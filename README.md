@@ -105,7 +105,7 @@ For production deployment:
 
 - Put KeyVault behind HTTPS using Caddy, Traefik or Nginx Proxy Manager.
 - Set `SESSION_COOKIE_SECURE=true` once HTTPS is enabled.
-- Set `BASE_URL` to the real HTTPS URL and `ALLOWED_HOSTS` to the hostname users will browse to.
+- Set `BASE_URL` to the real HTTPS URL. If users browse by an IP address or additional hostname, add those exact hosts to `ALLOWED_HOSTS` as a comma-separated list.
 - Generate a new `SECRET_KEY` and `ENCRYPTION_KEY`.
 - Keep `/app/data` and `/app/uploads` on persistent storage.
 - Back up the database, uploads and `.env` encryption key.

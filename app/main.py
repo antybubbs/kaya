@@ -5,7 +5,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from sqlalchemy.orm import Session
-from app.core.config import get_settings
+from app.core.config import get_settings, trusted_hosts
 from app.core.security import hash_password
 from app.db.session import Base, engine, SessionLocal
 from app.models.models import User
@@ -14,10 +14,10 @@ from app.routers import auth, dashboard, licences, admin
 settings = get_settings()
 app = FastAPI(title=settings.app_name, docs_url=None if settings.app_env == "production" else "/docs")
 
-if settings.allowed_hosts:
+if settings.app_env == "production":
     app.add_middleware(
         TrustedHostMiddleware,
-        allowed_hosts=[host.strip() for host in settings.allowed_hosts.split(",") if host.strip()],
+        allowed_hosts=trusted_hosts(settings),
     )
 
 app.add_middleware(
