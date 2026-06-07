@@ -1,0 +1,68 @@
+name: Build and publish KeyVault
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+
+jobs:
+  container:
+    runs-on: docker
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set image metadata
+        id: meta
+        shell: bash
+        run: |
+          REGISTRY="${FORGEJO_REGISTRY:-${{ vars.FORGEJO_REGISTRY }}}"
+          if [ -z "$REGISTRY" ]; then
+            REGISTRY="$(printf '%s' '${{ github.server_url }}' | sed -E 's#^https?://##')"
+          fi
+
+          OWNER="$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          IMAGE="$REGISTRY/$OWNER/keyvault"
+          SHORT_SHA="$(printf '%s' '${{ github.sha }}' | cut -c1-12)"
+
+          {
+            echo "registry=$REGISTRY"
+            echo "image=$IMAGE"
+            echo "short_sha=$SHORT_SHA"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Log in to Forgejo registry
+        shell: bash
+        run: |
+          printf '%s' '${{ secrets.FORGEJO_TOKEN }}' |
+            docker login '${{ steps.meta.outputs.registry }}' \
+              --username '${{ github.repository_owner }}' \
+              --password-stdin
+
+      - name: Build image
+        shell: bash
+        run: |
+          docker build \
+            --tag '${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.short_sha }}' \
+            .
+
+      - name: Tag image
+        shell: bash
+        run: |
+          docker tag '${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.short_sha }}' '${{ steps.meta.outputs.image }}:latest'
+          if printf '%s' '${{ github.ref }}' | grep -q '^refs/tags/'; then
+            VERSION="${GITHUB_REF#refs/tags/}"
+            docker tag '${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.short_sha }}' '${{ steps.meta.outputs.image }}:'"$VERSION"
+          fi
+
+      - name: Push image
+        shell: bash
+        run: |
+          docker push '${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.short_sha }}'
+          docker push '${{ steps.meta.outputs.image }}:latest'
+          if printf '%s' '${{ github.ref }}' | grep -q '^refs/tags/'; then
+            VERSION="${GITHUB_REF#refs/tags/}"
+            docker push '${{ steps.meta.outputs.image }}:'"$VERSION"
+          fi

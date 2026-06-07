@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="topbar"><div><h1>Add licence</h1><p class="muted">New keys are encrypted before being saved.</p></div></div>
+<section class="panel">
+<form method="post" class="form-grid">
+  <label>Product<input name="product" required></label>
+  <label>Organisation<input name="organisation"></label>
+  <label>Product key<input name="product_key" required></label>
+  <label>Licence type<input name="licence_type"></label>
+  <label>Seats<input name="seats" type="number" value="0"></label>
+  <label class="wide">Notes<textarea name="notes"></textarea></label>
+  <button type="submit">Save licence</button>
+</form>
+</section>
+{% endblock %}

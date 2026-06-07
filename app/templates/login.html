@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block public %}
+<div class="login-wrap">
+  <div class="login-card">
+    <div class="brand large"><span class="brand-mark">K</span><span>KeyVault</span></div>
+    <h1>Secure licence management</h1>
+    <p class="muted">Sign in to manage encrypted product keys, licence data and audit history.</p>
+    {% if error %}<div class="alert">{{ error }}</div>{% endif %}
+    <form method="post" action="/login" class="stack">
+      <label>Email<input name="email" type="email" required autofocus></label>
+      <label>Password<input name="password" type="password" required></label>
+      <button type="submit">Sign in</button>
+    </form>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="topbar"><div><h1>Import CSV</h1><p class="muted">Import your initial product key export. Keys are encrypted during import.</p></div></div>
+<section class="panel">
+{% if message %}<div class="success">{{ message }}</div>{% endif %}
+<form method="post" enctype="multipart/form-data" class="stack">
+  <label>CSV file<input name="file" type="file" accept=".csv" required></label>
+  <button type="submit">Import records</button>
+</form>
+</section>
+{% endblock %}

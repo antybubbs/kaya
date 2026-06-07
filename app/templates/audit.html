@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="topbar"><div><h1>Audit log</h1><p class="muted">Recent security and data access events.</p></div></div>
+<section class="panel"><table><thead><tr><th>Time</th><th>User</th><th>Action</th><th>Entity</th><th>Detail</th></tr></thead><tbody>
+{% for log in logs %}<tr><td>{{ log.created_at }}</td><td>{{ log.user.email if log.user else '-' }}</td><td>{{ log.action }}</td><td>{{ log.entity }} {{ log.entity_id or '' }}</td><td>{{ log.detail or '-' }}</td></tr>{% endfor %}
+</tbody></table></section>
+{% endblock %}

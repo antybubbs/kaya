@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="topbar"><div><h1>Licences</h1><p class="muted">Search product, organisation, type or licence ID.</p></div><a class="button" href="/licences/new">Add licence</a></div>
+<form class="search" method="get"><input name="q" placeholder="Search licences..." value="{{ q }}"><button>Search</button></form>
+<section class="panel">
+<table><thead><tr><th>Product</th><th>Organisation</th><th>Type</th><th>Product Key</th><th>Seats</th><th></th></tr></thead><tbody>
+{% for row in rows %}<tr><td>{{ row.product }}</td><td>{{ row.organisation or '-' }}</td><td>{{ row.licence_type or '-' }}</td><td class="mono">{{ mask_key(row.encrypted_product_key) }}</td><td>{{ row.seats or 0 }}</td><td><a href="/licences/{{ row.id }}">Open</a></td></tr>{% endfor %}
+</tbody></table>
+</section>
+{% endblock %}

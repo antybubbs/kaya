@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="topbar"><div><h1>{{ licence.product }}</h1><p class="muted">Licence record #{{ licence.id }}</p></div><a class="button secondary" href="/licences">Back</a></div>
+<section class="panel detail-grid">
+  <div><label>Product key</label><div class="secret mono">{{ display_key }}</div>{% if user.role in ['admin','editor'] %}<a class="button small" href="/licences/{{ licence.id }}?reveal=true">Reveal key</a>{% endif %}</div>
+  <div><label>Organisation</label><p>{{ licence.organisation or '-' }}</p></div>
+  <div><label>Licence type</label><p>{{ licence.licence_type or '-' }}</p></div>
+  <div><label>Activations</label><p>{{ licence.activations or '-' }}</p></div>
+  <div><label>Seats</label><p>{{ licence.seats or 0 }}</p></div>
+  <div><label>OSA Status</label><p>{{ licence.osa_status or '-' }}</p></div>
+</section>
+{% endblock %}

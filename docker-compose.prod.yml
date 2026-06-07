@@ -1,0 +1,24 @@
+services:
+  keyvault:
+    image: ${KEYVAULT_IMAGE:?Set KEYVAULT_IMAGE in .env}
+    container_name: keyvault
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "${KEYVAULT_PORT:-8080}:8080"
+    volumes:
+      - ./data:/app/data
+      - ./uploads:/app/uploads
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:noexec,nosuid,size=64m
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s

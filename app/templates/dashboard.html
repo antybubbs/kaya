@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="topbar"><div><h1>Dashboard</h1><p class="muted">Encrypted product key inventory and licence overview.</p></div><a class="button" href="/licences/new">Add licence</a></div>
+<section class="cards">
+  <div class="card"><span>Total records</span><strong>{{ total }}</strong></div>
+  <div class="card"><span>Products</span><strong>{{ products }}</strong></div>
+  <div class="card"><span>Organisations</span><strong>{{ organisations }}</strong></div>
+</section>
+<section class="panel">
+  <h2>Recently added</h2>
+  <table><thead><tr><th>Product</th><th>Organisation</th><th>Type</th><th></th></tr></thead><tbody>
+  {% for row in recent %}<tr><td>{{ row.product }}</td><td>{{ row.organisation or '-' }}</td><td>{{ row.licence_type or '-' }}</td><td><a href="/licences/{{ row.id }}">Open</a></td></tr>{% endfor %}
+  </tbody></table>
+</section>
+{% endblock %}

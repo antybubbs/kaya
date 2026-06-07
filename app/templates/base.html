@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title or 'KeyVault' }}</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+{% if user %}
+<aside class="sidebar">
+  <div class="brand"><span class="brand-mark">K</span><span>KeyVault</span></div>
+  <nav>
+    <a href="/dashboard">Dashboard</a>
+    <a href="/licences">Licences</a>
+    {% if user.role == 'admin' %}
+    <a href="/admin/import">Import CSV</a>
+    <a href="/admin/audit">Audit Log</a>
+    {% endif %}
+  </nav>
+  <form method="post" action="/logout"><button class="ghost" type="submit">Sign out</button></form>
+</aside>
+<main class="content">
+{% block content %}{% endblock %}
+</main>
+{% else %}
+{% block public %}{% endblock %}
+{% endif %}
+</body>
+</html>
