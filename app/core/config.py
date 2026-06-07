@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     app_name: str = "KeyVault"
     app_env: str = "production"
     base_url: str = "http://localhost:8080"
+    root_path: str = ""
     database_url: str = "sqlite:////app/data/keyvault.db"
     secret_key: str = "change-this-secret-key"
     encryption_key: str = ""

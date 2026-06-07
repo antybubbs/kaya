@@ -12,7 +12,11 @@ from app.models.models import User
 from app.routers import auth, dashboard, licences, admin
 
 settings = get_settings()
-app = FastAPI(title=settings.app_name, docs_url=None if settings.app_env == "production" else "/docs")
+app = FastAPI(
+    title=settings.app_name,
+    docs_url=None if settings.app_env == "production" else "/docs",
+    root_path=settings.root_path,
+)
 
 if settings.app_env == "production":
     app.add_middleware(

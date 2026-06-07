@@ -106,10 +106,50 @@ For production deployment:
 - Put KeyVault behind HTTPS using Caddy, Traefik or Nginx Proxy Manager.
 - Set `SESSION_COOKIE_SECURE=true` once HTTPS is enabled.
 - Set `BASE_URL` to the real HTTPS URL. If users browse by an IP address or additional hostname, add those exact hosts to `ALLOWED_HOSTS` as a comma-separated list.
+- Keep `FORWARDED_ALLOW_IPS=*` only when KeyVault is reachable exclusively through your trusted proxy or Docker network.
 - Generate a new `SECRET_KEY` and `ENCRYPTION_KEY`.
 - Keep `/app/data` and `/app/uploads` on persistent storage.
 - Back up the database, uploads and `.env` encryption key.
 - Restrict access with VPN, Authentik, Cloudflare Access or an internal network boundary.
+
+## Reverse proxy
+
+Set these values when serving through HTTPS:
+
+```text
+BASE_URL=https://keyvault.example.com
+ALLOWED_HOSTS=keyvault.example.com
+SESSION_COOKIE_SECURE=true
+FORWARDED_ALLOW_IPS=*
+```
+
+Your proxy must preserve the original host and forward the client scheme/IP.
+
+Nginx:
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+Caddy:
+
+```caddyfile
+keyvault.example.com {
+    reverse_proxy 127.0.0.1:8080
+}
+```
+
+If KeyVault is served from a path prefix such as `/keyvault`, also set:
+
+```text
+ROOT_PATH=/keyvault
+```
 
 ## Generate secure keys
 
