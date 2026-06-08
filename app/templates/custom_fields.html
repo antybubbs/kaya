@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="topbar"><div><h1>Custom Fields</h1><p class="muted">Create extra fields for module records. List options use one value per line.</p></div><a class="button secondary" href="/admin">Back</a></div>
+{% if error %}<div class="alert">{{ error }}</div>{% endif %}
+<div class="tabs">
+  {% for module_key, module_label in modules.items() %}<a class="{% if active_module == module_key %}active{% endif %}" href="/admin/custom-fields?module={{ module_key }}">{{ module_label }}</a>{% endfor %}
+  <span>Assets</span>
+  <span>Software Assets</span>
+</div>
+<section class="panel stack">
+<div>
+<h2>Add field</h2>
+<form method="post" action="/admin/custom-fields" class="form-grid">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="module" value="{{ active_module }}">
+  <label>Field name<input name="label" placeholder="Rack location" required></label>
+  <label>Field type<select name="field_type">{% for value, label in field_types.items() %}<option value="{{ value }}">{{ label }}</option>{% endfor %}</select></label>
+  <label>Sort order<input name="sort_order" type="number" value="0"></label>
+  <label>Required<select name="is_required"><option value="">No</option><option value="1">Yes</option></select></label>
+  <label class="wide">List options<textarea name="options" placeholder="One option per line. Used for radio buttons and drop-down lists."></textarea></label>
+  <button type="submit">Add field</button>
+</form>
+</div>
+<div>
+<h2>Fields</h2>
+<table><thead><tr><th>Name</th><th>Type</th><th>Required</th><th>Status</th><th>Options</th><th></th></tr></thead><tbody>
+{% for row in rows %}<tr><td>{{ row.label }}</td><td>{{ field_types.get(row.field_type, row.field_type) }}</td><td>{{ 'Yes' if row.is_required else 'No' }}</td><td>{{ 'Active' if row.is_active else 'Inactive' }}</td><td>{{ row.options or '-' }}</td><td><form method="post" action="/admin/custom-fields/{{ row.id }}/toggle"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit">{{ 'Disable' if row.is_active else 'Enable' }}</button></form></td></tr>{% endfor %}
+</tbody></table>
+</div>
+</section>
+{% endblock %}

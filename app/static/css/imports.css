@@ -25,3 +25,7 @@
   color: var(--muted);
   opacity: .6;
 }
+
+input[type="radio"] {
+  width: auto;
+}

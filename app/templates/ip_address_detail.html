@@ -9,6 +9,9 @@
   <div><label>Description</label><p>{{ record.description or '-' }}</p></div>
   <div><label>Static/Dynamic</label><p>{{ record.assignment_type }}</p></div>
   <div class="wide"><label>Notes</label><p>{{ record.notes or '-' }}</p></div>
+  {% for field in custom_fields %}
+  <div><label>{{ field.label }}</label><p>{{ custom_values.get(field.id) or '-' }}</p></div>
+  {% endfor %}
 </section>
 </section>
 {% endblock %}

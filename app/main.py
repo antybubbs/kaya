@@ -94,6 +94,19 @@ def migrate_existing_database():
             conn.execute(text("CREATE INDEX ix_ip_addresses_vlan_id ON ip_addresses (vlan_id)"))
         conn.execute(text("INSERT OR IGNORE INTO vlans (name, created_at, updated_at) VALUES ('VLAN 1', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"))
         conn.execute(text("UPDATE ip_addresses SET vlan_id = (SELECT id FROM vlans WHERE name = 'VLAN 1') WHERE vlan_id IS NULL"))
+        custom_field_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(custom_fields)"))}
+        if not custom_field_columns:
+            conn.execute(text("CREATE TABLE custom_fields (id INTEGER NOT NULL PRIMARY KEY, module VARCHAR(80) NOT NULL, label VARCHAR(120) NOT NULL, field_key VARCHAR(120) NOT NULL, field_type VARCHAR(30) NOT NULL DEFAULT 'text', options TEXT, is_required BOOLEAN DEFAULT 0 NOT NULL, is_active BOOLEAN DEFAULT 1 NOT NULL, sort_order INTEGER DEFAULT 0 NOT NULL, created_at DATETIME, updated_at DATETIME)"))
+            conn.execute(text("CREATE UNIQUE INDEX uq_custom_fields_module_key ON custom_fields (module, field_key)"))
+            conn.execute(text("CREATE INDEX ix_custom_fields_module ON custom_fields (module)"))
+            conn.execute(text("CREATE INDEX ix_custom_fields_field_key ON custom_fields (field_key)"))
+        custom_value_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(custom_field_values)"))}
+        if not custom_value_columns:
+            conn.execute(text("CREATE TABLE custom_field_values (id INTEGER NOT NULL PRIMARY KEY, field_id INTEGER NOT NULL REFERENCES custom_fields(id), entity_type VARCHAR(80) NOT NULL, entity_id INTEGER NOT NULL, value TEXT, created_at DATETIME, updated_at DATETIME)"))
+            conn.execute(text("CREATE UNIQUE INDEX uq_custom_field_values_entity ON custom_field_values (field_id, entity_type, entity_id)"))
+            conn.execute(text("CREATE INDEX ix_custom_field_values_field_id ON custom_field_values (field_id)"))
+            conn.execute(text("CREATE INDEX ix_custom_field_values_entity_type ON custom_field_values (entity_type)"))
+            conn.execute(text("CREATE INDEX ix_custom_field_values_entity_id ON custom_field_values (entity_id)"))
 
 
 @app.on_event("startup")

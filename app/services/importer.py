@@ -3,7 +3,7 @@ import pandas as pd
 from sqlalchemy.orm import Session
 from app.core.config import InvalidConfigurationError
 from app.core.security import encrypt_secret
-from app.models.models import IPAddress, Licence, User, VLAN
+from app.models.models import CustomField, CustomFieldValue, IPAddress, Licence, User, VLAN
 from app.services.audit import write_audit
 
 
@@ -130,6 +130,8 @@ def import_ip_addresses_csv(db: Session, user: User, path: str, ip_address: str 
 
     count = 0
     try:
+        custom_fields = db.query(CustomField).filter(CustomField.module == "ip_addresses", CustomField.is_active == True).all()
+        custom_field_columns = {f"Custom: {field.label}": field for field in custom_fields}
         for _, row in df.iterrows():
             address = clean_ip_address(row.get("IP Address"))
             if not address:
@@ -145,6 +147,16 @@ def import_ip_addresses_csv(db: Session, user: User, path: str, ip_address: str 
             record.description = clean(row.get("Description"))
             record.assignment_type = assignment_type if assignment_type in {"Static", "Dynamic"} else "Static"
             record.notes = clean(row.get("Notes"))
+            db.flush()
+            for column, field in custom_field_columns.items():
+                if column not in df.columns:
+                    continue
+                value = clean(row.get(column))
+                custom_value = db.query(CustomFieldValue).filter(CustomFieldValue.field_id == field.id, CustomFieldValue.entity_type == "ip_address", CustomFieldValue.entity_id == record.id).first()
+                if not custom_value:
+                    custom_value = CustomFieldValue(field_id=field.id, entity_type="ip_address", entity_id=record.id)
+                    db.add(custom_value)
+                custom_value.value = value
             count += 1
         db.commit()
     except ImportCSVError:

@@ -59,6 +59,35 @@ class VLAN(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class CustomField(Base):
+    __tablename__ = "custom_fields"
+    __table_args__ = (UniqueConstraint("module", "field_key", name="uq_custom_fields_module_key"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    module: Mapped[str] = mapped_column(String(80), index=True)
+    label: Mapped[str] = mapped_column(String(120))
+    field_key: Mapped[str] = mapped_column(String(120), index=True)
+    field_type: Mapped[str] = mapped_column(String(30), default="text")
+    options: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_required: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class CustomFieldValue(Base):
+    __tablename__ = "custom_field_values"
+    __table_args__ = (UniqueConstraint("field_id", "entity_type", "entity_id", name="uq_custom_field_values_entity"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    field_id: Mapped[int] = mapped_column(ForeignKey("custom_fields.id"), index=True)
+    entity_type: Mapped[str] = mapped_column(String(80), index=True)
+    entity_id: Mapped[int] = mapped_column(Integer, index=True)
+    value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    field = relationship("CustomField")
+
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

@@ -10,15 +10,17 @@ from app.core.csrf import csrf_context, validate_csrf_token
 from app.core.security import hash_password
 from app.core.totp import decrypted_totp_secret, encrypted_totp_secret, generate_totp_secret, provisioning_uri, verify_totp
 from app.db.session import get_db
-from app.models.models import AuditLog, User
+from app.models.models import AuditLog, CustomField, User
 from app.routers.auth import require_admin
 from app.services.audit import write_audit
+from app.services.custom_fields import FIELD_TYPES, make_field_key
 from app.services.exporter import export_ip_addresses_csv, export_licences_csv
 from app.services.importer import ImportCSVError, import_csv, import_ip_addresses_csv
 
 router = APIRouter(prefix="/admin")
 templates = Jinja2Templates(directory="app/templates")
 ROLES = {"admin", "editor", "viewer"}
+CUSTOM_FIELD_MODULES = {"ip_addresses": "IP Addresses"}
 
 
 @router.get("")
@@ -148,6 +150,47 @@ def export_csv(request: Request, module: str, csrf_token: str = Form(...), db: S
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
+
+
+@router.get("/custom-fields")
+def custom_fields(request: Request, module: str = "ip_addresses", db: Session = Depends(get_db), user=Depends(require_admin)):
+    active_module = module if module in CUSTOM_FIELD_MODULES else "ip_addresses"
+    rows = db.query(CustomField).filter(CustomField.module == active_module).order_by(CustomField.sort_order.asc(), CustomField.label.asc()).all()
+    return templates.TemplateResponse(request, "custom_fields.html", {"user": user, "modules": CUSTOM_FIELD_MODULES, "active_module": active_module, "rows": rows, "field_types": FIELD_TYPES, "error": None, **csrf_context(request)})
+
+
+@router.post("/custom-fields")
+def create_custom_field(request: Request, module: str = Form("ip_addresses"), label: str = Form(..., max_length=120), field_type: str = Form("text"), options: str = Form("", max_length=5000), is_required: str = Form(""), sort_order: int = Form(0), csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_admin)):
+    validate_csrf_token(request, csrf_token)
+    active_module = module if module in CUSTOM_FIELD_MODULES else "ip_addresses"
+    clean_label = label.strip()
+    clean_type = field_type if field_type in FIELD_TYPES else "text"
+    clean_options = options.strip()
+    rows = db.query(CustomField).filter(CustomField.module == active_module).order_by(CustomField.sort_order.asc(), CustomField.label.asc()).all()
+    if not clean_label:
+        return templates.TemplateResponse(request, "custom_fields.html", {"user": user, "modules": CUSTOM_FIELD_MODULES, "active_module": active_module, "rows": rows, "field_types": FIELD_TYPES, "error": "Field name is required.", **csrf_context(request)}, status_code=400)
+    if clean_type in {"radio", "select"} and not clean_options:
+        return templates.TemplateResponse(request, "custom_fields.html", {"user": user, "modules": CUSTOM_FIELD_MODULES, "active_module": active_module, "rows": rows, "field_types": FIELD_TYPES, "error": "List fields need one option per line.", **csrf_context(request)}, status_code=400)
+    field_key = make_field_key(clean_label)
+    if db.query(CustomField).filter(CustomField.module == active_module, CustomField.field_key == field_key).first():
+        return templates.TemplateResponse(request, "custom_fields.html", {"user": user, "modules": CUSTOM_FIELD_MODULES, "active_module": active_module, "rows": rows, "field_types": FIELD_TYPES, "error": "A field with that name already exists for this module.", **csrf_context(request)}, status_code=400)
+    row = CustomField(module=active_module, label=clean_label, field_key=field_key, field_type=clean_type, options=clean_options or None, is_required=bool(is_required), is_active=True, sort_order=sort_order)
+    db.add(row)
+    db.commit()
+    write_audit(db, user, "create", "custom_field", str(row.id), request.client.host if request.client else None, detail=f"{CUSTOM_FIELD_MODULES[active_module]}: {clean_label}")
+    return RedirectResponse(f"/admin/custom-fields?module={active_module}", status_code=303)
+
+
+@router.post("/custom-fields/{field_id}/toggle")
+def toggle_custom_field(request: Request, field_id: int, csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_admin)):
+    validate_csrf_token(request, csrf_token)
+    row = db.get(CustomField, field_id)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Custom field not found")
+    row.is_active = not row.is_active
+    db.commit()
+    write_audit(db, user, "update", "custom_field", str(row.id), request.client.host if request.client else None, detail=f"{row.label}: {'active' if row.is_active else 'inactive'}")
+    return RedirectResponse(f"/admin/custom-fields?module={row.module}", status_code=303)
 
 
 @router.get("/security")

@@ -12,6 +12,18 @@
   <label>Static/Dynamic<select name="assignment_type">{% for option in assignment_types %}<option value="{{ option }}" {% if record and record.assignment_type == option %}selected{% endif %}>{{ option }}</option>{% endfor %}</select></label>
   <label class="wide">Notes<textarea name="notes">{{ record.notes if record and record.notes else '' }}</textarea></label>
   <div class="wide"><h2>Custom Fields</h2></div>
+  {% for field in custom_fields %}
+  {% set current_value = custom_values.get(field.id, '') %}
+  {% if field.field_type == 'textarea' %}
+  <label class="wide">{{ field.label }}<textarea name="custom_{{ field.id }}" {% if field.is_required %}required{% endif %}>{{ current_value }}</textarea></label>
+  {% elif field.field_type == 'radio' %}
+  <div><label>{{ field.label }}</label>{% for option in option_list(field) %}<label><input name="custom_{{ field.id }}" type="radio" value="{{ option }}" {% if current_value == option %}checked{% endif %} {% if field.is_required %}required{% endif %}> {{ option }}</label>{% endfor %}</div>
+  {% elif field.field_type == 'select' %}
+  <label>{{ field.label }}<select name="custom_{{ field.id }}" {% if field.is_required %}required{% endif %}><option value=""></option>{% for option in option_list(field) %}<option value="{{ option }}" {% if current_value == option %}selected{% endif %}>{{ option }}</option>{% endfor %}</select></label>
+  {% else %}
+  <label>{{ field.label }}<input name="custom_{{ field.id }}" value="{{ current_value }}" {% if field.is_required %}required{% endif %}></label>
+  {% endif %}
+  {% endfor %}
   <button class="button secondary" type="reset">Reset</button>
   <button type="submit">Save</button>
 </form>
