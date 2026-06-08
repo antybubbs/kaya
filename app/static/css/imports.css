@@ -1,0 +1,27 @@
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 18px;
+}
+
+.tabs a,
+.tabs span {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 14px;
+  color: var(--text);
+  background: rgba(17, 24, 39, .5);
+  font-weight: 800;
+}
+
+.tabs a.active {
+  background: var(--panel2);
+  border-color: #3b82f6;
+  color: #bfdbfe;
+}
+
+.tabs span {
+  color: var(--muted);
+  opacity: .6;
+}

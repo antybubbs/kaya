@@ -1,24 +1,49 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="topbar"><div><h1>Imports and exports</h1><p class="muted">Move licence data in and out of HomeLab.</p></div><a class="button secondary" href="/admin">Back</a></div>
-<section class="panel stack">
-<div>
-<h2>Import CSV</h2>
+<div class="topbar"><div><h1>Imports and exports</h1><p class="muted">Export first to get the correct CSV structure, then import using the same columns. Imports overwrite matching records.</p></div><a class="button secondary" href="/admin">Back</a></div>
 {% if message %}<div class="success">{{ message }}</div>{% endif %}
 {% if error %}<div class="alert">{{ error }}</div>{% endif %}
-<form method="post" enctype="multipart/form-data" class="stack">
+<div class="tabs">
+  <a class="{% if active_module == 'licences' %}active{% endif %}" href="/admin/import?module=licences">License Keys</a>
+  <a class="{% if active_module == 'ip-addresses' %}active{% endif %}" href="/admin/import?module=ip-addresses">IP Addresses</a>
+  <span>Hardware Assets</span>
+  <span>Software Assets</span>
+</div>
+<section class="panel stack">
+{% if active_module == 'ip-addresses' %}
+<div>
+<h2>Import IP Addresses</h2>
+<form method="post" action="/admin/import/ip-addresses" enctype="multipart/form-data" class="stack">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <label>CSV file<input name="file" type="file" accept=".csv" required></label>
   <button type="submit">Import records</button>
 </form>
 </div>
 <div id="export">
-<h2>Export CSV</h2>
-<p class="muted">Exports include decrypted product keys. Store the file carefully.</p>
-<form method="post" action="/admin/export">
+<h2>Export IP Addresses</h2>
+<p class="muted">Use this export as the template for future IP address imports.</p>
+<form method="post" action="/admin/export/ip-addresses">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <button class="button secondary" type="submit">Download export</button>
 </form>
 </div>
+{% else %}
+<div>
+<h2>Import License Keys</h2>
+<form method="post" action="/admin/import/licences" enctype="multipart/form-data" class="stack">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <label>CSV file<input name="file" type="file" accept=".csv" required></label>
+  <button type="submit">Import records</button>
+</form>
+</div>
+<div id="export">
+<h2>Export License Keys</h2>
+<p class="muted">Exports include decrypted product keys. Store the file carefully. Use this export as the template for future imports.</p>
+<form method="post" action="/admin/export/licences">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button class="button secondary" type="submit">Download export</button>
+</form>
+</div>
+{% endif %}
 </section>
 {% endblock %}
