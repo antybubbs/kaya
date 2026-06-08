@@ -12,7 +12,7 @@
   <div class="brand"><span class="brand-mark">K</span><span>KeyVault</span></div>
   <nav class="nav-tree">
     <a class="nav-link" href="/dashboard">Dashboard</a>
-    <details class="nav-group" open>
+    <details class="nav-group">
       <summary>Software</summary>
       <div class="nav-children">
         <a class="nav-link" href="/licences">License Keys</a>
@@ -27,11 +27,11 @@
       </div>
     </details>
     {% if user.role == 'admin' %}
-    <details class="nav-group admin-group" open>
+    <details class="nav-group admin-group">
       <summary>Site Admin</summary>
       <div class="nav-children">
         <a class="nav-link" href="/admin">Overview</a>
-        <details class="nav-subgroup" open>
+        <details class="nav-subgroup">
           <summary>User Management</summary>
           <div class="nav-children">
             <a class="nav-link" href="/admin/users">Users</a>
@@ -39,7 +39,7 @@
             <span class="nav-link disabled" title="Coming soon">IDP Integration OIDC</span>
           </div>
         </details>
-        <details class="nav-subgroup" open>
+        <details class="nav-subgroup">
           <summary>Data Management</summary>
           <div class="nav-children">
             <a class="nav-link" href="/admin/import">License Keys</a>
