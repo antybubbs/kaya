@@ -20,7 +20,7 @@ from app.services.importer import ImportCSVError, import_csv, import_ip_addresse
 router = APIRouter(prefix="/admin")
 templates = Jinja2Templates(directory="app/templates")
 ROLES = {"admin", "editor", "viewer"}
-CUSTOM_FIELD_MODULES = {"ip_addresses": "IP Addresses"}
+CUSTOM_FIELD_MODULES = {"ip_addresses": "IP Addresses", "hardware_assets": "Hardware Assets"}
 
 
 @router.get("")

@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="topbar"><div><h1>{{ record.name }}</h1><p class="muted">Hardware asset #{{ record.id }}</p></div><div>{% if user.role in ['admin','editor'] %}<a class="button" href="/hardware-assets/{{ record.id }}/edit">Edit</a> {% endif %}<a class="button secondary" href="/hardware-assets">Back</a></div></div>
+<section class="panel asset-detail">
+  {% if record.photo_filename %}
+  <div class="asset-photo-wrap"><img class="asset-photo" src="/hardware-assets/{{ record.id }}/photo" alt="{{ record.name }}"></div>
+  {% endif %}
+  <section class="detail-grid">
+    <div><label>Asset Tag</label><p class="mono">{{ record.asset_tag or '-' }}</p></div>
+    <div><label>Status</label><p>{{ record.status }}</p></div>
+    <div><label>Category</label><p>{{ record.category or '-' }}</p></div>
+    <div><label>Location</label><p>{{ record.location or '-' }}</p></div>
+    <div><label>Assigned To</label><p>{{ record.assigned_to or '-' }}</p></div>
+    <div><label>Manufacturer</label><p>{{ record.manufacturer or '-' }}</p></div>
+    <div><label>Model</label><p>{{ record.model or '-' }}</p></div>
+    <div><label>Serial Number</label><p>{{ record.serial_number or '-' }}</p></div>
+    <div><label>Purchase Date</label><p>{{ record.purchase_date or '-' }}</p></div>
+    <div><label>Purchase Cost</label><p>{{ record.purchase_cost or '-' }}</p></div>
+    <div><label>Warranty Expires</label><p>{{ record.warranty_expires or '-' }}</p></div>
+    <div><label>Supplier</label><p>{{ record.supplier or '-' }}</p></div>
+    <div class="wide"><label>Notes</label><p>{{ record.notes or '-' }}</p></div>
+    {% for field in custom_fields %}
+    <div><label>{{ field.label }}</label><p>{{ custom_values.get(field.id) or '-' }}</p></div>
+    {% endfor %}
+  </section>
+</section>
+<section class="panel section-gap">
+  <div class="topbar compact"><h2>Attachments</h2></div>
+  {% if attachments %}
+  <table>
+    <thead><tr><th>File</th><th>Uploaded</th><th></th></tr></thead>
+    <tbody>
+    {% for attachment in attachments %}
+    <tr><td>{{ attachment.original_filename }}</td><td>{{ attachment.uploaded_at }}</td><td><a class="button secondary" href="/hardware-assets/{{ record.id }}/attachments/{{ attachment.id }}">Download</a></td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No attachments yet.</p>
+  {% endif %}
+  {% if user.role in ['admin','editor'] %}
+  <form method="post" action="/hardware-assets/{{ record.id }}/attachments" enctype="multipart/form-data" class="search section-gap">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input name="attachment" type="file" required>
+    <button type="submit">Upload attachment</button>
+  </form>
+  {% endif %}
+</section>
+{% endblock %}

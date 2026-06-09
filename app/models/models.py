@@ -59,6 +59,39 @@ class VLAN(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class HardwareAsset(Base):
+    __tablename__ = "hardware_assets"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    asset_tag: Mapped[str | None] = mapped_column(String(120), unique=True, index=True, nullable=True)
+    name: Mapped[str] = mapped_column(String(255), index=True)
+    category: Mapped[str | None] = mapped_column(String(120), index=True, nullable=True)
+    status: Mapped[str] = mapped_column(String(80), default="In use", index=True)
+    manufacturer: Mapped[str | None] = mapped_column(String(255), index=True, nullable=True)
+    model: Mapped[str | None] = mapped_column(String(255), index=True, nullable=True)
+    serial_number: Mapped[str | None] = mapped_column(String(255), index=True, nullable=True)
+    location: Mapped[str | None] = mapped_column(String(255), index=True, nullable=True)
+    assigned_to: Mapped[str | None] = mapped_column(String(255), index=True, nullable=True)
+    purchase_date: Mapped[datetime | None] = mapped_column(Date, nullable=True)
+    purchase_cost: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    warranty_expires: Mapped[datetime | None] = mapped_column(Date, nullable=True)
+    supplier: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    photo_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class HardwareAssetAttachment(Base):
+    __tablename__ = "hardware_asset_attachments"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    asset_id: Mapped[int] = mapped_column(ForeignKey("hardware_assets.id"), index=True)
+    original_filename: Mapped[str] = mapped_column(String(255))
+    stored_filename: Mapped[str] = mapped_column(String(255))
+    content_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    asset = relationship("HardwareAsset")
+
+
 class CustomField(Base):
     __tablename__ = "custom_fields"
     __table_args__ = (UniqueConstraint("module", "field_key", name="uq_custom_fields_module_key"),)

@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="topbar"><div><h1>{% if record %}Edit Hardware Asset{% else %}Add Hardware Asset{% endif %}</h1></div><a class="button secondary" href="{% if record %}/hardware-assets/{{ record.id }}{% else %}/hardware-assets{% endif %}">Back</a></div>
+{% if error %}<div class="alert">{{ error }}</div>{% endif %}
+<section class="panel">
+<form method="post" enctype="multipart/form-data" class="form-grid">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <label>Asset Tag<input name="asset_tag" value="{{ record.asset_tag if record and record.asset_tag else '' }}" placeholder="HL-001"></label>
+  <label>Name<input name="name" value="{{ record.name if record else '' }}" placeholder="Main lab server" required></label>
+  <label>Category<input name="category" value="{{ record.category if record and record.category else '' }}" placeholder="Server, PC, Switch"></label>
+  <label>Status<select name="asset_status">{% for option in statuses %}<option value="{{ option }}" {% if record and record.status == option %}selected{% endif %}>{{ option }}</option>{% endfor %}</select></label>
+  <label>Manufacturer<input name="manufacturer" value="{{ record.manufacturer if record and record.manufacturer else '' }}"></label>
+  <label>Model<input name="model" value="{{ record.model if record and record.model else '' }}"></label>
+  <label>Serial Number<input name="serial_number" value="{{ record.serial_number if record and record.serial_number else '' }}"></label>
+  <label>Location<input name="location" value="{{ record.location if record and record.location else '' }}" placeholder="Rack, office, cupboard"></label>
+  <label>Assigned To<input name="assigned_to" value="{{ record.assigned_to if record and record.assigned_to else '' }}"></label>
+  <label>Supplier<input name="supplier" value="{{ record.supplier if record and record.supplier else '' }}"></label>
+  <label>Purchase Date<input name="purchase_date" type="date" value="{{ record.purchase_date if record and record.purchase_date else '' }}"></label>
+  <label>Purchase Cost<input name="purchase_cost" value="{{ record.purchase_cost if record and record.purchase_cost else '' }}"></label>
+  <label>Warranty Expires<input name="warranty_expires" type="date" value="{{ record.warranty_expires if record and record.warranty_expires else '' }}"></label>
+  <label>Photo<input name="photo" type="file" accept="image/*"></label>
+  <label class="wide">Attachment<input name="attachment" type="file"></label>
+  <label class="wide">Notes<textarea name="notes">{{ record.notes if record and record.notes else '' }}</textarea></label>
+  <div class="wide"><h2>Custom Fields</h2></div>
+  {% for field in custom_fields %}
+  {% set current_value = custom_values.get(field.id, '') %}
+  {% if field.field_type == 'textarea' %}
+  <label class="wide">{{ field.label }}<textarea name="custom_{{ field.id }}" {% if field.is_required %}required{% endif %}>{{ current_value }}</textarea></label>
+  {% elif field.field_type == 'radio' %}
+  <div><label>{{ field.label }}</label>{% for option in option_list(field) %}<label><input name="custom_{{ field.id }}" type="radio" value="{{ option }}" {% if current_value == option %}checked{% endif %} {% if field.is_required %}required{% endif %}> {{ option }}</label>{% endfor %}</div>
+  {% elif field.field_type == 'select' %}
+  <label>{{ field.label }}<select name="custom_{{ field.id }}" {% if field.is_required %}required{% endif %}><option value=""></option>{% for option in option_list(field) %}<option value="{{ option }}" {% if current_value == option %}selected{% endif %}>{{ option }}</option>{% endfor %}</select></label>
+  {% else %}
+  <label>{{ field.label }}<input name="custom_{{ field.id }}" value="{{ current_value }}" {% if field.is_required %}required{% endif %}></label>
+  {% endif %}
+  {% endfor %}
+  <button class="button secondary" type="reset">Reset</button>
+  <button type="submit">Save</button>
+</form>
+</section>
+{% endblock %}

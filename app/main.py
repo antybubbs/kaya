@@ -10,7 +10,7 @@ from app.core.config import get_settings, trusted_hosts
 from app.core.security import hash_password
 from app.db.session import Base, engine, SessionLocal
 from app.models.models import User, VLAN
-from app.routers import auth, dashboard, licences, admin, ip_addresses
+from app.routers import auth, dashboard, licences, admin, ip_addresses, hardware_assets
 
 settings = get_settings()
 app = FastAPI(
@@ -107,6 +107,15 @@ def migrate_existing_database():
             conn.execute(text("CREATE INDEX ix_custom_field_values_field_id ON custom_field_values (field_id)"))
             conn.execute(text("CREATE INDEX ix_custom_field_values_entity_type ON custom_field_values (entity_type)"))
             conn.execute(text("CREATE INDEX ix_custom_field_values_entity_id ON custom_field_values (entity_id)"))
+        hardware_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(hardware_assets)"))}
+        if not hardware_columns:
+            conn.execute(text("CREATE TABLE hardware_assets (id INTEGER NOT NULL PRIMARY KEY, asset_tag VARCHAR(120) UNIQUE, name VARCHAR(255) NOT NULL, category VARCHAR(120), status VARCHAR(80) NOT NULL DEFAULT 'In use', manufacturer VARCHAR(255), model VARCHAR(255), serial_number VARCHAR(255), location VARCHAR(255), assigned_to VARCHAR(255), purchase_date DATE, purchase_cost VARCHAR(80), warranty_expires DATE, supplier VARCHAR(255), photo_filename VARCHAR(255), notes TEXT, created_at DATETIME, updated_at DATETIME)"))
+            for column in ["asset_tag", "name", "category", "status", "manufacturer", "model", "serial_number", "location", "assigned_to"]:
+                conn.execute(text(f"CREATE INDEX ix_hardware_assets_{column} ON hardware_assets ({column})"))
+        attachment_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(hardware_asset_attachments)"))}
+        if not attachment_columns:
+            conn.execute(text("CREATE TABLE hardware_asset_attachments (id INTEGER NOT NULL PRIMARY KEY, asset_id INTEGER NOT NULL REFERENCES hardware_assets(id), original_filename VARCHAR(255) NOT NULL, stored_filename VARCHAR(255) NOT NULL, content_type VARCHAR(120), uploaded_at DATETIME)"))
+            conn.execute(text("CREATE INDEX ix_hardware_asset_attachments_asset_id ON hardware_asset_attachments (asset_id)"))
 
 
 @app.on_event("startup")
@@ -118,6 +127,7 @@ app.include_router(auth.router)
 app.include_router(dashboard.router)
 app.include_router(licences.router)
 app.include_router(ip_addresses.router)
+app.include_router(hardware_assets.router)
 app.include_router(admin.router)
 
 @app.get("/healthz", include_in_schema=False)
