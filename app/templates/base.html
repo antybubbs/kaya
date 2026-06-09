@@ -11,9 +11,10 @@
 <body>
 {% if user %}
 <aside class="sidebar">
-  <div class="brand"><span class="brand-mark">H</span><span class="brand-text">HomeLab</span><button class="sidebar-toggle" type="button" data-sidebar-collapse aria-label="Collapse sidebar" title="Collapse sidebar">|<</button></div>
+  <div class="sidebar-heading">Core</div>
   <nav class="nav-tree">
     <a class="nav-link" href="/dashboard" data-reset-sidebar><span class="nav-icon">D</span><span class="nav-text">Dashboard</span></a>
+    <div class="sidebar-heading">Lab</div>
     <details class="nav-group" data-sidebar-menu="top-draw">
       <summary><span class="nav-icon">T</span><span class="nav-text">Top Draw</span></summary>
       <div class="nav-children">
@@ -36,6 +37,7 @@
       </div>
     </details>
     {% if user.role == 'admin' %}
+    <div class="sidebar-heading">Admin</div>
     <details class="nav-group admin-group" data-sidebar-menu="site-admin">
       <summary><span class="nav-icon">S</span><span class="nav-text">Site Admin</span></summary>
       <div class="nav-children">
@@ -88,9 +90,33 @@
   </div>
   {% endif %}
 </aside>
-<main class="content">
-{% block content %}{% endblock %}
-</main>
+<div class="app-shell">
+  <header class="app-topbar">
+    <div class="app-topbar-left">
+      <button class="topbar-icon-button" type="button" data-sidebar-collapse aria-label="Collapse sidebar" title="Collapse sidebar">
+        <span aria-hidden="true">&#9776;</span>
+      </button>
+      <a class="app-brand" href="/dashboard" data-reset-sidebar><span class="brand-mark">H</span><span class="brand-text">HomeLab</span></a>
+      <form class="top-search" action="#" method="get" role="search">
+        <input type="search" name="q" placeholder="Search" aria-label="Search">
+      </form>
+    </div>
+    <div class="app-topbar-right">
+      <a class="topbar-link" href="https://github.com/antybubbs/HomeLab/releases" target="_blank" rel="noopener noreferrer">Releases</a>
+      <button class="theme-toggle topbar-theme" type="button" data-theme-toggle aria-label="Toggle light and dark mode" title="Light/Dark Mode">
+        <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M21 14.4A8.7 8.7 0 0 1 9.6 3a7.3 7.3 0 1 0 11.4 11.4Z"></path></svg>
+      </button>
+      <a class="topbar-profile" href="/profile" title="Profile">
+        <span class="avatar">{{ (user.first_name[:1] if user.first_name else user.email[:1])|upper }}</span>
+      </a>
+    </div>
+  </header>
+  <main class="content">
+    <div class="content-inner">
+      {% block content %}{% endblock %}
+    </div>
+  </main>
+</div>
 {% else %}
 {% block public %}{% endblock %}
 {% endif %}
