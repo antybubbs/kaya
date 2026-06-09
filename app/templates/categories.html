@@ -22,8 +22,16 @@
 </div>
 <div>
 <h2>{{ active_list_label }} Values</h2>
-<table><thead><tr><th>Name</th><th>Status</th><th>Sort order</th><th></th></tr></thead><tbody>
-{% for row in rows %}<tr><td>{{ row.value }}</td><td>{{ 'Active' if row.is_active else 'Inactive' }}</td><td>{{ row.sort_order }}</td><td><form method="post" action="/admin/categories/{{ row.id }}/toggle"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit">{{ 'Disable' if row.is_active else 'Enable' }}</button></form></td></tr>{% endfor %}
+<table><thead><tr><th>Name</th><th>Status</th><th>Sort order</th><th></th><th></th></tr></thead><tbody>
+{% for row in rows %}
+<tr>
+  <td><form id="edit-category-{{ row.id }}" method="post" action="/admin/categories/{{ row.id }}/edit"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input name="value" value="{{ row.value }}" required></form></td>
+  <td>{{ 'Active' if row.is_active else 'Inactive' }}</td>
+  <td><input form="edit-category-{{ row.id }}" name="sort_order" type="number" value="{{ row.sort_order }}"></td>
+  <td><button class="button secondary" form="edit-category-{{ row.id }}" type="submit">Save</button></td>
+  <td><form method="post" action="/admin/categories/{{ row.id }}/toggle"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit">{{ 'Disable' if row.is_active else 'Enable' }}</button></form></td>
+</tr>
+{% endfor %}
 </tbody></table>
 </div>
 </section>

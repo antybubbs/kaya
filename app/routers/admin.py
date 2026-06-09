@@ -234,6 +234,31 @@ def toggle_category(request: Request, item_id: int, csrf_token: str = Form(...),
     return RedirectResponse(f"/admin/categories?module={row.module}&list_key={row.list_key}", status_code=303)
 
 
+@router.post("/categories/{item_id}/edit")
+def edit_category(request: Request, item_id: int, value: str = Form(..., max_length=120), sort_order: int = Form(0), csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_admin)):
+    validate_csrf_token(request, csrf_token)
+    row = db.get(ManagedListItem, item_id)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Category not found")
+    clean_value = value.strip()
+    if not clean_value:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Name is required.")
+    duplicate = db.query(ManagedListItem).filter(
+        ManagedListItem.module == row.module,
+        ManagedListItem.list_key == row.list_key,
+        ManagedListItem.value == clean_value,
+        ManagedListItem.id != row.id,
+    ).first()
+    if duplicate:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="That value already exists.")
+    old_value = row.value
+    row.value = clean_value
+    row.sort_order = sort_order
+    db.commit()
+    write_audit(db, user, "update", "category", str(row.id), request.client.host if request.client else None, detail=f"{old_value} -> {row.value}")
+    return RedirectResponse(f"/admin/categories?module={row.module}&list_key={row.list_key}", status_code=303)
+
+
 @router.get("/security")
 def security(request: Request, user=Depends(require_admin)):
     secret = decrypted_totp_secret(user.totp_secret) if user.totp_secret and not user.totp_enabled else None
