@@ -4,8 +4,8 @@
 <section class="cards">
   <div class="card"><span>Total IP Addresses</span><strong>{{ total }}</strong></div>
 </section>
-{% if user.role in ['admin','editor'] %}<div class="list-actions"><a class="button secondary" href="/admin/categories?module=ip_addresses&list_key=category">Manage Categories</a> <a class="button" href="/ip-addresses/new">Add IP</a></div>{% endif %}
-<form class="search" method="get"><select name="category"><option value="">All categories</option>{% for category in categories %}<option value="{{ category }}" {% if active_category == category %}selected{% endif %}>{{ category }}</option>{% endfor %}</select><input name="q" placeholder="Search IP addresses..." value="{{ q }}"><button>Search</button></form>
+{% if user.role in ['admin','editor'] %}<div class="list-actions"><a class="button" href="/ip-addresses/new">Add IP</a></div>{% endif %}
+<form class="search" method="get"><input name="q" placeholder="Search IP addresses..." value="{{ q }}"><button>Search</button></form>
 <section class="panel">
 <table data-table-key="ip-addresses"><thead><tr><th data-col="ip" data-sort>IP</th><th data-col="category" data-sort>Category</th><th data-col="name" data-sort>Name</th><th data-col="description" data-sort>Description</th><th data-col="assignment" data-sort>Static/Dynamic</th><th data-col="notes" data-sort>Notes</th><th data-col="actions"></th></tr></thead><tbody>
 {% for row in rows %}<tr><td class="mono">{{ row.address }}</td><td>{{ row.category or '-' }}</td><td>{{ row.name or '-' }}</td><td>{{ row.description or '-' }}</td><td>{{ row.assignment_type }}</td><td>{{ row.notes or '-' }}</td><td><a class="button secondary" href="/ip-addresses/{{ row.id }}">View</a></td></tr>{% endfor %}
