@@ -11,7 +11,6 @@ from app.core.security import hash_password
 from app.db.session import Base, engine, SessionLocal
 from app.models.models import User, VLAN
 from app.routers import auth, dashboard, licences, admin, ip_addresses, hardware_assets
-from app.services.managed_lists import seed_default_lists
 
 settings = get_settings()
 app = FastAPI(
@@ -72,7 +71,6 @@ def bootstrap():
         if not default_vlan:
             db.add(VLAN(name="VLAN 1"))
             db.commit()
-        seed_default_lists(db)
         db.commit()
     finally:
         db.close()
