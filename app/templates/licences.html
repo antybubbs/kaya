@@ -7,7 +7,7 @@
 {% if user.role in ['admin','editor'] %}<div class="list-actions"><a class="button" href="/licences/new">Add License Key</a></div>{% endif %}
 <form class="search" method="get"><input name="q" placeholder="Search license keys..." value="{{ q }}"><button>Search</button></form>
 <section class="panel">
-<table><thead><tr><th>Product</th><th>Type</th><th>Product Key</th><th>Seats</th><th></th></tr></thead><tbody>
+<table data-table-key="license-keys"><thead><tr><th data-col="product" data-sort>Product</th><th data-col="type" data-sort>Type</th><th data-col="product-key" data-sort>Product Key</th><th data-col="seats" data-sort>Seats</th><th data-col="actions"></th></tr></thead><tbody>
 {% for row in rows %}<tr><td>{{ row.product }}</td><td>{{ row.licence_type or '-' }}</td><td class="mono">{{ mask_key(row.encrypted_product_key) }}</td><td>{{ row.seats or 0 }}</td><td><a class="button secondary" href="/licences/{{ row.id }}">View</a></td></tr>{% endfor %}
 </tbody></table>
 </section>

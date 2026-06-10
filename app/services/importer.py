@@ -71,6 +71,10 @@ def get_or_create_vlan(db: Session, name: str | None) -> VLAN:
     return vlan
 
 
+def default_vlan(db: Session) -> VLAN:
+    return get_or_create_vlan(db, "VLAN 1")
+
+
 def import_csv(db: Session, user: User, path: str, ip_address: str | None = None) -> int:
     df = read_csv_file(path)
 
@@ -147,13 +151,14 @@ def import_ip_addresses_csv(db: Session, user: User, path: str, ip_address: str 
             address = clean_ip_address(row.get("IP Address"))
             if not address:
                 continue
-            vlan = get_or_create_vlan(db, clean(row.get("VLAN")))
-            record = db.query(IPAddress).filter(IPAddress.address == address, IPAddress.vlan_id == vlan.id).first()
+            vlan = default_vlan(db)
+            record = db.query(IPAddress).filter(IPAddress.address == address).first()
             if not record:
                 record = IPAddress(address=address, vlan_id=vlan.id)
                 db.add(record)
             record.vlan_id = vlan.id
             assignment_type = clean(row.get("Static/Dynamic")) or clean(row.get("Assignment Type")) or "Static"
+            record.category = clean(row.get("Category")) or clean(row.get("VLAN"))
             record.name = clean(row.get("Name"))
             record.description = clean(row.get("Description"))
             record.assignment_type = assignment_type if assignment_type in {"Static", "Dynamic"} else "Static"

@@ -5,8 +5,8 @@
 <section class="panel">
 <form method="post" class="form-grid">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <label>VLAN<select name="vlan_id">{% for vlan in vlans %}<option value="{{ vlan.id }}" {% if selected_vlan and selected_vlan.id == vlan.id %}selected{% endif %}>{{ vlan.name }}</option>{% endfor %}</select></label>
   <label>IP Address<input name="address" placeholder="192.168.1.1" value="{{ record.address if record else '' }}" required></label>
+  <label>Category<select name="category"><option value=""></option>{% for category in categories %}<option value="{{ category }}" {% if record and record.category == category %}selected{% endif %}>{{ category }}</option>{% endfor %}</select></label>
   <label>Name<input name="name" placeholder="HAL=Homelab" value="{{ record.name if record and record.name else '' }}"></label>
   <label>Description<textarea name="description">{{ record.description if record and record.description else '' }}</textarea></label>
   <label>Static/Dynamic<select name="assignment_type">{% for option in assignment_types %}<option value="{{ option }}" {% if record and record.assignment_type == option %}selected{% endif %}>{{ option }}</option>{% endfor %}</select></label>

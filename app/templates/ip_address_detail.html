@@ -3,8 +3,8 @@
 <div class="topbar"><div><h1>{{ record.address }}</h1><p class="muted">IP address record #{{ record.id }}</p></div><div>{% if user.role in ['admin','editor'] %}<a class="button" href="/ip-addresses/{{ record.id }}/edit">Edit</a> {% endif %}<a class="button secondary" href="/ip-addresses">Back</a></div></div>
 <section class="panel">
 <section class="detail-grid">
-  <div><label>VLAN</label><p>{{ record.vlan.name if record.vlan else 'VLAN 1' }}</p></div>
   <div><label>IP Address</label><p class="mono">{{ record.address }}</p></div>
+  <div><label>Category</label><p>{{ record.category or '-' }}</p></div>
   <div><label>Name</label><p>{{ record.name or '-' }}</p></div>
   <div><label>Description</label><p>{{ record.description or '-' }}</p></div>
   <div><label>Static/Dynamic</label><p>{{ record.assignment_type }}</p></div>

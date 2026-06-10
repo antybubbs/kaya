@@ -99,6 +99,9 @@ def migrate_existing_database():
         if ip_columns and "vlan_id" not in ip_columns:
             conn.execute(text("ALTER TABLE ip_addresses ADD COLUMN vlan_id INTEGER REFERENCES vlans(id)"))
             conn.execute(text("CREATE INDEX ix_ip_addresses_vlan_id ON ip_addresses (vlan_id)"))
+        if ip_columns and "category" not in ip_columns:
+            conn.execute(text("ALTER TABLE ip_addresses ADD COLUMN category VARCHAR(120)"))
+            conn.execute(text("CREATE INDEX ix_ip_addresses_category ON ip_addresses (category)"))
         conn.execute(text("INSERT OR IGNORE INTO vlans (name, created_at, updated_at) VALUES ('VLAN 1', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"))
         conn.execute(text("UPDATE ip_addresses SET vlan_id = (SELECT id FROM vlans WHERE name = 'VLAN 1') WHERE vlan_id IS NULL"))
         custom_field_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(custom_fields)"))}

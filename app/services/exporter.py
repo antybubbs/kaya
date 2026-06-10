@@ -42,8 +42,8 @@ def export_ip_addresses_csv(db: Session) -> str:
     writer = csv.writer(output)
     custom_fields = db.query(CustomField).filter(CustomField.module == "ip_addresses", CustomField.is_active == True).order_by(CustomField.sort_order.asc(), CustomField.label.asc()).all()
     writer.writerow([
-        "VLAN",
         "IP Address",
+        "Category",
         "Name",
         "Description",
         "Static/Dynamic",
@@ -53,8 +53,8 @@ def export_ip_addresses_csv(db: Session) -> str:
         values = db.query(CustomFieldValue).filter(CustomFieldValue.entity_type == "ip_address", CustomFieldValue.entity_id == row.id).all()
         value_map = {value.field_id: value.value or "" for value in values}
         writer.writerow([
-            row.vlan.name if row.vlan else "VLAN 1",
             row.address,
+            row.category or "",
             row.name or "",
             row.description or "",
             row.assignment_type,

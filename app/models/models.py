@@ -43,6 +43,7 @@ class IPAddress(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     vlan_id: Mapped[int | None] = mapped_column(ForeignKey("vlans.id"), nullable=True, index=True)
     address: Mapped[str] = mapped_column(String(80), index=True)
+    category: Mapped[str | None] = mapped_column(String(120), index=True, nullable=True)
     name: Mapped[str | None] = mapped_column(String(255), index=True, nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     assignment_type: Mapped[str] = mapped_column(String(20), default="Static")

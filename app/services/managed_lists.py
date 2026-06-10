@@ -1,12 +1,15 @@
 from sqlalchemy.orm import Session
 from app.models.models import ManagedListItem
 
-MANAGED_LIST_MODULES = {"hardware_assets": "Hardware Assets", "licences": "License Keys"}
+MANAGED_LIST_MODULES = {"hardware_assets": "Hardware Assets", "ip_addresses": "IP Addresses", "licences": "License Keys"}
 MANAGED_LISTS = {
     "hardware_assets": {
         "category": "Category",
         "location": "Location",
         "status": "Status",
+    },
+    "ip_addresses": {
+        "category": "Category",
     },
     "licences": {
         "licence_type": "License Type",
@@ -17,6 +20,7 @@ DEFAULT_ITEMS = {
     ("hardware_assets", "category"): ["Server", "Desktop", "Laptop", "Network", "Storage", "Peripheral", "Other"],
     ("hardware_assets", "location"): ["Rack", "Office", "Living Room", "Storage", "Other"],
     ("hardware_assets", "status"): ["In use", "Ready", "Repair", "Retired", "Missing"],
+    ("ip_addresses", "category"): ["Infrastructure", "Servers", "Clients", "IoT", "Guest", "Reserved", "Other"],
     ("licences", "licence_type"): ["Retail", "OEM", "Volume", "Subscription", "Trial", "Other"],
 }
 

@@ -20,7 +20,7 @@
 </div>
 <div id="export">
 <h2>Export IP Addresses</h2>
-<p class="muted">Use this export as the template for future IP address imports. The VLAN column controls which tab each IP address belongs to.</p>
+<p class="muted">Use this export as the template for future IP address imports. The Category column controls the category shown on the IP address table.</p>
 <form method="post" action="/admin/export/ip-addresses">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <button class="button secondary" type="submit">Download export</button>

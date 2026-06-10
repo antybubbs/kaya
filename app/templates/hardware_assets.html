@@ -7,8 +7,8 @@
 {% if user.role in ['admin','editor'] %}<div class="list-actions"><a class="button" href="/hardware-assets/new">Add Asset</a></div>{% endif %}
 <form class="search" method="get"><input name="q" placeholder="Search hardware assets..." value="{{ q }}"><button>Search</button></form>
 <section class="panel">
-<table>
-  <thead><tr><th>Asset Tag</th><th>Name</th><th>Category</th><th>Status</th><th>Location</th><th>Warranty</th><th></th></tr></thead>
+<table data-table-key="hardware-assets">
+  <thead><tr><th data-col="asset-tag" data-sort>Asset Tag</th><th data-col="name" data-sort>Name</th><th data-col="category" data-sort>Category</th><th data-col="status" data-sort>Status</th><th data-col="location" data-sort>Location</th><th data-col="warranty" data-sort>Warranty</th><th data-col="actions"></th></tr></thead>
   <tbody>
   {% for row in rows %}
   <tr>
