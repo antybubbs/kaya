@@ -3,6 +3,12 @@
 <span class="session-tab active">{{ remote_label }}</span>
 <a class="session-tab close-tab" href="/remote-manager">Close</a>
 {% endblock %}
+{% block main_class %}remote-main{% endblock %}
+{% block extra_head %}
+{% if remote.protocol == 'ssh' %}
+<link rel="stylesheet" href="/static/vendor/xterm/xterm.css">
+{% endif %}
+{% endblock %}
 {% block content %}
 <div class="remote-session-page">
   <section class="remote-session-frame">
@@ -16,9 +22,9 @@
           <input data-ssh-password type="password" autocomplete="current-password" required>
         </label>
         <button type="submit">Start SSH session</button>
+        <p class="muted">Session only. Not stored.</p>
       </form>
-      <div class="ssh-terminal mono" data-ssh-output tabindex="0" role="textbox" aria-label="SSH terminal">Session not connected.</div>
-      <p class="muted terminal-note">Password is used for this browser session only. The first successful connection pins the SSH host fingerprint and future changes are refused.</p>
+      <div class="ssh-terminal" data-ssh-terminal aria-label="SSH terminal"></div>
       {% endif %}
     </div>
     {% else %}
@@ -47,6 +53,8 @@
   </section>
 </div>
 {% if remote.protocol == 'ssh' %}
+<script src="/static/vendor/xterm/xterm.js" defer></script>
+<script src="/static/vendor/xterm/addon-fit.js" defer></script>
 <script src="/static/js/remote_session.js" defer></script>
 {% endif %}
 {% endblock %}

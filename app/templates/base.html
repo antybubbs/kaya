@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="/static/css/app.css">
   <link rel="stylesheet" href="/static/css/imports.css">
   <link rel="stylesheet" href="/static/css/remote.css">
+  {% block extra_head %}{% endblock %}
   <script src="/static/js/sidebar.js" defer></script>
   <script src="/static/js/tables.js" defer></script>
 </head>
@@ -106,7 +107,7 @@
   </div>
   {% endif %}
 </aside>
-<main class="content">
+<main class="content {% block main_class %}{% endblock %}">
 {% block content %}{% endblock %}
 </main>
 {% else %}

@@ -151,7 +151,7 @@ async def ssh_websocket(websocket: WebSocket, remote_id: int):
                         update_db.commit()
                 finally:
                     update_db.close()
-            process = await client.create_process(term_type="xterm", term_size=(120, 32))
+            process = await client.create_process(term_type="xterm-256color", term_size=(160, 48))
         except Exception as exc:
             await websocket.send_text(f"\r\nSSH connection failed: {exc}\r\n")
             await websocket.close(code=1011)
@@ -171,6 +171,13 @@ async def ssh_websocket(websocket: WebSocket, remote_id: int):
             try:
                 while True:
                     text = await websocket.receive_text()
+                    if text.startswith("\x00resize:"):
+                        try:
+                            _, cols, rows = text.split(":", 2)
+                            process.change_terminal_size(int(cols), int(rows))
+                        except Exception:
+                            pass
+                        continue
                     process.stdin.write(text)
             except WebSocketDisconnect:
                 pass
