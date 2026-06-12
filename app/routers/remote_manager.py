@@ -2,7 +2,6 @@ import asyncio
 import base64
 import hashlib
 import json
-import shlex
 import secrets
 import time
 from dataclasses import dataclass
@@ -414,10 +413,9 @@ async def ssh_websocket(websocket: WebSocket, remote_id: int):
             async def apply_terminal_theme():
                 await asyncio.sleep(1.2)
                 try:
-                    prompt = "\\[\x1b[01;32m\\]\\u@\\h\\[\x1b[00m\\]:\\[\x1b[01;34m\\]\\w\\[\x1b[00m\\]\\$ "
                     process.stdin.write(
                         "export TERM=xterm-256color COLORTERM=truecolor; "
-                        f"export PS1={shlex.quote(prompt)}; "
+                        "export PS1=$'\\[\\e[01;32m\\]\\u@\\h\\[\\e[00m\\]:\\[\\e[01;34m\\]\\w\\[\\e[00m\\]\\$ '; "
                         "export PROMPT='%F{green}%n@%m%f:%F{blue}%~%f%# '; "
                         "alias ls='ls --color=auto' 2>/dev/null; "
                         "alias grep='grep --color=auto' 2>/dev/null; "
