@@ -8,30 +8,38 @@
   if (!terminalEl || !passwordForm || !passwordInput || !window.Terminal) return;
 
   const term = new window.Terminal({
+    allowTransparency: false,
+    convertEol: true,
     cursorBlink: true,
+    cursorStyle: "block",
     fontFamily: "Cascadia Mono, Consolas, ui-monospace, SFMono-Regular, Menlo, monospace",
-    fontSize: 14,
-    lineHeight: 1.15,
+    fontSize: 15,
+    fontWeight: 700,
+    fontWeightBold: 800,
+    lineHeight: 1.08,
+    letterSpacing: 0,
     scrollback: 6000,
     theme: {
-      background: "#050706",
-      foreground: "#f8fafc",
+      background: "#080a08",
+      foreground: "#f4f4f5",
       cursor: "#f8fafc",
-      black: "#020617",
-      red: "#ef4444",
-      green: "#22c55e",
-      yellow: "#eab308",
-      blue: "#60a5fa",
-      magenta: "#d946ef",
-      cyan: "#22d3ee",
-      white: "#f8fafc",
-      brightBlack: "#64748b",
-      brightRed: "#f87171",
-      brightGreen: "#7ee787",
-      brightYellow: "#fde047",
-      brightBlue: "#93c5fd",
-      brightMagenta: "#f0abfc",
-      brightCyan: "#67e8f9",
+      cursorAccent: "#080a08",
+      selectionBackground: "#314158",
+      black: "#0a0c0a",
+      red: "#ff5f57",
+      green: "#5af78e",
+      yellow: "#f3f99d",
+      blue: "#57c7ff",
+      magenta: "#ff6ac1",
+      cyan: "#9aedfe",
+      white: "#f1f5f9",
+      brightBlack: "#686f7a",
+      brightRed: "#ff6e67",
+      brightGreen: "#7cff9b",
+      brightYellow: "#ffffa5",
+      brightBlue: "#5cc8ff",
+      brightMagenta: "#ff92d0",
+      brightCyan: "#c2ffff",
       brightWhite: "#ffffff",
     },
   });
@@ -39,7 +47,6 @@
   if (fitAddon) term.loadAddon(fitAddon);
   term.open(terminalEl);
   if (fitAddon) fitAddon.fit();
-  term.write("Session not connected.\r\n");
 
   let socket = null;
   let connected = false;
