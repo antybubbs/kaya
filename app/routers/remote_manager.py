@@ -409,13 +409,22 @@ async def ssh_websocket(websocket: WebSocket, remote_id: int):
                 finally:
                     update_db.close()
             process = await client.create_process(term_type="xterm-256color", term_size=(160, 48))
-            process.stdin.write(
-                "export TERM=xterm-256color COLORTERM=truecolor; "
-                "export PS1='\\[\\033[01;32m\\]\\u@\\h\\[\\033[00m\\]:\\[\\033[01;34m\\]\\w\\[\\033[00m\\]\\$ '; "
-                "alias ls='ls --color=auto' 2>/dev/null; "
-                "alias grep='grep --color=auto' 2>/dev/null; "
-                "clear\n"
-            )
+
+            async def apply_terminal_theme():
+                await asyncio.sleep(1.2)
+                try:
+                    process.stdin.write(
+                        "export TERM=xterm-256color COLORTERM=truecolor; "
+                        "export PS1='\\[\\033[01;32m\\]\\u@\\h\\[\\033[00m\\]:\\[\\033[01;34m\\]\\w\\[\\033[00m\\]\\$ '; "
+                        "export PROMPT='%F{green}%n@%m%f:%F{blue}%~%f%# '; "
+                        "alias ls='ls --color=auto' 2>/dev/null; "
+                        "alias grep='grep --color=auto' 2>/dev/null; "
+                        "clear\n"
+                    )
+                except Exception:
+                    pass
+
+            asyncio.create_task(apply_terminal_theme())
         except Exception as exc:
             await websocket.send_text(f"\r\nSSH connection failed: {exc}\r\n")
             await websocket.close(code=1011)
