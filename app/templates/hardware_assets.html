@@ -4,8 +4,11 @@
 <section class="cards">
   <div class="card"><span>Total Assets</span><strong>{{ total }}</strong></div>
 </section>
-{% if user.role in ['admin','editor'] %}<div class="list-actions"><a class="button" href="/hardware-assets/new">Add Asset</a></div>{% endif %}
-<form class="search" method="get"><input name="q" placeholder="Search hardware assets..." value="{{ q }}"><button>Search</button></form>
+<form class="search list-search" method="get">
+  <input name="q" placeholder="Search hardware assets..." value="{{ q }}">
+  <button>Search</button>
+  {% if user.role in ['admin','editor'] %}<a class="button" href="/hardware-assets/new">Add Asset</a>{% endif %}
+</form>
 <section class="panel">
 <table data-table-key="hardware-assets">
   <thead><tr><th data-col="asset-tag" data-sort>Asset Tag</th><th data-col="name" data-sort>Name</th><th data-col="category" data-sort>Category</th><th data-col="status" data-sort>Status</th><th data-col="location" data-sort>Location</th><th data-col="warranty" data-sort>Warranty</th><th data-col="actions"></th></tr></thead>
