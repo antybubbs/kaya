@@ -44,15 +44,19 @@ def form_context(db: Session, request: Request, user, licence=None, product_key=
 
 
 @router.get("")
-def list_licences(request: Request, q: str = Query("", max_length=200), db: Session = Depends(get_db), user=Depends(require_user)):
+def list_licences(request: Request, q: str = Query("", max_length=200), licence_type: str = Query("", max_length=120), db: Session = Depends(get_db), user=Depends(require_user)):
     query = db.query(Licence)
+    licence_types = list_values(db, MODULE).get("licence_type", [])
+    active_licence_type = licence_type.strip()
+    if active_licence_type:
+        query = query.filter(Licence.licence_type == active_licence_type)
     clean_q = q.strip()
     if clean_q:
         like = f"%{clean_q}%"
         query = query.filter(or_(Licence.product.ilike(like), Licence.licence_type.ilike(like), Licence.licence_id.ilike(like), Licence.vendor.ilike(like)))
     rows = query.order_by(Licence.product.asc()).limit(500).all()
     total = db.query(Licence).count()
-    return templates.TemplateResponse(request, "licences.html", {"user": user, "rows": rows, "total": total, "q": clean_q, "mask_key": lambda encrypted: mask_key(decrypt_secret(encrypted)), **csrf_context(request)})
+    return templates.TemplateResponse(request, "licences.html", {"user": user, "rows": rows, "total": total, "q": clean_q, "licence_types": licence_types, "active_licence_type": active_licence_type, "mask_key": lambda encrypted: mask_key(decrypt_secret(encrypted)), **csrf_context(request)})
 
 
 @router.get("/new")
