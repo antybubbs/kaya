@@ -86,26 +86,6 @@ docker compose -f docker-compose.prod.yml pull
 docker compose -f docker-compose.prod.yml up -d
 ```
 
-## Import your initial CSV
-
-After signing in as an admin, open:
-
-```text
-Site Admin > Data Management > Import
-```
-
-The importer supports the Microsoft Volume Licensing style CSV columns:
-
-- License ID
-- Parent Program
-- Organization
-- Product
-- Product Key
-- Type
-- MAK Activations-Used/Available
-- Seats
-- OSA Status
-
 ## Reverse proxy
 
 Set these values when serving through HTTPS:
