@@ -1,5 +1,6 @@
 import json
 import re
+import threading
 import time
 from dataclasses import dataclass
 from urllib.error import URLError
@@ -17,6 +18,8 @@ class VersionCache:
 
 
 _cache = VersionCache()
+_cache_lock = threading.Lock()
+_refreshing = False
 SHA_PATTERN = re.compile(r"^[0-9a-f]{7,40}$")
 
 
@@ -40,11 +43,7 @@ def display_version(version: str) -> str:
     return version
 
 
-def latest_release() -> tuple[str | None, str | None]:
-    now = time.monotonic()
-    if now - _cache.checked_at < CACHE_SECONDS:
-        return _cache.latest_version, _cache.release_url
-
+def _fetch_latest_release() -> tuple[str | None, str | None]:
     settings = get_settings()
     request = Request(
         f"https://api.github.com/repos/{settings.github_repo}/releases/latest",
@@ -54,15 +53,33 @@ def latest_release() -> tuple[str | None, str | None]:
         with urlopen(request, timeout=3) as response:
             data = json.loads(response.read().decode("utf-8"))
     except (OSError, TimeoutError, URLError, ValueError):
-        _cache.checked_at = now
-        _cache.latest_version = None
-        _cache.release_url = None
         return None, None
+    return data.get("tag_name"), data.get("html_url")
 
-    _cache.checked_at = now
-    _cache.latest_version = data.get("tag_name")
-    _cache.release_url = data.get("html_url")
-    return _cache.latest_version, _cache.release_url
+
+def _refresh_latest_release() -> None:
+    global _refreshing
+    latest, release_url = _fetch_latest_release()
+    with _cache_lock:
+        _cache.checked_at = time.monotonic()
+        _cache.latest_version = latest
+        _cache.release_url = release_url
+        _refreshing = False
+
+
+def latest_release() -> tuple[str | None, str | None]:
+    global _refreshing
+    now = time.monotonic()
+    with _cache_lock:
+        latest = _cache.latest_version
+        release_url = _cache.release_url
+        checked_at = _cache.checked_at
+        if now - checked_at < CACHE_SECONDS:
+            return latest, release_url
+        if not _refreshing:
+            _refreshing = True
+            threading.Thread(target=_refresh_latest_release, daemon=True).start()
+        return _cache.latest_version, _cache.release_url
 
 
 def version_status() -> dict[str, str | bool | None]:

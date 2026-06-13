@@ -5,6 +5,7 @@
 {% endblock %}
 {% block main_class %}remote-main{% endblock %}
 {% block extra_head %}
+<link rel="stylesheet" href="/static/css/remote.css">
 {% if remote.protocol == 'ssh' %}
 <link rel="stylesheet" href="/static/vendor/xterm/xterm.css">
 {% endif %}

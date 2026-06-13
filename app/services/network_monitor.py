@@ -11,6 +11,7 @@ from app.db.session import SessionLocal
 from app.models.models import IPAddress, NetworkMonitor, NetworkMonitorCheck
 
 CHECK_INTERVAL_SECONDS = 10
+MAX_CONCURRENT_CHECKS = 5
 MAX_CHECK_HISTORY = 1000
 PING_TIME_PATTERN = re.compile(r"time[=<]([0-9.]+)")
 
@@ -117,6 +118,12 @@ async def monitor_loop() -> None:
             monitor_ids = [monitor.id for monitor in fallback_due_monitors(db)]
         finally:
             db.close()
-        for monitor_id in monitor_ids:
-            await asyncio.to_thread(run_monitor_check_by_id, monitor_id)
+        if monitor_ids:
+            semaphore = asyncio.Semaphore(MAX_CONCURRENT_CHECKS)
+
+            async def checked_monitor(monitor_id: int) -> None:
+                async with semaphore:
+                    await asyncio.to_thread(run_monitor_check_by_id, monitor_id)
+
+            await asyncio.gather(*(checked_monitor(monitor_id) for monitor_id in monitor_ids))
         await asyncio.sleep(CHECK_INTERVAL_SECONDS)

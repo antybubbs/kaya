@@ -21,7 +21,7 @@ from app.db.session import SessionLocal, get_db
 from app.models.models import RemoteAccess, RemoteManagerSetting, User
 from app.routers.auth import require_admin, require_user
 from app.services.audit import write_audit
-from app.services.guacamole_bridge import restart_guacamole_bridge
+from app.services.guacamole_bridge import restart_guacamole_bridge, start_guacamole_bridge
 
 router = APIRouter(prefix="/remote-manager")
 templates = Jinja2Templates(directory="app/templates")
@@ -334,6 +334,7 @@ async def rdp_start(request: Request, remote_id: int, db: Session = Depends(get_
     if settings.get("guacamole_enabled") != "1" or not settings.get("guacd_host", "").strip():
         logs.append("Guacamole is not enabled or guacd is not configured.")
         return JSONResponse({"ok": False, "logs": logs}, status_code=400)
+    start_guacamole_bridge()
     cleanup_rdp_tokens()
     width = clean_dimension(int_payload(payload, "width", 1280), 1280, 640, 7680)
     height = clean_dimension(int_payload(payload, "height", 720), 720, 480, 4320)

@@ -12,7 +12,7 @@ from app.core.security import hash_password
 from app.db.session import Base, engine, SessionLocal
 from app.models.models import User, VLAN
 from app.routers import auth, dashboard, licences, admin, ip_addresses, hardware_assets, network_monitor, remote_manager
-from app.services.guacamole_bridge import start_guacamole_bridge, stop_guacamole_bridge
+from app.services.guacamole_bridge import stop_guacamole_bridge
 from app.services.network_monitor import monitor_loop
 
 settings = get_settings()
@@ -165,7 +165,6 @@ def migrate_existing_database():
 @app.on_event("startup")
 async def on_startup():
     bootstrap()
-    start_guacamole_bridge()
     global monitor_task
     monitor_task = asyncio.create_task(monitor_loop())
 
