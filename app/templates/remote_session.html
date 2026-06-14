@@ -5,9 +5,9 @@
 {% endblock %}
 {% block main_class %}remote-main{% endblock %}
 {% block extra_head %}
-<link rel="stylesheet" href="/static/css/remote.css">
+<link rel="stylesheet" href="/static/css/remote.css?v={{ asset_version }}">
 {% if remote.protocol == 'ssh' %}
-<link rel="stylesheet" href="/static/vendor/xterm/xterm.css">
+<link rel="stylesheet" href="/static/vendor/xterm/xterm.css?v={{ asset_version }}">
 {% endif %}
 {% endblock %}
 {% block content %}
@@ -67,10 +67,10 @@
   </section>
 </div>
 {% if remote.protocol == 'ssh' %}
-<script src="/static/vendor/xterm/xterm.js" defer></script>
-<script src="/static/vendor/xterm/addon-fit.js" defer></script>
-<script src="/static/js/remote_session.js" defer></script>
+<script src="/static/vendor/xterm/xterm.js?v={{ asset_version }}" defer></script>
+<script src="/static/vendor/xterm/addon-fit.js?v={{ asset_version }}" defer></script>
+<script src="/static/js/remote_session.js?v={{ asset_version }}" defer></script>
 {% else %}
-<script type="module" src="/static/js/remote_rdp.js"></script>
+<script type="module" src="/static/js/remote_rdp.js?v={{ asset_version }}"></script>
 {% endif %}
 {% endblock %}
