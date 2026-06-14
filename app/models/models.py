@@ -32,6 +32,7 @@ class Licence(Base):
     seats: Mapped[int | None] = mapped_column(Integer, nullable=True)
     osa_status: Mapped[str | None] = mapped_column(String(120), nullable=True)
     expiry_date: Mapped[datetime | None] = mapped_column(Date, nullable=True)
+    is_favourite: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

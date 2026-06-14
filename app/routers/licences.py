@@ -55,8 +55,9 @@ def list_licences(request: Request, q: str = Query("", max_length=200), licence_
         like = f"%{clean_q}%"
         query = query.filter(or_(Licence.product.ilike(like), Licence.licence_type.ilike(like), Licence.licence_id.ilike(like), Licence.vendor.ilike(like)))
     rows = query.order_by(Licence.product.asc()).limit(500).all()
+    favourites = db.query(Licence).filter(Licence.is_favourite == True).order_by(Licence.product.asc()).limit(50).all()
     total = db.query(Licence).count()
-    return templates.TemplateResponse(request, "licences.html", {"user": user, "rows": rows, "total": total, "q": clean_q, "licence_types": licence_types, "active_licence_type": active_licence_type, "mask_key": lambda encrypted: mask_key(decrypt_secret(encrypted)), **csrf_context(request)})
+    return templates.TemplateResponse(request, "licences.html", {"user": user, "rows": rows, "favourites": favourites, "total": total, "q": clean_q, "licence_types": licence_types, "active_licence_type": active_licence_type, "mask_key": lambda encrypted: mask_key(decrypt_secret(encrypted)), **csrf_context(request)})
 
 
 @router.get("/new")
@@ -65,7 +66,7 @@ def new_licence(request: Request, db: Session = Depends(get_db), user=Depends(re
 
 
 @router.post("/new")
-async def create_licence(request: Request, product: str = Form(..., max_length=500), product_key: str = Form(..., max_length=500), licence_type: str = Form("", max_length=120), seats: int = Form(0, ge=0, le=1000000), notes: str = Form("", max_length=10000), csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_editor)):
+async def create_licence(request: Request, product: str = Form(..., max_length=500), product_key: str = Form(..., max_length=500), licence_type: str = Form("", max_length=120), seats: int = Form(0, ge=0, le=1000000), is_favourite: str = Form(""), notes: str = Form("", max_length=10000), csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_editor)):
     validate_csrf_token(request, csrf_token)
     form = await request.form()
     fields = active_fields(db, MODULE)
@@ -77,7 +78,7 @@ async def create_licence(request: Request, product: str = Form(..., max_length=5
     if not product or not product_key:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Product and product key are required")
     lists = list_values(db, MODULE)
-    row = Licence(product=product, encrypted_product_key=encrypt_secret(product_key), organisation=None, licence_type=clean_list_value(licence_type, lists.get("licence_type", [])), seats=seats, notes=notes.strip() or None)
+    row = Licence(product=product, encrypted_product_key=encrypt_secret(product_key), organisation=None, licence_type=clean_list_value(licence_type, lists.get("licence_type", [])), seats=seats, is_favourite=bool(is_favourite), notes=notes.strip() or None)
     db.add(row)
     db.commit()
     db.refresh(row)
@@ -96,7 +97,7 @@ def edit_licence(request: Request, licence_id: int, db: Session = Depends(get_db
 
 
 @router.post("/{licence_id}/edit")
-async def update_licence(request: Request, licence_id: int, product: str = Form(..., max_length=500), product_key: str = Form("", max_length=500), licence_type: str = Form("", max_length=120), seats: int = Form(0, ge=0, le=1000000), notes: str = Form("", max_length=10000), csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_editor)):
+async def update_licence(request: Request, licence_id: int, product: str = Form(..., max_length=500), product_key: str = Form("", max_length=500), licence_type: str = Form("", max_length=120), seats: int = Form(0, ge=0, le=1000000), is_favourite: str = Form(""), notes: str = Form("", max_length=10000), csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_editor)):
     validate_csrf_token(request, csrf_token)
     row = db.get(Licence, licence_id)
     if not row:
@@ -117,6 +118,7 @@ async def update_licence(request: Request, licence_id: int, product: str = Form(
     row.organisation = None
     row.licence_type = clean_list_value(licence_type, lists.get("licence_type", []), row.licence_type)
     row.seats = seats
+    row.is_favourite = bool(is_favourite)
     row.notes = notes.strip() or None
     db.commit()
     save_custom_values(db, fields, form, ENTITY_TYPE, row.id)

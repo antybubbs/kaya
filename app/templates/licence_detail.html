@@ -9,6 +9,7 @@
     <div class="record-chips">
       {% if licence.licence_type %}<span class="table-chip">{{ licence.licence_type }}</span>{% endif %}
       <span class="table-chip muted-chip">{{ licence.seats or 0 }} seats</span>
+      {% if licence.is_favourite %}<span class="table-chip favourite-chip">Favourite</span>{% endif %}
       {% if revealed %}<span class="table-chip muted-chip">Key revealed</span>{% endif %}
     </div>
   </div>
@@ -27,6 +28,7 @@
       <div><dt>Product</dt><dd><span data-view>{{ licence.product }}</span><input data-edit data-display-copy name="product_display" value="{{ licence.product }}" disabled></dd></div>
       <div><dt>License type</dt><dd><span data-view>{% if licence.licence_type %}<span class="table-chip">{{ licence.licence_type }}</span>{% else %}-{% endif %}</span><select data-edit name="licence_type"><option value=""></option>{% if licence.licence_type and licence.licence_type not in licence_types %}<option value="{{ licence.licence_type }}" selected>{{ licence.licence_type }}</option>{% endif %}{% for option in licence_types %}<option value="{{ option }}" {% if licence.licence_type == option %}selected{% endif %}>{{ option }}</option>{% endfor %}</select></dd></div>
       <div><dt>Seats</dt><dd><span data-view>{{ licence.seats or 0 }}</span><input data-edit name="seats" type="number" min="0" value="{{ licence.seats if licence.seats is not none else 0 }}"></dd></div>
+      <div><dt>Favourite</dt><dd><span data-view>{% if licence.is_favourite %}Yes{% else %}No{% endif %}</span><label data-edit class="inline-toggle"><input name="is_favourite" type="checkbox" value="1" {% if licence.is_favourite %}checked{% endif %}> Favourite</label></dd></div>
       <div><dt>Activations</dt><dd>{{ licence.activations or '-' }}</dd></div>
       <div><dt>OSA Status</dt><dd>{{ licence.osa_status or '-' }}</dd></div>
     </dl>

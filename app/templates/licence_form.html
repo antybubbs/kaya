@@ -9,6 +9,7 @@
   <label>Product key<input name="product_key" autocomplete="off" value="{{ product_key }}" required></label>
   <label>License type<select name="licence_type"><option value=""></option>{% if licence and licence.licence_type and licence.licence_type not in licence_types %}<option value="{{ licence.licence_type }}" selected>{{ licence.licence_type }}</option>{% endif %}{% for option in licence_types %}<option value="{{ option }}" {% if licence and licence.licence_type == option %}selected{% endif %}>{{ option }}</option>{% endfor %}</select></label>
   <label>Seats<input name="seats" type="number" value="{{ licence.seats if licence and licence.seats is not none else 0 }}"></label>
+  <label class="checkbox-label"><input name="is_favourite" type="checkbox" value="1" {% if licence and licence.is_favourite %}checked{% endif %}> Favourite</label>
   <label class="wide">Notes<textarea name="notes">{{ licence.notes if licence and licence.notes else '' }}</textarea></label>
   <div class="wide"><h2>Custom Fields</h2></div>
   {% for field in custom_fields %}
