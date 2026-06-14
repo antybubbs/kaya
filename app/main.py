@@ -53,7 +53,7 @@ async def security_headers(request: Request, call_next):
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     response.headers["Content-Security-Policy"] = "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data:; style-src 'self'; style-src-attr 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
     if is_static_asset:
-        response.headers["Cache-Control"] = "public, max-age=604800"
+        response.headers["Cache-Control"] = "public, max-age=604800, immutable"
     else:
         response.headers["Cache-Control"] = "no-store"
     if settings.session_cookie_secure:

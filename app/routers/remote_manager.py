@@ -10,7 +10,7 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 from starlette import status
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import padding
@@ -249,7 +249,7 @@ async def tcp_check(host: str, port: int, timeout: float = 5) -> tuple[bool, str
 
 @router.get("")
 def remote_list(request: Request, db: Session = Depends(get_db), user=Depends(require_user)):
-    rows = db.query(RemoteAccess).filter(RemoteAccess.is_enabled == True).order_by(RemoteAccess.protocol.asc(), RemoteAccess.display_name.asc(), RemoteAccess.id.asc()).all()
+    rows = db.query(RemoteAccess).filter(RemoteAccess.is_enabled == True).options(selectinload(RemoteAccess.ip_address)).order_by(RemoteAccess.protocol.asc(), RemoteAccess.display_name.asc(), RemoteAccess.id.asc()).all()
     return templates.TemplateResponse(request, "remote_manager.html", {"user": user, "rows": rows, "remote_label": remote_label, **csrf_context(request)})
 
 
@@ -273,7 +273,7 @@ def save_remote_settings(request: Request, csrf_token: str = Form(...), guacamol
 @router.get("/{remote_id}/session")
 def remote_session(request: Request, remote_id: int, db: Session = Depends(get_db), user=Depends(require_user)):
     row = require_remote_session(db, remote_id)
-    rows = db.query(RemoteAccess).filter(RemoteAccess.is_enabled == True).order_by(RemoteAccess.protocol.asc(), RemoteAccess.display_name.asc(), RemoteAccess.id.asc()).all()
+    rows = db.query(RemoteAccess).filter(RemoteAccess.is_enabled == True).options(selectinload(RemoteAccess.ip_address)).order_by(RemoteAccess.protocol.asc(), RemoteAccess.display_name.asc(), RemoteAccess.id.asc()).all()
     settings = settings_map(db)
     title = remote_label(row)
     return templates.TemplateResponse(request, "remote_session.html", {"user": user, "remote": row, "rows": rows, "remote_label": title, "remote_label_fn": remote_label, "settings": settings, **csrf_context(request)})

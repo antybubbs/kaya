@@ -3,7 +3,8 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy.orm import Session
+from sqlalchemy import case, func
+from sqlalchemy.orm import Session, selectinload
 from starlette import status
 
 from app.core.csrf import csrf_context, validate_csrf_token
@@ -19,19 +20,44 @@ templates = Jinja2Templates(directory="app/templates")
 def monitor_rows(db: Session) -> tuple[list[dict], int, int, int]:
     monitors = db.query(NetworkMonitor).filter(
         NetworkMonitor.is_enabled == True
-    ).order_by(NetworkMonitor.display_name.asc(), NetworkMonitor.id.asc()).all()
+    ).options(selectinload(NetworkMonitor.ip_address)).order_by(NetworkMonitor.display_name.asc(), NetworkMonitor.id.asc()).all()
     since = datetime.utcnow() - timedelta(hours=24)
+    monitor_ids = [monitor.id for monitor in monitors]
+    stats = {}
+    recent_by_monitor = {monitor_id: [] for monitor_id in monitor_ids}
+    if monitor_ids:
+        stats = {
+            monitor_id: (total or 0, up or 0)
+            for monitor_id, total, up in db.query(
+                NetworkMonitorCheck.monitor_id,
+                func.count(NetworkMonitorCheck.id),
+                func.sum(case((NetworkMonitorCheck.status == "up", 1), else_=0)),
+            ).filter(
+                NetworkMonitorCheck.monitor_id.in_(monitor_ids),
+                NetworkMonitorCheck.checked_at >= since,
+            ).group_by(NetworkMonitorCheck.monitor_id).all()
+        }
+        recent_rank = func.row_number().over(
+            partition_by=NetworkMonitorCheck.monitor_id,
+            order_by=NetworkMonitorCheck.checked_at.desc(),
+        ).label("recent_rank")
+        recent_subquery = db.query(NetworkMonitorCheck.id.label("check_id"), recent_rank).filter(
+            NetworkMonitorCheck.monitor_id.in_(monitor_ids),
+            NetworkMonitorCheck.checked_at >= since,
+        ).subquery()
+        recent_checks = db.query(NetworkMonitorCheck).join(
+            recent_subquery,
+            NetworkMonitorCheck.id == recent_subquery.c.check_id,
+        ).filter(
+            recent_subquery.c.recent_rank <= 36,
+        ).order_by(NetworkMonitorCheck.monitor_id.asc(), NetworkMonitorCheck.checked_at.asc()).all()
+        for check in recent_checks:
+            recent_by_monitor.setdefault(check.monitor_id, []).append(check)
     rows = []
     up_count = 0
     down_count = 0
     for monitor in monitors:
-        checks = db.query(NetworkMonitorCheck).filter(
-            NetworkMonitorCheck.monitor_id == monitor.id,
-            NetworkMonitorCheck.checked_at >= since,
-        ).order_by(NetworkMonitorCheck.checked_at.asc()).all()
-        recent = checks[-36:]
-        total_checks = len(checks)
-        total_up = len([check for check in checks if check.status == "up"])
+        total_checks, total_up = stats.get(monitor.id, (0, 0))
         if monitor.last_status == "up":
             up_count += 1
         if monitor.last_status == "down":
@@ -39,7 +65,7 @@ def monitor_rows(db: Session) -> tuple[list[dict], int, int, int]:
         rows.append({
             "monitor": monitor,
             "label": monitor_label(monitor),
-            "history": recent,
+            "history": recent_by_monitor.get(monitor.id, []),
             "uptime": round((total_up / total_checks) * 100, 1) if total_checks else None,
         })
     return rows, len(monitors), up_count, down_count
