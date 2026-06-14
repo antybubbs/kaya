@@ -101,10 +101,11 @@
   {% if version_status %}
   <div class="version-card">
     <div><span>Installed</span><strong>{{ version_status.installed_display }}</strong></div>
+    <div><span>Channel</span><strong class="{% if version_status.is_dev %}dev-version{% else %}stable-version{% endif %}">{% if version_status.is_dev %}Development{% else %}Stable{% endif %}</strong></div>
     {% if version_status.update_available %}
     <a href="{{ version_status.release_url }}" target="_blank" rel="noopener noreferrer"><span>Update available</span><strong>{{ version_status.latest }}</strong></a>
     {% elif version_status.latest %}
-    <div><span>Latest</span><strong>{{ version_status.latest }}</strong></div>
+    <div><span>{% if version_status.is_dev %}Latest stable{% else %}Latest{% endif %}</span><strong>{{ version_status.latest }}</strong></div>
     {% else %}
     <div><span>Latest</span><strong>unknown</strong></div>
     {% endif %}

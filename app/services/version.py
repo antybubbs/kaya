@@ -21,6 +21,7 @@ _cache = VersionCache()
 _cache_lock = threading.Lock()
 _refreshing = False
 SHA_PATTERN = re.compile(r"^[0-9a-f]{7,40}$")
+DEV_PATTERN = re.compile(r"^dev\d+\.\d+\.\d+$", re.IGNORECASE)
 
 
 def normalize_version(version: str) -> tuple[int, ...]:
@@ -85,15 +86,18 @@ def latest_release() -> tuple[str | None, str | None]:
 def version_status() -> dict[str, str | bool | None]:
     settings = get_settings()
     installed = settings.app_version
+    is_dev = bool(DEV_PATTERN.match(installed.strip()) or SHA_PATTERN.match(installed.strip().lower()))
     latest, release_url = latest_release()
     update_available = False
-    if latest and SHA_PATTERN.match(installed.strip().lower()):
+    if latest and is_dev:
         update_available = True
     elif latest and normalize_version(latest) and normalize_version(installed):
         update_available = normalize_version(latest) > normalize_version(installed)
+    release_url = release_url or f"https://github.com/{settings.github_repo}/releases/latest"
     return {
         "installed": installed,
         "installed_display": display_version(installed),
+        "is_dev": is_dev,
         "latest": latest,
         "release_url": release_url,
         "update_available": update_available,
