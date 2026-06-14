@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - "dev*"
     tags:
       - "v*"
 
@@ -25,14 +26,19 @@ jobs:
           OWNER="$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
           IMAGE="ghcr.io/$OWNER/homelab"
           SHORT_SHA="$(printf '%s' '${{ github.sha }}' | cut -c1-12)"
+          REF_NAME='${{ github.ref_name }}'
+          REF_TAG="$(printf '%s' "$REF_NAME" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_.-' '-')"
           VERSION="$SHORT_SHA"
           if printf '%s' '${{ github.ref }}' | grep -q '^refs/tags/'; then
-            VERSION='${{ github.ref_name }}'
+            VERSION="$REF_NAME"
+          elif printf '%s' "$REF_NAME" | grep -q '^dev'; then
+            VERSION="$REF_NAME"
           fi
 
           {
             echo "image=$IMAGE"
             echo "short_sha=$SHORT_SHA"
+            echo "ref_tag=$REF_TAG"
             echo "version=$VERSION"
           } >> "$GITHUB_OUTPUT"
 
@@ -46,8 +52,8 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and push commit image
-        if: "!startsWith(github.ref, 'refs/tags/')"
+      - name: Build and push main commit image
+        if: github.ref == 'refs/heads/main'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -55,6 +61,18 @@ jobs:
           build-args: |
             APP_VERSION=${{ steps.meta.outputs.version }}
           tags: ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.short_sha }}
+
+      - name: Build and push dev branch image
+        if: startsWith(github.ref_name, 'dev')
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          build-args: |
+            APP_VERSION=${{ steps.meta.outputs.version }}
+          tags: |
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.ref_tag }}
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.ref_tag }}-${{ steps.meta.outputs.short_sha }}
 
       - name: Build and push release image
         if: startsWith(github.ref, 'refs/tags/')

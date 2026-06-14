@@ -1,15 +1,70 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="topbar"><div><h1>{{ licence.product }}</h1><p class="muted">License record #{{ licence.id }}</p></div>{% if user.role in ['admin','editor'] %}<div><a class="button" href="/licences/{{ licence.id }}/edit">Edit</a></div>{% endif %}</div>
-<section class="panel detail-grid">
-  <div><label>Product key</label><div class="secret mono">{{ display_key }}</div>{% if user.role in ['admin','editor'] and not revealed %}<form method="post" action="/licences/{{ licence.id }}/reveal"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button small" type="submit">Reveal key</button></form>{% endif %}</div>
-  <div><label>License type</label><p>{{ licence.licence_type or '-' }}</p></div>
-  <div><label>Activations</label><p>{{ licence.activations or '-' }}</p></div>
-  <div><label>Seats</label><p>{{ licence.seats or 0 }}</p></div>
-  <div><label>OSA Status</label><p>{{ licence.osa_status or '-' }}</p></div>
-  <div class="wide"><label>Notes</label><p>{{ licence.notes or '-' }}</p></div>
-  {% for field in custom_fields %}
-  <div><label>{{ field.label }}</label><p>{{ custom_values.get(field.id) or '-' }}</p></div>
-  {% endfor %}
+<form method="post" action="/licences/{{ licence.id }}/edit" class="inline-record" data-inline-edit>
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<div class="record-hero">
+  <div>
+    <h1><span data-view>{{ licence.product }}</span><input data-edit name="product" value="{{ licence.product }}" required></h1>
+    <p class="record-identifier mono">{{ display_key }}</p>
+    <div class="record-chips">
+      {% if licence.licence_type %}<span class="table-chip">{{ licence.licence_type }}</span>{% endif %}
+      <span class="table-chip muted-chip">{{ licence.seats or 0 }} seats</span>
+      {% if licence.is_favourite %}<span class="table-chip favourite-chip">Favourite</span>{% endif %}
+      {% if revealed %}<span class="table-chip muted-chip">Key revealed</span>{% endif %}
+    </div>
+  </div>
+  {% if user.role in ['admin','editor'] %}
+  <div class="inline-actions">
+    <button class="button" type="button" data-edit-toggle>Edit</button>
+    <button class="button secondary" type="button" data-edit-cancel>Cancel</button>
+    <button class="button" type="submit" data-edit-save>Save</button>
+  </div>
+  {% endif %}
+</div>
+<section class="record-layout">
+  <section class="panel record-panel">
+    <h2>Overview</h2>
+    <dl class="record-kv-list">
+      <div><dt>Product</dt><dd><span data-view>{{ licence.product }}</span><input data-edit data-display-copy name="product_display" value="{{ licence.product }}" disabled></dd></div>
+      <div><dt>License type</dt><dd><span data-view>{% if licence.licence_type %}<span class="table-chip">{{ licence.licence_type }}</span>{% else %}-{% endif %}</span><select data-edit name="licence_type"><option value=""></option>{% if licence.licence_type and licence.licence_type not in licence_types %}<option value="{{ licence.licence_type }}" selected>{{ licence.licence_type }}</option>{% endif %}{% for option in licence_types %}<option value="{{ option }}" {% if licence.licence_type == option %}selected{% endif %}>{{ option }}</option>{% endfor %}</select></dd></div>
+      <div><dt>Seats</dt><dd><span data-view>{{ licence.seats or 0 }}</span><input data-edit name="seats" type="number" min="0" value="{{ licence.seats if licence.seats is not none else 0 }}"></dd></div>
+      <div><dt>Favourite</dt><dd><span data-view>{% if licence.is_favourite %}Yes{% else %}No{% endif %}</span><label data-edit class="inline-toggle"><input name="is_favourite" type="checkbox" value="1" {% if licence.is_favourite %}checked{% endif %}> Favourite</label></dd></div>
+      <div><dt>Activations</dt><dd>{{ licence.activations or '-' }}</dd></div>
+      <div><dt>OSA Status</dt><dd>{{ licence.osa_status or '-' }}</dd></div>
+    </dl>
+  </section>
+  <section class="panel record-panel">
+    <h2>Product Key</h2>
+    <div class="secret mono"><span data-view>{{ display_key }}</span><input data-edit name="product_key" autocomplete="off" value="{{ product_key_edit }}" placeholder="{% if revealed %}Product key{% else %}Leave blank to keep existing key{% endif %}"></div>
+    {% if user.role in ['admin','editor'] and not revealed %}
+    <div data-view>
+      <button class="button small" type="submit" form="reveal-key-form">Reveal key</button>
+    </div>
+    {% endif %}
+  </section>
+  <section class="panel record-panel wide">
+    <h2>Notes and Custom Fields</h2>
+    <dl class="record-kv-list full">
+      <div><dt>Notes</dt><dd><span data-view>{{ licence.notes or '-' }}</span><textarea data-edit name="notes">{{ licence.notes or '' }}</textarea></dd></div>
+      {% for field in custom_fields %}
+      {% set current_value = custom_values.get(field.id, '') %}
+      <div><dt>{{ field.label }}</dt><dd><span data-view>{{ current_value or '-' }}</span>
+        {% if field.field_type == 'textarea' %}
+        <textarea data-edit name="custom_{{ field.id }}" {% if field.is_required %}required{% endif %}>{{ current_value }}</textarea>
+        {% elif field.field_type in ['radio','select'] %}
+        <select data-edit name="custom_{{ field.id }}" {% if field.is_required %}required{% endif %}><option value=""></option>{% for option in option_list(field) %}<option value="{{ option }}" {% if current_value == option %}selected{% endif %}>{{ option }}</option>{% endfor %}</select>
+        {% else %}
+        <input data-edit name="custom_{{ field.id }}" value="{{ current_value }}" {% if field.is_required %}required{% endif %}>
+        {% endif %}
+      </dd></div>
+      {% endfor %}
+    </dl>
+  </section>
 </section>
+</form>
+{% if user.role in ['admin','editor'] and not revealed %}
+<form id="reveal-key-form" method="post" action="/licences/{{ licence.id }}/reveal">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+</form>
+{% endif %}
 {% endblock %}

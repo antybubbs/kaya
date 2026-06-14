@@ -44,15 +44,20 @@ def form_context(db: Session, request: Request, user, licence=None, product_key=
 
 
 @router.get("")
-def list_licences(request: Request, q: str = Query("", max_length=200), db: Session = Depends(get_db), user=Depends(require_user)):
+def list_licences(request: Request, q: str = Query("", max_length=200), licence_type: str = Query("", max_length=120), db: Session = Depends(get_db), user=Depends(require_user)):
     query = db.query(Licence)
+    licence_types = list_values(db, MODULE).get("licence_type", [])
+    active_licence_type = licence_type.strip()
+    if active_licence_type:
+        query = query.filter(Licence.licence_type == active_licence_type)
     clean_q = q.strip()
     if clean_q:
         like = f"%{clean_q}%"
         query = query.filter(or_(Licence.product.ilike(like), Licence.licence_type.ilike(like), Licence.licence_id.ilike(like), Licence.vendor.ilike(like)))
     rows = query.order_by(Licence.product.asc()).limit(500).all()
+    favourites = db.query(Licence).filter(Licence.is_favourite == True).order_by(Licence.product.asc()).limit(50).all()
     total = db.query(Licence).count()
-    return templates.TemplateResponse(request, "licences.html", {"user": user, "rows": rows, "total": total, "q": clean_q, "mask_key": lambda encrypted: mask_key(decrypt_secret(encrypted)), **csrf_context(request)})
+    return templates.TemplateResponse(request, "licences.html", {"user": user, "rows": rows, "favourites": favourites, "total": total, "q": clean_q, "licence_types": licence_types, "active_licence_type": active_licence_type, "mask_key": lambda encrypted: mask_key(decrypt_secret(encrypted)), **csrf_context(request)})
 
 
 @router.get("/new")
@@ -61,7 +66,7 @@ def new_licence(request: Request, db: Session = Depends(get_db), user=Depends(re
 
 
 @router.post("/new")
-async def create_licence(request: Request, product: str = Form(..., max_length=500), product_key: str = Form(..., max_length=500), licence_type: str = Form("", max_length=120), seats: int = Form(0, ge=0, le=1000000), notes: str = Form("", max_length=10000), csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_editor)):
+async def create_licence(request: Request, product: str = Form(..., max_length=500), product_key: str = Form(..., max_length=500), licence_type: str = Form("", max_length=120), seats: int = Form(0, ge=0, le=1000000), is_favourite: str = Form(""), notes: str = Form("", max_length=10000), csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_editor)):
     validate_csrf_token(request, csrf_token)
     form = await request.form()
     fields = active_fields(db, MODULE)
@@ -73,7 +78,7 @@ async def create_licence(request: Request, product: str = Form(..., max_length=5
     if not product or not product_key:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Product and product key are required")
     lists = list_values(db, MODULE)
-    row = Licence(product=product, encrypted_product_key=encrypt_secret(product_key), organisation=None, licence_type=clean_list_value(licence_type, lists.get("licence_type", [])), seats=seats, notes=notes.strip() or None)
+    row = Licence(product=product, encrypted_product_key=encrypt_secret(product_key), organisation=None, licence_type=clean_list_value(licence_type, lists.get("licence_type", [])), seats=seats, is_favourite=bool(is_favourite), notes=notes.strip() or None)
     db.add(row)
     db.commit()
     db.refresh(row)
@@ -92,7 +97,7 @@ def edit_licence(request: Request, licence_id: int, db: Session = Depends(get_db
 
 
 @router.post("/{licence_id}/edit")
-async def update_licence(request: Request, licence_id: int, product: str = Form(..., max_length=500), product_key: str = Form(..., max_length=500), licence_type: str = Form("", max_length=120), seats: int = Form(0, ge=0, le=1000000), notes: str = Form("", max_length=10000), csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_editor)):
+async def update_licence(request: Request, licence_id: int, product: str = Form(..., max_length=500), product_key: str = Form("", max_length=500), licence_type: str = Form("", max_length=120), seats: int = Form(0, ge=0, le=1000000), is_favourite: str = Form(""), notes: str = Form("", max_length=10000), csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_editor)):
     validate_csrf_token(request, csrf_token)
     row = db.get(Licence, licence_id)
     if not row:
@@ -104,14 +109,16 @@ async def update_licence(request: Request, licence_id: int, product: str = Form(
         return templates.TemplateResponse(request, "licence_form.html", form_context(db, request, user, licence=row, product_key=product_key, error=custom_error), status_code=400)
     product = product.strip()
     product_key = product_key.strip()
-    if not product or not product_key:
-        return templates.TemplateResponse(request, "licence_form.html", form_context(db, request, user, licence=row, product_key=product_key, error="Product and product key are required."), status_code=400)
+    if not product:
+        return templates.TemplateResponse(request, "licence_form.html", form_context(db, request, user, licence=row, product_key=product_key, error="Product is required."), status_code=400)
     lists = list_values(db, MODULE)
     row.product = product
-    row.encrypted_product_key = encrypt_secret(product_key)
+    if product_key:
+        row.encrypted_product_key = encrypt_secret(product_key)
     row.organisation = None
     row.licence_type = clean_list_value(licence_type, lists.get("licence_type", []), row.licence_type)
     row.seats = seats
+    row.is_favourite = bool(is_favourite)
     row.notes = notes.strip() or None
     db.commit()
     save_custom_values(db, fields, form, ENTITY_TYPE, row.id)
@@ -127,7 +134,8 @@ def detail(request: Request, licence_id: int, db: Session = Depends(get_db), use
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Licence not found")
     fields = active_fields(db, MODULE)
     values = field_values(db, MODULE, ENTITY_TYPE, row.id)
-    return templates.TemplateResponse(request, "licence_detail.html", {"user": user, "licence": row, "display_key": mask_key(decrypt_secret(row.encrypted_product_key)), "revealed": False, "custom_fields": fields, "custom_values": values, **csrf_context(request)})
+    lists = list_values(db, MODULE)
+    return templates.TemplateResponse(request, "licence_detail.html", {"user": user, "licence": row, "display_key": mask_key(decrypt_secret(row.encrypted_product_key)), "product_key_edit": "", "revealed": False, "licence_types": lists.get("licence_type", []), "custom_fields": fields, "custom_values": values, "option_list": option_list, **csrf_context(request)})
 
 
 @router.post("/{licence_id}/reveal")
@@ -139,4 +147,6 @@ def reveal(request: Request, licence_id: int, csrf_token: str = Form(...), db: S
     write_audit(db, user, "reveal", "licence", str(row.id), request.client.host if request.client else None)
     fields = active_fields(db, MODULE)
     values = field_values(db, MODULE, ENTITY_TYPE, row.id)
-    return templates.TemplateResponse(request, "licence_detail.html", {"user": user, "licence": row, "display_key": decrypt_secret(row.encrypted_product_key), "revealed": True, "custom_fields": fields, "custom_values": values, **csrf_context(request)})
+    lists = list_values(db, MODULE)
+    product_key = decrypt_secret(row.encrypted_product_key)
+    return templates.TemplateResponse(request, "licence_detail.html", {"user": user, "licence": row, "display_key": product_key, "product_key_edit": product_key, "revealed": True, "licence_types": lists.get("licence_type", []), "custom_fields": fields, "custom_values": values, "option_list": option_list, **csrf_context(request)})

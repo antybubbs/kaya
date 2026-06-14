@@ -51,8 +51,8 @@ def ping_ipv4(address: str, timeout_ms: int) -> tuple[bool, int | None, str | No
         return False, None, "Ping command is not installed in the container."
     except subprocess.TimeoutExpired:
         return False, None, "Timed out"
-    except OSError as exc:
-        return False, None, str(exc)
+    except OSError:
+        return False, None, "Ping execution failed."
     output = f"{result.stdout}\n{result.stderr}"
     if result.returncode == 0:
         match = PING_TIME_PATTERN.search(output)

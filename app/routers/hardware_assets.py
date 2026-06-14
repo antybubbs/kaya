@@ -80,15 +80,19 @@ def clean_managed_value(value: str, allowed: list[str], current: str | None = No
 
 
 @router.get("")
-def list_assets(request: Request, q: str = Query("", max_length=200), db: Session = Depends(get_db), user=Depends(require_user)):
+def list_assets(request: Request, q: str = Query("", max_length=200), category: str = Query("", max_length=120), db: Session = Depends(get_db), user=Depends(require_user)):
     query = db.query(HardwareAsset)
+    categories = list_values(db, MODULE).get("category", [])
+    active_category = category.strip()
+    if active_category:
+        query = query.filter(HardwareAsset.category == active_category)
     clean_q = q.strip()
     if clean_q:
         like = f"%{clean_q}%"
         query = query.filter(or_(HardwareAsset.asset_tag.ilike(like), HardwareAsset.name.ilike(like), HardwareAsset.category.ilike(like), HardwareAsset.status.ilike(like), HardwareAsset.manufacturer.ilike(like), HardwareAsset.model.ilike(like), HardwareAsset.serial_number.ilike(like), HardwareAsset.location.ilike(like)))
     rows = query.order_by(HardwareAsset.name.asc()).limit(500).all()
     total = db.query(HardwareAsset).count()
-    return templates.TemplateResponse(request, "hardware_assets.html", {"user": user, "rows": rows, "total": total, "q": clean_q, **csrf_context(request)})
+    return templates.TemplateResponse(request, "hardware_assets.html", {"user": user, "rows": rows, "total": total, "q": clean_q, "categories": categories, "active_category": active_category, **csrf_context(request)})
 
 
 @router.get("/new")
@@ -138,7 +142,8 @@ def detail_asset(request: Request, asset_id: int, db: Session = Depends(get_db),
     attachments = db.query(HardwareAssetAttachment).filter(HardwareAssetAttachment.asset_id == row.id).order_by(HardwareAssetAttachment.uploaded_at.desc()).all()
     fields = active_fields(db, MODULE)
     values = field_values(db, MODULE, ENTITY_TYPE, row.id)
-    return templates.TemplateResponse(request, "hardware_asset_detail.html", {"user": user, "record": row, "attachments": attachments, "custom_fields": fields, "custom_values": values, **csrf_context(request)})
+    lists = list_values(db, MODULE)
+    return templates.TemplateResponse(request, "hardware_asset_detail.html", {"user": user, "record": row, "attachments": attachments, "categories": lists.get("category", []), "locations": lists.get("location", []), "statuses": lists.get("status", []), "custom_fields": fields, "custom_values": values, "option_list": option_list, **csrf_context(request)})
 
 
 @router.get("/{asset_id}/edit")

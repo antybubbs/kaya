@@ -1,28 +1,73 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="topbar"><div><h1>{{ record.name }}</h1><p class="muted">Hardware asset #{{ record.id }}</p></div>{% if user.role in ['admin','editor'] %}<div><a class="button" href="/hardware-assets/{{ record.id }}/edit">Edit</a></div>{% endif %}</div>
-<section class="panel asset-detail">
-  {% if record.photo_filename %}
-  <div class="asset-photo-wrap"><img class="asset-photo" src="/hardware-assets/{{ record.id }}/photo" alt="{{ record.name }}"></div>
+<form method="post" action="/hardware-assets/{{ record.id }}/edit" class="inline-record" data-inline-edit enctype="multipart/form-data">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<div class="record-hero">
+  <div>
+    <h1><span data-view>{{ record.name }}</span><input data-edit name="name" value="{{ record.name }}" required></h1>
+    <p class="record-identifier mono"><span data-view>{{ record.asset_tag or record.serial_number or 'No asset tag' }}</span><input data-edit name="asset_tag" value="{{ record.asset_tag or '' }}" placeholder="Asset tag"></p>
+    <div class="record-chips">
+      <span class="table-chip muted-chip">{{ record.status }}</span>
+      {% if record.category %}<span class="table-chip">{{ record.category }}</span>{% endif %}
+      {% if record.location %}<span class="table-chip muted-chip">{{ record.location }}</span>{% endif %}
+    </div>
+  </div>
+  {% if user.role in ['admin','editor'] %}
+  <div class="inline-actions">
+    <button class="button" type="button" data-edit-toggle>Edit</button>
+    <button class="button secondary" type="button" data-edit-cancel>Cancel</button>
+    <button class="button" type="submit" data-edit-save>Save</button>
+  </div>
   {% endif %}
-  <section class="detail-grid">
-    <div><label>Asset Tag</label><p class="mono">{{ record.asset_tag or '-' }}</p></div>
-    <div><label>Status</label><p>{{ record.status }}</p></div>
-    <div><label>Category</label><p>{{ record.category or '-' }}</p></div>
-    <div><label>Location</label><p>{{ record.location or '-' }}</p></div>
-    <div><label>Manufacturer</label><p>{{ record.manufacturer or '-' }}</p></div>
-    <div><label>Model</label><p>{{ record.model or '-' }}</p></div>
-    <div><label>Serial Number</label><p>{{ record.serial_number or '-' }}</p></div>
-    <div><label>Purchase Date</label><p>{{ record.purchase_date or '-' }}</p></div>
-    <div><label>Purchase Cost</label><p>{{ record.purchase_cost or '-' }}</p></div>
-    <div><label>Warranty Expires</label><p>{{ record.warranty_expires or '-' }}</p></div>
-    <div><label>Supplier</label><p>{{ record.supplier or '-' }}</p></div>
-    <div class="wide"><label>Notes</label><p>{{ record.notes or '-' }}</p></div>
-    {% for field in custom_fields %}
-    <div><label>{{ field.label }}</label><p>{{ custom_values.get(field.id) or '-' }}</p></div>
-    {% endfor %}
+</div>
+<section class="record-layout">
+  {% if record.photo_filename %}
+  <section class="panel record-panel media-panel">
+    <h2>Photo</h2>
+    <div class="asset-photo-wrap"><img class="asset-photo" src="/hardware-assets/{{ record.id }}/photo" alt="{{ record.name }}"></div>
+  </section>
+  {% endif %}
+  <section class="panel record-panel {% if not record.photo_filename %}wide{% endif %}">
+    <h2>Overview</h2>
+    <dl class="record-kv-list">
+      <div><dt>Asset Tag</dt><dd class="mono"><span data-view>{{ record.asset_tag or '-' }}</span><input data-edit data-display-copy name="asset_tag_display" value="{{ record.asset_tag or '' }}" disabled></dd></div>
+      <div><dt>Status</dt><dd><span data-view><span class="table-chip muted-chip">{{ record.status }}</span></span><select data-edit name="asset_status">{% if record.status and record.status not in statuses %}<option value="{{ record.status }}" selected>{{ record.status }}</option>{% endif %}{% for option in statuses %}<option value="{{ option }}" {% if record.status == option %}selected{% endif %}>{{ option }}</option>{% endfor %}</select></dd></div>
+      <div><dt>Category</dt><dd><span data-view>{% if record.category %}<span class="table-chip">{{ record.category }}</span>{% else %}-{% endif %}</span><select data-edit name="category"><option value=""></option>{% if record.category and record.category not in categories %}<option value="{{ record.category }}" selected>{{ record.category }}</option>{% endif %}{% for option in categories %}<option value="{{ option }}" {% if record.category == option %}selected{% endif %}>{{ option }}</option>{% endfor %}</select></dd></div>
+      <div><dt>Location</dt><dd><span data-view>{{ record.location or '-' }}</span><select data-edit name="location"><option value=""></option>{% if record.location and record.location not in locations %}<option value="{{ record.location }}" selected>{{ record.location }}</option>{% endif %}{% for option in locations %}<option value="{{ option }}" {% if record.location == option %}selected{% endif %}>{{ option }}</option>{% endfor %}</select></dd></div>
+      <div><dt>Manufacturer</dt><dd><span data-view>{{ record.manufacturer or '-' }}</span><input data-edit name="manufacturer" value="{{ record.manufacturer or '' }}"></dd></div>
+      <div><dt>Model</dt><dd><span data-view>{{ record.model or '-' }}</span><input data-edit name="model" value="{{ record.model or '' }}"></dd></div>
+      <div><dt>Serial Number</dt><dd><span data-view>{{ record.serial_number or '-' }}</span><input data-edit name="serial_number" value="{{ record.serial_number or '' }}"></dd></div>
+      <div><dt>Supplier</dt><dd><span data-view>{{ record.supplier or '-' }}</span><input data-edit name="supplier" value="{{ record.supplier or '' }}"></dd></div>
+    </dl>
+  </section>
+  <section class="panel record-panel wide">
+    <h2>Purchase and Warranty</h2>
+    <dl class="record-kv-list full">
+      <div><dt>Purchase Date</dt><dd><span data-view>{{ record.purchase_date or '-' }}</span><input data-edit name="purchase_date" type="date" value="{{ record.purchase_date or '' }}"></dd></div>
+      <div><dt>Purchase Cost</dt><dd><span data-view>{{ record.purchase_cost or '-' }}</span><input data-edit name="purchase_cost" value="{{ record.purchase_cost or '' }}"></dd></div>
+      <div><dt>Warranty Expires</dt><dd><span data-view>{{ record.warranty_expires or '-' }}</span><input data-edit name="warranty_expires" type="date" value="{{ record.warranty_expires or '' }}"></dd></div>
+    </dl>
+  </section>
+  <section class="panel record-panel wide">
+    <h2>Notes and Custom Fields</h2>
+    <dl class="record-kv-list full">
+      <div><dt>Notes</dt><dd><span data-view>{{ record.notes or '-' }}</span><textarea data-edit name="notes">{{ record.notes or '' }}</textarea></dd></div>
+      {% for field in custom_fields %}
+      {% set current_value = custom_values.get(field.id, '') %}
+      <div><dt>{{ field.label }}</dt><dd><span data-view>{{ current_value or '-' }}</span>
+        {% if field.field_type == 'textarea' %}
+        <textarea data-edit name="custom_{{ field.id }}" {% if field.is_required %}required{% endif %}>{{ current_value }}</textarea>
+        {% elif field.field_type in ['radio','select'] %}
+        <select data-edit name="custom_{{ field.id }}" {% if field.is_required %}required{% endif %}><option value=""></option>{% for option in option_list(field) %}<option value="{{ option }}" {% if current_value == option %}selected{% endif %}>{{ option }}</option>{% endfor %}</select>
+        {% else %}
+        <input data-edit name="custom_{{ field.id }}" value="{{ current_value }}" {% if field.is_required %}required{% endif %}>
+        {% endif %}
+      </dd></div>
+      {% endfor %}
+    </dl>
   </section>
 </section>
+</form>
 <section class="panel section-gap">
   <div class="topbar compact"><h2>Attachments</h2></div>
   {% if attachments %}

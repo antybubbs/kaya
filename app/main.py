@@ -97,6 +97,10 @@ def migrate_existing_database():
             conn.execute(text("ALTER TABLE users ADD COLUMN first_name VARCHAR(120)"))
         if "last_name" not in columns:
             conn.execute(text("ALTER TABLE users ADD COLUMN last_name VARCHAR(120)"))
+        licence_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(licences)"))}
+        if licence_columns and "is_favourite" not in licence_columns:
+            conn.execute(text("ALTER TABLE licences ADD COLUMN is_favourite BOOLEAN DEFAULT 0 NOT NULL"))
+            conn.execute(text("CREATE INDEX ix_licences_is_favourite ON licences (is_favourite)"))
         vlan_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(vlans)"))}
         if not vlan_columns:
             conn.execute(text("CREATE TABLE vlans (id INTEGER NOT NULL PRIMARY KEY, name VARCHAR(120) NOT NULL UNIQUE, description TEXT, created_at DATETIME, updated_at DATETIME)"))

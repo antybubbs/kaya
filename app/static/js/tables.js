@@ -53,6 +53,7 @@
     const key = table.dataset.tableKey;
     const storageKey = storagePrefix + key;
     const headers = Array.from(table.tHead.rows[0].cells);
+    const parent = table.parentNode;
     let hiddenColumns;
     try {
       hiddenColumns = new Set(JSON.parse(localStorage.getItem(storageKey) || "[]"));
@@ -67,7 +68,7 @@
 
     headers.forEach((header, index) => {
       const columnKey = header.dataset.col || String(index);
-      const label = header.textContent.trim() || "Actions";
+      const label = header.dataset.label || header.textContent.trim() || "Actions";
       if (header.dataset.sort !== undefined) {
         header.classList.add("sortable");
         header.tabIndex = 0;
@@ -103,7 +104,7 @@
       });
       panel.appendChild(option);
 
-      if (columnKey !== "actions" && label) {
+      if (!["actions", "select"].includes(columnKey) && label) {
         const filterLabel = document.createElement("label");
         filterLabel.className = "table-filter";
         const filterInput = document.createElement("input");
@@ -120,7 +121,13 @@
       }
     });
 
-    table.parentNode.insertBefore(toolbar, table);
+    parent.insertBefore(toolbar, table);
+    if (!table.closest(".table-scroll")) {
+      const scrollWrap = document.createElement("div");
+      scrollWrap.className = "table-scroll";
+      parent.insertBefore(scrollWrap, table);
+      scrollWrap.appendChild(table);
+    }
     applyVisibility(table, hiddenColumns);
     applyFilters(table, filters);
   });

@@ -38,6 +38,8 @@ Create an `.env` file beside `docker-compose.prod.yml`:
 
 ```text
 HOMELAB_IMAGE=ghcr.io/antybubbs/homelab:latest
+# Development/test server only:
+# HOMELAB_IMAGE=ghcr.io/antybubbs/homelab:dev0.15.1
 HOMELAB_PORT=8080
 APP_NAME=HomeLab
 APP_ENV=production
@@ -72,6 +74,26 @@ Start or update:
 docker compose -f docker-compose.prod.yml pull
 docker compose -f docker-compose.prod.yml up -d
 ```
+
+## Development branch installs
+
+Keep production on `ghcr.io/antybubbs/homelab:latest` or a pinned release such as `ghcr.io/antybubbs/homelab:v0.15.0`.
+
+For a test server, switch the `.env` image line to the active development branch image:
+
+```text
+# HOMELAB_IMAGE=ghcr.io/antybubbs/homelab:latest
+HOMELAB_IMAGE=ghcr.io/antybubbs/homelab:dev0.15.1
+```
+
+Then update the test server:
+
+```bash
+docker compose -f docker-compose.prod.yml pull
+docker compose -f docker-compose.prod.yml up -d
+```
+
+Development builds show a Development channel in the sidebar version box.
 
 ## Reverse proxy
 

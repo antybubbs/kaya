@@ -1,25 +1,97 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="topbar"><div><h1>{{ record.address }}</h1><p class="muted">IP address record #{{ record.id }}</p></div>{% if user.role in ['admin','editor'] %}<div><a class="button" href="/ip-addresses/{{ record.id }}/edit">Edit</a></div>{% endif %}</div>
-<section class="panel">
-<section class="detail-grid">
-  <div><label>IP Address</label><p class="mono">{{ record.address }}</p></div>
-  <div><label>Category</label><p>{{ record.category or '-' }}</p></div>
-  <div><label>Name</label><p>{{ record.name or '-' }}</p></div>
-  <div><label>Description</label><p>{{ record.description or '-' }}</p></div>
-  <div><label>Static/Dynamic</label><p>{{ record.assignment_type }}</p></div>
-  <div><label>Network Monitor</label><p>{% if monitor and monitor.is_enabled %}Enabled{% else %}Disabled{% endif %}</p></div>
-  {% if monitor and monitor.is_enabled %}
-  <div><label>Last Check</label><p>{% if monitor.last_checked_at %}{{ monitor.last_status|capitalize }}{% if monitor.last_latency_ms is not none %} - {{ monitor.last_latency_ms }} ms{% endif %}{% else %}Waiting for first check{% endif %}</p></div>
+{% set record_title = record.name or record.description or record.address %}
+<form method="post" action="/ip-addresses/{{ record.id }}/edit" class="inline-record" data-inline-edit>
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<div class="record-hero">
+  <div>
+    <h1><span data-view>{{ record_title }}</span><input data-edit name="name" value="{{ record.name or '' }}" placeholder="Name"></h1>
+    <p class="record-identifier mono"><span data-view>{{ record.address }}</span><input data-edit name="address" value="{{ record.address }}" required></p>
+    <div class="record-chips">
+      <span class="table-chip muted-chip">{{ record.assignment_type }}</span>
+      {% if record.category %}<span class="table-chip">Category: {{ record.category }}</span>{% endif %}
+      <span class="table-chip muted-chip">Network Monitor {% if monitor and monitor.is_enabled %}On{% else %}Off{% endif %}</span>
+      <span class="table-chip muted-chip">Remote Manager {% if remote and remote.is_enabled %}On{% else %}Off{% endif %}</span>
+    </div>
+  </div>
+  {% if user.role in ['admin','editor'] %}
+  <div class="inline-actions">
+    <button class="button" type="button" data-edit-toggle>Edit</button>
+    <button class="button secondary" type="button" data-edit-cancel>Cancel</button>
+    <button class="button" type="submit" data-edit-save>Save</button>
+  </div>
   {% endif %}
-  <div><label>Remote Manager</label><p>{% if remote and remote.is_enabled %}{{ remote.protocol|upper }} on port {{ remote.port }}{% else %}Disabled{% endif %}</p></div>
-  {% if remote and remote.is_enabled %}
-  <div><label>Remote Username</label><p>{{ remote.username or '-' }}</p></div>
-  {% endif %}
-  <div class="wide"><label>Notes</label><p>{{ record.notes or '-' }}</p></div>
-  {% for field in custom_fields %}
-  <div><label>{{ field.label }}</label><p>{{ custom_values.get(field.id) or '-' }}</p></div>
-  {% endfor %}
+</div>
+<section class="record-layout">
+  <section class="panel record-panel">
+    <h2>Overview</h2>
+    <dl class="record-kv-list">
+      <div><dt>IP Address</dt><dd class="mono"><span data-view>{{ record.address }}</span><input data-edit data-display-copy name="address_display" value="{{ record.address }}" disabled></dd></div>
+      <div><dt>Name</dt><dd><span data-view>{{ record.name or '-' }}</span><input data-edit data-display-copy name="name_display" value="{{ record.name or '' }}" disabled></dd></div>
+      <div><dt>Description</dt><dd><span data-view>{{ record.description or '-' }}</span><textarea data-edit name="description">{{ record.description or '' }}</textarea></dd></div>
+      <div><dt>Category</dt><dd><span data-view>{% if record.category %}<span class="table-chip">{{ record.category }}</span>{% else %}-{% endif %}</span><select data-edit name="category"><option value=""></option>{% if record.category and record.category not in categories %}<option value="{{ record.category }}" selected>{{ record.category }}</option>{% endif %}{% for category in categories %}<option value="{{ category }}" {% if record.category == category %}selected{% endif %}>{{ category }}</option>{% endfor %}</select></dd></div>
+      <div><dt>Static/Dynamic</dt><dd><span data-view>{{ record.assignment_type }}</span><select data-edit name="assignment_type">{% for option in assignment_types %}<option value="{{ option }}" {% if record.assignment_type == option %}selected{% endif %}>{{ option }}</option>{% endfor %}</select></dd></div>
+    </dl>
+  </section>
+  <section class="panel record-panel">
+    <h2>Services</h2>
+    <div class="service-card-list">
+      <div class="service-card">
+        <div><strong>Network Monitor</strong><span>Monitors uptime and latency for this IP address.</span></div>
+        <span data-view class="service-pill {% if monitor and monitor.is_enabled %}on{% endif %}">{% if monitor and monitor.is_enabled %}Enabled{% else %}Disabled{% endif %}</span>
+        <label data-edit class="inline-toggle"><input name="monitor_enabled" type="checkbox" value="1" {% if monitor and monitor.is_enabled %}checked{% endif %}> Enabled</label>
+      </div>
+      <div data-edit class="record-edit-grid">
+        <label>Monitor display name<input name="monitor_display_name" value="{{ monitor.display_name if monitor and monitor.display_name else '' }}"></label>
+        <label>Check interval<select name="monitor_interval_seconds">{% set interval = monitor.interval_seconds if monitor else 300 %}<option value="60" {% if interval == 60 %}selected{% endif %}>1 minute</option><option value="300" {% if interval == 300 %}selected{% endif %}>5 minutes</option><option value="900" {% if interval == 900 %}selected{% endif %}>15 minutes</option><option value="3600" {% if interval == 3600 %}selected{% endif %}>1 hour</option></select></label>
+        <label>Ping timeout<select name="monitor_timeout_ms">{% set timeout = monitor.timeout_ms if monitor else 2000 %}<option value="1000" {% if timeout == 1000 %}selected{% endif %}>1 second</option><option value="2000" {% if timeout == 2000 %}selected{% endif %}>2 seconds</option><option value="5000" {% if timeout == 5000 %}selected{% endif %}>5 seconds</option></select></label>
+      </div>
+      {% if monitor and monitor.is_enabled %}
+      <div class="service-card compact">
+        <div><strong>Last Check</strong><span>{% if monitor.last_checked_at %}{{ monitor.last_status|capitalize }}{% if monitor.last_latency_ms is not none %} - {{ monitor.last_latency_ms }} ms{% endif %}{% else %}Waiting for first check{% endif %}</span></div>
+      </div>
+      {% endif %}
+      <div class="service-card" data-ping-card>
+        <div><strong>Ping</strong><span data-ping-message>Allows a quick ping to see if this device is up.</span></div>
+        <button class="button secondary" type="button" data-ping-url="/ip-addresses/{{ record.id }}/ping" data-csrf-token="{{ csrf_token }}">Ping</button>
+      </div>
+      <div class="service-card">
+        <div><strong>Remote Manager</strong><span>Allows remote access via SSH or RDP.</span></div>
+        <span data-view class="service-pill {% if remote and remote.is_enabled %}on{% endif %}">{% if remote and remote.is_enabled %}{{ remote.protocol|upper }}:{{ remote.port }}{% else %}Disabled{% endif %}</span>
+        <label data-edit class="inline-toggle"><input name="remote_enabled" type="checkbox" value="1" {% if remote and remote.is_enabled %}checked{% endif %}> Enabled</label>
+      </div>
+      <div data-edit class="record-edit-grid">
+        <label>Remote display name<input name="remote_display_name" value="{{ remote.display_name if remote and remote.display_name else '' }}"></label>
+        <label>Protocol<select name="remote_protocol">{% set selected_protocol = remote.protocol if remote else 'ssh' %}{% for option in remote_protocols %}<option value="{{ option }}" {% if selected_protocol == option %}selected{% endif %}>{{ option|upper }}</option>{% endfor %}</select></label>
+        <label>Port<input name="remote_port" type="number" min="1" max="65535" value="{{ remote.port if remote else 22 }}"></label>
+        <label>Username<input name="remote_username" autocomplete="username" value="{{ remote.username if remote and remote.username else '' }}"></label>
+      </div>
+      {% if remote and remote.is_enabled %}
+      <div class="service-card compact">
+        <div><strong>Remote Username</strong><span>{{ remote.username or '-' }}</span></div>
+      </div>
+      {% endif %}
+    </div>
+  </section>
+  <section class="panel record-panel wide">
+    <h2>Notes and Custom Fields</h2>
+    <dl class="record-kv-list full">
+      <div><dt>Notes</dt><dd><span data-view>{{ record.notes or '-' }}</span><textarea data-edit name="notes">{{ record.notes or '' }}</textarea></dd></div>
+      {% for field in custom_fields %}
+      {% set current_value = custom_values.get(field.id, '') %}
+      <div><dt>{{ field.label }}</dt><dd><span data-view>{{ current_value or '-' }}</span>
+        {% if field.field_type == 'textarea' %}
+        <textarea data-edit name="custom_{{ field.id }}" {% if field.is_required %}required{% endif %}>{{ current_value }}</textarea>
+        {% elif field.field_type in ['radio','select'] %}
+        <select data-edit name="custom_{{ field.id }}" {% if field.is_required %}required{% endif %}><option value=""></option>{% for option in option_list(field) %}<option value="{{ option }}" {% if current_value == option %}selected{% endif %}>{{ option }}</option>{% endfor %}</select>
+        {% else %}
+        <input data-edit name="custom_{{ field.id }}" value="{{ current_value }}" {% if field.is_required %}required{% endif %}>
+        {% endif %}
+      </dd></div>
+      {% endfor %}
+    </dl>
+  </section>
 </section>
-</section>
+</form>
+<script src="/static/js/ip_addresses.js?v={{ asset_version }}" defer></script>
 {% endblock %}

@@ -5,23 +5,30 @@
   <div class="card"><span>Total Assets</span><strong>{{ total }}</strong></div>
 </section>
 <form class="search list-search" method="get">
+  {% if active_category %}<input type="hidden" name="category" value="{{ active_category }}">{% endif %}
   <input name="q" placeholder="Search hardware assets..." value="{{ q }}">
   <button>Search</button>
   {% if user.role in ['admin','editor'] %}<a class="button" href="/hardware-assets/new">Add Asset</a>{% endif %}
 </form>
+<nav class="category-tabs" aria-label="Hardware asset categories">
+  <a class="{% if not active_category %}active{% endif %}" href="/hardware-assets{% if q %}?q={{ q|urlencode }}{% endif %}">All</a>
+  {% for category in categories %}
+  <a class="{% if active_category == category %}active{% endif %}" href="/hardware-assets?category={{ category|urlencode }}{% if q %}&q={{ q|urlencode }}{% endif %}">{{ category }}</a>
+  {% endfor %}
+</nav>
 <section class="panel">
 <table data-table-key="hardware-assets">
-  <thead><tr><th data-col="asset-tag" data-sort>Asset Tag</th><th data-col="name" data-sort>Name</th><th data-col="category" data-sort>Category</th><th data-col="status" data-sort>Status</th><th data-col="location" data-sort>Location</th><th data-col="warranty" data-sort>Warranty</th><th data-col="actions"></th></tr></thead>
+  <thead><tr><th class="action-col" data-col="actions">View</th><th data-col="asset-tag" data-sort>Asset Tag</th><th data-col="name" data-sort>Name</th><th data-col="category" data-sort>Category</th><th data-col="status" data-sort>Status</th><th data-col="location" data-sort>Location</th><th data-col="warranty" data-sort>Warranty</th></tr></thead>
   <tbody>
   {% for row in rows %}
   <tr>
+    <td class="action-col"><a class="button secondary" href="/hardware-assets/{{ row.id }}">View</a></td>
     <td class="mono">{{ row.asset_tag or '-' }}</td>
     <td>{{ row.name }}</td>
-    <td>{{ row.category or '-' }}</td>
-    <td>{{ row.status }}</td>
+    <td>{% if row.category %}<span class="table-chip">{{ row.category }}</span>{% else %}-{% endif %}</td>
+    <td><span class="table-chip muted-chip">{{ row.status }}</span></td>
     <td>{{ row.location or '-' }}</td>
     <td>{{ row.warranty_expires or '-' }}</td>
-    <td><a class="button secondary" href="/hardware-assets/{{ row.id }}">View</a></td>
   </tr>
   {% endfor %}
   </tbody>

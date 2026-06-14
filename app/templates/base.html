@@ -4,11 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ title or 'HomeLab' }}</title>
-  <link rel="stylesheet" href="/static/css/app.css">
-  <link rel="stylesheet" href="/static/css/imports.css">
+  <link rel="stylesheet" href="/static/css/app.css?v={{ asset_version }}">
+  <link rel="stylesheet" href="/static/css/imports.css?v={{ asset_version }}">
   {% block extra_head %}{% endblock %}
-  <script src="/static/js/sidebar.js" defer></script>
-  <script src="/static/js/tables.js" defer></script>
+  <script src="/static/js/sidebar.js?v={{ asset_version }}" defer></script>
+  <script src="/static/js/tables.js?v={{ asset_version }}" defer></script>
+  <script src="/static/js/inline_edit.js?v={{ asset_version }}" defer></script>
 </head>
 <body>
 {% if user %}

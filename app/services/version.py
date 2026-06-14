@@ -39,6 +39,8 @@ def normalize_version(version: str) -> tuple[int, ...]:
 
 
 def display_version(version: str) -> str:
+    if DEV_PATTERN.match(version.strip()):
+        return version.strip()
     if SHA_PATTERN.match(version.strip().lower()):
         return "dev build"
     return version

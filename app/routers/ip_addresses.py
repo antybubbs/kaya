@@ -1,6 +1,6 @@
 from ipaddress import ip_address
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
@@ -12,7 +12,7 @@ from app.routers.auth import require_editor, require_user
 from app.services.audit import write_audit
 from app.services.custom_fields import active_fields, field_values, option_list, save_custom_values, validate_custom_values
 from app.services.managed_lists import list_values
-from app.services.network_monitor import clamp_interval, clamp_timeout
+from app.services.network_monitor import clamp_interval, clamp_timeout, ping_ipv4
 
 router = APIRouter(prefix="/ip-addresses")
 templates = Jinja2Templates(directory="app/templates")
@@ -128,6 +128,85 @@ def list_ip_addresses(request: Request, q: str = Query("", max_length=200), cate
 
 MODULE = "ip_addresses"
 ENTITY_TYPE = "ip_address"
+BULK_NO_CHANGE = "__no_change__"
+BULK_CLEAR = "__clear__"
+
+
+@router.post("/bulk-update")
+def bulk_update_ip_addresses(
+    request: Request,
+    selected_ids: list[int] = Form(...),
+    category: str = Form(BULK_NO_CHANGE, max_length=120),
+    assignment_type: str = Form(BULK_NO_CHANGE),
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+    user=Depends(require_editor),
+):
+    validate_csrf_token(request, csrf_token)
+    ids = sorted({record_id for record_id in selected_ids if record_id > 0})[:500]
+    if not ids:
+        return RedirectResponse("/ip-addresses", status_code=303)
+    categories = list_values(db, MODULE).get("category", [])
+    category_value: str | None = None
+    update_category = category != BULK_NO_CHANGE
+    if update_category:
+        if category == BULK_CLEAR:
+            category_value = None
+        elif category in categories:
+            category_value = category
+        else:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Choose a valid category.")
+    update_assignment = assignment_type != BULK_NO_CHANGE
+    if update_assignment and assignment_type not in ASSIGNMENT_TYPES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Choose Static or Dynamic.")
+    if not update_category and not update_assignment:
+        return RedirectResponse("/ip-addresses", status_code=303)
+    rows = db.query(IPAddress).filter(IPAddress.id.in_(ids)).all()
+    for row in rows:
+        if update_category:
+            row.category = category_value
+        if update_assignment:
+            row.assignment_type = assignment_type
+    db.commit()
+    fields = []
+    if update_category:
+        fields.append(f"category={category_value or 'blank'}")
+    if update_assignment:
+        fields.append(f"assignment_type={assignment_type}")
+    write_audit(
+        db,
+        user,
+        "bulk_update",
+        "ip_address",
+        ",".join(str(row.id) for row in rows),
+        request.client.host if request.client else None,
+        detail=f"Updated {len(rows)} IP addresses: {', '.join(fields)}",
+    )
+    return RedirectResponse("/ip-addresses", status_code=303)
+
+
+@router.post("/{record_id}/ping")
+def ping_ip_address(request: Request, record_id: int, csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_user)):
+    validate_csrf_token(request, csrf_token)
+    row = db.get(IPAddress, record_id)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="IP address not found")
+    ok, latency_ms, error = ping_ipv4(row.address, 2000)
+    write_audit(
+        db,
+        user,
+        "ping",
+        "ip_address",
+        str(row.id),
+        request.client.host if request.client else None,
+        detail=f"{row.address} {'up' if ok else 'down'}{f' {latency_ms}ms' if latency_ms is not None else ''}{f': {error}' if error else ''}",
+    )
+    return JSONResponse({
+        "ok": ok,
+        "status": "up" if ok else "down",
+        "latency_ms": latency_ms,
+        "error": error,
+    })
 
 
 @router.get("/new")
@@ -168,7 +247,8 @@ def detail_ip_address(request: Request, record_id: int, db: Session = Depends(ge
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="IP address not found")
     fields = active_fields(db, MODULE)
     values = field_values(db, MODULE, ENTITY_TYPE, row.id)
-    return templates.TemplateResponse(request, "ip_address_detail.html", {"user": user, "record": row, "monitor": monitor_for(db, row.id), "remote": remote_for(db, row.id), "custom_fields": fields, "custom_values": values, **csrf_context(request)})
+    categories = list_values(db, MODULE).get("category", [])
+    return templates.TemplateResponse(request, "ip_address_detail.html", {"user": user, "record": row, "monitor": monitor_for(db, row.id), "remote": remote_for(db, row.id), "categories": categories, "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": values, "option_list": option_list, **csrf_context(request)})
 
 
 @router.get("/{record_id}/edit")

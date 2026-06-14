@@ -5,13 +5,43 @@
   <div class="card"><span>Total IP Addresses</span><strong>{{ total }}</strong></div>
 </section>
 <form class="search list-search" method="get">
+  {% if active_category %}<input type="hidden" name="category" value="{{ active_category }}">{% endif %}
   <input name="q" placeholder="Search IP addresses..." value="{{ q }}">
   <button>Search</button>
   {% if user.role in ['admin','editor'] %}<a class="button" href="/ip-addresses/new">Add IP</a>{% endif %}
 </form>
+<nav class="category-tabs" aria-label="IP address categories">
+  <a class="{% if not active_category %}active{% endif %}" href="/ip-addresses{% if q %}?q={{ q|urlencode }}{% endif %}">All</a>
+  {% for category in categories %}
+  <a class="{% if active_category == category %}active{% endif %}" href="/ip-addresses?category={{ category|urlencode }}{% if q %}&q={{ q|urlencode }}{% endif %}">{{ category }}</a>
+  {% endfor %}
+</nav>
 <section class="panel">
-<table data-table-key="ip-addresses"><thead><tr><th data-col="ip" data-sort>IP</th><th data-col="category" data-sort>Category</th><th data-col="name" data-sort>Name</th><th data-col="description" data-sort>Description</th><th data-col="assignment" data-sort>Static/Dynamic</th><th data-col="notes" data-sort>Notes</th><th data-col="actions"></th></tr></thead><tbody>
-{% for row in rows %}<tr><td class="mono">{{ row.address }}</td><td>{{ row.category or '-' }}</td><td>{{ row.name or '-' }}</td><td>{{ row.description or '-' }}</td><td>{{ row.assignment_type }}</td><td>{{ row.notes or '-' }}</td><td><a class="button secondary" href="/ip-addresses/{{ row.id }}">View</a></td></tr>{% endfor %}
-</tbody></table>
+<form method="post" action="/ip-addresses/bulk-update" data-ip-bulk-form>
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <div class="bulk-action-bar" data-bulk-bar hidden>
+    <strong><span data-selected-count>0</span> selected</strong>
+    <label>Category
+      <select name="category">
+        <option value="__no_change__">No change</option>
+        <option value="__clear__">Clear category</option>
+        {% for category in categories %}<option value="{{ category }}">{{ category }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Static/Dynamic
+      <select name="assignment_type">
+        <option value="__no_change__">No change</option>
+        <option value="Static">Static</option>
+        <option value="Dynamic">Dynamic</option>
+      </select>
+    </label>
+    <button type="submit">Apply</button>
+    <button class="button secondary" type="button" data-clear-selection>Clear</button>
+  </div>
+  <table data-table-key="ip-addresses"><thead><tr><th class="select-col" data-col="select" data-label="Select"><label class="table-check"><input type="checkbox" aria-label="Select all IP addresses" data-select-all></label></th><th class="action-col" data-col="actions">View</th><th data-col="ip" data-sort>IP</th><th data-col="category" data-sort>Category</th><th data-col="name" data-sort>Name</th><th data-col="description" data-sort>Description</th><th data-col="assignment" data-sort>Static/Dynamic</th><th data-col="notes" data-sort>Notes</th></tr></thead><tbody>
+  {% for row in rows %}<tr><td class="select-col"><input class="row-select" type="checkbox" name="selected_ids" value="{{ row.id }}"></td><td class="action-col"><a class="button secondary" href="/ip-addresses/{{ row.id }}">View</a></td><td class="mono">{{ row.address }}</td><td>{% if row.category %}<span class="table-chip">{{ row.category }}</span>{% else %}-{% endif %}</td><td>{{ row.name or '-' }}</td><td>{{ row.description or '-' }}</td><td>{{ row.assignment_type }}</td><td>{{ row.notes or '-' }}</td></tr>{% endfor %}
+  </tbody></table>
+</form>
 </section>
+<script src="/static/js/ip_addresses.js?v={{ asset_version }}" defer></script>
 {% endblock %}
