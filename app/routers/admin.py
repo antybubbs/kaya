@@ -4,19 +4,22 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 from fastapi.responses import PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
+from sqlalchemy.orm import selectinload
 from starlette import status
 from app.core.config import get_settings
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.core.security import hash_password
 from app.core.totp import decrypted_totp_secret, encrypted_totp_secret, generate_totp_secret, provisioning_uri, qr_code_data_uri, verify_totp
 from app.db.session import get_db
-from app.models.models import AuditLog, CustomField, ManagedListItem, User
+from app.models.models import AppSession, AuditLog, CustomField, ManagedListItem, User
 from app.routers.auth import require_admin
 from app.services.audit import write_audit
+from app.services.about import collect_about
 from app.services.custom_fields import FIELD_TYPES, make_field_key
 from app.services.exporter import export_ip_addresses_csv, export_licences_csv
 from app.services.importer import ImportCSVError, import_csv, import_ip_addresses_csv
 from app.services.managed_lists import MANAGED_LIST_MODULES, MANAGED_LISTS, list_label
+from app.services.sessions import active_since
 
 router = APIRouter(prefix="/admin")
 templates = Jinja2Templates(directory="app/templates")
@@ -308,3 +311,19 @@ def disable_2fa(request: Request, csrf_token: str = Form(...), db: Session = Dep
 def audit(request: Request, db: Session = Depends(get_db), user=Depends(require_admin)):
     logs = db.query(AuditLog).order_by(AuditLog.created_at.desc()).limit(200).all()
     return templates.TemplateResponse(request, "audit.html", {"user": user, "logs": logs, **csrf_context(request)})
+
+
+@router.get("/about")
+def about(request: Request, db: Session = Depends(get_db), user=Depends(require_admin)):
+    sessions = db.query(AppSession).filter(
+        AppSession.ended_at.is_(None),
+        AppSession.last_seen_at >= active_since(),
+    ).options(selectinload(AppSession.user)).order_by(AppSession.last_seen_at.desc()).limit(100).all()
+    current_session_id = request.session.get("session_id")
+    return templates.TemplateResponse(request, "about.html", {
+        "user": user,
+        "about": collect_about(db),
+        "sessions": sessions,
+        "current_session_id": current_session_id,
+        **csrf_context(request),
+    })

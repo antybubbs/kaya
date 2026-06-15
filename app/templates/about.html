@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="topbar">
+  <div>
+    <h1>About HomeLab</h1>
+    <p class="muted">System, storage, runtime and active session information.</p>
+  </div>
+  <a class="button secondary" href="/admin/about">Refresh</a>
+</div>
+
+<section class="about-hero">
+  <div>
+    <span class="about-kicker">{{ about.app.name }}</span>
+    <h2>{{ about.version.installed_display }}</h2>
+    <p>Channel: <strong class="{% if about.version.is_dev %}dev-version{% else %}stable-version{% endif %}">{% if about.version.is_dev %}Development{% else %}Stable{% endif %}</strong></p>
+    <p>Latest stable: <strong>{{ about.version.latest or 'unknown' }}</strong></p>
+  </div>
+  <div class="about-meta">
+    <span>Repository</span><strong>{{ about.app.repository }}</strong>
+    <span>Environment</span><strong>{{ about.app.environment }}</strong>
+    <span>Database</span><strong>{{ about.app.database }}</strong>
+  </div>
+</section>
+
+<section class="cards">
+  <div class="card"><span>Disk used</span><strong>{{ about.disk.used }}</strong></div>
+  <div class="card"><span>Database size</span><strong>{{ about.storage_rows[0].size }}</strong></div>
+  <div class="card"><span>Uploads</span><strong>{{ about.storage_rows[1].size }}</strong></div>
+</section>
+
+<section class="about-grid">
+  <section class="panel about-panel">
+    <h2>System</h2>
+    <dl class="about-list">
+      <div><dt>Hostname</dt><dd>{{ about.system.hostname }}</dd></div>
+      <div><dt>OS</dt><dd>{{ about.system.os }}</dd></div>
+      <div><dt>Platform</dt><dd>{{ about.system.platform }}</dd></div>
+      <div><dt>Uptime</dt><dd>{{ about.system.uptime }}</dd></div>
+      <div><dt>Python executable</dt><dd>{{ about.system.executable }}</dd></div>
+    </dl>
+  </section>
+
+  <section class="panel about-panel">
+    <h2>CPU and Memory</h2>
+    <dl class="about-list">
+      <div><dt>CPU model</dt><dd>{{ about.cpu.model }}</dd></div>
+      <div><dt>Architecture</dt><dd>{{ about.cpu.architecture }}</dd></div>
+      <div><dt>Logical cores</dt><dd>{{ about.cpu.logical_cores }}</dd></div>
+      <div><dt>Load average</dt><dd>{{ about.cpu.load_average }}</dd></div>
+      <div><dt>Memory used</dt><dd>{{ about.memory.used }} / {{ about.memory.total }}</dd></div>
+      <div><dt>Memory available</dt><dd>{{ about.memory.available }}</dd></div>
+    </dl>
+  </section>
+</section>
+
+<section class="about-grid">
+  <section class="panel about-panel">
+    <h2>Storage Breakdown</h2>
+    <dl class="about-list">
+      {% for row in about.storage_rows %}
+      <div><dt>{{ row.label }}</dt><dd>{{ row.size }}</dd></div>
+      {% endfor %}
+      <div><dt>Disk total</dt><dd>{{ about.disk.total }}</dd></div>
+      <div><dt>Disk free</dt><dd>{{ about.disk.free }}</dd></div>
+    </dl>
+  </section>
+
+  <section class="panel about-panel">
+    <h2>Module Counts</h2>
+    <dl class="about-counts">
+      {% for row in about.module_counts %}
+      <div><dt>{{ row.label }}</dt><dd>{{ row.count }}</dd></div>
+      {% endfor %}
+    </dl>
+  </section>
+</section>
+
+<section class="panel about-panel">
+  <h2>Installed Runtime Versions</h2>
+  <table data-table-key="about-packages">
+    <thead><tr><th data-col="name" data-sort>Name</th><th data-col="version" data-sort>Version</th></tr></thead>
+    <tbody>
+      {% for row in about.packages %}
+      <tr><td>{{ row.name }}</td><td class="mono">{{ row.version }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="panel about-panel">
+  <h2>Open Sessions</h2>
+  <table data-table-key="about-sessions">
+    <thead><tr><th data-col="user" data-sort>User</th><th data-col="role" data-sort>Role</th><th data-col="ip" data-sort>IP Address</th><th data-col="created" data-sort>Logged in</th><th data-col="seen" data-sort>Last seen</th><th data-col="agent" data-sort>User agent</th></tr></thead>
+    <tbody>
+      {% for session in sessions %}
+      <tr>
+        <td>{{ session.user.email }}{% if session.session_id == current_session_id %} <span class="table-chip">Current</span>{% endif %}</td>
+        <td>{{ session.user.role }}</td>
+        <td class="mono">{{ session.ip_address or '-' }}</td>
+        <td>{{ session.created_at }}</td>
+        <td>{{ session.last_seen_at }}</td>
+        <td>{{ session.user_agent or '-' }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="muted">No active sessions recorded yet. Sessions will appear after users log in again.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}
