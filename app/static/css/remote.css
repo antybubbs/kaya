@@ -52,16 +52,14 @@
 .remote-credential-form{align-items:end;background:rgba(8,12,16,.96);border:1px solid var(--line);border-radius:10px;box-shadow:0 18px 45px rgba(0,0,0,.38);display:grid;gap:8px;grid-template-columns:minmax(220px,320px) auto;left:50%;max-width:min(620px,calc(100% - 32px));padding:12px;position:absolute;top:18px;transform:translateX(-50%);width:max-content;z-index:5}
 .remote-credential-form p{grid-column:1/-1;margin:0}
 .rdp-credential-form{grid-template-columns:minmax(180px,260px) minmax(180px,260px) auto}
-.ssh-terminal{background:#011627;height:100%;min-height:0;overflow:hidden;position:relative}
+.ssh-terminal{background:#0c0d0b;height:100%;min-height:0;overflow:hidden;position:relative}
 .ssh-terminal .xterm{font-feature-settings:"liga" 0,"calt" 0;height:100%;padding:4px 6px;text-rendering:optimizeLegibility;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
-.ssh-terminal .xterm-screen{font-family:"Caskaydia Cove Nerd Font Mono","Cascadia Mono","SF Mono",Consolas,"Liberation Mono",monospace!important;font-variant-ligatures:none}
+.ssh-terminal .xterm-screen{font-variant-ligatures:none}
 .ssh-terminal .xterm-viewport{background:transparent!important;scrollbar-color:rgba(255,255,255,.3) transparent;scrollbar-width:thin}
 .ssh-terminal .xterm-viewport::-webkit-scrollbar{background:transparent;width:8px}
 .ssh-terminal .xterm-viewport::-webkit-scrollbar-thumb{background:rgba(255,255,255,.3);border-radius:4px}
 .ssh-terminal .xterm-viewport::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.5)}
 .ssh-terminal .xterm-cursor-layer{z-index:4}
-.ssh-terminal .xterm.focus .xterm-cursor.xterm-cursor-block{background:#fafafa!important;color:#0c0d0b!important}
-.ssh-terminal .xterm .xterm-cursor.xterm-cursor-block{outline:1px solid rgba(250,250,250,.9)}
 .ssh-terminal .xterm .xterm-cursor.xterm-cursor-blink{animation:remote-terminal-cursor-blink 1s steps(2,start) infinite!important}
 .ssh-terminal .xterm.xterm-cursor-pointer,.ssh-terminal .xterm .xterm-cursor-pointer,.ssh-terminal.is-link-hover .xterm{cursor:pointer}
 @keyframes remote-terminal-cursor-blink{0%,48%{opacity:1}49%,100%{opacity:0}}
@@ -78,28 +76,28 @@
 .rdp-log-panel{background:rgba(5,7,6,.92);border:1px solid var(--line);border-radius:10px;bottom:18px;left:50%;max-width:min(760px,calc(100% - 32px));overflow:hidden;position:absolute;transform:translateX(-50%);width:760px}
 .rdp-log-panel header{border-bottom:1px solid var(--line);font-size:12px;font-weight:800;padding:8px 10px}
 .rdp-log-panel pre{color:#d1fae5;font-size:12px;line-height:1.45;margin:0;max-height:170px;overflow:auto;padding:10px;white-space:pre-wrap}
-.remote-settings-shell{display:grid;gap:12px;max-width:980px}
-.remote-settings-tabs{align-items:center;border-bottom:1px solid #30342d;display:flex;gap:8px;overflow-x:auto;padding:0 0 8px}
-.remote-settings-tabs a{align-items:center;border-bottom:2px solid transparent;color:#aeb7a5;display:inline-flex;font-size:12px;font-weight:900;min-height:34px;padding:8px 10px;text-transform:uppercase;white-space:nowrap}
-.remote-settings-tabs a:hover,.remote-settings-tabs a.active{border-bottom-color:#f39044;color:#fff}
-.remote-settings-card{background:#151712;border:1px solid #30342d;display:grid}
-.remote-settings-card header{align-items:center;border-bottom:1px solid #30342d;color:#b9c3b0;display:flex;font-size:12px;font-weight:900;letter-spacing:.14em;min-height:42px;padding:10px 14px;text-transform:uppercase}
+.remote-settings-shell{display:grid;gap:14px;max-width:1040px}
+.remote-settings-tabs{align-items:center;border-bottom:1px solid var(--line);display:flex;gap:8px;overflow-x:auto;padding:0 0 8px}
+.remote-settings-tabs a{align-items:center;background:rgba(15,23,42,.42);border:1px solid var(--line);border-radius:10px;color:var(--muted);display:inline-flex;font-size:12px;font-weight:850;min-height:34px;padding:8px 13px;white-space:nowrap}
+.remote-settings-tabs a:hover,.remote-settings-tabs a.active{background:rgba(56,189,248,.12);border-color:rgba(56,189,248,.7);box-shadow:inset 0 -2px 0 rgba(56,189,248,.75);color:var(--text)}
+.remote-settings-card{background:rgba(17,24,39,.82);border:1px solid var(--line);border-radius:12px;box-shadow:0 12px 36px rgba(0,0,0,.18);display:grid;overflow:hidden}
+.remote-settings-card header{align-items:center;border-bottom:1px solid var(--line);color:var(--text);display:flex;font-size:13px;font-weight:900;min-height:42px;padding:10px 14px}
 .remote-settings-card>header+*,.remote-settings-card>.remote-setting-row,.remote-settings-card>.remote-settings-grid{margin:0 14px}
 .remote-settings-card>.remote-setting-row:last-child,.remote-settings-card>.remote-settings-grid:last-child{margin-bottom:10px}
 .remote-settings-grid{display:grid;gap:14px;padding:14px 0}
 .remote-settings-grid.two{grid-template-columns:repeat(2,minmax(0,1fr))}
-.remote-settings-grid label{color:#cbd5e1;font-size:11px;font-weight:900;letter-spacing:.08em;text-transform:uppercase}
-.remote-settings-grid label span{color:#9fb6d8;float:right;font-size:11px;font-weight:700;letter-spacing:0;text-transform:none}
-.remote-settings-grid input,.remote-settings-grid select{background:#080a08;border-color:#30342d;border-radius:0;color:#fff;font-family:"Caskaydia Cove Nerd Font Mono",Consolas,monospace;font-size:12px}
-.remote-settings-grid input[type=range]{accent-color:#f39044;min-height:22px;padding:0}
-.remote-setting-row{align-items:center;border-bottom:1px solid #30342d;display:flex;gap:16px;justify-content:space-between;padding:14px 0}
+.remote-settings-grid label{color:var(--text);font-size:13px;font-weight:800;letter-spacing:0;text-transform:none}
+.remote-settings-grid label span{color:var(--muted);float:right;font-size:12px;font-weight:700}
+.remote-settings-grid input,.remote-settings-grid select{background:#0b1220;border-color:var(--line);border-radius:8px;color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Arial;font-size:13px}
+.remote-settings-grid input[type=range]{accent-color:var(--accent);min-height:22px;padding:0}
+.remote-setting-row{align-items:center;border-bottom:1px solid var(--line);display:flex;gap:16px;justify-content:space-between;padding:14px 0}
 .remote-setting-row:last-child{border-bottom:0}
-.remote-setting-row strong{color:#fff;display:block;font-size:14px;font-weight:900;line-height:1.2}
-.remote-setting-row small{color:#b6c6d8;display:block;font-size:12px;margin-top:3px}
-.remote-switch{appearance:none;background:#080a08;border:2px solid #363b34;border-radius:0;height:20px;min-height:20px;padding:0;position:relative;width:38px}
-.remote-switch:before{background:#020403;content:"";height:10px;left:4px;position:absolute;top:3px;width:12px}
-.remote-switch:checked{background:#f39044;border-color:#f39044}
-.remote-switch:checked:before{left:18px}
+.remote-setting-row strong{color:var(--text);display:block;font-size:14px;font-weight:900;line-height:1.2}
+.remote-setting-row small{color:var(--muted);display:block;font-size:12px;margin-top:3px}
+.remote-switch{appearance:none;background:#0b1220;border:1px solid var(--line);border-radius:999px;height:22px;min-height:22px;padding:0;position:relative;width:42px}
+.remote-switch:before{background:var(--muted);border-radius:50%;content:"";height:16px;left:3px;position:absolute;top:2px;transition:left .15s ease,background .15s ease;width:16px}
+.remote-switch:checked{background:rgba(56,189,248,.18);border-color:var(--accent)}
+.remote-switch:checked:before{background:var(--accent);left:21px}
 .terminal-preview{background:#011627;border:1px solid #24445f;color:#d6deeb;font-family:"Caskaydia Cove Nerd Font Mono",Consolas,monospace;font-size:14px;font-weight:700;line-height:1.1;margin:14px;padding:14px}
 .term-green{color:#22da6e}.term-blue{color:#82aaff}.term-cyan{color:#21c7a8}.term-white{color:#fff}.term-cursor{animation:remote-terminal-cursor-blink 1s steps(2,start) infinite;background:#d6deeb;display:inline-block;height:1em;vertical-align:-.12em;width:.55em}
 .remote-settings-actions{display:flex;justify-content:flex-end;padding:6px 0 24px}

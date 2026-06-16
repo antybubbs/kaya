@@ -48,7 +48,7 @@
           <select name="override_terminal_theme">
             {% set current = remote_terminal_overrides.get('terminal_theme', '') %}
             <option value="">Global default</option>
-            {% for value, label in [('night-owl','Night Owl'),('dracula','Dracula'),('nord','Nord'),('one-dark','One Dark'),('gruvbox','Gruvbox'),('solarized-dark','Solarized Dark')] %}
+            {% for value, label in [('termix','Termix Default'),('termixDark','Termix Dark'),('termixLight','Termix Light'),('nightOwl','Night Owl'),('dracula','Dracula'),('monokai','Monokai'),('nord','Nord'),('oneDark','One Dark'),('tokyoNight','Tokyo Night'),('gruvboxDark','Gruvbox Dark'),('solarizedDark','Solarized Dark'),('catppuccinMocha','Catppuccin Mocha')] %}
             <option value="{{ value }}" {% if current == value %}selected{% endif %}>{{ label }}</option>
             {% endfor %}
           </select>

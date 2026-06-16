@@ -2,8 +2,8 @@
 {% if remote.protocol == 'ssh' %}
   {% set terminal_settings = remote_settings.terminal if remote_settings is defined else {} %}
   <div class="ssh-session" data-ssh-session data-ws-url="{{ request.scope.get('root_path', '') }}/remote-manager/{{ remote.id }}/ssh/ws"
-    data-terminal-theme="{{ terminal_settings.get('terminal_theme', 'night-owl') }}"
-    data-terminal-font-family="{{ terminal_settings.get('terminal_font_family', 'Caskaydia Cove Nerd Font Mono, Cascadia Mono, Consolas, ui-monospace, SFMono-Regular, Menlo, monospace') }}"
+    data-terminal-theme="{{ terminal_settings.get('terminal_theme', 'termix') }}"
+    data-terminal-font-family="{{ terminal_settings.get('terminal_font_family', 'Caskaydia Cove Nerd Font Mono') }}"
     data-terminal-font-size="{{ terminal_settings.get('terminal_font_size', '14') }}"
     data-terminal-cursor-style="{{ terminal_settings.get('terminal_cursor_style', 'bar') }}"
     data-terminal-letter-spacing="{{ terminal_settings.get('terminal_letter_spacing', '0') }}"

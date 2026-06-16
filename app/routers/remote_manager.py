@@ -31,8 +31,8 @@ SETTINGS = {
     "guacamole_enabled": "0",
     "guacd_host": "",
     "guacd_port": "4822",
-    "terminal_theme": "night-owl",
-    "terminal_font_family": "Caskaydia Cove Nerd Font Mono, Cascadia Mono, Consolas, ui-monospace, SFMono-Regular, Menlo, monospace",
+    "terminal_theme": "termix",
+    "terminal_font_family": "Caskaydia Cove Nerd Font Mono",
     "terminal_font_size": "14",
     "terminal_cursor_style": "bar",
     "terminal_letter_spacing": "0",
@@ -165,7 +165,14 @@ def clean_global_setting(key: str, value: str) -> str:
     if key == "terminal_line_height":
         return clean_float_text(value, 1, 0.8, 2)
     if key == "terminal_theme":
-        return clean_choice(value, {"night-owl", "dracula", "nord", "one-dark", "gruvbox", "solarized-dark"}, SETTINGS[key])
+        legacy_themes = {
+            "night-owl": "nightOwl",
+            "one-dark": "oneDark",
+            "gruvbox": "gruvboxDark",
+            "solarized-dark": "solarizedDark",
+        }
+        value = legacy_themes.get(value, value)
+        return clean_choice(value, {"termix", "termixDark", "termixLight", "dracula", "monokai", "nord", "gruvboxDark", "gruvboxLight", "solarizedDark", "solarizedLight", "oneDark", "tokyoNight", "ayuDark", "materialTheme", "palenight", "oceanicNext", "nightOwl", "synthwave84", "cobalt2", "snazzy", "atomOneDark", "catppuccinMocha"}, SETTINGS[key])
     if key == "terminal_cursor_style":
         return clean_choice(value, {"bar", "block", "underline"}, SETTINGS[key])
     if key == "terminal_bell_style":
@@ -197,8 +204,8 @@ def encode_settings_blob(values: dict[str, str]) -> str | None:
 def effective_remote_settings(row: RemoteAccess, global_settings: dict[str, str]) -> dict[str, dict[str, str]]:
     terminal = {key: global_settings.get(key, SETTINGS[key]) for key in TERMINAL_SETTING_KEYS}
     rdp = {key: global_settings.get(key, SETTINGS[key]) for key in RDP_SETTING_KEYS}
-    terminal.update({key: value for key, value in decode_settings_blob(row.terminal_settings).items() if key in terminal})
-    rdp.update({key: value for key, value in decode_settings_blob(row.rdp_settings).items() if key in rdp})
+    terminal.update({key: clean_global_setting(key, value) for key, value in decode_settings_blob(row.terminal_settings).items() if key in terminal})
+    rdp.update({key: clean_global_setting(key, value) for key, value in decode_settings_blob(row.rdp_settings).items() if key in rdp})
     return {"terminal": terminal, "rdp": rdp}
 
 
@@ -219,6 +226,8 @@ def settings_map(db: Session) -> dict[str, str]:
         values["guacd_host"] = env_guacd_host
     if env_guacd_port:
         values["guacd_port"] = str(env_guacd_port)
+    for key in TERMINAL_SETTING_KEYS + RDP_SETTING_KEYS:
+        values[key] = clean_global_setting(key, values.get(key, SETTINGS[key]))
     return values
 
 

@@ -124,12 +124,14 @@ def save_remote_settings(db: Session, record: IPAddress, enabled: bool, display_
 
 
 def remote_settings_context(remote: RemoteAccess | None) -> dict:
+    terminal_overrides = decode_settings_blob(remote.terminal_settings if remote else None)
+    rdp_overrides = decode_settings_blob(remote.rdp_settings if remote else None)
     return {
         "remote_terminal_setting_keys": TERMINAL_SETTING_KEYS,
         "remote_rdp_setting_keys": RDP_SETTING_KEYS,
         "remote_defaults": REMOTE_MANAGER_DEFAULTS,
-        "remote_terminal_overrides": decode_settings_blob(remote.terminal_settings if remote else None),
-        "remote_rdp_overrides": decode_settings_blob(remote.rdp_settings if remote else None),
+        "remote_terminal_overrides": {key: clean_global_setting(key, value) for key, value in terminal_overrides.items()},
+        "remote_rdp_overrides": {key: clean_global_setting(key, value) for key, value in rdp_overrides.items()},
     }
 
 
