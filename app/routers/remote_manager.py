@@ -218,6 +218,19 @@ def fingerprint_for(host_key) -> str:
     return host_key.get_fingerprint("sha256")
 
 
+def colour_ssh_prompt(data: str) -> str:
+    if not data or "\x1b[" in data:
+        return data
+    import re
+
+    prompt = re.compile(r"([A-Za-z_][A-Za-z0-9_.-]*@[A-Za-z0-9_.-]+)(:)(~|/[^\s#$]*)([$#])(?=\s|$)")
+
+    def replace(match: re.Match) -> str:
+        return f"\x1b[92m{match.group(1)}\x1b[0m{match.group(2)}\x1b[94m{match.group(3)}\x1b[0m{match.group(4)}"
+
+    return prompt.sub(replace, data)
+
+
 def settings_map(db: Session) -> dict[str, str]:
     values = SETTINGS.copy()
     for row in db.query(RemoteManagerSetting).all():
@@ -641,7 +654,7 @@ async def ssh_websocket(websocket: WebSocket, remote_id: int):
                     data = await process.stdout.read(4096)
                     if not data:
                         break
-                    await websocket.send_json({"type": "data", "data": data})
+                    await websocket.send_json({"type": "data", "data": colour_ssh_prompt(data)})
             except Exception:
                 pass
 
