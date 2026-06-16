@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% block extra_head %}<link rel="stylesheet" href="/static/css/remote.css?v={{ asset_version }}">{% endblock %}
 {% block content %}
 <div class="topbar"><div><h1>{% if record %}Edit IP Address{% else %}Add IP Address{% endif %}</h1></div></div>
 {% if error %}<div class="alert">{{ error }}</div>{% endif %}
@@ -40,6 +41,83 @@
       <label>Port<input name="remote_port" type="number" min="1" max="65535" value="{{ remote.port if remote else 22 }}"></label>
       <label>Username<input name="remote_username" autocomplete="username" value="{{ remote.username if remote and remote.username else '' }}"></label>
     </div>
+    <details class="remote-overrides">
+      <summary>Connection display overrides</summary>
+      <div class="remote-overrides-grid">
+        <label>Terminal theme
+          <select name="override_terminal_theme">
+            {% set current = remote_terminal_overrides.get('terminal_theme', '') %}
+            <option value="">Global default</option>
+            {% for value, label in [('night-owl','Night Owl'),('dracula','Dracula'),('nord','Nord'),('one-dark','One Dark'),('gruvbox','Gruvbox'),('solarized-dark','Solarized Dark')] %}
+            <option value="{{ value }}" {% if current == value %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>Font size
+          <input name="override_terminal_font_size" type="number" min="8" max="28" placeholder="Global {{ remote_defaults.terminal_font_size }}" value="{{ remote_terminal_overrides.get('terminal_font_size', '') }}">
+        </label>
+        <label>Cursor style
+          {% set current = remote_terminal_overrides.get('terminal_cursor_style', '') %}
+          <select name="override_terminal_cursor_style">
+            <option value="">Global default</option>
+            <option value="bar" {% if current == 'bar' %}selected{% endif %}>Bar</option>
+            <option value="block" {% if current == 'block' %}selected{% endif %}>Block</option>
+            <option value="underline" {% if current == 'underline' %}selected{% endif %}>Underline</option>
+          </select>
+        </label>
+        <label>Cursor blinking
+          {% set current = remote_terminal_overrides.get('terminal_cursor_blink', '') %}
+          <select name="override_terminal_cursor_blink">
+            <option value="">Global default</option>
+            <option value="1" {% if current == '1' %}selected{% endif %}>On</option>
+            <option value="0" {% if current == '0' %}selected{% endif %}>Off</option>
+          </select>
+        </label>
+        <label>Scrollback buffer
+          <input name="override_terminal_scrollback" type="number" min="1000" max="100000" step="1000" placeholder="Global {{ remote_defaults.terminal_scrollback }}" value="{{ remote_terminal_overrides.get('terminal_scrollback', '') }}">
+        </label>
+        <label>Backspace mode
+          {% set current = remote_terminal_overrides.get('terminal_backspace_mode', '') %}
+          <select name="override_terminal_backspace_mode">
+            <option value="">Global default</option>
+            <option value="normal" {% if current == 'normal' %}selected{% endif %}>Normal (DEL)</option>
+            <option value="bs" {% if current == 'bs' %}selected{% endif %}>Backspace (BS)</option>
+          </select>
+        </label>
+        <label>RDP wallpaper
+          {% set current = remote_rdp_overrides.get('rdp_enable_wallpaper', '') %}
+          <select name="override_rdp_enable_wallpaper">
+            <option value="">Global default</option>
+            <option value="1" {% if current == '1' %}selected{% endif %}>On</option>
+            <option value="0" {% if current == '0' %}selected{% endif %}>Off</option>
+          </select>
+        </label>
+        <label>RDP font smoothing
+          {% set current = remote_rdp_overrides.get('rdp_enable_font_smoothing', '') %}
+          <select name="override_rdp_enable_font_smoothing">
+            <option value="">Global default</option>
+            <option value="1" {% if current == '1' %}selected{% endif %}>On</option>
+            <option value="0" {% if current == '0' %}selected{% endif %}>Off</option>
+          </select>
+        </label>
+        <label>RDP GFX
+          {% set current = remote_rdp_overrides.get('rdp_enable_gfx', '') %}
+          <select name="override_rdp_enable_gfx">
+            <option value="">Global default</option>
+            <option value="1" {% if current == '1' %}selected{% endif %}>On</option>
+            <option value="0" {% if current == '0' %}selected{% endif %}>Off</option>
+          </select>
+        </label>
+        <label>RDP audio
+          {% set current = remote_rdp_overrides.get('rdp_disable_audio', '') %}
+          <select name="override_rdp_disable_audio">
+            <option value="">Global default</option>
+            <option value="0" {% if current == '0' %}selected{% endif %}>Enabled</option>
+            <option value="1" {% if current == '1' %}selected{% endif %}>Disabled</option>
+          </select>
+        </label>
+      </div>
+    </details>
   </div>
   <label class="wide">Notes<textarea name="notes">{{ record.notes if record and record.notes else '' }}</textarea></label>
   <div class="wide"><h2>Custom Fields</h2></div>

@@ -156,13 +156,36 @@
     save();
   };
 
+  const closeMenus = (except = null) => {
+    root.querySelectorAll(".remote-connect-menu[open]").forEach((menu) => {
+      if (menu !== except) menu.open = false;
+    });
+  };
+
+  root.addEventListener("toggle", (event) => {
+    const menu = event.target.closest(".remote-connect-menu");
+    if (menu && menu.open) closeMenus(menu);
+  }, true);
+
   root.addEventListener("click", (event) => {
     const link = event.target.closest("[data-remote-open]");
-    if (!link) return;
+    if (!link) {
+      if (!event.target.closest(".remote-connect-menu")) closeMenus();
+      return;
+    }
     const card = link.closest(".remote-host-card");
     if (!card) return;
     event.preventDefault();
+    closeMenus();
     openTab(hostFromCard(card));
+  });
+
+  document.addEventListener("click", (event) => {
+    if (!root.contains(event.target)) closeMenus();
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeMenus();
   });
 
   const restored = safeParse(window.sessionStorage.getItem(storageKey));

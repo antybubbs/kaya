@@ -134,4 +134,23 @@
     applyVisibility(table, hiddenColumns);
     applyFilters(table, filters);
   });
+
+  const closeTableSettings = (except = null) => {
+    document.querySelectorAll(".table-settings[open]").forEach((menu) => {
+      if (menu !== except) menu.open = false;
+    });
+  };
+
+  document.addEventListener("toggle", (event) => {
+    const menu = event.target.closest(".table-settings");
+    if (menu && menu.open) closeTableSettings(menu);
+  }, true);
+
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest(".table-settings")) closeTableSettings();
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeTableSettings();
+  });
 })();

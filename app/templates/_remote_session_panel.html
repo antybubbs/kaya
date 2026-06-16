@@ -1,6 +1,18 @@
 <section class="remote-session-frame">
-  {% if remote.protocol == 'ssh' %}
-  <div class="ssh-session" data-ssh-session data-ws-url="{{ request.scope.get('root_path', '') }}/remote-manager/{{ remote.id }}/ssh/ws">
+{% if remote.protocol == 'ssh' %}
+  {% set terminal_settings = remote_settings.terminal if remote_settings is defined else {} %}
+  <div class="ssh-session" data-ssh-session data-ws-url="{{ request.scope.get('root_path', '') }}/remote-manager/{{ remote.id }}/ssh/ws"
+    data-terminal-theme="{{ terminal_settings.get('terminal_theme', 'night-owl') }}"
+    data-terminal-font-family="{{ terminal_settings.get('terminal_font_family', 'Caskaydia Cove Nerd Font Mono, Cascadia Mono, Consolas, ui-monospace, SFMono-Regular, Menlo, monospace') }}"
+    data-terminal-font-size="{{ terminal_settings.get('terminal_font_size', '14') }}"
+    data-terminal-cursor-style="{{ terminal_settings.get('terminal_cursor_style', 'bar') }}"
+    data-terminal-letter-spacing="{{ terminal_settings.get('terminal_letter_spacing', '0') }}"
+    data-terminal-line-height="{{ terminal_settings.get('terminal_line_height', '1') }}"
+    data-terminal-bell-style="{{ terminal_settings.get('terminal_bell_style', 'none') }}"
+    data-terminal-backspace-mode="{{ terminal_settings.get('terminal_backspace_mode', 'normal') }}"
+    data-terminal-cursor-blink="{{ terminal_settings.get('terminal_cursor_blink', '1') }}"
+    data-terminal-right-click-selects-word="{{ terminal_settings.get('terminal_right_click_selects_word', '0') }}"
+    data-terminal-scrollback="{{ terminal_settings.get('terminal_scrollback', '10000') }}">
     {% if not remote.username %}
     <div class="alert">Add a username to this remote host before starting an SSH session.</div>
     {% else %}

@@ -1,25 +1,142 @@
 {% extends "base.html" %}
 {% block extra_head %}<link rel="stylesheet" href="/static/css/remote.css?v={{ asset_version }}">{% endblock %}
 {% block content %}
+{% macro switch(name, title, description) -%}
+<label class="remote-setting-row">
+  <span><strong>{{ title }}</strong><small>{{ description }}</small></span>
+  <input class="remote-switch" name="{{ name }}" type="checkbox" value="1" {% if settings.get(name) == '1' %}checked{% endif %}>
+</label>
+{%- endmacro %}
+
 <div class="topbar">
   <div>
     <h1>Remote Manager Settings</h1>
-    <p class="muted">Configure remote desktop integration. Passwords are never stored by HomeLab.</p>
+    <p class="muted">Global defaults for RDP and SSH sessions. Per-host overrides live on each IP record.</p>
   </div>
 </div>
 
 {% if message %}<div class="success">{{ message }}</div>{% endif %}
 
-<form class="panel stack compact-form" method="post" action="/remote-manager/settings">
+<form class="remote-settings-shell" method="post" action="/remote-manager/settings">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <label class="checkbox-label"><input name="guacamole_enabled" type="checkbox" value="1" {% if settings.guacamole_enabled == '1' %}checked{% endif %}> Enable Guacamole for RDP</label>
-  <label>GUACD host
-    <input name="guacd_host" value="{{ settings.guacd_host }}" placeholder="192.168.1.91">
-  </label>
-  <label>GUACD port
-    <input name="guacd_port" type="number" min="1" max="65535" value="{{ settings.guacd_port or '4822' }}">
-  </label>
-  <p class="muted">Keep guacd on your private network and expose HomeLab through your normal proxy only. Remote Manager stores usernames and connection settings, but not remote passwords.</p>
-  <button type="submit">Save settings</button>
+
+  <nav class="remote-settings-tabs" aria-label="Remote settings sections">
+    <a href="#general">General</a>
+    <a href="#terminal" class="active">Terminal</a>
+    <a href="#rdp">RDP</a>
+    <a href="#redirection">Redirection</a>
+  </nav>
+
+  <section class="remote-settings-card" id="general">
+    <header><span>General</span></header>
+    <div class="remote-settings-grid">
+      {{ switch('guacamole_enabled', 'Enable Guacamole for RDP', 'Use the browser RDP display pipeline') }}
+      <label>GUACD host
+        <input name="guacd_host" value="{{ settings.guacd_host }}" placeholder="192.168.1.91">
+      </label>
+      <label>GUACD port
+        <input name="guacd_port" type="number" min="1" max="65535" value="{{ settings.guacd_port or '4822' }}">
+      </label>
+    </div>
+  </section>
+
+  <section class="remote-settings-card" id="terminal">
+    <header><span>Terminal Appearance</span></header>
+    <div class="terminal-preview">
+      <div><span class="term-green">deploy@web-01</span>:<span class="term-blue">~</span>$ ls -la</div>
+      <div>total 48</div>
+      <div><span class="term-cyan">drwxr-xr-x</span> 5 deploy deploy 4096 May 1 09:12 .</div>
+      <div><span class="term-cyan">drwxr-xr-x</span> 3 root root 4096 Apr 15 18:44 ..</div>
+      <div>-rw-r--r-- 1 deploy deploy 220 Apr 15 18:44 <span class="term-white">.bash_logout</span></div>
+      <div><span class="term-green">-rwxr-xr-x</span> 1 deploy deploy 8192 May 1 08:55 deploy.sh</div>
+      <div><span class="term-green">deploy@web-01</span>:<span class="term-blue">~</span>$ <span class="term-cursor"></span></div>
+    </div>
+    <div class="remote-settings-grid two">
+      <label>Color theme
+        <select name="terminal_theme">
+          {% for value, label in [('night-owl','Night Owl'),('dracula','Dracula'),('nord','Nord'),('one-dark','One Dark'),('gruvbox','Gruvbox'),('solarized-dark','Solarized Dark')] %}
+          <option value="{{ value }}" {% if settings.terminal_theme == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Font family
+        <select name="terminal_font_family">
+          {% for value, label in [('Caskaydia Cove Nerd Font Mono, Cascadia Mono, Consolas, ui-monospace, SFMono-Regular, Menlo, monospace','Caskaydia Cove Nerd Font Mono'),('Cascadia Mono, Consolas, ui-monospace, SFMono-Regular, Menlo, monospace','Cascadia Mono'),('Consolas, ui-monospace, SFMono-Regular, Menlo, monospace','Consolas'),('ui-monospace, SFMono-Regular, Menlo, monospace','System Mono')] %}
+          <option value="{{ value }}" {% if settings.terminal_font_family == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Font size <span>{{ settings.terminal_font_size }}px</span>
+        <input name="terminal_font_size" type="range" min="8" max="28" value="{{ settings.terminal_font_size }}">
+      </label>
+      <label>Cursor style
+        <select name="terminal_cursor_style">
+          <option value="bar" {% if settings.terminal_cursor_style == 'bar' %}selected{% endif %}>Bar</option>
+          <option value="block" {% if settings.terminal_cursor_style == 'block' %}selected{% endif %}>Block</option>
+          <option value="underline" {% if settings.terminal_cursor_style == 'underline' %}selected{% endif %}>Underline</option>
+        </select>
+      </label>
+      <label>Letter spacing (px) <span>{{ settings.terminal_letter_spacing }}px</span>
+        <input name="terminal_letter_spacing" type="range" min="0" max="4" value="{{ settings.terminal_letter_spacing }}">
+      </label>
+      <label>Line height <span>{{ settings.terminal_line_height }}</span>
+        <input name="terminal_line_height" type="range" min="0.8" max="2" step="0.1" value="{{ settings.terminal_line_height }}">
+      </label>
+      <label>Bell style
+        <select name="terminal_bell_style">
+          <option value="none" {% if settings.terminal_bell_style == 'none' %}selected{% endif %}>None</option>
+          <option value="sound" {% if settings.terminal_bell_style == 'sound' %}selected{% endif %}>Sound</option>
+          <option value="visual" {% if settings.terminal_bell_style == 'visual' %}selected{% endif %}>Visual</option>
+        </select>
+      </label>
+      <label>Backspace mode
+        <select name="terminal_backspace_mode">
+          <option value="normal" {% if settings.terminal_backspace_mode == 'normal' %}selected{% endif %}>Normal (DEL)</option>
+          <option value="bs" {% if settings.terminal_backspace_mode == 'bs' %}selected{% endif %}>Backspace (BS)</option>
+        </select>
+      </label>
+    </div>
+    {{ switch('terminal_cursor_blink', 'Cursor Blinking', 'Enable blinking animation for the terminal cursor') }}
+    {{ switch('terminal_right_click_selects_word', 'Right-click Selects Word', 'Select the word under cursor on right-click') }}
+  </section>
+
+  <section class="remote-settings-card">
+    <header><span>Behavior & Advanced</span></header>
+    <div class="remote-settings-grid">
+      <label>Scrollback buffer <span>{{ settings.terminal_scrollback }} lines kept in history</span>
+        <input name="terminal_scrollback" type="range" min="1000" max="100000" step="1000" value="{{ settings.terminal_scrollback }}">
+      </label>
+    </div>
+  </section>
+
+  <section class="remote-settings-card" id="rdp">
+    <header><span>Audio Settings</span></header>
+    {{ switch('rdp_disable_audio', 'Disable Audio', 'Mute all audio from the remote session') }}
+    {{ switch('rdp_enable_audio_input', 'Enable Audio Input (Microphone)', 'Forward local microphone to the remote session') }}
+  </section>
+
+  <section class="remote-settings-card">
+    <header><span>RDP Performance</span></header>
+    {{ switch('rdp_enable_wallpaper', 'Wallpaper', 'Show desktop wallpaper') }}
+    {{ switch('rdp_enable_theming', 'Theming', 'Enable visual themes and styles') }}
+    {{ switch('rdp_enable_font_smoothing', 'Font Smoothing', 'Enable ClearType font rendering') }}
+    {{ switch('rdp_enable_full_window_drag', 'Full Window Drag', 'Show window contents while dragging') }}
+    {{ switch('rdp_enable_desktop_composition', 'Desktop Composition', 'Enable desktop composition effects') }}
+    {{ switch('rdp_enable_menu_animations', 'Menu Animations', 'Enable menu fade and slide animations') }}
+    {{ switch('rdp_disable_bitmap_caching', 'Disable Bitmap Caching', 'Turn off bitmap cache') }}
+    {{ switch('rdp_disable_offscreen_caching', 'Disable Offscreen Caching', 'Turn off offscreen cache') }}
+    {{ switch('rdp_disable_glyph_caching', 'Disable Glyph Caching', 'Turn off glyph cache') }}
+    {{ switch('rdp_enable_gfx', 'Enable GFX', 'Use RemoteFX graphics pipeline') }}
+  </section>
+
+  <section class="remote-settings-card" id="redirection">
+    <header><span>Device Redirection</span></header>
+    {{ switch('rdp_enable_printing', 'Enable Printing', 'Redirect local printers to the remote session') }}
+    {{ switch('rdp_enable_drive', 'Enable Drive Redirection', 'Map a local folder as a drive in the remote session') }}
+  </section>
+
+  <div class="remote-settings-actions">
+    <button type="submit">Save settings</button>
+  </div>
 </form>
 {% endblock %}

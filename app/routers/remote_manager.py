@@ -31,7 +31,35 @@ SETTINGS = {
     "guacamole_enabled": "0",
     "guacd_host": "",
     "guacd_port": "4822",
+    "terminal_theme": "night-owl",
+    "terminal_font_family": "Caskaydia Cove Nerd Font Mono, Cascadia Mono, Consolas, ui-monospace, SFMono-Regular, Menlo, monospace",
+    "terminal_font_size": "14",
+    "terminal_cursor_style": "bar",
+    "terminal_letter_spacing": "0",
+    "terminal_line_height": "1",
+    "terminal_bell_style": "none",
+    "terminal_backspace_mode": "normal",
+    "terminal_cursor_blink": "1",
+    "terminal_right_click_selects_word": "0",
+    "terminal_scrollback": "10000",
+    "rdp_disable_audio": "0",
+    "rdp_enable_audio_input": "0",
+    "rdp_enable_wallpaper": "1",
+    "rdp_enable_theming": "0",
+    "rdp_enable_font_smoothing": "1",
+    "rdp_enable_full_window_drag": "0",
+    "rdp_enable_desktop_composition": "0",
+    "rdp_enable_menu_animations": "0",
+    "rdp_disable_bitmap_caching": "0",
+    "rdp_disable_offscreen_caching": "0",
+    "rdp_disable_glyph_caching": "0",
+    "rdp_enable_gfx": "1",
+    "rdp_enable_printing": "0",
+    "rdp_enable_drive": "0",
 }
+TERMINAL_SETTING_KEYS = [key for key in SETTINGS if key.startswith("terminal_")]
+RDP_SETTING_KEYS = [key for key in SETTINGS if key.startswith("rdp_")]
+SETTING_KEYS = set(SETTINGS)
 RDP_TOKEN_TTL_SECONDS = 60
 GUACAMOLE_LITE_URL = "ws://127.0.0.1:30008"
 
@@ -82,6 +110,98 @@ def int_payload(payload: dict, key: str, default: int) -> int:
         return default
 
 
+def clean_bool_text(value: str) -> str:
+    return "1" if str(value) in {"1", "true", "on", "yes"} else "0"
+
+
+def clean_choice(value: str, allowed: set[str], default: str) -> str:
+    value = str(value or "").strip()
+    return value if value in allowed else default
+
+
+def clean_int_text(value: str, default: int, minimum: int, maximum: int) -> str:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return str(clean_dimension(parsed, default, minimum, maximum))
+
+
+def clean_float_text(value: str, default: float, minimum: float, maximum: float) -> str:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = default
+    parsed = max(minimum, min(maximum, parsed))
+    return f"{parsed:g}"
+
+
+def clean_global_setting(key: str, value: str) -> str:
+    if key in {
+        "terminal_cursor_blink",
+        "terminal_right_click_selects_word",
+        "rdp_disable_audio",
+        "rdp_enable_audio_input",
+        "rdp_enable_wallpaper",
+        "rdp_enable_theming",
+        "rdp_enable_font_smoothing",
+        "rdp_enable_full_window_drag",
+        "rdp_enable_desktop_composition",
+        "rdp_enable_menu_animations",
+        "rdp_disable_bitmap_caching",
+        "rdp_disable_offscreen_caching",
+        "rdp_disable_glyph_caching",
+        "rdp_enable_gfx",
+        "rdp_enable_printing",
+        "rdp_enable_drive",
+    }:
+        return clean_bool_text(value)
+    if key == "terminal_font_size":
+        return clean_int_text(value, 14, 8, 28)
+    if key == "terminal_letter_spacing":
+        return clean_int_text(value, 0, 0, 4)
+    if key == "terminal_scrollback":
+        return clean_int_text(value, 10000, 1000, 100000)
+    if key == "terminal_line_height":
+        return clean_float_text(value, 1, 0.8, 2)
+    if key == "terminal_theme":
+        return clean_choice(value, {"night-owl", "dracula", "nord", "one-dark", "gruvbox", "solarized-dark"}, SETTINGS[key])
+    if key == "terminal_cursor_style":
+        return clean_choice(value, {"bar", "block", "underline"}, SETTINGS[key])
+    if key == "terminal_bell_style":
+        return clean_choice(value, {"none", "sound", "visual"}, SETTINGS[key])
+    if key == "terminal_backspace_mode":
+        return clean_choice(value, {"normal", "bs"}, SETTINGS[key])
+    return str(value or "").strip()
+
+
+def decode_settings_blob(value: str | None) -> dict[str, str]:
+    if not value:
+        return {}
+    try:
+        payload = json.loads(value)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return {str(key): str(val) for key, val in payload.items() if val is not None}
+
+
+def encode_settings_blob(values: dict[str, str]) -> str | None:
+    clean_values = {key: value for key, value in values.items() if value != ""}
+    if not clean_values:
+        return None
+    return json.dumps(clean_values, separators=(",", ":"), sort_keys=True)
+
+
+def effective_remote_settings(row: RemoteAccess, global_settings: dict[str, str]) -> dict[str, dict[str, str]]:
+    terminal = {key: global_settings.get(key, SETTINGS[key]) for key in TERMINAL_SETTING_KEYS}
+    rdp = {key: global_settings.get(key, SETTINGS[key]) for key in RDP_SETTING_KEYS}
+    terminal.update({key: value for key, value in decode_settings_blob(row.terminal_settings).items() if key in terminal})
+    rdp.update({key: value for key, value in decode_settings_blob(row.rdp_settings).items() if key in rdp})
+    return {"terminal": terminal, "rdp": rdp}
+
+
 def fingerprint_for(host_key) -> str:
     return host_key.get_fingerprint("sha256")
 
@@ -89,7 +209,7 @@ def fingerprint_for(host_key) -> str:
 def settings_map(db: Session) -> dict[str, str]:
     values = SETTINGS.copy()
     for row in db.query(RemoteManagerSetting).all():
-        if row.key in values:
+        if row.key in SETTING_KEYS:
             values[row.key] = row.value or ""
     app_settings = get_settings()
     env_guacd_host = getattr(app_settings, "guacd_host", "")
@@ -203,7 +323,10 @@ def encrypt_guacamole_token(token_object: dict[str, object]) -> str:
     return base64.b64encode(json.dumps(payload, separators=(",", ":")).encode("utf-8")).decode("ascii")
 
 
-def create_rdp_guacamole_token(row: RemoteAccess, username: str, password: str, width: int, height: int, dpi: int, timezone: str) -> str:
+def create_rdp_guacamole_token(row: RemoteAccess, username: str, password: str, width: int, height: int, dpi: int, timezone: str, rdp_settings: dict[str, str]) -> str:
+    def enabled(key: str) -> bool:
+        return rdp_settings.get(key, SETTINGS[key]) == "1"
+
     return encrypt_guacamole_token(
         {
             "connection": {
@@ -219,11 +342,20 @@ def create_rdp_guacamole_token(row: RemoteAccess, username: str, password: str, 
                     "timezone": timezone,
                     "security": "any",
                     "ignore-cert": True,
-                    "enable-wallpaper": False,
-                    "enable-font-smoothing": True,
-                    "enable-desktop-composition": False,
-                    "disable-audio": False,
-                    "enable-drive": False,
+                    "disable-audio": enabled("rdp_disable_audio"),
+                    "enable-audio-input": enabled("rdp_enable_audio_input"),
+                    "enable-wallpaper": enabled("rdp_enable_wallpaper"),
+                    "enable-theming": enabled("rdp_enable_theming"),
+                    "enable-font-smoothing": enabled("rdp_enable_font_smoothing"),
+                    "enable-full-window-drag": enabled("rdp_enable_full_window_drag"),
+                    "enable-desktop-composition": enabled("rdp_enable_desktop_composition"),
+                    "enable-menu-animations": enabled("rdp_enable_menu_animations"),
+                    "disable-bitmap-caching": enabled("rdp_disable_bitmap_caching"),
+                    "disable-offscreen-caching": enabled("rdp_disable_offscreen_caching"),
+                    "disable-glyph-caching": enabled("rdp_disable_glyph_caching"),
+                    "enable-gfx": enabled("rdp_enable_gfx"),
+                    "enable-printing": enabled("rdp_enable_printing"),
+                    "enable-drive": enabled("rdp_enable_drive"),
                     "resize-method": "display-update",
                 },
             }
@@ -282,11 +414,14 @@ def remote_settings(request: Request, db: Session = Depends(get_db), user=Depend
 
 
 @router.post("/settings")
-def save_remote_settings(request: Request, csrf_token: str = Form(...), guacamole_enabled: str = Form(""), guacd_host: str = Form("", max_length=255), guacd_port: int = Form(4822), db: Session = Depends(get_db), user=Depends(require_admin)):
+async def save_remote_settings(request: Request, csrf_token: str = Form(...), guacamole_enabled: str = Form(""), guacd_host: str = Form("", max_length=255), guacd_port: int = Form(4822), db: Session = Depends(get_db), user=Depends(require_admin)):
     validate_csrf_token(request, csrf_token)
+    form = await request.form()
     set_setting(db, "guacamole_enabled", "1" if guacamole_enabled else "0")
     set_setting(db, "guacd_host", guacd_host.strip())
     set_setting(db, "guacd_port", str(clean_port(guacd_port, "rdp")))
+    for key in TERMINAL_SETTING_KEYS + RDP_SETTING_KEYS:
+        set_setting(db, key, clean_global_setting(key, str(form.get(key, ""))))
     db.commit()
     restart_guacamole_bridge()
     write_audit(db, user, "update", "remote_manager_settings", ip_address=request.client.host if request.client else None, detail="Updated Remote Manager settings")
@@ -298,16 +433,18 @@ def remote_session(request: Request, remote_id: int, db: Session = Depends(get_d
     row = require_remote_session(db, remote_id)
     rows = db.query(RemoteAccess).filter(RemoteAccess.is_enabled == True).options(selectinload(RemoteAccess.ip_address)).order_by(RemoteAccess.protocol.asc(), RemoteAccess.display_name.asc(), RemoteAccess.id.asc()).all()
     settings = settings_map(db)
+    remote_settings = effective_remote_settings(row, settings)
     title = remote_label(row)
-    return templates.TemplateResponse(request, "remote_session.html", {"user": user, "remote": row, "rows": rows, "remote_label": title, "remote_label_fn": remote_label, "settings": settings, **csrf_context(request)})
+    return templates.TemplateResponse(request, "remote_session.html", {"user": user, "remote": row, "rows": rows, "remote_label": title, "remote_label_fn": remote_label, "settings": settings, "remote_settings": remote_settings, **csrf_context(request)})
 
 
 @router.get("/{remote_id}/panel")
 def remote_session_panel(request: Request, remote_id: int, db: Session = Depends(get_db), user=Depends(require_user)):
     row = require_remote_session(db, remote_id)
     settings = settings_map(db)
+    remote_settings = effective_remote_settings(row, settings)
     title = remote_label(row)
-    return templates.TemplateResponse(request, "remote_session_panel.html", {"user": user, "remote": row, "remote_label": title, "settings": settings, **csrf_context(request)})
+    return templates.TemplateResponse(request, "remote_session_panel.html", {"user": user, "remote": row, "remote_label": title, "settings": settings, "remote_settings": remote_settings, **csrf_context(request)})
 
 
 @router.post("/{remote_id}/rdp/check")
@@ -361,6 +498,7 @@ async def rdp_start(request: Request, remote_id: int, db: Session = Depends(get_
     if not username or not password:
         return JSONResponse({"ok": False, "logs": ["Username and password are required for RDP."]}, status_code=400)
     settings = settings_map(db)
+    remote_settings = effective_remote_settings(row, settings)
     logs = [f"Preparing RDP session for {row.ip_address.address}:{row.port}."]
     if settings.get("guacamole_enabled") != "1" or not settings.get("guacd_host", "").strip():
         logs.append("Guacamole is not enabled or guacd is not configured.")
@@ -371,7 +509,7 @@ async def rdp_start(request: Request, remote_id: int, db: Session = Depends(get_
     height = clean_dimension(int_payload(payload, "height", 720), 720, 480, 4320)
     dpi = clean_dimension(int_payload(payload, "dpi", 96), 96, 72, 240)
     timezone = str(payload.get("timezone", ""))[:80]
-    token = create_rdp_guacamole_token(row, username, password, width, height, dpi, timezone)
+    token = create_rdp_guacamole_token(row, username, password, width, height, dpi, timezone, remote_settings["rdp"])
     now = time.time()
     rdp_tokens[token] = RDPSessionToken(
         remote_id=row.id,
