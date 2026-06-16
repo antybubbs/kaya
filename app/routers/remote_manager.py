@@ -2,7 +2,6 @@ import asyncio
 import base64
 import hashlib
 import json
-import re
 import secrets
 import time
 from dataclasses import dataclass
@@ -64,23 +63,6 @@ RDP_SETTING_KEYS = [key for key in SETTINGS if key.startswith("rdp_")]
 SETTING_KEYS = set(SETTINGS)
 RDP_TOKEN_TTL_SECONDS = 60
 GUACAMOLE_LITE_URL = "ws://127.0.0.1:30008"
-ANSI_RESET = "\x1b[0m"
-ANSI_GREEN = "\x1b[92m"
-ANSI_BLUE = "\x1b[94m"
-ANSI_MAGENTA = "\x1b[95m"
-ANSI_YELLOW = "\x1b[93m"
-ANSI_RED = "\x1b[91m"
-ANSI_WHITE = "\x1b[97m"
-ANSI_UNDERLINE_BLUE = "\x1b[94;4m"
-ANSI_SEQUENCE_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-9;?>=!]*[@-~])")
-PROMPT_RE = re.compile(r"(?P<userhost>[A-Za-z_][A-Za-z0-9_.-]*@[A-Za-z0-9_.-]+)(?P<colon>:)(?P<path>~|/[^\s#$]*)(?P<marker>[$#])")
-IPV4_RE = re.compile(r"\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?::\d{1,5})?\b")
-URL_RE = re.compile(r"https?://[^\s\])}]+")
-SUCCESS_RE = re.compile(r"\b(SUCCESS|OK|PASS(?:ED)?|COMPLETE(?:D)?|connected|active|started|running|pulled|up|UP|FULL)\b|[\u2713\u2714]", re.IGNORECASE)
-WARN_RE = re.compile(r"\b(WARN(?:ING)?|ALERT|restart required)\b|\[WARN(?:ING)?\]", re.IGNORECASE)
-ERROR_RE = re.compile(r"\b(ERROR|FATAL|CRITICAL|FAIL(?:ED)?|denied|invalid|DENIED)\b|\[ERROR\]", re.IGNORECASE)
-COMMAND_RE = re.compile(r"\b(docker|compose|sudo|apt|apt-get|ls|cd|cat|nano|vim|systemctl|journalctl|ssh)\b")
-PATH_RE = re.compile(r"(?P<prefix>^|\s)(?P<path>(?:~|/[A-Za-z0-9_.@-]+)(?:/[A-Za-z0-9_.@-]+)+)")
 
 
 @dataclass
@@ -336,101 +318,6 @@ async def read_guac_instruction(reader: asyncio.StreamReader) -> tuple[str, list
 def guacamole_key() -> bytes:
     app_settings = get_settings()
     return hashlib.sha256(f"{app_settings.secret_key}_guacamole".encode("utf-8")).digest()
-
-
-def color_wrap(value: str, code: str) -> str:
-    return f"{code}{value}{ANSI_RESET}"
-
-
-def color_prompt(match: re.Match[str]) -> str:
-    userhost = color_wrap(match.group("userhost"), ANSI_GREEN)
-    path = color_wrap(match.group("path"), ANSI_BLUE)
-    return f"{userhost}{match.group('colon')}{path}{match.group('marker')}"
-
-
-def color_path(match: re.Match[str]) -> str:
-    return f"{match.group('prefix')}{color_wrap(match.group('path'), ANSI_BLUE)}"
-
-
-def highlight_ssh_plain_text(text: str) -> str:
-    if not text.strip() or len(text) > 5000:
-        return text
-    replacements: list[tuple[int, int, str, int]] = []
-    patterns: list[tuple[re.Pattern[str], str | None, int]] = [
-        (PROMPT_RE, None, 100),
-        (IPV4_RE, ANSI_MAGENTA, 90),
-        (ERROR_RE, ANSI_RED, 80),
-        (WARN_RE, ANSI_YELLOW, 75),
-        (SUCCESS_RE, ANSI_GREEN, 70),
-        (URL_RE, ANSI_UNDERLINE_BLUE, 65),
-        (PATH_RE, None, 55),
-        (COMMAND_RE, ANSI_WHITE, 45),
-    ]
-    for pattern, color, priority in patterns:
-        for match in pattern.finditer(text):
-            if pattern is PROMPT_RE:
-                replacement = color_prompt(match)
-            elif pattern is PATH_RE:
-                replacement = color_path(match)
-            else:
-                replacement = color_wrap(match.group(0), color or ANSI_WHITE)
-            replacements.append((match.start(), match.end(), replacement, priority))
-    if not replacements:
-        return text
-    replacements.sort(key=lambda item: (-item[3], item[0]))
-    used: list[tuple[int, int]] = []
-    final: list[tuple[int, int, str, int]] = []
-    for start, end, replacement, priority in replacements:
-        if any(start < used_end and end > used_start for used_start, used_end in used):
-            continue
-        used.append((start, end))
-        final.append((start, end, replacement, priority))
-    result = text
-    for start, end, replacement, _priority in sorted(final, key=lambda item: item[0], reverse=True):
-        result = result[:start] + replacement + result[end:]
-    return result
-
-
-def highlight_ssh_output(text: str) -> str:
-    if not text or not text.strip():
-        return text
-    parts: list[str] = []
-    index = 0
-    for match in ANSI_SEQUENCE_RE.finditer(text):
-        if match.start() > index:
-            parts.append(highlight_ssh_plain_text(text[index:match.start()]))
-        parts.append(match.group(0))
-        index = match.end()
-    if index < len(text):
-        parts.append(highlight_ssh_plain_text(text[index:]))
-    return "".join(parts)
-
-
-def termix_shell_command() -> str:
-    rc_lines = [
-        "export TERM=xterm-256color",
-        "export COLORTERM=truecolor",
-        "export FORCE_COLOR=1",
-        "export CLICOLOR=1",
-        "export CLICOLOR_FORCE=1",
-        "export LS_COLORS='di=01;34:ln=01;36:ex=01;32:*.sh=01;32:*.py=01;32:*.js=01;32:*.json=01;33'",
-        "alias ls='ls --color=auto'",
-        "alias ll='ls -la --color=auto'",
-        r"PS1='\[\e[01;32m\]\u@\h\[\e[00m\]:\[\e[01;34m\]\w\[\e[00m\]\$ '",
-        "rm -f \"$HOMELAB_TERMIX_RC\"",
-    ]
-    rc_body = "\n".join(rc_lines)
-    return (
-        "if command -v bash >/dev/null 2>&1; then "
-        "HOMELAB_TERMIX_RC=$(mktemp /tmp/homelab-termix.XXXXXX) && "
-        f"cat > \"$HOMELAB_TERMIX_RC\" <<'HOMELAB_TERMIX_RC'\n{rc_body}\nHOMELAB_TERMIX_RC\n"
-        "exec env HOMELAB_TERMIX_RC=\"$HOMELAB_TERMIX_RC\" bash --rcfile \"$HOMELAB_TERMIX_RC\" -i; "
-        "else "
-        "export TERM=xterm-256color COLORTERM=truecolor FORCE_COLOR=1 CLICOLOR=1 CLICOLOR_FORCE=1; "
-        "export PS1='$USER@$(hostname):$PWD$ '; "
-        "exec ${SHELL:-/bin/sh} -i; "
-        "fi"
-    )
 
 
 def encrypt_guacamole_token(token_object: dict[str, object]) -> str:
@@ -715,16 +602,11 @@ async def ssh_websocket(websocket: WebSocket, remote_id: int):
                 finally:
                     update_db.close()
             process = await client.create_process(
-                termix_shell_command(),
                 term_type="xterm-256color",
                 term_size=(cols, rows),
                 env={
                     "TERM": "xterm-256color",
                     "COLORTERM": "truecolor",
-                    "FORCE_COLOR": "1",
-                    "CLICOLOR": "1",
-                    "CLICOLOR_FORCE": "1",
-                    "LS_COLORS": "di=01;34:ln=01;36:ex=01;32:*.sh=01;32:*.py=01;32:*.js=01;32:*.json=01;33",
                     "LANG": "C.UTF-8",
                     "LC_CTYPE": "C.UTF-8",
                 },
@@ -740,7 +622,7 @@ async def ssh_websocket(websocket: WebSocket, remote_id: int):
                     data = await process.stdout.read(4096)
                     if not data:
                         break
-                    await websocket.send_text(highlight_ssh_output(data))
+                    await websocket.send_text(data)
             except Exception:
                 pass
 
