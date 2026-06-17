@@ -1,10 +1,12 @@
 {
-  "name": "homelab-guacamole",
+  "name": "homelab-remote-manager",
   "private": true,
   "version": "0.0.0",
-  "description": "HomeLab Guacamole websocket bridge",
+  "description": "HomeLab Remote Manager services",
   "main": "scripts/guacamole-server.cjs",
   "dependencies": {
-    "guacamole-lite": "^1.2.0"
+    "guacamole-lite": "^1.2.0",
+    "ssh2": "^1.17.0",
+    "ws": "^8.20.0"
   }
 }

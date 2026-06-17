@@ -13,63 +13,12 @@
 {% block content %}
 <div class="remote-workspace">
   {% include "_remote_host_rail.html" %}
-  <section class="remote-session-frame">
-    {% if remote.protocol == 'ssh' %}
-    <div class="ssh-session" data-ssh-session data-ws-url="{{ request.scope.get('root_path', '') }}/remote-manager/{{ remote.id }}/ssh/ws">
-      {% if not remote.username %}
-      <div class="alert">Add a username to this remote host before starting an SSH session.</div>
-      {% else %}
-      <form class="remote-credential-form ssh-password-form" data-ssh-password-form>
-        <label>Password for {{ remote.username }}@{{ remote.ip_address.address }}
-          <input data-ssh-password type="password" autocomplete="current-password" required>
-        </label>
-        <button type="submit">Start SSH session</button>
-        <p class="muted">Session only. Not stored.</p>
-      </form>
-      <div class="ssh-terminal" data-ssh-terminal aria-label="SSH terminal"></div>
-      {% endif %}
-    </div>
-    {% else %}
-    <div class="rdp-session" data-rdp-session data-start-url="{{ request.scope.get('root_path', '') }}/remote-manager/{{ remote.id }}/rdp/start" data-tunnel-url="{{ request.scope.get('root_path', '') }}/remote-manager/{{ remote.id }}/rdp/ws">
-      <form class="remote-credential-form rdp-credential-form">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <label>Username
-          <input name="rdp_username" autocomplete="username" value="{{ remote.username or '' }}">
-        </label>
-        <label>Password
-          <input name="rdp_password" type="password" autocomplete="current-password">
-        </label>
-        <button type="button">Start RDP session</button>
-      </form>
-      <div class="rdp-display-shell" data-rdp-shell tabindex="0">
-        <div class="rdp-session-placeholder" data-rdp-placeholder>
-          <div>
-            <h2>RDP session</h2>
-            {% if settings.guacamole_enabled == '1' and settings.guacd_host %}
-            <p class="muted">Guacamole is configured at {{ settings.guacd_host }}:{{ settings.guacd_port }}. Passwords are used for the browser session only.</p>
-            {% else %}
-            <p class="muted">Enable Guacamole in Remote Manager Settings before using browser RDP sessions.</p>
-            {% endif %}
-          </div>
-        </div>
-        <div class="rdp-display" data-rdp-display aria-label="RDP display"></div>
-        <div class="rdp-status" data-rdp-status>
-          <h2>RDP session</h2>
-          <p class="muted">Waiting for RDP session start.</p>
-        </div>
-      </div>
-      <section class="rdp-log-panel" data-rdp-log-panel aria-live="polite">
-        <header>Connection log</header>
-        <pre data-rdp-log>Waiting for RDP session start.</pre>
-      </section>
-    </div>
-    {% endif %}
-  </section>
+  {% include "_remote_session_panel.html" %}
 </div>
 {% if remote.protocol == 'ssh' %}
 <script src="/static/vendor/xterm/xterm.js?v={{ asset_version }}" defer></script>
 <script src="/static/vendor/xterm/addon-fit.js?v={{ asset_version }}" defer></script>
-<script src="/static/js/remote_session.js?v={{ asset_version }}" defer></script>
+<script src="/static/js/remote_session.js?v={{ asset_version }}&ssh=homelab-rewrite-3" defer></script>
 {% else %}
 <script type="module" src="/static/js/remote_rdp.js?v={{ asset_version }}"></script>
 {% endif %}

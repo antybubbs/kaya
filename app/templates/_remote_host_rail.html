@@ -5,10 +5,21 @@
       <span>{{ rows|length }}</span>
     </div>
   </header>
+  <div class="remote-host-search">
+    <label>
+      <span aria-hidden="true">⌕</span>
+      <input type="search" data-remote-search placeholder="Search hosts...">
+    </label>
+    <div class="remote-host-toolbar" aria-label="Host tools">
+      <button type="button" title="Refresh sessions" data-remote-refresh-tabs>↻</button>
+      <a href="/ip-addresses/new" title="Add host">＋</a>
+      <a href="/remote-manager/settings" title="Remote settings">⚙</a>
+    </div>
+  </div>
   <div class="remote-host-list">
     {% for row in rows %}
     {% set label = remote_label_fn(row) if remote_label_fn is defined else remote_label(row) %}
-    <article class="remote-host-card {% if remote and remote.id == row.id %}active{% endif %}">
+    <article class="remote-host-card {% if remote and remote.id == row.id %}active{% endif %}" data-remote-id="{{ row.id }}" data-remote-label="{{ label }}" data-remote-protocol="{{ row.protocol }}" data-remote-panel-url="/remote-manager/{{ row.id }}/panel?ssh=homelab-rewrite-2" data-remote-search-text="{{ label }} {{ row.username or '' }} {{ row.ip_address.address }} {{ row.protocol }}">
       <div class="remote-host-main">
         <span class="remote-status-dot {{ row.protocol }}"></span>
         <div>
@@ -17,11 +28,11 @@
         </div>
       </div>
       <div class="remote-host-actions">
-        <span class="remote-protocol-icon" title="{{ row.protocol|upper }}">{% if row.protocol == 'rdp' %}RDP{% else %}&gt;_{% endif %}</span>
+        <a class="remote-protocol-icon" href="/remote-manager/{{ row.id }}/session" data-remote-open title="Open {{ row.protocol|upper }}">{% if row.protocol == 'rdp' %}▣{% else %}&gt;_{% endif %}</a>
         <details class="remote-connect-menu">
-          <summary>Connect</summary>
+          <summary title="More actions">⋯</summary>
           <div>
-            <a href="/remote-manager/{{ row.id }}/session">Connect {{ row.protocol|upper }}</a>
+            <a href="/remote-manager/{{ row.id }}/session" data-remote-open>Connect {{ row.protocol|upper }}</a>
             <a href="/ip-addresses/{{ row.ip_address.id }}">View IP record</a>
             <a href="/ip-addresses/{{ row.ip_address.id }}/edit">Edit remote settings</a>
           </div>
@@ -31,5 +42,6 @@
     {% else %}
     <div class="remote-host-empty">No remote hosts enabled yet.</div>
     {% endfor %}
+    <div class="remote-host-empty" data-remote-no-results hidden>No matching hosts.</div>
   </div>
 </aside>

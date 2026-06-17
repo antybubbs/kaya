@@ -39,11 +39,12 @@ const server = new GuacamoleLite(
       rdp: {
         security: "any",
         "ignore-cert": true,
-        "enable-wallpaper": false,
+        "enable-wallpaper": true,
         "enable-font-smoothing": true,
         "enable-desktop-composition": false,
         "disable-audio": false,
         "enable-drive": false,
+        "enable-gfx": true,
         "resize-method": "display-update",
         width: 1280,
         height: 720,

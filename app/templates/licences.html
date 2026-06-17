@@ -1,33 +1,41 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="topbar"><div><h1>License Keys</h1></div></div>
-<section class="cards">
-  <div class="card"><span>Total License Keys</span><strong>{{ total }}</strong></div>
-</section>
-<form class="search list-search" method="get">
-  {% if active_licence_type %}<input type="hidden" name="licence_type" value="{{ active_licence_type }}">{% endif %}
-  <input name="q" placeholder="Search license keys..." value="{{ q }}">
-  <button>Search</button>
-  <details class="favourites-menu">
-    <summary>Favourites{% if favourites %} <span>{{ favourites|length }}</span>{% endif %}</summary>
-    <div class="favourites-popover">
-      {% if favourites %}
-        {% for favourite in favourites %}
-        <a href="/licences/{{ favourite.id }}"><strong>{{ favourite.product }}</strong><span>{{ favourite.licence_type or 'License key' }}</span></a>
-        {% endfor %}
-      {% else %}
-        <p>No favourites yet.</p>
-      {% endif %}
+<section class="module-header">
+  <div class="module-title-row">
+    <div class="module-title">
+      <h1>License Keys</h1>
+      <span class="module-stat">Total <strong>{{ total }}</strong></span>
     </div>
-  </details>
-  {% if user.role in ['admin','editor'] %}<a class="button" href="/licences/new">Add License Key</a>{% endif %}
-</form>
-<nav class="category-tabs" aria-label="License key types">
-  <a class="{% if not active_licence_type %}active{% endif %}" href="/licences{% if q %}?q={{ q|urlencode }}{% endif %}">All</a>
-  {% for licence_type in licence_types %}
-  <a class="{% if active_licence_type == licence_type %}active{% endif %}" href="/licences?licence_type={{ licence_type|urlencode }}{% if q %}&q={{ q|urlencode }}{% endif %}">{{ licence_type }}</a>
-  {% endfor %}
-</nav>
+  </div>
+  <div class="module-toolbar">
+    <form class="search list-search" method="get">
+      {% if active_licence_type %}<input type="hidden" name="licence_type" value="{{ active_licence_type }}">{% endif %}
+      <input name="q" placeholder="Search license keys..." value="{{ q }}">
+      <button>Search</button>
+    </form>
+    <div class="module-actions">
+      <details class="favourites-menu">
+        <summary>Favourites{% if favourites %} <span>{{ favourites|length }}</span>{% endif %}</summary>
+        <div class="favourites-popover">
+          {% if favourites %}
+            {% for favourite in favourites %}
+            <a href="/licences/{{ favourite.id }}"><strong>{{ favourite.product }}</strong><span>{{ favourite.licence_type or 'License key' }}</span></a>
+            {% endfor %}
+          {% else %}
+            <p>No favourites yet.</p>
+          {% endif %}
+        </div>
+      </details>
+      {% if user.role in ['admin','editor'] %}<a class="button" href="/licences/new">Add License Key</a>{% endif %}
+    </div>
+    <nav class="category-tabs" aria-label="License key types">
+      <a class="{% if not active_licence_type %}active{% endif %}" href="/licences{% if q %}?q={{ q|urlencode }}{% endif %}">All</a>
+      {% for licence_type in licence_types %}
+      <a class="{% if active_licence_type == licence_type %}active{% endif %}" href="/licences?licence_type={{ licence_type|urlencode }}{% if q %}&q={{ q|urlencode }}{% endif %}">{{ licence_type }}</a>
+      {% endfor %}
+    </nav>
+  </div>
+</section>
 <section class="panel">
 <table data-table-key="license-keys"><thead><tr><th class="action-col" data-col="actions">View</th><th data-col="favourite" data-sort>Favourite</th><th data-col="product" data-sort>Product</th><th data-col="type" data-sort>Type</th><th data-col="product-key" data-sort>Product Key</th><th data-col="seats" data-sort>Seats</th></tr></thead><tbody>
 {% for row in rows %}<tr><td class="action-col"><a class="button secondary" href="/licences/{{ row.id }}">View</a></td><td>{% if row.is_favourite %}<span class="favourite-star" title="Favourite">&#9733;</span>{% else %}-{% endif %}</td><td>{{ row.product }}</td><td>{% if row.licence_type %}<span class="table-chip">{{ row.licence_type }}</span>{% else %}-{% endif %}</td><td class="mono">{{ mask_key(row.encrypted_product_key) }}</td><td>{{ row.seats or 0 }}</td></tr>{% endfor %}

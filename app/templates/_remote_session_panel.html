@@ -1,0 +1,65 @@
+<section class="remote-session-frame">
+{% if remote.protocol == 'ssh' %}
+  {% set terminal_settings = remote_settings.terminal if remote_settings is defined else {} %}
+  <div class="ssh-session" data-ssh-session data-ws-url="{{ request.scope.get('root_path', '') }}/remote-manager/{{ remote.id }}/ssh/ws"
+    data-terminal-theme="{{ terminal_settings.get('terminal_theme', 'homelab') }}"
+    data-terminal-font-family="{{ terminal_settings.get('terminal_font_family', 'Caskaydia Cove Nerd Font Mono') }}"
+    data-terminal-font-size="{{ terminal_settings.get('terminal_font_size', '14') }}"
+    data-terminal-cursor-style="{{ terminal_settings.get('terminal_cursor_style', 'bar') }}"
+    data-terminal-letter-spacing="{{ terminal_settings.get('terminal_letter_spacing', '0') }}"
+    data-terminal-line-height="{{ terminal_settings.get('terminal_line_height', '1') }}"
+    data-terminal-bell-style="{{ terminal_settings.get('terminal_bell_style', 'none') }}"
+    data-terminal-backspace-mode="{{ terminal_settings.get('terminal_backspace_mode', 'normal') }}"
+    data-terminal-cursor-blink="{{ terminal_settings.get('terminal_cursor_blink', '1') }}"
+    data-terminal-right-click-selects-word="{{ terminal_settings.get('terminal_right_click_selects_word', '0') }}"
+    data-terminal-syntax-highlighting="{{ terminal_settings.get('terminal_syntax_highlighting', '1') }}"
+    data-terminal-scrollback="{{ terminal_settings.get('terminal_scrollback', '10000') }}">
+    {% if not remote.username %}
+    <div class="alert">Add a username to this remote host before starting an SSH session.</div>
+    {% else %}
+    <form class="remote-credential-form ssh-password-form" data-ssh-password-form>
+      <label>Password for {{ remote.username }}@{{ remote.ip_address.address }}
+        <input data-ssh-password type="password" autocomplete="current-password" required>
+      </label>
+      <button type="submit">Start SSH session</button>
+      <p class="muted">Session only. Not stored.</p>
+    </form>
+    <div class="ssh-terminal" data-ssh-terminal aria-label="SSH terminal"></div>
+    {% endif %}
+  </div>
+  {% else %}
+  <div class="rdp-session" data-rdp-session data-start-url="{{ request.scope.get('root_path', '') }}/remote-manager/{{ remote.id }}/rdp/start" data-tunnel-url="{{ request.scope.get('root_path', '') }}/remote-manager/{{ remote.id }}/rdp/ws">
+    <form class="remote-credential-form rdp-credential-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>Username
+        <input name="rdp_username" autocomplete="username" value="{{ remote.username or '' }}">
+      </label>
+      <label>Password
+        <input name="rdp_password" type="password" autocomplete="current-password">
+      </label>
+      <button type="button">Start RDP session</button>
+    </form>
+    <div class="rdp-display-shell" data-rdp-shell tabindex="0">
+      <div class="rdp-session-placeholder" data-rdp-placeholder>
+        <div>
+          <h2>RDP session</h2>
+          {% if settings.guacamole_enabled == '1' and settings.guacd_host %}
+          <p class="muted">Guacamole is configured at {{ settings.guacd_host }}:{{ settings.guacd_port }}. Passwords are used for the browser session only.</p>
+          {% else %}
+          <p class="muted">Enable Guacamole in Remote Manager Settings before using browser RDP sessions.</p>
+          {% endif %}
+        </div>
+      </div>
+      <div class="rdp-display" data-rdp-display aria-label="RDP display"></div>
+      <div class="rdp-status" data-rdp-status>
+        <h2>RDP session</h2>
+        <p class="muted">Waiting for RDP session start.</p>
+      </div>
+    </div>
+    <section class="rdp-log-panel" data-rdp-log-panel aria-live="polite">
+      <header>Connection log</header>
+      <pre data-rdp-log>Waiting for RDP session start.</pre>
+    </section>
+  </div>
+  {% endif %}
+</section>

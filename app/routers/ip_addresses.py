@@ -9,6 +9,7 @@ from app.core.csrf import csrf_context, validate_csrf_token
 from app.db.session import get_db
 from app.models.models import IPAddress, NetworkMonitor, RemoteAccess, VLAN
 from app.routers.auth import require_editor, require_user
+from app.routers.remote_manager import RDP_SETTING_KEYS, SETTINGS as REMOTE_MANAGER_DEFAULTS, TERMINAL_SETTING_KEYS, clean_global_setting, decode_settings_blob, encode_settings_blob
 from app.services.audit import write_audit
 from app.services.custom_fields import active_fields, field_values, option_list, save_custom_values, validate_custom_values
 from app.services.managed_lists import list_values
@@ -93,7 +94,17 @@ def clean_remote_port(value: int, protocol: str) -> int:
     return 3389 if protocol == "rdp" else 22
 
 
-def save_remote_settings(db: Session, record: IPAddress, enabled: bool, display_name: str, protocol: str, port: int, username: str) -> None:
+def remote_override_settings(form, keys: list[str]) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for key in keys:
+        value = str(form.get(f"override_{key}", ""))
+        if value == "":
+            continue
+        values[key] = clean_global_setting(key, value)
+    return values
+
+
+def save_remote_settings(db: Session, record: IPAddress, enabled: bool, display_name: str, protocol: str, port: int, username: str, terminal_settings: dict[str, str] | None = None, rdp_settings: dict[str, str] | None = None) -> None:
     remote = remote_for(db, record.id)
     if not enabled:
         if remote:
@@ -108,6 +119,20 @@ def save_remote_settings(db: Session, record: IPAddress, enabled: bool, display_
     remote.protocol = protocol
     remote.port = clean_remote_port(port, protocol)
     remote.username = username.strip() or None
+    remote.terminal_settings = encode_settings_blob(terminal_settings or {})
+    remote.rdp_settings = encode_settings_blob(rdp_settings or {})
+
+
+def remote_settings_context(remote: RemoteAccess | None) -> dict:
+    terminal_overrides = decode_settings_blob(remote.terminal_settings if remote else None)
+    rdp_overrides = decode_settings_blob(remote.rdp_settings if remote else None)
+    return {
+        "remote_terminal_setting_keys": TERMINAL_SETTING_KEYS,
+        "remote_rdp_setting_keys": RDP_SETTING_KEYS,
+        "remote_defaults": REMOTE_MANAGER_DEFAULTS,
+        "remote_terminal_overrides": {key: clean_global_setting(key, value) for key, value in terminal_overrides.items()},
+        "remote_rdp_overrides": {key: clean_global_setting(key, value) for key, value in rdp_overrides.items()},
+    }
 
 
 @router.get("")
@@ -213,7 +238,7 @@ def ping_ip_address(request: Request, record_id: int, csrf_token: str = Form(...
 def new_ip_address(request: Request, vlan_id: int | None = Query(None), db: Session = Depends(get_db), user=Depends(require_editor)):
     fields = active_fields(db, MODULE)
     categories = list_values(db, MODULE).get("category", [])
-    return templates.TemplateResponse(request, "ip_address_form.html", {"user": user, "record": None, "monitor": None, "remote": None, "categories": categories, "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": {}, "option_list": option_list, "error": None, **csrf_context(request)})
+    return templates.TemplateResponse(request, "ip_address_form.html", {"user": user, "record": None, "monitor": None, "remote": None, "categories": categories, "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": {}, "option_list": option_list, "error": None, **remote_settings_context(None), **csrf_context(request)})
 
 
 @router.post("/new")
@@ -226,14 +251,14 @@ async def create_ip_address(request: Request, address: str = Form(..., max_lengt
     form = await request.form()
     custom_error = validate_custom_values(fields, form)
     if custom_error:
-        return templates.TemplateResponse(request, "ip_address_form.html", {"user": user, "record": None, "monitor": None, "remote": None, "categories": categories, "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": {}, "option_list": option_list, "error": custom_error, **csrf_context(request)}, status_code=400)
+        return templates.TemplateResponse(request, "ip_address_form.html", {"user": user, "record": None, "monitor": None, "remote": None, "categories": categories, "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": {}, "option_list": option_list, "error": custom_error, **remote_settings_context(None), **csrf_context(request)}, status_code=400)
     if db.query(IPAddress).filter(IPAddress.address == clean_address).first():
-        return templates.TemplateResponse(request, "ip_address_form.html", {"user": user, "record": None, "monitor": None, "remote": None, "categories": categories, "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": {}, "option_list": option_list, "error": "That IP address already exists.", **csrf_context(request)}, status_code=400)
+        return templates.TemplateResponse(request, "ip_address_form.html", {"user": user, "record": None, "monitor": None, "remote": None, "categories": categories, "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": {}, "option_list": option_list, "error": "That IP address already exists.", **remote_settings_context(None), **csrf_context(request)}, status_code=400)
     row = IPAddress(vlan_id=selected_vlan.id, address=clean_address, category=clean_category(category, categories), name=name.strip() or None, description=description.strip() or None, assignment_type=clean_assignment_type(assignment_type), notes=notes.strip() or None)
     db.add(row)
     db.commit()
     save_monitor_settings(db, row, bool(monitor_enabled), monitor_display_name, monitor_interval_seconds, monitor_timeout_ms)
-    save_remote_settings(db, row, bool(remote_enabled), remote_display_name, remote_protocol, remote_port, remote_username)
+    save_remote_settings(db, row, bool(remote_enabled), remote_display_name, remote_protocol, remote_port, remote_username, remote_override_settings(form, TERMINAL_SETTING_KEYS), remote_override_settings(form, RDP_SETTING_KEYS))
     save_custom_values(db, fields, form, ENTITY_TYPE, row.id)
     db.commit()
     write_audit(db, user, "create", "ip_address", str(row.id), request.client.host if request.client else None, detail=clean_address)
@@ -248,7 +273,7 @@ def detail_ip_address(request: Request, record_id: int, db: Session = Depends(ge
     fields = active_fields(db, MODULE)
     values = field_values(db, MODULE, ENTITY_TYPE, row.id)
     categories = list_values(db, MODULE).get("category", [])
-    return templates.TemplateResponse(request, "ip_address_detail.html", {"user": user, "record": row, "monitor": monitor_for(db, row.id), "remote": remote_for(db, row.id), "categories": categories, "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": values, "option_list": option_list, **csrf_context(request)})
+    return templates.TemplateResponse(request, "ip_address_detail.html", {"user": user, "record": row, "monitor": monitor_for(db, row.id), "remote": remote_for(db, row.id), "categories": categories, "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": values, "option_list": option_list, **remote_settings_context(remote_for(db, row.id)), **csrf_context(request)})
 
 
 @router.get("/{record_id}/edit")
@@ -259,7 +284,8 @@ def edit_ip_address(request: Request, record_id: int, db: Session = Depends(get_
     fields = active_fields(db, MODULE)
     values = field_values(db, MODULE, ENTITY_TYPE, row.id)
     categories = list_values(db, MODULE).get("category", [])
-    return templates.TemplateResponse(request, "ip_address_form.html", {"user": user, "record": row, "monitor": monitor_for(db, row.id), "remote": remote_for(db, row.id), "categories": categories, "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": values, "option_list": option_list, "error": None, **csrf_context(request)})
+    remote = remote_for(db, row.id)
+    return templates.TemplateResponse(request, "ip_address_form.html", {"user": user, "record": row, "monitor": monitor_for(db, row.id), "remote": remote, "categories": categories, "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": values, "option_list": option_list, "error": None, **remote_settings_context(remote), **csrf_context(request)})
 
 
 @router.post("/{record_id}/edit")
@@ -276,10 +302,12 @@ async def update_ip_address(request: Request, record_id: int, address: str = For
     form = await request.form()
     custom_error = validate_custom_values(fields, form)
     if custom_error:
-        return templates.TemplateResponse(request, "ip_address_form.html", {"user": user, "record": row, "monitor": monitor_for(db, row.id), "remote": remote_for(db, row.id), "categories": categories, "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": values, "option_list": option_list, "error": custom_error, **csrf_context(request)}, status_code=400)
+        remote = remote_for(db, row.id)
+        return templates.TemplateResponse(request, "ip_address_form.html", {"user": user, "record": row, "monitor": monitor_for(db, row.id), "remote": remote, "categories": categories, "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": values, "option_list": option_list, "error": custom_error, **remote_settings_context(remote), **csrf_context(request)}, status_code=400)
     existing = db.query(IPAddress).filter(IPAddress.address == clean_address, IPAddress.id != row.id).first()
     if existing:
-        return templates.TemplateResponse(request, "ip_address_form.html", {"user": user, "record": row, "monitor": monitor_for(db, row.id), "remote": remote_for(db, row.id), "categories": categories, "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": values, "option_list": option_list, "error": "That IP address already exists.", **csrf_context(request)}, status_code=400)
+        remote = remote_for(db, row.id)
+        return templates.TemplateResponse(request, "ip_address_form.html", {"user": user, "record": row, "monitor": monitor_for(db, row.id), "remote": remote, "categories": categories, "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": values, "option_list": option_list, "error": "That IP address already exists.", **remote_settings_context(remote), **csrf_context(request)}, status_code=400)
     row.vlan_id = selected_vlan.id
     row.address = clean_address
     row.category = clean_category(category, categories, row.category)
@@ -289,7 +317,7 @@ async def update_ip_address(request: Request, record_id: int, address: str = For
     row.notes = notes.strip() or None
     db.commit()
     save_monitor_settings(db, row, bool(monitor_enabled), monitor_display_name, monitor_interval_seconds, monitor_timeout_ms)
-    save_remote_settings(db, row, bool(remote_enabled), remote_display_name, remote_protocol, remote_port, remote_username)
+    save_remote_settings(db, row, bool(remote_enabled), remote_display_name, remote_protocol, remote_port, remote_username, remote_override_settings(form, TERMINAL_SETTING_KEYS), remote_override_settings(form, RDP_SETTING_KEYS))
     save_custom_values(db, fields, form, ENTITY_TYPE, row.id)
     db.commit()
     write_audit(db, user, "update", "ip_address", str(row.id), request.client.host if request.client else None, detail=clean_address)

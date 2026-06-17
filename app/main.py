@@ -13,6 +13,7 @@ from app.db.session import Base, engine, SessionLocal
 from app.models.models import User, VLAN
 from app.routers import auth, dashboard, licences, admin, ip_addresses, hardware_assets, network_monitor, remote_manager
 from app.services.guacamole_bridge import stop_guacamole_bridge
+from app.services.homelab_remote_service import start_homelab_remote_service, stop_homelab_remote_service
 from app.services.network_monitor import monitor_loop
 
 settings = get_settings()
@@ -47,8 +48,12 @@ async def permission_handler(request: Request, exc: PermissionError):
 async def security_headers(request: Request, call_next):
     response = await call_next(request)
     is_static_asset = request.url.path.startswith(f"{settings.root_path}/static") if settings.root_path else request.url.path.startswith("/static")
+    path = request.url.path
+    if settings.root_path and path.startswith(settings.root_path):
+        path = path[len(settings.root_path):] or "/"
+    is_remote_panel = path.startswith("/remote-manager/") and path.endswith("/panel")
     response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Frame-Options"] = "SAMEORIGIN" if is_remote_panel else "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     ws_scheme = "wss" if request.url.scheme == "https" else "ws"
@@ -159,12 +164,16 @@ def migrate_existing_database():
             conn.execute(text("CREATE INDEX ix_network_monitor_checks_checked_at ON network_monitor_checks (checked_at)"))
         remote_access_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(remote_access)"))}
         if not remote_access_columns:
-            conn.execute(text("CREATE TABLE remote_access (id INTEGER NOT NULL PRIMARY KEY, ip_address_id INTEGER NOT NULL UNIQUE REFERENCES ip_addresses(id), display_name VARCHAR(255), is_enabled BOOLEAN DEFAULT 1 NOT NULL, protocol VARCHAR(20) DEFAULT 'ssh' NOT NULL, port INTEGER DEFAULT 22 NOT NULL, username VARCHAR(120), host_key_fingerprint VARCHAR(120), notes TEXT, created_at DATETIME, updated_at DATETIME)"))
+            conn.execute(text("CREATE TABLE remote_access (id INTEGER NOT NULL PRIMARY KEY, ip_address_id INTEGER NOT NULL UNIQUE REFERENCES ip_addresses(id), display_name VARCHAR(255), is_enabled BOOLEAN DEFAULT 1 NOT NULL, protocol VARCHAR(20) DEFAULT 'ssh' NOT NULL, port INTEGER DEFAULT 22 NOT NULL, username VARCHAR(120), host_key_fingerprint VARCHAR(120), terminal_settings TEXT, rdp_settings TEXT, notes TEXT, created_at DATETIME, updated_at DATETIME)"))
             conn.execute(text("CREATE INDEX ix_remote_access_ip_address_id ON remote_access (ip_address_id)"))
             conn.execute(text("CREATE INDEX ix_remote_access_is_enabled ON remote_access (is_enabled)"))
             conn.execute(text("CREATE INDEX ix_remote_access_protocol ON remote_access (protocol)"))
         elif "host_key_fingerprint" not in remote_access_columns:
             conn.execute(text("ALTER TABLE remote_access ADD COLUMN host_key_fingerprint VARCHAR(120)"))
+        if remote_access_columns and "terminal_settings" not in remote_access_columns:
+            conn.execute(text("ALTER TABLE remote_access ADD COLUMN terminal_settings TEXT"))
+        if remote_access_columns and "rdp_settings" not in remote_access_columns:
+            conn.execute(text("ALTER TABLE remote_access ADD COLUMN rdp_settings TEXT"))
         remote_settings_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(remote_manager_settings)"))}
         if not remote_settings_columns:
             conn.execute(text("CREATE TABLE remote_manager_settings (id INTEGER NOT NULL PRIMARY KEY, key VARCHAR(80) NOT NULL UNIQUE, value TEXT, updated_at DATETIME)"))
@@ -174,6 +183,7 @@ def migrate_existing_database():
 @app.on_event("startup")
 async def on_startup():
     bootstrap()
+    start_homelab_remote_service()
     global monitor_task
     monitor_task = asyncio.create_task(monitor_loop())
 
@@ -182,6 +192,7 @@ async def on_startup():
 async def on_shutdown():
     if monitor_task:
         monitor_task.cancel()
+    stop_homelab_remote_service()
     stop_guacamole_bridge()
 
 

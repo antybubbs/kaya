@@ -16,6 +16,10 @@ if (root) {
   let displayElement = null;
   let resizeTimer = null;
   let currentScale = 1;
+  let manuallyStopped = false;
+  let connected = false;
+  let displayReady = false;
+  let resizeObserver = null;
 
   const writeLog = (lines) => {
     if (!log) return;
@@ -61,13 +65,25 @@ if (root) {
     display.scale(currentScale);
   };
 
-  const scheduleResize = () => {
-    window.clearTimeout(resizeTimer);
-    resizeTimer = window.setTimeout(fitDisplay, 150);
+  const refreshDisplay = () => {
+    if (!client) return;
+    fitDisplay();
+    const size = displaySize();
+    client.sendSize(size.width, size.height);
+    client.getDisplay().flush(fitDisplay);
   };
 
-  const stopSession = () => {
+  const scheduleResize = () => {
     window.clearTimeout(resizeTimer);
+    resizeTimer = window.setTimeout(refreshDisplay, 150);
+  };
+
+  const disconnectCurrentSession = () => {
+    window.clearTimeout(resizeTimer);
+    if (resizeObserver) {
+      resizeObserver.disconnect();
+      resizeObserver = null;
+    }
     if (keyboard) {
       keyboard.onkeydown = null;
       keyboard.onkeyup = null;
@@ -80,6 +96,13 @@ if (root) {
     displayElement = null;
     tunnel = null;
     currentScale = 1;
+    connected = false;
+    displayReady = false;
+  };
+
+  const stopSession = () => {
+    manuallyStopped = true;
+    disconnectCurrentSession();
   };
 
   const attachInput = () => {
@@ -109,12 +132,34 @@ if (root) {
     };
   };
 
-  const connectDisplay = (token) => {
-    stopSession();
+  const markDisplayReady = () => {
+    if (displayReady) return;
+    displayReady = true;
+    setOverlayVisible(false);
+    if (displayElement) displayElement.focus({ preventScroll: true });
+  };
+
+  const waitForLayout = () =>
+    new Promise((resolve) => {
+      window.requestAnimationFrame(() => window.requestAnimationFrame(resolve));
+    });
+
+  const connectDisplay = async (token) => {
+    manuallyStopped = false;
+    disconnectCurrentSession();
+    window.clearTimeout(resizeTimer);
     displayTarget.replaceChildren();
     placeholder.hidden = true;
+    displayReady = false;
     setOverlayVisible(true);
     setStatus("Connecting", "Opening browser display tunnel.");
+    await waitForLayout();
+    const size = displaySize();
+    const params = new URLSearchParams({
+      token,
+      width: String(size.width),
+      height: String(size.height),
+    });
     tunnel = new Guacamole.WebSocketTunnel(root.dataset.tunnelUrl);
     client = new Guacamole.Client(tunnel);
     const displayEl = client.getDisplay().getElement();
@@ -128,28 +173,51 @@ if (root) {
       setOverlayVisible(true);
       writeLog([`RDP display error: ${error.message || "Unknown error"}`]);
       setStatus("Connection error", error.message || "The RDP session could not be opened.");
+      connected = false;
       form.hidden = false;
       button.disabled = false;
     };
     client.onstatechange = (state) => {
       if (state === Guacamole.Client.State.CONNECTED) {
         setStatus("Connected", "RDP session is active.");
-        setOverlayVisible(false);
-        displayElement.focus({ preventScroll: true });
-        fitDisplay();
+        connected = true;
+        refreshDisplay();
+        markDisplayReady();
       }
       if (state === Guacamole.Client.State.DISCONNECTED) {
         setOverlayVisible(true);
+        connected = false;
+        displayReady = false;
         setStatus("Disconnected", "The RDP session has ended.");
         form.hidden = false;
         button.disabled = false;
       }
     };
-    client.getDisplay().onresize = fitDisplay;
-    client.connect(`token=${encodeURIComponent(token)}`);
+    client.getDisplay().onresize = () => {
+      fitDisplay();
+      markDisplayReady();
+    };
+    if (window.ResizeObserver) {
+      resizeObserver = new ResizeObserver(scheduleResize);
+      resizeObserver.observe(shell);
+    }
+    client.connect(params.toString());
   };
 
   window.addEventListener("resize", scheduleResize);
+  window.addEventListener("focus", refreshDisplay);
+  window.addEventListener("message", (event) => {
+    if (event.origin !== window.location.origin) return;
+    if (event.data && event.data.type === "homelab:remote-tab-active") {
+      window.setTimeout(refreshDisplay, 50);
+      if (displayElement) displayElement.focus({ preventScroll: true });
+    }
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && connected) {
+      refreshDisplay();
+    }
+  });
   window.addEventListener("beforeunload", stopSession);
 
   form.addEventListener("submit", (event) => event.preventDefault());

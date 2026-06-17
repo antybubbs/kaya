@@ -18,6 +18,19 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class AppSession(Base):
+    __tablename__ = "app_sessions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    ip_address: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    user = relationship("User")
+
+
 class Licence(Base):
     __tablename__ = "licences"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -103,6 +116,8 @@ class RemoteAccess(Base):
     port: Mapped[int] = mapped_column(Integer, default=22)
     username: Mapped[str | None] = mapped_column(String(120), nullable=True)
     host_key_fingerprint: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    terminal_settings: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rdp_settings: Mapped[str | None] = mapped_column(Text, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

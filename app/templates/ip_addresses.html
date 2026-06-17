@@ -1,21 +1,29 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="topbar"><div><h1>IP Addresses</h1></div></div>
-<section class="cards">
-  <div class="card"><span>Total IP Addresses</span><strong>{{ total }}</strong></div>
+<section class="module-header">
+  <div class="module-title-row">
+    <div class="module-title">
+      <h1>IP Addresses</h1>
+      <span class="module-stat">Total <strong>{{ total }}</strong></span>
+    </div>
+  </div>
+  <div class="module-toolbar">
+    <form class="search list-search" method="get">
+      {% if active_category %}<input type="hidden" name="category" value="{{ active_category }}">{% endif %}
+      <input name="q" placeholder="Search IP addresses..." value="{{ q }}">
+      <button>Search</button>
+    </form>
+    <div class="module-actions">
+      {% if user.role in ['admin','editor'] %}<a class="button" href="/ip-addresses/new">Add IP</a>{% endif %}
+    </div>
+    <nav class="category-tabs" aria-label="IP address categories">
+      <a class="{% if not active_category %}active{% endif %}" href="/ip-addresses{% if q %}?q={{ q|urlencode }}{% endif %}">All</a>
+      {% for category in categories %}
+      <a class="{% if active_category == category %}active{% endif %}" href="/ip-addresses?category={{ category|urlencode }}{% if q %}&q={{ q|urlencode }}{% endif %}">{{ category }}</a>
+      {% endfor %}
+    </nav>
+  </div>
 </section>
-<form class="search list-search" method="get">
-  {% if active_category %}<input type="hidden" name="category" value="{{ active_category }}">{% endif %}
-  <input name="q" placeholder="Search IP addresses..." value="{{ q }}">
-  <button>Search</button>
-  {% if user.role in ['admin','editor'] %}<a class="button" href="/ip-addresses/new">Add IP</a>{% endif %}
-</form>
-<nav class="category-tabs" aria-label="IP address categories">
-  <a class="{% if not active_category %}active{% endif %}" href="/ip-addresses{% if q %}?q={{ q|urlencode }}{% endif %}">All</a>
-  {% for category in categories %}
-  <a class="{% if active_category == category %}active{% endif %}" href="/ip-addresses?category={{ category|urlencode }}{% if q %}&q={{ q|urlencode }}{% endif %}">{{ category }}</a>
-  {% endfor %}
-</nav>
 <section class="panel">
 <form method="post" action="/ip-addresses/bulk-update" data-ip-bulk-form>
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
