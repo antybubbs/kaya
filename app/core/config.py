@@ -35,7 +35,10 @@ class Settings(BaseSettings):
 
 
 def trusted_hosts(settings: Settings) -> list[str]:
-    hosts = {"*"}
+    if not settings.allowed_hosts.strip():
+        return ["*"]
+
+    hosts = {"localhost", "127.0.0.1", "::1", "homelab"}
 
     parsed_host = urlparse(settings.base_url).hostname
     if parsed_host:
@@ -46,7 +49,6 @@ def trusted_hosts(settings: Settings) -> list[str]:
         for host in settings.allowed_hosts.split(",")
         if host.strip()
     )
-
     return sorted(hosts)
 
 
