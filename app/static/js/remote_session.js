@@ -599,6 +599,8 @@
   const writeTerminal = (data) => {
   const text = typeof data === "string" ? data : String(data || "");
 
+  console.log("NEW TERMINAL CODE ACTIVE");
+    
   const hasAnsi = /\x1b\[/.test(text);
 
   if (hasAnsi) {
