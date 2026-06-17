@@ -1,3 +1,15 @@
+<<<<<<< Updated upstream
+FROM node:lts-alpine
+ENV NODE_ENV=production
+WORKDIR /usr/src/app
+COPY ["package.json", "package-lock.json*", "npm-shrinkwrap.json*", "./"]
+RUN npm install --production --silent && mv node_modules ../
+COPY . .
+EXPOSE 3000
+RUN chown -R node /usr/src/app
+USER node
+CMD ["node", "scripts/guacamole-server.cjs"]
+=======
 FROM python:3.12-slim
 
 ARG APP_VERSION=dev
@@ -31,5 +43,6 @@ RUN mkdir -p /app/data /app/uploads \
 
 EXPOSE 8080
 
-ENTRYPOINT ["homelab-entrypoint"]
+ENTRYPOINT ["/usr/local/bin/homelab-entrypoint"]
 CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port 8080 --proxy-headers --forwarded-allow-ips \"${FORWARDED_ALLOW_IPS:-*}\""]
+>>>>>>> Stashed changes

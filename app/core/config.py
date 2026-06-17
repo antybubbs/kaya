@@ -1,7 +1,7 @@
 from functools import lru_cache
 from urllib.parse import urlparse
 from pydantic_settings import BaseSettings
-from cryptography.fernet import Fernet
+import cryptography.fernet
 
 
 class InvalidConfigurationError(RuntimeError):
@@ -15,8 +15,8 @@ class Settings(BaseSettings):
     base_url: str = "http://localhost:8080"
     root_path: str = ""
     database_url: str = "sqlite:////app/data/homelab.db"
-    secret_key: str =
-    encryption_key: str =
+    secret_key: str = ""
+    encryption_key: str = ""
     admin_email: str = "admin@example.local"
     admin_password: str = "change-me-now"
     session_cookie_secure: bool = False
@@ -61,9 +61,9 @@ def get_settings() -> Settings:
                 "ENCRYPTION_KEY must be set to a valid Fernet key. Generate one with: "
                 "python scripts/generate_secrets.py"
             )
-        settings.encryption_key = Fernet.generate_key().decode()
+        settings.encryption_key = cryptography.fernet.Fernet.generate_key().decode()
     try:
-        Fernet(settings.encryption_key.encode())
+        cryptography.fernet.Fernet(settings.encryption_key.encode())
     except Exception as exc:
         raise InvalidConfigurationError(
             "ENCRYPTION_KEY must be 32 url-safe base64-encoded bytes. Generate one with: "
