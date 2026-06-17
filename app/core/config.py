@@ -35,7 +35,7 @@ class Settings(BaseSettings):
 
 
 def trusted_hosts(settings: Settings) -> list[str]:
-    hosts = {"localhost", "127.0.0.1", "::1", "homelab"}
+    hosts = {"*"}
 
     parsed_host = urlparse(settings.base_url).hostname
     if parsed_host:
