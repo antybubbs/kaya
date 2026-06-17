@@ -134,12 +134,16 @@ If HomeLab is served from a path prefix such as `/homelab`, also set:
 ROOT_PATH=/homelab
 ```
 
-## Security notes
+## Credit
 
-- Product keys are encrypted at rest using application-level Fernet encryption.
-- Users authenticate locally using Argon2 password hashing.
-- Product keys are masked by default and only revealed to authorised admin/editor users.
-- Reveal, create, update, delete, import and export actions are written to an audit log.
-- Secrets are injected using environment variables, not hard-coded.
-- Keep `/app/data`, `/app/uploads` and the `.env` encryption key backed up.
-- Restrict access with VPN, Authentik, Cloudflare Access or an internal network boundary.
+HomeLab Remote Manager is based on the same core architecture used by Termix:
+- WebSocket transport between browser and backend
+- Node.js SSH backend using ssh2
+- xterm-compatible PTY sessions using xterm-256color
+- JSON messages for connectToHost, input, resize, and disconnect
+
+Termix is licensed under the Apache License, Version 2.0.
+
+Original project: https://github.com/Termix-SSH/Termix
+
+Copyright 2025 Luke Gustafson

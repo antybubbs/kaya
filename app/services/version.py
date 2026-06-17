@@ -7,6 +7,7 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 from app.core.config import get_settings
 
+# This setting is linked to the environment variable displayed.
 CACHE_SECONDS = get_settings().version_check_interval_seconds
 
 
