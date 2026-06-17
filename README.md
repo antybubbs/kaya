@@ -136,7 +136,7 @@ ROOT_PATH=/homelab
 
 ## Credit
 
-HomeLab Remote Manager's replacement SSH service is based on the same core architecture used by Termix:
+HomeLab Remote Manager is based on the same core architecture used by Termix:
 - WebSocket transport between browser and backend
 - Node.js SSH backend using ssh2
 - xterm-compatible PTY sessions using xterm-256color
