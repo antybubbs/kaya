@@ -2,19 +2,19 @@
 {% block extra_head %}<link rel="stylesheet" href="/static/css/remote.css?v={{ asset_version }}">{% endblock %}
 {% block main_class %}remote-main{% endblock %}
 {% block content %}
-<div class="remote-workspace" data-remote-tabs data-remote-session-version="homelab-ssh-rewrite-2">
+<div class="remote-workspace" data-remote-tabs data-remote-session-version="homelab-termix-ui-1">
   {% include "_remote_host_rail.html" %}
   <section class="remote-tab-workspace">
     <div class="remote-tabbar" data-remote-tabbar aria-label="Remote sessions"></div>
     <div class="remote-tab-panels" data-remote-tab-panels>
       <section class="remote-console-empty" data-remote-empty>
         <div>
-          <h1>Remote Manager</h1>
-          <p class="muted">Select a host from the left to open an SSH or RDP session.</p>
+          <h1>HomeLab Remote Manager</h1>
+          <p class="muted">Open an SSH or RDP session from the host rail.</p>
         </div>
       </section>
     </div>
   </section>
 </div>
-<script src="/static/js/remote_workspace.js?v={{ asset_version }}&ssh=homelab-rewrite-2" defer></script>
+<script src="/static/js/remote_workspace.js?v={{ asset_version }}&remote-ui=homelab-termix-1" defer></script>
 {% endblock %}

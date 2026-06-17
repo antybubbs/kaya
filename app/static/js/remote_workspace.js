@@ -5,6 +5,9 @@
   const tabbar = root.querySelector("[data-remote-tabbar]");
   const panels = root.querySelector("[data-remote-tab-panels]");
   const empty = root.querySelector("[data-remote-empty]");
+  const searchInput = root.querySelector("[data-remote-search]");
+  const refreshTabsButton = root.querySelector("[data-remote-refresh-tabs]");
+  const noResults = root.querySelector("[data-remote-no-results]");
   const sessionVersion = root.dataset.remoteSessionVersion || "1";
   const storageKey = `homelab.remote.tabs.${sessionVersion}`;
   if (!tabbar || !panels || !empty) return;
@@ -104,7 +107,7 @@
       refresh.type = "button";
       refresh.className = "remote-tab-tool";
       refresh.title = "Refresh connection";
-      refresh.textContent = "r";
+      refresh.textContent = "↻";
       refresh.addEventListener("click", (event) => {
         event.stopPropagation();
         refreshTab(tab.id);
@@ -114,7 +117,7 @@
       close.type = "button";
       close.className = "remote-tab-tool";
       close.title = "Close session";
-      close.textContent = "x";
+      close.textContent = "×";
       close.addEventListener("click", (event) => {
         event.stopPropagation();
         closeTab(tab.id);
@@ -151,10 +154,27 @@
 
   const openTab = (session) => {
     if (!session.url) return;
+    const existing = tabs.find((tab) => tab.remoteId === session.remoteId && tab.protocol === session.protocol);
+    if (existing) {
+      activate(existing.id);
+      return;
+    }
     tabs.push(session);
     activeId = session.id;
     render();
     save();
+  };
+
+  const filterHosts = () => {
+    const query = (searchInput?.value || "").trim().toLowerCase();
+    let visible = 0;
+    root.querySelectorAll(".remote-host-card").forEach((card) => {
+      const text = (card.dataset.remoteSearchText || "").toLowerCase();
+      const hidden = query.length > 0 && !text.includes(query);
+      card.hidden = hidden;
+      if (!hidden) visible += 1;
+    });
+    if (noResults) noResults.hidden = visible > 0;
   };
 
   const closeMenus = (except = null) => {
@@ -188,6 +208,24 @@
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") closeMenus();
   });
+
+  if (searchInput) {
+    searchInput.addEventListener("input", filterHosts);
+    searchInput.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        searchInput.value = "";
+        filterHosts();
+        searchInput.blur();
+      }
+    });
+  }
+
+  if (refreshTabsButton) {
+    refreshTabsButton.addEventListener("click", () => {
+      const activeFrame = panels.querySelector(`[data-remote-panel="${CSS.escape(activeId)}"] iframe`);
+      if (activeFrame) activeFrame.src = activeFrame.src;
+    });
+  }
 
   const restored = safeParse(window.sessionStorage.getItem(storageKey));
   tabs = Array.isArray(restored.tabs) ? restored.tabs : [];
