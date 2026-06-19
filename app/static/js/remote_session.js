@@ -595,6 +595,7 @@
 
   let socket = null;
   let connected = false;
+  let closeHandled = false;
 
   const writeTerminal = (data) => {
   const text = typeof data === "string" ? data : String(data || "");
@@ -668,6 +669,7 @@
     const wsUrl = `${scheme}//${window.location.host}${root.dataset.wsUrl}`;
     term.reset();
     writeTerminal("Connecting...\r\n");
+    closeHandled = false;
     socket = new WebSocket(wsUrl);
 
     socket.addEventListener("open", () => {
@@ -700,9 +702,28 @@
         connected = true;
         fit();
       } else if (message.type === "error") {
+        connected = false;
         writeTerminal(`\r\n${message.message || "SSH connection failed."}\r\n`);
+      } else if (message.type === "closed") {
+        connected = false;
+        closeHandled = true;
+        writeTerminal(`\r\n${message.message || "SSH session closed."}\r\n`);
+
+        try {
+          socket.close();
+        } catch (_error) {
+          // Ignore close errors
+        }
       } else if (message.type === "sessionTakenOver" || message.type === "sessionExpired") {
+        connected = false;
+        closeHandled = true;
         writeTerminal(`\r\n${message.message || "Session ended."}\r\n`);
+
+        try {
+          socket.close();
+        } catch (_error) {
+          // Ignore close errors
+        }
       }
 
       if (connected && document.visibilityState === "visible") {
@@ -714,7 +735,11 @@
     });
     socket.addEventListener("close", () => {
       connected = false;
-      writeTerminal("\r\nSession closed.\r\n");
+
+      if (!closeHandled) {
+        writeTerminal("\r\nSession closed.\r\n");
+      }
+
       passwordForm.hidden = false;
     });
     socket.addEventListener("error", () => writeTerminal("\r\nSession error.\r\n"));
