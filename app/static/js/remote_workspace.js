@@ -7,9 +7,12 @@
   const empty = root.querySelector("[data-remote-empty]");
   const searchInput = root.querySelector("[data-remote-search]");
   const refreshTabsButton = root.querySelector("[data-remote-refresh-tabs]");
+  const hostRail = root.querySelector(".remote-host-rail");
+  const hostResizer = root.querySelector("[data-remote-host-resizer]");
   const noResults = root.querySelector("[data-remote-no-results]");
   const sessionVersion = root.dataset.remoteSessionVersion || "1";
   const storageKey = `homelab.remote.tabs.${sessionVersion}`;
+  const railWidthStorageKey = "homelab.remote.hostRailWidth";
   if (!tabbar || !panels || !empty) return;
 
   let tabs = [];
@@ -23,6 +26,17 @@
     } catch {
       return {};
     }
+  };
+
+  const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+
+  const setHostRailWidth = (width) => {
+    if (!hostRail) return;
+    const nextWidth = clamp(width, 96, 520);
+    root.style.setProperty("--remote-host-rail-width", `${nextWidth}px`);
+    root.classList.toggle("remote-rail-compact", nextWidth < 230);
+    root.classList.toggle("remote-rail-mini", nextWidth < 150);
+    localStorage.setItem(railWidthStorageKey, String(nextWidth));
   };
 
   const save = () => {
@@ -293,6 +307,34 @@
   if (refreshTabsButton) {
     refreshTabsButton.addEventListener("click", () => {
       visibleIds().forEach((id) => refreshTab(id));
+    });
+  }
+
+  if (hostRail && hostResizer) {
+    const storedWidth = Number.parseInt(localStorage.getItem(railWidthStorageKey) || "", 10);
+    if (Number.isFinite(storedWidth)) setHostRailWidth(storedWidth);
+
+    hostResizer.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      const startX = event.clientX;
+      const startWidth = hostRail.getBoundingClientRect().width;
+      hostResizer.setPointerCapture(event.pointerId);
+      document.body.classList.add("remote-resizing");
+
+      const move = (moveEvent) => {
+        setHostRailWidth(startWidth + moveEvent.clientX - startX);
+      };
+
+      const stop = () => {
+        document.body.classList.remove("remote-resizing");
+        hostResizer.removeEventListener("pointermove", move);
+        hostResizer.removeEventListener("pointerup", stop);
+        hostResizer.removeEventListener("pointercancel", stop);
+      };
+
+      hostResizer.addEventListener("pointermove", move);
+      hostResizer.addEventListener("pointerup", stop);
+      hostResizer.addEventListener("pointercancel", stop);
     });
   }
 

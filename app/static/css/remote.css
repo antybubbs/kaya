@@ -6,8 +6,8 @@
 .session-tab.active{background:var(--panel2);color:var(--text);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .session-tab.close-tab{background:transparent;color:var(--muted)}
 .content.remote-main{padding:56px 0 0}
-.remote-workspace{display:grid;grid-template-columns:310px minmax(0,1fr);height:calc(100vh - 56px);min-height:480px}
-.remote-host-rail{background:#0b1016;border-right:1px solid var(--line);display:grid;grid-template-rows:auto auto minmax(0,1fr);min-height:0}
+.remote-workspace{display:grid;grid-template-columns:var(--remote-host-rail-width,310px) minmax(0,1fr);height:calc(100vh - 56px);min-height:480px}
+.remote-host-rail{background:#0b1016;border-right:1px solid var(--line);display:grid;grid-template-rows:auto auto minmax(0,1fr);min-height:0;position:relative}
 .remote-host-header{align-items:center;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;min-height:42px;padding:9px 14px}
 .remote-host-header div{display:grid;gap:1px}
 .remote-host-header strong{font-size:13px}
@@ -40,9 +40,31 @@
 .remote-connect-menu a{border-radius:6px;color:var(--text);font-size:12px;padding:7px 8px}
 .remote-connect-menu a:hover{background:var(--panel2)}
 .remote-host-empty{color:var(--muted);font-size:12px;padding:10px}
+.remote-host-resizer{bottom:0;cursor:col-resize;position:absolute;right:-4px;top:0;width:8px;z-index:12}
+.remote-host-resizer:after{background:transparent;content:"";height:100%;left:3px;position:absolute;top:0;width:2px}
+.remote-host-resizer:hover:after,body.remote-resizing .remote-host-resizer:after{background:#38bdf8}
+body.remote-resizing{cursor:col-resize;user-select:none}
+.remote-rail-compact .remote-host-search label{grid-template-columns:1fr}
+.remote-rail-compact .remote-host-search label span{display:none}
+.remote-rail-compact .remote-host-card{padding:9px 6px}
+.remote-rail-compact .remote-host-main{gap:6px;grid-template-columns:8px minmax(0,1fr)}
+.remote-rail-compact .remote-host-main span.mono{display:none}
+.remote-rail-compact .remote-host-actions{margin-left:14px}
+.remote-rail-compact .remote-connect-menu>summary{font-size:12px}
+.remote-rail-mini .remote-host-header strong,.remote-rail-mini .remote-host-search input,.remote-rail-mini .remote-host-main strong,.remote-rail-mini .remote-connect-menu{display:none}
+.remote-rail-mini .remote-host-header{justify-content:center;padding-left:6px;padding-right:6px}
+.remote-rail-mini .remote-host-header div{place-items:center}
+.remote-rail-mini .remote-host-search{padding:6px}
+.remote-rail-mini .remote-host-search label{display:none}
+.remote-rail-mini .remote-host-toolbar{display:grid;grid-template-columns:1fr;justify-items:center}
+.remote-rail-mini .remote-host-toolbar button,.remote-rail-mini .remote-host-toolbar a{padding:0;width:34px}
+.remote-rail-mini .remote-host-card{align-items:center;justify-items:center;padding:9px 4px}
+.remote-rail-mini .remote-host-main{display:none}
+.remote-rail-mini .remote-host-actions{margin:0}
+.remote-rail-mini .remote-protocol-icon{min-width:34px}
 .remote-tab-workspace{background:#050a12;display:grid;grid-template-rows:42px minmax(0,1fr);min-width:0;min-height:0}
 .remote-tabbar{align-items:end;background:#121827;border-bottom:1px solid var(--line);display:flex;min-width:0;overflow-x:auto;scrollbar-width:thin}
-.remote-session-tab{align-items:center;background:#111827;border-right:1px solid var(--line);border-bottom:2px solid transparent;color:#aeb7a5;cursor:pointer;display:flex;gap:9px;height:42px;min-width:170px;max-width:300px;padding:0 10px;position:relative;user-select:none}
+.remote-session-tab{align-items:center;background:#111827;border-right:1px solid var(--line);border-bottom:2px solid transparent;color:#aeb7a5;cursor:pointer;display:flex;flex:0 1 230px;gap:9px;height:42px;min-width:132px;max-width:300px;padding:0 10px;position:relative;user-select:none}
 .remote-session-tab:hover{background:#172033;color:#f7f7f7}
 .remote-session-tab.active{background:#07111d;border-bottom-color:#fb923c;color:#fff}
 .remote-session-tab.split-visible{box-shadow:inset 0 -2px 0 rgba(56,189,248,.55)}
