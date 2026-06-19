@@ -5,9 +5,9 @@
 {% if error %}<div class="alert">{{ error }}</div>{% endif %}
 <form method="post" class="form-grid">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <label>Email<input name="email" type="email" value="{{ target.email if target else '' }}" required></label>
   <label>First name<input name="first_name" value="{{ target.first_name if target and target.first_name else '' }}"></label>
   <label>Last name<input name="last_name" value="{{ target.last_name if target and target.last_name else '' }}"></label>
+  <label>Email<input name="email" type="email" value="{{ target.email if target else '' }}" required></label>
   <label>Role<select name="role">{% for role in roles %}<option value="{{ role }}" {% if target and target.role == role %}selected{% endif %}>{{ role }}</option>{% endfor %}</select></label>
   <label>Password<input name="password" type="password" autocomplete="new-password" {% if not target %}required{% endif %}></label>
   <label>Active<select name="is_active"><option value="on" {% if not target or target.is_active %}selected{% endif %}>Active</option><option value="" {% if target and not target.is_active %}selected{% endif %}>Disabled</option></select></label>
