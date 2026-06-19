@@ -20,9 +20,32 @@
 
   function saveState() {
     const openMenus = menus
-      .filter((menu) => menu.open)
+      .filter((menu) => menu.open && menu.dataset.sidebarFlyout !== "1")
       .map((menu) => menu.dataset.sidebarMenu);
     localStorage.setItem(storageKey, JSON.stringify(openMenus));
+  }
+
+  function isCollapsed() {
+    return document.body.classList.contains("sidebar-collapsed");
+  }
+
+  function closeFlyout(menu) {
+    if (menu.dataset.sidebarFlyout !== "1") return;
+    menu.open = false;
+    delete menu.dataset.sidebarFlyout;
+  }
+
+  function closeFlyouts(except = null) {
+    menus.forEach((menu) => {
+      if (menu !== except) closeFlyout(menu);
+    });
+  }
+
+  function openFlyout(menu) {
+    if (!isCollapsed()) return;
+    closeFlyouts(menu);
+    menu.dataset.sidebarFlyout = "1";
+    menu.open = true;
   }
 
   function clearState() {
@@ -57,9 +80,31 @@
 
   if (collapseButton) {
     collapseButton.addEventListener("click", () => {
+      closeFlyouts();
       setCollapsed(!document.body.classList.contains("sidebar-collapsed"));
     });
   }
+
+  menus.forEach((menu) => {
+    const summary = menu.querySelector("summary");
+    menu.addEventListener("mouseenter", () => openFlyout(menu));
+    menu.addEventListener("mouseleave", () => closeFlyout(menu));
+    menu.addEventListener("focusin", () => openFlyout(menu));
+    menu.addEventListener("focusout", (event) => {
+      if (!menu.contains(event.relatedTarget)) closeFlyout(menu);
+    });
+    if (summary) {
+      summary.addEventListener("click", (event) => {
+        if (!isCollapsed()) return;
+        event.preventDefault();
+        if (menu.open && menu.dataset.sidebarFlyout === "1") {
+          closeFlyout(menu);
+        } else {
+          openFlyout(menu);
+        }
+      });
+    }
+  });
 
   document.querySelectorAll(".sidebar a.nav-link[href]").forEach((link) => {
     const href = link.getAttribute("href");
