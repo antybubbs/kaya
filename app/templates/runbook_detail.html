@@ -10,7 +10,10 @@
       </div>
       <h1>{{ page.title }}</h1>
       {% if page.summary %}<p class="muted">{{ page.summary }}</p>{% endif %}
-      <p class="muted">Updated {{ page.updated_at.strftime('%d %b %Y %H:%M') if page.updated_at else '-' }}{% if page.updated_by %} by {{ page.updated_by.email }}{% endif %}</p>
+      {% if page.updated_by %}
+      {% set updated_by_name = ((page.updated_by.first_name or '') ~ ' ' ~ (page.updated_by.last_name or ''))|trim %}
+      {% endif %}
+      <p class="muted">Updated {{ page.updated_at.strftime('%d %b %Y %H:%M') if page.updated_at else '-' }}{% if page.updated_by %} by {{ updated_by_name or page.updated_by.email }}{% endif %}</p>
     </div>
     <div class="form-actions">
       <a class="button secondary" href="/documentation/runbook-manager">Back</a>
@@ -46,7 +49,10 @@
         {% if history %}
         <div class="runbook-history">
           {% for item in history %}
-          <div><strong>{{ item.saved_at.strftime('%d %b %Y %H:%M') }}</strong><span>{{ item.saved_by.email if item.saved_by else 'Unknown user' }}</span></div>
+          {% if item.saved_by %}
+          {% set saved_by_name = ((item.saved_by.first_name or '') ~ ' ' ~ (item.saved_by.last_name or ''))|trim %}
+          {% endif %}
+          <div><strong>{{ item.saved_at.strftime('%d %b %Y %H:%M') }}</strong><span>{% if item.saved_by %}{{ saved_by_name or item.saved_by.email }}{% else %}Unknown user{% endif %}</span></div>
           {% endfor %}
         </div>
         {% else %}
