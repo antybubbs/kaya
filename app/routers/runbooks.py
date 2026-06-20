@@ -150,6 +150,40 @@ def pages_for_parent_select(db: Session, page_id: int | None = None) -> list[Run
     return query.order_by(RunbookPage.title.asc()).all()
 
 
+def hierarchical_pages(pages: list[RunbookPage]) -> list[dict]:
+    page_map = {page.id: page for page in pages}
+    order = {page.id: index for index, page in enumerate(pages)}
+    children_by_parent: dict[int, list[RunbookPage]] = {}
+    roots: list[RunbookPage] = []
+
+    for page in pages:
+        if page.parent_id and page.parent_id in page_map:
+            children_by_parent.setdefault(page.parent_id, []).append(page)
+        else:
+            roots.append(page)
+
+    def sort_key(page: RunbookPage) -> tuple:
+        return (page.title.lower(), order.get(page.id, 0))
+
+    for children in children_by_parent.values():
+        children.sort(key=sort_key)
+
+    flattened: list[dict] = []
+
+    def add_page(page: RunbookPage, depth: int, seen: set[int]) -> None:
+        if page.id in seen:
+            return
+        next_seen = {*seen, page.id}
+        flattened.append({"page": page, "depth": depth})
+        for child in children_by_parent.get(page.id, []):
+            add_page(child, depth + 1, next_seen)
+
+    for root in roots:
+        add_page(root, 0, set())
+
+    return flattened
+
+
 def optional_int(value: str | None) -> int | None:
     if not value:
         return None
@@ -202,6 +236,7 @@ def runbook_home(
         {
             "user": user,
             "pages": pages,
+            "table_pages": hierarchical_pages(pages),
             "spaces": spaces,
             "total": db.query(RunbookPage).count(),
             "q": clean_q,

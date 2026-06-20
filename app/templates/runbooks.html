@@ -97,10 +97,16 @@
           </tr>
         </thead>
         <tbody>
-          {% for page in pages %}
+          {% for row in table_pages %}
+          {% set page = row.page %}
           <tr>
             <td class="action-col"><a class="button secondary" href="/documentation/runbook-manager/{{ page.slug }}">Open</a></td>
-            <td><strong>{{ page.title }}</strong></td>
+            <td>
+              <a class="runbook-tree-title" href="/documentation/runbook-manager/{{ page.slug }}" style="--runbook-depth: {{ row.depth }}">
+                {% if row.depth %}<span class="runbook-tree-branch" aria-hidden="true"></span>{% endif %}
+                <strong>{{ page.title }}</strong>
+              </a>
+            </td>
             <td>{% if page.space %}<span class="table-chip">{{ page.space.name }}</span>{% else %}-{% endif %}</td>
             <td>{{ page.summary or '-' }}</td>
             <td>{% if page.tags %}{{ page.tags }}{% else %}-{% endif %}</td>
