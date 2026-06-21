@@ -2,24 +2,22 @@
 {% block content %}
 <section class="module-header">
   <div class="module-title-row">
-    <div class="module-title">
+    <div class="module-heading">
       <h1>Domain Manager</h1>
-      <span class="module-stat">Domains <strong>{{ total }}</strong></span>
+      <p class="muted">Track domain ownership, registration dates, nameservers and DNS records.</p>
     </div>
-    <p class="muted">Track domain ownership, registration dates, nameservers and DNS records.</p>
+    <span class="module-stat">Domains <strong>{{ total }}</strong></span>
   </div>
-  <div class="module-toolbar domain-manager-toolbar">
-    <div class="domain-manager-primary">
+  <div class="module-toolbar">
+    <div class="module-primary-actions">
       <form class="search list-search" method="get">
         <input name="q" placeholder="Search domains..." value="{{ q }}">
         <button>Search</button>
       </form>
-      {% if user.role in ['admin','editor'] %}
-      <a class="button" href="/networking/domain-manager/new">Add Domain</a>
-      {% endif %}
+      {% if user.role in ['admin','editor'] %}<a class="button" href="/networking/domain-manager/new">Add Domain</a>{% endif %}
     </div>
     {% if user.role in ['admin','editor'] %}
-    <form class="inline-actions domain-poll-controls" method="post" action="/networking/domain-manager/poll-cadence">
+    <form class="module-secondary-actions domain-poll-controls" method="post" action="/networking/domain-manager/poll-cadence">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <label class="muted" for="domain-poll-cadence">Poll domains</label>
       <select id="domain-poll-cadence" name="cadence">

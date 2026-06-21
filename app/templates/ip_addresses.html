@@ -2,27 +2,28 @@
 {% block content %}
 <section class="module-header">
   <div class="module-title-row">
-    <div class="module-title">
+    <div class="module-heading">
       <h1>VLAN/IP Manager</h1>
-      <span class="module-stat">Total <strong>{{ total }}</strong></span>
+      <p class="muted">Manage VLANs, IP allocations, categories and device assignments.</p>
     </div>
+    <span class="module-stat">Records <strong>{{ total }}</strong></span>
   </div>
   <div class="module-toolbar">
-    <form class="search list-search" method="get">
-      {% if active_category %}<input type="hidden" name="category" value="{{ active_category }}">{% endif %}
-      <input name="q" placeholder="Search VLAN/IP records..." value="{{ q }}">
-      <button>Search</button>
-    </form>
-    <div class="module-actions">
+    <div class="module-primary-actions">
+      <form class="search list-search" method="get">
+        {% if active_category %}<input type="hidden" name="category" value="{{ active_category }}">{% endif %}
+        <input name="q" placeholder="Search VLAN/IP records..." value="{{ q }}">
+        <button>Search</button>
+      </form>
       {% if user.role in ['admin','editor'] %}<a class="button" href="/networking/vlan-ip-manager/new">Add IP</a>{% endif %}
     </div>
-    <nav class="category-tabs" aria-label="VLAN/IP categories">
-      <a class="{% if not active_category %}active{% endif %}" href="/networking/vlan-ip-manager{% if q %}?q={{ q|urlencode }}{% endif %}">All</a>
-      {% for category in categories %}
-      <a class="{% if active_category == category %}active{% endif %}" href="/networking/vlan-ip-manager?category={{ category|urlencode }}{% if q %}&q={{ q|urlencode }}{% endif %}">{{ category }}</a>
-      {% endfor %}
-    </nav>
   </div>
+  <nav class="category-tabs module-filters" aria-label="VLAN/IP categories">
+    <a class="{% if not active_category %}active{% endif %}" href="/networking/vlan-ip-manager{% if q %}?q={{ q|urlencode }}{% endif %}">All</a>
+    {% for category in categories %}
+    <a class="{% if active_category == category %}active{% endif %}" href="/networking/vlan-ip-manager?category={{ category|urlencode }}{% if q %}&q={{ q|urlencode }}{% endif %}">{{ category }}</a>
+    {% endfor %}
+  </nav>
 </section>
 <section class="panel">
 <form method="post" action="/networking/vlan-ip-manager/bulk-update" data-ip-bulk-form>

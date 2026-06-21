@@ -1,6 +1,14 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="topbar"><div><h1>IP/WAN Monitor</h1><p class="muted">Ping checks for IP addresses enabled from the VLAN/IP Manager form.</p></div></div>
+<section class="module-header">
+  <div class="module-title-row">
+    <div class="module-heading">
+      <h1>IP/WAN Monitor</h1>
+      <p class="muted">Ping checks for IP addresses enabled from the VLAN/IP Manager form.</p>
+    </div>
+    <span class="module-stat">Monitors <strong>{{ total }}</strong></span>
+  </div>
+</section>
 <div data-monitor-content>
   {% include "_network_monitor_cards.html" %}
 </div>

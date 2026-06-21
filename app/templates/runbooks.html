@@ -2,25 +2,27 @@
 {% block content %}
 <section class="module-header runbook-header">
   <div class="module-title-row">
-    <div class="module-title">
+    <div class="module-heading">
       <h1>Runbook Manager</h1>
-      <span class="module-stat">Pages <strong>{{ total }}</strong></span>
+      <p class="muted">Store notes, recovery steps, service documentation and homelab knowledge.</p>
     </div>
-    <p class="muted">Store notes, recovery steps, service docs and homelab knowledge. Its your HomeLab "wikipedia"</p>
+    <span class="module-stat">Pages <strong>{{ total }}</strong></span>
   </div>
   <div class="module-toolbar">
-    <form class="search list-search" method="get">
-      {% if active_space %}<input type="hidden" name="space" value="{{ active_space }}">{% endif %}
-      {% if active_tag %}<input type="hidden" name="tag" value="{{ active_tag }}">{% endif %}
-      <input name="q" placeholder="Search runbooks..." value="{{ q }}">
-      <button>Search</button>
-    </form>
-    <div class="module-actions">
+    <div class="module-primary-actions">
+      <form class="search list-search" method="get">
+        {% if active_space %}<input type="hidden" name="space" value="{{ active_space }}">{% endif %}
+        {% if active_tag %}<input type="hidden" name="tag" value="{{ active_tag }}">{% endif %}
+        <input name="q" placeholder="Search runbooks..." value="{{ q }}">
+        <button>Search</button>
+      </form>
+      {% if user.role in ['admin','editor'] %}<a class="button" href="/documentation/runbook-manager/new">New Page</a>{% endif %}
+    </div>
+    <div class="module-secondary-actions">
       <div class="runbook-view-toggle" role="group" aria-label="Runbook view">
         <button class="button secondary" type="button" data-runbook-view-button="tiles">Tiles</button>
         <button class="button secondary" type="button" data-runbook-view-button="table">Table</button>
       </div>
-      {% if user.role in ['admin','editor'] %}<a class="button" href="/documentation/runbook-manager/new">New Page</a>{% endif %}
     </div>
   </div>
 </section>
