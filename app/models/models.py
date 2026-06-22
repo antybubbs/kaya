@@ -294,6 +294,8 @@ class ComputeHost(Base):
     base_url: Mapped[str] = mapped_column(String(500))
     token_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     encrypted_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    agent_token: Mapped[str | None] = mapped_column(String(128), nullable=True, unique=True, index=True)
+    agent_last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     verify_tls: Mapped[bool] = mapped_column(Boolean, default=True)
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     poll_interval_seconds: Mapped[int] = mapped_column(Integer, default=30)
