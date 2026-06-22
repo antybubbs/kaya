@@ -55,7 +55,7 @@ def new_host(request:Request,user=Depends(require_editor)):
     return templates.TemplateResponse(request,'compute_host_form.html',context(user=user,host=None,error=None,**csrf_context(request)))
 
 @router.post('/hosts/new')
-def create_host(request:Request,name:str=Form(...,max_length=255),platform:str=Form(...),base_url:str=Form(...,max_length=500),token_id:str=Form('',max_length=255),token_secret:str=Form('',max_length=2000),verify_tls:str=Form(''),is_enabled:str=Form(''),poll_interval_seconds:int=Form(30),owner:str=Form('',max_length=255),notes:str=Form('',max_length=10000),csrf_token:str=Form(...),db:Session=Depends(get_db),user=Depends(require_editor)):
+def create_host(request:Request,name:str=Form(...,max_length=255),platform:str=Form(...),base_url:str=Form("",max_length=500),token_id:str=Form('',max_length=255),token_secret:str=Form('',max_length=2000),verify_tls:str=Form(''),is_enabled:str=Form(''),poll_interval_seconds:int=Form(30),owner:str=Form('',max_length=255),notes:str=Form('',max_length=10000),csrf_token:str=Form(...),db:Session=Depends(get_db),user=Depends(require_editor)):
     validate_csrf_token(request,csrf_token); platform=platform.strip().lower(); clean_name=name.strip(); clean_url=base_url.strip()
     error=None
     if platform not in {'docker','docker_agent','proxmox'}:
@@ -97,7 +97,7 @@ def edit_host(request:Request,host_id:int,db:Session=Depends(get_db),user=Depend
     return templates.TemplateResponse(request,'compute_host_form.html',context(user=user,host=host,error=None,**csrf_context(request)))
 
 @router.post('/hosts/{host_id}/edit')
-def update_host(request:Request,host_id:int,name:str=Form(...),platform:str=Form(...),base_url:str=Form(...),token_id:str=Form(''),token_secret:str=Form(''),verify_tls:str=Form(''),is_enabled:str=Form(''),poll_interval_seconds:int=Form(30),owner:str=Form(''),notes:str=Form(''),csrf_token:str=Form(...),db:Session=Depends(get_db),user=Depends(require_editor)):
+def update_host(request:Request,host_id:int,name:str=Form(...),platform:str=Form(...),base_url:str=Form(""),token_id:str=Form(''),token_secret:str=Form(''),verify_tls:str=Form(''),is_enabled:str=Form(''),poll_interval_seconds:int=Form(30),owner:str=Form(''),notes:str=Form(''),csrf_token:str=Form(...),db:Session=Depends(get_db),user=Depends(require_editor)):
     validate_csrf_token(request,csrf_token); host=db.get(ComputeHost,host_id)
     if not host: raise HTTPException(404,'Host not found')
     platform=platform.strip().lower()
