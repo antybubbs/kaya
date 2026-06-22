@@ -148,7 +148,11 @@ async def compute_monitor_loop():
     await asyncio.sleep(20)
     while True:
         db=SessionLocal(); now=datetime.utcnow()
-        try: ids=[h.id for h in db.query(ComputeHost).filter_by(is_enabled=True).all() if not h.last_synced_at or h.last_synced_at<=now-timedelta(seconds=max(15,min(h.poll_interval_seconds,3600)))]
+        try: def sync_host(db,host):
+    if host.platform == 'docker_agent':
+        return
+
+    now=datetime.utcnow(); old_host_status=host.status
         finally: db.close()
         if ids: await asyncio.gather(*(asyncio.to_thread(sync_host_by_id,i) for i in ids[:3]),return_exceptions=True)
         await asyncio.sleep(5)
