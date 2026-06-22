@@ -13,6 +13,7 @@ from app.models.models import ComputeEvent, ComputeHost, ComputeInventoryItem, C
 from app.routers.auth import require_editor, require_user
 from app.services.audit import write_audit
 from app.services.compute_monitor import compute_summary, sync_host
+from datetime import datetime
 
 router=APIRouter(prefix='/infrastructure/vm-docker-manager')
 templates=Jinja2Templates(directory='app/templates')
@@ -127,6 +128,55 @@ def delete_host(request:Request,host_id:int,csrf_token:str=Form(...),db:Session=
     for model in (ComputeMetric,ComputeEvent,ComputeInventoryItem,ComputeWorkload): db.query(model).filter(model.host_id==host.id).delete(synchronize_session=False)
     db.delete(host); db.commit(); write_audit(db,user,'delete','compute_host',None,request.client.host if request.client else None,detail=name)
     return RedirectResponse('/infrastructure/vm-docker-manager',status_code=303)
+
+@router.post('/api/agent/checkin')
+async def agent_checkin(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    auth = request.headers.get('authorization', '')
+
+    if not auth.lower().startswith('bearer '):
+        raise HTTPException(
+            status_code=401,
+            detail='Missing agent token'
+        )
+
+    token = auth.split(' ', 1)[1].strip()
+
+    host = (
+        db.query(ComputeHost)
+        .filter(
+            ComputeHost.platform == 'docker_agent',
+            ComputeHost.agent_token == token,
+        )
+        .first()
+    )
+
+    if not host:
+        raise HTTPException(
+            status_code=401,
+            detail='Invalid agent token'
+        )
+
+    payload = await request.json()
+
+    now = datetime.utcnow()
+
+    host.status = 'online'
+    host.last_synced_at = now
+    host.agent_last_seen_at = now
+    host.last_error = None
+
+    if payload.get('version'):
+        host.version = payload['version']
+
+    db.commit()
+
+    return JSONResponse({
+        'ok': True,
+        'host': host.name,
+    })
 
 @router.get('/workloads/{workload_id}')
 def workload_detail(request:Request,workload_id:int,db:Session=Depends(get_db),user=Depends(require_user)):
