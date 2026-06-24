@@ -24,9 +24,12 @@
 .remote-host-group-heading{align-items:center;background:#0f1722;border:0;border-bottom:1px solid var(--line);border-radius:0;color:#cbd5e1;cursor:pointer;display:flex;font-size:11px;justify-content:space-between;margin-top:5px;min-height:30px;padding:7px 9px;text-align:left;text-transform:uppercase;width:100%}
 .remote-host-group-heading:hover{background:#152131;color:#f8fafc}
 .remote-host-group-heading.collapsed{color:#94a3b8}
+.remote-host-group-heading strong:before{content:"- "}
+.remote-host-group-heading.collapsed strong:before{content:"+ "}
 .remote-host-group-heading:first-child{margin-top:0}
 .remote-host-group-heading span{color:#f59e0b;font-size:10px}
 .remote-host-card{background:rgba(255,255,255,.024);border-left:3px solid transparent;display:grid;gap:7px;min-height:0;padding:10px 9px}
+.remote-host-card[hidden],.remote-host-group-heading[hidden]{display:none!important}
 .remote-host-card:hover,.remote-host-card.active{background:rgba(148,163,184,.09)}
 .remote-host-card.active{border-left-color:#fb923c}
 .remote-host-card.split-active{box-shadow:inset 2px 0 0 rgba(56,189,248,.7)}

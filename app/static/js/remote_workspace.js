@@ -302,7 +302,7 @@
         const name = document.createElement("strong");
         const count = document.createElement("span");
         const collapsed = collapsedGroups.has(category);
-        name.textContent = `${collapsed ? "▸" : "▾"} ${category}`;
+        name.textContent = category;
         count.textContent = String(groups.get(category).length);
         heading.classList.toggle("collapsed", collapsed);
         heading.setAttribute("aria-expanded", collapsed ? "false" : "true");
