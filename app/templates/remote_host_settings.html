@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block extra_head %}<link rel="stylesheet" href="/static/css/remote.css?v={{ asset_version }}">{% endblock %}
+{% macro override_select(key, label, options, overrides) %}
+<label>{{ label }}
+  {% set current = overrides.get(key, '') %}
+  <select name="override_{{ key }}">
+    <option value="">Global default</option>
+    {% for value, text in options %}<option value="{{ value }}" {% if current == value %}selected{% endif %}>{{ text }}</option>{% endfor %}
+  </select>
+</label>
+{% endmacro %}
+{% block content %}
+<div class="topbar">
+  <div><h1>Host remote settings</h1><p class="muted">{{ remote_label }} · {{ remote.ip_address.address }}</p></div>
+  <a class="button secondary" href="/remote-manager">Back to Remote Manager</a>
+</div>
+<form method="post" class="remote-settings-shell">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <section class="remote-settings-card">
+    <header><span>Connection</span></header>
+    <div class="remote-settings-grid two">
+      <label class="checkbox-label"><input name="remote_enabled" type="checkbox" value="1" {% if remote.is_enabled %}checked{% endif %}> Show in Remote Manager</label>
+      <label>Display name<input name="remote_display_name" value="{{ remote.display_name or '' }}" placeholder="{{ remote.ip_address.name or remote.ip_address.address }}"></label>
+      <label>Protocol<select name="remote_protocol"><option value="ssh" {% if remote.protocol == 'ssh' %}selected{% endif %}>SSH</option><option value="rdp" {% if remote.protocol == 'rdp' %}selected{% endif %}>RDP</option></select></label>
+      <label>Port<input name="remote_port" type="number" min="1" max="65535" value="{{ remote.port }}"></label>
+      <label>Username<input name="remote_username" autocomplete="username" value="{{ remote.username or '' }}"></label>
+      <label>IP/WAN record<input value="{{ remote.ip_address.address }} · {{ remote.ip_address.category or 'Uncategorised' }}" disabled></label>
+    </div>
+  </section>
+  <section class="remote-settings-card">
+    <header><span>Terminal overrides</span></header>
+    <div class="remote-settings-grid two">
+      {{ override_select('terminal_theme', 'Theme', [('homelab','HomeLab Default'),('homelabDark','HomeLab Dark'),('homelabLight','HomeLab Light'),('nightOwl','Night Owl'),('dracula','Dracula'),('monokai','Monokai'),('nord','Nord'),('oneDark','One Dark'),('tokyoNight','Tokyo Night')], remote_terminal_overrides) }}
+      <label>Font size<input name="override_terminal_font_size" type="number" min="8" max="28" placeholder="Global {{ remote_defaults.terminal_font_size }}" value="{{ remote_terminal_overrides.get('terminal_font_size', '') }}"></label>
+      {{ override_select('terminal_cursor_style', 'Cursor style', [('bar','Bar'),('block','Block'),('underline','Underline')], remote_terminal_overrides) }}
+      {{ override_select('terminal_cursor_blink', 'Cursor blinking', [('1','On'),('0','Off')], remote_terminal_overrides) }}
+      {{ override_select('terminal_syntax_highlighting', 'Syntax highlighting', [('1','On'),('0','Off')], remote_terminal_overrides) }}
+      <label>Scrollback buffer<input name="override_terminal_scrollback" type="number" min="1000" max="100000" step="1000" placeholder="Global {{ remote_defaults.terminal_scrollback }}" value="{{ remote_terminal_overrides.get('terminal_scrollback', '') }}"></label>
+      {{ override_select('terminal_backspace_mode', 'Backspace mode', [('normal','Normal (DEL)'),('bs','Backspace (BS)')], remote_terminal_overrides) }}
+    </div>
+  </section>
+  <section class="remote-settings-card">
+    <header><span>RDP overrides</span></header>
+    <div class="remote-settings-grid two">
+      {{ override_select('rdp_enable_wallpaper', 'Wallpaper', [('1','On'),('0','Off')], remote_rdp_overrides) }}
+      {{ override_select('rdp_enable_font_smoothing', 'Font smoothing', [('1','On'),('0','Off')], remote_rdp_overrides) }}
+      {{ override_select('rdp_enable_gfx', 'GFX pipeline', [('1','On'),('0','Off')], remote_rdp_overrides) }}
+      {{ override_select('rdp_resize_method', 'Resize method', [('display-update','Display Update (fast)'),('reconnect','Reconnect (VPN-safe)')], remote_rdp_overrides) }}
+      {{ override_select('rdp_disable_audio', 'Audio', [('0','Enabled'),('1','Disabled')], remote_rdp_overrides) }}
+    </div>
+  </section>
+  <div class="remote-settings-actions">
+    <a class="button secondary" href="/networking/vlan-ip-manager/{{ remote.ip_address.id }}">View IP/WAN record</a>
+    <button type="submit">Save host remote settings</button>
+  </div>
+</form>
+{% endblock %}

@@ -6,19 +6,23 @@
   const panels = root.querySelector("[data-remote-tab-panels]");
   const empty = root.querySelector("[data-remote-empty]");
   const searchInput = root.querySelector("[data-remote-search]");
+  const groupToggle = root.querySelector("[data-remote-group-toggle]");
   const refreshTabsButton = root.querySelector("[data-remote-refresh-tabs]");
+  const hostList = root.querySelector(".remote-host-list");
   const hostRail = root.querySelector(".remote-host-rail");
   const hostResizer = root.querySelector("[data-remote-host-resizer]");
   const noResults = root.querySelector("[data-remote-no-results]");
   const sessionVersion = root.dataset.remoteSessionVersion || "1";
   const storageKey = `homelab.remote.tabs.${sessionVersion}`;
   const railWidthStorageKey = "homelab.remote.hostRailWidth";
+  const groupViewStorageKey = "homelab.remote.groupView";
   if (!tabbar || !panels || !empty) return;
 
   let tabs = [];
   let activeId = "";
   let splitEnabled = false;
   let splitIds = [];
+  let groupViewEnabled = localStorage.getItem(groupViewStorageKey) === "1";
 
   const safeParse = (value) => {
     try {
@@ -264,7 +268,47 @@
       card.hidden = hidden;
       if (!hidden) visible += 1;
     });
+    root.querySelectorAll(".remote-host-group-heading").forEach((heading) => {
+      const category = heading.dataset.remoteCategory;
+      heading.hidden = !Array.from(root.querySelectorAll(".remote-host-card")).some(
+        (card) => card.dataset.remoteCategory === category && !card.hidden,
+      );
+    });
     if (noResults) noResults.hidden = visible > 0;
+  };
+
+  const applyHostGrouping = () => {
+    if (!hostList) return;
+    hostList.querySelectorAll(".remote-host-group-heading").forEach((heading) => heading.remove());
+    const cards = Array.from(hostList.querySelectorAll(".remote-host-card"));
+    if (groupViewEnabled) {
+      const groups = new Map();
+      cards.forEach((card) => {
+        const category = card.dataset.remoteCategory || "Uncategorised";
+        if (!groups.has(category)) groups.set(category, []);
+        groups.get(category).push(card);
+      });
+      Array.from(groups.keys()).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" })).forEach((category) => {
+        const heading = document.createElement("div");
+        heading.className = "remote-host-group-heading";
+        heading.dataset.remoteCategory = category;
+        const name = document.createElement("strong");
+        const count = document.createElement("span");
+        name.textContent = category;
+        count.textContent = String(groups.get(category).length);
+        heading.append(name, count);
+        hostList.append(heading, ...groups.get(category));
+      });
+    } else {
+      cards.sort((a, b) => Number(a.dataset.remoteOrder) - Number(b.dataset.remoteOrder));
+      hostList.append(...cards);
+    }
+    if (groupToggle) {
+      groupToggle.classList.toggle("active", groupViewEnabled);
+      groupToggle.textContent = groupViewEnabled ? "List" : "Grp";
+      groupToggle.title = groupViewEnabled ? "Show a flat host list" : "Group hosts by IP/WAN category";
+    }
+    filterHosts();
   };
 
   const closeMenus = (except = null) => {
@@ -310,6 +354,14 @@
     });
   }
 
+  if (groupToggle) {
+    groupToggle.addEventListener("click", () => {
+      groupViewEnabled = !groupViewEnabled;
+      localStorage.setItem(groupViewStorageKey, groupViewEnabled ? "1" : "0");
+      applyHostGrouping();
+    });
+  }
+
   if (refreshTabsButton) {
     refreshTabsButton.addEventListener("click", () => {
       visibleIds().forEach((id) => refreshTab(id));
@@ -349,5 +401,6 @@
   activeId = restored.activeId || tabs[0]?.id || "";
   splitEnabled = Boolean(restored.splitEnabled);
   splitIds = Array.isArray(restored.splitIds) ? restored.splitIds : [];
+  applyHostGrouping();
   render();
 })();

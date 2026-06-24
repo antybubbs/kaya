@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session, selectinload
 from starlette import status
@@ -20,7 +20,7 @@ from app.core.config import get_settings
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.db.session import SessionLocal, get_db
 from app.models.models import RemoteAccess, RemoteManagerSetting, User
-from app.routers.auth import require_admin, require_user
+from app.routers.auth import require_admin, require_editor, require_user
 from app.services.audit import write_audit
 from app.services.guacamole_bridge import restart_guacamole_bridge, start_guacamole_bridge
 
@@ -217,6 +217,35 @@ def effective_remote_settings(row: RemoteAccess, global_settings: dict[str, str]
     terminal.update({key: clean_global_setting(key, value) for key, value in decode_settings_blob(row.terminal_settings).items() if key in terminal})
     rdp.update({key: clean_global_setting(key, value) for key, value in decode_settings_blob(row.rdp_settings).items() if key in rdp})
     return {"terminal": terminal, "rdp": rdp}
+
+
+def remote_override_settings(form, keys: list[str]) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for key in keys:
+        value = str(form.get(f"override_{key}", ""))
+        if value != "":
+            values[key] = clean_global_setting(key, value)
+    return values
+
+
+def remote_host_settings_context(row: RemoteAccess, db: Session) -> dict:
+    terminal_overrides = decode_settings_blob(row.terminal_settings)
+    rdp_overrides = decode_settings_blob(row.rdp_settings)
+    return {
+        "remote": row,
+        "remote_label": remote_label(row),
+        "remote_defaults": settings_map(db),
+        "remote_terminal_overrides": {
+            key: clean_global_setting(key, value)
+            for key, value in terminal_overrides.items()
+            if key in TERMINAL_SETTING_KEYS
+        },
+        "remote_rdp_overrides": {
+            key: clean_global_setting(key, value)
+            for key, value in rdp_overrides.items()
+            if key in RDP_SETTING_KEYS
+        },
+    }
 
 
 def settings_map(db: Session) -> dict[str, str]:
@@ -451,6 +480,37 @@ def remote_session(request: Request, remote_id: int, db: Session = Depends(get_d
     remote_settings = effective_remote_settings(row, settings)
     title = remote_label(row)
     return templates.TemplateResponse(request, "remote_session.html", {"user": user, "remote": row, "rows": rows, "remote_label": title, "remote_label_fn": remote_label, "settings": settings, "remote_settings": remote_settings, **csrf_context(request)})
+
+
+@router.get("/{remote_id}/settings")
+def remote_host_settings(request: Request, remote_id: int, db: Session = Depends(get_db), user=Depends(require_editor)):
+    row = db.get(RemoteAccess, remote_id)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Remote access entry not found")
+    return templates.TemplateResponse(
+        request,
+        "remote_host_settings.html",
+        {"user": user, **remote_host_settings_context(row, db), **csrf_context(request)},
+    )
+
+
+@router.post("/{remote_id}/settings")
+async def save_remote_host_settings(request: Request, remote_id: int, csrf_token: str = Form(...), remote_display_name: str = Form("", max_length=255), remote_protocol: str = Form("ssh"), remote_port: int = Form(22), remote_username: str = Form("", max_length=120), db: Session = Depends(get_db), user=Depends(require_editor)):
+    validate_csrf_token(request, csrf_token)
+    row = db.get(RemoteAccess, remote_id)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Remote access entry not found")
+    form = await request.form()
+    row.display_name = remote_display_name.strip() or None
+    row.is_enabled = bool(form.get("remote_enabled"))
+    row.protocol = clean_protocol(remote_protocol)
+    row.port = clean_port(remote_port, row.protocol)
+    row.username = remote_username.strip() or None
+    row.terminal_settings = encode_settings_blob(remote_override_settings(form, TERMINAL_SETTING_KEYS))
+    row.rdp_settings = encode_settings_blob(remote_override_settings(form, RDP_SETTING_KEYS))
+    db.commit()
+    write_audit(db, user, "update", "remote_access", entity_id=str(row.id), ip_address=request.client.host if request.client else None, detail=f"Updated Remote Manager settings for {remote_label(row)}")
+    return RedirectResponse("/remote-manager", status_code=303)
 
 
 @router.get("/{remote_id}/panel")
