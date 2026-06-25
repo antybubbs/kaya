@@ -2,7 +2,7 @@ name: homelab-demo
 
 services:
   homelab:
-    image: ${HOMELAB_IMAGE:-ghcr.io/antybubbs/homelab:dev0.19.0}
+    image: ${HOMELAB_IMAGE:-ghcr.io/antybubbs/homelab:latest}
     restart: unless-stopped
     env_file:
       - path: .env.demo
