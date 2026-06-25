@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="module-header rack-hero">
+  <div class="module-title-row">
+    <div class="module-heading">
+      <h1>Rack Manager</h1>
+      <p class="muted">Build visual rack elevations from HomeLab inventory assets.</p>
+    </div>
+    <span class="module-stat">Placed devices <strong>{{ total_items }}</strong></span>
+  </div>
+</section>
+{% if user.role in ['admin','editor'] %}
+<section class="panel rack-create-panel">
+  <div class="panel-heading"><div><h2>Create rack</h2><p class="muted">Start with a named rack, location and height in U.</p></div></div>
+  <form class="rack-form-grid" method="post" action="/infrastructure/rack-manager/new">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Name<input name="name" required placeholder="Lab rack A"></label>
+    <label>Location<input name="location" placeholder="Garage, office, cabinet"></label>
+    <label>Height U<input name="height_u" type="number" min="1" max="58" value="42" required></label>
+    <label>Sort<input name="sort_order" type="number" value="0"></label>
+    <label class="wide">Notes<textarea name="description" rows="2"></textarea></label>
+    <div class="rack-form-actions"><button type="submit">Create Rack</button></div>
+  </form>
+</section>
+{% endif %}
+{% if racks %}
+<section class="rack-card-grid section-gap">
+  {% for rack in racks %}
+  {% set used = rack.items|sum(attribute='height_u') %}
+  <a class="rack-card" href="/infrastructure/rack-manager/{{ rack.id }}">
+    <div class="rack-card-mini" aria-hidden="true">
+      {% for unit in range(rack.height_u, 0, -1) %}<i class="{% if unit <= used %}filled{% endif %}"></i>{% endfor %}
+    </div>
+    <div>
+      <strong>{{ rack.name }}</strong>
+      <span>{{ rack.location or 'No location' }}</span>
+      <small>{{ rack.height_u }}U rack - {{ rack.items|length }} devices - {{ rack.height_u - used }}U open</small>
+    </div>
+  </a>
+  {% endfor %}
+</section>
+{% else %}
+<section class="panel empty-state section-gap">
+  <h2>No racks yet</h2>
+  <p class="muted">Create your first rack to place hardware assets into a front elevation.</p>
+</section>
+{% endif %}
+{% endblock %}

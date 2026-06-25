@@ -198,6 +198,35 @@ class HardwareAssetAttachment(Base):
     uploaded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     asset = relationship("HardwareAsset")
 
+class Rack(Base):
+    __tablename__ = "racks"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), index=True)
+    location: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    height_u: Mapped[int] = mapped_column(Integer, default=42)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    items = relationship("RackItem", back_populates="rack", cascade="all, delete-orphan")
+
+
+class RackItem(Base):
+    __tablename__ = "rack_items"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    rack_id: Mapped[int] = mapped_column(ForeignKey("racks.id"), index=True)
+    hardware_asset_id: Mapped[int | None] = mapped_column(ForeignKey("hardware_assets.id"), nullable=True, index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    start_u: Mapped[int] = mapped_column(Integer)
+    height_u: Mapped[int] = mapped_column(Integer, default=1)
+    mount_side: Mapped[str] = mapped_column(String(20), default="front", index=True)
+    color: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    category: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    rack = relationship("Rack", back_populates="items")
+    hardware_asset = relationship("HardwareAsset")
 
 class CustomField(Base):
     __tablename__ = "custom_fields"

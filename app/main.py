@@ -14,7 +14,7 @@ from app.core.demo import demo_request_is_blocked
 from app.core.security import decrypt_secret, hash_password
 from app.db.session import Base, engine, SessionLocal
 from app.models.models import AuditLog, User, VLAN
-from app.routers import auth, dashboard, licences, admin, ip_addresses, hardware_assets, network_monitor, remote_manager, runbooks, domain_manager, compute_manager
+from app.routers import auth, dashboard, licences, admin, ip_addresses, hardware_assets, network_monitor, remote_manager, runbooks, domain_manager, compute_manager, rack_manager
 from app.services.guacamole_bridge import stop_guacamole_bridge
 from app.services.homelab_remote_service import start_homelab_remote_service, stop_homelab_remote_service
 from app.services.network_monitor import monitor_loop
@@ -258,6 +258,19 @@ def migrate_existing_database():
             conn.execute(text("CREATE TABLE hardware_assets (id INTEGER NOT NULL PRIMARY KEY, asset_tag VARCHAR(120) UNIQUE, name VARCHAR(255) NOT NULL, category VARCHAR(120), status VARCHAR(80) NOT NULL DEFAULT 'In use', manufacturer VARCHAR(255), model VARCHAR(255), serial_number VARCHAR(255), location VARCHAR(255), assigned_to VARCHAR(255), purchase_date DATE, purchase_cost VARCHAR(80), warranty_expires DATE, supplier VARCHAR(255), photo_filename VARCHAR(255), notes TEXT, created_at DATETIME, updated_at DATETIME)"))
             for column in ["asset_tag", "name", "category", "status", "manufacturer", "model", "serial_number", "location", "assigned_to"]:
                 conn.execute(text(f"CREATE INDEX ix_hardware_assets_{column} ON hardware_assets ({column})"))
+        rack_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(racks)"))}
+        if not rack_columns:
+            conn.execute(text("CREATE TABLE racks (id INTEGER NOT NULL PRIMARY KEY, name VARCHAR(255) NOT NULL, location VARCHAR(255), height_u INTEGER DEFAULT 42 NOT NULL, description TEXT, sort_order INTEGER DEFAULT 0 NOT NULL, created_at DATETIME, updated_at DATETIME)"))
+            conn.execute(text("CREATE INDEX ix_racks_name ON racks (name)"))
+            conn.execute(text("CREATE INDEX ix_racks_location ON racks (location)"))
+            conn.execute(text("CREATE INDEX ix_racks_sort_order ON racks (sort_order)"))
+        rack_item_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(rack_items)"))}
+        if not rack_item_columns:
+            conn.execute(text("CREATE TABLE rack_items (id INTEGER NOT NULL PRIMARY KEY, rack_id INTEGER NOT NULL REFERENCES racks(id), hardware_asset_id INTEGER REFERENCES hardware_assets(id), name VARCHAR(255) NOT NULL, start_u INTEGER NOT NULL, height_u INTEGER DEFAULT 1 NOT NULL, mount_side VARCHAR(20) DEFAULT 'front' NOT NULL, color VARCHAR(40), category VARCHAR(120), notes TEXT, created_at DATETIME, updated_at DATETIME)"))
+            conn.execute(text("CREATE INDEX ix_rack_items_rack_id ON rack_items (rack_id)"))
+            conn.execute(text("CREATE INDEX ix_rack_items_hardware_asset_id ON rack_items (hardware_asset_id)"))
+            conn.execute(text("CREATE INDEX ix_rack_items_mount_side ON rack_items (mount_side)"))
+            conn.execute(text("CREATE INDEX ix_rack_items_category ON rack_items (category)"))
         attachment_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(hardware_asset_attachments)"))}
         if not attachment_columns:
             conn.execute(text("CREATE TABLE hardware_asset_attachments (id INTEGER NOT NULL PRIMARY KEY, asset_id INTEGER NOT NULL REFERENCES hardware_assets(id), original_filename VARCHAR(255) NOT NULL, stored_filename VARCHAR(255) NOT NULL, content_type VARCHAR(120), uploaded_at DATETIME)"))
@@ -415,6 +428,7 @@ app.include_router(remote_manager.router)
 app.include_router(runbooks.router)
 app.include_router(domain_manager.router)
 app.include_router(compute_manager.router)
+app.include_router(rack_manager.router)
 app.include_router(admin.router)
 
 @app.get("/healthz", include_in_schema=False)
