@@ -38,3 +38,23 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
+    entrypoint:
+      - sh
+      - -c
+      - |
+        if [ -f /app/demo-seed/homelab.db ]; then
+          echo "Resetting public demo from seed before startup..."
+          cp /app/demo-seed/homelab.db /app/data/homelab.db
+          chown homelab:homelab /app/data/homelab.db
+          rm -f /app/data/homelab.db-wal /app/data/homelab.db-shm
+          find /app/uploads -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+          if [ -d /app/demo-seed/uploads ]; then
+            cp -a /app/demo-seed/uploads/. /app/uploads/
+          fi
+          chown -R homelab:homelab /app/uploads
+          date +%s > /app/data/.demo-generation
+          chown homelab:homelab /app/data/.demo-generation
+        else
+          echo "Public demo seed database does not exist yet; HomeLab will create it during startup."
+        fi
+        exec /usr/local/bin/homelab-entrypoint sh -c 'exec uvicorn app.main:app --host 0.0.0.0 --port 8080 --proxy-headers --forwarded-allow-ips "$${FORWARDED_ALLOW_IPS:-*}"'
