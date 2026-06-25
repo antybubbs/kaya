@@ -14,6 +14,7 @@ services:
       SESSION_COOKIE_SECURE: "true"
       DEMO_MODE: "true"
       DEMO_RESET_SCHEDULE: ${DEMO_RESET_SCHEDULE:-03:00 UTC}
+      DEMO_RESET_ON_START: "true"
       DEMO_SEED_DIR: /app/demo-seed
       DEMO_GENERATION_FILE: /app/data/.demo-generation
       GUACD_HOST: ""

@@ -116,13 +116,13 @@ The first start creates `demo/seed/homelab.db` and copies it into the live demo
 data directory. To restore that baseline manually:
 
 ```bash
-sh ./demo/reset-demo.sh
+docker compose -f docker-compose.demo.yml restart homelab
 ```
 
 Run it every day at 03:00 with the host's cron:
 
 ```cron
-0 3 * * * cd /opt/homelab && sh ./demo/reset-demo.sh >> /var/log/homelab-demo-reset.log 2>&1
+0 3 * * * cd /opt/homelab && docker compose -f docker-compose.demo.yml restart homelab >> /var/log/homelab-demo-reset.log 2>&1
 ```
 
 After changing to a newer HomeLab release, rebuild the seed against that image
@@ -132,7 +132,7 @@ and immediately reset the live instance:
 docker compose -f docker-compose.demo.yml pull
 docker compose -f docker-compose.demo.yml run --rm --no-deps \
   -e DEMO_REBUILD_SEED=true homelab true
-sh ./demo/reset-demo.sh
+docker compose -f docker-compose.demo.yml restart homelab
 ```
 
 Keep the demo behind HTTPS and reverse-proxy rate limiting. The published port
