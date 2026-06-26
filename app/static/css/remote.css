@@ -16,37 +16,38 @@
 .remote-host-search label{align-items:center;background:#111827;border:1px solid var(--line);border-radius:7px;color:var(--muted);display:grid;grid-template-columns:18px minmax(0,1fr);min-height:34px;padding:0 9px}
 .remote-host-search input{background:transparent;border:0;color:var(--text);font-size:12px;min-height:30px;padding:0;width:100%}
 .remote-host-search input:focus{outline:0}
-.remote-host-toolbar{align-items:center;display:flex;gap:6px}
-.remote-host-toolbar button,.remote-host-toolbar a{align-items:center;background:#111827;border:1px solid var(--line);border-radius:7px;color:var(--muted);display:inline-flex;font-size:12px;font-weight:900;height:30px;justify-content:center;min-height:30px;min-width:32px;padding:0 8px}
+.remote-host-toolbar{align-items:center;display:grid;gap:6px;grid-auto-columns:max-content;grid-auto-flow:column;overflow:hidden}
+.remote-host-toolbar button,.remote-host-toolbar a{align-items:center;background:#111827;border:1px solid var(--line);border-radius:7px;color:var(--muted);display:inline-flex;font-size:12px;font-weight:900;height:30px;justify-content:center;line-height:1;min-height:30px;min-width:34px;padding:0 9px;white-space:nowrap}
 .remote-host-toolbar button:hover,.remote-host-toolbar a:hover{background:rgba(96,165,250,.12);border-color:#3b82f6;color:#dbeafe}
 .remote-host-toolbar button.active{background:rgba(56,189,248,.14);border-color:rgba(56,189,248,.7);color:#e0f2fe}
-.remote-host-list{align-content:start;display:grid;gap:1px;min-height:0;overflow-y:auto;padding:6px;scrollbar-width:none;-ms-overflow-style:none}
+.remote-host-list{align-content:start;display:grid;gap:3px;min-height:0;overflow-x:hidden;overflow-y:auto;padding:8px;scrollbar-width:none;-ms-overflow-style:none}
 .remote-host-list::-webkit-scrollbar{display:none}
-.remote-host-group-heading{align-items:center;background:#0f1722;border:0;border-bottom:1px solid var(--line);border-radius:0;color:#cbd5e1;cursor:pointer;display:flex;font-size:11px;justify-content:space-between;margin-top:5px;min-height:30px;padding:7px 9px;text-align:left;text-transform:uppercase;width:100%}
+.remote-host-group-heading{align-items:center;background:#0f1722;border:0;border-bottom:1px solid rgba(148,163,184,.18);border-top:1px solid rgba(148,163,184,.08);border-radius:6px 6px 0 0;color:#cbd5e1;cursor:pointer;display:grid;font-size:11px;gap:8px;grid-template-columns:minmax(0,1fr) auto;margin-top:10px;min-height:32px;padding:8px 10px;text-align:left;text-transform:uppercase;width:100%}
 .remote-host-group-heading:hover{background:#152131;color:#f8fafc}
 .remote-host-group-heading.collapsed{color:#94a3b8}
-.remote-host-group-heading strong:before{content:"- "}
-.remote-host-group-heading.collapsed strong:before{content:"+ "}
+.remote-host-group-heading strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.remote-host-group-heading strong:before{content:"▾ ";font-size:10px}
+.remote-host-group-heading.collapsed strong:before{content:"▸ ";font-size:10px}
 .remote-host-group-heading:first-child{margin-top:0}
 .remote-host-group-heading span{color:#f59e0b;font-size:10px}
-.remote-host-card{align-items:center;background:rgba(255,255,255,.024);border-left:3px solid transparent;display:grid;gap:8px;grid-template-columns:minmax(0,1fr) auto;min-height:0;padding:10px 9px}
+.remote-host-card{align-items:start;background:rgba(255,255,255,.024);border:1px solid transparent;border-radius:0;display:grid;gap:8px;grid-template-columns:12px minmax(0,1fr) 32px;min-height:58px;overflow:hidden;padding:9px 10px}
 .remote-host-card[hidden],.remote-host-group-heading[hidden]{display:none!important}
-.remote-host-card:hover,.remote-host-card.active{background:rgba(148,163,184,.09)}
-.remote-host-card.active{border-left-color:#fb923c}
-.remote-host-card.split-active{box-shadow:inset 2px 0 0 rgba(56,189,248,.7)}
-.remote-host-main{align-items:start;display:grid;gap:9px;grid-template-columns:8px minmax(0,1fr);min-width:0}
-.remote-host-main>div{min-width:0}
-.remote-status-dot{background:#fb923c;border-radius:50%;height:6px;margin-top:6px;width:6px}
-.remote-status-dot.rdp{background:#60a5fa}
-.remote-host-main strong{display:block;font-size:14px;font-weight:900;line-height:1.15;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.remote-host-main span{color:#94a3b8;display:block;font-size:11px;line-height:1.25;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.remote-host-actions{align-items:center;display:flex;gap:6px;margin-left:0;min-width:max-content;white-space:nowrap}
-.remote-protocol-icon{align-items:center;border:1px solid transparent;border-radius:6px;color:#bfdbfe;display:inline-flex;font-family:"Caskaydia Cove Nerd Font Mono",Consolas,monospace;font-size:11px;font-weight:900;height:24px;justify-content:center;min-width:30px}
+.remote-host-card:hover{background:rgba(148,163,184,.075);border-color:rgba(148,163,184,.08)}
+.remote-host-card.active{background:rgba(59,130,246,.16);border-color:rgba(96,165,250,.35)}
+.remote-host-card.split-active{box-shadow:inset 0 0 0 1px rgba(56,189,248,.42)}
+.remote-host-main{display:contents;min-width:0}
+.remote-host-main>div,.remote-host-info{display:grid;gap:2px;grid-column:2;min-width:0}
+.remote-status-dot{align-self:start;background:#64748b;border-radius:50%;grid-column:1;height:7px;margin-top:8px;width:7px}
+.remote-status-dot.rdp{background:#64748b}
+.remote-host-main strong{color:#f8fafc;display:block;font-size:14px;font-weight:900;line-height:1.18;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.remote-host-main span{color:rgba(203,213,225,.62);display:block;font-size:11px;line-height:1.25;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.remote-host-actions{align-items:start;display:flex;gap:0;grid-column:3;justify-content:flex-end;margin-left:0;min-width:32px;white-space:nowrap}
+.remote-protocol-icon{align-items:center;border:1px solid rgba(96,165,250,.28);border-radius:5px;color:#bfdbfe;display:inline-flex;font-family:"Caskaydia Cove Nerd Font Mono",Consolas,monospace;font-size:10px;font-weight:900;height:18px;justify-content:center;line-height:1;margin-bottom:2px;min-width:28px;padding:0 5px;width:max-content}
 .remote-protocol-icon:hover{background:rgba(96,165,250,.12);border-color:rgba(96,165,250,.45);color:#fff}
 .remote-connect-menu{position:relative}
-.remote-connect-menu>summary{border:1px solid transparent;border-radius:6px;color:var(--muted);cursor:pointer;font-size:16px;font-weight:900;line-height:1;list-style:none;padding:4px 7px}
+.remote-connect-menu>summary{border:1px solid transparent;border-radius:6px;color:var(--muted);cursor:pointer;font-size:16px;font-weight:900;height:26px;line-height:1;list-style:none;opacity:.36;padding:3px 7px;transition:background .12s ease,color .12s ease,opacity .12s ease}
 .remote-connect-menu>summary::-webkit-details-marker{display:none}
-.remote-connect-menu[open]>summary,.remote-connect-menu>summary:hover{background:rgba(148,163,184,.12);color:var(--text)}
+.remote-host-card:hover .remote-connect-menu>summary,.remote-connect-menu[open]>summary,.remote-connect-menu>summary:hover,.remote-connect-menu>summary:focus-visible{background:rgba(148,163,184,.12);color:var(--text);opacity:1}
 .remote-connect-menu div{background:#111827;border:1px solid var(--line);border-radius:8px;box-shadow:0 16px 40px rgba(0,0,0,.35);display:grid;min-width:170px;padding:6px;position:absolute;top:27px;z-index:20}
 .remote-connect-menu a{border-radius:6px;color:var(--text);font-size:12px;padding:7px 8px}
 .remote-connect-menu a:hover{background:var(--panel2)}
@@ -57,7 +58,7 @@
 body.remote-resizing{cursor:col-resize;user-select:none}
 .remote-rail-compact .remote-host-search label{grid-template-columns:1fr}
 .remote-rail-compact .remote-host-search label span{display:none}
-.remote-rail-compact .remote-host-card{gap:6px;padding:9px 6px}
+.remote-rail-compact .remote-host-card{gap:6px;grid-template-columns:10px minmax(0,1fr) 30px;padding:8px 7px}
 .remote-rail-compact .remote-host-main{gap:6px;grid-template-columns:8px minmax(0,1fr)}
 .remote-rail-compact .remote-host-main span.mono{display:none}
 .remote-rail-compact .remote-host-actions{gap:4px;margin-left:0}
