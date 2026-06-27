@@ -109,3 +109,47 @@ html[data-theme=light] .module-stat,html[data-theme=light] .record-identifier,ht
 .record-edit-grid select{border-color:rgba(255,138,0,.24)}
 .runbook-link-list a:hover{background:rgba(255,138,0,.08);border-color:rgba(255,138,0,.32)}
 html[data-theme=light] .domain-dns-type strong,html[data-theme=light] .record-edit-grid label{color:#a84b00!important}
+
+/* Kaya Command / Light Ops theme switch */
+.kaya-theme-switch{align-items:center;background:#11151b;border:1px solid #2a303a;border-radius:9px;display:inline-flex;gap:3px;padding:3px}
+.kaya-theme-switch button{background:transparent;border:1px solid transparent;border-radius:6px;color:#9ca3af;font-size:11px;font-weight:850;min-height:24px;padding:3px 8px}
+.kaya-theme-switch button:hover{background:rgba(255,138,0,.1);border-color:rgba(255,138,0,.28);color:#fff}
+.kaya-theme-switch button.active{background:rgba(255,138,0,.18);border-color:rgba(255,138,0,.45);box-shadow:inset 0 -1px 0 var(--kaya-orange);color:#fff}
+html[data-kaya-theme=light-ops]{--bg:#eef1f5;--panel:#ffffff;--panel2:#f5f7fa;--text:#111827;--muted:#5b6574;--line:#d5dbe4;--accent:#ff8a00;--accent2:#16a34a;--danger:#dc2626;--kaya-bg:#eef1f5;--kaya-surface:#ffffff;--kaya-panel:#ffffff;--kaya-line:#d5dbe4;--kaya-text:#111827;--kaya-muted:#5b6574}
+html[data-kaya-theme=light-ops] body{background:#eef1f5;color:#111827}
+html[data-kaya-theme=light-ops] .app-topbar{background:#fff;border-bottom-color:#d5dbe4;box-shadow:0 1px 0 rgba(17,24,39,.04)}
+html[data-kaya-theme=light-ops] .content{background:#eef1f5}
+html[data-kaya-theme=light-ops] .sidebar{background:#0b0d11;border-right-color:#20252d;color:#f8fafc}
+html[data-kaya-theme=light-ops] .brand{border-bottom-color:rgba(255,255,255,.08)}
+html[data-kaya-theme=light-ops] .brand-name{color:#fff}
+html[data-kaya-theme=light-ops] .nav-link,html[data-kaya-theme=light-ops] .nav-group>summary,html[data-kaya-theme=light-ops] .nav-subgroup>summary{color:#aab2bf}
+html[data-kaya-theme=light-ops] .nav-link:hover,html[data-kaya-theme=light-ops] .nav-group>summary:hover,html[data-kaya-theme=light-ops] .nav-subgroup>summary:hover{background:#151a21;border-color:#252c36;color:#fff}
+html[data-kaya-theme=light-ops] .nav-link.active,html[data-kaya-theme=light-ops] .nav-group[open]>summary,html[data-kaya-theme=light-ops] .nav-subgroup[open]>summary{background:rgba(255,138,0,.12);border-color:rgba(255,138,0,.38);color:#fff}
+html[data-kaya-theme=light-ops] .version-card{background:#11151b;border-color:#262d37}
+html[data-kaya-theme=light-ops] .version-card div,html[data-kaya-theme=light-ops] .version-card a{color:#8f98a7}
+html[data-kaya-theme=light-ops] .version-card strong{color:#f5f5f2}
+html[data-kaya-theme=light-ops] .kaya-theme-switch{background:#f4f6f9;border-color:#d7dde6}
+html[data-kaya-theme=light-ops] .kaya-theme-switch button{color:#5b6574}
+html[data-kaya-theme=light-ops] .kaya-theme-switch button:hover{background:#fff3e2;border-color:rgba(255,138,0,.34);color:#7a3b00}
+html[data-kaya-theme=light-ops] .kaya-theme-switch button.active{background:#fff3e2;border-color:rgba(255,138,0,.46);color:#7a3b00}
+html[data-kaya-theme=light-ops] .card,html[data-kaya-theme=light-ops] .panel,html[data-kaya-theme=light-ops] .login-card,html[data-kaya-theme=light-ops] .remote-card,html[data-kaya-theme=light-ops] .remote-settings-card,html[data-kaya-theme=light-ops] .monitor-card,html[data-kaya-theme=light-ops] .compute-host-card,html[data-kaya-theme=light-ops] .runbook-page-card,html[data-kaya-theme=light-ops] .rack-card{background:#fff;border-color:#d8dee8;color:#111827;box-shadow:none}
+html[data-kaya-theme=light-ops] .card strong,html[data-kaya-theme=light-ops] .compute-summary-grid strong,html[data-kaya-theme=light-ops] .resource-gauge strong{color:#111827}
+html[data-kaya-theme=light-ops] .module-header,html[data-kaya-theme=light-ops] .dashboard-hero,html[data-kaya-theme=light-ops] .compute-hero,html[data-kaya-theme=light-ops] .audit-hero{background:#fff;border-color:#d8dee8;color:#111827}
+html[data-kaya-theme=light-ops] .dashboard-hero,html[data-kaya-theme=light-ops] .compute-hero,html[data-kaya-theme=light-ops] .audit-hero{border-left:3px solid var(--kaya-orange)}
+html[data-kaya-theme=light-ops] .panel:has(table),html[data-kaya-theme=light-ops] .table-settings-panel{background:#fff;border-color:#d8dee8}
+html[data-kaya-theme=light-ops] th,html[data-kaya-theme=light-ops] .audit-table th{background:#f2f5f8!important;border-bottom-color:#d8dee8;color:#a84b00!important}
+html[data-kaya-theme=light-ops] td{border-bottom-color:#e2e7ef;color:#1f2937}
+html[data-kaya-theme=light-ops] tbody tr:hover{background:rgba(255,138,0,.07)!important}
+html[data-kaya-theme=light-ops] input,html[data-kaya-theme=light-ops] textarea,html[data-kaya-theme=light-ops] select{background:#fff;border-color:#cfd7e3;color:#111827}
+html[data-kaya-theme=light-ops] .button.secondary,html[data-kaya-theme=light-ops] .ghost,html[data-kaya-theme=light-ops] .icon-button,html[data-kaya-theme=light-ops] .table-settings>summary,html[data-kaya-theme=light-ops] .category-tabs a,html[data-kaya-theme=light-ops] .compute-tabs a,html[data-kaya-theme=light-ops] .runbook-view-toggle .button,html[data-kaya-theme=light-ops] .runbook-editor-toolbar>button,html[data-kaya-theme=light-ops] .runbook-code-copy{background:#fff8f0;border-color:rgba(255,138,0,.3);color:#7a3b00}
+html[data-kaya-theme=light-ops] .category-tabs a.active,html[data-kaya-theme=light-ops] .compute-tabs a.active,html[data-kaya-theme=light-ops] .runbook-view-toggle .button.active{background:#fff3e2;border-color:rgba(255,138,0,.5);color:#111827}
+html[data-kaya-theme=light-ops] .account-popover{background:#fff;border-color:#d8dee8;box-shadow:0 18px 44px rgba(17,24,39,.12)}
+html[data-kaya-theme=light-ops] .account-link{color:#1f2937}
+html[data-kaya-theme=light-ops] .account-link:hover{background:#fff3e2;color:#7a3b00}
+html[data-kaya-theme=light-ops] .setup-page{background:#eef1f5}
+html[data-kaya-theme=light-ops] .setup-shell{background:#fff;border-color:#d8dee8}
+html[data-kaya-theme=light-ops] .setup-brand-panel{background:#0d0f13;border-right-color:#20252d}
+html[data-kaya-theme=light-ops] .setup-form-panel{background:#fff}
+html[data-kaya-theme=light-ops] .setup-form-heading h2{color:#111827}
+html[data-kaya-theme=light-ops] .setup-form-heading p,html[data-kaya-theme=light-ops] .setup-form label{color:#5b6574}
+@media(max-width:720px){.kaya-theme-switch{display:none}}

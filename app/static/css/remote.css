@@ -174,3 +174,13 @@ body.remote-resizing{cursor:col-resize;user-select:none}
 .remote-switch:checked{background:rgba(255,138,0,.18);border-color:var(--kaya-orange,#ff8a00)}
 .remote-switch:checked:before{background:var(--kaya-orange,#ff8a00)}
 .term-blue,.term-cyan{color:#ffb357}
+
+/* Kaya Light Ops remote surfaces */
+html[data-kaya-theme=light-ops] .remote-host-rail,html[data-kaya-theme=light-ops] .remote-tab-workspace,html[data-kaya-theme=light-ops] .remote-tabbar{background:#eef1f5}
+html[data-kaya-theme=light-ops] .remote-host-card,html[data-kaya-theme=light-ops] .remote-settings-card,html[data-kaya-theme=light-ops] .remote-card{background:#fff;border-color:#d8dee8;color:#111827}
+html[data-kaya-theme=light-ops] .remote-settings-card header{border-bottom-color:#d8dee8;color:#111827}
+html[data-kaya-theme=light-ops] .remote-settings-grid label{color:#111827}
+html[data-kaya-theme=light-ops] .remote-settings-grid input,html[data-kaya-theme=light-ops] .remote-settings-grid select{background:#fff;border-color:#cfd7e3;color:#111827}
+html[data-kaya-theme=light-ops] .remote-settings-tabs{border-bottom-color:#d8dee8}
+html[data-kaya-theme=light-ops] .remote-settings-tabs a,html[data-kaya-theme=light-ops] .remote-host-toolbar button,html[data-kaya-theme=light-ops] .remote-host-toolbar a,html[data-kaya-theme=light-ops] .remote-layout-button,html[data-kaya-theme=light-ops] .remote-protocol-icon{background:#fff8f0;border-color:rgba(255,138,0,.3);color:#7a3b00}
+html[data-kaya-theme=light-ops] .remote-session-frame,html[data-kaya-theme=light-ops] .remote-console-empty{background:#f5f7fa;border-color:#d8dee8;color:#111827}

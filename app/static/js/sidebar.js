@@ -1,15 +1,36 @@
 (function () {
   const storageKey = "homelab.sidebar.openMenus";
   const collapseStorageKey = "homelab.sidebar.collapsed";
+  const themeStorageKey = "kaya.ui.theme";
+  const legacyThemeStorageKey = "homelab.theme";
   const dashboardPath = "/dashboard";
   const menus = Array.from(document.querySelectorAll("[data-sidebar-menu]"));
   const resetLinks = Array.from(document.querySelectorAll("[data-reset-sidebar]"));
   const collapseButton = document.querySelector("[data-sidebar-collapse]");
+  const themeButtons = Array.from(document.querySelectorAll("[data-kaya-theme-choice]"));
   let flyout = null;
   let flyoutOwner = null;
   let flyoutCloseTimer = null;
-  document.documentElement.dataset.theme = "dark";
-  localStorage.removeItem("homelab.theme");
+
+  function normalTheme(value) {
+    return value === "light-ops" ? "light-ops" : "command";
+  }
+
+  function applyTheme(value) {
+    const theme = normalTheme(value);
+    document.documentElement.dataset.kayaTheme = theme;
+    document.documentElement.dataset.theme = theme === "light-ops" ? "light" : "dark";
+    localStorage.setItem(themeStorageKey, theme);
+    localStorage.removeItem(legacyThemeStorageKey);
+    themeButtons.forEach((button) => {
+      const active = button.dataset.kayaThemeChoice === theme;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+  }
+
+  const legacyTheme = localStorage.getItem(legacyThemeStorageKey);
+  applyTheme(localStorage.getItem(themeStorageKey) || (legacyTheme === "light" ? "light-ops" : "command"));
 
   function setCollapsed(collapsed) {
     document.body.classList.toggle("sidebar-collapsed", collapsed);
@@ -124,6 +145,10 @@
       setCollapsed(!document.body.classList.contains("sidebar-collapsed"));
     });
   }
+
+  themeButtons.forEach((button) => {
+    button.addEventListener("click", () => applyTheme(button.dataset.kayaThemeChoice));
+  });
 
   menus.forEach((menu) => {
     const summary = menu.querySelector("summary");

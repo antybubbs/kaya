@@ -7,6 +7,13 @@
   <link rel="stylesheet" href="/static/css/app.css?v={{ asset_version }}">
   <link rel="stylesheet" href="/static/css/kaya.css?v={{ asset_version }}">
   <link rel="stylesheet" href="/static/css/remote.css?v={{ asset_version }}">
+  <script>
+    (function () {
+      var theme = localStorage.getItem("kaya.ui.theme") === "light-ops" ? "light-ops" : "command";
+      document.documentElement.dataset.kayaTheme = theme;
+      document.documentElement.dataset.theme = theme === "light-ops" ? "light" : "dark";
+    })();
+  </script>
   {% if remote.protocol == 'ssh' %}
   <link rel="stylesheet" href="/static/vendor/xterm/xterm.css?v={{ asset_version }}">
   {% endif %}

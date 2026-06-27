@@ -35,6 +35,10 @@
   <div class="topbar-session-tabs">{% block topbar_session %}{% endblock %}</div>
   <div class="app-topbar-spacer"></div>
   <div class="topbar-actions">
+    <div class="kaya-theme-switch" role="group" aria-label="Kaya theme">
+      <button type="button" data-kaya-theme-choice="command" aria-pressed="true">Command</button>
+      <button type="button" data-kaya-theme-choice="light-ops" aria-pressed="false">Light Ops</button>
+    </div>
     <details class="account-menu">
       <summary>
         <span class="avatar">{{ (user.first_name[:1] if user.first_name else user.email[:1])|upper }}</span>
