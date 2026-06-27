@@ -15,6 +15,8 @@ TBC
 
 ## Docker Compose install
 
+Use `docker-compose.yml` for a one-file install. It pulls `ghcr.io/antybubbs/homelab:kaya` by default; override `HOMELAB_IMAGE` only if you want another published tag.
+
 Generate secure keys with:
 
 ```bash

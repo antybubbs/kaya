@@ -2,7 +2,7 @@ name: homelab
 
 services:
   homelab:
-    build: .
+    image: ${HOMELAB_IMAGE:-ghcr.io/antybubbs/homelab:kaya}
     container_name: homelab
     restart: unless-stopped
     ports:

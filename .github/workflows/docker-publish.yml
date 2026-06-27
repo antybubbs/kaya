@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - Kaya
       - "dev*"
     tags:
       - "v*"
@@ -31,8 +32,8 @@ jobs:
           VERSION="$SHORT_SHA"
           if printf '%s' '${{ github.ref }}' | grep -q '^refs/tags/'; then
             VERSION="$REF_NAME"
-          elif printf '%s' "$REF_NAME" | grep -q '^dev'; then
-            VERSION="$REF_NAME"
+          elif printf '%s' "$REF_NAME" | grep -Eq '^(dev|Kaya)'; then
+            VERSION="$REF_TAG"
           fi
 
           {
@@ -62,8 +63,8 @@ jobs:
             APP_VERSION=${{ steps.meta.outputs.version }}
           tags: ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.short_sha }}
 
-      - name: Build and push dev branch image
-        if: startsWith(github.ref_name, 'dev')
+      - name: Build and push branch image
+        if: startsWith(github.ref_name, 'dev') || github.ref_name == 'Kaya'
         uses: docker/build-push-action@v6
         with:
           context: .
