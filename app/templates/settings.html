@@ -18,10 +18,10 @@
 {% if message %}<div class="success">{{ message }}</div>{% endif %}
 {% if error %}<div class="alert">{{ error }}</div>{% endif %}
 
-<form method="post" action="/system/site-administration" class="remote-card site-admin-form" data-settings-tabs>
+<form method="post" action="/system/site-administration" class="site-admin-form" data-settings-tabs>
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 
-  <div class="tabs site-admin-tabs" role="tablist" aria-label="Site administration sections">
+  <div class="category-tabs site-admin-tabs" role="tablist" aria-label="Site administration sections">
     <button type="button" class="active" data-settings-tab="general" role="tab" aria-selected="true">General</button>
     <button type="button" data-settings-tab="uploads" role="tab" aria-selected="false">Uploads</button>
     <button type="button" data-settings-tab="email" role="tab" aria-selected="false">Email</button>
@@ -29,106 +29,109 @@
   </div>
 
   <section class="settings-tab-panel active" data-settings-panel="general" role="tabpanel">
-  <h2>General</h2>
+    <h2>General</h2>
 
-  <div class="remote-settings-card" id="general">
-    <div class="remote-settings-grid">
-      <label>
-        <strong>Base URL</strong>
-        <small>The public URL used to access {{ brand.name }}. Once configured, {{ brand.name }} will automatically trust this hostname instead of allowing requests from any host.</small>
-        <input name="base_url" type="url" value="{{ settings.get('base_url', '') }}" placeholder="http://localhost:8080">
-      </label>
+    <div class="remote-settings-card" id="general">
+      <div class="remote-settings-grid">
+        <label>
+          <strong>Base URL</strong>
+          <small>The public URL used to access {{ brand.name }}. Once configured, {{ brand.name }} will automatically trust this hostname instead of allowing requests from any host.</small>
+          <input name="base_url" type="url" value="{{ settings.get('base_url', '') }}" placeholder="http://localhost:8080">
+        </label>
+      </div>
     </div>
-  </div>
   </section>
 
   <section class="settings-tab-panel" data-settings-panel="uploads" role="tabpanel" hidden>
-  <h2>Uploads</h2>
+    <h2>Uploads</h2>
 
-  <div class="remote-settings-card" id="uploads">
-    <div class="remote-settings-grid">
-      <label>
-        <strong>Maximum Upload Size</strong>
-        <small>Maximum upload size for all files uploaded accross the site, in MB.</small>
-        <input name="max_upload_mb" type="number" min="1" value="{{ settings.get('max_upload_mb', '25') }}">
-      </label>
+    <div class="remote-settings-card" id="uploads">
+      <div class="remote-settings-grid">
+        <label>
+          <strong>Maximum Upload Size</strong>
+          <small>Maximum upload size for all files uploaded across the site, in MB.</small>
+          <input name="max_upload_mb" type="number" min="1" value="{{ settings.get('max_upload_mb', '25') }}">
+        </label>
+      </div>
     </div>
-  </div>
   </section>
 
   <section class="settings-tab-panel" data-settings-panel="email" role="tabpanel" hidden>
-  <h2>Email</h2>
+    <h2>Email</h2>
 
-  <div class="remote-settings-card" id="email">
-    {{ switch('smtp_enabled', 'Enable SMTP mail', 'Allow Kaya to send password reset emails and future notifications.') }}
-    <div class="remote-settings-grid">
-      <label>
-        <strong>SMTP Host</strong>
-        <small>Mail server hostname or IP address.</small>
-        <input name="smtp_host" value="{{ settings.get('smtp_host', '') }}" placeholder="smtp.example.com">
-      </label>
-      <label>
-        <strong>SMTP Port</strong>
-        <small>Usually 587 for STARTTLS or 465 for SSL.</small>
-        <input name="smtp_port" type="number" min="1" max="65535" value="{{ settings.get('smtp_port', '587') }}">
-      </label>
-      <label>
-        <strong>Username</strong>
-        <small>Optional SMTP authentication username.</small>
-        <input name="smtp_username" value="{{ settings.get('smtp_username', '') }}" autocomplete="username">
-      </label>
-      <label>
-        <strong>Password</strong>
-        <small>{% if settings.get('smtp_password_set') == '1' %}A password is saved. Enter a new one to replace it.{% else %}Optional SMTP authentication password.{% endif %}</small>
-        <input name="smtp_password" type="password" value="" autocomplete="new-password" placeholder="{% if settings.get('smtp_password_set') == '1' %}Saved password{% endif %}">
-      </label>
-      <label>
-        <strong>From Email</strong>
-        <small>Address used as the sender for system mail.</small>
-        <input name="smtp_from_email" type="email" value="{{ settings.get('smtp_from_email', '') }}" placeholder="kaya@example.com">
-      </label>
-      <label>
-        <strong>From Name</strong>
-        <small>Name shown beside the sender address.</small>
-        <input name="smtp_from_name" value="{{ settings.get('smtp_from_name', brand.name) }}">
-      </label>
-      <label>
-        <strong>Test Recipient</strong>
-        <small>Used only when sending a test email.</small>
-        <input name="test_email_to" type="email" value="{{ test_email_to or user.email }}" placeholder="{{ user.email }}">
-      </label>
+    <div class="remote-settings-card" id="email">
+      {{ switch('smtp_enabled', 'Enable SMTP mail', 'Allow Kaya to send password reset emails and future notifications.') }}
+      <div class="remote-settings-grid">
+        <label>
+          <strong>SMTP Host</strong>
+          <small>Mail server hostname or IP address.</small>
+          <input name="smtp_host" value="{{ settings.get('smtp_host', '') }}" placeholder="smtp.example.com">
+        </label>
+        <label>
+          <strong>SMTP Port</strong>
+          <small>Usually 587 for STARTTLS or 465 for SSL.</small>
+          <input name="smtp_port" type="number" min="1" max="65535" value="{{ settings.get('smtp_port', '587') }}">
+        </label>
+        <label>
+          <strong>Username</strong>
+          <small>Optional SMTP authentication username.</small>
+          <input name="smtp_username" value="{{ settings.get('smtp_username', '') }}" autocomplete="username">
+        </label>
+        <label>
+          <strong>Password</strong>
+          <small>{% if settings.get('smtp_password_set') == '1' %}A password is saved. Enter a new one to replace it.{% else %}Optional SMTP authentication password.{% endif %}</small>
+          <input name="smtp_password" type="password" value="" autocomplete="new-password" placeholder="{% if settings.get('smtp_password_set') == '1' %}Saved password{% endif %}">
+        </label>
+        <label>
+          <strong>From Email</strong>
+          <small>Address used as the sender for system mail.</small>
+          <input name="smtp_from_email" type="email" value="{{ settings.get('smtp_from_email', '') }}" placeholder="kaya@example.com">
+        </label>
+        <label>
+          <strong>From Name</strong>
+          <small>Name shown beside the sender address.</small>
+          <input name="smtp_from_name" value="{{ settings.get('smtp_from_name', brand.name) }}">
+        </label>
+        <label>
+          <strong>Test Recipient</strong>
+          <small>Used only when sending a test email.</small>
+          <input name="test_email_to" type="email" value="{{ test_email_to or user.email }}" placeholder="{{ user.email }}">
+        </label>
+      </div>
+      <div class="remote-settings-grid">
+        {{ switch('smtp_use_tls', 'Use STARTTLS', 'Upgrade the SMTP connection with STARTTLS after connecting.') }}
+        {{ switch('smtp_use_ssl', 'Use SSL', 'Connect with SMTP over SSL from the start, usually on port 465.') }}
+      </div>
     </div>
-    <div class="remote-settings-grid">
-      {{ switch('smtp_use_tls', 'Use STARTTLS', 'Upgrade the SMTP connection with STARTTLS after connecting.') }}
-      {{ switch('smtp_use_ssl', 'Use SSL', 'Connect with SMTP over SSL from the start, usually on port 465.') }}
-    </div>
-  </div>
   </section>
 
   <section class="settings-tab-panel" data-settings-panel="email-templates" role="tabpanel" hidden>
-  <h2>Email Templates</h2>
+    <h2>Email Templates</h2>
 
-  <div class="remote-settings-card" id="email-templates">
-    <header><span>Password reset</span></header>
-    <div class="remote-settings-grid">
-      <label>
-        <strong>Subject</strong>
-        <small>Available placeholders: {app_name}, {user_email}, {reset_link}, {expiry_hours}</small>
-        <input name="email_template_password_reset_subject" value="{{ settings.get('email_template_password_reset_subject', 'Reset your {app_name} password') }}">
-      </label>
-      <label>
-        <strong>Body</strong>
-        <small>Plain-text email body. Use {reset_link} where the reset URL should appear.</small>
-        <textarea name="email_template_password_reset_body" rows="9">{{ settings.get('email_template_password_reset_body', '') }}</textarea>
-      </label>
+    <div class="remote-settings-card" id="email-templates">
+      <header><span>Password reset</span></header>
+      <div class="remote-settings-grid">
+        <label>
+          <strong>Subject</strong>
+          <small>Available placeholders: {app_name}, {user_email}, {reset_link}, {expiry_hours}</small>
+          <input name="email_template_password_reset_subject" value="{{ settings.get('email_template_password_reset_subject', 'Reset your {app_name} password') }}">
+        </label>
+        <label>
+          <strong>Body</strong>
+          <small>Plain-text email body. Use {reset_link} where the reset URL should appear.</small>
+          <textarea name="email_template_password_reset_body" rows="9">{{ settings.get('email_template_password_reset_body', '') }}</textarea>
+        </label>
+      </div>
     </div>
-  </div>
   </section>
 
-  <div style="margin-top: 1.5rem;">
+  <div class="site-admin-actions">
     <button type="submit" class="btn btn-primary">Save settings</button>
     <button type="submit" formaction="/system/site-administration/test-email" class="btn btn-secondary">Send test email</button>
   </div>
 </form>
-<script src="/static/js/settings_tabs.js?v={{ asset_version }}" defer></script>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="/static/js/settings_tabs.js?v={{ asset_version }}"></script>
 {% endblock %}

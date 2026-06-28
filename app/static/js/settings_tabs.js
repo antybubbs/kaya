@@ -6,6 +6,22 @@
   const panels = Array.from(root.querySelectorAll("[data-settings-panel]"));
   const storageKey = "kaya.siteAdministration.activeTab";
 
+  const readStoredTab = () => {
+    try {
+      return window.localStorage.getItem(storageKey);
+    } catch {
+      return "";
+    }
+  };
+
+  const writeStoredTab = (name) => {
+    try {
+      window.localStorage.setItem(storageKey, name);
+    } catch {
+      // Tab switching should still work when browser storage is unavailable.
+    }
+  };
+
   const activate = (name) => {
     const fallback = tabs[0]?.dataset.settingsTab || "";
     const activeName = panels.some((panel) => panel.dataset.settingsPanel === name) ? name : fallback;
@@ -23,7 +39,7 @@
     });
 
     if (activeName) {
-      window.localStorage.setItem(storageKey, activeName);
+      writeStoredTab(activeName);
     }
   };
 
@@ -31,5 +47,5 @@
     tab.addEventListener("click", () => activate(tab.dataset.settingsTab));
   });
 
-  activate(window.localStorage.getItem(storageKey) || tabs[0]?.dataset.settingsTab || "");
+  activate(readStoredTab() || tabs[0]?.dataset.settingsTab || "");
 })();

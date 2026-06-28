@@ -409,11 +409,11 @@ body.sidebar-collapsed .sidebar-flyout-popover .nav-link,body.sidebar-collapsed 
 /* Site Administration tabs */
 .site-admin-form {
   display: grid;
-  gap: 14px;
+  gap: 16px;
 }
 
 .site-admin-tabs {
-  margin-bottom: 2px;
+  margin: 0;
 }
 
 .site-admin-tabs button {
@@ -423,10 +423,12 @@ body.sidebar-collapsed .sidebar-flyout-popover .nav-link,body.sidebar-collapsed 
   border-radius: 10px;
   color: var(--muted);
   display: inline-flex;
-  font-size: 12px;
+  cursor: pointer;
+  font-size: 13px;
   font-weight: 850;
-  min-height: 34px;
-  padding: 8px 13px;
+  justify-self: auto;
+  min-height: 38px;
+  padding: 9px 15px;
   white-space: nowrap;
 }
 
@@ -444,9 +446,27 @@ body.sidebar-collapsed .sidebar-flyout-popover .nav-link,body.sidebar-collapsed 
 
 .settings-tab-panel {
   display: grid;
-  gap: 10px;
+  gap: 12px;
+}
+
+.settings-tab-panel[hidden] {
+  display: none !important;
 }
 
 .settings-tab-panel h2 {
   margin: 0;
+}
+
+.settings-tab-panel .remote-settings-card {
+  box-shadow: none;
+}
+
+.site-admin-actions {
+  align-items: center;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  padding-top: 14px;
 }
