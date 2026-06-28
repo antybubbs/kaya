@@ -50,15 +50,6 @@ set +a
 export SECRET_KEY
 export ENCRYPTION_KEY
 
-DATABASE_FILE="/app/data/kaya.db"
-LEGACY_DATABASE_FILE="/app/data/homelab.db"
-if [ ! -f "$DATABASE_FILE" ] && [ -f "$LEGACY_DATABASE_FILE" ]; then
-    echo "Migrating legacy HomeLab database filename to Kaya..."
-    mv "$LEGACY_DATABASE_FILE" "$DATABASE_FILE"
-    [ ! -f "$LEGACY_DATABASE_FILE-wal" ] || mv "$LEGACY_DATABASE_FILE-wal" "$DATABASE_FILE-wal"
-    [ ! -f "$LEGACY_DATABASE_FILE-shm" ] || mv "$LEGACY_DATABASE_FILE-shm" "$DATABASE_FILE-shm"
-    chown kaya:kaya "$DATABASE_FILE"
-fi
 if [ "${DEMO_MODE:-false}" = "true" ]; then
     DEMO_SEED_DIR="${DEMO_SEED_DIR:-/app/demo-seed}"
     DEMO_SEED_DATABASE="$DEMO_SEED_DIR/kaya.db"

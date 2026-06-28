@@ -57,7 +57,20 @@ docker compose pull
 docker compose up -d
 ```
 
-Kaya stores its SQLite database at `data/kaya.db`. On upgrade from an older HomeLab install, the container will migrate `data/homelab.db` to the Kaya filename on first startup.
+Kaya stores its SQLite database at `data/kaya.db`.
+
+For a one-time migration from an older HomeLab install on the same machine, stop the container and rename the database on the host:
+
+```bash
+cd /opt/kaya
+docker compose down
+mv data/homelab.db data/kaya.db
+[ ! -f data/homelab.db-wal ] || mv data/homelab.db-wal data/kaya.db-wal
+[ ! -f data/homelab.db-shm ] || mv data/homelab.db-shm data/kaya.db-shm
+docker compose up -d
+```
+
+Only run those commands if `data/homelab.db` exists and `data/kaya.db` does not.
 
 ## Reverse proxy
 
