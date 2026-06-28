@@ -3,39 +3,56 @@
 {% block public %}
 <div class="login-wrap">
   <div class="login-card">
-    <div class="login-brand"><img class="login-logo" src="/static/brand/kaya-logo.svg" alt="{{ brand.name }}" width="220" height="220"></div>
-    <h1>{{ 'Explore the ' ~ brand.name ~ ' demo' if demo_accounts else brand.name }}</h1>
-    <p class="muted">{{ brand.tagline }}</p>
-    {% if demo_accounts %}
-    <p class="muted">Choose a role or sign in manually. Changes to sample inventory are welcome and reset daily.</p>
-    <div class="demo-login-grid">
-      {% for name, account in demo_accounts.items() %}
-      <form method="post" action="/login" class="demo-login-option">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <input type="hidden" name="email" value="{{ name|title }}">
-        <input type="hidden" name="password" value="{{ account.password }}">
-        <strong>{{ name|title }}</strong><span>{{ account.role|title }} access</span>
-        <button type="submit">Sign in as {{ name|title }}</button>
-      </form>
-      {% endfor %}
-    </div>
-    {% endif %}
-    {% if success %}<div class="success">{{ success }}</div>{% endif %}
-    {% if error %}<div class="alert">{{ error }}</div>{% endif %}
-    <form method="post" action="/login" class="stack">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      {% if requires_2fa %}
-      <label>Authentication code<input name="totp_code" inputmode="numeric" pattern="[0-9]{6}" autocomplete="one-time-code" required autofocus></label>
-      <button type="submit">Verify code</button>
-      {% else %}
-      <label>{{ 'Username or email' if demo_accounts else 'Email' }}<input name="email" type="{{ 'text' if demo_accounts else 'email' }}" required autofocus></label>
-      <label>Password<input name="password" type="password" required></label>
-      <div class="login-actions">
-        <button type="submit">Sign in</button>
-        {% if not demo_accounts %}<a href="/forgot-password">Forgot password?</a>{% endif %}
+    <section class="login-brand-panel">
+      <img class="login-logo" src="/static/brand/kaya-logo.svg" alt="{{ brand.name }}" width="220" height="220">
+      <div>
+        <p class="login-kicker">{{ 'Demo access' if demo_accounts else 'Welcome back' }}</p>
+        <h1>{{ 'Explore ' ~ brand.name if demo_accounts else brand.name }}</h1>
+        <p>{{ brand.tagline }}</p>
+      </div>
+      <div class="login-status-list" aria-label="Platform highlights">
+        <span>Infrastructure dashboard</span>
+        <span>Remote access workspace</span>
+        <span>Operational documentation</span>
+      </div>
+    </section>
+
+    <section class="login-form-panel">
+      <div class="login-form-heading">
+        <h2>{{ 'Sign in to the demo' if demo_accounts else 'Sign in' }}</h2>
+        <p>{{ 'Choose a role or use the form below.' if demo_accounts else 'Use your account to access Kaya.' }}</p>
+      </div>
+      {% if demo_accounts %}
+      <p class="muted">Changes to sample inventory are welcome and reset daily.</p>
+      <div class="demo-login-grid">
+        {% for name, account in demo_accounts.items() %}
+        <form method="post" action="/login" class="demo-login-option">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="email" value="{{ name|title }}">
+          <input type="hidden" name="password" value="{{ account.password }}">
+          <strong>{{ name|title }}</strong><span>{{ account.role|title }} access</span>
+          <button type="submit">Sign in as {{ name|title }}</button>
+        </form>
+        {% endfor %}
       </div>
       {% endif %}
-    </form>
-  </div>
+      {% if success %}<div class="success">{{ success }}</div>{% endif %}
+      {% if error %}<div class="alert">{{ error }}</div>{% endif %}
+      <form method="post" action="/login" class="stack">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        {% if requires_2fa %}
+        <label>Authentication code<input name="totp_code" inputmode="numeric" pattern="[0-9]{6}" autocomplete="one-time-code" required autofocus></label>
+        <button type="submit">Verify code</button>
+        {% else %}
+        <label>{{ 'Username or email' if demo_accounts else 'Email' }}<input name="email" type="{{ 'text' if demo_accounts else 'email' }}" required autofocus></label>
+        <label>Password<input name="password" type="password" required></label>
+        <div class="login-actions">
+          <button type="submit">Sign in</button>
+          {% if not demo_accounts %}<a href="/forgot-password">Forgot password?</a>{% endif %}
+        </div>
+        {% endif %}
+      </form>
+    </section>
+    </div>
 </div>
 {% endblock %}
