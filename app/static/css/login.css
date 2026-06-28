@@ -1,0 +1,38 @@
+.login-card {
+  text-align: left;
+}
+
+.login-brand {
+  display: flex;
+  justify-content: center;
+  margin: 0 auto 0.85rem;
+}
+
+.login-logo {
+  background: transparent;
+  display: block;
+  height: auto;
+  max-height: 170px;
+  object-fit: contain;
+  width: min(180px, 70%);
+}
+
+.login-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.85rem;
+  justify-content: space-between;
+}
+
+.login-actions a {
+  color: var(--accent, #ff8a00);
+  font-size: 0.9rem;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.login-actions a:hover,
+.login-actions a:focus {
+  text-decoration: underline;
+}

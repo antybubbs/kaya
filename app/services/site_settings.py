@@ -13,6 +13,15 @@ DEFAULT_SITE_SETTINGS = {
     "guacd_host": "",
     "guacd_port": "",
     "max_upload_mb": "25",
+    "smtp_enabled": "",
+    "smtp_host": "",
+    "smtp_port": "587",
+    "smtp_use_tls": "1",
+    "smtp_use_ssl": "",
+    "smtp_username": "",
+    "smtp_password": "",
+    "smtp_from_email": "",
+    "smtp_from_name": APP_BRAND_NAME,
 }
 
 

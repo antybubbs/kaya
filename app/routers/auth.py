@@ -1,4 +1,8 @@
+import hashlib
+import secrets
+import smtplib
 import time
+from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -9,9 +13,11 @@ from app.core.demo import DEMO_ACCOUNTS, demo_generation, demo_login_email
 from app.core.security import hash_password, verify_password
 from app.core.totp import decrypted_totp_secret, encrypted_totp_secret, generate_totp_secret, provisioning_uri, qr_code_data_uri, verify_totp
 from app.db.session import get_db
-from app.models.models import User
+from app.models.models import PasswordResetToken, User
 from app.services.audit import write_audit
+from app.services.mail import MailConfigurationError, send_mail
 from app.services.sessions import end_user_session, start_user_session, touch_user_session
+from app.services.site_settings import get_site_setting
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
@@ -20,6 +26,8 @@ LOGIN_WINDOW_SECONDS = 15 * 60
 LOGIN_FAILURES: dict[str, list[float]] = {}
 DUMMY_PASSWORD_HASH = hash_password("not-the-real-password")
 settings = get_settings()
+PASSWORD_RESET_TOKEN_HOURS = 1
+PASSWORD_RESET_MESSAGE = "If that email matches an active account and mail is configured, a reset link will be sent shortly."
 
 
 def client_key(request: Request) -> str:
@@ -38,6 +46,29 @@ def record_login_failure(key: str) -> None:
     attempts = [attempt for attempt in LOGIN_FAILURES.get(key, []) if now - attempt < LOGIN_WINDOW_SECONDS]
     attempts.append(now)
     LOGIN_FAILURES[key] = attempts
+
+
+def password_reset_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def password_reset_link(request: Request, db: Session, token: str) -> str:
+    base_url = get_site_setting(db, "base_url").strip() or str(request.base_url)
+    return f"{base_url.rstrip('/')}/reset-password?token={token}"
+
+
+def find_valid_reset_token(db: Session, token: str) -> PasswordResetToken | None:
+    if not token:
+        return None
+    return (
+        db.query(PasswordResetToken)
+        .filter(
+            PasswordResetToken.token_hash == password_reset_hash(token),
+            PasswordResetToken.used_at.is_(None),
+            PasswordResetToken.expires_at >= datetime.utcnow(),
+        )
+        .first()
+    )
 
 
 def current_user(request: Request, db: Session = Depends(get_db)) -> User | None:
@@ -108,6 +139,184 @@ def setup_page(
             "error": None,
             **csrf_context(request, include_version=False)
         }
+    )
+
+
+@router.get("/forgot-password")
+def forgot_password_page(request: Request):
+    if settings.demo_mode:
+        return RedirectResponse("/login", status_code=303)
+    return templates.TemplateResponse(
+        request,
+        "forgot_password.html",
+        {
+            "error": None,
+            "message": None,
+            **csrf_context(request, include_version=False),
+        },
+    )
+
+
+@router.post("/forgot-password")
+def forgot_password_submit(
+    request: Request,
+    email: str = Form("", max_length=255),
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    validate_csrf_token(request, csrf_token)
+    if settings.demo_mode:
+        return RedirectResponse("/login", status_code=303)
+
+    clean_email = email.strip().lower()
+    user = db.query(User).filter(User.email == clean_email, User.is_active == True).first()
+    if user:
+        raw_token = secrets.token_urlsafe(32)
+        now = datetime.utcnow()
+        db.query(PasswordResetToken).filter(
+            PasswordResetToken.user_id == user.id,
+            PasswordResetToken.used_at.is_(None),
+        ).update({PasswordResetToken.used_at: now}, synchronize_session=False)
+        db.add(
+            PasswordResetToken(
+                user_id=user.id,
+                token_hash=password_reset_hash(raw_token),
+                expires_at=now + timedelta(hours=PASSWORD_RESET_TOKEN_HOURS),
+            )
+        )
+        try:
+            send_mail(
+                db,
+                user.email,
+                "Reset your Kaya password",
+                (
+                    "A password reset was requested for your Kaya account.\n\n"
+                    f"Use this link within {PASSWORD_RESET_TOKEN_HOURS} hour to set a new password:\n"
+                    f"{password_reset_link(request, db, raw_token)}\n\n"
+                    "If you did not request this, you can ignore this email."
+                ),
+            )
+            db.commit()
+            write_audit(
+                db,
+                user,
+                "password_reset_requested",
+                "user",
+                str(user.id),
+                request.client.host if request.client else None,
+                detail="Password reset email sent",
+            )
+        except (MailConfigurationError, OSError, ValueError, smtplib.SMTPException):
+            db.rollback()
+            write_audit(
+                db,
+                user,
+                "password_reset_email_failed",
+                "user",
+                str(user.id),
+                request.client.host if request.client else None,
+                detail="Password reset email could not be sent",
+                severity="warning",
+            )
+
+    return templates.TemplateResponse(
+        request,
+        "forgot_password.html",
+        {
+            "error": None,
+            "message": PASSWORD_RESET_MESSAGE,
+            **csrf_context(request, include_version=False),
+        },
+    )
+
+
+@router.get("/reset-password")
+def reset_password_page(request: Request, token: str = "", db: Session = Depends(get_db)):
+    if settings.demo_mode:
+        return RedirectResponse("/login", status_code=303)
+    row = find_valid_reset_token(db, token)
+    return templates.TemplateResponse(
+        request,
+        "reset_password.html",
+        {
+            "token": token if row else "",
+            "error": None if row else "This reset link is invalid or has expired.",
+            **csrf_context(request, include_version=False),
+        },
+        status_code=200 if row else 400,
+    )
+
+
+@router.post("/reset-password")
+def reset_password_submit(
+    request: Request,
+    token: str = Form(""),
+    password: str = Form("", max_length=255),
+    confirm_password: str = Form("", max_length=255),
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    validate_csrf_token(request, csrf_token)
+    if settings.demo_mode:
+        return RedirectResponse("/login", status_code=303)
+
+    row = find_valid_reset_token(db, token)
+    if not row:
+        return templates.TemplateResponse(
+            request,
+            "reset_password.html",
+            {
+                "token": "",
+                "error": "This reset link is invalid or has expired.",
+                **csrf_context(request, include_version=False),
+            },
+            status_code=400,
+        )
+    if len(password) < 12:
+        return templates.TemplateResponse(
+            request,
+            "reset_password.html",
+            {
+                "token": token,
+                "error": "Password must be at least 12 characters.",
+                **csrf_context(request, include_version=False),
+            },
+            status_code=400,
+        )
+    if password != confirm_password:
+        return templates.TemplateResponse(
+            request,
+            "reset_password.html",
+            {
+                "token": token,
+                "error": "Passwords do not match.",
+                **csrf_context(request, include_version=False),
+            },
+            status_code=400,
+        )
+
+    user = row.user
+    user.password_hash = hash_password(password)
+    row.used_at = datetime.utcnow()
+    db.commit()
+    write_audit(
+        db,
+        user,
+        "password_reset_completed",
+        "user",
+        str(user.id),
+        request.client.host if request.client else None,
+    )
+    request.session.clear()
+    return templates.TemplateResponse(
+        request,
+        "login.html",
+        {
+            "error": None,
+            "success": "Password updated. You can sign in now.",
+            "demo_accounts": None,
+            **csrf_context(request, include_version=False),
+        },
     )
 
 

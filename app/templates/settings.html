@@ -22,11 +22,11 @@
 
   <h2>General</h2>
 
-    <section class="remote-settings-card" id="general">
+  <section class="remote-settings-card" id="general">
     <div class="remote-settings-grid">
       <label>
-        <strong></strong>Base URL</strong>
-        <small> The public URL used to access {{ brand.name }}. Once configured, {{ brand.name }} will automatically trust this hostname instead of allowing requests from any host.</small>
+        <strong>Base URL</strong>
+        <small>The public URL used to access {{ brand.name }}. Once configured, {{ brand.name }} will automatically trust this hostname instead of allowing requests from any host.</small>
         <input name="base_url" type="url" value="{{ settings.get('base_url', '') }}" placeholder="http://localhost:8080">
       </label>
     </div>
@@ -34,13 +34,55 @@
 
   <h2>Uploads</h2>
 
-    <section class="remote-settings-card" id="general">
+  <section class="remote-settings-card" id="uploads">
     <div class="remote-settings-grid">
       <label>
-        <strong></strong>Maximum Upload Size</strong>
+        <strong>Maximum Upload Size</strong>
         <small>Maximum upload size for all files uploaded accross the site, in MB.</small>
         <input name="max_upload_mb" type="number" min="1" value="{{ settings.get('max_upload_mb', '25') }}">
       </label>
+    </div>
+  </section>
+
+  <h2>Email</h2>
+
+  <section class="remote-settings-card" id="email">
+    {{ switch('smtp_enabled', 'Enable SMTP mail', 'Allow Kaya to send password reset emails and future notifications.') }}
+    <div class="remote-settings-grid">
+      <label>
+        <strong>SMTP Host</strong>
+        <small>Mail server hostname or IP address.</small>
+        <input name="smtp_host" value="{{ settings.get('smtp_host', '') }}" placeholder="smtp.example.com">
+      </label>
+      <label>
+        <strong>SMTP Port</strong>
+        <small>Usually 587 for STARTTLS or 465 for SSL.</small>
+        <input name="smtp_port" type="number" min="1" max="65535" value="{{ settings.get('smtp_port', '587') }}">
+      </label>
+      <label>
+        <strong>Username</strong>
+        <small>Optional SMTP authentication username.</small>
+        <input name="smtp_username" value="{{ settings.get('smtp_username', '') }}" autocomplete="username">
+      </label>
+      <label>
+        <strong>Password</strong>
+        <small>{% if settings.get('smtp_password_set') == '1' %}A password is saved. Enter a new one to replace it.{% else %}Optional SMTP authentication password.{% endif %}</small>
+        <input name="smtp_password" type="password" value="" autocomplete="new-password" placeholder="{% if settings.get('smtp_password_set') == '1' %}Saved password{% endif %}">
+      </label>
+      <label>
+        <strong>From Email</strong>
+        <small>Address used as the sender for system mail.</small>
+        <input name="smtp_from_email" type="email" value="{{ settings.get('smtp_from_email', '') }}" placeholder="kaya@example.com">
+      </label>
+      <label>
+        <strong>From Name</strong>
+        <small>Name shown beside the sender address.</small>
+        <input name="smtp_from_name" value="{{ settings.get('smtp_from_name', brand.name) }}">
+      </label>
+    </div>
+    <div class="remote-settings-grid">
+      {{ switch('smtp_use_tls', 'Use STARTTLS', 'Upgrade the SMTP connection with STARTTLS after connecting.') }}
+      {{ switch('smtp_use_ssl', 'Use SSL', 'Connect with SMTP over SSL from the start, usually on port 465.') }}
     </div>
   </section>
 

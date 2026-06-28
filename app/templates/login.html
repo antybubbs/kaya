@@ -1,8 +1,9 @@
 {% extends "base.html" %}
+{% block extra_head %}<link rel="stylesheet" href="/static/css/login.css?v={{ asset_version }}">{% endblock %}
 {% block public %}
 <div class="login-wrap">
   <div class="login-card">
-    <div class="brand large"><img class="brand-logo large" src="{{ brand.logo }}" alt="{{ brand.name }}" width="220" height="76"></div>
+    <div class="login-brand"><img class="login-logo" src="/static/brand/kaya-logo.svg" alt="{{ brand.name }}" width="220" height="220"></div>
     <h1>{{ 'Explore the ' ~ brand.name ~ ' demo' if demo_accounts else brand.name }}</h1>
     <p class="muted">{{ brand.tagline }}</p>
     {% if demo_accounts %}
@@ -19,6 +20,7 @@
       {% endfor %}
     </div>
     {% endif %}
+    {% if success %}<div class="success">{{ success }}</div>{% endif %}
     {% if error %}<div class="alert">{{ error }}</div>{% endif %}
     <form method="post" action="/login" class="stack">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -28,7 +30,10 @@
       {% else %}
       <label>{{ 'Username or email' if demo_accounts else 'Email' }}<input name="email" type="{{ 'text' if demo_accounts else 'email' }}" required autofocus></label>
       <label>Password<input name="password" type="password" required></label>
-      <button type="submit">Sign in</button>
+      <div class="login-actions">
+        <button type="submit">Sign in</button>
+        {% if not demo_accounts %}<a href="/forgot-password">Forgot password?</a>{% endif %}
+      </div>
       {% endif %}
     </form>
   </div>

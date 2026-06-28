@@ -15,7 +15,7 @@ from urllib.parse import urlencode
 from app.core.config import get_settings
 from app.core.branding import APP_BRAND_NAME
 from app.core.csrf import csrf_context, validate_csrf_token
-from app.core.security import hash_password, verify_password
+from app.core.security import encrypt_secret, hash_password, verify_password
 from app.core.totp import (
     decrypted_totp_secret,
     encrypted_totp_secret,
@@ -61,6 +61,15 @@ SITE_SETTING_KEYS = {
     "allowed_hosts": "",
     "guacd_host": "",
     "guacd_port": "4822",
+    "smtp_enabled": "",
+    "smtp_host": "",
+    "smtp_port": "587",
+    "smtp_use_tls": "1",
+    "smtp_use_ssl": "",
+    "smtp_username": "",
+    "smtp_password": "",
+    "smtp_from_email": "",
+    "smtp_from_name": APP_BRAND_NAME,
 }
 
 
@@ -74,7 +83,11 @@ def load_site_settings(db: Session) -> dict[str, str]:
     )
 
     for row in rows:
-        settings[row.key] = row.value or ""
+        if row.key == "smtp_password":
+            settings["smtp_password"] = ""
+            settings["smtp_password_set"] = "1" if row.value else ""
+        else:
+            settings[row.key] = row.value or ""
 
     return settings
 
@@ -94,6 +107,12 @@ def save_site_setting(db: Session, key: str, value: str) -> None:
         db.add(row)
 
     row.value = value.strip()
+
+
+def save_smtp_password(db: Session, password: str) -> None:
+    if not password:
+        return
+    save_site_setting(db, "smtp_password", encrypt_secret(password))
 
 
 @router.get("/admin")
@@ -1272,6 +1291,15 @@ def save_settings(
     guacd_host: str = Form(""),
     guacd_port: str = Form(""),
     max_upload_mb: str = Form("25"),
+    smtp_enabled: str = Form(""),
+    smtp_host: str = Form(""),
+    smtp_port: str = Form("587"),
+    smtp_use_tls: str = Form(""),
+    smtp_use_ssl: str = Form(""),
+    smtp_username: str = Form(""),
+    smtp_password: str = Form(""),
+    smtp_from_email: str = Form(""),
+    smtp_from_name: str = Form(APP_BRAND_NAME),
     csrf_token: str = Form(...),
     db: Session = Depends(get_db),
     user=Depends(require_admin),
@@ -1286,10 +1314,19 @@ def save_settings(
         "guacd_host": guacd_host,
         "guacd_port": guacd_port,
         "max_upload_mb": max_upload_mb,
+        "smtp_enabled": "1" if smtp_enabled else "",
+        "smtp_host": smtp_host,
+        "smtp_port": smtp_port,
+        "smtp_use_tls": "1" if smtp_use_tls else "",
+        "smtp_use_ssl": "1" if smtp_use_ssl else "",
+        "smtp_username": smtp_username,
+        "smtp_from_email": smtp_from_email,
+        "smtp_from_name": smtp_from_name,
     }
 
     for key, value in settings_to_save.items():
         save_site_setting(db, key, value)
+    save_smtp_password(db, smtp_password)
 
     db.commit()
 
