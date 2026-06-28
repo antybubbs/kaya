@@ -15,7 +15,7 @@ from app.core.totp import decrypted_totp_secret, encrypted_totp_secret, generate
 from app.db.session import get_db
 from app.models.models import PasswordResetToken, User
 from app.services.audit import write_audit
-from app.services.mail import MailConfigurationError, send_mail
+from app.services.mail import MailConfigurationError, render_email_template, send_mail
 from app.services.sessions import end_user_session, start_user_session, touch_user_session
 from app.services.site_settings import get_site_setting
 
@@ -185,16 +185,18 @@ def forgot_password_submit(
             )
         )
         try:
+            reset_link = password_reset_link(request, db, raw_token)
+            template_values = {
+                "app_name": get_site_setting(db, "app_name"),
+                "expiry_hours": str(PASSWORD_RESET_TOKEN_HOURS),
+                "reset_link": reset_link,
+                "user_email": user.email,
+            }
             send_mail(
                 db,
                 user.email,
-                "Reset your Kaya password",
-                (
-                    "A password reset was requested for your Kaya account.\n\n"
-                    f"Use this link within {PASSWORD_RESET_TOKEN_HOURS} hour to set a new password:\n"
-                    f"{password_reset_link(request, db, raw_token)}\n\n"
-                    "If you did not request this, you can ignore this email."
-                ),
+                render_email_template(get_site_setting(db, "email_template_password_reset_subject"), **template_values),
+                render_email_template(get_site_setting(db, "email_template_password_reset_body"), **template_values),
             )
             db.commit()
             write_audit(

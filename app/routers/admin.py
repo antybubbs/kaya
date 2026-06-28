@@ -1,6 +1,7 @@
 from pathlib import Path
 import tempfile
 import json
+import smtplib
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
@@ -40,6 +41,7 @@ from app.services.custom_fields import FIELD_TYPES, make_field_key
 from app.services.exporter import export_ip_addresses_csv, export_licences_csv
 from app.services.importer import ImportCSVError, import_csv, import_ip_addresses_csv
 from app.services.managed_lists import MANAGED_LIST_MODULES, MANAGED_LISTS, list_label
+from app.services.mail import MailConfigurationError, render_email_template, send_mail
 from app.services.sessions import active_since
 from app.services.site_settings import get_site_setting
 
@@ -70,6 +72,13 @@ SITE_SETTING_KEYS = {
     "smtp_password": "",
     "smtp_from_email": "",
     "smtp_from_name": APP_BRAND_NAME,
+    "email_template_password_reset_subject": "Reset your {app_name} password",
+    "email_template_password_reset_body": (
+        "A password reset was requested for your {app_name} account.\n\n"
+        "Use this link within {expiry_hours} hour to set a new password:\n"
+        "{reset_link}\n\n"
+        "If you did not request this, you can ignore this email."
+    ),
 }
 
 
@@ -113,6 +122,53 @@ def save_smtp_password(db: Session, password: str) -> None:
     if not password:
         return
     save_site_setting(db, "smtp_password", encrypt_secret(password))
+
+
+def save_email_settings(
+    db: Session,
+    *,
+    app_name: str,
+    base_url: str,
+    github_repo: str,
+    version_check_interval_seconds: str,
+    guacd_host: str,
+    guacd_port: str,
+    max_upload_mb: str,
+    smtp_enabled: str,
+    smtp_host: str,
+    smtp_port: str,
+    smtp_use_tls: str,
+    smtp_use_ssl: str,
+    smtp_username: str,
+    smtp_password: str,
+    smtp_from_email: str,
+    smtp_from_name: str,
+    email_template_password_reset_subject: str,
+    email_template_password_reset_body: str,
+) -> None:
+    settings_to_save = {
+        "app_name": app_name,
+        "base_url": base_url,
+        "github_repo": github_repo,
+        "version_check_interval_seconds": version_check_interval_seconds,
+        "guacd_host": guacd_host,
+        "guacd_port": guacd_port,
+        "max_upload_mb": max_upload_mb,
+        "smtp_enabled": "1" if smtp_enabled else "",
+        "smtp_host": smtp_host,
+        "smtp_port": smtp_port,
+        "smtp_use_tls": "1" if smtp_use_tls else "",
+        "smtp_use_ssl": "1" if smtp_use_ssl else "",
+        "smtp_username": smtp_username,
+        "smtp_from_email": smtp_from_email,
+        "smtp_from_name": smtp_from_name,
+        "email_template_password_reset_subject": email_template_password_reset_subject,
+        "email_template_password_reset_body": email_template_password_reset_body,
+    }
+
+    for key, value in settings_to_save.items():
+        save_site_setting(db, key, value)
+    save_smtp_password(db, smtp_password)
 
 
 @router.get("/admin")
@@ -1276,6 +1332,7 @@ def settings_page(
             "user": user,
             "settings": load_site_settings(db),
             "message": None,
+            "error": None,
             **csrf_context(request),
         },
     )
@@ -1300,33 +1357,35 @@ def save_settings(
     smtp_password: str = Form(""),
     smtp_from_email: str = Form(""),
     smtp_from_name: str = Form(APP_BRAND_NAME),
+    email_template_password_reset_subject: str = Form(""),
+    email_template_password_reset_body: str = Form(""),
     csrf_token: str = Form(...),
     db: Session = Depends(get_db),
     user=Depends(require_admin),
 ):
     validate_csrf_token(request, csrf_token)
 
-    settings_to_save = {
-        "app_name": app_name,
-        "base_url": base_url,
-        "github_repo": github_repo,
-        "version_check_interval_seconds": version_check_interval_seconds,
-        "guacd_host": guacd_host,
-        "guacd_port": guacd_port,
-        "max_upload_mb": max_upload_mb,
-        "smtp_enabled": "1" if smtp_enabled else "",
-        "smtp_host": smtp_host,
-        "smtp_port": smtp_port,
-        "smtp_use_tls": "1" if smtp_use_tls else "",
-        "smtp_use_ssl": "1" if smtp_use_ssl else "",
-        "smtp_username": smtp_username,
-        "smtp_from_email": smtp_from_email,
-        "smtp_from_name": smtp_from_name,
-    }
-
-    for key, value in settings_to_save.items():
-        save_site_setting(db, key, value)
-    save_smtp_password(db, smtp_password)
+    save_email_settings(
+        db,
+        app_name=app_name,
+        base_url=base_url,
+        github_repo=github_repo,
+        version_check_interval_seconds=version_check_interval_seconds,
+        guacd_host=guacd_host,
+        guacd_port=guacd_port,
+        max_upload_mb=max_upload_mb,
+        smtp_enabled=smtp_enabled,
+        smtp_host=smtp_host,
+        smtp_port=smtp_port,
+        smtp_use_tls=smtp_use_tls,
+        smtp_use_ssl=smtp_use_ssl,
+        smtp_username=smtp_username,
+        smtp_password=smtp_password,
+        smtp_from_email=smtp_from_email,
+        smtp_from_name=smtp_from_name,
+        email_template_password_reset_subject=email_template_password_reset_subject,
+        email_template_password_reset_body=email_template_password_reset_body,
+    )
 
     db.commit()
 
@@ -1347,6 +1406,109 @@ def save_settings(
             "user": user,
             "settings": load_site_settings(db),
             "message": "Settings saved successfully.",
+            "error": None,
+            **csrf_context(request),
+        },
+    )
+
+
+@router.post("/system/site-administration/test-email")
+def send_test_email(
+    request: Request,
+    app_name: str = Form(APP_BRAND_NAME),
+    base_url: str = Form("http://localhost:8080"),
+    github_repo: str = Form("antybubbs/Kaya"),
+    version_check_interval_seconds: str = Form("1800"),
+    guacd_host: str = Form(""),
+    guacd_port: str = Form(""),
+    max_upload_mb: str = Form("25"),
+    smtp_enabled: str = Form(""),
+    smtp_host: str = Form(""),
+    smtp_port: str = Form("587"),
+    smtp_use_tls: str = Form(""),
+    smtp_use_ssl: str = Form(""),
+    smtp_username: str = Form(""),
+    smtp_password: str = Form(""),
+    smtp_from_email: str = Form(""),
+    smtp_from_name: str = Form(APP_BRAND_NAME),
+    email_template_password_reset_subject: str = Form(""),
+    email_template_password_reset_body: str = Form(""),
+    test_email_to: str = Form(""),
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    validate_csrf_token(request, csrf_token)
+
+    save_email_settings(
+        db,
+        app_name=app_name,
+        base_url=base_url,
+        github_repo=github_repo,
+        version_check_interval_seconds=version_check_interval_seconds,
+        guacd_host=guacd_host,
+        guacd_port=guacd_port,
+        max_upload_mb=max_upload_mb,
+        smtp_enabled=smtp_enabled,
+        smtp_host=smtp_host,
+        smtp_port=smtp_port,
+        smtp_use_tls=smtp_use_tls,
+        smtp_use_ssl=smtp_use_ssl,
+        smtp_username=smtp_username,
+        smtp_password=smtp_password,
+        smtp_from_email=smtp_from_email,
+        smtp_from_name=smtp_from_name,
+        email_template_password_reset_subject=email_template_password_reset_subject,
+        email_template_password_reset_body=email_template_password_reset_body,
+    )
+    db.commit()
+
+    recipient = (test_email_to or user.email).strip()
+    template_values = {
+        "app_name": app_name.strip() or APP_BRAND_NAME,
+        "expiry_hours": "1",
+        "reset_link": f"{(base_url.strip() or 'http://localhost:8080').rstrip('/')}/reset-password?token=example-test-token",
+        "user_email": recipient,
+    }
+    subject = render_email_template(email_template_password_reset_subject or SITE_SETTING_KEYS["email_template_password_reset_subject"], **template_values)
+    body = render_email_template(email_template_password_reset_body or SITE_SETTING_KEYS["email_template_password_reset_body"], **template_values)
+
+    try:
+        send_mail(db, recipient, f"[Test] {subject}", body)
+        write_audit(
+            db,
+            user,
+            "test_email_sent",
+            "settings",
+            None,
+            request.client.host if request.client else None,
+            detail=f"Sent test email to {recipient}",
+        )
+        message = f"Test email sent to {recipient}."
+        error = None
+    except (MailConfigurationError, OSError, ValueError, smtplib.SMTPException) as exc:
+        write_audit(
+            db,
+            user,
+            "test_email_failed",
+            "settings",
+            None,
+            request.client.host if request.client else None,
+            detail=type(exc).__name__,
+            severity="warning",
+        )
+        message = None
+        error = f"Test email failed: {exc}"
+
+    return templates.TemplateResponse(
+        request,
+        "settings.html",
+        {
+            "user": user,
+            "settings": load_site_settings(db),
+            "message": message,
+            "error": error,
+            "test_email_to": recipient,
             **csrf_context(request),
         },
     )

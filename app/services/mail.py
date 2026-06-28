@@ -11,8 +11,17 @@ class MailConfigurationError(RuntimeError):
     pass
 
 
+class SafeTemplateValues(dict):
+    def __missing__(self, key: str) -> str:
+        return "{" + key + "}"
+
+
 def setting_enabled(value: str | None) -> bool:
     return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def render_email_template(template: str, **values: str) -> str:
+    return (template or "").format_map(SafeTemplateValues(values))
 
 
 def send_mail(db: Session, to_email: str, subject: str, body: str) -> None:
