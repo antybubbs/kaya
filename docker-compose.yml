@@ -5,6 +5,8 @@ services:
     image: ${KAYA_IMAGE:-ghcr.io/antybubbs/kaya:latest}
     container_name: kaya
     restart: unless-stopped
+    environment:
+      DATABASE_URL: sqlite:////app/data/kaya.db
     ports:
       - "${KAYA_PORT:-8080}:8080"
     volumes:
