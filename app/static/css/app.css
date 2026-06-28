@@ -405,3 +405,48 @@ body.sidebar-collapsed .sidebar-flyout-popover .nav-link,body.sidebar-collapsed 
   max-height: 220px;
   object-fit: contain;
 }
+
+/* Site Administration tabs */
+.site-admin-form {
+  display: grid;
+  gap: 14px;
+}
+
+.site-admin-tabs {
+  margin-bottom: 2px;
+}
+
+.site-admin-tabs button {
+  align-items: center;
+  background: rgba(15, 23, 42, .42);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--muted);
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 850;
+  min-height: 34px;
+  padding: 8px 13px;
+  white-space: nowrap;
+}
+
+.site-admin-tabs button:hover {
+  background: rgba(148, 163, 184, .1);
+  color: var(--text);
+}
+
+.site-admin-tabs button.active {
+  background: rgba(56, 189, 248, .12);
+  border-color: rgba(56, 189, 248, .7);
+  box-shadow: inset 0 -2px 0 rgba(56, 189, 248, .75);
+  color: var(--text);
+}
+
+.settings-tab-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.settings-tab-panel h2 {
+  margin: 0;
+}
