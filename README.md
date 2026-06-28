@@ -6,7 +6,7 @@ Kaya is a self-hosted infrastructure management platform for servers, services, 
 
 Kaya is built for home lab and small infrastructure environments where you want one place to understand what exists, how it is connected, how to access it, and what needs attention.
 
-<img width="2454" height="1227" alt="Kaya branding board" src="https://github.com/user-attachments/assets/f584720d-59df-4f40-a67a-42464bec5c2b" />
+<img width="2544" height="1262" alt="image" src="https://github.com/user-attachments/assets/9c9bd1c1-1cbe-45c5-981c-28d9d7063fc7" />
 
 ## Features
 
