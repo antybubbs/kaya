@@ -389,3 +389,19 @@ body.sidebar-collapsed .sidebar-flyout-popover .nav-link,body.sidebar-collapsed 
     justify-content: flex-start;
   }
 }
+
+/* First-run setup centering and responsive polish */
+.setup-page {
+  justify-items: center;
+  place-items: center;
+}
+
+.setup-shell {
+  justify-self: center;
+}
+
+.setup-logo {
+  background: transparent;
+  max-height: 220px;
+  object-fit: contain;
+}
