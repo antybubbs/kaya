@@ -1,4 +1,11 @@
-<img width="250" height="250" alt="image" src="https://github.com/user-attachments/assets/893ff230-83e1-4a2e-8a7a-f08d9a6a83f7" align="center"/>
+<p align="center">
+  <img
+    src="https://github.com/user-attachments/assets/893ff230-83e1-4a2e-8a7a-f08d9a6a83f7"
+    alt="Kaya Logo"
+    width="250"
+    height="250"
+  />
+</p>
 
 # Kaya
 
