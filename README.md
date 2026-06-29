@@ -119,9 +119,9 @@ While AI has significantly increased development speed, all architectural decisi
 
 The goal is simple: use AI to improve productivity while maintaining the quality, reliability, and security expected of a self-hosted application.
 
-## Remote Manager credit
+## Remote Manager Module credit
 
-Kaya Remote Manager is based on the same core architecture used by Termix:
+Kaya Remote Manager Module is based on the same core architecture used by Termix:
 
 - WebSocket transport between browser and backend
 - Node.js SSH backend using ssh2
