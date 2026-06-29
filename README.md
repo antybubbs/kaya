@@ -107,6 +107,17 @@ If Kaya is served from a path prefix such as `/kaya`, also set:
 ```text
 ROOT_PATH=/kaya
 ```
+## AI-Assisted Development
+
+Kaya is developed with the assistance of AI, primarily using OpenAI Codex alongside Visual Studio Code.
+
+AI is used as a development assistant to help generate code, suggest implementations, identify potential improvements, and accelerate development. It is not used to make autonomous changes to the project.
+
+Every code suggestion is reviewed before being applied. I carefully validate the logic, security, performance, and compatibility of all proposed changes before they are merged into the main codebase. Where necessary, AI-generated code is modified or rewritten to ensure it meets Kaya's architecture, coding standards, and functional requirements.
+
+While AI has significantly increased development speed, all architectural decisions, feature design, testing, and final implementation remain under my control.
+
+The goal is simple: use AI to improve productivity while maintaining the quality, reliability, and security expected of a self-hosted application.
 
 ## Remote Manager credit
 
