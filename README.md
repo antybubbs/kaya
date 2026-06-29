@@ -19,6 +19,9 @@ Kaya is built for home lab and small infrastructure environments where you want 
 - Licence, user, audit and application administration
 - Docker Compose deployment with persistent local data
 
+## Demo
+https://demo.kaya-app.uk
+
 ## One-file Docker Compose install
 
 Use `docker-compose.yml` directly. It pulls the Kaya image and starts the app plus Guacamole daemon support:
