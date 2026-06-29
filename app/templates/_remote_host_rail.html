@@ -21,7 +21,6 @@
     {% set label = remote_label_fn(row) if remote_label_fn is defined else remote_label(row) %}
     <article class="remote-host-card {% if remote and remote.id == row.id %}active{% endif %}" data-remote-id="{{ row.id }}" data-remote-label="{{ label }}" data-remote-protocol="{{ row.protocol }}" data-remote-category="{{ row.ip_address.category or 'Uncategorised' }}" data-remote-order="{{ loop.index0 }}" data-remote-panel-url="/remote-manager/{{ row.id }}/panel?ssh=kaya-rewrite-2" data-remote-search-text="{{ label }} {{ row.username or '' }} {{ row.ip_address.address }} {{ row.protocol }} {{ row.ip_address.category or '' }}">
       <div class="remote-host-main">
-        <span class="remote-status-dot {{ row.protocol }}" aria-hidden="true"></span>
         <div class="remote-host-info">
           <a class="remote-protocol-icon" href="/remote-manager/{{ row.id }}/session" data-remote-open title="Open {{ row.protocol|upper }}">{% if row.protocol == 'rdp' %}RDP{% else %}&gt;_{% endif %}</a>
           <strong>{{ label }}</strong>

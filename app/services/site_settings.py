@@ -13,6 +13,22 @@ DEFAULT_SITE_SETTINGS = {
     "guacd_host": "",
     "guacd_port": "",
     "max_upload_mb": "25",
+    "smtp_enabled": "",
+    "smtp_host": "",
+    "smtp_port": "587",
+    "smtp_use_tls": "1",
+    "smtp_use_ssl": "",
+    "smtp_username": "",
+    "smtp_password": "",
+    "smtp_from_email": "",
+    "smtp_from_name": APP_BRAND_NAME,
+    "email_template_password_reset_subject": "Reset your {app_name} password",
+    "email_template_password_reset_body": (
+        "A password reset was requested for your {app_name} account.\n\n"
+        "Use this link within {expiry_hours} hour to set a new password:\n"
+        "{reset_link}\n\n"
+        "If you did not request this, you can ignore this email."
+    ),
 }
 
 

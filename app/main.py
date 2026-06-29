@@ -223,6 +223,14 @@ def migrate_existing_database():
             conn.execute(text("ALTER TABLE users ADD COLUMN first_name VARCHAR(120)"))
         if "last_name" not in columns:
             conn.execute(text("ALTER TABLE users ADD COLUMN last_name VARCHAR(120)"))
+        password_reset_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(password_reset_tokens)"))}
+        if not password_reset_columns:
+            conn.execute(text("CREATE TABLE password_reset_tokens (id INTEGER NOT NULL PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), token_hash VARCHAR(64) NOT NULL UNIQUE, expires_at DATETIME NOT NULL, used_at DATETIME, created_at DATETIME)"))
+            conn.execute(text("CREATE INDEX ix_password_reset_tokens_user_id ON password_reset_tokens (user_id)"))
+            conn.execute(text("CREATE UNIQUE INDEX ix_password_reset_tokens_token_hash ON password_reset_tokens (token_hash)"))
+            conn.execute(text("CREATE INDEX ix_password_reset_tokens_expires_at ON password_reset_tokens (expires_at)"))
+            conn.execute(text("CREATE INDEX ix_password_reset_tokens_used_at ON password_reset_tokens (used_at)"))
+            conn.execute(text("CREATE INDEX ix_password_reset_tokens_created_at ON password_reset_tokens (created_at)"))
         licence_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(licences)"))}
         if licence_columns and "is_favourite" not in licence_columns:
             conn.execute(text("ALTER TABLE licences ADD COLUMN is_favourite BOOLEAN DEFAULT 0 NOT NULL"))

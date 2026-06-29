@@ -389,3 +389,84 @@ body.sidebar-collapsed .sidebar-flyout-popover .nav-link,body.sidebar-collapsed 
     justify-content: flex-start;
   }
 }
+
+/* First-run setup centering and responsive polish */
+.setup-page {
+  justify-items: center;
+  place-items: center;
+}
+
+.setup-shell {
+  justify-self: center;
+}
+
+.setup-logo {
+  background: transparent;
+  max-height: 220px;
+  object-fit: contain;
+}
+
+/* Site Administration tabs */
+.site-admin-form {
+  display: grid;
+  gap: 16px;
+}
+
+.site-admin-tabs {
+  margin: 0;
+}
+
+.site-admin-tabs button {
+  align-items: center;
+  background: rgba(15, 23, 42, .42);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--muted);
+  display: inline-flex;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 850;
+  justify-self: auto;
+  min-height: 38px;
+  padding: 9px 15px;
+  white-space: nowrap;
+}
+
+.site-admin-tabs button:hover {
+  background: rgba(148, 163, 184, .1);
+  color: var(--text);
+}
+
+.site-admin-tabs button.active {
+  background: rgba(56, 189, 248, .12);
+  border-color: rgba(56, 189, 248, .7);
+  box-shadow: inset 0 -2px 0 rgba(56, 189, 248, .75);
+  color: var(--text);
+}
+
+.settings-tab-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.settings-tab-panel[hidden] {
+  display: none !important;
+}
+
+.settings-tab-panel h2 {
+  margin: 0;
+}
+
+.settings-tab-panel .remote-settings-card {
+  box-shadow: none;
+}
+
+.site-admin-actions {
+  align-items: center;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  padding-top: 14px;
+}
