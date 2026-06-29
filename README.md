@@ -7,9 +7,7 @@
   />
 </p>
 
-# Kaya
-
-**Your Infrastructure. Your Home.**
+## **Your Infrastructure. Your Home.**
 
 Kaya is a self-hosted infrastructure management platform for servers, services, assets, remote access, runbooks, licences and day-to-day operational information.
 
