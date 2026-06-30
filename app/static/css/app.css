@@ -470,3 +470,18 @@ body.sidebar-collapsed .sidebar-flyout-popover .nav-link,body.sidebar-collapsed 
   justify-content: flex-end;
   padding-top: 14px;
 }
+
+/* Keep VM/Docker tabs on the right while action buttons stay grouped on the left. */
+@media (min-width: 851px) {
+  .compute-hero .module-toolbar {
+    justify-content: space-between;
+  }
+
+  .compute-hero .module-primary-actions {
+    flex: 1 1 auto;
+  }
+
+  .compute-hero .compute-tabs {
+    margin-left: 12px;
+  }
+}
