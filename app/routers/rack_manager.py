@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session, joinedload
 from starlette import status
@@ -100,7 +100,27 @@ def item_color(item: RackItem) -> str:
 def list_racks(request: Request, db: Session = Depends(get_db), user=Depends(require_user)):
     racks = db.query(Rack).options(joinedload(Rack.items)).order_by(Rack.sort_order.asc(), Rack.name.asc()).all()
     total_items = db.query(RackItem).count()
-    return templates.TemplateResponse(request, "rack_manager.html", rack_context(request, user, racks=racks, total_items=total_items))
+    rack_stats: dict[int, dict[str, object]] = {}
+    for rack in racks:
+        occupied: set[int] = set()
+        for item in rack.items:
+            start = max(1, item.start_u)
+            end = min(rack.height_u, item.start_u + item.height_u - 1)
+            if end < start:
+                continue
+            occupied.update(range(start, end + 1))
+        used_u = len(occupied)
+        rack_stats[rack.id] = {
+            "occupied_units": occupied,
+            "used_u": used_u,
+            "open_u": max(rack.height_u - used_u, 0),
+            "device_count": len(rack.items),
+        }
+    return templates.TemplateResponse(
+        request,
+        "rack_manager.html",
+        rack_context(request, user, racks=racks, rack_stats=rack_stats, total_items=total_items),
+    )
 
 
 @router.post("/new")
@@ -223,6 +243,29 @@ def update_item(request: Request, rack_id: int, item_id: int, hardware_asset_id:
     db.commit()
     write_audit(db, user, "update", "rack_item", str(item.id), request.client.host if request.client else None, detail=f"{item.name} in {rack.name}")
     return RedirectResponse(f"/infrastructure/rack-manager/{rack.id}?side={mount_side if mount_side != 'both' else 'front'}", status_code=303)
+
+
+@router.post("/{rack_id}/items/{item_id}/layout")
+def update_item_layout(request: Request, rack_id: int, item_id: int, start_u: int = Form(...), height_u: int = Form(1), csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_editor)):
+    validate_csrf_token(request, csrf_token)
+    rack = db.get(Rack, rack_id)
+    item = db.get(RackItem, item_id)
+    if not rack or not item or item.rack_id != rack.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Rack item not found")
+
+    clean_height = max(1, min(height_u, rack.height_u))
+    max_start = max(1, rack.height_u - clean_height + 1)
+    clean_start = max(1, min(start_u, max_start))
+
+    error = validate_item_position(db, rack, clean_start, clean_height, item.mount_side, item.id)
+    if error:
+        return JSONResponse({"ok": False, "detail": error}, status_code=status.HTTP_400_BAD_REQUEST)
+
+    item.start_u = clean_start
+    item.height_u = clean_height
+    db.commit()
+    write_audit(db, user, "update", "rack_item", str(item.id), request.client.host if request.client else None, detail=f"layout change for {item.name} in {rack.name}")
+    return JSONResponse({"ok": True, "start_u": item.start_u, "height_u": item.height_u})
 
 
 @router.post("/{rack_id}/items/{item_id}/delete")

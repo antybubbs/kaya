@@ -28,6 +28,8 @@ networks:
   default:
     driver: bridge
     driver_opts:
-      # Match NetBird's default WireGuard MTU so large RDP graphics packets do
-      # not enter the VPN through a 1500-byte Docker bridge and black-hole.
+      # Match default WireGuard MTU so large RDP graphics packets do, this helps if you are running kaya in a VPN container and the VPN is using WireGuard. 
+      # Otherwise, you may experience issues with RDP graphics when using kaya through a VPN. 
+      # This is because WireGuard uses a 1420-byte MTU, which is smaller than the default Docker bridge MTU of 1500 bytes. 
+      # By setting the MTU to 1280 bytes, we can avoid fragmentation and ensure that large packets are transmitted correctly. If you are not using a VPN, you can remove this option or set it to 1500 bytes.
       com.docker.network.driver.mtu: "1280"

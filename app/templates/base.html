@@ -32,33 +32,41 @@
 {% endif %}
 {% if user %}
 <header class="app-topbar">
-  <div class="topbar-session-tabs">{% block topbar_session %}{% endblock %}</div>
-  <div class="app-topbar-spacer"></div>
-  <div class="topbar-actions">
-    <div class="kaya-theme-switch" role="group" aria-label="Kaya theme">
-      <button type="button" data-kaya-theme-choice="command" aria-pressed="true">Command</button>
-      <button type="button" data-kaya-theme-choice="light-ops" aria-pressed="false">Light Ops</button>
-    </div>
-    <details class="account-menu">
-      <summary>
-        <span class="avatar">{{ (user.first_name[:1] if user.first_name else user.email[:1])|upper }}</span>
-      </summary>
-      <div class="account-popover">
-        <div class="account-heading">
-          <strong>{{ ((user.first_name or '') ~ ' ' ~ (user.last_name or ''))|trim or user.email }}</strong>
-          <span>{{ user.email }}</span>
-        </div>
-        <a class="account-link" href="/profile">Profile Settings</a>
-        <form method="post" action="/logout">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <button class="account-link logout-link" type="submit">Log out</button>
-        </form>
+  <div class="app-topbar-brand">
+    <a class="app-brand-link" href="/dashboard" data-reset-sidebar>
+      <img class="brand-logo" src="{{ brand.icon }}" alt="" width="38" height="38">
+      <span class="app-brand-name">{{ brand.name }}</span>
+    </a>
+    <button class="sidebar-collapse-button" type="button" data-sidebar-collapse title="Collapse sidebar" aria-label="Collapse sidebar">&lt;</button>
+  </div>
+  <div class="app-topbar-main">
+    <div class="topbar-session-tabs">{% block topbar_session %}{% endblock %}</div>
+    <div class="app-topbar-spacer"></div>
+    <div class="topbar-actions">
+      <div class="kaya-theme-switch" role="group" aria-label="Kaya theme">
+        <button type="button" data-kaya-theme-choice="command" aria-pressed="true">Command</button>
+        <button type="button" data-kaya-theme-choice="light-ops" aria-pressed="false">Light Ops</button>
       </div>
-    </details>
+      <details class="account-menu">
+        <summary>
+          <span class="avatar">{{ (user.first_name[:1] if user.first_name else user.email[:1])|upper }}</span>
+        </summary>
+        <div class="account-popover">
+          <div class="account-heading">
+            <strong>{{ ((user.first_name or '') ~ ' ' ~ (user.last_name or ''))|trim or user.email }}</strong>
+            <span>{{ user.email }}</span>
+          </div>
+          <a class="account-link" href="/profile">Profile Settings</a>
+          <form method="post" action="/logout">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="account-link logout-link" type="submit">Log out</button>
+          </form>
+        </div>
+      </details>
+    </div>
   </div>
 </header>
 <aside class="sidebar">
-  <div class="brand"><img class="brand-logo" src="{{ brand.icon }}" alt="" width="38" height="38"><span class="brand-name">{{ brand.name }}</span><button class="sidebar-collapse-button" type="button" data-sidebar-collapse title="Collapse sidebar" aria-label="Collapse sidebar">&lt;</button></div>
   <nav class="nav-tree">
     <a class="nav-link" href="/dashboard" data-reset-sidebar><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="8" rx="1.5"></rect><rect x="14" y="3" width="7" height="5" rx="1.5"></rect><rect x="14" y="12" width="7" height="9" rx="1.5"></rect><rect x="3" y="15" width="7" height="6" rx="1.5"></rect></svg></span><span class="nav-label">Dashboard</span></a>
     <details class="nav-group" data-sidebar-menu="infrastructure">
