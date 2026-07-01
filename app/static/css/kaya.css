@@ -266,6 +266,12 @@ html[data-kaya-theme=command] .audit-table th{background:#1a1f27!important;borde
   color:#fff;
 }
 
+html[data-kaya-theme=light-ops] .sidebar .nav-link.active,
+html[data-kaya-theme=light-ops] .sidebar .nav-group:has(.nav-link.active)>summary,
+html[data-kaya-theme=light-ops] .sidebar .nav-subgroup:has(.nav-link.active)>summary{
+  color:#0f172a;
+}
+
 .sidebar .nav-link.active:before,
 .sidebar .nav-group:has(.nav-link.active)>summary:before{
   display:none;
