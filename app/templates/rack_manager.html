@@ -26,15 +26,15 @@
 {% if racks %}
 <section class="rack-card-grid section-gap">
   {% for rack in racks %}
-  {% set used = rack.items|sum(attribute='height_u') %}
+  {% set stat = rack_stats.get(rack.id) %}
   <a class="rack-card" href="/infrastructure/rack-manager/{{ rack.id }}">
     <div class="rack-card-mini" aria-hidden="true">
-      {% for unit in range(rack.height_u, 0, -1) %}<i class="{% if unit <= used %}filled{% endif %}"></i>{% endfor %}
+      {% for unit in range(rack.height_u, 0, -1) %}<i class="{% if stat and unit in stat.occupied_units %}filled{% endif %}"></i>{% endfor %}
     </div>
     <div>
       <strong>{{ rack.name }}</strong>
       <span>{{ rack.location or 'No location' }}</span>
-      <small>{{ rack.height_u }}U rack - {{ rack.items|length }} devices - {{ rack.height_u - used }}U open</small>
+      <small>{{ rack.height_u }}U rack - {{ (stat.device_count if stat else rack.items|length) }} devices - {{ (stat.open_u if stat else rack.height_u) }}U open</small>
     </div>
   </a>
   {% endfor %}

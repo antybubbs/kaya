@@ -16,10 +16,11 @@
 .remote-host-search label{align-items:center;background:#111827;border:1px solid var(--line);border-radius:7px;color:var(--muted);display:grid;grid-template-columns:18px minmax(0,1fr);min-height:34px;padding:0 9px}
 .remote-host-search input{background:transparent;border:0;color:var(--text);font-size:12px;min-height:30px;padding:0;width:100%}
 .remote-host-search input:focus{outline:0}
-.remote-host-toolbar{align-items:center;display:grid;gap:6px;grid-auto-columns:max-content;grid-auto-flow:column;overflow:hidden}
-.remote-host-toolbar button,.remote-host-toolbar a{align-items:center;background:#111827;border:1px solid var(--line);border-radius:7px;color:var(--muted);display:inline-flex;font-size:12px;font-weight:900;height:30px;justify-content:center;line-height:1;min-height:30px;min-width:34px;padding:0 9px;white-space:nowrap}
-.remote-host-toolbar button:hover,.remote-host-toolbar a:hover{background:rgba(96,165,250,.12);border-color:#3b82f6;color:#dbeafe}
-.remote-host-toolbar button.active{background:rgba(56,189,248,.14);border-color:rgba(56,189,248,.7);color:#e0f2fe}
+.remote-host-toolbar{align-items:center;display:flex;gap:6px;overflow:hidden}
+.remote-host-toolbar .button{align-items:center;border-radius:8px;display:inline-flex;font-size:12px;font-weight:850;justify-content:center;line-height:1;margin:0;min-height:30px;min-width:34px;padding:6px 10px;white-space:nowrap}
+.remote-host-toolbar .button:hover{background:rgba(255,138,0,.12);border-color:#ff8a00;color:var(--text)}
+.remote-host-toolbar .button.active{background:rgba(255,138,0,.14);border-color:rgba(255,138,0,.7);box-shadow:inset 0 -2px 0 rgba(255,138,0,.75);color:var(--text)}
+.remote-host-toolbar [data-remote-host-add]{min-width:34px;padding:0 10px}
 .remote-host-list{align-content:start;display:grid;gap:3px;min-height:0;overflow-x:hidden;overflow-y:auto;padding:8px;scrollbar-width:none;-ms-overflow-style:none}
 .remote-host-list::-webkit-scrollbar{display:none}
 .remote-host-group-heading{align-items:center;background:#0f1722;border:0;border-bottom:1px solid rgba(148,163,184,.18);border-top:1px solid rgba(148,163,184,.08);border-radius:6px 6px 0 0;color:#cbd5e1;cursor:pointer;display:grid;font-size:11px;gap:8px;grid-template-columns:minmax(0,1fr) auto;margin-top:10px;min-height:32px;padding:8px 10px;text-align:left;text-transform:uppercase;width:100%}
@@ -34,15 +35,15 @@
 .remote-host-card[hidden],.remote-host-group-heading[hidden]{display:none!important}
 .remote-host-card:hover{background:rgba(148,163,184,.075);border-color:rgba(148,163,184,.1)}
 .remote-host-card.active{background:rgba(148,163,184,.105);border-color:rgba(148,163,184,.18)}
-.remote-host-card.active:before{background:#60a5fa;bottom:8px;content:"";left:0;position:absolute;top:8px;width:2px}
+.remote-host-card.active:before{background:#ff8a00;bottom:8px;content:"";left:0;position:absolute;top:8px;width:2px}
 .remote-host-card.split-active{box-shadow:inset 0 0 0 1px rgba(148,163,184,.22)}
 .remote-host-main{display:contents;min-width:0}
 .remote-host-main>div,.remote-host-info{align-items:center;column-gap:8px;display:grid;grid-column:1;grid-template-columns:auto minmax(0,1fr);min-width:0;overflow:hidden;row-gap:2px}
 .remote-host-main strong{color:#f8fafc;display:block;font-size:14px;font-weight:900;grid-column:2;line-height:1.18;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .remote-host-main span{color:rgba(203,213,225,.62);display:block;font-size:11px;grid-column:2;line-height:1.25;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .remote-host-actions{align-items:center;display:flex;gap:0;grid-column:2;justify-content:flex-end;margin-left:0;min-width:32px;white-space:nowrap}
-.remote-protocol-icon{align-items:center;border:1px solid rgba(96,165,250,.28);border-radius:5px;color:#bfdbfe;display:inline-flex;font-family:"Caskaydia Cove Nerd Font Mono",Consolas,monospace;font-size:10px;font-weight:900;grid-column:1;grid-row:1 / span 2;height:18px;justify-content:center;line-height:1;margin-bottom:0;min-width:28px;padding:0 5px;width:max-content}
-.remote-protocol-icon:hover{background:rgba(96,165,250,.12);border-color:rgba(96,165,250,.45);color:#fff}
+.remote-protocol-icon{align-items:center;border:1px solid rgba(255,138,0,.28);border-radius:5px;color:#bfdbfe;display:inline-flex;font-family:"Caskaydia Cove Nerd Font Mono",Consolas,monospace;font-size:10px;font-weight:900;grid-column:1;grid-row:1 / span 2;height:18px;justify-content:center;line-height:1;margin-bottom:0;min-width:28px;padding:0 5px;width:max-content}
+.remote-protocol-icon:hover{background:rgba(255,138,0,.12);border-color:rgba(255,138,0,.45);color:#fff}
 .remote-connect-menu{position:relative}
 .remote-connect-menu>summary{align-items:center;border:1px solid transparent;border-radius:6px;color:#cbd5e1;cursor:pointer;display:flex;font-size:16px;font-weight:900;height:26px;justify-content:center;line-height:1;list-style:none;opacity:.9;padding:0;transition:background .12s ease,color .12s ease,opacity .12s ease;width:28px}
 .remote-connect-menu>summary::-webkit-details-marker{display:none}
@@ -53,7 +54,7 @@
 .remote-host-empty{color:var(--muted);font-size:12px;padding:10px}
 .remote-host-resizer{bottom:0;cursor:col-resize;position:absolute;right:-4px;top:0;width:8px;z-index:12}
 .remote-host-resizer:after{background:transparent;content:"";height:100%;left:3px;position:absolute;top:0;width:2px}
-.remote-host-resizer:hover:after,body.remote-resizing .remote-host-resizer:after{background:#38bdf8}
+.remote-host-resizer:hover:after,body.remote-resizing .remote-host-resizer:after{background:#ff8a00}
 body.remote-resizing{cursor:col-resize;user-select:none}
 .remote-rail-compact .remote-host-search label{grid-template-columns:1fr}
 .remote-rail-compact .remote-host-search label span{display:none}
@@ -68,7 +69,7 @@ body.remote-resizing{cursor:col-resize;user-select:none}
 .remote-rail-mini .remote-host-search{padding:6px}
 .remote-rail-mini .remote-host-search label{display:none}
 .remote-rail-mini .remote-host-toolbar{display:grid;grid-template-columns:1fr;justify-items:center}
-.remote-rail-mini .remote-host-toolbar button,.remote-rail-mini .remote-host-toolbar a{padding:0;width:34px}
+.remote-rail-mini .remote-host-toolbar .button{padding:0;width:34px}
 .remote-rail-mini .remote-host-card{align-items:center;justify-items:center;padding:9px 4px}
 .remote-rail-mini .remote-host-group-heading{display:none}
 .remote-rail-mini .remote-host-main{display:none}
@@ -78,8 +79,8 @@ body.remote-resizing{cursor:col-resize;user-select:none}
 .remote-tabbar{align-items:end;background:#121827;border-bottom:1px solid var(--line);display:flex;min-width:0;overflow-x:auto;scrollbar-width:thin}
 .remote-session-tab{align-items:center;background:#111827;border-right:1px solid var(--line);border-bottom:2px solid transparent;color:#aeb7a5;cursor:pointer;display:flex;flex:0 1 230px;gap:9px;height:42px;min-width:132px;max-width:300px;padding:0 10px;position:relative;user-select:none}
 .remote-session-tab:hover{background:#172033;color:#f7f7f7}
-.remote-session-tab.active{background:#07111d;border-bottom-color:#fb923c;color:#fff}
-.remote-session-tab.split-visible{box-shadow:inset 0 -2px 0 rgba(56,189,248,.55)}
+.remote-session-tab.active{background:#07111d;border-bottom-color:#ff8a00;color:#fff}
+.remote-session-tab.split-visible{box-shadow:inset 0 -2px 0 rgba(255,138,0,.55)}
 .remote-tab-icon{color:#8fb8ff;font-family:"Caskaydia Cove Nerd Font Mono",Consolas,monospace;font-size:11px;font-weight:900;min-width:24px;text-align:center}
 .remote-tab-title{font-size:13px;font-weight:850;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .remote-tab-protocol{color:#7f8977;font-size:10px;font-weight:900;margin-left:auto}
@@ -88,7 +89,7 @@ body.remote-resizing{cursor:col-resize;user-select:none}
 .remote-tab-tool:hover{background:#263244;color:#fff}
 .remote-layout-tools{align-items:center;display:flex;gap:6px;margin-left:auto;padding:0 8px 6px}
 .remote-layout-button{background:#111827;border:1px solid var(--line);border-radius:7px;color:var(--muted);font-size:12px;font-weight:900;height:30px;min-height:30px;padding:0 12px}
-.remote-layout-button:hover:not(:disabled),.remote-layout-button.active{background:rgba(56,189,248,.12);border-color:rgba(56,189,248,.65);color:var(--text)}
+.remote-layout-button:hover:not(:disabled),.remote-layout-button.active{background:rgba(255,138,0,.12);border-color:rgba(255,138,0,.65);color:var(--text)}
 .remote-layout-button:disabled{cursor:not-allowed;opacity:.48}
 .remote-tab-panels{height:100%;min-height:0;position:relative}
 .remote-tab-panels>[hidden]{display:none!important}
@@ -122,7 +123,7 @@ body.remote-resizing{cursor:col-resize;user-select:none}
 .rdp-display-shell{background:#050706;height:100%;min-height:0;outline:none;overflow:hidden;position:relative}
 .rdp-display{align-items:center;display:flex;height:100%;justify-content:center;min-height:0;overflow:hidden;position:relative;width:100%}
 .rdp-display .rdp-guac-display{cursor:none}
-.rdp-session-placeholder{align-items:center;background:radial-gradient(circle at center,rgba(56,189,248,.08),transparent 42%),#050a12;display:flex;height:100%;inset:0;justify-content:center;min-height:360px;padding:24px;position:absolute;text-align:center;z-index:1}
+.rdp-session-placeholder{align-items:center;background:radial-gradient(circle at center,rgba(255,138,0,.08),transparent 42%),#050a12;display:flex;height:100%;inset:0;justify-content:center;min-height:360px;padding:24px;position:absolute;text-align:center;z-index:1}
 .rdp-session-placeholder h2{margin-bottom:8px}
 .rdp-status{background:rgba(5,7,6,.78);border:1px solid var(--line);border-radius:10px;bottom:18px;left:18px;max-width:min(420px,calc(100% - 36px));padding:10px 12px;position:absolute;z-index:3}
 .rdp-status h2{font-size:14px;margin:0 0 4px}
@@ -132,9 +133,9 @@ body.remote-resizing{cursor:col-resize;user-select:none}
 .rdp-log-panel pre{color:#d1fae5;font-size:12px;line-height:1.45;margin:0;max-height:170px;overflow:auto;padding:10px;white-space:pre-wrap}
 .remote-settings-shell{display:grid;gap:14px;max-width:1040px}
 .remote-settings-tabs{align-items:center;border-bottom:1px solid var(--line);display:flex;gap:8px;overflow-x:auto;padding:0 0 8px}
-.remote-settings-tabs a{align-items:center;background:rgba(15,23,42,.42);border:1px solid var(--line);border-radius:10px;color:var(--muted);display:inline-flex;font-size:12px;font-weight:850;min-height:34px;padding:8px 13px;white-space:nowrap}
-.remote-settings-tabs a:hover,.remote-settings-tabs a.active{background:rgba(56,189,248,.12);border-color:rgba(56,189,248,.7);box-shadow:inset 0 -2px 0 rgba(56,189,248,.75);color:var(--text)}
-.remote-settings-card{background:rgba(17,24,39,.82);border:1px solid var(--line);border-radius:12px;box-shadow:0 12px 36px rgba(0,0,0,.18);display:grid;overflow:hidden}
+.remote-settings-tabs a{align-items:center;background:#151a21;border:1px solid var(--line);border-radius:10px;color:var(--muted);display:inline-flex;font-size:12px;font-weight:850;min-height:34px;padding:8px 13px;white-space:nowrap}
+.remote-settings-tabs a:hover,.remote-settings-tabs a.active{background:rgba(255,138,0,.12);border-color:rgba(255,138,0,.7);box-shadow:inset 0 -2px 0 rgba(255,138,0,.75);color:var(--text)}
+.remote-settings-card{background:#14171d;border:1px solid var(--line);border-radius:12px;box-shadow:0 12px 36px rgba(0,0,0,.18);display:grid;overflow:hidden}
 .remote-settings-card header{align-items:center;border-bottom:1px solid var(--line);color:var(--text);display:flex;font-size:13px;font-weight:900;min-height:42px;padding:10px 14px}
 .remote-settings-card>header+*,.remote-settings-card>.remote-setting-row,.remote-settings-card>.remote-settings-grid{margin:0 14px}
 .remote-settings-card>.remote-setting-row:last-child,.remote-settings-card>.remote-settings-grid:last-child{margin-bottom:10px}
@@ -142,15 +143,15 @@ body.remote-resizing{cursor:col-resize;user-select:none}
 .remote-settings-grid.two{grid-template-columns:repeat(2,minmax(0,1fr))}
 .remote-settings-grid label{color:var(--text);font-size:13px;font-weight:800;letter-spacing:0;text-transform:none}
 .remote-settings-grid label span{color:var(--muted);float:right;font-size:12px;font-weight:700}
-.remote-settings-grid input,.remote-settings-grid select{background:#0b1220;border-color:var(--line);border-radius:8px;color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Arial;font-size:13px}
+.remote-settings-grid input,.remote-settings-grid select{background:#0d1117;border-color:var(--line);border-radius:8px;color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Arial;font-size:13px}
 .remote-settings-grid input[type=range]{accent-color:var(--accent);min-height:22px;padding:0}
 .remote-setting-row{align-items:center;border-bottom:1px solid var(--line);display:flex;gap:16px;justify-content:space-between;padding:14px 0}
 .remote-setting-row:last-child{border-bottom:0}
 .remote-setting-row strong{color:var(--text);display:block;font-size:14px;font-weight:900;line-height:1.2}
 .remote-setting-row small{color:var(--muted);display:block;font-size:12px;margin-top:3px}
-.remote-switch{appearance:none;background:#0b1220;border:1px solid var(--line);border-radius:999px;height:22px;min-height:22px;padding:0;position:relative;width:42px}
+.remote-switch{appearance:none;background:#0d1117;border:1px solid var(--line);border-radius:999px;height:22px;min-height:22px;padding:0;position:relative;width:42px}
 .remote-switch:before{background:var(--muted);border-radius:50%;content:"";height:16px;left:3px;position:absolute;top:2px;transition:left .15s ease,background .15s ease;width:16px}
-.remote-switch:checked{background:rgba(56,189,248,.18);border-color:var(--accent)}
+.remote-switch:checked{background:rgba(255,138,0,.18);border-color:var(--accent)}
 .remote-switch:checked:before{background:var(--accent);left:21px}
 .terminal-preview{background:#011627;border:1px solid #24445f;color:#d6deeb;font-family:"Caskaydia Cove Nerd Font Mono",Consolas,monospace;font-size:14px;font-weight:700;line-height:1.1;margin:14px;padding:14px}
 .term-green{color:#22da6e}.term-blue{color:#82aaff}.term-cyan{color:#21c7a8}.term-white{color:#fff}.term-cursor{animation:remote-terminal-cursor-blink 1s steps(2,start) infinite;background:#d6deeb;display:inline-block;height:1em;vertical-align:-.12em;width:.55em}
@@ -164,32 +165,32 @@ body.remote-resizing{cursor:col-resize;user-select:none}
 @media(max-width:850px){.remote-settings-grid.two,.remote-overrides-grid{grid-template-columns:1fr}}
 
 /* Kaya orange palette overrides */
-.remote-host-toolbar button:hover,.remote-host-toolbar a:hover,.remote-host-toolbar button.active,.remote-layout-button:hover:not(:disabled),.remote-layout-button.active,.remote-settings-tabs a:hover,.remote-settings-tabs a.active{background:rgba(255,138,0,.13);border-color:rgba(255,138,0,.58);box-shadow:inset 0 -2px 0 rgba(255,138,0,.72);color:var(--text)}
+.remote-host-toolbar button:hover,.remote-host-toolbar a:hover,.remote-host-toolbar button.active,.remote-layout-button:hover:not(:disabled),.remote-layout-button.active,.remote-settings-tabs a:hover,.remote-settings-tabs a.active{background:rgba(255,138,0,.13);border-color:rgba(255,138,0,.34);box-shadow:inset 0 -2px 0 rgba(255,138,0,.72);color:var(--text)}
 .remote-protocol-icon{border-color:rgba(255,138,0,.3);color:#ffd08a}
 .remote-protocol-icon:hover{background:rgba(255,138,0,.12);border-color:rgba(255,138,0,.45);color:#fff}
 .remote-session-tab.split-visible{box-shadow:inset 0 -2px 0 rgba(255,138,0,.62)}
 .rdp-session-placeholder{background:radial-gradient(circle at center,rgba(255,138,0,.09),transparent 42%),#050a12}
-.remote-switch:checked{background:rgba(255,138,0,.18);border-color:var(--kaya-orange,#ff8a00)}
-.remote-switch:checked:before{background:var(--kaya-orange,#ff8a00)}
+.remote-switch:checked{background:rgba(255,138,0,.18);border-color:var(--accent)}
+.remote-switch:checked:before{background:var(--accent)}
 .term-blue,.term-cyan{color:#ffb357}
 
 /* Kaya Light Ops remote surfaces */
-html[data-kaya-theme=light-ops] .remote-host-rail,html[data-kaya-theme=light-ops] .remote-tab-workspace,html[data-kaya-theme=light-ops] .remote-tabbar{background:#eef1f5}
+html[data-kaya-theme=light-ops] .remote-host-rail,html[data-kaya-theme=light-ops] .remote-tab-workspace,html[data-kaya-theme=light-ops] .remote-tabbar{background:#f2eee8}
 html[data-kaya-theme=light-ops] .remote-host-card,html[data-kaya-theme=light-ops] .remote-settings-card,html[data-kaya-theme=light-ops] .remote-card{background:#fff;border-color:#d8dee8;color:#111827}
 html[data-kaya-theme=light-ops] .remote-settings-card header{border-bottom-color:#d8dee8;color:#111827}
 html[data-kaya-theme=light-ops] .remote-settings-grid label{color:#111827}
 html[data-kaya-theme=light-ops] .remote-settings-grid input,html[data-kaya-theme=light-ops] .remote-settings-grid select{background:#fff;border-color:#cfd7e3;color:#111827}
 html[data-kaya-theme=light-ops] .remote-settings-tabs{border-bottom-color:#d8dee8}
-html[data-kaya-theme=light-ops] .remote-settings-tabs a,html[data-kaya-theme=light-ops] .remote-host-toolbar button,html[data-kaya-theme=light-ops] .remote-host-toolbar a,html[data-kaya-theme=light-ops] .remote-layout-button,html[data-kaya-theme=light-ops] .remote-protocol-icon{background:#fff8f0;border-color:rgba(255,138,0,.3);color:#7a3b00}
-html[data-kaya-theme=light-ops] .remote-session-frame,html[data-kaya-theme=light-ops] .remote-console-empty{background:#f5f7fa;border-color:#d8dee8;color:#111827}
+html[data-kaya-theme=light-ops] .remote-settings-tabs a,html[data-kaya-theme=light-ops] .remote-host-toolbar button,html[data-kaya-theme=light-ops] .remote-host-toolbar a,html[data-kaya-theme=light-ops] .remote-layout-button,html[data-kaya-theme=light-ops] .remote-protocol-icon{background:#fff8f0;border-color:rgba(255,138,0,.24);color:#7a3b00}
+html[data-kaya-theme=light-ops] .remote-session-frame,html[data-kaya-theme=light-ops] .remote-console-empty{background:#f8f3ec;border-color:#d8dee8;color:#111827}
 
 /* Kaya Light Ops remote search and form controls */
-html[data-kaya-theme=light-ops] .remote-host-search{background:#eef1f5;border-bottom-color:#cfd7e3}
+html[data-kaya-theme=light-ops] .remote-host-search{background:#f2eee8;border-bottom-color:#cfd7e3}
 html[data-kaya-theme=light-ops] .remote-host-search label{background:#fff!important;border:1px solid #b8c2cf!important;color:#334155!important;box-shadow:inset 0 1px 0 rgba(17,24,39,.03)}
 html[data-kaya-theme=light-ops] .remote-host-search label:focus-within{border-color:#ff8a00!important;box-shadow:0 0 0 3px rgba(255,138,0,.18)!important}
 html[data-kaya-theme=light-ops] .remote-host-search input{background:transparent!important;border:0!important;color:#111827!important;box-shadow:none!important}
 html[data-kaya-theme=light-ops] .remote-host-search input::placeholder{color:#6b7280!important;opacity:1}
-html[data-kaya-theme=light-ops] .remote-host-toolbar button,html[data-kaya-theme=light-ops] .remote-host-toolbar a{background:#fff8f0!important;border-color:rgba(255,138,0,.42)!important;color:#7a3b00!important}
-html[data-kaya-theme=light-ops] .remote-host-toolbar button:hover,html[data-kaya-theme=light-ops] .remote-host-toolbar a:hover,html[data-kaya-theme=light-ops] .remote-host-toolbar button.active{background:#fff3e2!important;border-color:#ff8a00!important;color:#111827!important}
+html[data-kaya-theme=light-ops] .remote-host-toolbar button,html[data-kaya-theme=light-ops] .remote-host-toolbar a{background:#fff8f0!important;border-color:rgba(255,138,0,.24)!important;color:#7a3b00!important}
+html[data-kaya-theme=light-ops] .remote-host-toolbar button:hover,html[data-kaya-theme=light-ops] .remote-host-toolbar a:hover,html[data-kaya-theme=light-ops] .remote-host-toolbar button.active{background:#fff3e2!important;border-color:#ff8a00!important;color:#7a3b00!important}
 html[data-kaya-theme=light-ops] .remote-host-header strong,html[data-kaya-theme=light-ops] .remote-host-main strong{color:#111827!important}
 html[data-kaya-theme=light-ops] .remote-host-header span,html[data-kaya-theme=light-ops] .remote-host-main span,html[data-kaya-theme=light-ops] .remote-host-meta{color:#5b6574!important}

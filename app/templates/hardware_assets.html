@@ -8,8 +8,8 @@
     </div>
     <span class="module-stat">Assets <strong>{{ total }}</strong></span>
   </div>
-  <div class="module-toolbar">
-    <div class="module-primary-actions">
+  <div class="module-toolbar asset-manager-toolbar">
+    <div class="module-primary-actions asset-manager-actions">
       <form class="search list-search" method="get">
         {% if active_category %}<input type="hidden" name="category" value="{{ active_category }}">{% endif %}
         <input name="q" placeholder="Search assets..." value="{{ q }}">

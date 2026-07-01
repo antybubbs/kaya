@@ -16,7 +16,6 @@
         <input name="q" placeholder="Search runbooks..." value="{{ q }}">
         <button>Search</button>
       </form>
-      {% if user.role in ['admin','editor'] %}<a class="button" href="/documentation/runbook-manager/new">New Page</a>{% endif %}
     </div>
     <div class="module-secondary-actions">
       <div class="runbook-view-toggle" role="group" aria-label="Runbook view">
@@ -53,7 +52,10 @@
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input name="name" placeholder="Backups, Docker, Network..." required>
         <textarea name="description" placeholder="Optional description"></textarea>
-        <button class="button secondary" type="submit">Add Space</button>
+        <div class="form-actions">
+          <button class="button secondary" type="submit">Add Space</button>
+          <a class="button" href="/documentation/runbook-manager/new">New Page</a>
+        </div>
       </form>
     </div>
     {% endif %}

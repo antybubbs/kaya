@@ -5,15 +5,16 @@
     <div class="module-heading">
       <h1>{{ rack.name }}</h1>
       <p class="muted">{{ rack.location or 'No location set' }} - {{ rack.height_u }}U - {{ visible_items|length }} devices on {{ active_side }}</p>
-    </div>
-    <div class="module-primary-actions">
-      <a class="button secondary" href="/infrastructure/rack-manager">All Racks</a>
+      <div class="rack-header-actions">
+        <a class="button secondary" href="/infrastructure/rack-manager">All Racks</a>
+        <span class="rack-header-separator" aria-hidden="true">|</span>
+        <nav class="rack-side-switch" aria-label="Rack side">
+          <a class="{% if active_side == 'front' %}active{% endif %}" href="/infrastructure/rack-manager/{{ rack.id }}?side=front">Front</a>
+          <a class="{% if active_side == 'rear' %}active{% endif %}" href="/infrastructure/rack-manager/{{ rack.id }}?side=rear">Rear</a>
+        </nav>
+      </div>
     </div>
   </div>
-  <nav class="category-tabs module-filters" aria-label="Rack side">
-    <a class="{% if active_side == 'front' %}active{% endif %}" href="/infrastructure/rack-manager/{{ rack.id }}?side=front">Front</a>
-    <a class="{% if active_side == 'rear' %}active{% endif %}" href="/infrastructure/rack-manager/{{ rack.id }}?side=rear">Rear</a>
-  </nav>
 </section>
 <section class="rack-workspace">
   <div class="rack-elevation-panel">
@@ -21,14 +22,15 @@
       <div class="rack-unit-labels" aria-hidden="true">
         {% for unit in units %}<button type="button" data-rack-u="{{ unit }}">{{ unit }}</button>{% endfor %}
       </div>
-      <div class="rack-rails" aria-label="{{ rack.name }} {{ active_side }} elevation">
+      <div class="rack-rails" aria-label="{{ rack.name }} {{ active_side }} elevation" data-rack-id="{{ rack.id }}" data-rack-height="{{ rack.height_u }}" data-csrf-token="{{ csrf_token }}">
         {% for unit in units %}<div class="rack-unit {% if unit in occupied_units %}occupied{% endif %}" data-rack-u="{{ unit }}"><span>U{{ unit }}</span></div>{% endfor %}
         {% for item in visible_items %}
         {% set row_start = rack.height_u - item.start_u - item.height_u + 2 %}
-        <article class="rack-device" style="grid-row: {{ row_start }} / span {{ item.height_u }}; --device-color: {{ item_color(item) }};" title="U{{ item.start_u }}{% if item.height_u > 1 %}-U{{ item.start_u + item.height_u - 1 }}{% endif %}">
+        <article class="rack-device{% if item.height_u == 1 %} rack-device-1u{% elif item.height_u == 2 %} rack-device-2u{% endif %}" data-item-id="{{ item.id }}" data-start-u="{{ item.start_u }}" data-height-u="{{ item.height_u }}" data-item-name="{{ item.name }}" style="grid-row: {{ row_start }} / span {{ item.height_u }}; --device-color: {{ item_color(item) }};" title="U{{ item.start_u }}{% if item.height_u > 1 %}-U{{ item.start_u + item.height_u - 1 }}{% endif %}">
           <strong>{{ item.name }}</strong>
           <span>{% if item.hardware_asset and item.hardware_asset.asset_tag %}{{ item.hardware_asset.asset_tag }} - {% endif %}{{ item.category or (item.hardware_asset.category if item.hardware_asset else '') or 'Device' }}</span>
           <small>{{ item.hardware_asset.status if item.hardware_asset else 'Manual entry' }} - {{ item.height_u }}U</small>
+          {% if user.role in ['admin','editor'] %}<button type="button" class="rack-device-resize" aria-label="Resize {{ item.name }}"></button>{% endif %}
         </article>
         {% endfor %}
       </div>
@@ -54,8 +56,8 @@
           <label>Height U<input name="height_u" type="number" min="1" max="{{ rack.height_u }}" value="1" required></label>
         </div>
         <div class="rack-form-pair">
-          <label>Side<select name="mount_side"><option value="{{ active_side }}">{{ active_side|title }}</option><option value="both">Both</option><option value="front">Front</option><option value="rear">Rear</option></select></label>
-          <label>Color<input name="color" type="color" value="#475569"></label>
+          <label>Side<select name="mount_side"><option value="front" {% if active_side == 'front' %}selected{% endif %}>Front</option><option value="rear" {% if active_side == 'rear' %}selected{% endif %}>Rear</option><option value="both">Both</option></select></label>
+          <label>Color<input class="rack-color-input" name="color" type="color" value="#475569"></label>
         </div>
         <label>Category<input name="category" data-device-category placeholder="Server, switch, storage"></label>
         <label>Notes<textarea name="notes" rows="3"></textarea></label>

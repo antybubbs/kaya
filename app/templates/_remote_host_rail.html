@@ -7,13 +7,13 @@
   </header>
   <div class="remote-host-search">
     <label>
-      <span aria-hidden="true">/</span>
+      <span aria-hidden="true"></span>
       <input type="search" data-remote-search placeholder="Search hosts...">
     </label>
     <div class="remote-host-toolbar" aria-label="Host tools">
-      {% if remote_label_fn is not defined %}<button type="button" title="Group hosts by IP/WAN category" data-remote-group-toggle>Grp</button>{% endif %}
-      <a href="/networking/vlan-ip-manager/new" title="Add host">+</a>
-      <a href="/remote-manager/settings" title="Remote settings">Set</a>
+      {% if remote_label_fn is not defined %}<button class="button secondary" type="button" title="Group hosts by IP/WAN category" data-remote-group-toggle>Grp</button>{% endif %}
+      <a class="button secondary" href="/networking/vlan-ip-manager/new" title="Add host" data-remote-host-add>+</a>
+      <a class="button secondary" href="/remote-manager/settings" title="Remote settings">Set</a>
     </div>
   </div>
   <div class="remote-host-list">
