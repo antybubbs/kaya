@@ -172,14 +172,29 @@
     }
   });
 
-  document.querySelectorAll(".sidebar a.nav-link[href]").forEach((link) => {
+  const currentPath = window.location.pathname.replace(/\/+$/, "") || "/";
+  const navLinks = Array.from(document.querySelectorAll(".sidebar a.nav-link[href]"));
+  let activeLink = null;
+  let activeMatchLength = -1;
+
+  navLinks.forEach((link) => {
     const href = link.getAttribute("href");
-    if (href && (window.location.pathname === href || (!["/dashboard", "/admin"].includes(href) && window.location.pathname.startsWith(href + "/")))) {
-      link.classList.add("active");
-      link.closest("details")?.setAttribute("open", "");
-      link.closest(".nav-group")?.setAttribute("open", "");
+    if (!href) return;
+    const hrefPath = href.replace(/\/+$/, "") || "/";
+    const matches =
+      currentPath === hrefPath ||
+      (!["/dashboard", "/admin"].includes(hrefPath) && currentPath.startsWith(`${hrefPath}/`));
+    if (matches && hrefPath.length > activeMatchLength) {
+      activeLink = link;
+      activeMatchLength = hrefPath.length;
     }
   });
+
+  navLinks.forEach((link) => link.classList.toggle("active", link === activeLink));
+  if (activeLink) {
+    activeLink.closest("details")?.setAttribute("open", "");
+    activeLink.closest(".nav-group")?.setAttribute("open", "");
+  }
 
   document.addEventListener("click", (event) => {
     if (flyout && !flyout.contains(event.target) && !event.target.closest("[data-sidebar-menu]")) {
