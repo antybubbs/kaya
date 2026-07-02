@@ -50,6 +50,9 @@
       <label>Recorded categories <span>Comma or line separated</span>
         <textarea name="recording_categories" rows="4" placeholder="Servers&#10;Privileged">{{ settings.recording_categories }}</textarea>
       </label>
+      <label>Pause recording after <span>Minutes with no screen change. Use 0 to disable.</span>
+        <input name="recording_pause_idle_minutes" type="number" min="0" max="1440" value="{{ settings.recording_pause_idle_minutes or '5' }}">
+      </label>
     </div>
   </section>
 

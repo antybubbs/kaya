@@ -34,13 +34,24 @@ if (root) {
   let recordingChunks = [];
   let recordingStartedAt = null;
   let recordingTrigger = "manual";
+  let recordingStopPromise = null;
+  let recordingStopResolve = null;
+  let recordingMonitorTimer = null;
+  let recordingLastFrameHash = "";
+  let recordingLastFrameChangeAt = 0;
+  const recordingPauseIdleMinutes = Math.max(0, Math.min(1440, Number.parseInt(root.dataset.recordingPauseIdleMinutes || "5", 10) || 0));
+  const recordingPauseIdleMs = recordingPauseIdleMinutes > 0 ? recordingPauseIdleMinutes * 60 * 1000 : 0;
+  const recordingSampleCanvas = document.createElement("canvas");
+  recordingSampleCanvas.width = 64;
+  recordingSampleCanvas.height = 36;
+  const recordingSampleContext = recordingSampleCanvas.getContext("2d", { willReadFrequently: true });
 
   const setRecordingStatus = (message) => {
     if (recordingStatus) recordingStatus.textContent = message;
   };
 
   const postRecordingState = () => {
-    const active = Boolean(recorder && recorder.state === "recording");
+    const active = Boolean(recorder && recorder.state !== "inactive");
     const available = Boolean(window.MediaRecorder) && recordingEnabled && connected && displayReady;
     const payload = {
       type: "kaya:remote-recording-state",
@@ -62,10 +73,70 @@ if (root) {
     const available = Boolean(window.MediaRecorder) && recordingEnabled && connected && displayReady;
     if (recordingButton) {
       recordingButton.disabled = !available;
-      recordingButton.textContent = recorder && recorder.state === "recording" ? "Stop" : "Record";
-      recordingButton.classList.toggle("active", Boolean(recorder && recorder.state === "recording"));
+      recordingButton.textContent = recorder && recorder.state !== "inactive" ? "Stop" : "Record";
+      recordingButton.classList.toggle("active", Boolean(recorder && recorder.state !== "inactive"));
     }
     postRecordingState();
+  };
+
+  const recordingFrameHash = () => {
+    const canvas = displayTarget.querySelector("canvas");
+    if (!canvas || !recordingSampleContext || !canvas.width || !canvas.height) return "";
+    try {
+      recordingSampleContext.drawImage(canvas, 0, 0, recordingSampleCanvas.width, recordingSampleCanvas.height);
+      const data = recordingSampleContext.getImageData(0, 0, recordingSampleCanvas.width, recordingSampleCanvas.height).data;
+      let hash = 2166136261;
+      for (let index = 0; index < data.length; index += 16) {
+        hash ^= data[index];
+        hash = Math.imul(hash, 16777619);
+        hash ^= data[index + 1] || 0;
+        hash = Math.imul(hash, 16777619);
+        hash ^= data[index + 2] || 0;
+        hash = Math.imul(hash, 16777619);
+      }
+      return String(hash >>> 0);
+    } catch (_error) {
+      return "";
+    }
+  };
+
+  const stopRecordingMovementMonitor = () => {
+    if (recordingMonitorTimer) {
+      window.clearInterval(recordingMonitorTimer);
+      recordingMonitorTimer = null;
+    }
+    recordingLastFrameHash = "";
+    recordingLastFrameChangeAt = 0;
+  };
+
+  const checkRecordingMovement = () => {
+    if (!recorder || recorder.state === "inactive") return;
+    const hash = recordingFrameHash();
+    if (!hash) return;
+    const now = Date.now();
+    if (!recordingLastFrameHash || hash !== recordingLastFrameHash) {
+      recordingLastFrameHash = hash;
+      recordingLastFrameChangeAt = now;
+      if (recorder.state === "paused") {
+        recorder.resume();
+        setRecordingStatus(recordingTrigger === "auto" ? "Recording automatically" : "Recording");
+        syncRecordingButton();
+      }
+      return;
+    }
+    if (recordingPauseIdleMs && recordingLastFrameChangeAt && now - recordingLastFrameChangeAt >= recordingPauseIdleMs && recorder.state === "recording") {
+      recorder.pause();
+      setRecordingStatus("Paused - no screen change");
+      syncRecordingButton();
+    }
+  };
+
+  const startRecordingMovementMonitor = () => {
+    stopRecordingMovementMonitor();
+    if (!recordingPauseIdleMs) return;
+    recordingLastFrameHash = recordingFrameHash();
+    recordingLastFrameChangeAt = Date.now();
+    recordingMonitorTimer = window.setInterval(checkRecordingMovement, 2000);
   };
 
   const recorderMimeType = () => {
@@ -121,13 +192,18 @@ if (root) {
       const endedAt = new Date();
       const chunks = recordingChunks;
       const triggerName = recordingTrigger;
+      const resolveStop = recordingStopResolve;
+      stopRecordingMovementMonitor();
       stream.getTracks().forEach((track) => track.stop());
       recorder = null;
       recordingStartedAt = null;
       recordingChunks = [];
+      recordingStopPromise = null;
+      recordingStopResolve = null;
       syncRecordingButton();
       if (!startedAt || !chunks.length) {
         setRecordingStatus("Ready");
+        if (resolveStop) resolveStop();
         return;
       }
       setRecordingStatus("Saving");
@@ -136,15 +212,25 @@ if (root) {
         setRecordingStatus("Saved");
       } catch (_error) {
         setRecordingStatus("Save failed");
+      } finally {
+        syncRecordingButton();
+        if (resolveStop) resolveStop();
       }
     };
     recorder.start(1000);
     setRecordingStatus(trigger === "auto" ? "Recording automatically" : "Recording");
+    startRecordingMovementMonitor();
     syncRecordingButton();
   };
 
   const stopRecording = () => {
-    if (recorder && recorder.state === "recording") recorder.stop();
+    if (!recorder || recorder.state === "inactive") return Promise.resolve();
+    if (recordingStopPromise) return recordingStopPromise;
+    recordingStopPromise = new Promise((resolve) => {
+      recordingStopResolve = resolve;
+      recorder.stop();
+    });
+    return recordingStopPromise;
   };
 
   const readInt = (value, fallback, min, max) => {
@@ -416,7 +502,7 @@ if (root) {
       scheduleResize();
     }
     if (event.data && event.data.type === "kaya:remote-recording-toggle") {
-      if (recorder && recorder.state === "recording") {
+      if (recorder && recorder.state !== "inactive") {
         stopRecording();
       } else {
         startRecording("manual");
@@ -425,6 +511,11 @@ if (root) {
     }
     if (event.data && event.data.type === "kaya:remote-recording-query") {
       syncRecordingButton();
+    }
+    if (event.data && event.data.type === "kaya:remote-recording-stop") {
+      stopRecording().finally(() => {
+        event.source?.postMessage({ type: "kaya:remote-recording-stopped", requestId: event.data.requestId }, event.origin);
+      });
     }
     if (event.data && event.data.type === "kaya:remote-popout-request") {
       event.source?.postMessage({
@@ -462,7 +553,7 @@ if (root) {
   window.addEventListener("beforeunload", stopSession);
   if (recordingButton) {
     recordingButton.addEventListener("click", () => {
-      if (recorder && recorder.state === "recording") {
+      if (recorder && recorder.state !== "inactive") {
         stopRecording();
       } else {
         startRecording("manual");

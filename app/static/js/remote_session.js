@@ -610,6 +610,10 @@
   let recordingStartedAt = null;
   let recordingChunks = [];
   let recordingTrigger = "manual";
+  let recordingPaused = false;
+  let recordingPauseTimer = null;
+  const recordingPauseIdleMinutes = Math.max(0, Math.min(1440, Number.parseInt(root.dataset.recordingPauseIdleMinutes || "5", 10) || 0));
+  const recordingPauseIdleMs = recordingPauseIdleMinutes > 0 ? recordingPauseIdleMinutes * 60 * 1000 : 0;
 
   const setRecordingStatus = (message) => {
     if (recordingStatus) recordingStatus.textContent = message;
@@ -642,6 +646,34 @@
     postRecordingState();
   };
 
+  const clearRecordingPauseTimer = () => {
+    if (recordingPauseTimer) {
+      window.clearTimeout(recordingPauseTimer);
+      recordingPauseTimer = null;
+    }
+  };
+
+  const armRecordingPauseTimer = () => {
+    clearRecordingPauseTimer();
+    if (!recordingPauseIdleMs || !recordingActive) return;
+    recordingPauseTimer = window.setTimeout(() => {
+      if (!recordingActive) return;
+      recordingPaused = true;
+      setRecordingStatus("Paused - no terminal output");
+      syncRecordingButton();
+    }, recordingPauseIdleMs);
+  };
+
+  const resumeRecordingForOutput = () => {
+    if (!recordingActive) return;
+    if (recordingPaused) {
+      recordingPaused = false;
+      setRecordingStatus(recordingTrigger === "auto" ? "Recording automatically" : "Recording");
+      syncRecordingButton();
+    }
+    armRecordingPauseTimer();
+  };
+
   const uploadRecording = async (blob, startedAt, endedAt, trigger) => {
     const formData = new FormData();
     formData.append("csrf_token", root.dataset.recordingCsrfToken || "");
@@ -661,7 +693,9 @@
     recordingStartedAt = new Date();
     recordingChunks = [`# SSH recording started ${recordingStartedAt.toISOString()}\n\n`];
     recordingActive = true;
+    recordingPaused = false;
     setRecordingStatus(trigger === "auto" ? "Recording automatically" : "Recording");
+    armRecordingPauseTimer();
     syncRecordingButton();
   };
 
@@ -672,8 +706,10 @@
     const trigger = recordingTrigger;
     const text = recordingChunks.join("");
     recordingActive = false;
+    recordingPaused = false;
     recordingStartedAt = null;
     recordingChunks = [];
+    clearRecordingPauseTimer();
     setRecordingStatus("Saving");
     syncRecordingButton();
     try {
@@ -686,6 +722,7 @@
 
   const recordTerminalText = (text) => {
     if (!recordingActive || !text) return;
+    resumeRecordingForOutput();
     recordingChunks.push(text);
   };
 
@@ -767,6 +804,11 @@
     }
     if (event.data && event.data.type === "kaya:remote-recording-query") {
       syncRecordingButton();
+    }
+    if (event.data && event.data.type === "kaya:remote-recording-stop") {
+      stopRecording().finally(() => {
+        event.source?.postMessage({ type: "kaya:remote-recording-stopped", requestId: event.data.requestId }, event.origin);
+      });
     }
   });
   terminalEl.addEventListener("click", () => term.focus());

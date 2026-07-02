@@ -37,6 +37,7 @@ SETTINGS = {
     "session_idle_timeout_minutes": "0",
     "recording_mode": "manual",
     "recording_categories": "",
+    "recording_pause_idle_minutes": "5",
     "terminal_theme": "kaya",
     "terminal_font_family": "Caskaydia Cove Nerd Font Mono",
     "terminal_font_size": "14",
@@ -223,6 +224,8 @@ def clean_global_setting(key: str, value: str) -> str:
         return clean_choice(value, {"off", "manual", "all", "categories"}, SETTINGS[key])
     if key == "recording_categories":
         return clean_recording_categories(value)
+    if key == "recording_pause_idle_minutes":
+        return clean_int_text(value, 5, 0, 1440)
     if key == "terminal_letter_spacing":
         return clean_int_text(value, 0, 0, 4)
     if key == "terminal_scrollback":
@@ -324,7 +327,7 @@ def settings_map(db: Session) -> dict[str, str]:
         values["guacd_host"] = env_guacd_host
     if env_guacd_port:
         values["guacd_port"] = str(env_guacd_port)
-    for key in ("recording_mode", "recording_categories", *TERMINAL_SETTING_KEYS, *RDP_SETTING_KEYS):
+    for key in ("recording_mode", "recording_categories", "recording_pause_idle_minutes", *TERMINAL_SETTING_KEYS, *RDP_SETTING_KEYS):
         values[key] = clean_global_setting(key, values.get(key, SETTINGS[key]))
     return values
 
@@ -531,6 +534,7 @@ async def save_remote_settings(request: Request, csrf_token: str = Form(...), gu
     set_setting(db, "session_idle_timeout_minutes", clean_global_setting("session_idle_timeout_minutes", str(form.get("session_idle_timeout_minutes", "0"))))
     set_setting(db, "recording_mode", clean_global_setting("recording_mode", str(form.get("recording_mode", "manual"))))
     set_setting(db, "recording_categories", clean_global_setting("recording_categories", str(form.get("recording_categories", ""))))
+    set_setting(db, "recording_pause_idle_minutes", clean_global_setting("recording_pause_idle_minutes", str(form.get("recording_pause_idle_minutes", "5"))))
     for key in TERMINAL_SETTING_KEYS + RDP_SETTING_KEYS:
         set_setting(db, key, clean_global_setting(key, str(form.get(key, ""))))
     db.commit()

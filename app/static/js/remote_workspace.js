@@ -26,6 +26,7 @@
   let groupViewEnabled = localStorage.getItem(groupViewStorageKey) !== "0";
   let collapsedGroups = new Set();
   const pendingPopouts = new Map();
+  const pendingRecordingStops = new Map();
 
   const safeParse = (value) => {
     try {
@@ -95,7 +96,26 @@
     save();
   };
 
-  const closeTab = (id) => {
+  const requestRecordingStop = (id) => {
+    const tab = tabs.find((candidate) => candidate.id === id);
+    const iframe = iframeForTab(id);
+    if (!tab?.recording?.active || !iframe?.contentWindow) return Promise.resolve();
+    tab.recording = { ...tab.recording, available: false, status: "Saving" };
+    render();
+    save();
+    const requestId = `recording-stop-${id}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    return new Promise((resolve) => {
+      const timeout = window.setTimeout(() => {
+        pendingRecordingStops.delete(requestId);
+        resolve();
+      }, 120000);
+      pendingRecordingStops.set(requestId, { resolve, timeout });
+      iframe.contentWindow.postMessage({ type: "kaya:remote-recording-stop", requestId }, window.location.origin);
+    });
+  };
+
+  const closeTab = async (id) => {
+    await requestRecordingStop(id);
     const index = tabs.findIndex((tab) => tab.id === id);
     tabs = tabs.filter((tab) => tab.id !== id);
     const panel = panels.querySelector(`[data-remote-panel="${CSS.escape(id)}"]`);
@@ -331,9 +351,10 @@
       close.className = "remote-tab-tool";
       close.title = "Close session";
       close.textContent = "X";
-      close.addEventListener("click", (event) => {
+      close.addEventListener("click", async (event) => {
         event.stopPropagation();
-        closeTab(tab.id);
+        close.disabled = true;
+        await closeTab(tab.id);
       });
 
       tools.append(record, refresh, popout, close);
@@ -531,6 +552,14 @@
     if (data.type === "kaya:remote-recording-state") {
       const tabId = tabIdForSource(event.source);
       if (tabId) updateRecordingState(tabId, data);
+      return;
+    }
+    if (data.type === "kaya:remote-recording-stopped") {
+      const pending = pendingRecordingStops.get(data.requestId);
+      if (!pending) return;
+      window.clearTimeout(pending.timeout);
+      pendingRecordingStops.delete(data.requestId);
+      pending.resolve();
       return;
     }
     if (data.type === "kaya:remote-popout-state") {
