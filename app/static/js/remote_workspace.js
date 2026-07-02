@@ -25,6 +25,7 @@
   let splitIds = [];
   let groupViewEnabled = localStorage.getItem(groupViewStorageKey) !== "0";
   let collapsedGroups = new Set();
+  const pendingPopouts = new Map();
 
   const safeParse = (value) => {
     try {
@@ -136,6 +137,37 @@
     if (opened) opened.focus();
   };
 
+  const openRdpPopoutForHandoff = (tab, token, requestId) => {
+    const name = `kaya_remote_${tab.remoteId}_${tab.protocol}`;
+    const url = new URL(tab.url, window.location.origin);
+    url.searchParams.set("popout", "1");
+    const hash = new URLSearchParams();
+    hash.set("requestId", requestId);
+    url.hash = hash.toString();
+    const opened = window.open(url.toString(), name, sessionWindowFeatures());
+    const pending = pendingPopouts.get(requestId);
+    if (pending) {
+      pending.token = token;
+      pending.window = opened;
+    }
+    if (opened) opened.focus();
+  };
+
+  const requestRdpPopoutHandoff = (tab) => {
+    const iframe = panels.querySelector(`[data-remote-panel="${CSS.escape(tab.id)}"] iframe`);
+    if (!iframe || !iframe.contentWindow) {
+      popOutSession(tab);
+      return;
+    }
+    const requestId = `popout-${tab.id}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const timeout = window.setTimeout(() => {
+      pendingPopouts.delete(requestId);
+      popOutSession(tab);
+    }, 900);
+    pendingPopouts.set(requestId, { tabId: tab.id, timeout });
+    iframe.contentWindow.postMessage({ type: "kaya:remote-popout-request", requestId }, window.location.origin);
+  };
+
   const ensurePanel = (tab) => {
     let panel = panels.querySelector(`[data-remote-panel="${CSS.escape(tab.id)}"]`);
     if (panel) return panel;
@@ -227,6 +259,10 @@
       popout.textContent = "P";
       popout.addEventListener("click", (event) => {
         event.stopPropagation();
+        if (tab.protocol === "rdp") {
+          requestRdpPopoutHandoff(tab);
+          return;
+        }
         popOutSession(tab);
       });
 
@@ -424,6 +460,49 @@
 
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") closeMenus();
+  });
+
+  window.addEventListener("message", (event) => {
+    if (event.origin !== window.location.origin) return;
+    const data = event.data || {};
+    if (data.type === "kaya:remote-popout-state") {
+      const pending = pendingPopouts.get(data.requestId);
+      if (!pending) return;
+      window.clearTimeout(pending.timeout);
+      const tab = tabs.find((candidate) => candidate.id === pending.tabId);
+      if (!tab) {
+        pendingPopouts.delete(data.requestId);
+        return;
+      }
+      if (data.ok && data.token) {
+        pending.timeout = window.setTimeout(() => pendingPopouts.delete(data.requestId), 30000);
+        openRdpPopoutForHandoff(tab, data.token, data.requestId);
+      } else {
+        pendingPopouts.delete(data.requestId);
+        popOutSession(tab);
+      }
+    }
+    if (data.type === "kaya:remote-popout-ready") {
+      const pending = pendingPopouts.get(data.requestId);
+      if (!pending?.token || !event.source) return;
+      event.source.postMessage({
+        type: "kaya:remote-popout-connect",
+        requestId: data.requestId,
+        token: pending.token,
+      }, event.origin);
+    }
+    if (data.type === "kaya:remote-popout-connected") {
+      const pending = pendingPopouts.get(data.requestId);
+      const tabId = pending?.tabId || "";
+      const iframe = tabId ? panels.querySelector(`[data-remote-panel="${CSS.escape(tabId)}"] iframe`) : null;
+      if (iframe && iframe.contentWindow) {
+        iframe.contentWindow.postMessage({ type: "kaya:remote-popout-detached" }, window.location.origin);
+      }
+      if (pending) {
+        window.clearTimeout(pending.timeout);
+        pendingPopouts.delete(data.requestId);
+      }
+    }
   });
 
   window.addEventListener("resize", positionOpenConnectMenu);

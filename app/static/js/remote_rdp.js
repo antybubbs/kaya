@@ -25,6 +25,7 @@ if (root) {
   let lastRequestedSize = "";
   let idleTimer = null;
   let disconnectReason = "";
+  let activeToken = "";
 
   const readInt = (value, fallback, min, max) => {
     const parsed = Number.parseInt(value, 10);
@@ -196,9 +197,10 @@ if (root) {
       window.requestAnimationFrame(() => window.requestAnimationFrame(resolve));
     });
 
-  const connectDisplay = async (token) => {
+  const connectDisplay = async (token, handoff = false) => {
     manuallyStopped = false;
     disconnectReason = "";
+    activeToken = token;
     disconnectCurrentSession();
     window.clearTimeout(resizeTimer);
     displayTarget.replaceChildren();
@@ -216,6 +218,7 @@ if (root) {
       width: String(size.width),
       height: String(size.height),
     });
+    if (handoff) params.set("handoff", "1");
     tunnel = new Guacamole.WebSocketTunnel(root.dataset.tunnelUrl);
     client = new Guacamole.Client(tunnel);
     const displayEl = client.getDisplay().getElement();
@@ -240,12 +243,22 @@ if (root) {
         markActivity();
         refreshDisplay();
         markDisplayReady();
+        const hashParams = new URLSearchParams(window.location.hash.slice(1));
+        const requestId = hashParams.get("requestId");
+        if (requestId && window.opener && !window.opener.closed) {
+          window.opener.postMessage({ type: "kaya:remote-popout-connected", requestId }, window.location.origin);
+        }
       }
       if (state === Guacamole.Client.State.DISCONNECTED) {
         setOverlayVisible(true);
         connected = false;
         displayReady = false;
-        setStatus(disconnectReason ? "Idle timeout" : "Disconnected", disconnectReason || "The RDP session has ended.");
+        const disconnectTitle = disconnectReason === "Session moved to the pop-out window."
+          ? "Popped out"
+          : disconnectReason
+            ? "Idle timeout"
+            : "Disconnected";
+        setStatus(disconnectTitle, disconnectReason || "The RDP session has ended.");
         form.hidden = false;
         button.disabled = false;
       }
@@ -274,6 +287,33 @@ if (root) {
     if (event.data && event.data.type === "kaya:remote-display-refresh") {
       lastRequestedSize = "";
       scheduleResize();
+    }
+    if (event.data && event.data.type === "kaya:remote-popout-request") {
+      event.source?.postMessage({
+        type: "kaya:remote-popout-state",
+        requestId: event.data.requestId,
+        ok: connected && Boolean(activeToken),
+        token: activeToken,
+      }, event.origin);
+    }
+    if (event.data && event.data.type === "kaya:remote-popout-detached") {
+      if (!connected) return;
+      disconnectReason = "Session moved to the pop-out window.";
+      manuallyStopped = true;
+      setOverlayVisible(true);
+      setStatus("Popped out", disconnectReason);
+      writeLog([disconnectReason]);
+      disconnectCurrentSession();
+      form.hidden = false;
+      button.disabled = false;
+    }
+    if (event.data && event.data.type === "kaya:remote-popout-connect") {
+      const hashParams = new URLSearchParams(window.location.hash.slice(1));
+      if (event.data.requestId !== hashParams.get("requestId") || !event.data.token) return;
+      form.hidden = true;
+      setOverlayVisible(true);
+      writeLog(["Opening popped-out RDP session."]);
+      connectDisplay(event.data.token, true);
     }
   });
   document.addEventListener("visibilitychange", () => {
@@ -319,4 +359,13 @@ if (root) {
       button.disabled = false;
     }
   });
+
+  const hashParams = new URLSearchParams(window.location.hash.slice(1));
+  const handoffRequestId = hashParams.get("requestId");
+  if (handoffRequestId && window.opener && !window.opener.closed) {
+    form.hidden = true;
+    setOverlayVisible(true);
+    writeLog(["Waiting for secure RDP handoff."]);
+    window.opener.postMessage({ type: "kaya:remote-popout-ready", requestId: handoffRequestId }, window.location.origin);
+  }
 }

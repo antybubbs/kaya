@@ -65,7 +65,7 @@ SETTINGS = {
 TERMINAL_SETTING_KEYS = [key for key in SETTINGS if key.startswith("terminal_")]
 RDP_SETTING_KEYS = [key for key in SETTINGS if key.startswith("rdp_")]
 SETTING_KEYS = set(SETTINGS)
-RDP_TOKEN_TTL_SECONDS = 60
+RDP_TOKEN_TTL_SECONDS = 12 * 60 * 60
 GUACAMOLE_LITE_URL = "ws://127.0.0.1:30008"
 
 
@@ -715,7 +715,7 @@ async def rdp_websocket(websocket: WebSocket, remote_id: int):
         return
     token = websocket.query_params.get("token", "")
     cleanup_rdp_tokens()
-    session = rdp_tokens.pop(token, None)
+    session = rdp_tokens.get(token)
     if not session or session.user_id != user_id or session.remote_id != remote_id:
         await websocket.close(code=1008)
         return
@@ -750,6 +750,8 @@ async def rdp_websocket(websocket: WebSocket, remote_id: int):
         upstream_url = f"{GUACAMOLE_LITE_URL}?{urlencode(upstream_params)}"
         try:
             upstream = await websockets.connect(upstream_url, subprotocols=["guacamole"], open_timeout=10)
+            if websocket.query_params.get("handoff") == "1":
+                rdp_tokens.pop(token, None)
         except Exception as exc:
             audit_db = SessionLocal()
             try:
