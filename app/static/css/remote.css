@@ -258,3 +258,72 @@ html[data-kaya-theme=light-ops] .remote-host-group-heading{background:#f8fafc!im
 html[data-kaya-theme=light-ops] .remote-host-group-heading:hover{background:#fff3e2!important;color:#7a3b00!important}
 html[data-kaya-theme=light-ops] .remote-host-group-heading strong,html[data-kaya-theme=light-ops] .remote-host-group-heading strong:before{color:#111827!important}
 html[data-kaya-theme=light-ops] .remote-host-group-heading span{color:#a84b00!important}
+
+/* Polished host rail controls */
+.remote-host-toolbar{
+  gap:7px;
+}
+
+.remote-host-toolbar .button{
+  background:#151a21!important;
+  border:1px solid rgba(255,138,0,.28)!important;
+  border-radius:7px!important;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.035);
+  color:#f8fafc!important;
+  font-size:11px!important;
+  font-weight:900!important;
+  height:30px!important;
+  letter-spacing:0;
+  min-height:30px!important;
+  min-width:40px;
+  padding:0 11px!important;
+  transition:background .14s ease,border-color .14s ease,color .14s ease,box-shadow .14s ease,transform .14s ease;
+}
+
+.remote-host-toolbar [data-remote-host-add]{
+  font-size:14px!important;
+  min-width:30px!important;
+  padding:0!important;
+  width:30px;
+}
+
+.remote-host-toolbar .button:hover,
+.remote-host-toolbar .button:focus-visible{
+  background:rgba(255,138,0,.13)!important;
+  border-color:rgba(255,138,0,.56)!important;
+  box-shadow:0 0 0 3px rgba(255,138,0,.1),inset 0 1px 0 rgba(255,255,255,.05)!important;
+  color:#fff!important;
+  transform:translateY(-1px);
+}
+
+.remote-host-toolbar .button.active,
+.remote-host-toolbar .button:active{
+  background:#ff8a00!important;
+  border-color:#ffb357!important;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.24)!important;
+  color:#101010!important;
+  transform:translateY(0);
+}
+
+html[data-kaya-theme=light-ops] .remote-host-toolbar .button{
+  background:#fff!important;
+  border-color:#d8dee8!important;
+  box-shadow:0 1px 2px rgba(17,24,39,.04)!important;
+  color:#7a3b00!important;
+}
+
+html[data-kaya-theme=light-ops] .remote-host-toolbar .button:hover,
+html[data-kaya-theme=light-ops] .remote-host-toolbar .button:focus-visible{
+  background:#fff7ed!important;
+  border-color:rgba(255,138,0,.42)!important;
+  box-shadow:0 0 0 3px rgba(255,138,0,.12)!important;
+  color:#7a3b00!important;
+}
+
+html[data-kaya-theme=light-ops] .remote-host-toolbar .button.active,
+html[data-kaya-theme=light-ops] .remote-host-toolbar .button:active{
+  background:#ff8a00!important;
+  border-color:#ff8a00!important;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.24)!important;
+  color:#101010!important;
+}
