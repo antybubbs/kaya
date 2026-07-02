@@ -26,8 +26,8 @@ if (root) {
   let idleTimer = null;
   let disconnectReason = "";
   let activeToken = "";
-  const recordingButton = root.querySelector("[data-recording-toggle]");
-  const recordingStatus = root.querySelector("[data-recording-status]");
+  const recordingButton = document.querySelector("[data-recording-toggle]");
+  const recordingStatus = document.querySelector("[data-recording-status]");
   const recordingEnabled = root.dataset.recordingEnabled === "1";
   const recordingAuto = root.dataset.recordingAuto === "1";
   let recorder = null;
@@ -39,12 +39,33 @@ if (root) {
     if (recordingStatus) recordingStatus.textContent = message;
   };
 
-  const syncRecordingButton = () => {
-    if (!recordingButton) return;
+  const postRecordingState = () => {
+    const active = Boolean(recorder && recorder.state === "recording");
     const available = Boolean(window.MediaRecorder) && recordingEnabled && connected && displayReady;
-    recordingButton.disabled = !available;
-    recordingButton.textContent = recorder && recorder.state === "recording" ? "Stop" : "Record";
-    recordingButton.classList.toggle("active", Boolean(recorder && recorder.state === "recording"));
+    const payload = {
+      type: "kaya:remote-recording-state",
+      enabled: recordingEnabled,
+      available,
+      active,
+      label: active ? "Stop" : "Record",
+      status: recordingStatus ? recordingStatus.textContent : "Ready",
+    };
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage(payload, window.location.origin);
+    }
+    if (window.opener && !window.opener.closed) {
+      window.opener.postMessage(payload, window.location.origin);
+    }
+  };
+
+  const syncRecordingButton = () => {
+    const available = Boolean(window.MediaRecorder) && recordingEnabled && connected && displayReady;
+    if (recordingButton) {
+      recordingButton.disabled = !available;
+      recordingButton.textContent = recorder && recorder.state === "recording" ? "Stop" : "Record";
+      recordingButton.classList.toggle("active", Boolean(recorder && recorder.state === "recording"));
+    }
+    postRecordingState();
   };
 
   const recorderMimeType = () => {
@@ -393,6 +414,17 @@ if (root) {
     if (event.data && event.data.type === "kaya:remote-display-refresh") {
       lastRequestedSize = "";
       scheduleResize();
+    }
+    if (event.data && event.data.type === "kaya:remote-recording-toggle") {
+      if (recorder && recorder.state === "recording") {
+        stopRecording();
+      } else {
+        startRecording("manual");
+      }
+      syncRecordingButton();
+    }
+    if (event.data && event.data.type === "kaya:remote-recording-query") {
+      syncRecordingButton();
     }
     if (event.data && event.data.type === "kaya:remote-popout-request") {
       event.source?.postMessage({

@@ -120,6 +120,53 @@
     iframe.src = iframe.src;
   };
 
+  const iframeForTab = (id) => panels.querySelector(`[data-remote-panel="${CSS.escape(id)}"] iframe`);
+
+  const queryRecordingState = (id) => {
+    const iframe = iframeForTab(id);
+    if (!iframe || !iframe.contentWindow) return;
+    iframe.contentWindow.postMessage({ type: "kaya:remote-recording-query" }, window.location.origin);
+  };
+
+  const toggleRecording = (id) => {
+    const iframe = iframeForTab(id);
+    if (!iframe || !iframe.contentWindow) return;
+    iframe.contentWindow.postMessage({ type: "kaya:remote-recording-toggle" }, window.location.origin);
+  };
+
+  const tabIdForSource = (source) => {
+    const panel = Array.from(panels.querySelectorAll("[data-remote-panel]")).find((candidate) => {
+      const iframe = candidate.querySelector("iframe");
+      return iframe && iframe.contentWindow === source;
+    });
+    return panel?.dataset.remotePanel || "";
+  };
+
+  const updateRecordingState = (id, state) => {
+    const tab = tabs.find((candidate) => candidate.id === id);
+    if (!tab) return;
+    const nextRecording = {
+      enabled: Boolean(state.enabled),
+      available: Boolean(state.available),
+      active: Boolean(state.active),
+      label: state.label || (state.active ? "Stop" : "Record"),
+      status: state.status || "Ready",
+    };
+    const current = tab.recording || {};
+    if (
+      current.enabled === nextRecording.enabled
+      && current.available === nextRecording.available
+      && current.active === nextRecording.active
+      && current.label === nextRecording.label
+      && current.status === nextRecording.status
+    ) {
+      return;
+    }
+    tab.recording = nextRecording;
+    render();
+    save();
+  };
+
   const sessionWindowFeatures = () => {
     const width = Math.min(1600, Math.max(960, Math.floor(window.screen.availWidth * 0.82)));
     const height = Math.min(1000, Math.max(640, Math.floor(window.screen.availHeight * 0.82)));
@@ -179,6 +226,7 @@
     iframe.src = tab.url;
     iframe.loading = "eager";
     iframe.referrerPolicy = "same-origin";
+    iframe.addEventListener("load", () => queryRecordingState(tab.id));
     panel.appendChild(iframe);
     panels.appendChild(panel);
     return panel;
@@ -242,6 +290,18 @@
       const tools = document.createElement("span");
       tools.className = "remote-tab-tools";
 
+      const record = document.createElement("button");
+      const recording = tab.recording || {};
+      record.type = "button";
+      record.className = `remote-tab-tool remote-tab-record${recording.active ? " active" : ""}`;
+      record.title = recording.status ? `Session recording: ${recording.status}` : "Session recording";
+      record.textContent = recording.active ? "S" : "Rec";
+      record.disabled = !recording.available;
+      record.addEventListener("click", (event) => {
+        event.stopPropagation();
+        toggleRecording(tab.id);
+      });
+
       const refresh = document.createElement("button");
       refresh.type = "button";
       refresh.className = "remote-tab-tool";
@@ -276,7 +336,7 @@
         closeTab(tab.id);
       });
 
-      tools.append(refresh, popout, close);
+      tools.append(record, refresh, popout, close);
       button.appendChild(tools);
       tabbar.appendChild(button);
     });
@@ -292,7 +352,10 @@
       panel.classList.toggle("split-secondary", splitEnabled && tab.id === shownIds[1]);
     });
 
-    shownIds.forEach((id) => notifyPanel(id));
+    shownIds.forEach((id) => {
+      notifyPanel(id);
+      queryRecordingState(id);
+    });
 
     panels.querySelectorAll("[data-remote-panel]").forEach((panel) => {
       if (!tabs.some((tab) => tab.id === panel.dataset.remotePanel)) {
@@ -465,6 +528,11 @@
   window.addEventListener("message", (event) => {
     if (event.origin !== window.location.origin) return;
     const data = event.data || {};
+    if (data.type === "kaya:remote-recording-state") {
+      const tabId = tabIdForSource(event.source);
+      if (tabId) updateRecordingState(tabId, data);
+      return;
+    }
     if (data.type === "kaya:remote-popout-state") {
       const pending = pendingPopouts.get(data.requestId);
       if (!pending) return;

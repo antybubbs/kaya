@@ -19,6 +19,19 @@
   {% endif %}
 </head>
 <body class="remote-panel-body">
+  <header class="remote-popout-tabbar">
+    <div class="remote-popout-tab active">
+      <span class="remote-tab-icon">{% if remote.protocol == 'rdp' %}RDP{% else %}&gt;_{% endif %}</span>
+      <span class="remote-tab-title">{{ remote_label }}</span>
+      <span class="remote-tab-protocol">{{ remote.protocol|upper }}</span>
+    </div>
+    {% if recording_enabled|default(false) %}
+    <div class="remote-recording-tools remote-recording-tools-inline" data-recording-tools>
+      <button type="button" data-recording-toggle disabled>Record</button>
+      <span data-recording-status>Ready</span>
+    </div>
+    {% endif %}
+  </header>
   {% include "_remote_session_panel.html" %}
   {% if remote.protocol == 'ssh' %}
   <script src="/static/vendor/xterm/xterm.js?v={{ asset_version }}"></script>

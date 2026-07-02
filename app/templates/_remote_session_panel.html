@@ -20,12 +20,6 @@
     data-terminal-right-click-selects-word="{{ terminal_settings.get('terminal_right_click_selects_word', '0') }}"
     data-terminal-syntax-highlighting="{{ terminal_settings.get('terminal_syntax_highlighting', '1') }}"
     data-terminal-scrollback="{{ terminal_settings.get('terminal_scrollback', '10000') }}">
-    {% if recording_enabled|default(false) %}
-    <div class="remote-recording-tools" data-recording-tools>
-      <button type="button" data-recording-toggle disabled>Record</button>
-      <span data-recording-status>Ready</span>
-    </div>
-    {% endif %}
     {% if not remote.username %}
     <div class="alert">Add a username to this remote host before starting an SSH session.</div>
     {% else %}
@@ -41,12 +35,6 @@
   </div>
   {% else %}
   <div class="rdp-session" data-rdp-session data-start-url="{{ request.scope.get('root_path', '') }}/remote-manager/{{ remote.id }}/rdp/start" data-tunnel-url="{{ request.scope.get('root_path', '') }}/remote-manager/{{ remote.id }}/rdp/ws" data-idle-timeout-minutes="{{ settings.get('session_idle_timeout_minutes', '0') if settings is defined else '0' }}" data-recording-enabled="{{ '1' if recording_enabled|default(false) else '0' }}" data-recording-auto="{{ '1' if recording_auto_enabled|default(false) else '0' }}" data-recording-upload-url="{{ request.scope.get('root_path', '') }}/remote-manager/{{ remote.id }}/recordings/upload" data-recording-csrf-token="{{ csrf_token }}" data-recording-protocol="rdp">
-    {% if recording_enabled|default(false) %}
-    <div class="remote-recording-tools" data-recording-tools>
-      <button type="button" data-recording-toggle disabled>Record</button>
-      <span data-recording-status>Ready</span>
-    </div>
-    {% endif %}
     <form class="remote-credential-form rdp-credential-form">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <label>Username

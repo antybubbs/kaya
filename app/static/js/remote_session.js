@@ -602,8 +602,8 @@
   let connected = false;
   let closeHandled = false;
   let idleTimer = null;
-  const recordingButton = root.querySelector("[data-recording-toggle]");
-  const recordingStatus = root.querySelector("[data-recording-status]");
+  const recordingButton = document.querySelector("[data-recording-toggle]");
+  const recordingStatus = document.querySelector("[data-recording-status]");
   const recordingEnabled = root.dataset.recordingEnabled === "1";
   const recordingAuto = root.dataset.recordingAuto === "1";
   let recordingActive = false;
@@ -615,11 +615,31 @@
     if (recordingStatus) recordingStatus.textContent = message;
   };
 
+  const postRecordingState = () => {
+    const active = recordingActive;
+    const payload = {
+      type: "kaya:remote-recording-state",
+      enabled: recordingEnabled,
+      available: recordingEnabled && connected,
+      active,
+      label: active ? "Stop" : "Record",
+      status: recordingStatus ? recordingStatus.textContent : "Ready",
+    };
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage(payload, window.location.origin);
+    }
+    if (window.opener && !window.opener.closed) {
+      window.opener.postMessage(payload, window.location.origin);
+    }
+  };
+
   const syncRecordingButton = () => {
-    if (!recordingButton) return;
-    recordingButton.disabled = !recordingEnabled || !connected;
-    recordingButton.textContent = recordingActive ? "Stop" : "Record";
-    recordingButton.classList.toggle("active", recordingActive);
+    if (recordingButton) {
+      recordingButton.disabled = !recordingEnabled || !connected;
+      recordingButton.textContent = recordingActive ? "Stop" : "Record";
+      recordingButton.classList.toggle("active", recordingActive);
+    }
+    postRecordingState();
   };
 
   const uploadRecording = async (blob, startedAt, endedAt, trigger) => {
@@ -736,6 +756,17 @@
     if (event.data && event.data.type === "kaya:remote-tab-active") {
       window.setTimeout(fit, 50);
       if (connected) term.focus();
+    }
+    if (event.data && event.data.type === "kaya:remote-recording-toggle") {
+      if (recordingActive) {
+        stopRecording();
+      } else {
+        startRecording("manual");
+      }
+      syncRecordingButton();
+    }
+    if (event.data && event.data.type === "kaya:remote-recording-query") {
+      syncRecordingButton();
     }
   });
   terminalEl.addEventListener("click", () => term.focus());
