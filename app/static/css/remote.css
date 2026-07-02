@@ -151,11 +151,18 @@ body.remote-resizing{cursor:col-resize;user-select:none}
 .remote-settings-card>.remote-setting-row:last-child,.remote-settings-card>.remote-settings-grid:last-child{margin-bottom:10px}
 .remote-settings-grid{display:grid;gap:14px;padding:14px 0}
 .remote-settings-grid.two{grid-template-columns:repeat(2,minmax(0,1fr))}
-.remote-settings-grid label{color:var(--text);font-size:13px;font-weight:800;letter-spacing:0;text-transform:none}
-.remote-settings-grid label span{color:var(--muted);float:right;font-size:12px;font-weight:700}
-.remote-settings-grid input,.remote-settings-grid select{background:#0d1117;border-color:var(--line);border-radius:8px;color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Arial;font-size:13px}
+.remote-settings-grid label{color:var(--text);display:grid;font-size:13px;font-weight:800;gap:8px;letter-spacing:0;text-transform:none}
+.remote-settings-grid label span{color:var(--muted);font-size:12px;font-weight:700;line-height:1.25}
+.remote-settings-grid input,.remote-settings-grid select{background:#0d1117;border-color:var(--line);border-radius:8px;color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Arial;font-size:13px;min-height:40px}
 .remote-settings-grid textarea{background:#0d1117;border:1px solid var(--line);border-radius:8px;color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Arial;font-size:13px;min-height:86px;padding:10px;resize:vertical}
 .remote-settings-grid input[type=range]{accent-color:var(--accent);min-height:22px;padding:0}
+.remote-recording-settings-grid{align-items:start;grid-template-columns:minmax(260px,1fr) minmax(320px,1fr);grid-template-rows:auto auto}
+.remote-recording-settings-grid label{align-content:start;min-width:0}
+.remote-recording-settings-grid label:nth-child(2){grid-column:2;grid-row:1 / span 2}
+.remote-recording-settings-grid label:nth-child(3){grid-column:1;grid-row:2}
+.remote-recording-settings-grid select{height:44px;padding:0 12px}
+.remote-recording-settings-grid input[type=number]{height:40px;padding:0 12px}
+.remote-recording-settings-grid textarea{min-height:126px}
 .remote-setting-row{align-items:center;border-bottom:1px solid var(--line);display:flex;gap:16px;justify-content:space-between;padding:14px 0}
 .remote-setting-row:last-child{border-bottom:0}
 .remote-setting-row strong{color:var(--text);display:block;font-size:14px;font-weight:900;line-height:1.2}
@@ -181,7 +188,8 @@ body.remote-resizing{cursor:col-resize;user-select:none}
 .remote-recordings-shell,.remote-recording-detail{display:grid;gap:14px}
 .remote-recordings-table{background:#0b1016;border:1px solid var(--line);border-collapse:separate;border-radius:8px;border-spacing:0;overflow:hidden;table-layout:fixed;width:100%}
 .remote-recordings-table th{background:#151c27;color:#cfe1ff;font-size:11px;letter-spacing:.02em;padding:10px 12px;text-align:left;text-transform:uppercase}
-.remote-recordings-table td{border-top:1px solid rgba(148,163,184,.16);padding:12px;vertical-align:middle}
+.remote-recordings-table td{border-bottom:0;border-top:1px solid rgba(148,163,184,.16);padding:12px;vertical-align:middle}
+.remote-recordings-table tbody tr:first-child td{border-top:0}
 .remote-recordings-table tr:hover td{background:rgba(255,138,0,.035)}
 .remote-recordings-table td strong{color:#f8fafc;display:block;font-size:12px;font-weight:900;line-height:1.2}
 .remote-recordings-table td span{color:var(--muted);display:block;font-size:12px;margin-top:2px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -189,7 +197,8 @@ body.remote-resizing{cursor:col-resize;user-select:none}
 .recording-col-started{width:140px}.recording-col-host{width:210px}.recording-col-protocol{width:90px}.recording-col-category{width:150px}.recording-col-user{width:260px}.recording-col-duration{width:95px}.recording-col-size{width:95px}.recording-col-actions{width:230px}
 .recording-pill{align-items:center;background:rgba(143,184,255,.12);border:1px solid rgba(143,184,255,.22);border-radius:999px;color:#bfdbfe!important;display:inline-flex!important;font-size:10px!important;font-weight:950;justify-content:center;line-height:1;margin:0!important;min-height:22px;min-width:48px;padding:0 8px;text-transform:uppercase}
 .recording-user{max-width:100%}
-.recording-actions{align-items:center;display:flex;gap:6px;justify-content:flex-end;white-space:nowrap}
+.recording-actions{text-align:right;white-space:nowrap}
+.recording-actions-inner{align-items:center;display:inline-flex;gap:6px;justify-content:flex-end;white-space:nowrap}
 .recording-actions .button,.recording-actions button{font-size:11px;min-height:28px;padding:0 9px}
 .recording-actions form,.topbar-actions form{margin:0}
 .remote-empty-state{background:#14171d;border:1px solid var(--line);border-radius:10px;padding:24px;text-align:center}
@@ -225,6 +234,15 @@ html[data-kaya-theme=light-ops] .remote-settings-grid input,html[data-kaya-theme
 html[data-kaya-theme=light-ops] .remote-settings-tabs{border-bottom-color:#d8dee8}
 html[data-kaya-theme=light-ops] .remote-settings-tabs a,html[data-kaya-theme=light-ops] .remote-host-toolbar button,html[data-kaya-theme=light-ops] .remote-host-toolbar a,html[data-kaya-theme=light-ops] .remote-layout-button,html[data-kaya-theme=light-ops] .remote-protocol-icon{background:#fff8f0;border-color:rgba(255,138,0,.24);color:#7a3b00}
 html[data-kaya-theme=light-ops] .remote-session-frame,html[data-kaya-theme=light-ops] .remote-console-empty{background:#f8f3ec;border-color:#d8dee8;color:#111827}
+html[data-kaya-theme=light-ops] .remote-recordings-table{background:#fff;border-color:#cfd7e3;box-shadow:0 1px 0 rgba(17,24,39,.04)}
+html[data-kaya-theme=light-ops] .remote-recordings-table th{background:#f2f5f8;border-bottom:1px solid #cfd7e3;color:#a84b00}
+html[data-kaya-theme=light-ops] .remote-recordings-table td{background:#fff;border-top-color:#e2e7ef;color:#1f2937}
+html[data-kaya-theme=light-ops] .remote-recordings-table tr:hover td{background:#fff8f0}
+html[data-kaya-theme=light-ops] .remote-recordings-table td strong{color:#111827}
+html[data-kaya-theme=light-ops] .remote-recordings-table td span,html[data-kaya-theme=light-ops] .recording-user{color:#5b6574}
+html[data-kaya-theme=light-ops] .remote-recordings-table td a:not(.button){color:#0369a1}
+html[data-kaya-theme=light-ops] .recording-pill{background:#eef4ff;border-color:#c6d8ff;color:#1e3a8a!important}
+html[data-kaya-theme=light-ops] .recording-actions form,html[data-kaya-theme=light-ops] .recording-actions input[type=hidden]{background:transparent!important;border:0!important;box-shadow:none!important;padding:0}
 
 /* Kaya Light Ops remote search and form controls */
 html[data-kaya-theme=light-ops] .remote-host-search{background:#f2eee8;border-bottom-color:#cfd7e3}
