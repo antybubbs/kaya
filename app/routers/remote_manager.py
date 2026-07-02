@@ -2,7 +2,9 @@ import asyncio
 import base64
 import hashlib
 import json
+import shutil
 import secrets
+import subprocess
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -167,6 +169,23 @@ def recording_extension(content_type: str, protocol: str) -> str:
 
 def recording_path(recording: RemoteSessionRecording) -> Path:
     return RECORDING_ROOT / recording.stored_filename
+
+
+def recording_download_name(recording: RemoteSessionRecording, extension: str) -> str:
+    started = recording.started_at or recording.created_at or datetime.utcnow()
+    label = "".join(char if char.isalnum() or char in {"-", "_"} else "-" for char in recording.remote_label.lower()).strip("-")
+    return f"{started:%Y%m%d-%H%M}-{label or 'remote-session'}-{recording.protocol}.{extension}"
+
+
+def safe_recording_file(recording: RemoteSessionRecording) -> Path:
+    path = recording_path(recording)
+    try:
+        path.relative_to(RECORDING_ROOT)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recording not found")
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recording file not found")
+    return path
 
 
 def parse_client_datetime(value: str | None) -> datetime:
@@ -560,16 +579,55 @@ def recording_detail(request: Request, recording_id: int, db: Session = Depends(
     row = db.get(RemoteSessionRecording, recording_id)
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recording not found")
-    path = recording_path(row)
     transcript = None
-    try:
-        path.relative_to(RECORDING_ROOT)
-    except ValueError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recording not found")
+    path = safe_recording_file(row)
     if (row.content_type or "").startswith("text/") and path.exists():
         transcript = path.read_text(encoding="utf-8", errors="replace")
     write_audit(db, user, "playback", "remote_session_recording", entity_id=str(row.id), ip_address=request.client.host if request.client else None, detail=f"Opened recording playback for {row.remote_label}")
     return templates.TemplateResponse(request, "remote_recording_detail.html", {"user": user, "recording": row, "transcript": transcript, **csrf_context(request)})
+
+
+@router.get("/recordings/{recording_id}/download.mp4")
+def recording_download_mp4(request: Request, recording_id: int, db: Session = Depends(get_db), user=Depends(require_admin)):
+    row = db.get(RemoteSessionRecording, recording_id)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recording not found")
+    if not (row.content_type or "").startswith("video/"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only video recordings can be downloaded as MP4")
+    source = safe_recording_file(row)
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="MP4 export is unavailable because ffmpeg is not installed")
+    target = source.with_suffix(".mp4")
+    if not target.exists() or target.stat().st_mtime < source.stat().st_mtime:
+        try:
+            subprocess.run(
+                [
+                    ffmpeg,
+                    "-y",
+                    "-i",
+                    str(source),
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "veryfast",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-movflags",
+                    "+faststart",
+                    "-an",
+                    str(target),
+                ],
+                check=True,
+                capture_output=True,
+                timeout=300,
+            )
+        except (subprocess.SubprocessError, OSError) as exc:
+            if target.exists():
+                target.unlink()
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"MP4 export failed: {exc}") from exc
+    write_audit(db, user, "export", "remote_session_recording", entity_id=str(row.id), ip_address=request.client.host if request.client else None, detail=f"Downloaded MP4 recording for {row.remote_label}")
+    return FileResponse(target, media_type="video/mp4", filename=recording_download_name(row, "mp4"))
 
 
 @router.get("/recordings/{recording_id}/media")
@@ -577,13 +635,7 @@ def recording_media(request: Request, recording_id: int, db: Session = Depends(g
     row = db.get(RemoteSessionRecording, recording_id)
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recording not found")
-    path = recording_path(row)
-    try:
-        path.relative_to(RECORDING_ROOT)
-    except ValueError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recording not found")
-    if not path.exists() or not path.is_file():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recording file not found")
+    path = safe_recording_file(row)
     write_audit(db, user, "playback", "remote_session_recording", entity_id=str(row.id), ip_address=request.client.host if request.client else None, detail=f"Streamed recording media for {row.remote_label}")
     return FileResponse(path, media_type=row.content_type or "application/octet-stream", filename=row.original_filename or path.name)
 
@@ -602,6 +654,9 @@ def delete_recording(request: Request, recording_id: int, csrf_token: str = Form
         path = None
     if path and path.exists() and path.is_file():
         path.unlink()
+        mp4_path = path.with_suffix(".mp4")
+        if mp4_path.exists() and mp4_path.is_file():
+            mp4_path.unlink()
     db.delete(row)
     db.commit()
     write_audit(db, user, "delete", "remote_session_recording", entity_id=str(recording_id), ip_address=request.client.host if request.client else None, detail=f"Deleted recording for {label}")

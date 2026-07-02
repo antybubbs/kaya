@@ -8,6 +8,9 @@
   </div>
   <div class="topbar-actions">
     <a class="button secondary" href="/remote-manager/recordings">Back</a>
+    {% if recording.content_type and recording.content_type.startswith('video/') %}
+    <a class="button secondary" href="/remote-manager/recordings/{{ recording.id }}/download.mp4">Download MP4</a>
+    {% endif %}
     <form method="post" action="/remote-manager/recordings/{{ recording.id }}/delete">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <button class="danger" type="submit">Delete</button>

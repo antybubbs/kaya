@@ -176,8 +176,18 @@ body.remote-resizing{cursor:col-resize;user-select:none}
 .remote-recording-tools button:disabled{cursor:not-allowed;opacity:.55}
 .remote-recording-tools span{color:#f8fafc;font-size:12px;font-weight:800;min-width:54px}
 .remote-recordings-shell,.remote-recording-detail{display:grid;gap:14px}
-.remote-recordings-table td span{color:var(--muted);display:block;font-size:12px;margin-top:2px}
-.recording-actions{align-items:center;display:flex;gap:8px;justify-content:flex-end}
+.remote-recordings-table{background:#0b1016;border:1px solid var(--line);border-collapse:separate;border-radius:8px;border-spacing:0;overflow:hidden;table-layout:fixed;width:100%}
+.remote-recordings-table th{background:#151c27;color:#cfe1ff;font-size:11px;letter-spacing:.02em;padding:10px 12px;text-align:left;text-transform:uppercase}
+.remote-recordings-table td{border-top:1px solid rgba(148,163,184,.16);padding:12px;vertical-align:middle}
+.remote-recordings-table tr:hover td{background:rgba(255,138,0,.035)}
+.remote-recordings-table td strong{color:#f8fafc;display:block;font-size:12px;font-weight:900;line-height:1.2}
+.remote-recordings-table td span{color:var(--muted);display:block;font-size:12px;margin-top:2px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.remote-recordings-table td a{font-weight:900}
+.recording-col-started{width:140px}.recording-col-host{width:210px}.recording-col-protocol{width:90px}.recording-col-category{width:150px}.recording-col-user{width:260px}.recording-col-duration{width:95px}.recording-col-size{width:95px}.recording-col-actions{width:230px}
+.recording-pill{align-items:center;background:rgba(143,184,255,.12);border:1px solid rgba(143,184,255,.22);border-radius:999px;color:#bfdbfe!important;display:inline-flex!important;font-size:10px!important;font-weight:950;justify-content:center;line-height:1;margin:0!important;min-height:22px;min-width:48px;padding:0 8px;text-transform:uppercase}
+.recording-user{max-width:100%}
+.recording-actions{align-items:center;display:flex;gap:6px;justify-content:flex-end;white-space:nowrap}
+.recording-actions .button,.recording-actions button{font-size:11px;min-height:28px;padding:0 9px}
 .recording-actions form,.topbar-actions form{margin:0}
 .remote-empty-state{background:#14171d;border:1px solid var(--line);border-radius:10px;padding:24px;text-align:center}
 .remote-recording-detail{grid-template-columns:260px minmax(0,1fr)}
@@ -191,7 +201,7 @@ body.remote-resizing{cursor:col-resize;user-select:none}
 .remote-recording-player pre{color:#d6deeb;font-family:"Caskaydia Cove Nerd Font Mono",Consolas,monospace;font-size:13px;line-height:1.45;margin:0;max-height:calc(100vh - 190px);min-height:520px;overflow:auto;padding:14px;white-space:pre-wrap}
 @media(max-width:850px){.content.remote-main{padding-top:56px}.remote-workspace{grid-template-columns:1fr;height:auto}.remote-host-rail{max-height:42vh}.remote-session-frame,.remote-console-empty{min-height:58vh}.remote-credential-form,.rdp-credential-form{grid-template-columns:1fr;left:16px;right:16px;top:16px;transform:none;width:auto}}
 @media(max-width:850px){.remote-tab-panels.is-split{grid-template-columns:1fr;grid-template-rows:minmax(58vh,1fr) minmax(58vh,1fr)}}
-@media(max-width:850px){.remote-settings-grid.two,.remote-overrides-grid,.remote-recording-detail{grid-template-columns:1fr}.remote-recording-tools{left:12px;right:auto;top:10px}.remote-recording-player{min-height:360px}.remote-recording-player pre{min-height:360px}}
+@media(max-width:850px){.remote-settings-grid.two,.remote-overrides-grid,.remote-recording-detail{grid-template-columns:1fr}.remote-recording-tools{left:12px;right:auto;top:10px}.remote-recording-player{min-height:360px}.remote-recording-player pre{min-height:360px}.remote-recordings-shell{overflow-x:auto}.remote-recordings-table{min-width:980px}}
 
 /* Kaya orange palette overrides */
 .remote-host-toolbar button:hover,.remote-host-toolbar a:hover,.remote-host-toolbar button.active,.remote-layout-button:hover:not(:disabled),.remote-layout-button.active,.remote-settings-tabs a:hover,.remote-settings-tabs a.active{background:rgba(255,138,0,.13);border-color:rgba(255,138,0,.34);box-shadow:inset 0 -2px 0 rgba(255,138,0,.72);color:var(--text)}
