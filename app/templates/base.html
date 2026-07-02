@@ -37,7 +37,13 @@
       <img class="brand-logo" src="{{ brand.icon }}" alt="" width="38" height="38">
       <span class="app-brand-name">{{ brand.name }}</span>
     </a>
-    <button class="sidebar-collapse-button" type="button" data-sidebar-collapse title="Collapse sidebar" aria-label="Collapse sidebar">&lt;</button>
+    <button class="sidebar-collapse-button" type="button" data-sidebar-collapse title="Collapse sidebar" aria-label="Collapse sidebar" aria-expanded="true">
+      <span class="sidebar-collapse-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" focusable="false">
+          <path d="M14.5 6.5 9 12l5.5 5.5"></path>
+        </svg>
+      </span>
+    </button>
   </div>
   <div class="app-topbar-main">
     <div class="topbar-session-tabs">{% block topbar_session %}{% endblock %}</div>

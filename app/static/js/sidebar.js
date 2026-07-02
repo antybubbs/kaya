@@ -36,9 +36,10 @@
     document.body.classList.toggle("sidebar-collapsed", collapsed);
     localStorage.setItem(collapseStorageKey, collapsed ? "1" : "0");
     if (collapseButton) {
-      collapseButton.textContent = collapsed ? ">" : "<";
+      collapseButton.classList.toggle("is-collapsed", collapsed);
       collapseButton.title = collapsed ? "Expand sidebar" : "Collapse sidebar";
       collapseButton.setAttribute("aria-label", collapseButton.title);
+      collapseButton.setAttribute("aria-expanded", collapsed ? "false" : "true");
     }
   }
 
