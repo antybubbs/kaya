@@ -26,8 +26,8 @@
 .remote-host-group-heading{align-items:center;background:#0f1722;border:0;border-bottom:1px solid rgba(148,163,184,.18);border-top:1px solid rgba(148,163,184,.08);border-radius:6px 6px 0 0;color:#fff;cursor:pointer;display:grid;font-size:11px;gap:8px;grid-template-columns:minmax(0,1fr) auto;margin-top:10px;min-height:32px;padding:8px 10px;text-align:left;text-transform:uppercase;width:100%}
 .remote-host-group-heading:hover{background:#152131;color:#fff}
 .remote-host-group-heading.collapsed{color:#fff}
-.remote-host-group-heading strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.remote-host-group-heading strong:before{content:"▾ ";font-size:10px}
+.remote-host-group-heading strong{color:#fff;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.remote-host-group-heading strong:before{color:#fff;content:"▾ ";font-size:10px}
 .remote-host-group-heading.collapsed strong:before{content:"▸ ";font-size:10px}
 .remote-host-group-heading:first-child{margin-top:0}
 .remote-host-group-heading span{color:#f59e0b;font-size:10px}
@@ -256,4 +256,5 @@ html[data-kaya-theme=light-ops] .remote-host-header strong,html[data-kaya-theme=
 html[data-kaya-theme=light-ops] .remote-host-header span,html[data-kaya-theme=light-ops] .remote-host-main span,html[data-kaya-theme=light-ops] .remote-host-meta{color:#5b6574!important}
 html[data-kaya-theme=light-ops] .remote-host-group-heading{background:#f8fafc!important;border-bottom-color:#d8dee8!important;border-top-color:#eef2f7!important;color:#111827!important}
 html[data-kaya-theme=light-ops] .remote-host-group-heading:hover{background:#fff3e2!important;color:#7a3b00!important}
+html[data-kaya-theme=light-ops] .remote-host-group-heading strong,html[data-kaya-theme=light-ops] .remote-host-group-heading strong:before{color:#111827!important}
 html[data-kaya-theme=light-ops] .remote-host-group-heading span{color:#a84b00!important}
