@@ -254,4 +254,6 @@ html[data-kaya-theme=light-ops] .remote-host-toolbar button,html[data-kaya-theme
 html[data-kaya-theme=light-ops] .remote-host-toolbar button:hover,html[data-kaya-theme=light-ops] .remote-host-toolbar a:hover,html[data-kaya-theme=light-ops] .remote-host-toolbar button.active{background:#fff3e2!important;border-color:#ff8a00!important;color:#7a3b00!important}
 html[data-kaya-theme=light-ops] .remote-host-header strong,html[data-kaya-theme=light-ops] .remote-host-main strong{color:#111827!important}
 html[data-kaya-theme=light-ops] .remote-host-header span,html[data-kaya-theme=light-ops] .remote-host-main span,html[data-kaya-theme=light-ops] .remote-host-meta{color:#5b6574!important}
-html[data-kaya-theme=light-ops] .remote-host-group-heading{color:#111827!important}
+html[data-kaya-theme=light-ops] .remote-host-group-heading{background:#f8fafc!important;border-bottom-color:#d8dee8!important;border-top-color:#eef2f7!important;color:#111827!important}
+html[data-kaya-theme=light-ops] .remote-host-group-heading:hover{background:#fff3e2!important;color:#7a3b00!important}
+html[data-kaya-theme=light-ops] .remote-host-group-heading span{color:#a84b00!important}
