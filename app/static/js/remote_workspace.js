@@ -130,7 +130,9 @@
   const popOutSession = (session) => {
     if (!session?.url) return;
     const name = `kaya_remote_${session.remoteId}_${session.protocol}`;
-    const opened = window.open(session.url, name, sessionWindowFeatures());
+    const url = new URL(session.url, window.location.origin);
+    url.searchParams.set("popout", "1");
+    const opened = window.open(url.toString(), name, sessionWindowFeatures());
     if (opened) opened.focus();
   };
 

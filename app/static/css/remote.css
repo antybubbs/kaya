@@ -85,8 +85,8 @@ body.remote-resizing{cursor:col-resize;user-select:none}
 .remote-tab-title{font-size:13px;font-weight:850;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .remote-tab-protocol{color:#7f8977;font-size:10px;font-weight:900;margin-left:auto}
 .remote-tab-tools{align-items:center;display:flex;gap:2px;margin-left:3px}
-.remote-tab-tool{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.16);border-radius:4px;color:#fff;font-size:13px;font-weight:900;height:22px;min-height:22px;padding:0;text-transform:uppercase;width:22px}
-.remote-tab-tool:hover{background:#263244;border-color:rgba(255,255,255,.34);color:#fff}
+.remote-tab-tool{background:#ff8a00;border:1px solid #ffb357;border-radius:4px;color:#050706;font-size:13px;font-weight:950;height:22px;min-height:22px;padding:0;text-transform:uppercase;width:22px}
+.remote-tab-tool:hover{background:#ffb357;border-color:#ffd08a;color:#050706}
 .remote-layout-tools{align-items:center;display:flex;gap:6px;margin-left:auto;padding:0 8px 6px}
 .remote-layout-button{background:#111827;border:1px solid var(--line);border-radius:7px;color:var(--muted);font-size:12px;font-weight:900;height:30px;min-height:30px;padding:0 12px}
 .remote-layout-button:hover:not(:disabled),.remote-layout-button.active{background:rgba(255,138,0,.12);border-color:rgba(255,138,0,.65);color:var(--text)}
@@ -120,6 +120,13 @@ body.remote-resizing{cursor:col-resize;user-select:none}
 @keyframes remote-terminal-cursor-blink{0%,48%{opacity:1}49%,100%{opacity:0}}
 .remote-panel-body{background:#050706;margin:0;min-height:100vh;overflow:hidden}
 .remote-panel-body .remote-session-frame{height:100vh}
+.remote-popout-toolbar{align-items:center;background:#111827;border-bottom:1px solid var(--line);box-sizing:border-box;display:flex;height:42px;justify-content:space-between;padding:6px 10px}
+.remote-popout-toolbar div{display:grid;gap:1px;min-width:0}
+.remote-popout-toolbar strong{color:#fff;font-size:13px;font-weight:900;line-height:1.1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.remote-popout-toolbar span{color:var(--muted);font-size:11px;font-weight:800;line-height:1.1}
+.remote-popout-toolbar button{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.18);border-radius:7px;color:#fff;font-size:12px;font-weight:900;min-height:28px;padding:5px 10px;white-space:nowrap}
+.remote-popout-toolbar button:hover{background:rgba(255,138,0,.14);border-color:rgba(255,138,0,.5)}
+.remote-popout-toolbar+.remote-session-frame{height:calc(100vh - 42px)}
 .rdp-display-shell{background:#050706;height:100%;min-height:0;outline:none;overflow:hidden;position:relative}
 .rdp-display{align-items:center;display:flex;height:100%;justify-content:center;min-height:0;overflow:hidden;position:relative;width:100%}
 .rdp-display .rdp-guac-display{cursor:none}
