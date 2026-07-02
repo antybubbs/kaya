@@ -362,7 +362,6 @@
       tabbar.appendChild(button);
     });
 
-    ensureLayoutTools();
     panels.classList.toggle("is-split", splitEnabled && shownIds.length > 1);
 
     tabs.forEach((tab) => {
