@@ -19,32 +19,7 @@
   {% endif %}
 </head>
 <body class="remote-panel-body">
-  {% if request.query_params.get('popout') == '1' %}
-  <header class="remote-popout-toolbar">
-    <div>
-      <strong>{{ remote_label }}</strong>
-      <span>{{ remote.protocol|upper }} session window</span>
-    </div>
-    <button type="button" data-remote-return>Return to Kaya</button>
-  </header>
-  {% endif %}
   {% include "_remote_session_panel.html" %}
-  {% if request.query_params.get('popout') == '1' %}
-  <script>
-    (function () {
-      var button = document.querySelector("[data-remote-return]");
-      if (!button) return;
-      button.addEventListener("click", function () {
-        if (window.opener && !window.opener.closed) {
-          window.opener.location.href = "/remote-manager";
-          window.opener.focus();
-        } else {
-          window.open("/remote-manager", "_blank", "noopener");
-        }
-      });
-    })();
-  </script>
-  {% endif %}
   {% if remote.protocol == 'ssh' %}
   <script src="/static/vendor/xterm/xterm.js?v={{ asset_version }}"></script>
   <script src="/static/vendor/xterm/addon-fit.js?v={{ asset_version }}"></script>
