@@ -16,6 +16,7 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
 from starlette import status
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -165,6 +166,24 @@ def recording_extension(content_type: str, protocol: str) -> str:
     if content_type.startswith("video/webm") or protocol == "rdp":
         return ".webm"
     return ".txt"
+
+
+def ensure_recording_storage_available(size_bytes: int) -> None:
+    app_settings = get_settings()
+    max_bytes = max(1, int(app_settings.max_recording_upload_mb)) * 1024 * 1024
+    min_free_bytes = max(0, int(app_settings.min_recording_free_mb)) * 1024 * 1024
+    if size_bytes > max_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"Recording is larger than the {app_settings.max_recording_upload_mb} MB limit",
+        )
+    probe_path = RECORDING_ROOT if RECORDING_ROOT.exists() else RECORDING_ROOT.parent
+    free_bytes = shutil.disk_usage(probe_path).free
+    if free_bytes - size_bytes < min_free_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_507_INSUFFICIENT_STORAGE,
+            detail="Not enough free storage to save this recording",
+        )
 
 
 def recording_path(recording: RemoteSessionRecording) -> Path:
@@ -756,6 +775,7 @@ async def upload_recording(
     data = await file.read()
     if not data:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Recording is empty")
+    ensure_recording_storage_available(len(data))
     path.write_bytes(data)
 
     recording = RemoteSessionRecording(
@@ -776,7 +796,15 @@ async def upload_recording(
         ended_at=parse_client_datetime(ended_at),
     )
     db.add(recording)
-    db.commit()
+    try:
+        db.commit()
+    except SQLAlchemyError as exc:
+        db.rollback()
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise HTTPException(status_code=status.HTTP_507_INSUFFICIENT_STORAGE, detail="Recording could not be saved") from exc
     write_audit(db, user, "start", "remote_session_recording", entity_id=str(recording.id), ip_address=request.client.host if request.client else None, detail=f"{row.protocol.upper()} recording started for {remote_label(row)}")
     write_audit(db, user, "stop", "remote_session_recording", entity_id=str(recording.id), ip_address=request.client.host if request.client else None, detail=f"{row.protocol.upper()} recording stopped for {remote_label(row)}")
     write_audit(db, user, "record", "remote_session_recording", entity_id=str(recording.id), ip_address=request.client.host if request.client else None, detail=f"Saved {row.protocol.upper()} recording for {remote_label(row)}")

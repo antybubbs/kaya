@@ -1,5 +1,6 @@
 import json
 from contextvars import ContextVar
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from app.models.models import AuditLog, User
 
@@ -76,8 +77,12 @@ def write_audit(
         request_id=context.get("request_id"),
         metadata_json=json.dumps(metadata, default=str, separators=(",", ":")) if metadata else None,
     )
-    db.add(row)
-    db.commit()
+    try:
+        db.add(row)
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        return None
     context["event_written"] = True
     context.setdefault("row_ids", []).append(row.id)
     return row
