@@ -29,7 +29,7 @@ def category_for(action: str, entity: str) -> str:
         return "data"
     if action in {"request_failed", "request_error"}:
         return "request"
-    if entity in {"remote_session", "rdp_session", "ssh_session"}:
+    if entity in {"remote_session", "rdp_session", "ssh_session", "remote_session_recording"}:
         return "remote_access"
     return "activity"
 

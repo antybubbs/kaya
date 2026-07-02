@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block extra_head %}<link rel="stylesheet" href="/static/css/remote.css?v={{ asset_version }}">{% endblock %}
+{% block content %}
+<div class="topbar">
+  <div>
+    <h1>Session Recording</h1>
+    <p class="muted">Recorded Remote Manager sessions.</p>
+  </div>
+</div>
+
+<section class="remote-recordings-shell">
+  {% if recordings %}
+  <table class="data-table remote-recordings-table">
+    <thead>
+      <tr>
+        <th>Started</th>
+        <th>Host</th>
+        <th>Protocol</th>
+        <th>Category</th>
+        <th>User</th>
+        <th>Duration</th>
+        <th>Size</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in recordings %}
+      <tr>
+        <td>{{ row.started_at.strftime('%Y-%m-%d %H:%M') if row.started_at else row.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+        <td><a href="/remote-manager/recordings/{{ row.id }}">{{ row.remote_label }}</a><span>{{ row.remote_address or '' }}</span></td>
+        <td>{{ row.protocol|upper }}</td>
+        <td>{{ row.category or 'Uncategorised' }}</td>
+        <td>{{ row.user.email if row.user else 'Unknown' }}</td>
+        <td>{{ '%0.0f'|format(row.duration_seconds or 0) }}s</td>
+        <td>{{ (row.size_bytes / 1048576)|round(2) }} MB</td>
+        <td class="recording-actions">
+          <a class="button secondary" href="/remote-manager/recordings/{{ row.id }}">Watch</a>
+          <form method="post" action="/remote-manager/recordings/{{ row.id }}/delete">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="danger" type="submit">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="remote-empty-state">
+    <h2>No recordings yet</h2>
+    <p class="muted">Session recordings will appear here after a recorded SSH or RDP session is stopped.</p>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

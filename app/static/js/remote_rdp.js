@@ -26,6 +26,105 @@ if (root) {
   let idleTimer = null;
   let disconnectReason = "";
   let activeToken = "";
+  const recordingButton = root.querySelector("[data-recording-toggle]");
+  const recordingStatus = root.querySelector("[data-recording-status]");
+  const recordingEnabled = root.dataset.recordingEnabled === "1";
+  const recordingAuto = root.dataset.recordingAuto === "1";
+  let recorder = null;
+  let recordingChunks = [];
+  let recordingStartedAt = null;
+  let recordingTrigger = "manual";
+
+  const setRecordingStatus = (message) => {
+    if (recordingStatus) recordingStatus.textContent = message;
+  };
+
+  const syncRecordingButton = () => {
+    if (!recordingButton) return;
+    const available = Boolean(window.MediaRecorder) && recordingEnabled && connected && displayReady;
+    recordingButton.disabled = !available;
+    recordingButton.textContent = recorder && recorder.state === "recording" ? "Stop" : "Record";
+    recordingButton.classList.toggle("active", Boolean(recorder && recorder.state === "recording"));
+  };
+
+  const recorderMimeType = () => {
+    if (!window.MediaRecorder) return "";
+    for (const type of ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"]) {
+      if (MediaRecorder.isTypeSupported(type)) return type;
+    }
+    return "";
+  };
+
+  const uploadRecording = async (blob, startedAt, endedAt, trigger) => {
+    const formData = new FormData();
+    formData.append("csrf_token", root.dataset.recordingCsrfToken || "");
+    formData.append("protocol", "rdp");
+    formData.append("trigger", trigger);
+    formData.append("started_at", startedAt.toISOString());
+    formData.append("ended_at", endedAt.toISOString());
+    formData.append("duration_seconds", String(Math.max(0, (endedAt - startedAt) / 1000)));
+    formData.append("file", blob, "rdp-session.webm");
+    const response = await fetch(root.dataset.recordingUploadUrl, { method: "POST", body: formData });
+    if (!response.ok) throw new Error(`Upload failed (${response.status})`);
+  };
+
+  const startRecording = (trigger = "manual") => {
+    if (!recordingEnabled || !connected || !displayReady || recorder) return;
+    if (!window.MediaRecorder) {
+      setRecordingStatus("Unavailable");
+      syncRecordingButton();
+      return;
+    }
+    const canvas = displayTarget.querySelector("canvas");
+    if (!canvas || typeof canvas.captureStream !== "function") {
+      setRecordingStatus("No display");
+      syncRecordingButton();
+      return;
+    }
+    const mimeType = recorderMimeType();
+    if (!mimeType) {
+      setRecordingStatus("Unavailable");
+      syncRecordingButton();
+      return;
+    }
+    recordingChunks = [];
+    recordingTrigger = trigger;
+    recordingStartedAt = new Date();
+    const stream = canvas.captureStream(12);
+    recorder = new MediaRecorder(stream, { mimeType });
+    recorder.ondataavailable = (event) => {
+      if (event.data && event.data.size > 0) recordingChunks.push(event.data);
+    };
+    recorder.onstop = async () => {
+      const startedAt = recordingStartedAt;
+      const endedAt = new Date();
+      const chunks = recordingChunks;
+      const triggerName = recordingTrigger;
+      stream.getTracks().forEach((track) => track.stop());
+      recorder = null;
+      recordingStartedAt = null;
+      recordingChunks = [];
+      syncRecordingButton();
+      if (!startedAt || !chunks.length) {
+        setRecordingStatus("Ready");
+        return;
+      }
+      setRecordingStatus("Saving");
+      try {
+        await uploadRecording(new Blob(chunks, { type: "video/webm" }), startedAt, endedAt, triggerName);
+        setRecordingStatus("Saved");
+      } catch (_error) {
+        setRecordingStatus("Save failed");
+      }
+    };
+    recorder.start(1000);
+    setRecordingStatus(trigger === "auto" ? "Recording automatically" : "Recording");
+    syncRecordingButton();
+  };
+
+  const stopRecording = () => {
+    if (recorder && recorder.state === "recording") recorder.stop();
+  };
 
   const readInt = (value, fallback, min, max) => {
     const parsed = Number.parseInt(value, 10);
@@ -106,6 +205,7 @@ if (root) {
   };
 
   const disconnectCurrentSession = () => {
+    stopRecording();
     window.clearTimeout(resizeTimer);
     if (idleTimer) {
       window.clearTimeout(idleTimer);
@@ -130,6 +230,7 @@ if (root) {
     lastRequestedSize = "";
     connected = false;
     displayReady = false;
+    syncRecordingButton();
   };
 
   const stopSession = () => {
@@ -190,6 +291,8 @@ if (root) {
     displayReady = true;
     setOverlayVisible(false);
     if (displayElement) displayElement.focus({ preventScroll: true });
+    syncRecordingButton();
+    if (recordingAuto) startRecording("auto");
   };
 
   const waitForLayout = () =>
@@ -241,6 +344,7 @@ if (root) {
         setStatus("Connected", "RDP session is active.");
         connected = true;
         markActivity();
+        syncRecordingButton();
         refreshDisplay();
         markDisplayReady();
         const hashParams = new URLSearchParams(window.location.hash.slice(1));
@@ -253,6 +357,8 @@ if (root) {
         setOverlayVisible(true);
         connected = false;
         displayReady = false;
+        stopRecording();
+        syncRecordingButton();
         const disconnectTitle = disconnectReason === "Session moved to the pop-out window."
           ? "Popped out"
           : disconnectReason
@@ -322,6 +428,16 @@ if (root) {
     }
   });
   window.addEventListener("beforeunload", stopSession);
+  if (recordingButton) {
+    recordingButton.addEventListener("click", () => {
+      if (recorder && recorder.state === "recording") {
+        stopRecording();
+      } else {
+        startRecording("manual");
+      }
+    });
+    syncRecordingButton();
+  }
 
   form.addEventListener("submit", (event) => event.preventDefault());
   button.addEventListener("click", async () => {

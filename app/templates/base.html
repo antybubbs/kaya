@@ -88,8 +88,8 @@
       <summary><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"></rect><path d="M8 20h8M12 16v4M8 9h4M8 12h8"></path></svg></span><span class="nav-label">Remote Manager</span></summary>
       <div class="nav-children">
         <a class="nav-link" href="/remote-manager"><span class="nav-label">Remote</span></a>
-        <span class="nav-link disabled" title="Coming soon"><span class="nav-label">Session Recording</span></span>
         {% if user.role == 'admin' %}
+        <a class="nav-link" href="/remote-manager/recordings"><span class="nav-label">Session Recording</span></a>
         <a class="nav-link" href="/remote-manager/settings"><span class="nav-label">Remote Manager Settings</span></a>
         {% endif %}
       </div>

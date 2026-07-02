@@ -36,6 +36,23 @@
     </div>
   </section>
 
+  <section class="remote-settings-card" id="recording">
+    <header><span>Session Recording</span></header>
+    <div class="remote-settings-grid two">
+      <label>Recording mode
+        <select name="recording_mode">
+          <option value="off" {% if settings.recording_mode == 'off' %}selected{% endif %}>Off</option>
+          <option value="manual" {% if settings.recording_mode == 'manual' %}selected{% endif %}>Manual only</option>
+          <option value="all" {% if settings.recording_mode == 'all' %}selected{% endif %}>Auto-record all sessions</option>
+          <option value="categories" {% if settings.recording_mode == 'categories' %}selected{% endif %}>Auto-record selected categories</option>
+        </select>
+      </label>
+      <label>Recorded categories <span>Comma or line separated</span>
+        <textarea name="recording_categories" rows="4" placeholder="Servers&#10;Privileged">{{ settings.recording_categories }}</textarea>
+      </label>
+    </div>
+  </section>
+
   <section class="remote-settings-card" id="terminal">
     <header><span>Terminal Appearance</span></header>
     <div class="terminal-preview">

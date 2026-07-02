@@ -144,6 +144,7 @@ body.remote-resizing{cursor:col-resize;user-select:none}
 .remote-settings-grid label{color:var(--text);font-size:13px;font-weight:800;letter-spacing:0;text-transform:none}
 .remote-settings-grid label span{color:var(--muted);float:right;font-size:12px;font-weight:700}
 .remote-settings-grid input,.remote-settings-grid select{background:#0d1117;border-color:var(--line);border-radius:8px;color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Arial;font-size:13px}
+.remote-settings-grid textarea{background:#0d1117;border:1px solid var(--line);border-radius:8px;color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Arial;font-size:13px;min-height:86px;padding:10px;resize:vertical}
 .remote-settings-grid input[type=range]{accent-color:var(--accent);min-height:22px;padding:0}
 .remote-setting-row{align-items:center;border-bottom:1px solid var(--line);display:flex;gap:16px;justify-content:space-between;padding:14px 0}
 .remote-setting-row:last-child{border-bottom:0}
@@ -160,9 +161,29 @@ body.remote-resizing{cursor:col-resize;user-select:none}
 .remote-overrides>summary{cursor:pointer;font-size:12px;font-weight:900;list-style:none;padding:10px 12px}
 .remote-overrides>summary::-webkit-details-marker{display:none}
 .remote-overrides-grid{border-top:1px solid var(--line);display:grid;gap:12px;grid-template-columns:repeat(2,minmax(0,1fr));padding:12px}
+.remote-recording-tools{align-items:center;background:rgba(5,7,6,.9);border:1px solid rgba(255,138,0,.42);border-radius:8px;display:flex;gap:8px;position:absolute;right:12px;top:10px;z-index:9;padding:6px}
+.remote-recording-tools button{background:#ff8a00;border:1px solid #ffb357;border-radius:6px;color:#050706;font-size:12px;font-weight:950;min-height:28px;padding:0 12px}
+.remote-recording-tools button:hover:not(:disabled),.remote-recording-tools button.active{background:#ffb357;color:#050706}
+.remote-recording-tools button.active{border-color:#ffd08a}
+.remote-recording-tools button:disabled{cursor:not-allowed;opacity:.55}
+.remote-recording-tools span{color:#f8fafc;font-size:12px;font-weight:800;min-width:54px}
+.remote-recordings-shell,.remote-recording-detail{display:grid;gap:14px}
+.remote-recordings-table td span{color:var(--muted);display:block;font-size:12px;margin-top:2px}
+.recording-actions{align-items:center;display:flex;gap:8px;justify-content:flex-end}
+.recording-actions form,.topbar-actions form{margin:0}
+.remote-empty-state{background:#14171d;border:1px solid var(--line);border-radius:10px;padding:24px;text-align:center}
+.remote-recording-detail{grid-template-columns:260px minmax(0,1fr)}
+.remote-recording-meta{background:#14171d;border:1px solid var(--line);border-radius:10px;display:grid;gap:0;align-self:start;overflow:hidden}
+.remote-recording-meta div{border-bottom:1px solid var(--line);display:grid;gap:3px;padding:12px}
+.remote-recording-meta div:last-child{border-bottom:0}
+.remote-recording-meta span{color:var(--muted);font-size:11px;font-weight:800;text-transform:uppercase}
+.remote-recording-meta strong{color:var(--text);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.remote-recording-player{background:#050706;border:1px solid var(--line);border-radius:10px;min-height:520px;overflow:hidden}
+.remote-recording-player video{background:#000;display:block;height:auto;max-height:calc(100vh - 190px);width:100%}
+.remote-recording-player pre{color:#d6deeb;font-family:"Caskaydia Cove Nerd Font Mono",Consolas,monospace;font-size:13px;line-height:1.45;margin:0;max-height:calc(100vh - 190px);min-height:520px;overflow:auto;padding:14px;white-space:pre-wrap}
 @media(max-width:850px){.content.remote-main{padding-top:56px}.remote-workspace{grid-template-columns:1fr;height:auto}.remote-host-rail{max-height:42vh}.remote-session-frame,.remote-console-empty{min-height:58vh}.remote-credential-form,.rdp-credential-form{grid-template-columns:1fr;left:16px;right:16px;top:16px;transform:none;width:auto}}
 @media(max-width:850px){.remote-tab-panels.is-split{grid-template-columns:1fr;grid-template-rows:minmax(58vh,1fr) minmax(58vh,1fr)}}
-@media(max-width:850px){.remote-settings-grid.two,.remote-overrides-grid{grid-template-columns:1fr}}
+@media(max-width:850px){.remote-settings-grid.two,.remote-overrides-grid,.remote-recording-detail{grid-template-columns:1fr}.remote-recording-tools{left:12px;right:auto;top:10px}.remote-recording-player{min-height:360px}.remote-recording-player pre{min-height:360px}}
 
 /* Kaya orange palette overrides */
 .remote-host-toolbar button:hover,.remote-host-toolbar a:hover,.remote-host-toolbar button.active,.remote-layout-button:hover:not(:disabled),.remote-layout-button.active,.remote-settings-tabs a:hover,.remote-settings-tabs a.active{background:rgba(255,138,0,.13);border-color:rgba(255,138,0,.34);box-shadow:inset 0 -2px 0 rgba(255,138,0,.72);color:var(--text)}
@@ -179,7 +200,7 @@ html[data-kaya-theme=light-ops] .remote-host-rail,html[data-kaya-theme=light-ops
 html[data-kaya-theme=light-ops] .remote-host-card,html[data-kaya-theme=light-ops] .remote-settings-card,html[data-kaya-theme=light-ops] .remote-card{background:#fff;border-color:#d8dee8;color:#111827}
 html[data-kaya-theme=light-ops] .remote-settings-card header{border-bottom-color:#d8dee8;color:#111827}
 html[data-kaya-theme=light-ops] .remote-settings-grid label{color:#111827}
-html[data-kaya-theme=light-ops] .remote-settings-grid input,html[data-kaya-theme=light-ops] .remote-settings-grid select{background:#fff;border-color:#cfd7e3;color:#111827}
+html[data-kaya-theme=light-ops] .remote-settings-grid input,html[data-kaya-theme=light-ops] .remote-settings-grid select,html[data-kaya-theme=light-ops] .remote-settings-grid textarea{background:#fff;border-color:#cfd7e3;color:#111827}
 html[data-kaya-theme=light-ops] .remote-settings-tabs{border-bottom-color:#d8dee8}
 html[data-kaya-theme=light-ops] .remote-settings-tabs a,html[data-kaya-theme=light-ops] .remote-host-toolbar button,html[data-kaya-theme=light-ops] .remote-host-toolbar a,html[data-kaya-theme=light-ops] .remote-layout-button,html[data-kaya-theme=light-ops] .remote-protocol-icon{background:#fff8f0;border-color:rgba(255,138,0,.24);color:#7a3b00}
 html[data-kaya-theme=light-ops] .remote-session-frame,html[data-kaya-theme=light-ops] .remote-console-empty{background:#f8f3ec;border-color:#d8dee8;color:#111827}

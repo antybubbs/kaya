@@ -193,6 +193,7 @@ async def audit_requests(request: Request, call_next):
 
 Path("/app/uploads").mkdir(parents=True, exist_ok=True)
 Path("/app/data").mkdir(parents=True, exist_ok=True)
+Path("/app/data/remote-recordings").mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 
@@ -319,6 +320,11 @@ def migrate_existing_database():
         if not remote_settings_columns:
             conn.execute(text("CREATE TABLE remote_manager_settings (id INTEGER NOT NULL PRIMARY KEY, key VARCHAR(80) NOT NULL UNIQUE, value TEXT, updated_at DATETIME)"))
             conn.execute(text("CREATE INDEX ix_remote_manager_settings_key ON remote_manager_settings (key)"))
+        recording_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(remote_session_recordings)"))}
+        if not recording_columns:
+            conn.execute(text("CREATE TABLE remote_session_recordings (id INTEGER NOT NULL PRIMARY KEY, remote_access_id INTEGER REFERENCES remote_access(id) ON DELETE SET NULL, user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, remote_label VARCHAR(255) NOT NULL, remote_address VARCHAR(80), protocol VARCHAR(20) NOT NULL, category VARCHAR(120), trigger VARCHAR(30) DEFAULT 'manual' NOT NULL, status VARCHAR(30) DEFAULT 'complete' NOT NULL, stored_filename VARCHAR(500) NOT NULL, original_filename VARCHAR(255), content_type VARCHAR(120), size_bytes INTEGER DEFAULT 0 NOT NULL, duration_seconds FLOAT, started_at DATETIME, ended_at DATETIME, created_at DATETIME)"))
+            for column in ["remote_access_id", "user_id", "remote_label", "protocol", "category", "trigger", "status", "started_at", "ended_at", "created_at"]:
+                conn.execute(text(f"CREATE INDEX ix_remote_session_recordings_{column} ON remote_session_recordings ({column})"))
         runbook_space_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(runbook_spaces)"))}
         if not runbook_space_columns:
             conn.execute(text("CREATE TABLE runbook_spaces (id INTEGER NOT NULL PRIMARY KEY, name VARCHAR(160) NOT NULL UNIQUE, description TEXT, sort_order INTEGER DEFAULT 0 NOT NULL, created_at DATETIME, updated_at DATETIME)"))
