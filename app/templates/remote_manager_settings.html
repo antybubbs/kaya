@@ -17,9 +17,18 @@
 
 {% if message %}<div class="success">{{ message }}</div>{% endif %}
 
-<form class="remote-settings-shell" method="post" action="/remote-manager/settings">
+<form class="remote-settings-shell" method="post" action="/remote-manager/settings" data-settings-tabs data-settings-storage-key="kaya.remoteManagerSettings.activeTab">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 
+  <div class="category-tabs site-admin-tabs remote-manager-settings-tabs" role="tablist" aria-label="Remote Manager settings sections">
+    <button type="button" class="active" data-settings-tab="general" role="tab" aria-selected="true">General</button>
+    <button type="button" data-settings-tab="recording" role="tab" aria-selected="false">Recording</button>
+    <button type="button" data-settings-tab="terminal" role="tab" aria-selected="false">Terminal</button>
+    <button type="button" data-settings-tab="rdp" role="tab" aria-selected="false">RDP</button>
+    <button type="button" data-settings-tab="redirection" role="tab" aria-selected="false">Redirection</button>
+  </div>
+
+  <section class="settings-tab-panel active" data-settings-panel="general" role="tabpanel">
   <section class="remote-settings-card" id="general">
     <header><span>General</span></header>
     <div class="remote-settings-grid">
@@ -35,7 +44,9 @@
       </label>
     </div>
   </section>
+  </section>
 
+  <section class="settings-tab-panel" data-settings-panel="recording" role="tabpanel" hidden>
   <section class="remote-settings-card" id="recording">
     <header><span>Session Recording</span></header>
     <div class="remote-settings-grid two">
@@ -55,7 +66,9 @@
       </label>
     </div>
   </section>
+  </section>
 
+  <section class="settings-tab-panel" data-settings-panel="terminal" role="tabpanel" hidden>
   <section class="remote-settings-card" id="terminal">
     <header><span>Terminal Appearance</span></header>
     <div class="terminal-preview">
@@ -125,7 +138,9 @@
       </label>
     </div>
   </section>
+  </section>
 
+  <section class="settings-tab-panel" data-settings-panel="rdp" role="tabpanel" hidden>
   <section class="remote-settings-card" id="rdp">
     <header><span>Audio Settings</span></header>
     {{ switch('rdp_disable_audio', 'Disable Audio', 'Mute all audio from the remote session') }}
@@ -151,11 +166,14 @@
       </select>
     </label>
   </section>
+  </section>
 
+  <section class="settings-tab-panel" data-settings-panel="redirection" role="tabpanel" hidden>
   <section class="remote-settings-card" id="redirection">
     <header><span>Device Redirection</span></header>
     {{ switch('rdp_enable_printing', 'Enable Printing', 'Redirect local printers to the remote session') }}
     {{ switch('rdp_enable_drive', 'Enable Drive Redirection', 'Map a local folder as a drive in the remote session') }}
+  </section>
   </section>
 
   <div class="remote-settings-actions">
@@ -165,5 +183,6 @@
 {% endblock %}
 
 {% block extra_scripts %}
+<script src="/static/js/settings_tabs.js?v={{ asset_version }}"></script>
 <script src="/static/js/remote_settings.js?v={{ asset_version }}"></script>
 {% endblock %}

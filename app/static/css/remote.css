@@ -139,6 +139,9 @@ body.remote-resizing{cursor:col-resize;user-select:none}
 .rdp-log-panel header{border-bottom:1px solid var(--line);font-size:12px;font-weight:800;padding:8px 10px}
 .rdp-log-panel pre{color:#d1fae5;font-size:12px;line-height:1.45;margin:0;max-height:170px;overflow:auto;padding:10px;white-space:pre-wrap}
 .remote-settings-shell{display:grid;gap:14px;max-width:1040px}
+.remote-settings-shell .settings-tab-panel{display:grid;gap:14px;max-width:1040px}
+.remote-settings-shell .settings-tab-panel[hidden]{display:none!important}
+.remote-manager-settings-tabs{max-width:1040px}
 .remote-settings-tabs{align-items:center;border-bottom:1px solid var(--line);display:flex;gap:8px;overflow-x:auto;padding:0 0 8px}
 .remote-settings-tabs a{align-items:center;background:#151a21;border:1px solid var(--line);border-radius:10px;color:var(--muted);display:inline-flex;font-size:12px;font-weight:850;min-height:34px;padding:8px 13px;white-space:nowrap}
 .remote-settings-tabs a:hover,.remote-settings-tabs a.active{background:rgba(255,138,0,.12);border-color:rgba(255,138,0,.7);box-shadow:inset 0 -2px 0 rgba(255,138,0,.75);color:var(--text)}
