@@ -25,6 +25,7 @@
   let splitIds = [];
   let groupViewEnabled = localStorage.getItem(groupViewStorageKey) !== "0";
   let collapsedGroups = new Set();
+  const poppedOutSessions = new Map();
 
   const safeParse = (value) => {
     try {
@@ -96,6 +97,12 @@
 
   const closeTab = (id) => {
     const index = tabs.findIndex((tab) => tab.id === id);
+    const popped = poppedOutSessions.get(id);
+    if (popped?.window && !popped.window.closed) {
+      popped.restoring = true;
+      popped.window.close();
+    }
+    poppedOutSessions.delete(id);
     tabs = tabs.filter((tab) => tab.id !== id);
     const panel = panels.querySelector(`[data-remote-panel="${CSS.escape(id)}"]`);
     if (panel) panel.remove();
@@ -119,18 +126,82 @@
     iframe.src = iframe.src;
   };
 
-  const popOutSession = (session) => {
-    if (!session?.url) return;
+  const sessionWindowFeatures = () => {
     const width = Math.min(1600, Math.max(960, Math.floor(window.screen.availWidth * 0.82)));
     const height = Math.min(1000, Math.max(640, Math.floor(window.screen.availHeight * 0.82)));
     const left = Math.max(0, Math.floor((window.screen.availWidth - width) / 2));
     const top = Math.max(0, Math.floor((window.screen.availHeight - height) / 2));
+    return `popup=yes,width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=no`;
+  };
+
+  const restorePoppedOutSession = (id) => {
+    const popped = poppedOutSessions.get(id);
+    if (!popped || popped.restoring) return;
+    const panel = panels.querySelector(`[data-remote-panel="${CSS.escape(id)}"]`);
+    if (panel && popped.iframe && !panel.contains(popped.iframe)) {
+      panel.replaceChildren(popped.iframe);
+      panel.classList.remove("is-popped-out");
+      notifyPanel(id, 80);
+    }
+    poppedOutSessions.delete(id);
+  };
+
+  const detachSessionIframe = (tab) => {
+    const panel = panels.querySelector(`[data-remote-panel="${CSS.escape(tab.id)}"]`);
+    const iframe = panel?.querySelector("iframe");
+    if (!panel || !iframe) return false;
+
+    const existing = poppedOutSessions.get(tab.id);
+    if (existing?.window && !existing.window.closed) {
+      existing.window.focus();
+      return true;
+    }
+
+    const opened = window.open("", `kaya_remote_${tab.id}`, sessionWindowFeatures());
+    if (!opened) return false;
+
+    opened.document.open();
+    opened.document.write(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kaya Remote Session</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/kaya.css">
+  <link rel="stylesheet" href="/static/css/remote.css">
+  <style>
+    html,body,#kaya-remote-popout-slot{background:#050706;height:100%;margin:0;overflow:hidden;width:100%}
+    #kaya-remote-popout-slot iframe{border:0;display:block;height:100%;width:100%}
+  </style>
+</head>
+<body class="remote-panel-body">
+  <div id="kaya-remote-popout-slot"></div>
+</body>
+</html>`);
+    opened.document.close();
+    opened.document.title = tab.label;
+    opened.document.documentElement.dataset.kayaTheme = document.documentElement.dataset.kayaTheme || "command";
+    opened.document.documentElement.dataset.theme = document.documentElement.dataset.theme || "dark";
+
+    const slot = opened.document.getElementById("kaya-remote-popout-slot");
+    const popped = { window: opened, iframe, restoring: false };
+    poppedOutSessions.set(tab.id, popped);
+    panel.replaceChildren(document.createTextNode("Session popped out. Close the pop-out window to dock it here again."));
+    panel.classList.add("is-popped-out");
+    slot.appendChild(iframe);
+    opened.addEventListener("beforeunload", () => restorePoppedOutSession(tab.id));
+    opened.focus();
+    notifyPanel(tab.id, 120);
+    return true;
+  };
+
+  const popOutSession = (session) => {
+    if (!session?.url) return;
+    const existing = tabs.find((tab) => tab.remoteId === session.remoteId && tab.protocol === session.protocol);
+    if (existing && detachSessionIframe(existing)) return;
     const name = `kaya_remote_${session.remoteId}_${session.protocol}`;
-    const opened = window.open(
-      session.url,
-      name,
-      `popup=yes,width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=no`,
-    );
+    const opened = window.open(session.url, name, sessionWindowFeatures());
     if (opened) opened.focus();
   };
 

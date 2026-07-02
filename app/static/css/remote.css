@@ -85,8 +85,8 @@ body.remote-resizing{cursor:col-resize;user-select:none}
 .remote-tab-title{font-size:13px;font-weight:850;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .remote-tab-protocol{color:#7f8977;font-size:10px;font-weight:900;margin-left:auto}
 .remote-tab-tools{align-items:center;display:flex;gap:2px;margin-left:3px}
-.remote-tab-tool{background:transparent;border:0;border-radius:4px;color:#8c9686;font-size:13px;font-weight:900;height:22px;min-height:22px;padding:0;text-transform:uppercase;width:22px}
-.remote-tab-tool:hover{background:#263244;color:#fff}
+.remote-tab-tool{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.16);border-radius:4px;color:#fff;font-size:13px;font-weight:900;height:22px;min-height:22px;padding:0;text-transform:uppercase;width:22px}
+.remote-tab-tool:hover{background:#263244;border-color:rgba(255,255,255,.34);color:#fff}
 .remote-layout-tools{align-items:center;display:flex;gap:6px;margin-left:auto;padding:0 8px 6px}
 .remote-layout-button{background:#111827;border:1px solid var(--line);border-radius:7px;color:var(--muted);font-size:12px;font-weight:900;height:30px;min-height:30px;padding:0 12px}
 .remote-layout-button:hover:not(:disabled),.remote-layout-button.active{background:rgba(255,138,0,.12);border-color:rgba(255,138,0,.65);color:var(--text)}
@@ -95,6 +95,7 @@ body.remote-resizing{cursor:col-resize;user-select:none}
 .remote-tab-panels>[hidden]{display:none!important}
 .remote-tab-panel{height:100%;inset:0;position:absolute;width:100%}
 .remote-tab-panel iframe{background:#050706;border:0;display:block;height:100%;width:100%}
+.remote-tab-panel.is-popped-out{align-items:center;background:#050a12;color:var(--muted);display:flex;font-size:13px;font-weight:800;justify-content:center;text-align:center}
 .remote-tab-panels.is-split{display:grid;gap:1px;grid-template-columns:minmax(0,1fr) minmax(0,1fr);position:relative}
 .remote-tab-panels.is-split .remote-tab-panel{border-right:1px solid var(--line);height:100%;inset:auto;min-width:0;position:relative;width:100%}
 .remote-tab-panels.is-split .remote-tab-panel:last-child{border-right:0}
