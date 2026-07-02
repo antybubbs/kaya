@@ -4,7 +4,7 @@
 
   const tabs = Array.from(root.querySelectorAll("[data-settings-tab]"));
   const panels = Array.from(root.querySelectorAll("[data-settings-panel]"));
-  const storageKey = "kaya.siteAdministration.activeTab";
+  const storageKey = root.dataset.settingsStorageKey || "kaya.siteAdministration.activeTab";
 
   const readStoredTab = () => {
     try {

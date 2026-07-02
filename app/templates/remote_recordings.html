@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block extra_head %}<link rel="stylesheet" href="/static/css/remote.css?v={{ asset_version }}">{% endblock %}
+{% block content %}
+<div class="topbar">
+  <div>
+    <h1>Session Recording</h1>
+    <p class="muted">Recorded Remote Manager sessions.</p>
+  </div>
+</div>
+
+<section class="remote-recordings-shell">
+  {% if recordings %}
+  <table class="data-table remote-recordings-table">
+    <colgroup>
+      <col class="recording-col-started">
+      <col class="recording-col-host">
+      <col class="recording-col-protocol">
+      <col class="recording-col-category">
+      <col class="recording-col-user">
+      <col class="recording-col-duration">
+      <col class="recording-col-size">
+      <col class="recording-col-actions">
+    </colgroup>
+    <thead>
+      <tr>
+        <th>Started</th>
+        <th>Host</th>
+        <th>Protocol</th>
+        <th>Category</th>
+        <th>User</th>
+        <th>Duration</th>
+        <th>Size</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in recordings %}
+      <tr>
+        <td><strong>{{ (row.started_at or row.created_at).strftime('%d %b %Y') }}</strong><span>{{ (row.started_at or row.created_at).strftime('%H:%M') }}</span></td>
+        <td><a href="/remote-manager/recordings/{{ row.id }}">{{ row.remote_label }}</a><span>{{ row.remote_address or '' }}</span></td>
+        <td><span class="recording-pill">{{ row.protocol|upper }}</span></td>
+        <td>{{ row.category or 'Uncategorised' }}</td>
+        <td><span class="recording-user">{{ row.user.email if row.user else 'Unknown' }}</span></td>
+        <td>{{ '%0.0f'|format(row.duration_seconds or 0) }}s</td>
+        <td>{{ (row.size_bytes / 1048576)|round(2) }} MB</td>
+        <td class="recording-actions">
+          <div class="recording-actions-inner">
+            <a class="button secondary" href="/remote-manager/recordings/{{ row.id }}">Watch</a>
+            {% if row.content_type and row.content_type.startswith('video/') %}
+            <a class="button secondary" href="/remote-manager/recordings/{{ row.id }}/download.mp4">MP4</a>
+            {% endif %}
+            <form method="post" action="/remote-manager/recordings/{{ row.id }}/delete">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button class="danger" type="submit">Delete</button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="remote-empty-state">
+    <h2>No recordings yet</h2>
+    <p class="muted">Session recordings will appear here after a recorded SSH or RDP session is stopped.</p>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

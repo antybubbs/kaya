@@ -482,6 +482,8 @@
     syntaxHighlighting: true,
     scrollback: readInt(root.dataset.terminalScrollback, 10000, 1000, 100000),
   };
+  const idleTimeoutMinutes = readInt(root.dataset.idleTimeoutMinutes, 0, 0, 1440);
+  const idleTimeoutMs = idleTimeoutMinutes > 0 ? idleTimeoutMinutes * 60 * 1000 : 0;
 
   const registerWebLinks = () => {
     if (typeof term.registerLinkProvider !== "function") return;
@@ -599,28 +601,176 @@
   let socket = null;
   let connected = false;
   let closeHandled = false;
+  let idleTimer = null;
+  const recordingButton = document.querySelector("[data-recording-toggle]");
+  const recordingStatus = document.querySelector("[data-recording-status]");
+  const recordingEnabled = root.dataset.recordingEnabled === "1";
+  const recordingAuto = root.dataset.recordingAuto === "1";
+  let recordingActive = false;
+  let recordingStartedAt = null;
+  let recordingChunks = [];
+  let recordingTrigger = "manual";
+  let recordingPaused = false;
+  let recordingPauseTimer = null;
+  const recordingPauseIdleMinutes = Math.max(0, Math.min(1440, Number.parseInt(root.dataset.recordingPauseIdleMinutes || "5", 10) || 0));
+  const recordingPauseIdleMs = recordingPauseIdleMinutes > 0 ? recordingPauseIdleMinutes * 60 * 1000 : 0;
+
+  const setRecordingStatus = (message) => {
+    if (recordingStatus) recordingStatus.textContent = message;
+  };
+
+  const postRecordingState = () => {
+    const active = recordingActive;
+    const payload = {
+      type: "kaya:remote-recording-state",
+      enabled: recordingEnabled,
+      available: recordingEnabled && connected,
+      active,
+      label: active ? "Stop" : "Record",
+      status: recordingStatus ? recordingStatus.textContent : "Ready",
+    };
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage(payload, window.location.origin);
+    }
+    if (window.opener && !window.opener.closed) {
+      window.opener.postMessage(payload, window.location.origin);
+    }
+  };
+
+  const syncRecordingButton = () => {
+    if (recordingButton) {
+      recordingButton.disabled = !recordingEnabled || !connected;
+      recordingButton.textContent = recordingActive ? "Stop" : "Record";
+      recordingButton.classList.toggle("active", recordingActive);
+    }
+    postRecordingState();
+  };
+
+  const clearRecordingPauseTimer = () => {
+    if (recordingPauseTimer) {
+      window.clearTimeout(recordingPauseTimer);
+      recordingPauseTimer = null;
+    }
+  };
+
+  const armRecordingPauseTimer = () => {
+    clearRecordingPauseTimer();
+    if (!recordingPauseIdleMs || !recordingActive) return;
+    recordingPauseTimer = window.setTimeout(() => {
+      if (!recordingActive) return;
+      recordingPaused = true;
+      setRecordingStatus("Paused - no terminal output");
+      syncRecordingButton();
+    }, recordingPauseIdleMs);
+  };
+
+  const resumeRecordingForOutput = () => {
+    if (!recordingActive) return;
+    if (recordingPaused) {
+      recordingPaused = false;
+      setRecordingStatus(recordingTrigger === "auto" ? "Recording automatically" : "Recording");
+      syncRecordingButton();
+    }
+    armRecordingPauseTimer();
+  };
+
+  const uploadRecording = async (blob, startedAt, endedAt, trigger) => {
+    const formData = new FormData();
+    formData.append("csrf_token", root.dataset.recordingCsrfToken || "");
+    formData.append("protocol", "ssh");
+    formData.append("trigger", trigger);
+    formData.append("started_at", startedAt.toISOString());
+    formData.append("ended_at", endedAt.toISOString());
+    formData.append("duration_seconds", String(Math.max(0, (endedAt - startedAt) / 1000)));
+    formData.append("file", blob, "ssh-session.txt");
+    const response = await fetch(root.dataset.recordingUploadUrl, { method: "POST", body: formData });
+    if (!response.ok) throw new Error(`Upload failed (${response.status})`);
+  };
+
+  const startRecording = (trigger = "manual") => {
+    if (!recordingEnabled || !connected || recordingActive) return;
+    recordingTrigger = trigger;
+    recordingStartedAt = new Date();
+    recordingChunks = [`# SSH recording started ${recordingStartedAt.toISOString()}\n\n`];
+    recordingActive = true;
+    recordingPaused = false;
+    setRecordingStatus(trigger === "auto" ? "Recording automatically" : "Recording");
+    armRecordingPauseTimer();
+    syncRecordingButton();
+  };
+
+  const stopRecording = async () => {
+    if (!recordingActive || !recordingStartedAt) return;
+    const startedAt = recordingStartedAt;
+    const endedAt = new Date();
+    const trigger = recordingTrigger;
+    const text = recordingChunks.join("");
+    recordingActive = false;
+    recordingPaused = false;
+    recordingStartedAt = null;
+    recordingChunks = [];
+    clearRecordingPauseTimer();
+    setRecordingStatus("Saving");
+    syncRecordingButton();
+    try {
+      await uploadRecording(new Blob([text], { type: "text/plain" }), startedAt, endedAt, trigger);
+      setRecordingStatus("Saved");
+    } catch (_error) {
+      setRecordingStatus("Save failed");
+    }
+  };
+
+  const recordTerminalText = (text) => {
+    if (!recordingActive || !text) return;
+    resumeRecordingForOutput();
+    recordingChunks.push(text);
+  };
 
   const writeTerminal = (data) => {
-  const text = typeof data === "string" ? data : String(data || "");
-
-  console.log("NEW TERMINAL CODE ACTIVE");
+    const text = typeof data === "string" ? data : String(data || "");
+    recordTerminalText(text);
     
-  const hasAnsi = /\x1b\[/.test(text);
+    const hasAnsi = /\x1b\[/.test(text);
 
-  if (hasAnsi) {
-    term.write(text);
-  } else {
-    term.write(
-      terminalSettings.syntaxHighlighting
-        ? highlightTerminalOutput(text)
-        : text
-    );
-  }
-};
+    if (hasAnsi) {
+      term.write(text);
+    } else {
+      term.write(
+        terminalSettings.syntaxHighlighting
+          ? highlightTerminalOutput(text)
+          : text
+      );
+    }
+  };
 
   const sendTerminalMessage = (type, data = {}) => {
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
     socket.send(JSON.stringify({ type, data }));
+  };
+
+  const clearIdleTimer = () => {
+    if (idleTimer) {
+      window.clearTimeout(idleTimer);
+      idleTimer = null;
+    }
+  };
+
+  const disconnectForIdle = () => {
+    if (!connected || !socket || socket.readyState !== WebSocket.OPEN) return;
+    closeHandled = true;
+    connected = false;
+    stopRecording();
+    writeTerminal(`\r\nSession disconnected after ${idleTimeoutMinutes} minute${idleTimeoutMinutes === 1 ? "" : "s"} of inactivity.\r\n`);
+    sendTerminalMessage("disconnect");
+    socket.close();
+    passwordForm.hidden = false;
+    clearIdleTimer();
+  };
+
+  const markActivity = () => {
+    if (!idleTimeoutMs || !connected) return;
+    clearIdleTimer();
+    idleTimer = window.setTimeout(disconnectForIdle, idleTimeoutMs);
   };
 
   const fit = () => {
@@ -644,25 +794,58 @@
       window.setTimeout(fit, 50);
       if (connected) term.focus();
     }
+    if (event.data && event.data.type === "kaya:remote-recording-toggle") {
+      if (recordingActive) {
+        stopRecording();
+      } else {
+        startRecording("manual");
+      }
+      syncRecordingButton();
+    }
+    if (event.data && event.data.type === "kaya:remote-recording-query") {
+      syncRecordingButton();
+    }
+    if (event.data && event.data.type === "kaya:remote-recording-stop") {
+      stopRecording().finally(() => {
+        event.source?.postMessage({ type: "kaya:remote-recording-stopped", requestId: event.data.requestId }, event.origin);
+      });
+    }
   });
   terminalEl.addEventListener("click", () => term.focus());
+  root.addEventListener("pointerdown", markActivity, { passive: true });
+  root.addEventListener("keydown", markActivity, true);
   terminalEl.addEventListener("paste", (event) => {
     const text = event.clipboardData ? event.clipboardData.getData("text/plain") : "";
     if (!text || !connected || !socket || socket.readyState !== WebSocket.OPEN) return;
     event.preventDefault();
+    markActivity();
     sendTerminalMessage("input", text);
   });
 
   term.onData((data) => {
     if (!connected || !socket || socket.readyState !== WebSocket.OPEN) return;
+    markActivity();
     sendTerminalMessage("input", data);
   });
 
   window.addEventListener("beforeunload", () => {
+    clearIdleTimer();
+    stopRecording();
     if (socket && socket.readyState === WebSocket.OPEN) {
       sendTerminalMessage("disconnect");
     }
   });
+
+  if (recordingButton) {
+    recordingButton.addEventListener("click", () => {
+      if (recordingActive) {
+        stopRecording();
+      } else {
+        startRecording("manual");
+      }
+    });
+    syncRecordingButton();
+  }
 
   passwordForm.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -703,12 +886,21 @@
         writeTerminal(message.data || "");
       } else if (message.type === "connected") {
         connected = true;
+        markActivity();
+        syncRecordingButton();
+        if (recordingAuto) startRecording("auto");
         fit();
       } else if (message.type === "error") {
         connected = false;
+        clearIdleTimer();
+        stopRecording();
+        syncRecordingButton();
         writeTerminal(`\r\n${message.message || "SSH connection failed."}\r\n`);
       } else if (message.type === "closed") {
         connected = false;
+        clearIdleTimer();
+        stopRecording();
+        syncRecordingButton();
         closeHandled = true;
         
           term.reset();
@@ -720,6 +912,9 @@
         }
       } else if (message.type === "sessionTakenOver" || message.type === "sessionExpired") {
         connected = false;
+        clearIdleTimer();
+        stopRecording();
+        syncRecordingButton();
         closeHandled = true;
         writeTerminal(`\r\n${message.message || "Session ended."}\r\n`);
 
@@ -739,6 +934,9 @@
     });
     socket.addEventListener("close", () => {
       connected = false;
+      clearIdleTimer();
+      stopRecording();
+      syncRecordingButton();
 
       if (!closeHandled) {
         writeTerminal("\r\nSession closed.\r\n");

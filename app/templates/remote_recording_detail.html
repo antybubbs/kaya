@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block extra_head %}<link rel="stylesheet" href="/static/css/remote.css?v={{ asset_version }}">{% endblock %}
+{% block content %}
+<div class="topbar">
+  <div>
+    <h1>{{ recording.remote_label }}</h1>
+    <p class="muted">{{ recording.protocol|upper }} recording from {{ recording.started_at.strftime('%Y-%m-%d %H:%M') if recording.started_at else recording.created_at.strftime('%Y-%m-%d %H:%M') }}</p>
+  </div>
+  <div class="topbar-actions">
+    <a class="button secondary" href="/remote-manager/recordings">Back</a>
+    {% if recording.content_type and recording.content_type.startswith('video/') %}
+    <a class="button secondary" href="/remote-manager/recordings/{{ recording.id }}/download.mp4">Download MP4</a>
+    {% endif %}
+    <form method="post" action="/remote-manager/recordings/{{ recording.id }}/delete">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="danger" type="submit">Delete</button>
+    </form>
+  </div>
+</div>
+
+<section class="remote-recording-detail">
+  <aside class="remote-recording-meta">
+    <div><span>Host</span><strong>{{ recording.remote_label }}</strong></div>
+    <div><span>Address</span><strong>{{ recording.remote_address or 'Unknown' }}</strong></div>
+    <div><span>Protocol</span><strong>{{ recording.protocol|upper }}</strong></div>
+    <div><span>Category</span><strong>{{ recording.category or 'Uncategorised' }}</strong></div>
+    <div><span>Trigger</span><strong>{{ recording.trigger|capitalize }}</strong></div>
+    <div><span>Duration</span><strong>{{ '%0.0f'|format(recording.duration_seconds or 0) }}s</strong></div>
+  </aside>
+  <div class="remote-recording-player">
+    {% if recording.content_type and recording.content_type.startswith('video/') %}
+    <video controls preload="metadata" src="/remote-manager/recordings/{{ recording.id }}/media"></video>
+    {% else %}
+    <pre>{{ transcript or 'Transcript unavailable.' }}</pre>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}

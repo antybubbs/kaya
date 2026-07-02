@@ -23,6 +23,224 @@ if (root) {
   let displayReady = false;
   let resizeObserver = null;
   let lastRequestedSize = "";
+  let idleTimer = null;
+  let disconnectReason = "";
+  let activeToken = "";
+  const recordingButton = document.querySelector("[data-recording-toggle]");
+  const recordingStatus = document.querySelector("[data-recording-status]");
+  const recordingEnabled = root.dataset.recordingEnabled === "1";
+  const recordingAuto = root.dataset.recordingAuto === "1";
+  let recorder = null;
+  let recordingChunks = [];
+  let recordingStartedAt = null;
+  let recordingTrigger = "manual";
+  let recordingStopPromise = null;
+  let recordingStopResolve = null;
+  let recordingMonitorTimer = null;
+  let recordingLastFrameHash = "";
+  let recordingLastFrameChangeAt = 0;
+  const recordingPauseIdleMinutes = Math.max(0, Math.min(1440, Number.parseInt(root.dataset.recordingPauseIdleMinutes || "5", 10) || 0));
+  const recordingPauseIdleMs = recordingPauseIdleMinutes > 0 ? recordingPauseIdleMinutes * 60 * 1000 : 0;
+  const recordingSampleCanvas = document.createElement("canvas");
+  recordingSampleCanvas.width = 64;
+  recordingSampleCanvas.height = 36;
+  const recordingSampleContext = recordingSampleCanvas.getContext("2d", { willReadFrequently: true });
+
+  const setRecordingStatus = (message) => {
+    if (recordingStatus) recordingStatus.textContent = message;
+  };
+
+  const postRecordingState = () => {
+    const active = Boolean(recorder && recorder.state !== "inactive");
+    const available = Boolean(window.MediaRecorder) && recordingEnabled && connected && displayReady;
+    const payload = {
+      type: "kaya:remote-recording-state",
+      enabled: recordingEnabled,
+      available,
+      active,
+      label: active ? "Stop" : "Record",
+      status: recordingStatus ? recordingStatus.textContent : "Ready",
+    };
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage(payload, window.location.origin);
+    }
+    if (window.opener && !window.opener.closed) {
+      window.opener.postMessage(payload, window.location.origin);
+    }
+  };
+
+  const syncRecordingButton = () => {
+    const available = Boolean(window.MediaRecorder) && recordingEnabled && connected && displayReady;
+    if (recordingButton) {
+      recordingButton.disabled = !available;
+      recordingButton.textContent = recorder && recorder.state !== "inactive" ? "Stop" : "Record";
+      recordingButton.classList.toggle("active", Boolean(recorder && recorder.state !== "inactive"));
+    }
+    postRecordingState();
+  };
+
+  const recordingFrameHash = () => {
+    const canvas = displayTarget.querySelector("canvas");
+    if (!canvas || !recordingSampleContext || !canvas.width || !canvas.height) return "";
+    try {
+      recordingSampleContext.drawImage(canvas, 0, 0, recordingSampleCanvas.width, recordingSampleCanvas.height);
+      const data = recordingSampleContext.getImageData(0, 0, recordingSampleCanvas.width, recordingSampleCanvas.height).data;
+      let hash = 2166136261;
+      for (let index = 0; index < data.length; index += 16) {
+        hash ^= data[index];
+        hash = Math.imul(hash, 16777619);
+        hash ^= data[index + 1] || 0;
+        hash = Math.imul(hash, 16777619);
+        hash ^= data[index + 2] || 0;
+        hash = Math.imul(hash, 16777619);
+      }
+      return String(hash >>> 0);
+    } catch (_error) {
+      return "";
+    }
+  };
+
+  const stopRecordingMovementMonitor = () => {
+    if (recordingMonitorTimer) {
+      window.clearInterval(recordingMonitorTimer);
+      recordingMonitorTimer = null;
+    }
+    recordingLastFrameHash = "";
+    recordingLastFrameChangeAt = 0;
+  };
+
+  const checkRecordingMovement = () => {
+    if (!recorder || recorder.state === "inactive") return;
+    const hash = recordingFrameHash();
+    if (!hash) return;
+    const now = Date.now();
+    if (!recordingLastFrameHash || hash !== recordingLastFrameHash) {
+      recordingLastFrameHash = hash;
+      recordingLastFrameChangeAt = now;
+      if (recorder.state === "paused") {
+        recorder.resume();
+        setRecordingStatus(recordingTrigger === "auto" ? "Recording automatically" : "Recording");
+        syncRecordingButton();
+      }
+      return;
+    }
+    if (recordingPauseIdleMs && recordingLastFrameChangeAt && now - recordingLastFrameChangeAt >= recordingPauseIdleMs && recorder.state === "recording") {
+      recorder.pause();
+      setRecordingStatus("Paused - no screen change");
+      syncRecordingButton();
+    }
+  };
+
+  const startRecordingMovementMonitor = () => {
+    stopRecordingMovementMonitor();
+    if (!recordingPauseIdleMs) return;
+    recordingLastFrameHash = recordingFrameHash();
+    recordingLastFrameChangeAt = Date.now();
+    recordingMonitorTimer = window.setInterval(checkRecordingMovement, 2000);
+  };
+
+  const recorderMimeType = () => {
+    if (!window.MediaRecorder) return "";
+    for (const type of ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"]) {
+      if (MediaRecorder.isTypeSupported(type)) return type;
+    }
+    return "";
+  };
+
+  const uploadRecording = async (blob, startedAt, endedAt, trigger) => {
+    const formData = new FormData();
+    formData.append("csrf_token", root.dataset.recordingCsrfToken || "");
+    formData.append("protocol", "rdp");
+    formData.append("trigger", trigger);
+    formData.append("started_at", startedAt.toISOString());
+    formData.append("ended_at", endedAt.toISOString());
+    formData.append("duration_seconds", String(Math.max(0, (endedAt - startedAt) / 1000)));
+    formData.append("file", blob, "rdp-session.webm");
+    const response = await fetch(root.dataset.recordingUploadUrl, { method: "POST", body: formData });
+    if (!response.ok) throw new Error(`Upload failed (${response.status})`);
+  };
+
+  const startRecording = (trigger = "manual") => {
+    if (!recordingEnabled || !connected || !displayReady || recorder) return;
+    if (!window.MediaRecorder) {
+      setRecordingStatus("Unavailable");
+      syncRecordingButton();
+      return;
+    }
+    const canvas = displayTarget.querySelector("canvas");
+    if (!canvas || typeof canvas.captureStream !== "function") {
+      setRecordingStatus("No display");
+      syncRecordingButton();
+      return;
+    }
+    const mimeType = recorderMimeType();
+    if (!mimeType) {
+      setRecordingStatus("Unavailable");
+      syncRecordingButton();
+      return;
+    }
+    recordingChunks = [];
+    recordingTrigger = trigger;
+    recordingStartedAt = new Date();
+    const stream = canvas.captureStream(12);
+    recorder = new MediaRecorder(stream, { mimeType });
+    recorder.ondataavailable = (event) => {
+      if (event.data && event.data.size > 0) recordingChunks.push(event.data);
+    };
+    recorder.onstop = async () => {
+      const startedAt = recordingStartedAt;
+      const endedAt = new Date();
+      const chunks = recordingChunks;
+      const triggerName = recordingTrigger;
+      const resolveStop = recordingStopResolve;
+      stopRecordingMovementMonitor();
+      stream.getTracks().forEach((track) => track.stop());
+      recorder = null;
+      recordingStartedAt = null;
+      recordingChunks = [];
+      recordingStopPromise = null;
+      recordingStopResolve = null;
+      syncRecordingButton();
+      if (!startedAt || !chunks.length) {
+        setRecordingStatus("Ready");
+        if (resolveStop) resolveStop();
+        return;
+      }
+      setRecordingStatus("Saving");
+      try {
+        await uploadRecording(new Blob(chunks, { type: "video/webm" }), startedAt, endedAt, triggerName);
+        setRecordingStatus("Saved");
+      } catch (_error) {
+        setRecordingStatus("Save failed");
+      } finally {
+        syncRecordingButton();
+        if (resolveStop) resolveStop();
+      }
+    };
+    recorder.start(1000);
+    setRecordingStatus(trigger === "auto" ? "Recording automatically" : "Recording");
+    startRecordingMovementMonitor();
+    syncRecordingButton();
+  };
+
+  const stopRecording = () => {
+    if (!recorder || recorder.state === "inactive") return Promise.resolve();
+    if (recordingStopPromise) return recordingStopPromise;
+    recordingStopPromise = new Promise((resolve) => {
+      recordingStopResolve = resolve;
+      recorder.stop();
+    });
+    return recordingStopPromise;
+  };
+
+  const readInt = (value, fallback, min, max) => {
+    const parsed = Number.parseInt(value, 10);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.min(max, Math.max(min, parsed));
+  };
+
+  const idleTimeoutMinutes = readInt(root.dataset.idleTimeoutMinutes, 0, 0, 1440);
+  const idleTimeoutMs = idleTimeoutMinutes > 0 ? idleTimeoutMinutes * 60 * 1000 : 0;
 
   const writeLog = (lines) => {
     if (!log) return;
@@ -94,7 +312,12 @@ if (root) {
   };
 
   const disconnectCurrentSession = () => {
+    stopRecording();
     window.clearTimeout(resizeTimer);
+    if (idleTimer) {
+      window.clearTimeout(idleTimer);
+      idleTimer = null;
+    }
     if (resizeObserver) {
       resizeObserver.disconnect();
       resizeObserver = null;
@@ -114,6 +337,7 @@ if (root) {
     lastRequestedSize = "";
     connected = false;
     displayReady = false;
+    syncRecordingButton();
   };
 
   const stopSession = () => {
@@ -121,10 +345,29 @@ if (root) {
     disconnectCurrentSession();
   };
 
+  const disconnectForIdle = () => {
+    if (!connected) return;
+    disconnectReason = `Disconnected after ${idleTimeoutMinutes} minute${idleTimeoutMinutes === 1 ? "" : "s"} of inactivity.`;
+    manuallyStopped = true;
+    setOverlayVisible(true);
+    setStatus("Idle timeout", disconnectReason);
+    writeLog([disconnectReason]);
+    disconnectCurrentSession();
+    form.hidden = false;
+    button.disabled = false;
+  };
+
+  const markActivity = () => {
+    if (!idleTimeoutMs || !connected) return;
+    window.clearTimeout(idleTimer);
+    idleTimer = window.setTimeout(disconnectForIdle, idleTimeoutMs);
+  };
+
   const attachInput = () => {
     const displayEl = client.getDisplay().getElement();
     const mouse = new Guacamole.Mouse(displayEl);
     mouse.onmousedown = mouse.onmouseup = mouse.onmousemove = (state) => {
+      markActivity();
       displayEl.focus({ preventScroll: true });
       const adjustedState = new Guacamole.Mouse.State(
         Math.round(state.x / currentScale),
@@ -139,10 +382,12 @@ if (root) {
     };
     keyboard = new Guacamole.Keyboard(displayEl);
     keyboard.onkeydown = (keysym) => {
+      markActivity();
       client.sendKeyEvent(1, keysym);
       return false;
     };
     keyboard.onkeyup = (keysym) => {
+      markActivity();
       client.sendKeyEvent(0, keysym);
       return false;
     };
@@ -153,6 +398,8 @@ if (root) {
     displayReady = true;
     setOverlayVisible(false);
     if (displayElement) displayElement.focus({ preventScroll: true });
+    syncRecordingButton();
+    if (recordingAuto) startRecording("auto");
   };
 
   const waitForLayout = () =>
@@ -160,8 +407,10 @@ if (root) {
       window.requestAnimationFrame(() => window.requestAnimationFrame(resolve));
     });
 
-  const connectDisplay = async (token) => {
+  const connectDisplay = async (token, handoff = false) => {
     manuallyStopped = false;
+    disconnectReason = "";
+    activeToken = token;
     disconnectCurrentSession();
     window.clearTimeout(resizeTimer);
     displayTarget.replaceChildren();
@@ -179,6 +428,7 @@ if (root) {
       width: String(size.width),
       height: String(size.height),
     });
+    if (handoff) params.set("handoff", "1");
     tunnel = new Guacamole.WebSocketTunnel(root.dataset.tunnelUrl);
     client = new Guacamole.Client(tunnel);
     const displayEl = client.getDisplay().getElement();
@@ -200,14 +450,28 @@ if (root) {
       if (state === Guacamole.Client.State.CONNECTED) {
         setStatus("Connected", "RDP session is active.");
         connected = true;
+        markActivity();
+        syncRecordingButton();
         refreshDisplay();
         markDisplayReady();
+        const hashParams = new URLSearchParams(window.location.hash.slice(1));
+        const requestId = hashParams.get("requestId");
+        if (requestId && window.opener && !window.opener.closed) {
+          window.opener.postMessage({ type: "kaya:remote-popout-connected", requestId }, window.location.origin);
+        }
       }
       if (state === Guacamole.Client.State.DISCONNECTED) {
         setOverlayVisible(true);
         connected = false;
         displayReady = false;
-        setStatus("Disconnected", "The RDP session has ended.");
+        stopRecording();
+        syncRecordingButton();
+        const disconnectTitle = disconnectReason === "Session moved to the pop-out window."
+          ? "Popped out"
+          : disconnectReason
+            ? "Idle timeout"
+            : "Disconnected";
+        setStatus(disconnectTitle, disconnectReason || "The RDP session has ended.");
         form.hidden = false;
         button.disabled = false;
       }
@@ -225,6 +489,8 @@ if (root) {
 
   window.addEventListener("resize", scheduleResize);
   window.addEventListener("focus", scheduleResize);
+  root.addEventListener("pointerdown", markActivity, { passive: true });
+  root.addEventListener("keydown", markActivity, true);
   window.addEventListener("message", (event) => {
     if (event.origin !== window.location.origin) return;
     if (event.data && event.data.type === "kaya:remote-tab-active") {
@@ -235,6 +501,49 @@ if (root) {
       lastRequestedSize = "";
       scheduleResize();
     }
+    if (event.data && event.data.type === "kaya:remote-recording-toggle") {
+      if (recorder && recorder.state !== "inactive") {
+        stopRecording();
+      } else {
+        startRecording("manual");
+      }
+      syncRecordingButton();
+    }
+    if (event.data && event.data.type === "kaya:remote-recording-query") {
+      syncRecordingButton();
+    }
+    if (event.data && event.data.type === "kaya:remote-recording-stop") {
+      stopRecording().finally(() => {
+        event.source?.postMessage({ type: "kaya:remote-recording-stopped", requestId: event.data.requestId }, event.origin);
+      });
+    }
+    if (event.data && event.data.type === "kaya:remote-popout-request") {
+      event.source?.postMessage({
+        type: "kaya:remote-popout-state",
+        requestId: event.data.requestId,
+        ok: connected && Boolean(activeToken),
+        token: activeToken,
+      }, event.origin);
+    }
+    if (event.data && event.data.type === "kaya:remote-popout-detached") {
+      if (!connected) return;
+      disconnectReason = "Session moved to the pop-out window.";
+      manuallyStopped = true;
+      setOverlayVisible(true);
+      setStatus("Popped out", disconnectReason);
+      writeLog([disconnectReason]);
+      disconnectCurrentSession();
+      form.hidden = false;
+      button.disabled = false;
+    }
+    if (event.data && event.data.type === "kaya:remote-popout-connect") {
+      const hashParams = new URLSearchParams(window.location.hash.slice(1));
+      if (event.data.requestId !== hashParams.get("requestId") || !event.data.token) return;
+      form.hidden = true;
+      setOverlayVisible(true);
+      writeLog(["Opening popped-out RDP session."]);
+      connectDisplay(event.data.token, true);
+    }
   });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible" && connected) {
@@ -242,6 +551,16 @@ if (root) {
     }
   });
   window.addEventListener("beforeunload", stopSession);
+  if (recordingButton) {
+    recordingButton.addEventListener("click", () => {
+      if (recorder && recorder.state !== "inactive") {
+        stopRecording();
+      } else {
+        startRecording("manual");
+      }
+    });
+    syncRecordingButton();
+  }
 
   form.addEventListener("submit", (event) => event.preventDefault());
   button.addEventListener("click", async () => {
@@ -279,4 +598,13 @@ if (root) {
       button.disabled = false;
     }
   });
+
+  const hashParams = new URLSearchParams(window.location.hash.slice(1));
+  const handoffRequestId = hashParams.get("requestId");
+  if (handoffRequestId && window.opener && !window.opener.closed) {
+    form.hidden = true;
+    setOverlayVisible(true);
+    writeLog(["Waiting for secure RDP handoff."]);
+    window.opener.postMessage({ type: "kaya:remote-popout-ready", requestId: handoffRequestId }, window.location.origin);
+  }
 }

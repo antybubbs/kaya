@@ -2,15 +2,21 @@ import asyncio
 import base64
 import hashlib
 import json
+import shutil
 import secrets
+import subprocess
 import time
 from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from uuid import uuid4
 from urllib.parse import urlparse
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
 from starlette import status
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -19,7 +25,7 @@ from cryptography.hazmat.primitives import padding
 from app.core.config import get_settings
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.db.session import SessionLocal, get_db
-from app.models.models import RemoteAccess, RemoteManagerSetting, User
+from app.models.models import RemoteAccess, RemoteManagerSetting, RemoteSessionRecording, User
 from app.routers.auth import require_admin, require_editor, require_user
 from app.services.audit import write_audit
 from app.services.guacamole_bridge import restart_guacamole_bridge, start_guacamole_bridge
@@ -31,6 +37,10 @@ SETTINGS = {
     "guacamole_enabled": "0",
     "guacd_host": "",
     "guacd_port": "4822",
+    "session_idle_timeout_minutes": "0",
+    "recording_mode": "manual",
+    "recording_categories": "",
+    "recording_pause_idle_minutes": "5",
     "terminal_theme": "kaya",
     "terminal_font_family": "Caskaydia Cove Nerd Font Mono",
     "terminal_font_size": "14",
@@ -64,8 +74,9 @@ SETTINGS = {
 TERMINAL_SETTING_KEYS = [key for key in SETTINGS if key.startswith("terminal_")]
 RDP_SETTING_KEYS = [key for key in SETTINGS if key.startswith("rdp_")]
 SETTING_KEYS = set(SETTINGS)
-RDP_TOKEN_TTL_SECONDS = 60
+RDP_TOKEN_TTL_SECONDS = 12 * 60 * 60
 GUACAMOLE_LITE_URL = "ws://127.0.0.1:30008"
+RECORDING_ROOT = Path("/app/data/remote-recordings")
 
 
 @dataclass
@@ -125,6 +136,86 @@ def clean_choice(value: str, allowed: set[str], default: str) -> str:
     return value if value in allowed else default
 
 
+def clean_recording_categories(value: str) -> str:
+    parts = [part.strip() for part in str(value or "").replace("\r", "\n").replace(",", "\n").split("\n")]
+    return "\n".join(dict.fromkeys(part for part in parts if part))
+
+
+def recording_category_set(value: str) -> set[str]:
+    return {part.strip().casefold() for part in str(value or "").replace("\r", "\n").replace(",", "\n").split("\n") if part.strip()}
+
+
+def remote_category(row: RemoteAccess) -> str:
+    return (row.ip_address.category if row.ip_address and row.ip_address.category else "Uncategorised").strip() or "Uncategorised"
+
+
+def recording_auto_enabled(row: RemoteAccess, settings: dict[str, str]) -> bool:
+    mode = settings.get("recording_mode", SETTINGS["recording_mode"])
+    if mode == "all":
+        return True
+    if mode == "categories":
+        return remote_category(row).casefold() in recording_category_set(settings.get("recording_categories", ""))
+    return False
+
+
+def recording_controls_enabled(settings: dict[str, str]) -> bool:
+    return settings.get("recording_mode", SETTINGS["recording_mode"]) != "off"
+
+
+def recording_extension(content_type: str, protocol: str) -> str:
+    if content_type.startswith("video/webm") or protocol == "rdp":
+        return ".webm"
+    return ".txt"
+
+
+def ensure_recording_storage_available(size_bytes: int) -> None:
+    app_settings = get_settings()
+    max_bytes = max(1, int(app_settings.max_recording_upload_mb)) * 1024 * 1024
+    min_free_bytes = max(0, int(app_settings.min_recording_free_mb)) * 1024 * 1024
+    if size_bytes > max_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"Recording is larger than the {app_settings.max_recording_upload_mb} MB limit",
+        )
+    probe_path = RECORDING_ROOT if RECORDING_ROOT.exists() else RECORDING_ROOT.parent
+    free_bytes = shutil.disk_usage(probe_path).free
+    if free_bytes - size_bytes < min_free_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_507_INSUFFICIENT_STORAGE,
+            detail="Not enough free storage to save this recording",
+        )
+
+
+def recording_path(recording: RemoteSessionRecording) -> Path:
+    return RECORDING_ROOT / recording.stored_filename
+
+
+def recording_download_name(recording: RemoteSessionRecording, extension: str) -> str:
+    started = recording.started_at or recording.created_at or datetime.utcnow()
+    label = "".join(char if char.isalnum() or char in {"-", "_"} else "-" for char in recording.remote_label.lower()).strip("-")
+    return f"{started:%Y%m%d-%H%M}-{label or 'remote-session'}-{recording.protocol}.{extension}"
+
+
+def safe_recording_file(recording: RemoteSessionRecording) -> Path:
+    path = recording_path(recording)
+    try:
+        path.relative_to(RECORDING_ROOT)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recording not found")
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recording file not found")
+    return path
+
+
+def parse_client_datetime(value: str | None) -> datetime:
+    if not value:
+        return datetime.utcnow()
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        return datetime.utcnow()
+
+
 def clean_int_text(value: str, default: int, minimum: int, maximum: int) -> str:
     try:
         parsed = int(value)
@@ -165,6 +256,14 @@ def clean_global_setting(key: str, value: str) -> str:
         return clean_bool_text(value)
     if key == "terminal_font_size":
         return clean_int_text(value, 14, 8, 28)
+    if key == "session_idle_timeout_minutes":
+        return clean_int_text(value, 0, 0, 1440)
+    if key == "recording_mode":
+        return clean_choice(value, {"off", "manual", "all", "categories"}, SETTINGS[key])
+    if key == "recording_categories":
+        return clean_recording_categories(value)
+    if key == "recording_pause_idle_minutes":
+        return clean_int_text(value, 5, 0, 1440)
     if key == "terminal_letter_spacing":
         return clean_int_text(value, 0, 0, 4)
     if key == "terminal_scrollback":
@@ -266,7 +365,7 @@ def settings_map(db: Session) -> dict[str, str]:
         values["guacd_host"] = env_guacd_host
     if env_guacd_port:
         values["guacd_port"] = str(env_guacd_port)
-    for key in TERMINAL_SETTING_KEYS + RDP_SETTING_KEYS:
+    for key in ("recording_mode", "recording_categories", "recording_pause_idle_minutes", *TERMINAL_SETTING_KEYS, *RDP_SETTING_KEYS):
         values[key] = clean_global_setting(key, values.get(key, SETTINGS[key]))
     return values
 
@@ -470,12 +569,117 @@ async def save_remote_settings(request: Request, csrf_token: str = Form(...), gu
     set_setting(db, "guacamole_enabled", "1" if guacamole_enabled else "0")
     set_setting(db, "guacd_host", guacd_host.strip())
     set_setting(db, "guacd_port", str(clean_port(guacd_port, "rdp")))
+    set_setting(db, "session_idle_timeout_minutes", clean_global_setting("session_idle_timeout_minutes", str(form.get("session_idle_timeout_minutes", "0"))))
+    set_setting(db, "recording_mode", clean_global_setting("recording_mode", str(form.get("recording_mode", "manual"))))
+    set_setting(db, "recording_categories", clean_global_setting("recording_categories", str(form.get("recording_categories", ""))))
+    set_setting(db, "recording_pause_idle_minutes", clean_global_setting("recording_pause_idle_minutes", str(form.get("recording_pause_idle_minutes", "5"))))
     for key in TERMINAL_SETTING_KEYS + RDP_SETTING_KEYS:
         set_setting(db, key, clean_global_setting(key, str(form.get(key, ""))))
     db.commit()
     restart_guacamole_bridge()
     write_audit(db, user, "update", "remote_manager_settings", ip_address=request.client.host if request.client else None, detail="Updated Remote Manager settings")
     return templates.TemplateResponse(request, "remote_manager_settings.html", {"user": user, "settings": settings_map(db), "message": "Settings saved.", **csrf_context(request)})
+
+
+@router.get("/recordings")
+def recording_list(request: Request, db: Session = Depends(get_db), user=Depends(require_admin)):
+    rows = (
+        db.query(RemoteSessionRecording)
+        .options(selectinload(RemoteSessionRecording.user), selectinload(RemoteSessionRecording.remote))
+        .order_by(RemoteSessionRecording.started_at.desc(), RemoteSessionRecording.id.desc())
+        .limit(250)
+        .all()
+    )
+    return templates.TemplateResponse(request, "remote_recordings.html", {"user": user, "recordings": rows, **csrf_context(request)})
+
+
+@router.get("/recordings/{recording_id}")
+def recording_detail(request: Request, recording_id: int, db: Session = Depends(get_db), user=Depends(require_admin)):
+    row = db.get(RemoteSessionRecording, recording_id)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recording not found")
+    transcript = None
+    path = safe_recording_file(row)
+    if (row.content_type or "").startswith("text/") and path.exists():
+        transcript = path.read_text(encoding="utf-8", errors="replace")
+    write_audit(db, user, "playback", "remote_session_recording", entity_id=str(row.id), ip_address=request.client.host if request.client else None, detail=f"Opened recording playback for {row.remote_label}")
+    return templates.TemplateResponse(request, "remote_recording_detail.html", {"user": user, "recording": row, "transcript": transcript, **csrf_context(request)})
+
+
+@router.get("/recordings/{recording_id}/download.mp4")
+def recording_download_mp4(request: Request, recording_id: int, db: Session = Depends(get_db), user=Depends(require_admin)):
+    row = db.get(RemoteSessionRecording, recording_id)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recording not found")
+    if not (row.content_type or "").startswith("video/"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only video recordings can be downloaded as MP4")
+    source = safe_recording_file(row)
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="MP4 export is unavailable because ffmpeg is not installed")
+    target = source.with_suffix(".mp4")
+    if not target.exists() or target.stat().st_mtime < source.stat().st_mtime:
+        try:
+            subprocess.run(
+                [
+                    ffmpeg,
+                    "-y",
+                    "-i",
+                    str(source),
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "veryfast",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-movflags",
+                    "+faststart",
+                    "-an",
+                    str(target),
+                ],
+                check=True,
+                capture_output=True,
+                timeout=300,
+            )
+        except (subprocess.SubprocessError, OSError) as exc:
+            if target.exists():
+                target.unlink()
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"MP4 export failed: {exc}") from exc
+    write_audit(db, user, "export", "remote_session_recording", entity_id=str(row.id), ip_address=request.client.host if request.client else None, detail=f"Downloaded MP4 recording for {row.remote_label}")
+    return FileResponse(target, media_type="video/mp4", filename=recording_download_name(row, "mp4"))
+
+
+@router.get("/recordings/{recording_id}/media")
+def recording_media(request: Request, recording_id: int, db: Session = Depends(get_db), user=Depends(require_admin)):
+    row = db.get(RemoteSessionRecording, recording_id)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recording not found")
+    path = safe_recording_file(row)
+    write_audit(db, user, "playback", "remote_session_recording", entity_id=str(row.id), ip_address=request.client.host if request.client else None, detail=f"Streamed recording media for {row.remote_label}")
+    return FileResponse(path, media_type=row.content_type or "application/octet-stream", filename=row.original_filename or path.name)
+
+
+@router.post("/recordings/{recording_id}/delete")
+def delete_recording(request: Request, recording_id: int, csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_admin)):
+    validate_csrf_token(request, csrf_token)
+    row = db.get(RemoteSessionRecording, recording_id)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recording not found")
+    label = row.remote_label
+    path = recording_path(row)
+    try:
+        path.relative_to(RECORDING_ROOT)
+    except ValueError:
+        path = None
+    if path and path.exists() and path.is_file():
+        path.unlink()
+        mp4_path = path.with_suffix(".mp4")
+        if mp4_path.exists() and mp4_path.is_file():
+            mp4_path.unlink()
+    db.delete(row)
+    db.commit()
+    write_audit(db, user, "delete", "remote_session_recording", entity_id=str(recording_id), ip_address=request.client.host if request.client else None, detail=f"Deleted recording for {label}")
+    return RedirectResponse("/remote-manager/recordings", status_code=303)
 
 
 @router.get("/{remote_id}/session")
@@ -485,7 +689,7 @@ def remote_session(request: Request, remote_id: int, db: Session = Depends(get_d
     settings = settings_map(db)
     remote_settings = effective_remote_settings(row, settings)
     title = remote_label(row)
-    return templates.TemplateResponse(request, "remote_session.html", {"user": user, "remote": row, "rows": rows, "remote_label": title, "remote_label_fn": remote_label, "settings": settings, "remote_settings": remote_settings, **csrf_context(request)})
+    return templates.TemplateResponse(request, "remote_session.html", {"user": user, "remote": row, "rows": rows, "remote_label": title, "remote_label_fn": remote_label, "settings": settings, "remote_settings": remote_settings, "recording_enabled": recording_controls_enabled(settings), "recording_auto_enabled": recording_auto_enabled(row, settings), "remote_category": remote_category(row), **csrf_context(request)})
 
 
 @router.get("/{remote_id}/settings")
@@ -525,7 +729,86 @@ def remote_session_panel(request: Request, remote_id: int, db: Session = Depends
     settings = settings_map(db)
     remote_settings = effective_remote_settings(row, settings)
     title = remote_label(row)
-    return templates.TemplateResponse(request, "remote_session_panel.html", {"user": user, "remote": row, "remote_label": title, "settings": settings, "remote_settings": remote_settings, **csrf_context(request)})
+    return templates.TemplateResponse(request, "remote_session_panel.html", {"user": user, "remote": row, "remote_label": title, "settings": settings, "remote_settings": remote_settings, "recording_enabled": recording_controls_enabled(settings), "recording_auto_enabled": recording_auto_enabled(row, settings), "remote_category": remote_category(row), **csrf_context(request)})
+
+
+@router.post("/{remote_id}/recordings/upload")
+async def upload_recording(
+    request: Request,
+    remote_id: int,
+    csrf_token: str = Form(...),
+    protocol: str = Form(...),
+    trigger: str = Form("manual"),
+    started_at: str = Form(""),
+    ended_at: str = Form(""),
+    duration_seconds: float = Form(0),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user=Depends(require_user),
+):
+    validate_csrf_token(request, csrf_token)
+    row = require_remote_session(db, remote_id)
+    settings = settings_map(db)
+    if not recording_controls_enabled(settings):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Session recording is disabled")
+    clean_trigger = clean_choice(trigger, {"manual", "auto"}, "manual")
+    if clean_trigger == "auto" and not recording_auto_enabled(row, settings):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Auto recording is not enabled for this host")
+    clean_protocol = protocol.lower().strip()
+    if clean_protocol != row.protocol:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Recording protocol does not match remote host")
+    content_type = (file.content_type or "application/octet-stream").split(";", 1)[0].strip().lower()
+    if content_type not in {"video/webm", "text/plain", "application/json", "application/octet-stream"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported recording type")
+    if row.protocol == "rdp" and content_type not in {"video/webm", "application/octet-stream"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="RDP recordings must be WebM video")
+    if row.protocol == "ssh" and content_type not in {"text/plain", "application/json", "application/octet-stream"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="SSH recordings must be text")
+
+    now = datetime.utcnow()
+    folder = Path(f"{now:%Y/%m}")
+    target_dir = RECORDING_ROOT / folder
+    target_dir.mkdir(parents=True, exist_ok=True)
+    extension = recording_extension(content_type, row.protocol)
+    stored_name = str(folder / f"{uuid4().hex}{extension}").replace("\\", "/")
+    path = RECORDING_ROOT / stored_name
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Recording is empty")
+    ensure_recording_storage_available(len(data))
+    path.write_bytes(data)
+
+    recording = RemoteSessionRecording(
+        remote_access_id=row.id,
+        user_id=user.id,
+        remote_label=remote_label(row),
+        remote_address=row.ip_address.address if row.ip_address else None,
+        protocol=row.protocol,
+        category=remote_category(row),
+        trigger=clean_trigger,
+        status="complete",
+        stored_filename=stored_name,
+        original_filename=file.filename,
+        content_type="video/webm" if row.protocol == "rdp" else "text/plain",
+        size_bytes=len(data),
+        duration_seconds=max(0, float(duration_seconds or 0)),
+        started_at=parse_client_datetime(started_at),
+        ended_at=parse_client_datetime(ended_at),
+    )
+    db.add(recording)
+    try:
+        db.commit()
+    except SQLAlchemyError as exc:
+        db.rollback()
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise HTTPException(status_code=status.HTTP_507_INSUFFICIENT_STORAGE, detail="Recording could not be saved") from exc
+    write_audit(db, user, "start", "remote_session_recording", entity_id=str(recording.id), ip_address=request.client.host if request.client else None, detail=f"{row.protocol.upper()} recording started for {remote_label(row)}")
+    write_audit(db, user, "stop", "remote_session_recording", entity_id=str(recording.id), ip_address=request.client.host if request.client else None, detail=f"{row.protocol.upper()} recording stopped for {remote_label(row)}")
+    write_audit(db, user, "record", "remote_session_recording", entity_id=str(recording.id), ip_address=request.client.host if request.client else None, detail=f"Saved {row.protocol.upper()} recording for {remote_label(row)}")
+    return JSONResponse({"ok": True, "recording_id": recording.id})
 
 
 @router.post("/{remote_id}/rdp/check")
@@ -711,7 +994,7 @@ async def rdp_websocket(websocket: WebSocket, remote_id: int):
         return
     token = websocket.query_params.get("token", "")
     cleanup_rdp_tokens()
-    session = rdp_tokens.pop(token, None)
+    session = rdp_tokens.get(token)
     if not session or session.user_id != user_id or session.remote_id != remote_id:
         await websocket.close(code=1008)
         return
@@ -746,6 +1029,8 @@ async def rdp_websocket(websocket: WebSocket, remote_id: int):
         upstream_url = f"{GUACAMOLE_LITE_URL}?{urlencode(upstream_params)}"
         try:
             upstream = await websockets.connect(upstream_url, subprotocols=["guacamole"], open_timeout=10)
+            if websocket.query_params.get("handoff") == "1":
+                rdp_tokens.pop(token, None)
         except Exception as exc:
             audit_db = SessionLocal()
             try:

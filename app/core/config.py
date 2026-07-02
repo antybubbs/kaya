@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     session_cookie_secure: bool = False
     upload_dir: str = "/app/uploads"
     max_upload_mb: int = 25
+    max_recording_upload_mb: int = 1024
+    min_recording_free_mb: int = 256
     allowed_hosts: str = ""
     github_repo: str = "antybubbs/Kaya"
     guacd_host: str = ""

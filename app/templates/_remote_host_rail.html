@@ -32,6 +32,7 @@
           <summary title="More actions">...</summary>
           <div>
             <a href="/remote-manager/{{ row.id }}/session" data-remote-open>Connect {{ row.protocol|upper }}</a>
+            <a href="/remote-manager/{{ row.id }}/panel?ssh=kaya-rewrite-2&popout=1" target="_blank" rel="noopener" data-remote-popout>Pop out {{ row.protocol|upper }}</a>
             <a href="/networking/vlan-ip-manager/{{ row.ip_address.id }}">View IP record</a>
             {% if user.role in ['admin', 'editor'] %}<a href="/remote-manager/{{ row.id }}/settings">Host remote settings</a>{% endif %}
           </div>

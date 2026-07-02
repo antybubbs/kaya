@@ -184,7 +184,11 @@ html[data-kaya-theme=light-ops] .setup-form-heading p,html[data-kaya-theme=light
 /* Kaya Light Ops contrast sweep */
 html[data-kaya-theme=light-ops] h1,html[data-kaya-theme=light-ops] h2,html[data-kaya-theme=light-ops] h3,html[data-kaya-theme=light-ops] h4,html[data-kaya-theme=light-ops] .topbar h1,html[data-kaya-theme=light-ops] .module-title h1,html[data-kaya-theme=light-ops] .module-heading h1,html[data-kaya-theme=light-ops] .record-hero h1{color:#111827}
 html[data-kaya-theme=light-ops] .muted,html[data-kaya-theme=light-ops] .topbar .muted,html[data-kaya-theme=light-ops] .module-heading .muted,html[data-kaya-theme=light-ops] .card span,html[data-kaya-theme=light-ops] .panel .muted{color:#5b6574}
-html[data-kaya-theme=light-ops] .dashboard-hero,html[data-kaya-theme=light-ops] .dashboard-launch,html[data-kaya-theme=light-ops] .module-header,html[data-kaya-theme=light-ops] .topbar,html[data-kaya-theme=light-ops] .record-hero,html[data-kaya-theme=light-ops] .compute-hero,html[data-kaya-theme=light-ops] .audit-hero{background:#fff!important;border-color:#d8dee8;color:#111827}
+html[data-kaya-theme=light-ops] .dashboard-hero,html[data-kaya-theme=light-ops] .dashboard-launch,html[data-kaya-theme=light-ops] .module-header,html[data-kaya-theme=light-ops] .topbar,html[data-kaya-theme=light-ops] .record-hero,html[data-kaya-theme=light-ops] .about-hero,html[data-kaya-theme=light-ops] .compute-hero,html[data-kaya-theme=light-ops] .audit-hero{background:#fff!important;border-color:#d8dee8;color:#111827}
+html[data-kaya-theme=light-ops] .about-hero h2,html[data-kaya-theme=light-ops] .about-hero strong{color:#111827!important}
+html[data-kaya-theme=light-ops] .about-hero p{color:#5b6574!important}
+html[data-kaya-theme=light-ops] .about-meta span{color:#64748b!important}
+html[data-kaya-theme=light-ops] .about-kicker{color:#a84b00!important}
 html[data-kaya-theme=light-ops] .compute-summary-grid article,html[data-kaya-theme=light-ops] .resource-gauge,html[data-kaya-theme=light-ops] .audit-summary-grid article,html[data-kaya-theme=light-ops] .inventory-counts div,html[data-kaya-theme=light-ops] .mini-metrics div,html[data-kaya-theme=light-ops] .record-panel,html[data-kaya-theme=light-ops] .record-fields>div,html[data-kaya-theme=light-ops] .record-kv-list div,html[data-kaya-theme=light-ops] .inline-edit-preview,html[data-kaya-theme=light-ops] .service-card,html[data-kaya-theme=light-ops] .compute-link-card,html[data-kaya-theme=light-ops] .compute-link-empty,html[data-kaya-theme=light-ops] .domain-dns-type,html[data-kaya-theme=light-ops] .domain-record-list span,html[data-kaya-theme=light-ops] .domain-dns-type span,html[data-kaya-theme=light-ops] .runbook-page-card,html[data-kaya-theme=light-ops] .runbook-side,html[data-kaya-theme=light-ops] .runbook-content,html[data-kaya-theme=light-ops] .empty-state,html[data-kaya-theme=light-ops] .rack-create-panel,html[data-kaya-theme=light-ops] .rack-elevation-panel,html[data-kaya-theme=light-ops] .rack-side-panel,html[data-kaya-theme=light-ops] .rack-card{background:#fff!important;border-color:#d8dee8!important;color:#111827!important;box-shadow:none}
 html[data-kaya-theme=light-ops] .compute-summary-grid span,html[data-kaya-theme=light-ops] .compute-summary-grid small,html[data-kaya-theme=light-ops] .resource-gauge span,html[data-kaya-theme=light-ops] .audit-summary-grid span,html[data-kaya-theme=light-ops] .audit-summary-grid small,html[data-kaya-theme=light-ops] .inventory-counts span,html[data-kaya-theme=light-ops] .mini-metrics span,html[data-kaya-theme=light-ops] .record-fields label,html[data-kaya-theme=light-ops] .record-kv-list dt,html[data-kaya-theme=light-ops] .runbook-info-list dt,html[data-kaya-theme=light-ops] .compute-link-facts dt,html[data-kaya-theme=light-ops] .workload-address small,html[data-kaya-theme=light-ops] .service-card div span{color:#5b6574!important}
 html[data-kaya-theme=light-ops] .compute-summary-grid strong,html[data-kaya-theme=light-ops] .resource-gauge strong,html[data-kaya-theme=light-ops] .audit-summary-grid strong,html[data-kaya-theme=light-ops] .inventory-counts strong,html[data-kaya-theme=light-ops] .mini-metrics strong,html[data-kaya-theme=light-ops] .record-kv-list dd,html[data-kaya-theme=light-ops] .record-fields p,html[data-kaya-theme=light-ops] .compute-link-facts dd,html[data-kaya-theme=light-ops] .service-card strong,html[data-kaya-theme=light-ops] .service-card span,html[data-kaya-theme=light-ops] .runbook-page-card h2,html[data-kaya-theme=light-ops] .empty-state h2{color:#111827!important}
@@ -364,4 +368,134 @@ body.sidebar-collapsed .sidebar-collapse-button{
   position:static;
   right:auto;
   width:28px;
+}
+
+/* Shared rocker switches used across settings pages */
+input.remote-switch{
+  appearance:none!important;
+  -webkit-appearance:none!important;
+  background:#0d1117!important;
+  border:1px solid #2a303a!important;
+  border-radius:999px!important;
+  box-shadow:none!important;
+  cursor:pointer;
+  display:inline-block;
+  flex:0 0 auto;
+  height:22px!important;
+  min-height:22px!important;
+  padding:0!important;
+  position:relative;
+  transition:background .15s ease,border-color .15s ease;
+  vertical-align:middle;
+  width:42px!important;
+}
+
+input.remote-switch:before{
+  background:#9ca3af;
+  border-radius:50%;
+  content:"";
+  height:16px;
+  left:3px;
+  position:absolute;
+  top:2px;
+  transition:left .15s ease,background .15s ease;
+  width:16px;
+}
+
+input.remote-switch:checked{
+  background:rgba(255,138,0,.18)!important;
+  border-color:var(--kaya-orange)!important;
+}
+
+input.remote-switch:checked:before{
+  background:var(--kaya-orange);
+  left:21px;
+}
+
+input.remote-switch:focus-visible{
+  box-shadow:0 0 0 3px rgba(255,138,0,.2)!important;
+  outline:0;
+}
+
+html[data-kaya-theme=light-ops] input.remote-switch{
+  background:#fff!important;
+  border-color:#94a3b8!important;
+}
+
+html[data-kaya-theme=light-ops] input.remote-switch:before{
+  background:#64748b;
+}
+
+html[data-kaya-theme=light-ops] input.remote-switch:checked{
+  background:#fff3e2!important;
+  border-color:var(--kaya-orange)!important;
+}
+
+html[data-kaya-theme=light-ops] input.remote-switch:checked:before{
+  background:var(--kaya-orange);
+}
+
+/* Polished segmented controls */
+.compute-tabs{
+  align-items:center;
+  background:rgba(15,18,24,.86)!important;
+  border:1px solid rgba(255,138,0,.28)!important;
+  border-radius:8px!important;
+  box-shadow:0 8px 22px rgba(0,0,0,.18),inset 0 1px 0 rgba(255,255,255,.04);
+  display:inline-flex;
+  gap:2px;
+  padding:3px!important;
+}
+
+.compute-tabs a{
+  align-items:center;
+  background:transparent!important;
+  border:1px solid transparent!important;
+  border-radius:6px!important;
+  box-shadow:none!important;
+  color:#cbd5e1!important;
+  display:inline-flex;
+  font-size:12px;
+  font-weight:900;
+  justify-content:center;
+  line-height:1;
+  min-height:30px;
+  padding:0 14px!important;
+  text-decoration:none;
+  transition:background .14s ease,border-color .14s ease,color .14s ease,box-shadow .14s ease;
+}
+
+.compute-tabs a:hover{
+  background:rgba(255,138,0,.1)!important;
+  border-color:rgba(255,138,0,.22)!important;
+  color:#fff!important;
+}
+
+.compute-tabs a.active{
+  background:#ff8a00!important;
+  border-color:#ffb357!important;
+  box-shadow:0 2px 8px rgba(255,138,0,.22),inset 0 1px 0 rgba(255,255,255,.24)!important;
+  color:#101010!important;
+}
+
+html[data-kaya-theme=light-ops] .compute-tabs{
+  background:#fff!important;
+  border-color:#d8dee8!important;
+  box-shadow:0 1px 2px rgba(17,24,39,.06),inset 0 1px 0 rgba(255,255,255,.7);
+}
+
+html[data-kaya-theme=light-ops] .compute-tabs a{
+  color:#475569!important;
+}
+
+html[data-kaya-theme=light-ops] .compute-tabs a:hover{
+  background:#fff7ed!important;
+  border-color:rgba(255,138,0,.28)!important;
+  color:#7a3b00!important;
+}
+
+html[data-kaya-theme=light-ops] .compute-tabs a.active{
+  background:#ff8a00!important;
+  border-color:#ff8a00!important;
+  color:#101010!important;
 }

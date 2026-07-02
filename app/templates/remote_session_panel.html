@@ -18,7 +18,23 @@
   <link rel="stylesheet" href="/static/vendor/xterm/xterm.css?v={{ asset_version }}">
   {% endif %}
 </head>
-<body class="remote-panel-body">
+{% set is_popout = request.query_params.get('popout') == '1' %}
+<body class="remote-panel-body{% if is_popout %} has-popout-bar{% endif %}">
+  {% if is_popout %}
+  <header class="remote-popout-tabbar">
+    <div class="remote-popout-tab active">
+      <span class="remote-tab-icon">{% if remote.protocol == 'rdp' %}RDP{% else %}&gt;_{% endif %}</span>
+      <span class="remote-tab-title">{{ remote_label }}</span>
+      <span class="remote-tab-protocol">{{ remote.protocol|upper }}</span>
+      {% if recording_enabled|default(false) %}
+      <span class="remote-recording-tools remote-recording-tools-inline" data-recording-tools>
+      <button type="button" data-recording-toggle disabled>Record</button>
+      <span data-recording-status>Ready</span>
+      </span>
+      {% endif %}
+    </div>
+  </header>
+  {% endif %}
   {% include "_remote_session_panel.html" %}
   {% if remote.protocol == 'ssh' %}
   <script src="/static/vendor/xterm/xterm.js?v={{ asset_version }}"></script>

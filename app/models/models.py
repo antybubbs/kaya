@@ -143,6 +143,29 @@ class RemoteManagerSetting(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class RemoteSessionRecording(Base):
+    __tablename__ = "remote_session_recordings"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    remote_access_id: Mapped[int | None] = mapped_column(ForeignKey("remote_access.id", ondelete="SET NULL"), nullable=True, index=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    remote_label: Mapped[str] = mapped_column(String(255), index=True)
+    remote_address: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    protocol: Mapped[str] = mapped_column(String(20), index=True)
+    category: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    trigger: Mapped[str] = mapped_column(String(30), default="manual", index=True)
+    status: Mapped[str] = mapped_column(String(30), default="complete", index=True)
+    stored_filename: Mapped[str] = mapped_column(String(500))
+    original_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    content_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    remote = relationship("RemoteAccess")
+    user = relationship("User")
+
+
 class DomainRecord(Base):
     __tablename__ = "domain_records"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

@@ -23,11 +23,11 @@
 .remote-host-toolbar [data-remote-host-add]{min-width:34px;padding:0 10px}
 .remote-host-list{align-content:start;display:grid;gap:3px;min-height:0;overflow-x:hidden;overflow-y:auto;padding:8px;scrollbar-width:none;-ms-overflow-style:none}
 .remote-host-list::-webkit-scrollbar{display:none}
-.remote-host-group-heading{align-items:center;background:#0f1722;border:0;border-bottom:1px solid rgba(148,163,184,.18);border-top:1px solid rgba(148,163,184,.08);border-radius:6px 6px 0 0;color:#cbd5e1;cursor:pointer;display:grid;font-size:11px;gap:8px;grid-template-columns:minmax(0,1fr) auto;margin-top:10px;min-height:32px;padding:8px 10px;text-align:left;text-transform:uppercase;width:100%}
-.remote-host-group-heading:hover{background:#152131;color:#f8fafc}
-.remote-host-group-heading.collapsed{color:#94a3b8}
-.remote-host-group-heading strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.remote-host-group-heading strong:before{content:"▾ ";font-size:10px}
+.remote-host-group-heading{align-items:center;background:#0f1722;border:0;border-bottom:1px solid rgba(148,163,184,.18);border-top:1px solid rgba(148,163,184,.08);border-radius:6px 6px 0 0;color:#fff;cursor:pointer;display:grid;font-size:11px;gap:8px;grid-template-columns:minmax(0,1fr) auto;margin-top:10px;min-height:32px;padding:8px 10px;text-align:left;text-transform:uppercase;width:100%}
+.remote-host-group-heading:hover{background:#152131;color:#fff}
+.remote-host-group-heading.collapsed{color:#fff}
+.remote-host-group-heading strong{color:#fff;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.remote-host-group-heading strong:before{color:#fff;content:"▾ ";font-size:10px}
 .remote-host-group-heading.collapsed strong:before{content:"▸ ";font-size:10px}
 .remote-host-group-heading:first-child{margin-top:0}
 .remote-host-group-heading span{color:#f59e0b;font-size:10px}
@@ -77,16 +77,19 @@ body.remote-resizing{cursor:col-resize;user-select:none}
 .remote-rail-mini .remote-protocol-icon{min-width:34px}
 .remote-tab-workspace{background:#050a12;display:grid;grid-template-rows:42px minmax(0,1fr);min-width:0;min-height:0}
 .remote-tabbar{align-items:end;background:#121827;border-bottom:1px solid var(--line);display:flex;min-width:0;overflow-x:auto;scrollbar-width:thin}
-.remote-session-tab{align-items:center;background:#111827;border-right:1px solid var(--line);border-bottom:2px solid transparent;color:#aeb7a5;cursor:pointer;display:flex;flex:0 1 230px;gap:9px;height:42px;min-width:132px;max-width:300px;padding:0 10px;position:relative;user-select:none}
+.remote-session-tab{align-items:center;background:#111827;border-right:1px solid var(--line);border-bottom:2px solid transparent;color:#aeb7a5;cursor:pointer;display:flex;flex:0 0 min(430px,42vw);gap:9px;height:42px;min-width:300px;max-width:520px;padding:0 10px;position:relative;user-select:none}
 .remote-session-tab:hover{background:#172033;color:#f7f7f7}
 .remote-session-tab.active{background:#07111d;border-bottom-color:#ff8a00;color:#fff}
 .remote-session-tab.split-visible{box-shadow:inset 0 -2px 0 rgba(255,138,0,.55)}
 .remote-tab-icon{color:#8fb8ff;font-family:"Caskaydia Cove Nerd Font Mono",Consolas,monospace;font-size:11px;font-weight:900;min-width:24px;text-align:center}
-.remote-tab-title{font-size:13px;font-weight:850;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.remote-tab-protocol{color:#7f8977;font-size:10px;font-weight:900;margin-left:auto}
-.remote-tab-tools{align-items:center;display:flex;gap:2px;margin-left:3px}
-.remote-tab-tool{background:transparent;border:0;border-radius:4px;color:#8c9686;font-size:13px;font-weight:900;height:22px;min-height:22px;padding:0;text-transform:uppercase;width:22px}
-.remote-tab-tool:hover{background:#263244;color:#fff}
+.remote-tab-title{flex:1 1 auto;font-size:13px;font-weight:850;min-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.remote-tab-protocol{color:#7f8977;flex:0 0 auto;font-size:10px;font-weight:900;margin-left:0}
+.remote-tab-tools{align-items:center;display:flex;flex:0 0 auto;gap:2px;margin-left:3px}
+.remote-tab-tool{background:#ff8a00;border:1px solid #ffb357;border-radius:4px;color:#050706;font-size:13px;font-weight:950;height:22px;min-height:22px;padding:0;text-transform:uppercase;width:22px}
+.remote-tab-tool:hover{background:#ffb357;border-color:#ffd08a;color:#050706}
+.remote-tab-tool:disabled{cursor:not-allowed;opacity:.48}
+.remote-tab-tool.active{background:#ffb357;border-color:#ffd08a;color:#050706}
+.remote-tab-record{font-size:10px;width:34px}
 .remote-layout-tools{align-items:center;display:flex;gap:6px;margin-left:auto;padding:0 8px 6px}
 .remote-layout-button{background:#111827;border:1px solid var(--line);border-radius:7px;color:var(--muted);font-size:12px;font-weight:900;height:30px;min-height:30px;padding:0 12px}
 .remote-layout-button:hover:not(:disabled),.remote-layout-button.active{background:rgba(255,138,0,.12);border-color:rgba(255,138,0,.65);color:var(--text)}
@@ -118,8 +121,12 @@ body.remote-resizing{cursor:col-resize;user-select:none}
 .ssh-terminal .xterm .xterm-cursor.xterm-cursor-blink{animation:remote-terminal-cursor-blink 1s steps(2,start) infinite!important}
 .ssh-terminal .xterm.xterm-cursor-pointer,.ssh-terminal .xterm .xterm-cursor-pointer,.ssh-terminal.is-link-hover .xterm{cursor:pointer}
 @keyframes remote-terminal-cursor-blink{0%,48%{opacity:1}49%,100%{opacity:0}}
-.remote-panel-body{background:#050706;margin:0;min-height:100vh;overflow:hidden}
-.remote-panel-body .remote-session-frame{height:100vh}
+.remote-panel-body{background:#050706;height:100vh;margin:0;overflow:hidden}
+.remote-panel-body.has-popout-bar{display:grid;grid-template-rows:42px minmax(0,1fr)}
+.remote-panel-body .remote-session-frame{height:100%;min-height:0}
+.remote-popout-tabbar{align-items:stretch;background:#121827;border-bottom:1px solid var(--line);display:flex;min-height:42px;min-width:0}
+.remote-popout-tab{align-items:center;background:#07111d;border-bottom:2px solid #ff8a00;border-right:1px solid var(--line);color:#fff;display:flex;gap:9px;min-width:min(520px,100%);padding:0 10px}
+.remote-popout-tab .remote-recording-tools{margin-left:8px}
 .rdp-display-shell{background:#050706;height:100%;min-height:0;outline:none;overflow:hidden;position:relative}
 .rdp-display{align-items:center;display:flex;height:100%;justify-content:center;min-height:0;overflow:hidden;position:relative;width:100%}
 .rdp-display .rdp-guac-display{cursor:none}
@@ -132,6 +139,9 @@ body.remote-resizing{cursor:col-resize;user-select:none}
 .rdp-log-panel header{border-bottom:1px solid var(--line);font-size:12px;font-weight:800;padding:8px 10px}
 .rdp-log-panel pre{color:#d1fae5;font-size:12px;line-height:1.45;margin:0;max-height:170px;overflow:auto;padding:10px;white-space:pre-wrap}
 .remote-settings-shell{display:grid;gap:14px;max-width:1040px}
+.remote-settings-shell .settings-tab-panel{display:grid;gap:14px;max-width:1040px}
+.remote-settings-shell .settings-tab-panel[hidden]{display:none!important}
+.remote-manager-settings-tabs{max-width:1040px}
 .remote-settings-tabs{align-items:center;border-bottom:1px solid var(--line);display:flex;gap:8px;overflow-x:auto;padding:0 0 8px}
 .remote-settings-tabs a{align-items:center;background:#151a21;border:1px solid var(--line);border-radius:10px;color:var(--muted);display:inline-flex;font-size:12px;font-weight:850;min-height:34px;padding:8px 13px;white-space:nowrap}
 .remote-settings-tabs a:hover,.remote-settings-tabs a.active{background:rgba(255,138,0,.12);border-color:rgba(255,138,0,.7);box-shadow:inset 0 -2px 0 rgba(255,138,0,.75);color:var(--text)}
@@ -141,10 +151,18 @@ body.remote-resizing{cursor:col-resize;user-select:none}
 .remote-settings-card>.remote-setting-row:last-child,.remote-settings-card>.remote-settings-grid:last-child{margin-bottom:10px}
 .remote-settings-grid{display:grid;gap:14px;padding:14px 0}
 .remote-settings-grid.two{grid-template-columns:repeat(2,minmax(0,1fr))}
-.remote-settings-grid label{color:var(--text);font-size:13px;font-weight:800;letter-spacing:0;text-transform:none}
-.remote-settings-grid label span{color:var(--muted);float:right;font-size:12px;font-weight:700}
-.remote-settings-grid input,.remote-settings-grid select{background:#0d1117;border-color:var(--line);border-radius:8px;color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Arial;font-size:13px}
+.remote-settings-grid label{color:var(--text);display:grid;font-size:13px;font-weight:800;gap:8px;letter-spacing:0;text-transform:none}
+.remote-settings-grid label span{color:var(--muted);font-size:12px;font-weight:700;line-height:1.25}
+.remote-settings-grid input,.remote-settings-grid select{background:#0d1117;border-color:var(--line);border-radius:8px;color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Arial;font-size:13px;min-height:40px}
+.remote-settings-grid textarea{background:#0d1117;border:1px solid var(--line);border-radius:8px;color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Arial;font-size:13px;min-height:86px;padding:10px;resize:vertical}
 .remote-settings-grid input[type=range]{accent-color:var(--accent);min-height:22px;padding:0}
+.remote-recording-settings-grid{align-items:start;grid-template-columns:minmax(260px,1fr) minmax(320px,1fr);grid-template-rows:auto auto}
+.remote-recording-settings-grid label{align-content:start;min-width:0}
+.remote-recording-settings-grid label:nth-child(2){grid-column:2;grid-row:1 / span 2}
+.remote-recording-settings-grid label:nth-child(3){grid-column:1;grid-row:2}
+.remote-recording-settings-grid select{height:44px;padding:0 12px}
+.remote-recording-settings-grid input[type=number]{height:40px;padding:0 12px}
+.remote-recording-settings-grid textarea{min-height:126px}
 .remote-setting-row{align-items:center;border-bottom:1px solid var(--line);display:flex;gap:16px;justify-content:space-between;padding:14px 0}
 .remote-setting-row:last-child{border-bottom:0}
 .remote-setting-row strong{color:var(--text);display:block;font-size:14px;font-weight:900;line-height:1.2}
@@ -160,9 +178,42 @@ body.remote-resizing{cursor:col-resize;user-select:none}
 .remote-overrides>summary{cursor:pointer;font-size:12px;font-weight:900;list-style:none;padding:10px 12px}
 .remote-overrides>summary::-webkit-details-marker{display:none}
 .remote-overrides-grid{border-top:1px solid var(--line);display:grid;gap:12px;grid-template-columns:repeat(2,minmax(0,1fr));padding:12px}
+.remote-recording-tools{align-items:center;background:rgba(5,7,6,.9);border:1px solid rgba(255,138,0,.42);border-radius:8px;display:flex;gap:8px;position:absolute;right:12px;top:10px;z-index:9;padding:6px}
+.remote-recording-tools-inline{position:static;z-index:auto}
+.remote-recording-tools button{background:#ff8a00;border:1px solid #ffb357;border-radius:6px;color:#050706;font-size:12px;font-weight:950;min-height:28px;padding:0 12px}
+.remote-recording-tools button:hover:not(:disabled),.remote-recording-tools button.active{background:#ffb357;color:#050706}
+.remote-recording-tools button.active{border-color:#ffd08a}
+.remote-recording-tools button:disabled{cursor:not-allowed;opacity:.55}
+.remote-recording-tools span{color:#f8fafc;font-size:12px;font-weight:800;min-width:54px}
+.remote-recordings-shell,.remote-recording-detail{display:grid;gap:14px}
+.remote-recordings-table{background:#0b1016;border:1px solid var(--line);border-collapse:separate;border-radius:8px;border-spacing:0;overflow:hidden;table-layout:fixed;width:100%}
+.remote-recordings-table th{background:#151c27;color:#cfe1ff;font-size:11px;letter-spacing:.02em;padding:10px 12px;text-align:left;text-transform:uppercase}
+.remote-recordings-table td{border-bottom:0;border-top:1px solid rgba(148,163,184,.16);padding:12px;vertical-align:middle}
+.remote-recordings-table tbody tr:first-child td{border-top:0}
+.remote-recordings-table tr:hover td{background:rgba(255,138,0,.035)}
+.remote-recordings-table td strong{color:#f8fafc;display:block;font-size:12px;font-weight:900;line-height:1.2}
+.remote-recordings-table td span{color:var(--muted);display:block;font-size:12px;margin-top:2px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.remote-recordings-table td a{font-weight:900}
+.recording-col-started{width:140px}.recording-col-host{width:210px}.recording-col-protocol{width:90px}.recording-col-category{width:150px}.recording-col-user{width:260px}.recording-col-duration{width:95px}.recording-col-size{width:95px}.recording-col-actions{width:230px}
+.recording-pill{align-items:center;background:rgba(143,184,255,.12);border:1px solid rgba(143,184,255,.22);border-radius:999px;color:#bfdbfe!important;display:inline-flex!important;font-size:10px!important;font-weight:950;justify-content:center;line-height:1;margin:0!important;min-height:22px;min-width:48px;padding:0 8px;text-transform:uppercase}
+.recording-user{max-width:100%}
+.recording-actions{text-align:right;white-space:nowrap}
+.recording-actions-inner{align-items:center;display:inline-flex;gap:6px;justify-content:flex-end;white-space:nowrap}
+.recording-actions .button,.recording-actions button{font-size:11px;min-height:28px;padding:0 9px}
+.recording-actions form,.topbar-actions form{margin:0}
+.remote-empty-state{background:#14171d;border:1px solid var(--line);border-radius:10px;padding:24px;text-align:center}
+.remote-recording-detail{grid-template-columns:260px minmax(0,1fr)}
+.remote-recording-meta{background:#14171d;border:1px solid var(--line);border-radius:10px;display:grid;gap:0;align-self:start;overflow:hidden}
+.remote-recording-meta div{border-bottom:1px solid var(--line);display:grid;gap:3px;padding:12px}
+.remote-recording-meta div:last-child{border-bottom:0}
+.remote-recording-meta span{color:var(--muted);font-size:11px;font-weight:800;text-transform:uppercase}
+.remote-recording-meta strong{color:var(--text);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.remote-recording-player{background:#050706;border:1px solid var(--line);border-radius:10px;min-height:520px;overflow:hidden}
+.remote-recording-player video{background:#000;display:block;height:auto;max-height:calc(100vh - 190px);width:100%}
+.remote-recording-player pre{color:#d6deeb;font-family:"Caskaydia Cove Nerd Font Mono",Consolas,monospace;font-size:13px;line-height:1.45;margin:0;max-height:calc(100vh - 190px);min-height:520px;overflow:auto;padding:14px;white-space:pre-wrap}
 @media(max-width:850px){.content.remote-main{padding-top:56px}.remote-workspace{grid-template-columns:1fr;height:auto}.remote-host-rail{max-height:42vh}.remote-session-frame,.remote-console-empty{min-height:58vh}.remote-credential-form,.rdp-credential-form{grid-template-columns:1fr;left:16px;right:16px;top:16px;transform:none;width:auto}}
 @media(max-width:850px){.remote-tab-panels.is-split{grid-template-columns:1fr;grid-template-rows:minmax(58vh,1fr) minmax(58vh,1fr)}}
-@media(max-width:850px){.remote-settings-grid.two,.remote-overrides-grid{grid-template-columns:1fr}}
+@media(max-width:850px){.remote-settings-grid.two,.remote-overrides-grid,.remote-recording-detail{grid-template-columns:1fr}.remote-recording-tools{left:12px;right:auto;top:10px}.remote-recording-player{min-height:360px}.remote-recording-player pre{min-height:360px}.remote-recordings-shell{overflow-x:auto}.remote-recordings-table{min-width:980px}}
 
 /* Kaya orange palette overrides */
 .remote-host-toolbar button:hover,.remote-host-toolbar a:hover,.remote-host-toolbar button.active,.remote-layout-button:hover:not(:disabled),.remote-layout-button.active,.remote-settings-tabs a:hover,.remote-settings-tabs a.active{background:rgba(255,138,0,.13);border-color:rgba(255,138,0,.34);box-shadow:inset 0 -2px 0 rgba(255,138,0,.72);color:var(--text)}
@@ -179,10 +230,19 @@ html[data-kaya-theme=light-ops] .remote-host-rail,html[data-kaya-theme=light-ops
 html[data-kaya-theme=light-ops] .remote-host-card,html[data-kaya-theme=light-ops] .remote-settings-card,html[data-kaya-theme=light-ops] .remote-card{background:#fff;border-color:#d8dee8;color:#111827}
 html[data-kaya-theme=light-ops] .remote-settings-card header{border-bottom-color:#d8dee8;color:#111827}
 html[data-kaya-theme=light-ops] .remote-settings-grid label{color:#111827}
-html[data-kaya-theme=light-ops] .remote-settings-grid input,html[data-kaya-theme=light-ops] .remote-settings-grid select{background:#fff;border-color:#cfd7e3;color:#111827}
+html[data-kaya-theme=light-ops] .remote-settings-grid input,html[data-kaya-theme=light-ops] .remote-settings-grid select,html[data-kaya-theme=light-ops] .remote-settings-grid textarea{background:#fff;border-color:#cfd7e3;color:#111827}
 html[data-kaya-theme=light-ops] .remote-settings-tabs{border-bottom-color:#d8dee8}
 html[data-kaya-theme=light-ops] .remote-settings-tabs a,html[data-kaya-theme=light-ops] .remote-host-toolbar button,html[data-kaya-theme=light-ops] .remote-host-toolbar a,html[data-kaya-theme=light-ops] .remote-layout-button,html[data-kaya-theme=light-ops] .remote-protocol-icon{background:#fff8f0;border-color:rgba(255,138,0,.24);color:#7a3b00}
 html[data-kaya-theme=light-ops] .remote-session-frame,html[data-kaya-theme=light-ops] .remote-console-empty{background:#f8f3ec;border-color:#d8dee8;color:#111827}
+html[data-kaya-theme=light-ops] .remote-recordings-table{background:#fff;border-color:#cfd7e3;box-shadow:0 1px 0 rgba(17,24,39,.04)}
+html[data-kaya-theme=light-ops] .remote-recordings-table th{background:#f2f5f8;border-bottom:1px solid #cfd7e3;color:#a84b00}
+html[data-kaya-theme=light-ops] .remote-recordings-table td{background:#fff;border-top-color:#e2e7ef;color:#1f2937}
+html[data-kaya-theme=light-ops] .remote-recordings-table tr:hover td{background:#fff8f0}
+html[data-kaya-theme=light-ops] .remote-recordings-table td strong{color:#111827}
+html[data-kaya-theme=light-ops] .remote-recordings-table td span,html[data-kaya-theme=light-ops] .recording-user{color:#5b6574}
+html[data-kaya-theme=light-ops] .remote-recordings-table td a:not(.button){color:#0369a1}
+html[data-kaya-theme=light-ops] .recording-pill{background:#eef4ff;border-color:#c6d8ff;color:#1e3a8a!important}
+html[data-kaya-theme=light-ops] .recording-actions form,html[data-kaya-theme=light-ops] .recording-actions input[type=hidden]{background:transparent!important;border:0!important;box-shadow:none!important;padding:0}
 
 /* Kaya Light Ops remote search and form controls */
 html[data-kaya-theme=light-ops] .remote-host-search{background:#f2eee8;border-bottom-color:#cfd7e3}
@@ -194,3 +254,76 @@ html[data-kaya-theme=light-ops] .remote-host-toolbar button,html[data-kaya-theme
 html[data-kaya-theme=light-ops] .remote-host-toolbar button:hover,html[data-kaya-theme=light-ops] .remote-host-toolbar a:hover,html[data-kaya-theme=light-ops] .remote-host-toolbar button.active{background:#fff3e2!important;border-color:#ff8a00!important;color:#7a3b00!important}
 html[data-kaya-theme=light-ops] .remote-host-header strong,html[data-kaya-theme=light-ops] .remote-host-main strong{color:#111827!important}
 html[data-kaya-theme=light-ops] .remote-host-header span,html[data-kaya-theme=light-ops] .remote-host-main span,html[data-kaya-theme=light-ops] .remote-host-meta{color:#5b6574!important}
+html[data-kaya-theme=light-ops] .remote-host-group-heading{background:#f8fafc!important;border-bottom-color:#d8dee8!important;border-top-color:#eef2f7!important;color:#111827!important}
+html[data-kaya-theme=light-ops] .remote-host-group-heading:hover{background:#fff3e2!important;color:#7a3b00!important}
+html[data-kaya-theme=light-ops] .remote-host-group-heading strong,html[data-kaya-theme=light-ops] .remote-host-group-heading strong:before{color:#111827!important}
+html[data-kaya-theme=light-ops] .remote-host-group-heading span{color:#a84b00!important}
+
+/* Polished host rail controls */
+.remote-host-toolbar{
+  gap:7px;
+}
+
+.remote-host-toolbar .button{
+  background:#151a21!important;
+  border:1px solid rgba(255,138,0,.28)!important;
+  border-radius:7px!important;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.035);
+  color:#f8fafc!important;
+  font-size:11px!important;
+  font-weight:900!important;
+  height:30px!important;
+  letter-spacing:0;
+  min-height:30px!important;
+  min-width:40px;
+  padding:0 11px!important;
+  transition:background .14s ease,border-color .14s ease,color .14s ease,box-shadow .14s ease,transform .14s ease;
+}
+
+.remote-host-toolbar [data-remote-host-add]{
+  font-size:14px!important;
+  min-width:30px!important;
+  padding:0!important;
+  width:30px;
+}
+
+.remote-host-toolbar .button:hover,
+.remote-host-toolbar .button:focus-visible{
+  background:rgba(255,138,0,.13)!important;
+  border-color:rgba(255,138,0,.56)!important;
+  box-shadow:0 0 0 3px rgba(255,138,0,.1),inset 0 1px 0 rgba(255,255,255,.05)!important;
+  color:#fff!important;
+  transform:translateY(-1px);
+}
+
+.remote-host-toolbar .button.active,
+.remote-host-toolbar .button:active{
+  background:#ff8a00!important;
+  border-color:#ffb357!important;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.24)!important;
+  color:#101010!important;
+  transform:translateY(0);
+}
+
+html[data-kaya-theme=light-ops] .remote-host-toolbar .button{
+  background:#fff!important;
+  border-color:#d8dee8!important;
+  box-shadow:0 1px 2px rgba(17,24,39,.04)!important;
+  color:#7a3b00!important;
+}
+
+html[data-kaya-theme=light-ops] .remote-host-toolbar .button:hover,
+html[data-kaya-theme=light-ops] .remote-host-toolbar .button:focus-visible{
+  background:#fff7ed!important;
+  border-color:rgba(255,138,0,.42)!important;
+  box-shadow:0 0 0 3px rgba(255,138,0,.12)!important;
+  color:#7a3b00!important;
+}
+
+html[data-kaya-theme=light-ops] .remote-host-toolbar .button.active,
+html[data-kaya-theme=light-ops] .remote-host-toolbar .button:active{
+  background:#ff8a00!important;
+  border-color:#ff8a00!important;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.24)!important;
+  color:#101010!important;
+}
