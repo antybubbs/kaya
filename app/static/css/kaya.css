@@ -365,3 +365,68 @@ body.sidebar-collapsed .sidebar-collapse-button{
   right:auto;
   width:28px;
 }
+
+/* Shared rocker switches used across settings pages */
+input.remote-switch{
+  appearance:none!important;
+  -webkit-appearance:none!important;
+  background:#0d1117!important;
+  border:1px solid #2a303a!important;
+  border-radius:999px!important;
+  box-shadow:none!important;
+  cursor:pointer;
+  display:inline-block;
+  flex:0 0 auto;
+  height:22px!important;
+  min-height:22px!important;
+  padding:0!important;
+  position:relative;
+  transition:background .15s ease,border-color .15s ease;
+  vertical-align:middle;
+  width:42px!important;
+}
+
+input.remote-switch:before{
+  background:#9ca3af;
+  border-radius:50%;
+  content:"";
+  height:16px;
+  left:3px;
+  position:absolute;
+  top:2px;
+  transition:left .15s ease,background .15s ease;
+  width:16px;
+}
+
+input.remote-switch:checked{
+  background:rgba(255,138,0,.18)!important;
+  border-color:var(--kaya-orange)!important;
+}
+
+input.remote-switch:checked:before{
+  background:var(--kaya-orange);
+  left:21px;
+}
+
+input.remote-switch:focus-visible{
+  box-shadow:0 0 0 3px rgba(255,138,0,.2)!important;
+  outline:0;
+}
+
+html[data-kaya-theme=light-ops] input.remote-switch{
+  background:#fff!important;
+  border-color:#94a3b8!important;
+}
+
+html[data-kaya-theme=light-ops] input.remote-switch:before{
+  background:#64748b;
+}
+
+html[data-kaya-theme=light-ops] input.remote-switch:checked{
+  background:#fff3e2!important;
+  border-color:var(--kaya-orange)!important;
+}
+
+html[data-kaya-theme=light-ops] input.remote-switch:checked:before{
+  background:var(--kaya-orange);
+}
