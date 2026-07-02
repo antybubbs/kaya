@@ -31,6 +31,7 @@ SETTINGS = {
     "guacamole_enabled": "0",
     "guacd_host": "",
     "guacd_port": "4822",
+    "session_idle_timeout_minutes": "0",
     "terminal_theme": "kaya",
     "terminal_font_family": "Caskaydia Cove Nerd Font Mono",
     "terminal_font_size": "14",
@@ -165,6 +166,8 @@ def clean_global_setting(key: str, value: str) -> str:
         return clean_bool_text(value)
     if key == "terminal_font_size":
         return clean_int_text(value, 14, 8, 28)
+    if key == "session_idle_timeout_minutes":
+        return clean_int_text(value, 0, 0, 1440)
     if key == "terminal_letter_spacing":
         return clean_int_text(value, 0, 0, 4)
     if key == "terminal_scrollback":
@@ -470,6 +473,7 @@ async def save_remote_settings(request: Request, csrf_token: str = Form(...), gu
     set_setting(db, "guacamole_enabled", "1" if guacamole_enabled else "0")
     set_setting(db, "guacd_host", guacd_host.strip())
     set_setting(db, "guacd_port", str(clean_port(guacd_port, "rdp")))
+    set_setting(db, "session_idle_timeout_minutes", clean_global_setting("session_idle_timeout_minutes", str(form.get("session_idle_timeout_minutes", "0"))))
     for key in TERMINAL_SETTING_KEYS + RDP_SETTING_KEYS:
         set_setting(db, key, clean_global_setting(key, str(form.get(key, ""))))
     db.commit()

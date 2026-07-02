@@ -119,6 +119,21 @@
     iframe.src = iframe.src;
   };
 
+  const popOutSession = (session) => {
+    if (!session?.url) return;
+    const width = Math.min(1600, Math.max(960, Math.floor(window.screen.availWidth * 0.82)));
+    const height = Math.min(1000, Math.max(640, Math.floor(window.screen.availHeight * 0.82)));
+    const left = Math.max(0, Math.floor((window.screen.availWidth - width) / 2));
+    const top = Math.max(0, Math.floor((window.screen.availHeight - height) / 2));
+    const name = `kaya_remote_${session.remoteId}_${session.protocol}`;
+    const opened = window.open(
+      session.url,
+      name,
+      `popup=yes,width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=no`,
+    );
+    if (opened) opened.focus();
+  };
+
   const ensurePanel = (tab) => {
     let panel = panels.querySelector(`[data-remote-panel="${CSS.escape(tab.id)}"]`);
     if (panel) return panel;
@@ -203,6 +218,16 @@
         refreshTab(tab.id);
       });
 
+      const popout = document.createElement("button");
+      popout.type = "button";
+      popout.className = "remote-tab-tool";
+      popout.title = "Pop out session";
+      popout.textContent = "P";
+      popout.addEventListener("click", (event) => {
+        event.stopPropagation();
+        popOutSession(tab);
+      });
+
       const close = document.createElement("button");
       close.type = "button";
       close.className = "remote-tab-tool";
@@ -213,7 +238,7 @@
         closeTab(tab.id);
       });
 
-      tools.append(refresh, close);
+      tools.append(refresh, popout, close);
       button.appendChild(tools);
       tabbar.appendChild(button);
     });
@@ -369,6 +394,16 @@
   }, true);
 
   root.addEventListener("click", (event) => {
+    const popoutLink = event.target.closest("[data-remote-popout]");
+    if (popoutLink) {
+      const card = popoutLink.closest(".remote-host-card");
+      if (!card) return;
+      event.preventDefault();
+      closeMenus();
+      popOutSession(hostFromCard(card));
+      return;
+    }
+
     const link = event.target.closest("[data-remote-open]");
     if (!link) {
       if (!event.target.closest(".remote-connect-menu")) closeMenus();

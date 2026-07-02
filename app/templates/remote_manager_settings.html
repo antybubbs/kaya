@@ -30,6 +30,9 @@
       <label>guacd port
         <input name="guacd_port" type="number" min="1" max="65535" value="{{ settings.guacd_port or '4822' }}">
       </label>
+      <label>Idle timeout <span>Disconnect inactive sessions after this many minutes. Use 0 to disable.</span>
+        <input name="session_idle_timeout_minutes" type="number" min="0" max="1440" value="{{ settings.session_idle_timeout_minutes or '0' }}">
+      </label>
     </div>
   </section>
 

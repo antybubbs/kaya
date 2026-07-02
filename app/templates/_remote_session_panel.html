@@ -2,6 +2,7 @@
 {% if remote.protocol == 'ssh' %}
   {% set terminal_settings = remote_settings.terminal if remote_settings is defined else {} %}
   <div class="ssh-session" data-ssh-session data-ws-url="{{ request.scope.get('root_path', '') }}/remote-manager/{{ remote.id }}/ssh/ws"
+    data-idle-timeout-minutes="{{ settings.get('session_idle_timeout_minutes', '0') if settings is defined else '0' }}"
     data-terminal-theme="{{ terminal_settings.get('terminal_theme', 'kaya') }}"
     data-terminal-font-family="{{ terminal_settings.get('terminal_font_family', 'Caskaydia Cove Nerd Font Mono') }}"
     data-terminal-font-size="{{ terminal_settings.get('terminal_font_size', '14') }}"
@@ -28,7 +29,7 @@
     {% endif %}
   </div>
   {% else %}
-  <div class="rdp-session" data-rdp-session data-start-url="{{ request.scope.get('root_path', '') }}/remote-manager/{{ remote.id }}/rdp/start" data-tunnel-url="{{ request.scope.get('root_path', '') }}/remote-manager/{{ remote.id }}/rdp/ws">
+  <div class="rdp-session" data-rdp-session data-start-url="{{ request.scope.get('root_path', '') }}/remote-manager/{{ remote.id }}/rdp/start" data-tunnel-url="{{ request.scope.get('root_path', '') }}/remote-manager/{{ remote.id }}/rdp/ws" data-idle-timeout-minutes="{{ settings.get('session_idle_timeout_minutes', '0') if settings is defined else '0' }}">
     <form class="remote-credential-form rdp-credential-form">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <label>Username

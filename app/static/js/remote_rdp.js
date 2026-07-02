@@ -23,6 +23,17 @@ if (root) {
   let displayReady = false;
   let resizeObserver = null;
   let lastRequestedSize = "";
+  let idleTimer = null;
+  let disconnectReason = "";
+
+  const readInt = (value, fallback, min, max) => {
+    const parsed = Number.parseInt(value, 10);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.min(max, Math.max(min, parsed));
+  };
+
+  const idleTimeoutMinutes = readInt(root.dataset.idleTimeoutMinutes, 0, 0, 1440);
+  const idleTimeoutMs = idleTimeoutMinutes > 0 ? idleTimeoutMinutes * 60 * 1000 : 0;
 
   const writeLog = (lines) => {
     if (!log) return;
@@ -95,6 +106,10 @@ if (root) {
 
   const disconnectCurrentSession = () => {
     window.clearTimeout(resizeTimer);
+    if (idleTimer) {
+      window.clearTimeout(idleTimer);
+      idleTimer = null;
+    }
     if (resizeObserver) {
       resizeObserver.disconnect();
       resizeObserver = null;
@@ -121,10 +136,29 @@ if (root) {
     disconnectCurrentSession();
   };
 
+  const disconnectForIdle = () => {
+    if (!connected) return;
+    disconnectReason = `Disconnected after ${idleTimeoutMinutes} minute${idleTimeoutMinutes === 1 ? "" : "s"} of inactivity.`;
+    manuallyStopped = true;
+    setOverlayVisible(true);
+    setStatus("Idle timeout", disconnectReason);
+    writeLog([disconnectReason]);
+    disconnectCurrentSession();
+    form.hidden = false;
+    button.disabled = false;
+  };
+
+  const markActivity = () => {
+    if (!idleTimeoutMs || !connected) return;
+    window.clearTimeout(idleTimer);
+    idleTimer = window.setTimeout(disconnectForIdle, idleTimeoutMs);
+  };
+
   const attachInput = () => {
     const displayEl = client.getDisplay().getElement();
     const mouse = new Guacamole.Mouse(displayEl);
     mouse.onmousedown = mouse.onmouseup = mouse.onmousemove = (state) => {
+      markActivity();
       displayEl.focus({ preventScroll: true });
       const adjustedState = new Guacamole.Mouse.State(
         Math.round(state.x / currentScale),
@@ -139,10 +173,12 @@ if (root) {
     };
     keyboard = new Guacamole.Keyboard(displayEl);
     keyboard.onkeydown = (keysym) => {
+      markActivity();
       client.sendKeyEvent(1, keysym);
       return false;
     };
     keyboard.onkeyup = (keysym) => {
+      markActivity();
       client.sendKeyEvent(0, keysym);
       return false;
     };
@@ -162,6 +198,7 @@ if (root) {
 
   const connectDisplay = async (token) => {
     manuallyStopped = false;
+    disconnectReason = "";
     disconnectCurrentSession();
     window.clearTimeout(resizeTimer);
     displayTarget.replaceChildren();
@@ -200,6 +237,7 @@ if (root) {
       if (state === Guacamole.Client.State.CONNECTED) {
         setStatus("Connected", "RDP session is active.");
         connected = true;
+        markActivity();
         refreshDisplay();
         markDisplayReady();
       }
@@ -207,7 +245,7 @@ if (root) {
         setOverlayVisible(true);
         connected = false;
         displayReady = false;
-        setStatus("Disconnected", "The RDP session has ended.");
+        setStatus(disconnectReason ? "Idle timeout" : "Disconnected", disconnectReason || "The RDP session has ended.");
         form.hidden = false;
         button.disabled = false;
       }
@@ -225,6 +263,8 @@ if (root) {
 
   window.addEventListener("resize", scheduleResize);
   window.addEventListener("focus", scheduleResize);
+  root.addEventListener("pointerdown", markActivity, { passive: true });
+  root.addEventListener("keydown", markActivity, true);
   window.addEventListener("message", (event) => {
     if (event.origin !== window.location.origin) return;
     if (event.data && event.data.type === "kaya:remote-tab-active") {

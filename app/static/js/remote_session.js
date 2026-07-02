@@ -482,6 +482,8 @@
     syntaxHighlighting: true,
     scrollback: readInt(root.dataset.terminalScrollback, 10000, 1000, 100000),
   };
+  const idleTimeoutMinutes = readInt(root.dataset.idleTimeoutMinutes, 0, 0, 1440);
+  const idleTimeoutMs = idleTimeoutMinutes > 0 ? idleTimeoutMinutes * 60 * 1000 : 0;
 
   const registerWebLinks = () => {
     if (typeof term.registerLinkProvider !== "function") return;
@@ -599,6 +601,7 @@
   let socket = null;
   let connected = false;
   let closeHandled = false;
+  let idleTimer = null;
 
   const writeTerminal = (data) => {
   const text = typeof data === "string" ? data : String(data || "");
@@ -621,6 +624,30 @@
   const sendTerminalMessage = (type, data = {}) => {
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
     socket.send(JSON.stringify({ type, data }));
+  };
+
+  const clearIdleTimer = () => {
+    if (idleTimer) {
+      window.clearTimeout(idleTimer);
+      idleTimer = null;
+    }
+  };
+
+  const disconnectForIdle = () => {
+    if (!connected || !socket || socket.readyState !== WebSocket.OPEN) return;
+    closeHandled = true;
+    connected = false;
+    writeTerminal(`\r\nSession disconnected after ${idleTimeoutMinutes} minute${idleTimeoutMinutes === 1 ? "" : "s"} of inactivity.\r\n`);
+    sendTerminalMessage("disconnect");
+    socket.close();
+    passwordForm.hidden = false;
+    clearIdleTimer();
+  };
+
+  const markActivity = () => {
+    if (!idleTimeoutMs || !connected) return;
+    clearIdleTimer();
+    idleTimer = window.setTimeout(disconnectForIdle, idleTimeoutMs);
   };
 
   const fit = () => {
@@ -646,19 +673,24 @@
     }
   });
   terminalEl.addEventListener("click", () => term.focus());
+  root.addEventListener("pointerdown", markActivity, { passive: true });
+  root.addEventListener("keydown", markActivity, true);
   terminalEl.addEventListener("paste", (event) => {
     const text = event.clipboardData ? event.clipboardData.getData("text/plain") : "";
     if (!text || !connected || !socket || socket.readyState !== WebSocket.OPEN) return;
     event.preventDefault();
+    markActivity();
     sendTerminalMessage("input", text);
   });
 
   term.onData((data) => {
     if (!connected || !socket || socket.readyState !== WebSocket.OPEN) return;
+    markActivity();
     sendTerminalMessage("input", data);
   });
 
   window.addEventListener("beforeunload", () => {
+    clearIdleTimer();
     if (socket && socket.readyState === WebSocket.OPEN) {
       sendTerminalMessage("disconnect");
     }
@@ -703,12 +735,15 @@
         writeTerminal(message.data || "");
       } else if (message.type === "connected") {
         connected = true;
+        markActivity();
         fit();
       } else if (message.type === "error") {
         connected = false;
+        clearIdleTimer();
         writeTerminal(`\r\n${message.message || "SSH connection failed."}\r\n`);
       } else if (message.type === "closed") {
         connected = false;
+        clearIdleTimer();
         closeHandled = true;
         
           term.reset();
@@ -720,6 +755,7 @@
         }
       } else if (message.type === "sessionTakenOver" || message.type === "sessionExpired") {
         connected = false;
+        clearIdleTimer();
         closeHandled = true;
         writeTerminal(`\r\n${message.message || "Session ended."}\r\n`);
 
@@ -739,6 +775,7 @@
     });
     socket.addEventListener("close", () => {
       connected = false;
+      clearIdleTimer();
 
       if (!closeHandled) {
         writeTerminal("\r\nSession closed.\r\n");
