@@ -56,16 +56,16 @@ Just your infrastructure, your data and your rules.
 
 ------------------------------------------------------------------------
 
-# 📸 Screenshots
+# 📸 Live Demo
 
-> *Screenshots coming soon.*
+Want to kick the tyres? Go ahead. https://demo.kaya-app.uk 
 
--   Dashboard
--   Infrastructure
--   Remote Manager
--   Networking
--   Documentation
--   Settings
+However, a few caveats.
+- The demo does not have a functional Remote Manager module.
+- The data resets every night.
+- Its probably (highly likley to be) rough around the edges, this is because its the main app with a few restrictions in place - we may have not picked up everything and most likley broke things trying to "make it safe"
+
+Our suggestion - install it in your own environment and throw the kitchen sink at it.
 
 ------------------------------------------------------------------------
 
@@ -75,6 +75,7 @@ Just your infrastructure, your data and your rules.
 
 -   Docker
 -   Docker Compose
+*   Guacd (the below docker compose file includes a guacd container, however - you may have your own. Once you are in the app you can change the guacd server in remote settings.)
 
 Clone the repository:
 
