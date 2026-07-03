@@ -145,10 +145,10 @@ docker compose up -d
 
 # 📂 Persistent Data
 
-  Path          Description
-  ------------- -------------------------------
-  `./data`      Database and application data
-  `./uploads`   User uploads
+  | Path        | Description                    |
+  |-------------| -------------------------------|
+  |`./data`     | Database and application data  | 
+  |`./uploads`  | User uploads                   |
 
 Back up these folders regularly.
 
