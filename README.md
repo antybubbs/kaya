@@ -1,135 +1,245 @@
-<p align="center">
-  <img
-    src="https://github.com/user-attachments/assets/893ff230-83e1-4a2e-8a7a-f08d9a6a83f7"
-    alt="Kaya Logo"
-    width="250"
-    height="250"
-  />
-</p>
+# 🏡 Kaya
 
-## Your Infrastructure. Your Home.
+> **Your Infrastructure. Your Home.**
+>
+> A modern, self-hosted infrastructure platform built for homelabs,
+> businesses and IT professionals who want complete control of their
+> infrastructure.
 
-Kaya is a self-hosted infrastructure management platform for servers, services, assets, remote access, runbooks, licences and day-to-day operational information.
+![GitHub
+release](https://img.shields.io/github/v/release/antybubbs/kaya)
+![License](https://img.shields.io/github/license/antybubbs/kaya)
+![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)
 
-Kaya is built for home lab and small infrastructure environments where you want one place to understand what exists, how it is connected, how to access it, and what needs attention.
+------------------------------------------------------------------------
 
-<img width="2544" height="1262" alt="image" src="https://github.com/user-attachments/assets/9c9bd1c1-1cbe-45c5-981c-28d9d7063fc7" />
+## Welcome Home
 
-## Features
+Lets be honest, homelab infrastrcuture never stays small.
 
-- Infrastructure dashboard with live health and capacity overview
-- VLAN/IP, domain, WAN and network monitoring workflows
-- Hardware asset and rack management
-- Remote Manager for browser-based SSH/RDP access
-- VM/Docker monitoring integrations
-- Runbooks and operational documentation
-- Licence, user, audit and application administration
-- Docker Compose deployment with persistent local data
+A Raspberry Pi becomes a server. One Docker container becomes twenty. A
+virtual machine becomes a cluster. Before long you're juggling IP
+addresses, documentation, credentials, licences, runbooks and bookmarks
+across half a dozen different places all while trying to keep your end users (family, friends) happy!
 
-## Demo
-https://demo.kaya-app.uk
+**Kaya brings it all together.**
 
-## One-file Docker Compose install
+Named after the Southern African word for **home**, Kaya gives your
+infrastructure a place to belong. Whether you're managing a homelab, a
+business environment or customer systems, Kaya provides one clean,
+modern workspace to organise everything that matters.
 
-Use `docker-compose.yml` directly. It pulls the Kaya image and starts the app plus Guacamole daemon support:
+No subscriptions.
 
-```bash
-mkdir -p /opt/kaya
-cd /opt/kaya
-curl -fsSLO https://raw.githubusercontent.com/antybubbs/Kaya/main/docker-compose.yml
+No cloud dependency.
+
+No vendor lock-in.
+
+Just your infrastructure, your data and your rules.
+
+------------------------------------------------------------------------
+
+# ✨ Features
+ | Feature                | Description                                     |
+ |------------------------|-------------------------------------------------|
+ | 🖥️ Infrastructure      | Manage servers, VMs, devices and assets         |
+ | 🐳 Docker              | Monitor Docker hosts and containers             |
+ | 🔐 Remote Access       | Browser-based SSH and RDP with session recording|
+ | 🌐 Networking          | IP addresses, VLANs, DNS, domains and WAN links |
+ | 📚 Documentation       | Built-in runbooks and operational notes         |
+ | 🔑 Licence Management  | Organise software licences and keys             |
+ | 👥 Multi-user          | Role-based access control                       |
+ | 📝 Audit Logs          | Track important actions                         |
+ | 📁 File Storage        | Secure document uploads                         |
+ | ⚡ Lightweight         | Fast, simple and self-hosted                    |
+
+------------------------------------------------------------------------
+
+# 📸 Live Demo
+
+Want to kick the tyres? Go ahead. https://demo.kaya-app.uk 
+
+However, a few caveats.
+- The demo does not have a functional Remote Manager module.
+- The data resets every night.
+- Its probably (highly likley to be) rough around the edges, this is because its the main app with a few restrictions in place - we may have not picked up everything and most likley broke things trying to "make it safe"
+
+Our suggestion - install it in your own environment and throw the kitchen sink at it.
+
+------------------------------------------------------------------------
+
+# 🚀 Quick Start
+
+## Prerequisites
+
+-   Docker
+-   Docker Compose
+*   Guacd (the below docker compose file includes a guacd container, however - you may have your own. Once you are in the app you can change the guacd server in remote settings.)
+
+Clone the repository:
+
+``` bash
+git clone https://github.com/antybubbs/kaya.git
+cd kaya
+```
+
+Start Kaya:
+
+``` bash
 docker compose up -d
 ```
 
-Open `http://SERVER-IP:8080/setup` and create the first administrator account.
+Open your browser:
 
-The compose file uses these defaults:
-
-```text
-KAYA_IMAGE=ghcr.io/antybubbs/kaya:latest
-KAYA_PORT=8080
+``` text
+http://SERVER-IP:8080/setup
 ```
 
-To override them, create a `.env` file beside `docker-compose.yml`:
+Complete the setup wizard to create your administrator account.
 
-```text
-KAYA_IMAGE=ghcr.io/antybubbs/kaya:latest
-KAYA_PORT=8080
+Within a few moments Kaya will:
+
+-   Generate its application secrets
+-   Create the SQLite database
+-   Prepare persistent storage
+-   Guide you through first-time setup
+
+------------------------------------------------------------------------
+
+# 🐳 Docker Compose
+
+``` yaml
+services:
+  kaya:
+    image: ghcr.io/antybubbs/kaya:latest
+    container_name: kaya
+    restart: unless-stopped
+
+    ports:
+      - "8080:8080"
+
+    volumes:
+      - ./data:/app/data
+      - ./uploads:/app/uploads
+
+    environment:
+      DATABASE_URL: sqlite:////app/data/kaya.db
+
+    security_opt:
+      - no-new-privileges:true
+
+    cap_add:
+      - NET_RAW
+
+  guacd:
+    image: guacamole/guacd:1.6.0
+    restart: unless-stopped
 ```
 
-Kaya stores application data in `./data` and uploaded files in `./uploads`. Back up both directories before updates.
+Launch:
 
-## Updating
+``` bash
+docker compose up -d
+```
 
-```bash
-cd /opt/kaya
-cp data/kaya.db "data/kaya.db.backup-$(date +%Y%m%d-%H%M%S)"
+------------------------------------------------------------------------
+
+# 📂 Persistent Data
+
+  | Path        | Description                    |
+  |-------------| -------------------------------|
+  |`./data`     | Database and application data  | 
+  |`./uploads`  | User uploads                   |
+
+Back up these folders regularly.
+
+------------------------------------------------------------------------
+
+# 🔄 Updating
+
+``` bash
 docker compose pull
 docker compose up -d
 ```
 
-Kaya stores its SQLite database at `data/kaya.db`.
+------------------------------------------------------------------------
 
-## Reverse proxy
+# 🌐 Reverse Proxy
 
-Set these values when serving through HTTPS:
+Kaya works behind Nginx, Caddy, Traefik and Cloudflare.
 
-```text
+Typical environment variables:
+
+``` env
 BASE_URL=https://kaya.example.com
 ALLOWED_HOSTS=kaya.example.com
 SESSION_COOKIE_SECURE=true
-FORWARDED_ALLOW_IPS=*
 ```
 
-Your proxy must preserve the original host and forward the client scheme/IP.
+------------------------------------------------------------------------
 
-Nginx:
+# 🏗️ Architecture
 
-```nginx
-location / {
-    proxy_pass http://127.0.0.1:8080;
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-}
+``` text
+Browser
+   │
+Reverse Proxy
+   │
+Kaya
+├── SQLite Database
+├── Upload Storage
+└── Guacamole (SSH / RDP)
 ```
 
-Caddy:
+------------------------------------------------------------------------
 
-```caddyfile
-kaya.example.com {
-    reverse_proxy 127.0.0.1:8080
-}
-```
+# 🗺️ Roadmap
 
-If Kaya is served from a path prefix such as `/kaya`, also set:
+-   ✅ Infrastructure Management
+-   ✅ Browser-based Remote Access
+-   ✅ Documentation & Runbooks
+-   🚧 Monitoring & Metrics
+-   🚧 REST API Expansion
+-   🚧 Notifications
+-   🧪 Mobile Companion
+-   🧪 High Availability
 
-```text
-ROOT_PATH=/kaya
-```
-## AI-Assisted Development
+------------------------------------------------------------------------
 
-Kaya is developed with the assistance of AI, primarily using OpenAI Codex alongside Visual Studio Code.
+# 🤖 AI-Assisted Development
 
-AI is used as a development assistant to help generate code, suggest implementations, identify potential improvements, and accelerate development. It is not used to make autonomous changes to the project.
+Kaya is developed by a human developer with AI acting as a development
+assistant.
 
-Every code suggestion is reviewed before being applied. I carefully validate the logic, security, performance, and compatibility of all proposed changes before they are merged into the main codebase. Where necessary, AI-generated code is modified or rewritten to ensure it meets Kaya's architecture, coding standards, and functional requirements.
+AI is used to speed up repetitive coding tasks, explore implementation
+ideas and improve productivity. Every suggestion is reviewed, tested and
+refined before becoming part of the project.
 
-While AI has significantly increased development speed, all architectural decisions, feature design, testing, and final implementation remain under my control.
+The architecture, security decisions and overall direction of Kaya
+remain entirely human-led.
 
-The goal is simple: use AI to improve productivity while maintaining the quality, reliability, and security expected of a self-hosted application.
+------------------------------------------------------------------------
 
-## Remote Manager Module credit
+# 🤝 Contributing
 
-Kaya Remote Manager Module is based on the same core architecture used by Termix:
+Ideas, bug reports, feature requests and pull requests are always
+welcome.
 
-- WebSocket transport between browser and backend
-- Node.js SSH backend using ssh2
-- xterm-compatible PTY sessions using xterm-256color
-- JSON messages for connectToHost, input, resize and disconnect
+If you've built something with Kaya or have suggestions to improve it,
+we'd love to hear from you.
 
-Termix is licensed under the Apache License, Version 2.0.
+------------------------------------------------------------------------
 
-Original project: https://github.com/Termix-SSH/Termix
+# ❤️ Why "Kaya"?
 
-Copyright 2025 Luke Gustafson
+*Kaya* means **home** in several Southern African languages.
+
+It reflects the philosophy behind the project: your infrastructure
+should feel organised, trusted and completely under your control.
+
+------------------------------------------------------------------------
+
+# 📄 Licence
+
+Licensed under **GPL-3.0**.
