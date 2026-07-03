@@ -1,4 +1,4 @@
-# Kaya
+# 🏡 Kaya
 
 > **Your Infrastructure. Your Home.**
 >
@@ -44,20 +44,20 @@ Just your infrastructure, your data and your rules.
 
   Feature                 Description
   ----------------------- -------------------------------------------------
-  �️ Infrastructure       Manage servers, VMs, devices and assets
-  � Docker               Monitor Docker hosts and containers
-  � Remote Access        Browser-based SSH and RDP
-  � Networking           IP addresses, VLANs, DNS, domains and WAN links
-  � Documentation        Built-in runbooks and operational notes
-  � Licence Management   Organise software licences and keys
-  � Multi-user           Role-based access control
-  � Audit Logs           Track important actions
-  � File Storage         Secure document uploads
+  🖥️ Infrastructure       Manage servers, VMs, devices and assets
+  🐳 Docker               Monitor Docker hosts and containers
+  🔐 Remote Access        Browser-based SSH and RDP
+  🌐 Networking           IP addresses, VLANs, DNS, domains and WAN links
+  📚 Documentation        Built-in runbooks and operational notes
+  🔑 Licence Management   Organise software licences and keys
+  👥 Multi-user           Role-based access control
+  📝 Audit Logs           Track important actions
+  📁 File Storage         Secure document uploads
   ⚡ Lightweight          Fast, simple and self-hosted
 
 ------------------------------------------------------------------------
 
-# � Screenshots
+# 📸 Screenshots
 
 > *Screenshots coming soon.*
 
@@ -70,7 +70,7 @@ Just your infrastructure, your data and your rules.
 
 ------------------------------------------------------------------------
 
-# � Quick Start
+# 🚀 Quick Start
 
 ## Prerequisites
 
@@ -107,7 +107,7 @@ Within a few moments Kaya will:
 
 ------------------------------------------------------------------------
 
-# � Docker Compose
+# 🐳 Docker Compose
 
 ``` yaml
 services:
@@ -145,7 +145,7 @@ docker compose up -d
 
 ------------------------------------------------------------------------
 
-# � Persistent Data
+# 📂 Persistent Data
 
   Path          Description
   ------------- -------------------------------
@@ -156,7 +156,7 @@ Back up these folders regularly.
 
 ------------------------------------------------------------------------
 
-# � Updating
+# 🔄 Updating
 
 ``` bash
 docker compose pull
@@ -165,7 +165,7 @@ docker compose up -d
 
 ------------------------------------------------------------------------
 
-# � Reverse Proxy
+# 🌐 Reverse Proxy
 
 Kaya works behind Nginx, Caddy, Traefik and Cloudflare.
 
@@ -179,7 +179,7 @@ SESSION_COOKIE_SECURE=true
 
 ------------------------------------------------------------------------
 
-# �️ Architecture
+# 🏗️ Architecture
 
 ``` text
 Browser
@@ -194,20 +194,20 @@ Kaya
 
 ------------------------------------------------------------------------
 
-# �️ Roadmap
+# 🗺️ Roadmap
 
 -   ✅ Infrastructure Management
 -   ✅ Browser-based Remote Access
 -   ✅ Documentation & Runbooks
--   � Monitoring & Metrics
--   � REST API Expansion
--   � Notifications
--   � Mobile Companion
--   � High Availability
+-   🚧 Monitoring & Metrics
+-   🚧 REST API Expansion
+-   🚧 Notifications
+-   🧪 Mobile Companion
+-   🧪 High Availability
 
 ------------------------------------------------------------------------
 
-# � AI-Assisted Development
+# 🤖 AI-Assisted Development
 
 Kaya is developed by a human developer with AI acting as a development
 assistant.
@@ -221,7 +221,7 @@ remain entirely human-led.
 
 ------------------------------------------------------------------------
 
-# � Contributing
+# 🤝 Contributing
 
 Ideas, bug reports, feature requests and pull requests are always
 welcome.
@@ -240,6 +240,6 @@ should feel organised, trusted and completely under your control.
 
 ------------------------------------------------------------------------
 
-# � Licence
+# 📄 Licence
 
 Licensed under **GPL-3.0**.
