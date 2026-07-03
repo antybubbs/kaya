@@ -41,17 +41,18 @@ Just your infrastructure, your data and your rules.
 ------------------------------------------------------------------------
 
 # ✨ Features
-
- - 🖥️ Infrastructure       Manage servers, VMs, devices and assets
- - 🐳 Docker               Monitor Docker hosts and containers
- - 🔐 Remote Access        Browser-based SSH and RDP
- - 🌐 Networking           IP addresses, VLANs, DNS, domains and WAN links
- - 📚 Documentation        Built-in runbooks and operational notes
- - 🔑 Licence Management   Organise software licences and keys
- - 👥 Multi-user           Role-based access control
- - 📝 Audit Logs           Track important actions
- - 📁 File Storage         Secure document uploads
- - ⚡ Lightweight          Fast, simple and self-hosted
+ | Feature                | Description                                     |
+ |------------------------|-------------------------------------------------|
+ | 🖥️ Infrastructure      | Manage servers, VMs, devices and assets         |
+ | 🐳 Docker              | Monitor Docker hosts and containers             |
+ | 🔐 Remote Access       | Browser-based SSH and RDP with session recording|
+ | 🌐 Networking          | IP addresses, VLANs, DNS, domains and WAN links |
+ | 📚 Documentation       | Built-in runbooks and operational notes         |
+ | 🔑 Licence Management  | Organise software licences and keys             |
+ | 👥 Multi-user          | Role-based access control                       |
+ | 📝 Audit Logs          | Track important actions                         |
+ | 📁 File Storage        | Secure document uploads                         |
+ | ⚡ Lightweight         | Fast, simple and self-hosted                    |
 
 ------------------------------------------------------------------------
 
