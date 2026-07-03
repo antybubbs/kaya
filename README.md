@@ -1,32 +1,22 @@
-# 🏡 Kaya
+<p align="center">
+  <img src="app/static/brand/logo.jpg" width="140">
+</p>
 
-```{=html}
-<p align="center">
-```
-`<img src="docs/assets/logo.png" alt="Kaya Logo" width="180">`{=html}
-```{=html}
-</p>
-```
-```{=html}
-<p align="center">
-```
-`<b>`{=html}Your Infrastructure. Your Home.`</b>`{=html}`<br>`{=html} A
-modern, self-hosted infrastructure platform for people who build, run
-and care about their own systems.
-```{=html}
-</p>
-```
-```{=html}
-<p align="center">
-```
-![License](https://img.shields.io/badge/License-GPLv3-blue.svg)
-![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)
-![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)
-![Platform](https://img.shields.io/badge/Platform-Linux-success)
+<h1 align="center">Kaya</h1>
 
-```{=html}
+<p align="center">
+Your Infrastructure. Your Home.
 </p>
-```
+
+<p align="center">
+A beautiful self-hosted infrastructure management platform built for homelabs, businesses and modern IT teams.
+</p>
+
+<p align="center">
+
+[Documentation] • [Demo] • [Docker Hub] • [Releases]
+
+</p>
 
 ------------------------------------------------------------------------
 
