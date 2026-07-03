@@ -1,39 +1,34 @@
-<p align="center">
-  <img src="app/static/brand/logo.jpg" width="140">
-</p>
+# Kaya
 
-<h1 align="center">Kaya</h1>
+> **Your Infrastructure. Your Home.**
+>
+> A modern, self-hosted infrastructure platform built for homelabs,
+> businesses and IT professionals who want complete control of their
+> infrastructure.
 
-<p align="center">
-Your Infrastructure. Your Home.
-</p>
-
-<p align="center">
-A beautiful self-hosted infrastructure management platform built for homelabs, businesses and modern IT teams.
-</p>
-
-<p align="center">
-
-[Documentation] • [Demo] • [Docker Hub] • [Releases]
-
-</p>
+![GitHub
+release](https://img.shields.io/github/v/release/antybubbs/kaya)
+![License](https://img.shields.io/github/license/antybubbs/kaya)
+![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)
 
 ------------------------------------------------------------------------
 
-## Why Kaya?
+## Welcome Home
 
-Infrastructure grows.
+Most infrastructure doesn't stay small.
 
-What starts as a Raspberry Pi, a Docker host or a small server quickly
-becomes dozens of services, virtual machines, IP addresses,
-certificates, containers and notes spread across bookmarks, spreadsheets
-and sticky notes.
+A Raspberry Pi becomes a server. One Docker container becomes twenty. A
+virtual machine becomes a cluster. Before long you're juggling IP
+addresses, documentation, credentials, licences, runbooks and bookmarks
+across half a dozen different places.
 
-Kaya brings everything together into one beautiful workspace.
+**Kaya brings it all together.**
 
-Whether you're running a homelab, managing a business, hosting customer
-environments or simply love self-hosting, Kaya gives you a single place
-to understand your infrastructure.
+Named after the Southern African word for **home**, Kaya gives your
+infrastructure a place to belong. Whether you're managing a homelab, a
+business environment or customer systems, Kaya provides one clean,
+modern workspace to organise everything that matters.
 
 No subscriptions.
 
@@ -47,35 +42,51 @@ Just your infrastructure, your data and your rules.
 
 # ✨ Features
 
--   🌐 Infrastructure inventory
--   🖥️ Servers, VMs and containers
--   🔐 Browser-based SSH & RDP
--   🌍 Domains, DNS and networking
--   📦 Docker monitoring
--   📚 Runbooks & documentation
--   🔑 Licence management
--   👥 Multi-user with role-based access
--   📝 Audit logging
--   📁 Secure file uploads
--   ⚡ Fast, lightweight and self-hosted
+  Feature                 Description
+  ----------------------- -------------------------------------------------
+  �️ Infrastructure       Manage servers, VMs, devices and assets
+  � Docker               Monitor Docker hosts and containers
+  � Remote Access        Browser-based SSH and RDP
+  � Networking           IP addresses, VLANs, DNS, domains and WAN links
+  � Documentation        Built-in runbooks and operational notes
+  � Licence Management   Organise software licences and keys
+  � Multi-user           Role-based access control
+  � Audit Logs           Track important actions
+  � File Storage         Secure document uploads
+  ⚡ Lightweight          Fast, simple and self-hosted
 
 ------------------------------------------------------------------------
 
-# 🚀 Quick Start
+# � Screenshots
+
+> *Screenshots coming soon.*
+
+-   Dashboard
+-   Infrastructure
+-   Remote Manager
+-   Networking
+-   Documentation
+-   Settings
+
+------------------------------------------------------------------------
+
+# � Quick Start
 
 ## Prerequisites
 
 -   Docker
 -   Docker Compose
 
-## Installation
+Clone the repository:
 
 ``` bash
-mkdir -p /opt/kaya
-cd /opt/kaya
+git clone https://github.com/antybubbs/kaya.git
+cd kaya
+```
 
-curl -fsSLO https://raw.githubusercontent.com/antybubbs/kaya/main/docker-compose.yml
+Start Kaya:
 
+``` bash
 docker compose up -d
 ```
 
@@ -85,16 +96,20 @@ Open your browser:
 http://SERVER-IP:8080/setup
 ```
 
-Complete the first-run setup wizard to create your administrator
-account.
+Complete the setup wizard to create your administrator account.
+
+Within a few moments Kaya will:
+
+-   Generate its application secrets
+-   Create the SQLite database
+-   Prepare persistent storage
+-   Guide you through first-time setup
 
 ------------------------------------------------------------------------
 
-# 🐳 Docker Compose
+# � Docker Compose
 
 ``` yaml
-name: kaya
-
 services:
   kaya:
     image: ghcr.io/antybubbs/kaya:latest
@@ -122,7 +137,7 @@ services:
     restart: unless-stopped
 ```
 
-Start Kaya:
+Launch:
 
 ``` bash
 docker compose up -d
@@ -130,18 +145,18 @@ docker compose up -d
 
 ------------------------------------------------------------------------
 
-# 📂 Persistent Data
+# � Persistent Data
 
-  Folder        Purpose
+  Path          Description
   ------------- -------------------------------
   `./data`      Database and application data
-  `./uploads`   User uploaded files
+  `./uploads`   User uploads
 
-Back up both folders regularly.
+Back up these folders regularly.
 
 ------------------------------------------------------------------------
 
-# 🔄 Updating
+# � Updating
 
 ``` bash
 docker compose pull
@@ -150,62 +165,81 @@ docker compose up -d
 
 ------------------------------------------------------------------------
 
-# 🌍 Reverse Proxy
+# � Reverse Proxy
 
-Kaya works behind Nginx, Caddy, Traefik and other reverse proxies.
+Kaya works behind Nginx, Caddy, Traefik and Cloudflare.
 
-Set:
+Typical environment variables:
 
 ``` env
 BASE_URL=https://kaya.example.com
-SESSION_COOKIE_SECURE=true
 ALLOWED_HOSTS=kaya.example.com
+SESSION_COOKIE_SECURE=true
 ```
 
 ------------------------------------------------------------------------
 
-# 🤖 AI Development
+# �️ Architecture
 
-Kaya is developed with assistance from OpenAI Codex inside Visual Studio
-Code.
-
-AI helps accelerate development by suggesting implementations,
-identifying improvements and reducing repetitive work. Every change is
-reviewed, tested and validated before becoming part of the project.
-
-Human judgement always has the final say.
-
-------------------------------------------------------------------------
-
-# ❤️ Philosophy
-
-Kaya is named after the Southern African word meaning **home**.
-
-It reflects the idea that your infrastructure should feel like your own
-space: organised, trusted and entirely under your control.
+``` text
+Browser
+   │
+Reverse Proxy
+   │
+Kaya
+├── SQLite Database
+├── Upload Storage
+└── Guacamole (SSH / RDP)
+```
 
 ------------------------------------------------------------------------
 
-# 🗺️ Roadmap
+# �️ Roadmap
 
--   Mobile companion
--   API expansion
--   High Availability
--   Notifications
--   Plugin framework
--   Metrics dashboards
--   Additional infrastructure integrations
-
-------------------------------------------------------------------------
-
-# 🤝 Contributing
-
-Bug reports, ideas and pull requests are always welcome.
-
-If you've built something cool with Kaya, we'd love to see it.
+-   ✅ Infrastructure Management
+-   ✅ Browser-based Remote Access
+-   ✅ Documentation & Runbooks
+-   � Monitoring & Metrics
+-   � REST API Expansion
+-   � Notifications
+-   � Mobile Companion
+-   � High Availability
 
 ------------------------------------------------------------------------
 
-# 📄 Licence
+# � AI-Assisted Development
 
-GPL-3.0
+Kaya is developed by a human developer with AI acting as a development
+assistant.
+
+AI is used to speed up repetitive coding tasks, explore implementation
+ideas and improve productivity. Every suggestion is reviewed, tested and
+refined before becoming part of the project.
+
+The architecture, security decisions and overall direction of Kaya
+remain entirely human-led.
+
+------------------------------------------------------------------------
+
+# � Contributing
+
+Ideas, bug reports, feature requests and pull requests are always
+welcome.
+
+If you've built something with Kaya or have suggestions to improve it,
+we'd love to hear from you.
+
+------------------------------------------------------------------------
+
+# ❤️ Why "Kaya"?
+
+*Kaya* means **home** in several Southern African languages.
+
+It reflects the philosophy behind the project: your infrastructure
+should feel organised, trusted and completely under your control.
+
+------------------------------------------------------------------------
+
+# � Licence
+
+Licensed under **GPL-3.0**.
