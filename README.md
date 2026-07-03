@@ -16,12 +16,12 @@ release](https://img.shields.io/github/v/release/antybubbs/kaya)
 
 ## Welcome Home
 
-Most infrastructure doesn't stay small.
+Lets be honest, homelab infrastrcuture never stays small.
 
 A Raspberry Pi becomes a server. One Docker container becomes twenty. A
 virtual machine becomes a cluster. Before long you're juggling IP
 addresses, documentation, credentials, licences, runbooks and bookmarks
-across half a dozen different places.
+across half a dozen different places all while trying to keep your end users (family, friends) happy!
 
 **Kaya brings it all together.**
 
@@ -42,18 +42,16 @@ Just your infrastructure, your data and your rules.
 
 # ✨ Features
 
-  Feature                 Description
-  ----------------------- -------------------------------------------------
-  🖥️ Infrastructure       Manage servers, VMs, devices and assets
-  🐳 Docker               Monitor Docker hosts and containers
-  🔐 Remote Access        Browser-based SSH and RDP
-  🌐 Networking           IP addresses, VLANs, DNS, domains and WAN links
-  📚 Documentation        Built-in runbooks and operational notes
-  🔑 Licence Management   Organise software licences and keys
-  👥 Multi-user           Role-based access control
-  📝 Audit Logs           Track important actions
-  📁 File Storage         Secure document uploads
-  ⚡ Lightweight          Fast, simple and self-hosted
+ - 🖥️ Infrastructure       Manage servers, VMs, devices and assets
+ - 🐳 Docker               Monitor Docker hosts and containers
+ - 🔐 Remote Access        Browser-based SSH and RDP
+ - 🌐 Networking           IP addresses, VLANs, DNS, domains and WAN links
+ - 📚 Documentation        Built-in runbooks and operational notes
+ - 🔑 Licence Management   Organise software licences and keys
+ - 👥 Multi-user           Role-based access control
+ - 📝 Audit Logs           Track important actions
+ - 📁 File Storage         Secure document uploads
+ - ⚡ Lightweight          Fast, simple and self-hosted
 
 ------------------------------------------------------------------------
 
