@@ -125,8 +125,9 @@ body.remote-resizing{cursor:col-resize;user-select:none}
 .remote-panel-body.has-popout-bar{display:grid;grid-template-rows:42px minmax(0,1fr)}
 .remote-panel-body .remote-session-frame{height:100%;min-height:0}
 .remote-popout-tabbar{align-items:stretch;background:#121827;border-bottom:1px solid var(--line);display:flex;min-height:42px;min-width:0}
-.remote-popout-tab{align-items:center;background:#07111d;border-bottom:2px solid #ff8a00;border-right:1px solid var(--line);color:#fff;display:flex;gap:9px;min-width:min(520px,100%);padding:0 10px}
-.remote-popout-tab .remote-recording-tools{margin-left:8px}
+.remote-popout-tab{align-items:center;background:#07111d;border-bottom:2px solid #ff8a00;color:#fff;display:flex;flex:1 1 auto;gap:9px;min-width:0;padding:0 10px}
+.remote-popout-tab .remote-tab-title{flex:0 1 auto;max-width:min(360px,40vw)}
+.remote-popout-tab .remote-recording-tools{margin-left:auto}
 .rdp-display-shell{background:#050706;height:100%;min-height:0;outline:none;overflow:hidden;position:relative}
 .rdp-display{align-items:center;display:flex;height:100%;justify-content:center;min-height:0;overflow:hidden;position:relative;width:100%}
 .rdp-display .rdp-guac-display{cursor:none}
