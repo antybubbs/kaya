@@ -60,7 +60,14 @@ SITE_SETTING_KEYS = {
     "app_name": APP_BRAND_NAME,
     "base_url": "http://localhost:8080",
     "max_upload_mb": "25",
+    "trusted_hosts_enabled": "",
     "allowed_hosts": "",
+    "csp_frame_ancestors": "self",
+    "csp_frame_ancestor_sources": "",
+    "hsts_enabled": "",
+    "hsts_include_subdomains": "",
+    "hsts_max_age": "31536000",
+    "rdp_token_ttl_minutes": "10",
     "guacd_host": "",
     "guacd_port": "4822",
     "smtp_enabled": "",
@@ -169,6 +176,58 @@ def save_email_settings(
     for key, value in settings_to_save.items():
         save_site_setting(db, key, value)
     save_smtp_password(db, smtp_password)
+
+
+def save_security_settings(
+    db: Session,
+    *,
+    trusted_hosts_enabled: str,
+    allowed_hosts: str,
+    csp_frame_ancestors: str,
+    csp_frame_ancestor_sources: str,
+    hsts_enabled: str,
+    hsts_include_subdomains: str,
+    hsts_max_age: str,
+    rdp_token_ttl_minutes: str,
+) -> None:
+    if csp_frame_ancestors not in {"none", "self", "custom"}:
+        csp_frame_ancestors = "self"
+    try:
+        clean_hsts_max_age = str(max(300, min(int(hsts_max_age or 31536000), 63072000)))
+    except ValueError:
+        clean_hsts_max_age = "31536000"
+    try:
+        clean_rdp_ttl = str(max(5, min(int(rdp_token_ttl_minutes or 10), 60)))
+    except ValueError:
+        clean_rdp_ttl = "10"
+
+    settings_to_save = {
+        "trusted_hosts_enabled": "1" if trusted_hosts_enabled else "",
+        "allowed_hosts": allowed_hosts,
+        "csp_frame_ancestors": csp_frame_ancestors,
+        "csp_frame_ancestor_sources": csp_frame_ancestor_sources,
+        "hsts_enabled": "1" if hsts_enabled else "",
+        "hsts_include_subdomains": "1" if hsts_include_subdomains else "",
+        "hsts_max_age": clean_hsts_max_age,
+        "rdp_token_ttl_minutes": clean_rdp_ttl,
+    }
+    for key, value in settings_to_save.items():
+        save_site_setting(db, key, value)
+
+
+def include_current_host(allowed_hosts: str, request: Request) -> str:
+    current_host = request.headers.get("host", "").strip()
+    if not current_host:
+        return allowed_hosts
+    existing = {
+        part.strip().lower()
+        for part in str(allowed_hosts or "").replace("\r", "\n").replace(",", "\n").split("\n")
+        if part.strip()
+    }
+    if current_host.lower() in existing:
+        return allowed_hosts
+    separator = "\n" if allowed_hosts.strip() else ""
+    return f"{allowed_hosts.strip()}{separator}{current_host}"
 
 
 @router.get("/admin")
@@ -1348,6 +1407,14 @@ def save_settings(
     guacd_host: str = Form(""),
     guacd_port: str = Form(""),
     max_upload_mb: str = Form("25"),
+    trusted_hosts_enabled: str = Form(""),
+    allowed_hosts: str = Form(""),
+    csp_frame_ancestors: str = Form("self"),
+    csp_frame_ancestor_sources: str = Form(""),
+    hsts_enabled: str = Form(""),
+    hsts_include_subdomains: str = Form(""),
+    hsts_max_age: str = Form("31536000"),
+    rdp_token_ttl_minutes: str = Form("10"),
     smtp_enabled: str = Form(""),
     smtp_host: str = Form(""),
     smtp_port: str = Form("587"),
@@ -1386,6 +1453,19 @@ def save_settings(
         email_template_password_reset_subject=email_template_password_reset_subject,
         email_template_password_reset_body=email_template_password_reset_body,
     )
+    if trusted_hosts_enabled:
+        allowed_hosts = include_current_host(allowed_hosts, request)
+    save_security_settings(
+        db,
+        trusted_hosts_enabled=trusted_hosts_enabled,
+        allowed_hosts=allowed_hosts,
+        csp_frame_ancestors=csp_frame_ancestors,
+        csp_frame_ancestor_sources=csp_frame_ancestor_sources,
+        hsts_enabled=hsts_enabled,
+        hsts_include_subdomains=hsts_include_subdomains,
+        hsts_max_age=hsts_max_age,
+        rdp_token_ttl_minutes=rdp_token_ttl_minutes,
+    )
 
     db.commit()
 
@@ -1422,6 +1502,14 @@ def send_test_email(
     guacd_host: str = Form(""),
     guacd_port: str = Form(""),
     max_upload_mb: str = Form("25"),
+    trusted_hosts_enabled: str = Form(""),
+    allowed_hosts: str = Form(""),
+    csp_frame_ancestors: str = Form("self"),
+    csp_frame_ancestor_sources: str = Form(""),
+    hsts_enabled: str = Form(""),
+    hsts_include_subdomains: str = Form(""),
+    hsts_max_age: str = Form("31536000"),
+    rdp_token_ttl_minutes: str = Form("10"),
     smtp_enabled: str = Form(""),
     smtp_host: str = Form(""),
     smtp_port: str = Form("587"),
@@ -1460,6 +1548,19 @@ def send_test_email(
         smtp_from_name=smtp_from_name,
         email_template_password_reset_subject=email_template_password_reset_subject,
         email_template_password_reset_body=email_template_password_reset_body,
+    )
+    if trusted_hosts_enabled:
+        allowed_hosts = include_current_host(allowed_hosts, request)
+    save_security_settings(
+        db,
+        trusted_hosts_enabled=trusted_hosts_enabled,
+        allowed_hosts=allowed_hosts,
+        csp_frame_ancestors=csp_frame_ancestors,
+        csp_frame_ancestor_sources=csp_frame_ancestor_sources,
+        hsts_enabled=hsts_enabled,
+        hsts_include_subdomains=hsts_include_subdomains,
+        hsts_max_age=hsts_max_age,
+        rdp_token_ttl_minutes=rdp_token_ttl_minutes,
     )
     db.commit()
 

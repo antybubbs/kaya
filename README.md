@@ -102,6 +102,8 @@ For hardened installs, set `ALLOWED_HOSTS` to your known hostnames or IPs. When 
 
 Complete the setup wizard to create your administrator account.
 
+After first sign-in, open **System Settings -> Site Administration -> Security** to harden the install. This page lets admins restrict trusted hostnames, tune frame-embedding rules, enable HTTPS security headers and shorten browser RDP token lifetime without editing an environment file.
+
 Within a few moments Kaya will:
 
 -   Generate its application secrets
@@ -190,6 +192,8 @@ SESSION_COOKIE_SECURE=true
 These are optional hardening settings. Kaya will still work through a reverse proxy without them, but `BASE_URL` should be set before enabling password reset emails so links point at the public address.
 
 When Kaya sits behind a reverse proxy on the same host, you can bind the container to loopback with `127.0.0.1:8080:8080` and let the proxy be the public entry point.
+
+The same host allow-list and HTTPS hardening can also be managed from **System Settings -> Site Administration -> Security** after setup.
 
 ------------------------------------------------------------------------
 

@@ -83,7 +83,7 @@ a:hover,.panel a:hover{color:#ffd08a}
 .button.secondary:hover,.ghost:hover,.icon-button:hover,.table-settings>summary:hover,.category-tabs a:hover,.compute-tabs a:hover,.runbook-view-toggle .button:hover,.runbook-editor-toolbar>button:hover,.runbook-editor-toolbar>button:focus-visible,.runbook-code-copy:hover,.remote-host-toolbar button:hover,.remote-host-toolbar a:hover,.remote-layout-button:hover,.remote-tab-tool:hover,.remote-protocol-icon:hover{background:rgba(255,138,0,.13);border-color:rgba(255,138,0,.34);color:#fff}
 .category-tabs a.active,.compute-tabs a.active,.runbook-view-toggle .button.active,.remote-layout-button.active{background:rgba(255,138,0,.17);border-color:rgba(255,138,0,.5);box-shadow:inset 0 -2px 0 var(--kaya-orange);color:#fff}
 .site-admin-form{max-width:1040px}
-.settings-tab-panel{max-width:680px}
+.settings-tab-panel{max-width:860px}
 .site-admin-tabs button{background:#161c24;border:1px solid #2b3340;border-radius:8px;color:#b9c2cf;font-size:13px;min-height:38px;padding:9px 15px;transition:background .12s,border-color .12s,color .12s,box-shadow .12s}
 .site-admin-tabs button:hover{background:#202835;border-color:rgba(255,138,0,.38);color:#f8fafc}
 .site-admin-tabs button.active,.site-admin-tabs button[aria-selected=true]{background:#1b2430;border-color:rgba(255,138,0,.55);box-shadow:inset 0 -2px 0 var(--kaya-orange);color:#fff}

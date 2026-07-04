@@ -25,6 +25,7 @@ from app.models.models import RemoteAccess, RemoteManagerSetting, RemoteSessionR
 from app.routers.auth import require_admin, require_editor, require_user
 from app.services.audit import write_audit
 from app.services.guacamole_bridge import restart_guacamole_bridge, start_guacamole_bridge
+from app.services.site_settings import get_site_setting
 
 router = APIRouter(prefix="/remote-manager")
 templates = Jinja2Templates(directory="app/templates")
@@ -70,7 +71,7 @@ SETTINGS = {
 TERMINAL_SETTING_KEYS = [key for key in SETTINGS if key.startswith("terminal_")]
 RDP_SETTING_KEYS = [key for key in SETTINGS if key.startswith("rdp_")]
 SETTING_KEYS = set(SETTINGS)
-RDP_TOKEN_TTL_SECONDS = 10 * 60
+DEFAULT_RDP_TOKEN_TTL_MINUTES = 10
 GUACAMOLE_LITE_URL = "ws://127.0.0.1:30008"
 RECORDING_ROOT = Path("/app/data/remote-recordings")
 
@@ -376,9 +377,20 @@ def set_setting(db: Session, key: str, value: str) -> None:
 
 def cleanup_rdp_tokens() -> None:
     now = time.time()
-    expired = [token for token, session in rdp_tokens.items() if now - session.created_at > RDP_TOKEN_TTL_SECONDS]
+    expired = [token for token, session in rdp_tokens.items() if now - session.created_at > rdp_token_ttl_seconds()]
     for token in expired:
         rdp_tokens.pop(token, None)
+
+
+def rdp_token_ttl_seconds() -> int:
+    db = SessionLocal()
+    try:
+        minutes = int(get_site_setting(db, "rdp_token_ttl_minutes") or DEFAULT_RDP_TOKEN_TTL_MINUTES)
+    except ValueError:
+        minutes = DEFAULT_RDP_TOKEN_TTL_MINUTES
+    finally:
+        db.close()
+    return max(5, min(minutes, 60)) * 60
 
 
 def guac_element(value: object) -> str:

@@ -23,6 +23,7 @@
 
   <div class="category-tabs site-admin-tabs" role="tablist" aria-label="Site administration sections">
     <button type="button" class="active" data-settings-tab="general" role="tab" aria-selected="true">General</button>
+    <button type="button" data-settings-tab="security" role="tab" aria-selected="false">Security</button>
     <button type="button" data-settings-tab="uploads" role="tab" aria-selected="false">Uploads</button>
     <button type="button" data-settings-tab="email" role="tab" aria-selected="false">Email</button>
     <button type="button" data-settings-tab="email-templates" role="tab" aria-selected="false">Email Templates</button>
@@ -35,8 +36,64 @@
       <div class="remote-settings-grid">
         <label>
           <strong>Base URL</strong>
-          <small>The public URL used for links in emails and integrations. Hardened installs can also set ALLOWED_HOSTS in the container environment.</small>
+          <small>The public URL used for links in emails and integrations.</small>
           <input name="base_url" type="url" value="{{ settings.get('base_url', '') }}" placeholder="http://localhost:8080">
+        </label>
+      </div>
+    </div>
+  </section>
+
+  <section class="settings-tab-panel" data-settings-panel="security" role="tabpanel" hidden>
+    <h2>Security</h2>
+
+    <div class="remote-settings-card" id="security">
+      <header><span>Host and proxy hardening</span></header>
+      {{ switch('trusted_hosts_enabled', 'Restrict trusted hosts', 'Reject requests whose Host header is not in the allow-list. Leave this off for first install or changing proxy/IP setups.') }}
+      <div class="remote-settings-grid">
+        <label>
+          <strong>Allowed hosts</strong>
+          <small>One hostname or IP per line, or comma-separated. Include the address users type in their browser, for example kaya.example.com, 185.241.225.58, or *.example.com.</small>
+          <textarea name="allowed_hosts" rows="4" placeholder="kaya.example.com&#10;185.241.225.58">{{ settings.get('allowed_hosts', '') }}</textarea>
+        </label>
+      </div>
+    </div>
+
+    <div class="remote-settings-card">
+      <header><span>Browser security headers</span></header>
+      <div class="remote-settings-grid">
+        <label>
+          <strong>Frame embedding policy</strong>
+          <small>Controls which sites can embed Kaya in a frame. Self only is the safest default for normal installs.</small>
+          <select name="csp_frame_ancestors">
+            <option value="self" {% if settings.get('csp_frame_ancestors', 'self') == 'self' %}selected{% endif %}>Self only</option>
+            <option value="none" {% if settings.get('csp_frame_ancestors') == 'none' %}selected{% endif %}>Block all framing</option>
+            <option value="custom" {% if settings.get('csp_frame_ancestors') == 'custom' %}selected{% endif %}>Self plus trusted sites</option>
+          </select>
+        </label>
+        <label>
+          <strong>Trusted frame sources</strong>
+          <small>Only used by "Self plus trusted sites". Use full origins such as https://portal.example.com.</small>
+          <textarea name="csp_frame_ancestor_sources" rows="3" placeholder="https://portal.example.com">{{ settings.get('csp_frame_ancestor_sources', '') }}</textarea>
+        </label>
+      </div>
+      {{ switch('hsts_enabled', 'Enable HSTS', 'Tell browsers to use HTTPS for future visits. Enable only after HTTPS is working through your reverse proxy.') }}
+      {{ switch('hsts_include_subdomains', 'Include subdomains in HSTS', 'Apply the HTTPS-only rule to subdomains too. Use only if all subdomains are HTTPS-ready.') }}
+      <div class="remote-settings-grid">
+        <label>
+          <strong>HSTS max age</strong>
+          <small>How long browsers remember the HTTPS-only rule, in seconds. 31536000 is one year.</small>
+          <input name="hsts_max_age" type="number" min="300" max="63072000" value="{{ settings.get('hsts_max_age', '31536000') }}">
+        </label>
+      </div>
+    </div>
+
+    <div class="remote-settings-card">
+      <header><span>Remote access tokens</span></header>
+      <div class="remote-settings-grid">
+        <label>
+          <strong>RDP token lifetime</strong>
+          <small>Minutes that a prepared browser RDP handoff token can be used. Shorter is safer; 5 to 15 minutes is recommended.</small>
+          <input name="rdp_token_ttl_minutes" type="number" min="5" max="60" value="{{ settings.get('rdp_token_ttl_minutes', '10') }}">
         </label>
       </div>
     </div>
