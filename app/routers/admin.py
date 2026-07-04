@@ -43,7 +43,14 @@ from app.services.importer import ImportCSVError, import_csv, import_ip_addresse
 from app.services.managed_lists import MANAGED_LIST_MODULES, MANAGED_LISTS, list_label
 from app.services.mail import MailConfigurationError, render_email_template, send_mail
 from app.services.sessions import active_since
-from app.services.site_settings import get_site_setting
+from app.services.site_settings import (
+    effective_allowed_hosts,
+    frame_ancestor_directive,
+    get_site_setting,
+    host_is_allowed,
+    hsts_header_value,
+    load_security_settings,
+)
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
@@ -228,6 +235,31 @@ def include_current_host(allowed_hosts: str, request: Request) -> str:
         return allowed_hosts
     separator = "\n" if allowed_hosts.strip() else ""
     return f"{allowed_hosts.strip()}{separator}{current_host}"
+
+
+def security_check_context(request: Request, db: Session) -> dict[str, object]:
+    app_settings = get_settings()
+    security = load_security_settings(db)
+    allowed_hosts = effective_allowed_hosts(security, app_settings)
+    current_host = request.headers.get("host", "")
+    host_filter_enabled = security.get("trusted_hosts_enabled") == "1" or bool(app_settings.allowed_hosts.strip())
+    request_is_https = (
+        request.url.scheme == "https"
+        or request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip() == "https"
+    )
+    hsts_enabled = security.get("hsts_enabled") == "1" or app_settings.session_cookie_secure
+    return {
+        "current_host": current_host,
+        "host_filter_enabled": host_filter_enabled,
+        "host_allowed": (not host_filter_enabled) or host_is_allowed(current_host, allowed_hosts),
+        "allowed_hosts": allowed_hosts,
+        "frame_ancestors": frame_ancestor_directive(security),
+        "hsts_enabled": hsts_enabled,
+        "hsts_active": request_is_https and hsts_enabled,
+        "hsts_header": hsts_header_value(security) if hsts_enabled else "",
+        "request_is_https": request_is_https,
+        "rdp_token_ttl_minutes": security.get("rdp_token_ttl_minutes") or "10",
+    }
 
 
 @router.get("/admin")
@@ -1390,6 +1422,7 @@ def settings_page(
         {
             "user": user,
             "settings": load_site_settings(db),
+            "security_check": security_check_context(request, db),
             "message": None,
             "error": None,
             **csrf_context(request),
@@ -1485,6 +1518,7 @@ def save_settings(
         {
             "user": user,
             "settings": load_site_settings(db),
+            "security_check": security_check_context(request, db),
             "message": "Settings saved successfully.",
             "error": None,
             **csrf_context(request),
@@ -1607,6 +1641,7 @@ def send_test_email(
         {
             "user": user,
             "settings": load_site_settings(db),
+            "security_check": security_check_context(request, db),
             "message": message,
             "error": error,
             "test_email_to": recipient,

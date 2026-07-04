@@ -46,14 +46,60 @@
   <section class="settings-tab-panel" data-settings-panel="security" role="tabpanel" hidden>
     <h2>Security</h2>
 
+    {% if security_check %}
+    <div class="remote-settings-card">
+      <header><span>Current security check</span></header>
+      <div class="security-check-grid">
+        <div>
+          <span>Current host</span>
+          <strong class="mono">{{ security_check.current_host or 'unknown' }}</strong>
+          <small>The Host header Kaya is seeing for this browser request.</small>
+        </div>
+        <div>
+          <span>Trusted host check</span>
+          {% if security_check.host_filter_enabled %}
+            <strong class="table-chip {% if security_check.host_allowed %}good{% else %}danger-chip{% endif %}">{% if security_check.host_allowed %}Passing{% else %}Blocked{% endif %}</strong>
+            <small>{% if security_check.host_allowed %}This host is in the effective allow-list.{% else %}Saving this would block the current browser host.{% endif %}</small>
+          {% else %}
+            <strong class="table-chip muted-chip">Not enforced</strong>
+            <small>Host filtering is off, so direct IPs and changing reverse proxies keep working.</small>
+          {% endif %}
+        </div>
+        <div>
+          <span>Frame ancestors</span>
+          <strong class="mono">{{ security_check.frame_ancestors }}</strong>
+          <small>The value Kaya will send in Content-Security-Policy.</small>
+        </div>
+        <div>
+          <span>HSTS</span>
+          {% if security_check.hsts_active %}
+            <strong class="table-chip good">Active</strong>
+            <small class="mono">{{ security_check.hsts_header }}</small>
+          {% elif security_check.hsts_enabled %}
+            <strong class="table-chip muted-chip">Waiting for HTTPS</strong>
+            <small>HSTS is configured, but this request was not HTTPS.</small>
+          {% else %}
+            <strong class="table-chip muted-chip">Off</strong>
+            <small>Browsers will not be told to force HTTPS yet.</small>
+          {% endif %}
+        </div>
+        <div>
+          <span>RDP token lifetime</span>
+          <strong>{{ security_check.rdp_token_ttl_minutes }} minutes</strong>
+          <small>Browser RDP handoff tokens expire after this time.</small>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
     <div class="remote-settings-card" id="security">
       <header><span>Host and proxy hardening</span></header>
       {{ switch('trusted_hosts_enabled', 'Restrict trusted hosts', 'Reject requests whose Host header is not in the allow-list. Leave this off for first install or changing proxy/IP setups.') }}
       <div class="remote-settings-grid">
         <label>
           <strong>Allowed hosts</strong>
-          <small>One hostname or IP per line, or comma-separated. Include the address users type in their browser, for example kaya.example.com, 185.241.225.58, or *.example.com.</small>
-          <textarea name="allowed_hosts" rows="4" placeholder="kaya.example.com&#10;185.241.225.58">{{ settings.get('allowed_hosts', '') }}</textarea>
+          <small>One hostname or IP per line, or comma-separated. Include the address users type in their browser, for example kaya.example.com, xxx.xxx.xxx.xxx, or *.example.com.</small>
+          <textarea name="allowed_hosts" rows="4" placeholder="kaya.example.com&#10;xxx.xxx.xxx.xxx">{{ settings.get('allowed_hosts', '') }}</textarea>
         </label>
       </div>
     </div>

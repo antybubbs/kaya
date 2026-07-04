@@ -104,6 +104,8 @@ Complete the setup wizard to create your administrator account.
 
 After first sign-in, open **System Settings -> Site Administration -> Security** to harden the install. This page lets admins restrict trusted hostnames, tune frame-embedding rules, enable HTTPS security headers and shorten browser RDP token lifetime without editing an environment file.
 
+The Security tab includes a current-request check so admins can confirm the host allow-list, frame policy, HSTS state and RDP token lifetime after saving.
+
 Within a few moments Kaya will:
 
 -   Generate its application secrets

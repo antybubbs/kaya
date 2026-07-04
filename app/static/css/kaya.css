@@ -91,6 +91,12 @@ a:hover,.panel a:hover{color:#ffd08a}
 .settings-tab-panel .remote-settings-card{background:#14171d!important;border-color:#2a303a!important}
 .settings-tab-panel .remote-settings-card .remote-setting-row{border-bottom-color:#2a303a}
 .settings-tab-panel .remote-settings-card .remote-settings-grid{background:transparent}
+.security-check-grid{display:grid;gap:12px;grid-template-columns:repeat(2,minmax(0,1fr));padding:14px}
+.security-check-grid div{background:#10141a;border:1px solid #2a303a;border-radius:8px;display:grid;gap:6px;min-width:0;padding:12px}
+.security-check-grid span{color:#9ca3af;font-size:12px;font-weight:850;text-transform:uppercase}
+.security-check-grid strong{overflow-wrap:anywhere}
+.security-check-grid small{color:#9ca3af;font-size:12px;line-height:1.35}
+.table-chip.danger-chip{background:rgba(239,68,68,.11);border-color:rgba(239,68,68,.34);color:#fca5a5}
 .panel th,.table-head th{color:#ffc477!important}
 .table-chip{background:rgba(255,138,0,.1);border-color:rgba(255,138,0,.26);color:#ffd08a}
 .table-chip.muted-chip{background:rgba(156,163,175,.1);border-color:rgba(156,163,175,.22);color:#cbd5e1}
@@ -228,6 +234,8 @@ html[data-kaya-theme=light-ops] .site-admin-tabs button.active,html[data-kaya-th
 html[data-kaya-theme=light-ops] .site-admin-actions,html[data-kaya-theme=light-ops] .remote-settings-actions{border-top:0!important}
 html[data-kaya-theme=light-ops] .settings-tab-panel .remote-settings-card{background:#fff!important;border-color:#d8dee8!important}
 html[data-kaya-theme=light-ops] .settings-tab-panel .remote-settings-card .remote-setting-row{border-bottom-color:#d8dee8}
+html[data-kaya-theme=light-ops] .security-check-grid div{background:#f8fafc;border-color:#d8dee8}
+html[data-kaya-theme=light-ops] .security-check-grid span,html[data-kaya-theme=light-ops] .security-check-grid small{color:#64748b}
 
 /* Global hero treatment and blue-surface cleanup */
 .topbar,.module-header,.record-hero,.about-hero,.audit-hero,.dashboard-hero,.compute-hero{background:radial-gradient(circle at 86% 8%,rgba(255,138,0,.11),transparent 36%),#12161c!important;border-color:#252c36!important}
@@ -258,7 +266,7 @@ html[data-kaya-theme=command] .remote-card{background:#14171d!important;border-c
 html[data-kaya-theme=command] .table-scroll thead th,
 html[data-kaya-theme=command] .audit-table th{background:#1a1f27!important;border-bottom-color:#303845!important}
 
-@media(max-width:900px){.site-admin-form,.settings-tab-panel{max-width:none}}
+@media(max-width:900px){.site-admin-form,.settings-tab-panel{max-width:none}.security-check-grid{grid-template-columns:1fr}}
 
 /* Sidebar selected modules: remove orange outline/rail */
 .sidebar .nav-link.active,
