@@ -1,9 +1,6 @@
 import asyncio
-import base64
-import hashlib
 import json
 import shutil
-import secrets
 import subprocess
 import time
 from dataclasses import dataclass
@@ -19,11 +16,10 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
 from starlette import status
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from cryptography.hazmat.primitives import padding
 
 from app.core.config import get_settings
 from app.core.csrf import csrf_context, validate_csrf_token
+from app.core.security import encrypt_secret
 from app.db.session import SessionLocal, get_db
 from app.models.models import RemoteAccess, RemoteManagerSetting, RemoteSessionRecording, User
 from app.routers.auth import require_admin, require_editor, require_user
@@ -74,7 +70,7 @@ SETTINGS = {
 TERMINAL_SETTING_KEYS = [key for key in SETTINGS if key.startswith("terminal_")]
 RDP_SETTING_KEYS = [key for key in SETTINGS if key.startswith("rdp_")]
 SETTING_KEYS = set(SETTINGS)
-RDP_TOKEN_TTL_SECONDS = 12 * 60 * 60
+RDP_TOKEN_TTL_SECONDS = 10 * 60
 GUACAMOLE_LITE_URL = "ws://127.0.0.1:30008"
 RECORDING_ROOT = Path("/app/data/remote-recordings")
 
@@ -452,23 +448,9 @@ async def read_guac_instruction(reader: asyncio.StreamReader) -> tuple[str, list
             return instructions[0]
 
 
-def guacamole_key() -> bytes:
-    app_settings = get_settings()
-    return hashlib.sha256(f"{app_settings.secret_key}_guacamole".encode("utf-8")).digest()
-
-
 def encrypt_guacamole_token(token_object: dict[str, object]) -> str:
-    iv = secrets.token_bytes(16)
-    padder = padding.PKCS7(128).padder()
     plaintext = json.dumps(token_object, separators=(",", ":")).encode("utf-8")
-    padded = padder.update(plaintext) + padder.finalize()
-    encryptor = Cipher(algorithms.AES(guacamole_key()), modes.CBC(iv)).encryptor()
-    encrypted = encryptor.update(padded) + encryptor.finalize()
-    payload = {
-        "iv": base64.b64encode(iv).decode("ascii"),
-        "value": base64.b64encode(encrypted).decode("ascii"),
-    }
-    return base64.b64encode(json.dumps(payload, separators=(",", ":")).encode("utf-8")).decode("ascii")
+    return encrypt_secret(plaintext.decode("utf-8"))
 
 
 def create_rdp_guacamole_token(row: RemoteAccess, username: str, password: str, width: int, height: int, dpi: int, timezone: str, rdp_settings: dict[str, str]) -> str:

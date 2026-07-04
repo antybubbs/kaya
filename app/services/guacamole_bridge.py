@@ -61,6 +61,7 @@ def start_guacamole_bridge() -> None:
             "GUACD_HOST": settings["guacd_host"].strip(),
             "GUACD_PORT": settings.get("guacd_port", "4822"),
             "SECRET_KEY": app_settings.secret_key,
+            "ENCRYPTION_KEY": app_settings.encryption_key,
         }
     )
     script = Path("/app/scripts/guacamole-server.cjs")

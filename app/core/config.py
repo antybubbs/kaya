@@ -39,9 +39,6 @@ class Settings(BaseSettings):
 
 
 def trusted_hosts(settings: Settings) -> list[str]:
-    if not settings.allowed_hosts.strip():
-        return ["*"]
-
     hosts = {"localhost", "127.0.0.1", "::1", "kaya", "homelab"}
 
     parsed_host = urlparse(settings.base_url).hostname

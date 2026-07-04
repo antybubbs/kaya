@@ -1,29 +1,67 @@
 const crypto = require("crypto");
 const GuacamoleLite = require("guacamole-lite");
+const Crypt = require("guacamole-lite/lib/Crypt.js");
 
 const port = Number.parseInt(process.env.GUACAMOLE_WS_PORT || "30008", 10);
 const guacdHost = process.env.GUACD_HOST || "127.0.0.1";
 const guacdPort = Number.parseInt(process.env.GUACD_PORT || "4822", 10);
 
-function encryptionKey() {
-  const configured = process.env.GUACAMOLE_ENCRYPTION_KEY || "";
-  if (/^[0-9a-fA-F]{64}$/.test(configured)) {
-    return Buffer.from(configured, "hex");
-  }
-  if (configured.length === 32) {
-    return Buffer.from(configured, "utf8");
-  }
-  const secret = process.env.SECRET_KEY || "change-this-secret-key";
-  return crypto.createHash("sha256").update(`${secret}_guacamole`).digest();
+function base64UrlDecode(value) {
+  const padded = value.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(value.length / 4) * 4, "=");
+  return Buffer.from(padded, "base64");
 }
+
+function fernetKey() {
+  const configured = process.env.ENCRYPTION_KEY || "";
+  const key = base64UrlDecode(configured);
+  if (key.length !== 32) {
+    throw new Error("ENCRYPTION_KEY must be a valid Fernet key");
+  }
+  return {
+    signing: key.subarray(0, 16),
+    encryption: key.subarray(16),
+  };
+}
+
+function timingSafeEqual(left, right) {
+  return left.length === right.length && crypto.timingSafeEqual(left, right);
+}
+
+function decryptFernetToken(token) {
+  const key = fernetKey();
+  const decoded = base64UrlDecode(token);
+  if (decoded.length < 73 || decoded[0] !== 0x80) {
+    throw new Error("Invalid Fernet token");
+  }
+
+  const signedPayload = decoded.subarray(0, decoded.length - 32);
+  const suppliedMac = decoded.subarray(decoded.length - 32);
+  const expectedMac = crypto.createHmac("sha256", key.signing).update(signedPayload).digest();
+  if (!timingSafeEqual(suppliedMac, expectedMac)) {
+    throw new Error("Invalid Fernet token signature");
+  }
+
+  const iv = decoded.subarray(9, 25);
+  const ciphertext = decoded.subarray(25, decoded.length - 32);
+  const decipher = crypto.createDecipheriv("aes-128-cbc", key.encryption, iv);
+  const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+  return JSON.parse(plaintext.toString("utf8"));
+}
+
+Crypt.prototype.decrypt = function decrypt(encodedString) {
+  return decryptFernetToken(encodedString);
+};
+GuacamoleLite.prototype.decryptToken = function decryptToken(encryptedToken) {
+  return decryptFernetToken(encryptedToken);
+};
 
 const server = new GuacamoleLite(
   { port },
   { host: guacdHost, port: guacdPort },
   {
     crypt: {
-      cypher: "AES-256-CBC",
-      key: encryptionKey(),
+      cypher: "FERNET",
+      key: Buffer.alloc(32),
     },
     log: {
       level: "ERRORS",

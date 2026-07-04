@@ -96,7 +96,7 @@ async def security_headers(request: Request, call_next):
     "worker-src 'self' blob:; "
     "object-src 'none'; "
     "base-uri 'self'; "
-    "frame-ancestors *; "
+    "frame-ancestors 'self'; "
     "form-action 'self'"
     )
     if is_static_asset:

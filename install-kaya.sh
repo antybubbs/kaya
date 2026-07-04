@@ -20,7 +20,7 @@ if ! docker compose version >/dev/null 2>&1; then
   exit 1
 fi
 
-sudo mkdir -p "$APP_DIR/data" "$APP_DIR/uploads"
+sudo mkdir -p "$APP_DIR/data/remote-recordings" "$APP_DIR/uploads"
 sudo chown -R "$(id -u):$(id -g)" "$APP_DIR"
 
 cat > "$APP_DIR/docker-compose.yml" <<'COMPOSE'
@@ -34,14 +34,16 @@ services:
     env_file:
       - .env
     ports:
-      - "${KAYA_PORT:-8080}:8080"
+      - "${KAYA_BIND:-127.0.0.1}:${KAYA_PORT:-8080}:8080"
     volumes:
       - ./data:/app/data
       - ./uploads:/app/uploads
+      - ./data/remote-recordings:/app/data/remote-recordings
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    read_only: true
     tmpfs:
       - /tmp:noexec,nosuid,size=64m
 COMPOSE
@@ -66,6 +68,7 @@ PY
 
 cat > "$APP_DIR/.env" <<ENV
 KAYA_IMAGE=$IMAGE
+KAYA_BIND=127.0.0.1
 KAYA_PORT=8080
 APP_NAME=Kaya
 APP_ENV=production
@@ -78,7 +81,7 @@ ADMIN_PASSWORD=$ADMIN_PASSWORD
 DATABASE_URL=sqlite:////app/data/kaya.db
 UPLOAD_DIR=/app/uploads
 MAX_UPLOAD_MB=25
-ALLOWED_HOSTS=
+ALLOWED_HOSTS=localhost,127.0.0.1
 SESSION_COOKIE_SECURE=false
 FORWARDED_ALLOW_IPS=*
 ENV

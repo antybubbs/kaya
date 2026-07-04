@@ -96,6 +96,8 @@ Open your browser:
 http://SERVER-IP:8080/setup
 ```
 
+Set `ALLOWED_HOSTS` to the DNS name or IP address you use to open Kaya. When it is blank, Kaya only trusts local/default hostnames.
+
 Complete the setup wizard to create your administrator account.
 
 Within a few moments Kaya will:
@@ -117,20 +119,26 @@ services:
     restart: unless-stopped
 
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
 
     volumes:
       - ./data:/app/data
       - ./uploads:/app/uploads
+      - ./data/remote-recordings:/app/data/remote-recordings
 
     environment:
       DATABASE_URL: sqlite:////app/data/kaya.db
+      ALLOWED_HOSTS: localhost,127.0.0.1
 
     security_opt:
       - no-new-privileges:true
 
     cap_add:
       - NET_RAW
+
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=128m
 
   guacd:
     image: guacamole/guacd:1.6.0
@@ -151,6 +159,7 @@ docker compose up -d
   |-------------| -------------------------------|
   |`./data`     | Database and application data  | 
   |`./uploads`  | User uploads                   |
+  |`./data/remote-recordings`| SSH and RDP session recordings |
 
 Back up these folders regularly.
 
@@ -176,6 +185,8 @@ BASE_URL=https://kaya.example.com
 ALLOWED_HOSTS=kaya.example.com
 SESSION_COOKIE_SECURE=true
 ```
+
+When Kaya sits behind a reverse proxy on the same host, bind the container to loopback with `127.0.0.1:8080:8080` and let the proxy be the public entry point.
 
 ------------------------------------------------------------------------
 
@@ -209,7 +220,7 @@ Kaya
 
 # 🤖 AI-Assisted Development
 
-Kaya is developed by a human developer with AI acting as a development
+Kaya is developed by a human with AI acting as a development
 assistant.
 
 AI is used to speed up repetitive coding tasks, explore implementation
@@ -242,4 +253,4 @@ should feel organised, trusted and completely under your control.
 
 # 📄 Licence
 
-Licensed under **GPL-3.0**.
+Licensed under **MIT**.

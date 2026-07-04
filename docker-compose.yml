@@ -7,18 +7,20 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: sqlite:////app/data/kaya.db
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1,kaya,homelab}
     ports:
-      - "${KAYA_PORT:-8080}:8080"
+      - "${KAYA_BIND:-127.0.0.1}:${KAYA_PORT:-8080}:8080"
     volumes:
       - ./data:/app/data
       - ./uploads:/app/uploads
+      - ./data/remote-recordings:/app/data/remote-recordings
     security_opt:
       - no-new-privileges:true
     cap_add:
       - NET_RAW
-    read_only: false
+    read_only: true
     tmpfs:
-      - /tmp
+      - /tmp:size=128m,noexec,nosuid
   guacd:
     image: guacamole/guacd:1.6.0
     container_name: kaya-guacd
