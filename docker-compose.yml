@@ -7,9 +7,8 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: sqlite:////app/data/kaya.db
-      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1,kaya,homelab}
     ports:
-      - "${KAYA_BIND:-127.0.0.1}:${KAYA_PORT:-8080}:8080"
+      - "${KAYA_PORT:-8080}:8080"
     volumes:
       - ./data:/app/data
       - ./uploads:/app/uploads

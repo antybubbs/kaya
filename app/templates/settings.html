@@ -35,7 +35,7 @@
       <div class="remote-settings-grid">
         <label>
           <strong>Base URL</strong>
-          <small>The public URL used to access {{ brand.name }}. Once configured, {{ brand.name }} will automatically trust this hostname instead of allowing requests from any host.</small>
+          <small>The public URL used for links in emails and integrations. Hardened installs can also set ALLOWED_HOSTS in the container environment.</small>
           <input name="base_url" type="url" value="{{ settings.get('base_url', '') }}" placeholder="http://localhost:8080">
         </label>
       </div>

@@ -96,7 +96,9 @@ Open your browser:
 http://SERVER-IP:8080/setup
 ```
 
-Set `ALLOWED_HOSTS` to the DNS name or IP address you use to open Kaya. When it is blank, Kaya only trusts local/default hostnames.
+Kaya works without an environment file. By default it accepts the hostname or IP address you use to reach it, whether that is direct Docker port access or a reverse proxy such as NetBird.
+
+For hardened installs, set `ALLOWED_HOSTS` to your known hostnames or IPs. When `ALLOWED_HOSTS` is blank, Kaya does not enforce host filtering.
 
 Complete the setup wizard to create your administrator account.
 
@@ -119,7 +121,7 @@ services:
     restart: unless-stopped
 
     ports:
-      - "127.0.0.1:8080:8080"
+      - "8080:8080"
 
     volumes:
       - ./data:/app/data
@@ -128,7 +130,6 @@ services:
 
     environment:
       DATABASE_URL: sqlite:////app/data/kaya.db
-      ALLOWED_HOSTS: localhost,127.0.0.1
 
     security_opt:
       - no-new-privileges:true
@@ -186,7 +187,9 @@ ALLOWED_HOSTS=kaya.example.com
 SESSION_COOKIE_SECURE=true
 ```
 
-When Kaya sits behind a reverse proxy on the same host, bind the container to loopback with `127.0.0.1:8080:8080` and let the proxy be the public entry point.
+These are optional hardening settings. Kaya will still work through a reverse proxy without them, but `BASE_URL` should be set before enabling password reset emails so links point at the public address.
+
+When Kaya sits behind a reverse proxy on the same host, you can bind the container to loopback with `127.0.0.1:8080:8080` and let the proxy be the public entry point.
 
 ------------------------------------------------------------------------
 

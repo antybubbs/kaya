@@ -34,10 +34,11 @@ compute_monitor_task = None
 app.state.demo_mode = settings.demo_mode
 app.state.demo_reset_schedule = settings.demo_reset_schedule
 
-if settings.app_env == "production":
+configured_trusted_hosts = trusted_hosts(settings)
+if settings.app_env == "production" and configured_trusted_hosts:
     app.add_middleware(
         TrustedHostMiddleware,
-        allowed_hosts=trusted_hosts(settings),
+        allowed_hosts=configured_trusted_hosts,
     )
 
 app.add_middleware(
