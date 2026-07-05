@@ -1,14 +1,17 @@
 import json
+import hashlib
+import secrets
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from app.core.csrf import csrf_context, validate_csrf_token
+from app.core.security import decrypt_secret, encrypt_secret
 from app.db.session import get_db
-from app.models.models import BackupRecord, ComputeHost, ComputeInventoryItem, ComputeWorkload
+from app.models.models import BackupJob, BackupRecord, ComputeHost, ComputeInventoryItem, ComputeWorkload
 from app.routers.auth import require_editor, require_user
 from app.services.audit import write_audit
 from app.services.site_settings import get_site_setting
@@ -25,6 +28,29 @@ def metadata(value: str | None) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def hash_agent_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def require_agent_host(request: Request, db: Session) -> ComputeHost:
+    auth = request.headers.get("authorization", "")
+    if not auth.lower().startswith("bearer "):
+        raise HTTPException(401, "Missing agent token")
+    token_hash = hash_agent_token(auth.split(" ", 1)[1].strip())
+    host = (
+        db.query(ComputeHost)
+        .filter(ComputeHost.platform == "docker_agent", ComputeHost.agent_token_hash == token_hash)
+        .first()
+    )
+    if not host:
+        raise HTTPException(401, "Invalid agent token")
+    now = datetime.utcnow()
+    host.status = "online"
+    host.agent_last_seen_at = now
+    host.updated_at = now
+    return host
+
+
 def backup_target_summary(db: Session) -> str:
     target_type = get_site_setting(db, "backup_storage_type") or "local"
     if target_type == "local":
@@ -32,6 +58,65 @@ def backup_target_summary(db: Session) -> str:
     host = get_site_setting(db, "backup_remote_host")
     share = get_site_setting(db, "backup_remote_share")
     return f"{target_type.upper()} {host}{('/' + share) if share else ''}".strip()
+
+
+def backup_target_payload(db: Session) -> dict:
+    return {
+        "type": get_site_setting(db, "backup_storage_type") or "local",
+        "path": get_site_setting(db, "backup_storage_path") or "/mnt/backups",
+        "remote_host": get_site_setting(db, "backup_remote_host"),
+        "remote_share": get_site_setting(db, "backup_remote_share"),
+        "remote_username": get_site_setting(db, "backup_remote_username"),
+        "remote_password": decrypt_secret(get_site_setting(db, "backup_remote_password")),
+    }
+
+
+def bytes_label(value: int | None) -> str:
+    if value is None:
+        return "-"
+    number = float(value)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if abs(number) < 1024:
+            return f"{number:.1f} {unit}" if unit != "B" else f"{int(number)} B"
+        number /= 1024
+    return f"{number:.1f} PB"
+
+
+def latest_successful_backup(db: Session, workload_id: int) -> BackupJob | None:
+    return (
+        db.query(BackupJob)
+        .filter(
+            BackupJob.workload_id == workload_id,
+            BackupJob.operation == "backup",
+            BackupJob.status == "successful",
+            BackupJob.artifact_path.is_not(None),
+        )
+        .order_by(BackupJob.finished_at.desc(), BackupJob.created_at.desc())
+        .first()
+    )
+
+
+def create_docker_job(db: Session, workload: ComputeWorkload, operation: str, user_id: int | None, source_job: BackupJob | None = None) -> BackupJob:
+    backup_key = secrets.token_urlsafe(32) if operation == "backup" else None
+    payload = {
+        "container": workload.name,
+        "external_id": workload.external_id,
+        "policy": workload.backup_policy,
+        "source_job_id": source_job.id if source_job else None,
+        "source_artifact": source_job.artifact_path if source_job else None,
+    }
+    job = BackupJob(
+        host_id=workload.host_id,
+        workload_id=workload.id,
+        operation=operation,
+        status="queued",
+        encryption_enabled=True,
+        encrypted_backup_key=source_job.encrypted_backup_key if source_job else encrypt_secret(backup_key),
+        metadata_json=json.dumps(payload),
+        requested_by_id=user_id,
+    )
+    db.add(job)
+    return job
 
 
 def proxmox_backup_jobs(db: Session) -> list[dict]:
@@ -82,6 +167,16 @@ def backup_home(
         .order_by(ComputeHost.name, ComputeWorkload.name)
         .all()
     )
+    latest_by_workload = {
+        row.id: latest_successful_backup(db, row.id)
+        for row in docker_workloads
+    }
+    recent_jobs = (
+        db.query(BackupJob)
+        .order_by(BackupJob.created_at.desc())
+        .limit(20)
+        .all()
+    )
     return templates.TemplateResponse(
         request,
         "backup_manager.html",
@@ -89,8 +184,11 @@ def backup_home(
             "user": user,
             "manual_backups": manual_backups,
             "docker_workloads": docker_workloads,
+            "latest_by_workload": latest_by_workload,
+            "recent_jobs": recent_jobs,
             "proxmox_jobs": proxmox_backup_jobs(db),
             "backup_target": backup_target_summary(db),
+            "bytes_label": bytes_label,
             **csrf_context(request),
         },
     )
@@ -157,3 +255,115 @@ def update_docker_backup_policy(
     db.commit()
     write_audit(db, user, "update", "docker_backup_policy", str(row.id), request.client.host if request.client else None, detail=row.name)
     return RedirectResponse("/infrastructure/backup-manager", status_code=303)
+
+
+@router.post("/docker/{workload_id}/backup")
+def queue_docker_backup(
+    request: Request,
+    workload_id: int,
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+    user=Depends(require_editor),
+):
+    validate_csrf_token(request, csrf_token)
+    row = db.get(ComputeWorkload, workload_id)
+    if not row or row.kind != "container" or not row.host or row.host.platform != "docker_agent":
+        raise HTTPException(404, "Docker Agent container not found")
+    job = create_docker_job(db, row, "backup", user.id)
+    db.commit()
+    write_audit(db, user, "queue_backup", "backup_job", str(job.id), request.client.host if request.client else None, detail=row.name)
+    return RedirectResponse("/infrastructure/backup-manager", status_code=303)
+
+
+@router.post("/docker/{workload_id}/restore")
+def queue_docker_restore(
+    request: Request,
+    workload_id: int,
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+    user=Depends(require_editor),
+):
+    validate_csrf_token(request, csrf_token)
+    row = db.get(ComputeWorkload, workload_id)
+    if not row or row.kind != "container" or not row.host or row.host.platform != "docker_agent":
+        raise HTTPException(404, "Docker Agent container not found")
+    source_job = latest_successful_backup(db, row.id)
+    if not source_job:
+        raise HTTPException(400, "No successful encrypted backup is available to restore")
+    job = create_docker_job(db, row, "restore", user.id, source_job=source_job)
+    db.commit()
+    write_audit(db, user, "queue_restore", "backup_job", str(job.id), request.client.host if request.client else None, detail=row.name)
+    return RedirectResponse("/infrastructure/backup-manager", status_code=303)
+
+
+@router.get("/api/agent/jobs")
+def agent_jobs(request: Request, db: Session = Depends(get_db)):
+    host = require_agent_host(request, db)
+    jobs = (
+        db.query(BackupJob)
+        .filter(BackupJob.host_id == host.id, BackupJob.status == "queued")
+        .order_by(BackupJob.created_at.asc())
+        .limit(5)
+        .all()
+    )
+    now = datetime.utcnow()
+    response = []
+    for job in jobs:
+        job.status = "dispatched"
+        job.dispatched_at = now
+        job.updated_at = now
+        job_metadata = metadata(job.metadata_json)
+        response.append(
+            {
+                "id": job.id,
+                "operation": job.operation,
+                "container": job.workload.name if job.workload else job_metadata.get("container"),
+                "external_id": job.workload.external_id if job.workload else job_metadata.get("external_id"),
+                "policy": job_metadata.get("policy"),
+                "target": backup_target_payload(db),
+                "encryption": {
+                    "enabled": job.encryption_enabled,
+                    "mode": "agent-aes-256-gcm",
+                    "key": decrypt_secret(job.encrypted_backup_key) if job.encrypted_backup_key else "",
+                },
+                "source_artifact": job_metadata.get("source_artifact"),
+            }
+        )
+    db.commit()
+    return {"ok": True, "jobs": response}
+
+
+@router.post("/api/agent/jobs/{job_id}/status")
+async def agent_job_status(job_id: int, request: Request, db: Session = Depends(get_db)):
+    host = require_agent_host(request, db)
+    job = db.get(BackupJob, job_id)
+    if not job or job.host_id != host.id:
+        raise HTTPException(404, "Backup job not found")
+    payload = await request.json()
+    status = str(payload.get("status") or "").strip().lower()
+    if status not in {"queued", "dispatched", "running", "successful", "failed"}:
+        raise HTTPException(400, "Invalid backup job status")
+    now = datetime.utcnow()
+    job.status = status
+    job.updated_at = now
+    if status == "running" and not job.started_at:
+        job.started_at = now
+    if status in {"successful", "failed"}:
+        job.finished_at = now
+    if payload.get("artifact_path"):
+        job.artifact_path = str(payload["artifact_path"])[:1000]
+    if payload.get("size_bytes") is not None:
+        try:
+            job.size_bytes = int(payload["size_bytes"])
+        except (TypeError, ValueError):
+            job.size_bytes = None
+    if payload.get("error"):
+        job.error = str(payload["error"])[:2000]
+    if payload.get("log"):
+        job.log = str(payload["log"])[:10000]
+    if isinstance(payload.get("metadata"), dict):
+        existing = metadata(job.metadata_json)
+        existing.update(payload["metadata"])
+        job.metadata_json = json.dumps(existing)
+    db.commit()
+    return JSONResponse({"ok": True, "job": job.id, "status": job.status})

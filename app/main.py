@@ -430,6 +430,12 @@ def migrate_existing_database():
             for column in ["name", "source_type", "source_ref", "owner", "last_status", "last_run_at", "is_enabled"]:
                 conn.execute(text(f"CREATE INDEX ix_backup_records_{column} ON backup_records ({column})"))
 
+        backup_job_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(backup_jobs)"))}
+        if not backup_job_columns:
+            conn.execute(text("CREATE TABLE backup_jobs (id INTEGER NOT NULL PRIMARY KEY, host_id INTEGER NOT NULL REFERENCES compute_hosts(id), workload_id INTEGER REFERENCES compute_workloads(id), operation VARCHAR(30) NOT NULL, status VARCHAR(40) DEFAULT 'queued' NOT NULL, encryption_enabled BOOLEAN DEFAULT 1 NOT NULL, encrypted_backup_key TEXT, artifact_path VARCHAR(1000), size_bytes INTEGER, error TEXT, log TEXT, metadata_json TEXT, requested_by_id INTEGER REFERENCES users(id), created_at DATETIME, dispatched_at DATETIME, started_at DATETIME, finished_at DATETIME, updated_at DATETIME)"))
+            for column in ["host_id", "workload_id", "operation", "status", "encryption_enabled", "requested_by_id", "created_at", "dispatched_at", "started_at", "finished_at"]:
+                conn.execute(text(f"CREATE INDEX ix_backup_jobs_{column} ON backup_jobs ({column})"))
+
 
 @app.on_event("startup")
 async def on_startup():

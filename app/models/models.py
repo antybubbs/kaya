@@ -463,6 +463,31 @@ class BackupRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class BackupJob(Base):
+    __tablename__ = "backup_jobs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    host_id: Mapped[int] = mapped_column(ForeignKey("compute_hosts.id"), index=True)
+    workload_id: Mapped[int | None] = mapped_column(ForeignKey("compute_workloads.id"), nullable=True, index=True)
+    operation: Mapped[str] = mapped_column(String(30), index=True)
+    status: Mapped[str] = mapped_column(String(40), default="queued", index=True)
+    encryption_enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    encrypted_backup_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    artifact_path: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    log: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    requested_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    host = relationship("ComputeHost")
+    workload = relationship("ComputeWorkload")
+    requested_by = relationship("User")
+
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
