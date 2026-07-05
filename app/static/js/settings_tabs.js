@@ -47,5 +47,32 @@
     tab.addEventListener("click", () => activate(tab.dataset.settingsTab));
   });
 
+  const publicIpButton = root.querySelector("[data-public-ip-check]");
+  const publicIpResult = root.querySelector("[data-public-ip-result]");
+  const publicIpDetail = root.querySelector("[data-public-ip-detail]");
+  if (publicIpButton && publicIpResult && publicIpDetail) {
+    publicIpButton.addEventListener("click", async () => {
+      publicIpButton.disabled = true;
+      publicIpResult.textContent = "Checking...";
+      publicIpDetail.textContent = "Kaya is asking an external IP service from the server.";
+      try {
+        const response = await fetch("/system/site-administration/security/public-ip", {
+          headers: { Accept: "application/json" },
+        });
+        const data = await response.json();
+        if (!response.ok || !data.ok) {
+          throw new Error(data.error || "Public IP check failed");
+        }
+        publicIpResult.textContent = data.ip;
+        publicIpDetail.textContent = `Reported by ${data.source}. This is Kaya's outbound public IP.`;
+      } catch (error) {
+        publicIpResult.textContent = "Unavailable";
+        publicIpDetail.textContent = error.message || "Kaya could not reach a public IP service.";
+      } finally {
+        publicIpButton.disabled = false;
+      }
+    });
+  }
+
   activate(readStoredTab() || tabs[0]?.dataset.settingsTab || "");
 })();

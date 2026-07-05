@@ -56,6 +56,12 @@
           <small>The Host header Kaya is seeing for this browser request.</small>
         </div>
         <div>
+          <span>Public IP</span>
+          <strong class="mono" data-public-ip-result>Not checked</strong>
+          <small data-public-ip-detail>Checks the outbound public IP Kaya uses to reach the internet.</small>
+          <button type="button" class="button secondary" data-public-ip-check>Check public IP</button>
+        </div>
+        <div>
           <span>Trusted host check</span>
           {% if security_check.host_filter_enabled %}
             <strong class="table-chip {% if security_check.host_allowed %}good{% else %}danger-chip{% endif %}">{% if security_check.host_allowed %}Passing{% else %}Blocked{% endif %}</strong>

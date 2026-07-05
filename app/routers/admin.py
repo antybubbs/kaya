@@ -3,9 +3,10 @@ import tempfile
 import json
 import smtplib
 from datetime import datetime, timedelta
+from urllib.request import urlopen
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import PlainTextResponse, RedirectResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
@@ -260,6 +261,28 @@ def security_check_context(request: Request, db: Session) -> dict[str, object]:
         "request_is_https": request_is_https,
         "rdp_token_ttl_minutes": security.get("rdp_token_ttl_minutes") or "10",
     }
+
+
+def lookup_public_ip() -> tuple[str, str]:
+    services = [
+        ("ipify", "https://api.ipify.org?format=json"),
+        ("ifconfig.me", "https://ifconfig.me/ip"),
+    ]
+    last_error = "Public IP check failed"
+    for name, url in services:
+        try:
+            with urlopen(url, timeout=5) as response:
+                body = response.read(512).decode("utf-8", errors="replace").strip()
+            if name == "ipify":
+                payload = json.loads(body)
+                ip_address = str(payload.get("ip", "")).strip()
+            else:
+                ip_address = body
+            if ip_address:
+                return ip_address, name
+        except Exception as exc:
+            last_error = f"{name}: {type(exc).__name__}"
+    raise RuntimeError(last_error)
 
 
 @router.get("/admin")
@@ -1428,6 +1451,18 @@ def settings_page(
             **csrf_context(request),
         },
     )
+
+
+@router.get("/system/site-administration/security/public-ip")
+def public_ip_check(user=Depends(require_admin)):
+    try:
+        ip_address, source = lookup_public_ip()
+    except RuntimeError as exc:
+        return JSONResponse(
+            {"ok": False, "error": str(exc)},
+            status_code=status.HTTP_502_BAD_GATEWAY,
+        )
+    return {"ok": True, "ip": ip_address, "source": source}
 
 
 @router.post("/system/site-administration")

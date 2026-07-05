@@ -96,6 +96,7 @@ a:hover,.panel a:hover{color:#ffd08a}
 .security-check-grid span{color:#9ca3af;font-size:12px;font-weight:850;text-transform:uppercase}
 .security-check-grid strong{overflow-wrap:anywhere}
 .security-check-grid small{color:#9ca3af;font-size:12px;line-height:1.35}
+.security-check-grid button{justify-self:start;margin-top:2px}
 .table-chip.danger-chip{background:rgba(239,68,68,.11);border-color:rgba(239,68,68,.34);color:#fca5a5}
 .panel th,.table-head th{color:#ffc477!important}
 .table-chip{background:rgba(255,138,0,.1);border-color:rgba(255,138,0,.26);color:#ffd08a}
