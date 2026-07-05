@@ -7,6 +7,8 @@
   const storageKey = root.dataset.settingsStorageKey || "kaya.siteAdministration.activeTab";
 
   const readStoredTab = () => {
+    const requested = new URLSearchParams(window.location.search).get("tab");
+    if (requested) return requested;
     try {
       return window.localStorage.getItem(storageKey);
     } catch {

@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="module-header backup-hero">
+  <div class="module-title-row">
+    <div class="module-heading">
+      <h1>Backup Manager</h1>
+      <p class="muted">Track manual backups, Docker container policies and Proxmox backup jobs.</p>
+    </div>
+    <a class="button secondary" href="/system/site-administration?tab=backups">Storage settings</a>
+  </div>
+  <div class="module-stat">Default target <strong>{{ backup_target }}</strong></div>
+</section>
+
+<section class="panel section-gap">
+  <h2>Add manual backup</h2>
+  <form class="backup-form-grid" method="post" action="/infrastructure/backup-manager/manual">
+    <label>Name<input name="name" placeholder="Firewall config backup" required></label>
+    <label>Target<input name="target" placeholder="{{ backup_target }}"></label>
+    <label>Schedule<input name="schedule" placeholder="Daily at 02:00"></label>
+    <label>Owner<input name="owner" placeholder="Team or person"></label>
+    <label>Status<select name="last_status"><option value="">Unknown</option><option value="successful">Successful</option><option value="failed">Failed</option><option value="running">Running</option></select></label>
+    <label>Last run<input name="last_run_at" type="datetime-local"></label>
+    <label class="checkbox-row"><input type="checkbox" name="is_enabled" value="on" checked> Enabled</label>
+    <label class="wide">Notes<textarea name="notes" placeholder="What is backed up, how to restore it, and where the job runs."></textarea></label>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="wide form-actions"><button>Add backup</button></div>
+  </form>
+</section>
+
+<section class="panel section-gap">
+  <h2>Manual backups</h2>
+  <table>
+    <thead><tr><th>Name</th><th>Status</th><th>Schedule</th><th>Target</th><th>Owner</th><th>Last run</th></tr></thead>
+    <tbody>
+      {% for row in manual_backups %}
+      <tr>
+        <td><strong>{{ row.name }}</strong>{% if row.notes %}<small class="muted">{{ row.notes }}</small>{% endif %}</td>
+        <td><span class="compute-state {{ row.last_status or 'unknown' }}">{{ row.last_status or 'Unknown' }}</span></td>
+        <td>{{ row.schedule or '-' }}</td>
+        <td class="mono">{{ row.target or backup_target }}</td>
+        <td>{{ row.owner or '-' }}</td>
+        <td>{{ row.last_run_at.strftime('%Y-%m-%d %H:%M') if row.last_run_at else '-' }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6">No manual backups added yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="panel section-gap">
+  <h2>Docker container backups</h2>
+  <table>
+    <thead><tr><th>Container</th><th>Host</th><th>State</th><th>Backup policy</th><th>Owner</th><th></th></tr></thead>
+    <tbody>
+      {% for row in docker_workloads %}
+      <tr>
+        <td><strong>{{ row.name }}</strong></td>
+        <td>{{ row.host.name }}</td>
+        <td><span class="compute-state {{ row.status }}">{{ row.status }}</span></td>
+        <td colspan="3">
+          {% if user.role in ['admin','editor'] %}
+          <form class="backup-inline-form" method="post" action="/infrastructure/backup-manager/docker/{{ row.id }}">
+            <input name="backup_policy" value="{{ row.backup_policy or '' }}" placeholder="Bind mounts to {{ backup_target }}">
+            <input name="owner" value="{{ row.owner or '' }}" placeholder="Owner">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button>Save</button>
+          </form>
+          {% else %}
+          {{ row.backup_policy or '-' }}
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6">No Docker containers have checked in yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="panel section-gap">
+  <h2>Proxmox backup jobs</h2>
+  <table>
+    <thead><tr><th>Job</th><th>Host</th><th>Enabled</th><th>Last run</th><th>Last status</th><th>Schedule</th><th>Storage</th><th>VMs/CTs</th></tr></thead>
+    <tbody>
+      {% for job in proxmox_jobs %}
+      <tr>
+        <td><strong>{{ job.name }}</strong></td>
+        <td>{{ job.host.name }}</td>
+        <td><span class="compute-state {{ job.status }}">{{ job.status }}</span></td>
+        <td>{{ job.last_run_at.strftime('%Y-%m-%d %H:%M') if job.last_run_at else '-' }}</td>
+        <td><span class="compute-state {{ job.last_status }}">{{ job.last_status }}</span></td>
+        <td>{{ job.schedule }}</td>
+        <td>{{ job.storage }}</td>
+        <td>{{ job.vmids }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="8">No Proxmox backup jobs discovered yet. Sync a Proxmox host from VM/Docker Manager.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

@@ -24,6 +24,7 @@
   <div class="category-tabs site-admin-tabs" role="tablist" aria-label="Site administration sections">
     <button type="button" class="active" data-settings-tab="general" role="tab" aria-selected="true">General</button>
     <button type="button" data-settings-tab="security" role="tab" aria-selected="false">Security</button>
+    <button type="button" data-settings-tab="backups" role="tab" aria-selected="false">Backups</button>
     <button type="button" data-settings-tab="uploads" role="tab" aria-selected="false">Uploads</button>
     <button type="button" data-settings-tab="email" role="tab" aria-selected="false">Email</button>
     <button type="button" data-settings-tab="email-templates" role="tab" aria-selected="false">Email Templates</button>
@@ -152,6 +153,50 @@
           <strong>RDP token lifetime</strong>
           <small>Minutes that a prepared browser RDP handoff token can be used. Shorter is safer; 5 to 15 minutes is recommended.</small>
           <input name="rdp_token_ttl_minutes" type="number" min="5" max="60" value="{{ settings.get('rdp_token_ttl_minutes', '10') }}">
+        </label>
+      </div>
+    </div>
+  </section>
+
+  <section class="settings-tab-panel" data-settings-panel="backups" role="tabpanel" hidden>
+    <h2>Backups</h2>
+
+    <div class="remote-settings-card">
+      <header><span>Default backup storage</span></header>
+      <div class="remote-settings-grid">
+        <label>
+          <strong>Storage type</strong>
+          <small>Where Backup Manager should point manual records and future backup runners by default.</small>
+          <select name="backup_storage_type">
+            {% for value,label in [('local','Local path or mounted share'),('smb','SMB share'),('ftp','FTP server'),('sftp','SFTP server')] %}
+            <option value="{{ value }}" {% if settings.get('backup_storage_type', 'local') == value %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>
+          <strong>Local path or mount point</strong>
+          <small>Use a path Kaya or the backup agent can reach, for example /mnt/backups.</small>
+          <input name="backup_storage_path" value="{{ settings.get('backup_storage_path', '/mnt/backups') }}" placeholder="/mnt/backups">
+        </label>
+        <label>
+          <strong>Remote host</strong>
+          <small>Hostname or IP for SMB, FTP or SFTP targets.</small>
+          <input name="backup_remote_host" value="{{ settings.get('backup_remote_host', '') }}" placeholder="backup-nas.example.local">
+        </label>
+        <label>
+          <strong>Remote share/path</strong>
+          <small>Share name or remote path, for example backups or /srv/backups.</small>
+          <input name="backup_remote_share" value="{{ settings.get('backup_remote_share', '') }}" placeholder="backups">
+        </label>
+        <label>
+          <strong>Remote username</strong>
+          <small>Optional account used by future remote backup runners.</small>
+          <input name="backup_remote_username" value="{{ settings.get('backup_remote_username', '') }}" autocomplete="username">
+        </label>
+        <label>
+          <strong>Remote password</strong>
+          <small>{% if settings.get('backup_remote_password_set') == '1' %}A password is saved. Enter a new one to replace it.{% else %}Optional remote storage password.{% endif %}</small>
+          <input name="backup_remote_password" type="password" value="" autocomplete="new-password" placeholder="{% if settings.get('backup_remote_password_set') == '1' %}Saved password{% endif %}">
         </label>
       </div>
     </div>

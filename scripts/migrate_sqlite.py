@@ -45,6 +45,14 @@ def main():
             )
             migrations_applied.append("compute_hosts.encrypted_agent_token")
 
+    if not table_exists(cur, "backup_records"):
+        cur.execute(
+            "CREATE TABLE backup_records (id INTEGER NOT NULL PRIMARY KEY, name VARCHAR(255) NOT NULL, source_type VARCHAR(40) DEFAULT 'manual' NOT NULL, source_ref VARCHAR(500), target VARCHAR(500), schedule VARCHAR(255), owner VARCHAR(255), last_status VARCHAR(40), last_run_at DATETIME, notes TEXT, is_enabled BOOLEAN DEFAULT 1 NOT NULL, created_at DATETIME, updated_at DATETIME)"
+        )
+        for column in ["name", "source_type", "source_ref", "owner", "last_status", "last_run_at", "is_enabled"]:
+            cur.execute(f"CREATE INDEX ix_backup_records_{column} ON backup_records ({column})")
+        migrations_applied.append("backup_records")
+
     conn.commit()
     conn.close()
 

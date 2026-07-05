@@ -78,6 +78,12 @@ SITE_SETTING_KEYS = {
     "hsts_include_subdomains": "",
     "hsts_max_age": "31536000",
     "rdp_token_ttl_minutes": "10",
+    "backup_storage_type": "local",
+    "backup_storage_path": "/mnt/backups",
+    "backup_remote_host": "",
+    "backup_remote_share": "",
+    "backup_remote_username": "",
+    "backup_remote_password": "",
     "guacd_host": "",
     "guacd_port": "4822",
     "smtp_enabled": "",
@@ -109,9 +115,9 @@ def load_site_settings(db: Session) -> dict[str, str]:
     )
 
     for row in rows:
-        if row.key == "smtp_password":
-            settings["smtp_password"] = ""
-            settings["smtp_password_set"] = "1" if row.value else ""
+        if row.key in {"smtp_password", "backup_remote_password"}:
+            settings[row.key] = ""
+            settings[f"{row.key}_set"] = "1" if row.value else ""
         else:
             settings[row.key] = row.value or ""
 
@@ -139,6 +145,36 @@ def save_smtp_password(db: Session, password: str) -> None:
     if not password:
         return
     save_site_setting(db, "smtp_password", encrypt_secret(password))
+
+
+def save_backup_remote_password(db: Session, password: str) -> None:
+    if not password:
+        return
+    save_site_setting(db, "backup_remote_password", encrypt_secret(password))
+
+
+def save_backup_settings(
+    db: Session,
+    *,
+    backup_storage_type: str,
+    backup_storage_path: str,
+    backup_remote_host: str,
+    backup_remote_share: str,
+    backup_remote_username: str,
+    backup_remote_password: str,
+) -> None:
+    if backup_storage_type not in {"local", "smb", "ftp", "sftp"}:
+        backup_storage_type = "local"
+    settings_to_save = {
+        "backup_storage_type": backup_storage_type,
+        "backup_storage_path": backup_storage_path,
+        "backup_remote_host": backup_remote_host,
+        "backup_remote_share": backup_remote_share,
+        "backup_remote_username": backup_remote_username,
+    }
+    for key, value in settings_to_save.items():
+        save_site_setting(db, key, value)
+    save_backup_remote_password(db, backup_remote_password)
 
 
 def save_email_settings(
@@ -1520,6 +1556,12 @@ def save_settings(
     hsts_include_subdomains: str = Form(""),
     hsts_max_age: str = Form("31536000"),
     rdp_token_ttl_minutes: str = Form("10"),
+    backup_storage_type: str = Form("local"),
+    backup_storage_path: str = Form("/mnt/backups"),
+    backup_remote_host: str = Form(""),
+    backup_remote_share: str = Form(""),
+    backup_remote_username: str = Form(""),
+    backup_remote_password: str = Form(""),
     smtp_enabled: str = Form(""),
     smtp_host: str = Form(""),
     smtp_port: str = Form("587"),
@@ -1570,6 +1612,15 @@ def save_settings(
         hsts_include_subdomains=hsts_include_subdomains,
         hsts_max_age=hsts_max_age,
         rdp_token_ttl_minutes=rdp_token_ttl_minutes,
+    )
+    save_backup_settings(
+        db,
+        backup_storage_type=backup_storage_type,
+        backup_storage_path=backup_storage_path,
+        backup_remote_host=backup_remote_host,
+        backup_remote_share=backup_remote_share,
+        backup_remote_username=backup_remote_username,
+        backup_remote_password=backup_remote_password,
     )
 
     db.commit()

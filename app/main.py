@@ -13,7 +13,7 @@ from app.core.demo import demo_request_is_blocked
 from app.core.security import decrypt_secret, hash_password
 from app.db.session import Base, engine, SessionLocal
 from app.models.models import AuditLog, User, VLAN
-from app.routers import auth, dashboard, licences, admin, ip_addresses, hardware_assets, network_monitor, remote_manager, runbooks, domain_manager, compute_manager, rack_manager
+from app.routers import auth, dashboard, licences, admin, ip_addresses, hardware_assets, network_monitor, remote_manager, runbooks, domain_manager, compute_manager, rack_manager, backup_manager
 from app.services.guacamole_bridge import stop_guacamole_bridge
 from app.services.kaya_remote_service import start_kaya_remote_service, stop_kaya_remote_service
 from app.services.network_monitor import monitor_loop
@@ -424,6 +424,12 @@ def migrate_existing_database():
                     assignments = ["agent_token_hash = :token_hash", *[f"{name} = NULL" for name in legacy_columns]]
                     conn.execute(text(f"UPDATE compute_hosts SET {', '.join(assignments)} WHERE id = :id"), {"token_hash": token_hash, "id": row["id"]})
 
+        backup_record_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(backup_records)"))}
+        if not backup_record_columns:
+            conn.execute(text("CREATE TABLE backup_records (id INTEGER NOT NULL PRIMARY KEY, name VARCHAR(255) NOT NULL, source_type VARCHAR(40) DEFAULT 'manual' NOT NULL, source_ref VARCHAR(500), target VARCHAR(500), schedule VARCHAR(255), owner VARCHAR(255), last_status VARCHAR(40), last_run_at DATETIME, notes TEXT, is_enabled BOOLEAN DEFAULT 1 NOT NULL, created_at DATETIME, updated_at DATETIME)"))
+            for column in ["name", "source_type", "source_ref", "owner", "last_status", "last_run_at", "is_enabled"]:
+                conn.execute(text(f"CREATE INDEX ix_backup_records_{column} ON backup_records ({column})"))
+
 
 @app.on_event("startup")
 async def on_startup():
@@ -460,6 +466,7 @@ app.include_router(runbooks.router)
 app.include_router(domain_manager.router)
 app.include_router(compute_manager.router)
 app.include_router(rack_manager.router)
+app.include_router(backup_manager.router)
 app.include_router(admin.router)
 
 @app.get("/healthz", include_in_schema=False)
