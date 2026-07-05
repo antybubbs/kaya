@@ -28,6 +28,20 @@ def metadata(value: str | None) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def host_metadata(host: ComputeHost | None) -> dict:
+    return metadata(host.metadata_json if host else None)
+
+
+def agent_capabilities(host: ComputeHost | None) -> dict:
+    data = host_metadata(host)
+    capabilities = data.get("agent_capabilities")
+    return capabilities if isinstance(capabilities, dict) else {}
+
+
+def agent_supports_docker_backups(host: ComputeHost | None) -> bool:
+    return bool(agent_capabilities(host).get("docker_backups"))
+
+
 def hash_agent_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
@@ -104,6 +118,7 @@ def create_docker_job(db: Session, workload: ComputeWorkload, operation: str, us
         "policy": workload.backup_policy,
         "source_job_id": source_job.id if source_job else None,
         "source_artifact": source_job.artifact_path if source_job else None,
+        "source_size_bytes": source_job.size_bytes if source_job else None,
     }
     job = BackupJob(
         host_id=workload.host_id,
@@ -189,6 +204,7 @@ def backup_home(
             "proxmox_jobs": proxmox_backup_jobs(db),
             "backup_target": backup_target_summary(db),
             "bytes_label": bytes_label,
+            "agent_supports_docker_backups": agent_supports_docker_backups,
             **csrf_context(request),
         },
     )
@@ -269,6 +285,8 @@ def queue_docker_backup(
     row = db.get(ComputeWorkload, workload_id)
     if not row or row.kind != "container" or not row.host or row.host.platform != "docker_agent":
         raise HTTPException(404, "Docker Agent container not found")
+    if not agent_supports_docker_backups(row.host):
+        raise HTTPException(400, "Docker Agent must be updated before it can run backups")
     job = create_docker_job(db, row, "backup", user.id)
     db.commit()
     write_audit(db, user, "queue_backup", "backup_job", str(job.id), request.client.host if request.client else None, detail=row.name)
@@ -287,6 +305,8 @@ def queue_docker_restore(
     row = db.get(ComputeWorkload, workload_id)
     if not row or row.kind != "container" or not row.host or row.host.platform != "docker_agent":
         raise HTTPException(404, "Docker Agent container not found")
+    if not agent_supports_docker_backups(row.host):
+        raise HTTPException(400, "Docker Agent must be updated before it can run restores")
     source_job = latest_successful_backup(db, row.id)
     if not source_job:
         raise HTTPException(400, "No successful encrypted backup is available to restore")
@@ -327,6 +347,7 @@ def agent_jobs(request: Request, db: Session = Depends(get_db)):
                     "key": decrypt_secret(job.encrypted_backup_key) if job.encrypted_backup_key else "",
                 },
                 "source_artifact": job_metadata.get("source_artifact"),
+                "source_size_bytes": job_metadata.get("source_size_bytes"),
             }
         )
     db.commit()

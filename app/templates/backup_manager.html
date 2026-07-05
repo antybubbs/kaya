@@ -43,6 +43,7 @@
       {% for row in docker_workloads %}
       {% set latest = latest_by_workload.get(row.id) %}
       {% set agent_ready = row.host.platform == 'docker_agent' %}
+      {% set backup_ready = agent_ready and agent_supports_docker_backups(row.host) %}
       <tr>
         <td><strong>{{ row.name }}</strong></td>
         <td>{{ row.host.name }}</td>
@@ -72,13 +73,14 @@
           <div class="backup-action-row">
             <form method="post" action="/infrastructure/backup-manager/docker/{{ row.id }}/backup">
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-              <button {% if not agent_ready %}disabled{% endif %}>Back up now</button>
+              <button {% if not backup_ready %}disabled{% endif %}>Back up now</button>
             </form>
             <form method="post" action="/infrastructure/backup-manager/docker/{{ row.id }}/restore">
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-              <button class="button secondary" {% if not latest or not agent_ready %}disabled{% endif %}>Restore latest</button>
+              <button class="button secondary" {% if not latest or not backup_ready %}disabled{% endif %}>Restore latest</button>
             </form>
             {% if not agent_ready %}<small class="muted">Docker Agent required</small>{% endif %}
+            {% if agent_ready and not backup_ready %}<small class="muted">Update Docker Agent for backups</small>{% endif %}
           </div>
           {% endif %}
         </td>

@@ -15,6 +15,7 @@ from app.models.models import ComputeEvent, ComputeHost, ComputeInventoryItem, C
 from app.routers.auth import require_editor, require_user
 from app.services.audit import write_audit
 from app.services.compute_monitor import compute_summary, prune_missing_workloads, reconcile_workload, sync_host, workload_identity
+from app.services.site_settings import get_site_setting
 from datetime import datetime, timedelta
 
 
@@ -145,7 +146,8 @@ def render_host_detail(request:Request,host:ComputeHost,db:Session,user,agent_to
     workloads=db.query(ComputeWorkload).filter_by(host_id=host.id).order_by(ComputeWorkload.kind,ComputeWorkload.name).all()
     items=db.query(ComputeInventoryItem).filter_by(host_id=host.id).order_by(ComputeInventoryItem.kind,ComputeInventoryItem.name).all()
     metrics=db.query(ComputeMetric).filter(ComputeMetric.host_id==host.id,ComputeMetric.workload_id.is_(None)).order_by(ComputeMetric.recorded_at.desc()).limit(120).all()[::-1]
-    return templates.TemplateResponse(request,'compute_host_detail.html',context(user=user,host=host,workloads=workloads,items=items,metrics=metrics,agent_token=agent_token,**csrf_context(request)),status_code=status_code)
+    backup_storage_path=get_site_setting(db,'backup_storage_path') or '/mnt/backups'
+    return templates.TemplateResponse(request,'compute_host_detail.html',context(user=user,host=host,workloads=workloads,items=items,metrics=metrics,agent_token=agent_token,backup_storage_path=backup_storage_path,**csrf_context(request)),status_code=status_code)
 
 @router.get('/hosts/{host_id}')
 def host_detail(request:Request,host_id:int,db:Session=Depends(get_db),user=Depends(require_user)):

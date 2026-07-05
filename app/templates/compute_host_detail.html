@@ -3,7 +3,7 @@
 <section class="record-layout section-gap"><section class="panel record-panel"><h2>Connection</h2><dl class="record-kv-list"><div><dt>Status</dt><dd>{{ host.status|title }}</dd></div><div><dt>Last sync</dt><dd>{{ host.last_synced_at.strftime('%Y-%m-%d %H:%M:%S') if host.last_synced_at else 'Pending' }}</dd></div>{% if host.platform == 'docker_agent' %}<div><dt>Agent last seen</dt><dd>{{ host.agent_last_seen_at.strftime('%Y-%m-%d %H:%M:%S') if host.agent_last_seen_at else 'Pending' }}</dd></div>{% endif %}<div><dt>Polling</dt><dd>{{ host.poll_interval_seconds }} seconds</dd></div><div><dt>Owner</dt><dd>{{ host.owner or '-' }}</dd></div></dl>{% if host.last_error %}<div class="alert">{{ host.last_error }}</div>{% endif %}</section><section class="panel record-panel"><h2>Capacity</h2><dl class="record-kv-list"><div><dt>Memory</dt><dd>{{ bytes_label(host.memory_used) }} / {{ bytes_label(host.memory_total) }}</dd></div><div><dt>Storage</dt><dd>{{ bytes_label(host.storage_used) }} / {{ bytes_label(host.storage_total) }}</dd></div><div><dt>Workloads</dt><dd>{{ workloads|length }}</dd></div><div><dt>Inventory objects</dt><dd>{{ items|length }}</dd></div></dl></section></section>
 {% if host.platform == 'docker_agent' %}<section class="panel section-gap agent-setup-panel"><h2>Kaya Agent</h2><p class="muted">Install this agent on the Docker server using the docker-compose file below. It reports back to Kaya over HTTPS and does not require opening the Docker API port.</p>{% if agent_token %}<div class="alert"><strong>Copy this token now.</strong> For security, it will never be shown again. Regenerating it will immediately invalidate the current token.</div>{% endif %}<div class="agent-token-row"><label class="agent-token-field">Agent token{% if agent_token %}<input readonly value="{{ agent_token }}" autocomplete="off" spellcheck="false">{% else %}<input readonly value="********************************" aria-label="Agent token hidden">{% endif %}</label>{% if user.role in ['admin','editor'] %}<form class="agent-token-action" method="post" action="/infrastructure/vm-docker-manager/hosts/{{ host.id }}/regenerate-agent-token"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary">Regenerate agent token</button></form>{% endif %}</div>{% if not agent_token %}<p class="muted agent-token-note">The token is stored as a one-way hash and cannot be viewed again.</p>{% endif %}<label class="agent-compose-field">docker-compose.yml file
   <textarea readonly rows="15">
-# This docker compose file is for the Kaya Docker agent, which allows Kaya to monitor and manage this host without exposing the Docker API port.
+# This docker compose file is for the Kaya Docker agent, which allows Kaya to monitor, back up and restore Docker containers without exposing the Docker API port.
 # It is a separate repo and is maintained by the Kaya team. For more information, see https://github.com/antybubbs/Kaya-Docker-Agent
 services:
   kaya-agent:
@@ -17,7 +17,10 @@ services:
       KAYA_POLL_SECONDS: "30"
       KAYA_VERIFY_TLS: "true"
     volumes:
-         - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Docker socket access lets the agent inspect containers and perform restore jobs.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Mount the same backup path configured in Kaya Site Administration.
+      - {{ backup_storage_path }}:{{ backup_storage_path }}
 </textarea></label></section>
 {% endif %}
 <section class="panel section-gap"><h2>Workloads</h2><table><thead><tr><th>State</th><th>Name</th><th>Type</th><th>CPU</th><th>Memory</th><th>Owner</th></tr></thead><tbody>{% for row in workloads %}<tr><td><span class="compute-state {{ row.status }}">{{ row.status }}</span></td><td><a href="/infrastructure/vm-docker-manager/workloads/{{ row.id }}"><strong>{{ row.name }}</strong></a></td><td>{{ row.kind }}</td><td>{{ row.cpu_percent|round(1) if row.cpu_percent is not none else '-' }}%</td><td>{{ bytes_label(row.memory_used) }}</td><td>{{ row.owner or '-' }}</td></tr>{% endfor %}</tbody></table></section>
