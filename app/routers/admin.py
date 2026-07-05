@@ -1,8 +1,10 @@
 from pathlib import Path
+import io
 import tempfile
 import json
 import socket
 import smtplib
+from ftplib import FTP
 from datetime import datetime, timedelta
 from urllib.request import urlopen
 
@@ -18,7 +20,7 @@ from urllib.parse import urlencode
 from app.core.config import get_settings
 from app.core.branding import APP_BRAND_NAME
 from app.core.csrf import csrf_context, validate_csrf_token
-from app.core.security import encrypt_secret, hash_password, verify_password
+from app.core.security import decrypt_secret, encrypt_secret, hash_password, verify_password
 from app.core.totp import (
     decrypted_totp_secret,
     encrypted_totp_secret,
@@ -175,6 +177,135 @@ def save_backup_settings(
     for key, value in settings_to_save.items():
         save_site_setting(db, key, value)
     save_backup_remote_password(db, backup_remote_password)
+
+
+def read_saved_backup_password(db: Session, fallback_password: str = "") -> str:
+    if fallback_password:
+        return fallback_password.strip()
+    return decrypt_secret(get_site_setting(db, "backup_remote_password")).strip()
+
+
+def test_directory_read_write(path_value: str) -> tuple[bool, str]:
+    target = Path(path_value.strip() or "/mnt/backups")
+    if not target.exists():
+        return False, f"{target} does not exist from inside Kaya."
+    if not target.is_dir():
+        return False, f"{target} is not a directory."
+
+    test_file = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            delete=False,
+            dir=target,
+            prefix=".kaya-storage-test-",
+            suffix=".txt",
+            encoding="utf-8",
+        ) as handle:
+            test_file = Path(handle.name)
+            handle.write("kaya storage test")
+
+        if test_file.read_text(encoding="utf-8") != "kaya storage test":
+            return False, f"Kaya wrote to {target}, but could not read the same data back."
+        test_file.unlink()
+    except OSError as exc:
+        return False, f"Kaya could not write, read and delete a test file in {target}: {exc}"
+    finally:
+        if test_file and test_file.exists():
+            try:
+                test_file.unlink()
+            except OSError:
+                pass
+
+    return True, f"Kaya can write, read and delete files in {target}."
+
+
+def test_tcp_connection(host: str, port: int) -> tuple[bool, str]:
+    if not host.strip():
+        return False, "Remote host is required for this storage type."
+    try:
+        with socket.create_connection((host.strip(), port), timeout=8):
+            return True, f"Kaya can reach {host.strip()} on port {port}."
+    except OSError as exc:
+        return False, f"Kaya cannot reach {host.strip()} on port {port}: {exc}"
+
+
+def test_ftp_storage(
+    *,
+    host: str,
+    remote_path: str,
+    username: str,
+    password: str,
+) -> tuple[bool, str]:
+    host = host.strip()
+    if not host:
+        return False, "Remote host is required for FTP storage."
+
+    marker = ".kaya-storage-test.txt"
+    payload = b"kaya storage test"
+    ftp = FTP()
+    try:
+        ftp.connect(host, 21, timeout=8)
+        ftp.login(username.strip() or "anonymous", password or "anonymous@")
+        if remote_path.strip():
+            ftp.cwd(remote_path.strip())
+        ftp.storbinary(f"STOR {marker}", io.BytesIO(payload))
+        downloaded = io.BytesIO()
+        ftp.retrbinary(f"RETR {marker}", downloaded.write)
+        ftp.delete(marker)
+        ftp.quit()
+    except OSError as exc:
+        return False, f"Kaya could not reach the FTP server: {exc}"
+    except Exception as exc:
+        try:
+            ftp.quit()
+        except Exception:
+            pass
+        return False, f"Kaya could not write, read and delete a test file over FTP: {exc}"
+
+    if downloaded.getvalue() != payload:
+        return False, "Kaya uploaded a test file over FTP, but the downloaded data did not match."
+    return True, f"Kaya can write, read and delete files on FTP storage at {host}."
+
+
+def test_backup_storage_target(
+    db: Session,
+    *,
+    storage_type: str,
+    storage_path: str,
+    remote_host: str,
+    remote_share: str,
+    remote_username: str,
+    remote_password: str,
+) -> tuple[bool, str]:
+    storage_type = storage_type if storage_type in {"local", "smb", "ftp", "sftp"} else "local"
+
+    if storage_type == "local":
+        return test_directory_read_write(storage_path)
+
+    mounted_ok, mounted_detail = test_directory_read_write(storage_path)
+    if mounted_ok:
+        return True, f"{mounted_detail} This is the path Kaya will use for {storage_type.upper()} storage."
+
+    if storage_type == "ftp":
+        password = read_saved_backup_password(db, remote_password)
+        return test_ftp_storage(
+            host=remote_host,
+            remote_path=remote_share,
+            username=remote_username,
+            password=password,
+        )
+
+    port = 445 if storage_type == "smb" else 22
+    reachable, reachable_detail = test_tcp_connection(remote_host, port)
+    if reachable:
+        return (
+            False,
+            f"{reachable_detail} Read/write was not verified because {storage_type.upper()} must be mounted at "
+            f"{storage_path.strip() or '/mnt/backups'} for Kaya to test file access directly. Mount the share there, "
+            "or test it from the backup agent when agent-side remote storage is enabled.",
+        )
+    return False, f"{mounted_detail} {reachable_detail}"
 
 
 def save_email_settings(
@@ -1644,6 +1775,67 @@ def save_settings(
             "security_check": security_check_context(request, db),
             "message": "Settings saved successfully.",
             "error": None,
+            **csrf_context(request),
+        },
+    )
+
+
+@router.post("/system/site-administration/test-backup-storage")
+def test_backup_storage(
+    request: Request,
+    backup_storage_type: str = Form("local"),
+    backup_storage_path: str = Form("/mnt/backups"),
+    backup_remote_host: str = Form(""),
+    backup_remote_share: str = Form(""),
+    backup_remote_username: str = Form(""),
+    backup_remote_password: str = Form(""),
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    validate_csrf_token(request, csrf_token)
+
+    save_backup_settings(
+        db,
+        backup_storage_type=backup_storage_type,
+        backup_storage_path=backup_storage_path,
+        backup_remote_host=backup_remote_host,
+        backup_remote_share=backup_remote_share,
+        backup_remote_username=backup_remote_username,
+        backup_remote_password=backup_remote_password,
+    )
+    db.commit()
+
+    passed, detail = test_backup_storage_target(
+        db,
+        storage_type=backup_storage_type,
+        storage_path=backup_storage_path,
+        remote_host=backup_remote_host,
+        remote_share=backup_remote_share,
+        remote_username=backup_remote_username,
+        remote_password=backup_remote_password,
+    )
+    write_audit(
+        db,
+        user,
+        "test_backup_storage",
+        "settings",
+        None,
+        request.client.host if request.client else None,
+        detail=detail,
+        severity="info" if passed else "warning",
+    )
+    db.commit()
+
+    return templates.TemplateResponse(
+        request,
+        "settings.html",
+        {
+            "user": user,
+            "settings": load_site_settings(db),
+            "security_check": security_check_context(request, db),
+            "message": f"Backup storage test passed: {detail}" if passed else None,
+            "error": None if passed else f"Backup storage test failed: {detail}",
             **csrf_context(request),
         },
     )

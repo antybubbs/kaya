@@ -199,6 +199,10 @@
           <input name="backup_remote_password" type="password" value="" autocomplete="new-password" placeholder="{% if settings.get('backup_remote_password_set') == '1' %}Saved password{% endif %}">
         </label>
       </div>
+      <div class="form-actions">
+        <button type="submit" formaction="/system/site-administration/test-backup-storage" class="btn btn-secondary">Test storage access</button>
+        <span class="muted">Checks that Kaya can write, read and delete a small test file at this target.</span>
+      </div>
     </div>
   </section>
 
@@ -287,7 +291,6 @@
 
   <div class="site-admin-actions">
     <button type="submit" class="btn btn-primary">Save settings</button>
-    <button type="submit" formaction="/system/site-administration/test-email" class="btn btn-secondary">Send test email</button>
   </div>
 </form>
 {% endblock %}
