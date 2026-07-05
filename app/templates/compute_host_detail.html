@@ -19,8 +19,12 @@ services:
     volumes:
       # Docker socket access lets the agent inspect containers and perform restore jobs.
       - /var/run/docker.sock:/var/run/docker.sock:ro
+{% if backup_storage_type == 'local' %}
       # Mount the same backup path configured in Kaya Site Administration.
       - {{ backup_storage_path }}:{{ backup_storage_path }}
+{% else %}
+      # Remote backup storage is configured in Kaya and used directly by the agent.
+{% endif %}
 </textarea></label></section>
 {% endif %}
 <section class="panel section-gap"><h2>Workloads</h2><table><thead><tr><th>State</th><th>Name</th><th>Type</th><th>CPU</th><th>Memory</th><th>Owner</th></tr></thead><tbody>{% for row in workloads %}<tr><td><span class="compute-state {{ row.status }}">{{ row.status }}</span></td><td><a href="/infrastructure/vm-docker-manager/workloads/{{ row.id }}"><strong>{{ row.name }}</strong></a></td><td>{{ row.kind }}</td><td>{{ row.cpu_percent|round(1) if row.cpu_percent is not none else '-' }}%</td><td>{{ bytes_label(row.memory_used) }}</td><td>{{ row.owner or '-' }}</td></tr>{% endfor %}</tbody></table></section>

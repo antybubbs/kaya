@@ -7,6 +7,7 @@ import smtplib
 from ftplib import FTP
 from datetime import datetime, timedelta
 from urllib.request import urlopen
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
@@ -16,6 +17,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm import selectinload
 from starlette import status
 from urllib.parse import urlencode
+import smbclient
 
 from app.core.config import get_settings
 from app.core.branding import APP_BRAND_NAME
@@ -268,6 +270,57 @@ def test_ftp_storage(
     return True, f"Kaya can write, read and delete files on FTP storage at {host}."
 
 
+def smb_unc_path(host: str, remote_share: str, *children: str) -> str:
+    host = host.strip().strip("\\/")
+    share_path = remote_share.strip().strip("\\/")
+    if not host:
+        raise ValueError("Remote host is required for SMB storage.")
+    if not share_path:
+        raise ValueError("Remote share/path is required for SMB storage.")
+    parts = [part for part in share_path.replace("\\", "/").split("/") if part]
+    share = parts[0]
+    path_parts = parts[1:]
+    for child in children:
+        path_parts.extend(part for part in str(child).replace("\\", "/").split("/") if part)
+    suffix = ("\\" + "\\".join(path_parts)) if path_parts else ""
+    return f"\\\\{host}\\{share}{suffix}"
+
+
+def test_smb_storage(
+    *,
+    host: str,
+    remote_share: str,
+    username: str,
+    password: str,
+) -> tuple[bool, str]:
+    try:
+        target = smb_unc_path(host, remote_share)
+    except ValueError as exc:
+        return False, str(exc)
+
+    marker = f".kaya-storage-test-{uuid4().hex}.txt"
+    payload = b"kaya storage test"
+    test_path = smb_unc_path(host, remote_share, marker)
+    try:
+        smbclient.register_session(host.strip(), username=username.strip() or None, password=password or None)
+        with smbclient.open_file(test_path, mode="wb") as handle:
+            handle.write(payload)
+        with smbclient.open_file(test_path, mode="rb") as handle:
+            downloaded = handle.read()
+        smbclient.remove(test_path)
+    except Exception as exc:
+        return False, f"Kaya could not write, read and delete a test file on SMB target {target}: {exc}"
+    finally:
+        try:
+            smbclient.delete_session(host.strip())
+        except Exception:
+            pass
+
+    if downloaded != payload:
+        return False, f"Kaya wrote to SMB target {target}, but the downloaded data did not match."
+    return True, f"Kaya can write, read and delete files on SMB target {target}."
+
+
 def test_backup_storage_target(
     db: Session,
     *,
@@ -292,6 +345,15 @@ def test_backup_storage_target(
         return test_ftp_storage(
             host=remote_host,
             remote_path=remote_share,
+            username=remote_username,
+            password=password,
+        )
+
+    if storage_type == "smb":
+        password = read_saved_backup_password(db, remote_password)
+        return test_smb_storage(
+            host=remote_host,
+            remote_share=remote_share,
             username=remote_username,
             password=password,
         )

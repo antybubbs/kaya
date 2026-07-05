@@ -174,8 +174,8 @@
           </select>
         </label>
         <label>
-          <strong>Local path or mount point</strong>
-          <small>Use a path Kaya or the backup agent can reach, for example /mnt/backups.</small>
+          <strong>Storage path</strong>
+          <small>For Local storage, use a path such as /mnt/backups. For remote storage, use Remote share/path below.</small>
           <input name="backup_storage_path" value="{{ settings.get('backup_storage_path', '/mnt/backups') }}" placeholder="/mnt/backups">
         </label>
         <label>
@@ -185,7 +185,7 @@
         </label>
         <label>
           <strong>Remote share/path</strong>
-          <small>Share name or remote path, for example backups or /srv/backups.</small>
+          <small>For SMB, use share or share/folder, for example home or home/kaya-backups.</small>
           <input name="backup_remote_share" value="{{ settings.get('backup_remote_share', '') }}" placeholder="backups">
         </label>
         <label>
