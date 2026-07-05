@@ -74,5 +74,32 @@
     });
   }
 
+  const inboundButton = root.querySelector("[data-inbound-check]");
+  const inboundResult = root.querySelector("[data-inbound-result]");
+  const inboundDetail = root.querySelector("[data-inbound-detail]");
+  if (inboundButton && inboundResult && inboundDetail) {
+    inboundButton.addEventListener("click", async () => {
+      inboundButton.disabled = true;
+      inboundResult.textContent = "Checking...";
+      inboundDetail.textContent = "Kaya is resolving the hostname used by this browser request.";
+      try {
+        const response = await fetch("/system/site-administration/security/inbound", {
+          headers: { Accept: "application/json" },
+        });
+        const data = await response.json();
+        if (!response.ok || !data.ok) {
+          throw new Error(data.error || "Inbound DNS check failed");
+        }
+        inboundResult.textContent = data.addresses.join(", ");
+        inboundDetail.textContent = `Resolved ${data.host}. This is where browsers are routed before reaching Kaya.`;
+      } catch (error) {
+        inboundResult.textContent = "Unavailable";
+        inboundDetail.textContent = error.message || "Kaya could not resolve the inbound hostname.";
+      } finally {
+        inboundButton.disabled = false;
+      }
+    });
+  }
+
   activate(readStoredTab() || tabs[0]?.dataset.settingsTab || "");
 })();

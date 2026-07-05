@@ -56,10 +56,16 @@
           <small>The Host header Kaya is seeing for this browser request.</small>
         </div>
         <div>
-          <span>Public IP</span>
+          <span>Outbound public IP</span>
           <strong class="mono" data-public-ip-result>Not checked</strong>
-          <small data-public-ip-detail>Checks the outbound public IP Kaya uses to reach the internet.</small>
-          <button type="button" class="button secondary" data-public-ip-check>Check public IP</button>
+          <small data-public-ip-detail>Checks the public IP Kaya uses when it reaches external services.</small>
+          <button type="button" class="button secondary" data-public-ip-check>Check outbound IP</button>
+        </div>
+        <div>
+          <span>Inbound DNS</span>
+          <strong class="mono" data-inbound-result>Not checked</strong>
+          <small data-inbound-detail>Resolves the current browser hostname to show where users are routed.</small>
+          <button type="button" class="button secondary" data-inbound-check>Check inbound DNS</button>
         </div>
         <div>
           <span>Trusted host check</span>

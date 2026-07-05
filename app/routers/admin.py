@@ -1,6 +1,7 @@
 from pathlib import Path
 import tempfile
 import json
+import socket
 import smtplib
 from datetime import datetime, timedelta
 from urllib.request import urlopen
@@ -48,6 +49,7 @@ from app.services.site_settings import (
     effective_allowed_hosts,
     frame_ancestor_directive,
     get_site_setting,
+    host_without_port,
     host_is_allowed,
     hsts_header_value,
     load_security_settings,
@@ -283,6 +285,15 @@ def lookup_public_ip() -> tuple[str, str]:
         except Exception as exc:
             last_error = f"{name}: {type(exc).__name__}"
     raise RuntimeError(last_error)
+
+
+def lookup_inbound_addresses(host: str) -> list[str]:
+    addresses = {
+        result[4][0]
+        for result in socket.getaddrinfo(host, None)
+        if result[4] and result[4][0]
+    }
+    return sorted(addresses)
 
 
 @router.get("/admin")
@@ -1463,6 +1474,32 @@ def public_ip_check(user=Depends(require_admin)):
             status_code=status.HTTP_502_BAD_GATEWAY,
         )
     return {"ok": True, "ip": ip_address, "source": source}
+
+
+@router.get("/system/site-administration/security/inbound")
+def inbound_check(request: Request, user=Depends(require_admin)):
+    host = host_without_port(request.headers.get("host", ""))
+    if not host:
+        return JSONResponse(
+            {"ok": False, "error": "Kaya could not read a Host header from this request."},
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        addresses = lookup_inbound_addresses(host)
+    except OSError as exc:
+        return JSONResponse(
+            {"ok": False, "host": host, "error": f"DNS lookup failed: {type(exc).__name__}"},
+            status_code=status.HTTP_502_BAD_GATEWAY,
+        )
+
+    if not addresses:
+        return JSONResponse(
+            {"ok": False, "host": host, "error": "DNS lookup returned no addresses."},
+            status_code=status.HTTP_502_BAD_GATEWAY,
+        )
+
+    return {"ok": True, "host": host, "addresses": addresses}
 
 
 @router.post("/system/site-administration")
