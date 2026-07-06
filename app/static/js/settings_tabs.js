@@ -5,6 +5,7 @@
   const parentTabs = Array.from(root.querySelectorAll("[data-settings-parent-tab]"));
   const childTabs = Array.from(root.querySelectorAll("[data-settings-child-tab]"));
   const childTabRow = root.querySelector("[data-settings-subtabs]");
+  const detailGroups = Array.from(root.querySelectorAll("[data-settings-details]"));
   const panels = Array.from(root.querySelectorAll("[data-settings-panel]"));
   const storageKey = root.dataset.settingsStorageKey || "kaya.siteAdministration.activeTab";
 
@@ -93,6 +94,13 @@
       const active = parentKey === activeParent;
       tab.classList.toggle("active", active);
       tab.setAttribute("aria-selected", active ? "true" : "false");
+      tab.setAttribute("aria-current", active ? "page" : "false");
+    });
+
+    detailGroups.forEach((group) => {
+      if (group.dataset.settingsDetails === activeParent) {
+        group.open = true;
+      }
     });
 
     if (childTabRow) {
@@ -104,9 +112,10 @@
     childTabs.forEach((tab) => {
       const visible = tab.dataset.settingsParent === activeParent;
       const active = visible && tab.dataset.settingsChildTab === activePanel;
-      tab.hidden = !visible;
+      if (childTabRow) tab.hidden = !visible;
       tab.classList.toggle("active", active);
       tab.setAttribute("aria-selected", active ? "true" : "false");
+      tab.setAttribute("aria-current", active ? "page" : "false");
     });
 
     panels.forEach((panel) => {
@@ -122,9 +131,18 @@
   };
 
   parentTabs.forEach((tab) => {
-    tab.addEventListener("click", () => {
+    tab.addEventListener("click", (event) => {
       const parentKey = tab.dataset.settingsParentTab || "";
+      const group = tab.closest("details");
+      const wasActive = tab.classList.contains("active");
+      const wasOpen = Boolean(group?.open);
+      if (tab.tagName === "SUMMARY") {
+        event.preventDefault();
+      }
       activate(defaultPanelForParent(parentKey));
+      if (group) {
+        group.open = wasActive ? !wasOpen : true;
+      }
     });
   });
 
