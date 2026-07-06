@@ -136,7 +136,7 @@
       const group = tab.closest("details");
       const wasActive = tab.classList.contains("active");
       const wasOpen = Boolean(group?.open);
-      if (tab.tagName === "SUMMARY") {
+      if (tab.tagName === "SUMMARY" || tab.tagName === "A") {
         event.preventDefault();
       }
       activate(defaultPanelForParent(parentKey));
@@ -147,7 +147,12 @@
   });
 
   childTabs.forEach((tab) => {
-    tab.addEventListener("click", () => activate(tab.dataset.settingsChildTab || ""));
+    tab.addEventListener("click", (event) => {
+      if (tab.tagName === "A") {
+        event.preventDefault();
+      }
+      activate(tab.dataset.settingsChildTab || "");
+    });
   });
 
   const publicIpButton = root.querySelector("[data-public-ip-check]");

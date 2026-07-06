@@ -495,10 +495,10 @@ html[data-theme=light] .backup-target-table th,html[data-theme=light] .backup-ta
 .settings-side-link,
 .settings-side-child {
   align-items: center;
-  background: transparent !important;
+  background: transparent;
   border: 0;
   border-radius: 8px;
-  color: var(--muted) !important;
+  color: #cbd5e1 !important;
   cursor: pointer;
   display: flex;
   font-size: 13px;
@@ -513,14 +513,26 @@ html[data-theme=light] .backup-target-table th,html[data-theme=light] .backup-ta
 .settings-side-link:hover,
 .settings-side-child:hover {
   background: rgba(148, 163, 184, .1);
-  color: var(--text) !important;
+  color: #f8fafc !important;
 }
 
 .settings-side-link.active,
 .settings-side-child.active {
-  background: rgba(255, 138, 0, .12) !important;
+  background: rgba(255, 138, 0, .12);
   box-shadow: inset 3px 0 0 rgba(255, 138, 0, .85);
-  color: var(--text) !important;
+  color: #ffffff !important;
+}
+
+html[data-theme=light] .settings-side-link,
+html[data-theme=light] .settings-side-child {
+  color: #475569 !important;
+}
+
+html[data-theme=light] .settings-side-link:hover,
+html[data-theme=light] .settings-side-child:hover,
+html[data-theme=light] .settings-side-link.active,
+html[data-theme=light] .settings-side-child.active {
+  color: #0f172a !important;
 }
 
 .settings-side-group>summary.settings-side-link {
