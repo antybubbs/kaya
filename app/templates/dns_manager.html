@@ -122,24 +122,75 @@
 </section>
 {% elif active_tab == 'query-log' %}
 {% set rows = list_from_payload(queries.data if queries and queries.ok else {}, 'queries', 'data') %}
-<section class="panel">
+<section class="panel dns-query-log-panel" data-dns-query-log>
+  <div class="dns-query-log-controls">
+    <label class="checkbox-row dns-live-toggle">
+      <input type="checkbox" data-dns-live-toggle>
+      <span><strong>Live query log</strong><small>Refresh this view automatically every 10 seconds.</small></span>
+    </label>
+  </div>
   <table data-table-key="dns-query-log">
-    <thead><tr><th>Time</th><th>Client Name</th><th>Client IP</th><th>Domain</th><th>Query Type</th><th>Status</th><th>Reply Type</th><th>Reply Time</th><th>Upstream</th></tr></thead>
+    <thead><tr><th>Time</th><th>Client Name</th><th>Client IP</th><th>Domain</th><th>Query Type</th><th>Status</th><th>Reply Type</th><th>Reply Time</th><th>Upstream</th><th data-col="actions">Actions</th></tr></thead>
     <tbody>
       {% for row in rows[:200] %}
+      {% set observed_at = query_log_time(row) %}
+      {% set client_name = query_client_name(row) %}
+      {% set client_ip = query_client_ip(row) %}
+      {% set domain = query_domain(row) %}
+      {% set qtype = query_type(row) %}
+      {% set qstatus = query_status(row) %}
+      {% set rtype = query_reply_type(row) %}
+      {% set rtime = query_reply_time(row) %}
+      {% set upstream = query_upstream(row) %}
+      {% set flagged = domain|lower in flagged_domains %}
       <tr>
         <td>{{ query_log_time(row) }}</td>
-        <td>{{ query_client_name(row) }}</td>
-        <td>{{ query_client_ip(row) }}</td>
-        <td><strong>{{ row.domain if row.domain is defined else row.query if row.query is defined else '-' }}</strong></td>
-        <td>{{ row.type if row.type is defined else row.query_type if row.query_type is defined else '-' }}</td>
-        <td>{{ row.status if row.status is defined else row.reply_type if row.reply_type is defined else '-' }}</td>
-        <td>{{ query_reply_type(row) }}</td>
-        <td>{{ query_reply_time(row) }}</td>
-        <td>{{ row.upstream if row.upstream is defined else '-' }}</td>
+        <td>{{ client_name }}</td>
+        <td>{{ client_ip }}</td>
+        <td>
+          <button class="dns-domain-link" type="button" data-dns-domain-detail aria-expanded="false">
+            {{ domain }}
+          </button>
+          {% if flagged %}<span class="table-chip danger-chip">Flagged</span>{% endif %}
+        </td>
+        <td>{{ qtype }}</td>
+        <td>{{ qstatus }}</td>
+        <td>{{ rtype }}</td>
+        <td>{{ rtime }}</td>
+        <td>{{ upstream }}</td>
+        <td>
+          <form method="post" action="/networking/dns-manager/investigations" class="dns-flag-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="domain" value="{{ domain }}">
+            <input type="hidden" name="client_name" value="{{ client_name }}">
+            <input type="hidden" name="client_ip" value="{{ client_ip }}">
+            <input type="hidden" name="query_type" value="{{ qtype }}">
+            <input type="hidden" name="reply_status" value="{{ qstatus }}">
+            <input type="hidden" name="reply_type" value="{{ rtype }}">
+            <input type="hidden" name="reply_time" value="{{ rtime }}">
+            <input type="hidden" name="upstream" value="{{ upstream }}">
+            <input type="hidden" name="observed_at" value="{{ observed_at }}">
+            <input type="hidden" name="notes" value="Flagged from DNS query log.">
+            <button class="button secondary small" type="submit" {% if flagged %}disabled title="Already flagged"{% endif %}>Flag</button>
+          </form>
+        </td>
+      </tr>
+      <tr class="dns-domain-detail-row" hidden>
+        <td colspan="10">
+          <div class="dns-domain-detail">
+            <div><span>Domain</span><strong class="mono">{{ domain }}</strong></div>
+            <div><span>Root domain</span><strong>{{ domain_root(domain) }}</strong></div>
+            <div><span>Classification</span><strong>{{ domain_kind(domain) }}</strong></div>
+            <div><span>Client</span><strong>{{ client_name }}{% if client_ip != '-' %} / {{ client_ip }}{% endif %}</strong></div>
+            <div><span>Query result</span><strong>{{ qstatus }}{% if rtype != '-' %} / {{ rtype }}{% endif %}</strong></div>
+            <div><span>Response</span><strong>{{ rtime }}{% if upstream != '-' and upstream != 'None' %} via {{ upstream }}{% endif %}</strong></div>
+            <div><span>Observed</span><strong>{{ observed_at }}</strong></div>
+            <div><span>Manager</span><strong><a href="/networking/domain-manager?q={{ domain_root(domain) }}">Check Domain Manager</a></strong></div>
+          </div>
+        </td>
       </tr>
       {% else %}
-      <tr><td colspan="9">No query log entries returned by this provider.</td></tr>
+      <tr><td colspan="10">No query log entries returned by this provider.</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -208,10 +259,30 @@
   </table>
 </section>
 {% else %}
-<section class="empty-state">
-  <h2>Reports are not available yet</h2>
-  <p class="muted">The DNS provider foundation is ready. Charts can be added once response shapes are confirmed against your Pi-hole version.</p>
+<section class="panel">
+  <h2>Open investigations</h2>
+  <table data-table-key="dns-investigations">
+    <thead><tr><th>Flagged</th><th>Domain</th><th>Client</th><th>Query Type</th><th>Reply</th><th>Observed</th><th>Notes</th></tr></thead>
+    <tbody>
+      {% for item in investigations %}
+      <tr>
+        <td>{{ item.created_at.strftime('%Y-%m-%d %H:%M') if item.created_at else '-' }}</td>
+        <td><strong class="mono">{{ item.domain }}</strong></td>
+        <td>{{ item.client_name or '-' }}{% if item.client_ip %}<br><span class="muted">{{ item.client_ip }}</span>{% endif %}</td>
+        <td>{{ item.query_type or '-' }}</td>
+        <td>{{ item.reply_type or '-' }}{% if item.reply_time %}<br><span class="muted">{{ item.reply_time }}</span>{% endif %}</td>
+        <td>{{ item.observed_at or '-' }}</td>
+        <td>{{ item.notes or '-' }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7">No DNS queries have been flagged for investigation.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
 </section>
 {% endif %}
 {% endif %}
+{% endblock %}
+{% block extra_scripts %}
+<script src="/static/js/dns_manager.js?v={{ asset_version }}" defer></script>
 {% endblock %}

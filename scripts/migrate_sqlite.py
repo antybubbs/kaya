@@ -70,6 +70,14 @@ def main():
             cur.execute(f"CREATE INDEX ix_dns_providers_{column} ON dns_providers ({column})")
         migrations_applied.append("dns_providers")
 
+    if not table_exists(cur, "dns_investigations"):
+        cur.execute(
+            "CREATE TABLE dns_investigations (id INTEGER NOT NULL PRIMARY KEY, provider_id INTEGER REFERENCES dns_providers(id) ON DELETE SET NULL, domain VARCHAR(500) NOT NULL, client_name VARCHAR(255), client_ip VARCHAR(80), query_type VARCHAR(40), status VARCHAR(40) DEFAULT 'open' NOT NULL, reply_type VARCHAR(120), reply_time VARCHAR(80), upstream VARCHAR(255), observed_at VARCHAR(80), notes TEXT, created_by_id INTEGER REFERENCES users(id) ON DELETE SET NULL, created_at DATETIME, updated_at DATETIME)"
+        )
+        for column in ["provider_id", "domain", "client_name", "client_ip", "query_type", "status", "reply_type", "created_by_id", "created_at"]:
+            cur.execute(f"CREATE INDEX ix_dns_investigations_{column} ON dns_investigations ({column})")
+        migrations_applied.append("dns_investigations")
+
     conn.commit()
     conn.close()
 

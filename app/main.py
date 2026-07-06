@@ -385,6 +385,12 @@ def migrate_existing_database():
             for column in ["name", "provider_type", "is_enabled", "last_status", "last_checked_at"]:
                 conn.execute(text(f"CREATE INDEX ix_dns_providers_{column} ON dns_providers ({column})"))
 
+        dns_investigation_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(dns_investigations)"))}
+        if not dns_investigation_columns:
+            conn.execute(text("CREATE TABLE dns_investigations (id INTEGER NOT NULL PRIMARY KEY, provider_id INTEGER REFERENCES dns_providers(id) ON DELETE SET NULL, domain VARCHAR(500) NOT NULL, client_name VARCHAR(255), client_ip VARCHAR(80), query_type VARCHAR(40), status VARCHAR(40) DEFAULT 'open' NOT NULL, reply_type VARCHAR(120), reply_time VARCHAR(80), upstream VARCHAR(255), observed_at VARCHAR(80), notes TEXT, created_by_id INTEGER REFERENCES users(id) ON DELETE SET NULL, created_at DATETIME, updated_at DATETIME)"))
+            for column in ["provider_id", "domain", "client_name", "client_ip", "query_type", "status", "reply_type", "created_by_id", "created_at"]:
+                conn.execute(text(f"CREATE INDEX ix_dns_investigations_{column} ON dns_investigations ({column})"))
+
         audit_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(audit_logs)"))}
         if audit_columns:
             for column, definition in {

@@ -219,6 +219,27 @@ class DNSProviderConfig(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class DNSInvestigation(Base):
+    __tablename__ = "dns_investigations"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    provider_id: Mapped[int | None] = mapped_column(ForeignKey("dns_providers.id", ondelete="SET NULL"), nullable=True, index=True)
+    domain: Mapped[str] = mapped_column(String(500), index=True)
+    client_name: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    client_ip: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    query_type: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(40), default="open", index=True)
+    reply_type: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    reply_time: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    upstream: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    observed_at: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    provider = relationship("DNSProviderConfig")
+    created_by = relationship("User")
+
+
 class HardwareAsset(Base):
     __tablename__ = "hardware_assets"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

@@ -598,3 +598,112 @@ html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .setup-brand-panel
   border-color:#2a303a!important;
   box-shadow:none!important;
 }
+
+/* DNS Manager query log interactions */
+.dns-query-log-panel{
+  display:grid;
+  gap:12px;
+}
+
+.dns-query-log-controls{
+  align-items:center;
+  display:flex;
+  justify-content:flex-start;
+}
+
+.dns-live-toggle{
+  align-items:center;
+  background:#101319;
+  border:1px solid #2a303a;
+  border-radius:8px;
+  display:inline-flex;
+  gap:10px;
+  padding:9px 12px;
+}
+
+.dns-live-toggle input{
+  flex:0 0 auto;
+  min-height:0;
+  width:auto;
+}
+
+.dns-live-toggle span{
+  display:grid;
+  gap:2px;
+}
+
+.dns-live-toggle small{
+  color:var(--kaya-muted);
+  font-size:11px;
+  font-weight:650;
+}
+
+.dns-domain-link{
+  background:transparent!important;
+  border:0!important;
+  color:#f5f5f2!important;
+  display:inline;
+  font:inherit;
+  font-weight:850;
+  min-height:0;
+  padding:0!important;
+  text-align:left;
+}
+
+.dns-domain-link:hover{
+  color:#ffb357!important;
+  text-decoration:underline;
+}
+
+.dns-flag-form{
+  margin:0;
+}
+
+.dns-flag-form button:disabled{
+  cursor:not-allowed;
+  opacity:.62;
+}
+
+.dns-domain-detail-row td{
+  background:#101319!important;
+  padding:0!important;
+}
+
+.dns-domain-detail{
+  display:grid;
+  gap:10px;
+  grid-template-columns:repeat(auto-fit,minmax(210px,1fr));
+  padding:14px;
+}
+
+.dns-domain-detail div{
+  background:#14171d;
+  border:1px solid #2a303a;
+  border-radius:8px;
+  display:grid;
+  gap:5px;
+  min-width:0;
+  padding:10px 12px;
+}
+
+.dns-domain-detail span{
+  color:var(--kaya-muted);
+  font-size:11px;
+  font-weight:850;
+  text-transform:uppercase;
+}
+
+.dns-domain-detail strong{
+  overflow-wrap:anywhere;
+}
+
+html[data-kaya-theme=light-ops] .dns-live-toggle,
+html[data-kaya-theme=light-ops] .dns-domain-detail-row td,
+html[data-kaya-theme=light-ops] .dns-domain-detail div{
+  background:#fff!important;
+  border-color:#d8dee8!important;
+}
+
+html[data-kaya-theme=light-ops] .dns-domain-link{
+  color:#111827!important;
+}

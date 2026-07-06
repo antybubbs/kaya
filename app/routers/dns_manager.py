@@ -3,15 +3,17 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Form, Query, Request
+from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
-from app.core.csrf import csrf_context
+from app.core.csrf import csrf_context, validate_csrf_token
 from app.db.session import get_db
-from app.models.models import DNSProviderConfig
+from app.models.models import DNSInvestigation, DNSProviderConfig
 from app.routers.auth import require_user
 from app.services.dns_providers import DNSProvider, provider_for
+from app.services.audit import write_audit
 from app.services.site_settings import get_site_setting
 
 router = APIRouter(prefix="/networking/dns-manager")
@@ -144,6 +146,56 @@ def query_reply_time(row: Any) -> str:
     return f"{seconds:.2f} s"
 
 
+def query_domain(row: Any) -> str:
+    return str(payload_value(row, "domain", "query") or "-")
+
+
+def query_type(row: Any) -> str:
+    return str(payload_value(row, "type", "query_type") or "-")
+
+
+def query_status(row: Any) -> str:
+    return str(payload_value(row, "status", "reply_status", "reply_type") or "-")
+
+
+def query_upstream(row: Any) -> str:
+    return str(payload_value(row, "upstream", "forwarded_to", "server") or "-")
+
+
+def domain_root(domain: str) -> str:
+    clean = (domain or "").strip(".").lower()
+    if not clean or clean == "-":
+        return "-"
+    parts = [part for part in clean.split(".") if part]
+    if len(parts) <= 2:
+        return clean
+    return ".".join(parts[-2:])
+
+
+def domain_kind(domain: str) -> str:
+    clean = (domain or "").strip(".").lower()
+    if not clean or clean == "-":
+        return "Unknown"
+    if clean.endswith(".local") or clean.endswith(".lan") or clean.endswith(".home.arpa"):
+        return "Local network"
+    if clean.endswith(".in-addr.arpa") or clean.endswith(".ip6.arpa"):
+        return "Reverse lookup"
+    if clean.startswith("_"):
+        return "Service discovery"
+    return "External domain"
+
+
+def open_investigation_domains(db: Session, provider: DNSProviderConfig | None) -> set[str]:
+    if not provider:
+        return set()
+    rows = (
+        db.query(DNSInvestigation.domain)
+        .filter(DNSInvestigation.provider_id == provider.id, DNSInvestigation.status == "open")
+        .all()
+    )
+    return {str(domain).lower() for domain, in rows if domain}
+
+
 def _timestamp_label(value: Any) -> str:
     try:
         stamp = int(float(value))
@@ -215,6 +267,64 @@ def call_provider(provider: DNSProviderConfig | None, method: str, client: DNSPr
     return result
 
 
+@router.post("/investigations")
+def flag_dns_investigation(
+    request: Request,
+    domain: str = Form(..., max_length=500),
+    client_name: str = Form("", max_length=255),
+    client_ip: str = Form("", max_length=80),
+    query_type_value: str = Form("", alias="query_type", max_length=40),
+    reply_status: str = Form("", max_length=40),
+    reply_type: str = Form("", max_length=120),
+    reply_time: str = Form("", max_length=80),
+    upstream: str = Form("", max_length=255),
+    observed_at: str = Form("", max_length=80),
+    notes: str = Form("", max_length=2000),
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+    user=Depends(require_user),
+):
+    validate_csrf_token(request, csrf_token)
+    clean_domain = domain.strip().strip(".").lower()
+    if clean_domain and clean_domain != "-":
+        provider = selected_provider(db) if dns_manager_enabled(db) else None
+        row = DNSInvestigation(
+            provider_id=provider.id if provider else None,
+            domain=clean_domain,
+            client_name=client_name.strip() or None,
+            client_ip=client_ip.strip() or None,
+            query_type=query_type_value.strip() or None,
+            status="open",
+            reply_type=reply_type.strip() or reply_status.strip() or None,
+            reply_time=reply_time.strip() or None,
+            upstream=upstream.strip() or None,
+            observed_at=observed_at.strip() or None,
+            notes=notes.strip() or None,
+            created_by_id=user.id,
+        )
+        db.add(row)
+        db.commit()
+        write_audit(
+            db,
+            user,
+            "flag",
+            "dns_investigation",
+            str(row.id),
+            request.client.host if request.client else None,
+            detail=f"Flagged DNS query for {clean_domain}",
+            severity="warning",
+            metadata={
+                "domain": clean_domain,
+                "client_name": client_name,
+                "client_ip": client_ip,
+                "query_type": query_type_value,
+                "reply_type": reply_type,
+                "upstream": upstream,
+            },
+        )
+    return RedirectResponse("/networking/dns-manager?tab=query-log", status_code=303)
+
+
 @router.get("")
 def dns_manager(
     request: Request,
@@ -227,6 +337,8 @@ def dns_manager(
     provider = selected_provider(db) if enabled else None
     status = stats = history = queries = clients = local_dns = dhcp = blocklists = None
     error = None
+    flagged_domains: set[str] = set()
+    investigations: list[DNSInvestigation] = []
 
     if enabled and provider:
         dns_client = provider_for(provider)
@@ -248,6 +360,14 @@ def dns_manager(
         db.commit()
         active_result = next((item for item in [status, stats, history, queries, clients, local_dns, dhcp, blocklists] if item and not item.ok), None)
         error = active_result.message if active_result else None
+        flagged_domains = open_investigation_domains(db, provider)
+        investigations = (
+            db.query(DNSInvestigation)
+            .filter(DNSInvestigation.provider_id == provider.id, DNSInvestigation.status == "open")
+            .order_by(DNSInvestigation.created_at.desc())
+            .limit(100)
+            .all()
+        )
 
     return templates.TemplateResponse(
         request,
@@ -268,14 +388,22 @@ def dns_manager(
             "dhcp": dhcp,
             "blocklists": blocklists,
             "error": error,
+            "flagged_domains": flagged_domains,
+            "investigations": investigations,
             "list_from_payload": list_from_payload,
             "stat_value": stat_value,
             "display_number": display_number,
+            "query_domain": query_domain,
+            "query_type": query_type,
+            "query_status": query_status,
+            "query_upstream": query_upstream,
             "query_log_time": query_log_time,
             "query_client_name": query_client_name,
             "query_client_ip": query_client_ip,
             "query_reply_type": query_reply_type,
             "query_reply_time": query_reply_time,
+            "domain_root": domain_root,
+            "domain_kind": domain_kind,
             "query_chart_points": query_chart_points,
             "client_activity_rows": client_activity_rows,
             "chart_max": chart_max,
