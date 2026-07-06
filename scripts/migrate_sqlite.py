@@ -62,6 +62,14 @@ def main():
             cur.execute(f"CREATE INDEX ix_backup_jobs_{column} ON backup_jobs ({column})")
         migrations_applied.append("backup_jobs")
 
+    if not table_exists(cur, "dns_providers"):
+        cur.execute(
+            "CREATE TABLE dns_providers (id INTEGER NOT NULL PRIMARY KEY, name VARCHAR(255) NOT NULL, provider_type VARCHAR(40) DEFAULT 'pihole' NOT NULL, base_url VARCHAR(500) NOT NULL, auth_method VARCHAR(40) DEFAULT 'password' NOT NULL, encrypted_secret TEXT, ssl_verify BOOLEAN DEFAULT 1 NOT NULL, timeout_seconds INTEGER DEFAULT 10 NOT NULL, is_enabled BOOLEAN DEFAULT 1 NOT NULL, description TEXT, last_status VARCHAR(40), last_error TEXT, last_checked_at DATETIME, created_at DATETIME, updated_at DATETIME)"
+        )
+        for column in ["name", "provider_type", "is_enabled", "last_status", "last_checked_at"]:
+            cur.execute(f"CREATE INDEX ix_dns_providers_{column} ON dns_providers ({column})")
+        migrations_applied.append("dns_providers")
+
     conn.commit()
     conn.close()
 

@@ -41,6 +41,7 @@
         <summary class="settings-side-link" data-settings-parent-tab="modules" data-default-child="module-backup-manager" aria-selected="false">Module Settings</summary>
         <div class="settings-side-children">
           <a href="/system/site-administration?tab=module-backup-manager" class="settings-side-child" data-settings-child-tab="module-backup-manager" data-settings-parent="modules" aria-selected="false">Backup Manager</a>
+          <a href="/system/site-administration?tab=module-dns-manager" class="settings-side-child" data-settings-child-tab="module-dns-manager" data-settings-parent="modules" aria-selected="false">DNS Manager</a>
         </div>
       </details>
     </aside>
@@ -179,6 +180,7 @@
 
     <div class="remote-settings-card">
       <header><span>Backup targets</span></header>
+      <small class="muted">Saved targets are listed below.</small>
       <input type="hidden" name="backup_targets_json" id="backup_targets_json" value="{{ settings.get('backup_targets_json', '[]') }}">
       <input type="hidden" name="backup_default_target_name" id="backup_default_target_name" value="{{ settings.get('backup_default_target_name', '') }}">
       <input type="hidden" name="backup_storage_type" id="backup_storage_type" value="{{ settings.get('backup_storage_type', 'local') }}">
@@ -192,9 +194,108 @@
           <div class="backup-target-editor" data-backup-target-editor hidden></div>
           <div class="backup-targets-actions">
             <button type="button" class="button secondary" data-add-backup-target>Add target</button>
-            <small class="muted">Saved targets are listed in a table. Add opens a target form, then save it. Use Test on any saved target to verify connectivity.</small>
           </div>
         </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="settings-tab-panel" data-settings-panel="module-dns-manager" data-settings-parent="modules" role="tabpanel" hidden>
+    <h2>DNS Manager</h2>
+    {% set dns_default_id = settings.get('dns_default_provider_id', '') %}
+    {% set dns_ns = namespace(provider=none) %}
+    {% for item in dns_providers or [] %}
+      {% if (dns_default_id and item.id|string == dns_default_id) or (not dns_default_id and loop.first) %}
+        {% set dns_ns.provider = item %}
+      {% endif %}
+    {% endfor %}
+    {% set dns_provider = dns_ns.provider %}
+
+    <div class="remote-settings-card">
+      <header><span>General</span></header>
+      <div class="remote-settings-grid two">
+        <label class="remote-setting-row">
+          <span><strong>Enable DNS Manager</strong><small>Show and use DNS Manager for configured providers.</small></span>
+          <input class="remote-switch" name="dns_manager_enabled" type="checkbox" value="1" {% if settings.get('dns_manager_enabled') == '1' %}checked{% endif %}>
+        </label>
+        <label class="remote-setting-row">
+          <span><strong>Enable caching</strong><small>Allow DNS Manager to reuse recent provider responses where supported.</small></span>
+          <input class="remote-switch" name="dns_cache_enabled" type="checkbox" value="1" {% if settings.get('dns_cache_enabled', '1') == '1' %}checked{% endif %}>
+        </label>
+        <label>
+          <strong>Default DNS provider</strong>
+          <small>Provider used when DNS Manager opens.</small>
+          <select name="dns_default_provider_id">
+            <option value="">First enabled provider</option>
+            {% for item in dns_providers or [] %}
+            <option value="{{ item.id }}" {% if settings.get('dns_default_provider_id') == item.id|string %}selected{% endif %}>{{ item.name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>
+          <strong>Default refresh interval</strong>
+          <small>Minimum time between automatic refreshes.</small>
+          <input name="dns_refresh_interval_seconds" type="number" min="30" max="86400" value="{{ settings.get('dns_refresh_interval_seconds', '300') }}">
+        </label>
+      </div>
+    </div>
+
+    <div class="remote-settings-card">
+      <header><span>Pi-hole connection</span></header>
+      <div class="remote-settings-grid two">
+        <input name="dns_provider_id" type="hidden" value="{{ dns_provider.id if dns_provider else '' }}">
+        <label>
+          <strong>Display name</strong>
+          <small>Name shown inside DNS Manager.</small>
+          <input name="dns_provider_name" value="{{ dns_provider.name if dns_provider else '' }}" placeholder="Home Pi-hole">
+        </label>
+        <label>
+          <strong>Provider type</strong>
+          <small>Pi-hole is the first supported provider.</small>
+          <select name="dns_provider_type">
+            <option value="pihole" selected>Pi-hole</option>
+          </select>
+        </label>
+        <label>
+          <strong>Base URL</strong>
+          <small>Pi-hole URL Kaya should connect to.</small>
+          <input name="dns_provider_base_url" type="url" value="{{ dns_provider.base_url if dns_provider else '' }}" placeholder="https://pihole.example.local">
+        </label>
+        <label>
+          <strong>Authentication method</strong>
+          <small>Use an application password or API credential supported by your Pi-hole version.</small>
+          <select name="dns_provider_auth_method">
+            {% set auth_method = dns_provider.auth_method if dns_provider else 'password' %}
+            <option value="password" {% if auth_method == 'password' %}selected{% endif %}>Application password</option>
+            <option value="api_token" {% if auth_method == 'api_token' %}selected{% endif %}>API credential</option>
+          </select>
+        </label>
+        <label>
+          <strong>Application password/API credential</strong>
+          <small>{% if dns_provider and dns_provider.encrypted_secret %}A credential is saved. Enter a new one to replace it.{% else %}Stored encrypted by Kaya.{% endif %}</small>
+          <input name="dns_provider_secret" type="password" value="" autocomplete="new-password" placeholder="{% if dns_provider and dns_provider.encrypted_secret %}Saved credential{% endif %}">
+        </label>
+        <label>
+          <strong>Connection timeout</strong>
+          <small>Seconds before Kaya gives up on a provider request.</small>
+          <input name="dns_provider_timeout_seconds" type="number" min="1" max="60" value="{{ dns_provider.timeout_seconds if dns_provider else 10 }}">
+        </label>
+        <label class="remote-setting-row">
+          <span><strong>Verify SSL certificate</strong><small>Disable only for trusted internal endpoints with self-signed certificates.</small></span>
+          <input class="remote-switch" name="dns_provider_ssl_verify" type="checkbox" value="1" {% if not dns_provider or dns_provider.ssl_verify %}checked{% endif %}>
+        </label>
+        <label class="remote-setting-row">
+          <span><strong>Provider enabled</strong><small>Disabled providers stay saved but are ignored by DNS Manager.</small></span>
+          <input class="remote-switch" name="dns_provider_enabled" type="checkbox" value="1" {% if not dns_provider or dns_provider.is_enabled %}checked{% endif %}>
+        </label>
+        <label class="wide">
+          <strong>Description</strong>
+          <small>Optional internal note for administrators.</small>
+          <textarea name="dns_provider_description" placeholder="Location, purpose, or owner">{{ dns_provider.description if dns_provider and dns_provider.description else '' }}</textarea>
+        </label>
+      </div>
+      <div class="remote-settings-actions">
+        <button class="button secondary" type="submit" formaction="/system/site-administration/test-dns-provider" formmethod="post">Test Pi-hole connection</button>
       </div>
     </div>
   </section>

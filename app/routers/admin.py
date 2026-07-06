@@ -36,6 +36,7 @@ from app.models.models import (
     AppSession,
     AuditLog,
     CustomField,
+    DNSProviderConfig,
     ManagedListItem,
     RemoteManagerSetting,
     User,
@@ -49,6 +50,7 @@ from app.services.importer import ImportCSVError, import_csv, import_ip_addresse
 from app.services.managed_lists import MANAGED_LIST_MODULES, MANAGED_LISTS, list_label
 from app.services.mail import MailConfigurationError, render_email_template, send_mail
 from app.services.sessions import active_since
+from app.services.dns_providers import provider_for
 from app.services.site_settings import (
     effective_allowed_hosts,
     frame_ancestor_directive,
@@ -90,6 +92,10 @@ SITE_SETTING_KEYS = {
     "backup_remote_password": "",
     "backup_targets_json": "[]",
     "backup_default_target_name": "",
+    "dns_manager_enabled": "",
+    "dns_default_provider_id": "",
+    "dns_refresh_interval_seconds": "300",
+    "dns_cache_enabled": "1",
     "guacd_host": "",
     "guacd_port": "4822",
     "smtp_enabled": "",
@@ -157,6 +163,67 @@ def save_backup_remote_password(db: Session, password: str) -> None:
     if not password:
         return
     save_site_setting(db, "backup_remote_password", encrypt_secret(password))
+
+
+def dns_providers_for_admin(db: Session) -> list[DNSProviderConfig]:
+    return db.query(DNSProviderConfig).order_by(DNSProviderConfig.name.asc()).all()
+
+
+def save_dns_manager_settings(
+    db: Session,
+    *,
+    dns_manager_enabled: str,
+    dns_default_provider_id: str,
+    dns_refresh_interval_seconds: str,
+    dns_cache_enabled: str,
+    dns_provider_id: str,
+    dns_provider_name: str,
+    dns_provider_type: str,
+    dns_provider_base_url: str,
+    dns_provider_auth_method: str,
+    dns_provider_secret: str,
+    dns_provider_ssl_verify: str,
+    dns_provider_timeout_seconds: str,
+    dns_provider_enabled: str,
+    dns_provider_description: str,
+) -> None:
+    save_site_setting(db, "dns_manager_enabled", "1" if dns_manager_enabled else "")
+    save_site_setting(db, "dns_cache_enabled", "1" if dns_cache_enabled else "")
+    try:
+        refresh = max(30, min(int(dns_refresh_interval_seconds or "300"), 86400))
+    except ValueError:
+        refresh = 300
+    save_site_setting(db, "dns_refresh_interval_seconds", str(refresh))
+
+    name = dns_provider_name.strip()
+    base_url = dns_provider_base_url.strip().rstrip("/")
+    if not name or not base_url:
+        save_site_setting(db, "dns_default_provider_id", dns_default_provider_id.strip())
+        return
+
+    provider = None
+    if dns_provider_id.strip().isdigit():
+        provider = db.get(DNSProviderConfig, int(dns_provider_id.strip()))
+    if not provider:
+        provider = DNSProviderConfig(name=name, provider_type="pihole", base_url=base_url)
+        db.add(provider)
+        db.flush()
+
+    provider.name = name
+    provider.provider_type = dns_provider_type if dns_provider_type in {"pihole"} else "pihole"
+    provider.base_url = base_url
+    provider.auth_method = dns_provider_auth_method if dns_provider_auth_method in {"password", "api_token"} else "password"
+    if dns_provider_secret.strip():
+        provider.encrypted_secret = encrypt_secret(dns_provider_secret.strip())
+    provider.ssl_verify = bool(dns_provider_ssl_verify)
+    try:
+        provider.timeout_seconds = max(1, min(int(dns_provider_timeout_seconds or "10"), 60))
+    except ValueError:
+        provider.timeout_seconds = 10
+    provider.is_enabled = bool(dns_provider_enabled)
+    provider.description = dns_provider_description.strip() or None
+    provider.updated_at = datetime.utcnow()
+    save_site_setting(db, "dns_default_provider_id", str(provider.id))
 
 
 def normalize_backup_targets_json(value: str) -> str:
@@ -1728,6 +1795,7 @@ def settings_page(
         {
             "user": user,
             "settings": load_site_settings(db),
+            "dns_providers": dns_providers_for_admin(db),
             "security_check": security_check_context(request, db),
             "message": None,
             "error": None,
@@ -1800,6 +1868,20 @@ def save_settings(
     backup_remote_password: str = Form(""),
     backup_targets_json: str = Form("[]"),
     backup_default_target_name: str = Form(""),
+    dns_manager_enabled: str = Form(""),
+    dns_default_provider_id: str = Form(""),
+    dns_refresh_interval_seconds: str = Form("300"),
+    dns_cache_enabled: str = Form(""),
+    dns_provider_id: str = Form(""),
+    dns_provider_name: str = Form(""),
+    dns_provider_type: str = Form("pihole"),
+    dns_provider_base_url: str = Form(""),
+    dns_provider_auth_method: str = Form("password"),
+    dns_provider_secret: str = Form(""),
+    dns_provider_ssl_verify: str = Form(""),
+    dns_provider_timeout_seconds: str = Form("10"),
+    dns_provider_enabled: str = Form(""),
+    dns_provider_description: str = Form(""),
     smtp_enabled: str = Form(""),
     smtp_host: str = Form(""),
     smtp_port: str = Form("587"),
@@ -1867,6 +1949,23 @@ def save_settings(
         save_site_setting(db, "backup_default_target_name", default_name)
     else:
         save_site_setting(db, "backup_default_target_name", "")
+    save_dns_manager_settings(
+        db,
+        dns_manager_enabled=dns_manager_enabled,
+        dns_default_provider_id=dns_default_provider_id,
+        dns_refresh_interval_seconds=dns_refresh_interval_seconds,
+        dns_cache_enabled=dns_cache_enabled,
+        dns_provider_id=dns_provider_id,
+        dns_provider_name=dns_provider_name,
+        dns_provider_type=dns_provider_type,
+        dns_provider_base_url=dns_provider_base_url,
+        dns_provider_auth_method=dns_provider_auth_method,
+        dns_provider_secret=dns_provider_secret,
+        dns_provider_ssl_verify=dns_provider_ssl_verify,
+        dns_provider_timeout_seconds=dns_provider_timeout_seconds,
+        dns_provider_enabled=dns_provider_enabled,
+        dns_provider_description=dns_provider_description,
+    )
 
     db.commit()
 
@@ -1886,6 +1985,7 @@ def save_settings(
         {
             "user": user,
             "settings": load_site_settings(db),
+            "dns_providers": dns_providers_for_admin(db),
             "security_check": security_check_context(request, db),
             "message": "Settings saved successfully.",
             "error": None,
@@ -1956,9 +2056,91 @@ def test_backup_storage(
         {
             "user": user,
             "settings": load_site_settings(db),
+            "dns_providers": dns_providers_for_admin(db),
             "security_check": security_check_context(request, db),
             "message": f"Backup storage test passed: {detail}" if passed else None,
             "error": None if passed else f"Backup storage test failed: {detail}",
+            **csrf_context(request),
+        },
+    )
+
+
+@router.post("/system/site-administration/test-dns-provider")
+def test_dns_provider(
+    request: Request,
+    dns_manager_enabled: str = Form(""),
+    dns_default_provider_id: str = Form(""),
+    dns_refresh_interval_seconds: str = Form("300"),
+    dns_cache_enabled: str = Form(""),
+    dns_provider_id: str = Form(""),
+    dns_provider_name: str = Form(""),
+    dns_provider_type: str = Form("pihole"),
+    dns_provider_base_url: str = Form(""),
+    dns_provider_auth_method: str = Form("password"),
+    dns_provider_secret: str = Form(""),
+    dns_provider_ssl_verify: str = Form(""),
+    dns_provider_timeout_seconds: str = Form("10"),
+    dns_provider_enabled: str = Form(""),
+    dns_provider_description: str = Form(""),
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    validate_csrf_token(request, csrf_token)
+    save_dns_manager_settings(
+        db,
+        dns_manager_enabled=dns_manager_enabled,
+        dns_default_provider_id=dns_default_provider_id,
+        dns_refresh_interval_seconds=dns_refresh_interval_seconds,
+        dns_cache_enabled=dns_cache_enabled,
+        dns_provider_id=dns_provider_id,
+        dns_provider_name=dns_provider_name,
+        dns_provider_type=dns_provider_type,
+        dns_provider_base_url=dns_provider_base_url,
+        dns_provider_auth_method=dns_provider_auth_method,
+        dns_provider_secret=dns_provider_secret,
+        dns_provider_ssl_verify=dns_provider_ssl_verify,
+        dns_provider_timeout_seconds=dns_provider_timeout_seconds,
+        dns_provider_enabled=dns_provider_enabled,
+        dns_provider_description=dns_provider_description,
+    )
+    db.commit()
+
+    provider_id = (get_site_setting(db, "dns_default_provider_id") or "").strip()
+    provider = db.get(DNSProviderConfig, int(provider_id)) if provider_id.isdigit() else None
+    if not provider:
+        passed = False
+        detail = "DNS provider settings were saved, but no provider is configured to test."
+    else:
+        result = provider_for(provider).test_connection()
+        passed = result.ok
+        detail = result.message
+        provider.last_status = "online" if passed else "error"
+        provider.last_error = "" if passed else detail
+        provider.last_checked_at = datetime.utcnow()
+        db.commit()
+
+    write_audit(
+        db,
+        user,
+        "test_connection",
+        "dns_provider",
+        str(provider.id) if provider else None,
+        request.client.host if request.client else None,
+        detail=detail,
+        severity="info" if passed else "warning",
+    )
+    db.commit()
+    return templates.TemplateResponse(
+        request,
+        "settings.html",
+        {
+            "user": user,
+            "settings": load_site_settings(db),
+            "dns_providers": dns_providers_for_admin(db),
+            "security_check": security_check_context(request, db),
+            "message": detail if passed else None,
+            "error": None if passed else detail,
             **csrf_context(request),
         },
     )
@@ -2079,6 +2261,7 @@ def send_test_email(
         {
             "user": user,
             "settings": load_site_settings(db),
+            "dns_providers": dns_providers_for_admin(db),
             "security_check": security_check_context(request, db),
             "message": message,
             "error": error,

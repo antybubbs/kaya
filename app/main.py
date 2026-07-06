@@ -13,7 +13,7 @@ from app.core.demo import demo_request_is_blocked
 from app.core.security import decrypt_secret, hash_password
 from app.db.session import Base, engine, SessionLocal
 from app.models.models import AuditLog, User, VLAN
-from app.routers import auth, dashboard, licences, admin, ip_addresses, hardware_assets, network_monitor, remote_manager, runbooks, domain_manager, compute_manager, rack_manager, backup_manager
+from app.routers import auth, dashboard, licences, admin, ip_addresses, hardware_assets, network_monitor, remote_manager, runbooks, domain_manager, compute_manager, rack_manager, backup_manager, dns_manager
 from app.services.guacamole_bridge import stop_guacamole_bridge
 from app.services.kaya_remote_service import start_kaya_remote_service, stop_kaya_remote_service
 from app.services.network_monitor import monitor_loop
@@ -379,6 +379,12 @@ def migrate_existing_database():
                 if column not in domain_columns:
                     conn.execute(text(f"ALTER TABLE domain_records ADD COLUMN {column} {definition}"))
 
+        dns_provider_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(dns_providers)"))}
+        if not dns_provider_columns:
+            conn.execute(text("CREATE TABLE dns_providers (id INTEGER NOT NULL PRIMARY KEY, name VARCHAR(255) NOT NULL, provider_type VARCHAR(40) DEFAULT 'pihole' NOT NULL, base_url VARCHAR(500) NOT NULL, auth_method VARCHAR(40) DEFAULT 'password' NOT NULL, encrypted_secret TEXT, ssl_verify BOOLEAN DEFAULT 1 NOT NULL, timeout_seconds INTEGER DEFAULT 10 NOT NULL, is_enabled BOOLEAN DEFAULT 1 NOT NULL, description TEXT, last_status VARCHAR(40), last_error TEXT, last_checked_at DATETIME, created_at DATETIME, updated_at DATETIME)"))
+            for column in ["name", "provider_type", "is_enabled", "last_status", "last_checked_at"]:
+                conn.execute(text(f"CREATE INDEX ix_dns_providers_{column} ON dns_providers ({column})"))
+
         audit_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(audit_logs)"))}
         if audit_columns:
             for column, definition in {
@@ -473,6 +479,7 @@ app.include_router(domain_manager.router)
 app.include_router(compute_manager.router)
 app.include_router(rack_manager.router)
 app.include_router(backup_manager.router)
+app.include_router(dns_manager.router)
 app.include_router(admin.router)
 
 @app.get("/healthz", include_in_schema=False)

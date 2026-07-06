@@ -24,6 +24,8 @@
     "backup-manager": "module-backup-manager",
     modules: "module-backup-manager",
     module: "module-backup-manager",
+    "dns-manager": "module-dns-manager",
+    dns: "module-dns-manager",
     email: "email-general",
     templates: "email-templates",
     "email_templates": "email-templates",

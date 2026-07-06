@@ -200,6 +200,25 @@ class DomainRecordHistory(Base):
     domain = relationship("DomainRecord")
 
 
+class DNSProviderConfig(Base):
+    __tablename__ = "dns_providers"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), index=True)
+    provider_type: Mapped[str] = mapped_column(String(40), default="pihole", index=True)
+    base_url: Mapped[str] = mapped_column(String(500))
+    auth_method: Mapped[str] = mapped_column(String(40), default="password")
+    encrypted_secret: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ssl_verify: Mapped[bool] = mapped_column(Boolean, default=True)
+    timeout_seconds: Mapped[int] = mapped_column(Integer, default=10)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_status: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class HardwareAsset(Base):
     __tablename__ = "hardware_assets"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

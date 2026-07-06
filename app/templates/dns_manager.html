@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="module-header">
+  <div class="module-title-row">
+    <div class="module-heading">
+      <h1>DNS Manager</h1>
+      <p class="muted">Manage and monitor DNS providers from Kaya.</p>
+    </div>
+    {% if provider %}
+    <span class="module-stat">Provider <strong>{{ provider.name }}</strong></span>
+    {% endif %}
+  </div>
+  <div class="module-toolbar">
+    <div class="module-primary-actions">
+      {% if user.role == 'admin' %}
+      <a class="button secondary" href="/system/site-administration?tab=dns-manager">Provider settings</a>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+{% if not enabled %}
+<section class="empty-state">
+  <h2>DNS Manager is not enabled</h2>
+  <p class="muted">Enable DNS Manager and configure a Pi-hole provider in Site Administration.</p>
+  {% if user.role == 'admin' %}<a class="button" href="/system/site-administration?tab=dns-manager">Open settings</a>{% endif %}
+</section>
+{% elif not provider %}
+<section class="empty-state">
+  <h2>No DNS provider configured</h2>
+  <p class="muted">Add an enabled Pi-hole provider in Site Administration before opening DNS Manager.</p>
+  {% if user.role == 'admin' %}<a class="button" href="/system/site-administration?tab=dns-manager">Add provider</a>{% endif %}
+</section>
+{% else %}
+{% if error %}<div class="alert">{{ error }}</div>{% endif %}
+
+<nav class="category-tabs dns-manager-tabs" aria-label="DNS Manager sections">
+  <a href="/networking/dns-manager?tab=dashboard" class="{% if active_tab == 'dashboard' %}active{% endif %}">Dashboard</a>
+  <a href="/networking/dns-manager?tab=query-log" class="{% if active_tab == 'query-log' %}active{% endif %}">Query Log</a>
+  <a href="/networking/dns-manager?tab=clients" class="{% if active_tab == 'clients' %}active{% endif %}">Clients</a>
+  <a href="/networking/dns-manager?tab=local-dns" class="{% if active_tab == 'local-dns' %}active{% endif %}">Local DNS</a>
+  <a href="/networking/dns-manager?tab=dhcp" class="{% if active_tab == 'dhcp' %}active{% endif %}">DHCP</a>
+  <a href="/networking/dns-manager?tab=blocklists" class="{% if active_tab == 'blocklists' %}active{% endif %}">Blocklists</a>
+  <a href="/networking/dns-manager?tab=reports" class="{% if active_tab == 'reports' %}active{% endif %}">Reports</a>
+</nav>
+
+{% if active_tab == 'dashboard' %}
+{% set stats_data = stats.data if stats and stats.ok else {} %}
+{% set status_data = status.data if status and status.ok else {} %}
+<section class="cards">
+  <article class="card"><span>Server Status</span><strong>{{ provider.last_status or 'unknown' }}</strong></article>
+  <article class="card"><span>Blocking Status</span><strong>{{ stat_value(stats_data, 'status', 'blocking') }}</strong></article>
+  <article class="card"><span>Queries Today</span><strong>{{ stat_value(stats_data, 'queries.total', 'dns_queries_today', 'queries_today') }}</strong></article>
+  <article class="card"><span>Blocked Queries</span><strong>{{ stat_value(stats_data, 'queries.blocked', 'ads_blocked_today', 'blocked_queries') }}</strong></article>
+  <article class="card"><span>Block Percentage</span><strong>{{ stat_value(stats_data, 'queries.percent_blocked', 'ads_percentage_today') }}</strong></article>
+  <article class="card"><span>Active Clients</span><strong>{{ stat_value(stats_data, 'clients.active', 'unique_clients') }}</strong></article>
+  <article class="card"><span>Domains on Blocklist</span><strong>{{ stat_value(stats_data, 'gravity.domains_being_blocked', 'domains_being_blocked') }}</strong></article>
+  <article class="card"><span>Pi-hole Version</span><strong>{{ stat_value(status_data, 'version.core.local.version', 'version') }}</strong></article>
+</section>
+<section class="panel">
+  <h2>Provider Details</h2>
+  <div class="detail-grid">
+    <div><label>Provider</label><p>{{ provider.name }}</p></div>
+    <div><label>Type</label><p>{{ provider.provider_type|upper }}</p></div>
+    <div><label>Base URL</label><p class="mono">{{ provider.base_url }}</p></div>
+    <div><label>Last checked</label><p>{{ provider.last_checked_at.strftime('%Y-%m-%d %H:%M') if provider.last_checked_at else '-' }}</p></div>
+  </div>
+</section>
+{% elif active_tab == 'query-log' %}
+{% set rows = list_from_payload(queries.data if queries and queries.ok else {}, 'queries', 'data') %}
+<section class="panel">
+  <table data-table-key="dns-query-log">
+    <thead><tr><th>Time</th><th>Client</th><th>Domain</th><th>Query Type</th><th>Status</th><th>Reply</th><th>Upstream</th></tr></thead>
+    <tbody>
+      {% for row in rows[:200] %}
+      <tr>
+        <td>{{ row.time if row.time is defined else row.timestamp if row.timestamp is defined else '-' }}</td>
+        <td>{{ row.client if row.client is defined else row.client_ip if row.client_ip is defined else '-' }}</td>
+        <td><strong>{{ row.domain if row.domain is defined else row.query if row.query is defined else '-' }}</strong></td>
+        <td>{{ row.type if row.type is defined else row.query_type if row.query_type is defined else '-' }}</td>
+        <td>{{ row.status if row.status is defined else row.reply_type if row.reply_type is defined else '-' }}</td>
+        <td>{{ row.reply if row.reply is defined else '-' }}</td>
+        <td>{{ row.upstream if row.upstream is defined else '-' }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7">No query log entries returned by this provider.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% elif active_tab == 'clients' %}
+{% set rows = list_from_payload(clients.data if clients and clients.ok else {}, 'clients', 'devices', 'data') %}
+<section class="panel">
+  <table data-table-key="dns-clients">
+    <thead><tr><th>Hostname</th><th>IP Address</th><th>MAC Address</th><th>Queries</th><th>Blocked Queries</th><th>Last Seen</th></tr></thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td><strong>{{ row.name if row.name is defined else row.hostname if row.hostname is defined else '-' }}</strong></td>
+        <td>{{ row.ip if row.ip is defined else row.ip_address if row.ip_address is defined else '-' }}</td>
+        <td>{{ row.mac if row.mac is defined else row.hwaddr if row.hwaddr is defined else '-' }}</td>
+        <td>{{ row.queries if row.queries is defined else '-' }}</td>
+        <td>{{ row.blocked_queries if row.blocked_queries is defined else '-' }}</td>
+        <td>{{ row.last_seen if row.last_seen is defined else '-' }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6">No clients returned by this provider.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% elif active_tab == 'local-dns' %}
+{% set rows = list_from_payload(local_dns.data if local_dns and local_dns.ok else {}, 'hosts', 'records', 'data') %}
+<section class="panel">
+  <table data-table-key="dns-local-records">
+    <thead><tr><th>Hostname</th><th>IP Address</th><th>Description</th></tr></thead>
+    <tbody>
+      {% for row in rows %}
+      <tr><td><strong>{{ row.name if row.name is defined else row.hostname if row.hostname is defined else '-' }}</strong></td><td>{{ row.ip if row.ip is defined else row.address if row.address is defined else '-' }}</td><td>{{ row.comment if row.comment is defined else row.description if row.description is defined else '-' }}</td></tr>
+      {% else %}
+      <tr><td colspan="3">No local DNS records returned by this provider.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% elif active_tab == 'dhcp' %}
+{% set rows = list_from_payload(dhcp.data if dhcp and dhcp.ok else {}, 'leases', 'data') %}
+<section class="panel">
+  <table data-table-key="dns-dhcp">
+    <thead><tr><th>Hostname</th><th>IP Address</th><th>MAC Address</th><th>Lease Expiry</th><th>Static Reservation</th></tr></thead>
+    <tbody>
+      {% for row in rows %}
+      <tr><td><strong>{{ row.name if row.name is defined else row.hostname if row.hostname is defined else '-' }}</strong></td><td>{{ row.ip if row.ip is defined else '-' }}</td><td>{{ row.mac if row.mac is defined else '-' }}</td><td>{{ row.expires if row.expires is defined else row.expiry if row.expiry is defined else '-' }}</td><td>{{ row.static if row.static is defined else '-' }}</td></tr>
+      {% else %}
+      <tr><td colspan="5">No DHCP leases returned by this provider.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% elif active_tab == 'blocklists' %}
+{% set rows = list_from_payload(blocklists.data if blocklists and blocklists.ok else {}, 'lists', 'blocklists', 'data') %}
+<section class="panel">
+  <table data-table-key="dns-blocklists">
+    <thead><tr><th>Blocklist Name</th><th>Status</th><th>Last Updated</th></tr></thead>
+    <tbody>
+      {% for row in rows %}
+      <tr><td><strong>{{ row.address if row.address is defined else row.name if row.name is defined else '-' }}</strong></td><td>{{ row.enabled if row.enabled is defined else row.status if row.status is defined else '-' }}</td><td>{{ row.date_updated if row.date_updated is defined else row.updated_at if row.updated_at is defined else '-' }}</td></tr>
+      {% else %}
+      <tr><td colspan="3">No blocklists returned by this provider.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% else %}
+<section class="empty-state">
+  <h2>Reports are not available yet</h2>
+  <p class="muted">The DNS provider foundation is ready. Charts can be added once response shapes are confirmed against your Pi-hole version.</p>
+</section>
+{% endif %}
+{% endif %}
+{% endblock %}
