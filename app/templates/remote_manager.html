@@ -8,7 +8,7 @@
   <p class="muted">Live SSH, RDP, connection checks and remote host configuration are disabled here to protect this site and other people's infrastructure.</p>
 </section>
 {% else %}
-<div class="remote-workspace" data-remote-tabs data-remote-session-version="kaya-split-ui-1">
+<div class="remote-workspace" data-remote-tabs data-remote-session-version="kaya-split-ui-1" data-remote-split-enabled="{{ '1' if split_screen_enabled else '0' }}">
   {% include "_remote_host_rail.html" %}
   <section class="remote-tab-workspace">
     <div class="remote-tabbar" data-remote-tabbar aria-label="Remote sessions"></div>

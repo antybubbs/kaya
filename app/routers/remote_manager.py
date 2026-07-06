@@ -32,6 +32,7 @@ templates = Jinja2Templates(directory="app/templates")
 PROTOCOLS = {"ssh", "rdp"}
 SETTINGS = {
     "guacamole_enabled": "0",
+    "split_screen_enabled": "1",
     "guacd_host": "",
     "guacd_port": "4822",
     "session_idle_timeout_minutes": "0",
@@ -232,6 +233,7 @@ def clean_float_text(value: str, default: float, minimum: float, maximum: float)
 
 def clean_global_setting(key: str, value: str) -> str:
     if key in {
+        "split_screen_enabled",
         "terminal_cursor_blink",
         "terminal_right_click_selects_word",
         "terminal_syntax_highlighting",
@@ -362,7 +364,7 @@ def settings_map(db: Session) -> dict[str, str]:
         values["guacd_host"] = env_guacd_host
     if env_guacd_port:
         values["guacd_port"] = str(env_guacd_port)
-    for key in ("recording_mode", "recording_categories", "recording_pause_idle_minutes", *TERMINAL_SETTING_KEYS, *RDP_SETTING_KEYS):
+    for key in ("split_screen_enabled", "recording_mode", "recording_categories", "recording_pause_idle_minutes", *TERMINAL_SETTING_KEYS, *RDP_SETTING_KEYS):
         values[key] = clean_global_setting(key, values.get(key, SETTINGS[key]))
     return values
 
@@ -548,7 +550,8 @@ async def tcp_check(host: str, port: int, timeout: float = 5) -> tuple[bool, str
 def remote_list(request: Request, db: Session = Depends(get_db), user=Depends(require_user)):
     demo_mode = get_settings().demo_mode
     rows = [] if demo_mode else db.query(RemoteAccess).filter(RemoteAccess.is_enabled == True).options(selectinload(RemoteAccess.ip_address)).order_by(RemoteAccess.protocol.asc(), RemoteAccess.display_name.asc(), RemoteAccess.id.asc()).all()
-    return templates.TemplateResponse(request, "remote_manager.html", {"user": user, "rows": rows, "remote_label": remote_label, "remote_manager_locked": demo_mode, **csrf_context(request)})
+    settings = settings_map(db)
+    return templates.TemplateResponse(request, "remote_manager.html", {"user": user, "rows": rows, "remote_label": remote_label, "remote_manager_locked": demo_mode, "split_screen_enabled": settings.get("split_screen_enabled", "1") == "1", **csrf_context(request)})
 
 
 @router.get("/settings")
@@ -561,6 +564,7 @@ async def save_remote_settings(request: Request, csrf_token: str = Form(...), gu
     validate_csrf_token(request, csrf_token)
     form = await request.form()
     set_setting(db, "guacamole_enabled", "1" if guacamole_enabled else "0")
+    set_setting(db, "split_screen_enabled", "1" if form.get("split_screen_enabled") else "0")
     set_setting(db, "guacd_host", guacd_host.strip())
     set_setting(db, "guacd_port", str(clean_port(guacd_port, "rdp")))
     set_setting(db, "session_idle_timeout_minutes", clean_global_setting("session_idle_timeout_minutes", str(form.get("session_idle_timeout_minutes", "0"))))
