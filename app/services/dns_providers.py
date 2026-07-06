@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 from app.core.security import decrypt_secret
@@ -15,6 +15,12 @@ from app.models.models import DNSProviderConfig
 
 class DNSProviderError(RuntimeError):
     pass
+
+
+class PiHoleHTTPError(DNSProviderError):
+    def __init__(self, status_code: int, message: str):
+        self.status_code = status_code
+        super().__init__(message)
 
 
 @dataclass
@@ -96,7 +102,25 @@ class PiHoleProvider(DNSProvider):
             ) as response:
                 raw = response.read().decode("utf-8")
         except HTTPError as exc:
-            raise DNSProviderError(f"Pi-hole returned HTTP {exc.code}.") from exc
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", errors="replace").strip()
+            except Exception:
+                detail = ""
+            message = f"Pi-hole returned HTTP {exc.code}."
+            if detail:
+                try:
+                    parsed = json.loads(detail)
+                    if isinstance(parsed, dict):
+                        api_error = parsed.get("error") or parsed.get("message")
+                        if isinstance(api_error, dict):
+                            api_error = api_error.get("message") or api_error.get("detail")
+                        if api_error:
+                            message = f"Pi-hole returned HTTP {exc.code}: {api_error}"
+                except json.JSONDecodeError:
+                    if len(detail) < 180:
+                        message = f"Pi-hole returned HTTP {exc.code}: {detail}"
+            raise PiHoleHTTPError(exc.code, message) from exc
         except URLError as exc:
             raise DNSProviderError(f"Could not reach Pi-hole: {exc.reason}.") from exc
         except TimeoutError as exc:
@@ -109,25 +133,45 @@ class PiHoleProvider(DNSProvider):
             raise DNSProviderError("Pi-hole returned an invalid JSON response.") from exc
         return parsed if isinstance(parsed, dict) else {"data": parsed}
 
-    def _auth_headers(self) -> dict[str, str]:
+    def _v6_auth_headers(self) -> dict[str, str]:
         secret = self._secret()
         if not secret:
             return {}
         if self.config.auth_method == "api_token":
             return {"X-FTL-SID": secret}
-        try:
-            data = self._request_json("/api/auth", method="POST", payload={"password": secret})
-        except DNSProviderError:
-            return {}
+        data = self._request_json("/api/auth", method="POST", payload={"password": secret})
         session = data.get("session") if isinstance(data.get("session"), dict) else data
         sid = session.get("sid") if isinstance(session, dict) else None
-        return {"X-FTL-SID": sid} if sid else {}
+        if not sid:
+            raise DNSProviderError("Pi-hole authentication did not return a session.")
+        return {"X-FTL-SID": sid}
 
     def _legacy_api(self, params: dict[str, Any]) -> dict[str, Any]:
         secret = self._secret()
         if secret:
             params = {**params, "auth": secret}
-        return self._request_json(f"/admin/api.php?{urlencode(params)}")
+        query_parts = []
+        for key, value in params.items():
+            if value == "":
+                query_parts.append(quote(str(key)))
+            else:
+                query_parts.append(urlencode({key: value}))
+        return self._request_json(f"/admin/api.php?{'&'.join(query_parts)}")
+
+    def _v6_or_legacy(self, v6_path: str, legacy_params: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return self._request_json(v6_path, headers=self._v6_auth_headers())
+        except PiHoleHTTPError as exc:
+            if exc.status_code not in {400, 401, 403, 404}:
+                raise
+            try:
+                return self._legacy_api(legacy_params)
+            except DNSProviderError:
+                if exc.status_code in {401, 403}:
+                    raise DNSProviderError("Pi-hole authentication failed. Check the authentication method and credential.") from exc
+                raise
+        except DNSProviderError:
+            return self._legacy_api(legacy_params)
 
     def _safe(self, label: str, func) -> DNSProviderResult:
         try:
@@ -145,65 +189,52 @@ class PiHoleProvider(DNSProvider):
 
     def get_status(self) -> DNSProviderResult:
         def run():
-            headers = self._auth_headers()
-            try:
-                data = self._request_json("/api/info/system", headers=headers)
-            except DNSProviderError:
-                data = self._legacy_api({"status": ""})
+            data = self._v6_or_legacy("/api/info/system", {"status": ""})
             return DNSProviderResult(True, "Pi-hole status loaded.", data)
 
         return self._safe("Status", run)
 
     def get_statistics(self) -> DNSProviderResult:
         def run():
-            headers = self._auth_headers()
-            try:
-                data = self._request_json("/api/stats/summary", headers=headers)
-            except DNSProviderError:
-                data = self._legacy_api({"summaryRaw": ""})
+            data = self._v6_or_legacy("/api/stats/summary", {"summaryRaw": ""})
             return DNSProviderResult(True, "Pi-hole statistics loaded.", data)
 
         return self._safe("Statistics", run)
 
     def get_clients(self) -> DNSProviderResult:
         def run():
-            headers = self._auth_headers()
-            try:
-                data = self._request_json("/api/network/devices", headers=headers)
-            except DNSProviderError:
-                data = self._legacy_api({"getQuerySources": ""})
+            data = self._v6_or_legacy("/api/network/devices", {"getQuerySources": ""})
             return DNSProviderResult(True, "Pi-hole clients loaded.", data)
 
         return self._safe("Clients", run)
 
     def get_query_log(self, *, limit: int = 100) -> DNSProviderResult:
         def run():
-            headers = self._auth_headers()
-            try:
-                data = self._request_json(f"/api/queries?length={max(1, min(limit, 500))}", headers=headers)
-            except DNSProviderError:
-                data = self._legacy_api({"getAllQueries": "", "limit": max(1, min(limit, 500))})
+            data = self._v6_or_legacy(
+                f"/api/queries?length={max(1, min(limit, 500))}",
+                {"getAllQueries": "", "limit": max(1, min(limit, 500))},
+            )
             return DNSProviderResult(True, "Pi-hole query log loaded.", data)
 
         return self._safe("Query log", run)
 
     def get_local_dns_records(self) -> DNSProviderResult:
         def run():
-            data = self._request_json("/api/config/dns/hosts", headers=self._auth_headers())
+            data = self._request_json("/api/config/dns/hosts", headers=self._v6_auth_headers())
             return DNSProviderResult(True, "Pi-hole local DNS records loaded.", data)
 
         return self._safe("Local DNS", run)
 
     def get_dhcp_leases(self) -> DNSProviderResult:
         def run():
-            data = self._request_json("/api/dhcp/leases", headers=self._auth_headers())
+            data = self._request_json("/api/dhcp/leases", headers=self._v6_auth_headers())
             return DNSProviderResult(True, "Pi-hole DHCP leases loaded.", data)
 
         return self._safe("DHCP", run)
 
     def get_blocklists(self) -> DNSProviderResult:
         def run():
-            data = self._request_json("/api/lists", headers=self._auth_headers())
+            data = self._request_json("/api/lists", headers=self._v6_auth_headers())
             return DNSProviderResult(True, "Pi-hole blocklists loaded.", data)
 
         return self._safe("Blocklists", run)
