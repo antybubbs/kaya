@@ -719,7 +719,7 @@ html[data-theme=light] .settings-content-panel {
 }
 
 .dns-card-blue {
-  background: linear-gradient(135deg, #06b6d4, #0284c7);
+  background: linear-gradient(135deg, #2a303a, #181d24);
 }
 
 .dns-card-red {
@@ -790,7 +790,7 @@ html[data-theme=light] .settings-content-panel {
 }
 
 .dns-bar-allowed {
-  background: #93c5fd;
+  background: #ffb357;
 }
 
 .dns-bar-blocked {
@@ -837,7 +837,7 @@ html[data-theme=light] .settings-content-panel {
 }
 
 .dns-client-row span {
-  background: linear-gradient(90deg, #22c55e, #06b6d4);
+  background: linear-gradient(90deg, #ff8a00, #22c55e);
   display: block;
   height: 100%;
   min-width: 2px;

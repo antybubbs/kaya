@@ -11,7 +11,7 @@ from app.core.csrf import csrf_context
 from app.db.session import get_db
 from app.models.models import DNSProviderConfig
 from app.routers.auth import require_user
-from app.services.dns_providers import provider_for
+from app.services.dns_providers import DNSProvider, provider_for
 from app.services.site_settings import get_site_setting
 
 router = APIRouter(prefix="/networking/dns-manager")
@@ -146,10 +146,11 @@ def chart_max(rows: list[dict[str, Any]], key: str) -> int:
     return max(values) if values else 1
 
 
-def call_provider(provider: DNSProviderConfig | None, method: str):
+def call_provider(provider: DNSProviderConfig | None, method: str, client: DNSProvider | None = None):
     if not provider:
         return None
-    result = getattr(provider_for(provider), method)()
+    dns_client = client or provider_for(provider)
+    result = getattr(dns_client, method)()
     provider.last_status = "online" if result.ok else "error"
     provider.last_error = "" if result.ok else result.message
     provider.last_checked_at = datetime.utcnow()
@@ -170,20 +171,21 @@ def dns_manager(
     error = None
 
     if enabled and provider:
+        dns_client = provider_for(provider)
         if active_tab == "dashboard":
-            status = call_provider(provider, "get_status")
-            stats = call_provider(provider, "get_statistics")
-            history = call_provider(provider, "get_history")
+            status = call_provider(provider, "get_status", dns_client)
+            stats = call_provider(provider, "get_statistics", dns_client)
+            history = call_provider(provider, "get_history", dns_client)
         elif active_tab == "query-log":
-            queries = provider_for(provider).get_query_log(limit=200)
+            queries = dns_client.get_query_log(limit=200)
         elif active_tab == "clients":
-            clients = call_provider(provider, "get_clients")
+            clients = call_provider(provider, "get_clients", dns_client)
         elif active_tab == "local-dns":
-            local_dns = call_provider(provider, "get_local_dns_records")
+            local_dns = call_provider(provider, "get_local_dns_records", dns_client)
         elif active_tab == "dhcp":
-            dhcp = call_provider(provider, "get_dhcp_leases")
+            dhcp = call_provider(provider, "get_dhcp_leases", dns_client)
         elif active_tab == "blocklists":
-            blocklists = call_provider(provider, "get_blocklists")
+            blocklists = call_provider(provider, "get_blocklists", dns_client)
 
         db.commit()
         active_result = next((item for item in [status, stats, history, queries, clients, local_dns, dhcp, blocklists] if item and not item.ok), None)

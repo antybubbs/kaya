@@ -72,6 +72,10 @@ class DNSProvider(ABC):
 
 
 class PiHoleProvider(DNSProvider):
+    def __init__(self, config: DNSProviderConfig):
+        super().__init__(config)
+        self._sid: str | None = None
+
     def _base_url(self) -> str:
         return self.config.base_url.rstrip("/")
 
@@ -112,6 +116,8 @@ class PiHoleProvider(DNSProvider):
             except Exception:
                 detail = ""
             message = f"Pi-hole returned HTTP {exc.code}."
+            if exc.code == 429:
+                message = "Pi-hole API seats are currently exhausted. Wait for an existing Pi-hole API session to expire, then retry."
             if detail:
                 try:
                     parsed = json.loads(detail)
@@ -119,10 +125,10 @@ class PiHoleProvider(DNSProvider):
                         api_error = parsed.get("error") or parsed.get("message")
                         if isinstance(api_error, dict):
                             api_error = api_error.get("message") or api_error.get("detail")
-                        if api_error:
+                        if api_error and exc.code != 429:
                             message = f"Pi-hole returned HTTP {exc.code}: {api_error}"
                 except json.JSONDecodeError:
-                    if len(detail) < 180:
+                    if len(detail) < 180 and exc.code != 429:
                         message = f"Pi-hole returned HTTP {exc.code}: {detail}"
             raise PiHoleHTTPError(exc.code, message) from exc
         except URLError as exc:
@@ -142,13 +148,16 @@ class PiHoleProvider(DNSProvider):
         if not secret:
             return {}
         if self.config.auth_method == "api_token":
-            return {"X-FTL-SID": secret}
+            raise DNSProviderError("Configured for legacy Pi-hole API token authentication.")
+        if self._sid:
+            return {"X-FTL-SID": self._sid}
         data = self._request_json("/api/auth", method="POST", payload={"password": secret})
         session = data.get("session") if isinstance(data.get("session"), dict) else data
         sid = session.get("sid") if isinstance(session, dict) else None
         if not sid:
             raise DNSProviderError("Pi-hole authentication did not return a session.")
-        return {"X-FTL-SID": sid}
+        self._sid = sid
+        return {"X-FTL-SID": self._sid}
 
     def _legacy_api(self, params: dict[str, Any]) -> dict[str, Any]:
         secret = self._secret()

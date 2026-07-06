@@ -267,6 +267,10 @@ html[data-kaya-theme=command] .remote-card{background:#14171d!important;border-c
 html[data-kaya-theme=command] .table-scroll thead th,
 html[data-kaya-theme=command] .audit-table th{background:#1a1f27!important;border-bottom-color:#303845!important}
 
+.dns-card-blue{background:linear-gradient(135deg,#2a303a,#181d24)!important}
+.dns-bar-allowed{background:#ffb357!important}
+.dns-client-row span{background:linear-gradient(90deg,#ff8a00,#22c55e)!important}
+
 @media(max-width:900px){.site-admin-form,.settings-tab-panel{max-width:none}.security-check-grid{grid-template-columns:1fr}}
 
 /* Sidebar selected modules: remove orange outline/rail */
