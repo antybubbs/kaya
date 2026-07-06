@@ -4,7 +4,7 @@
   <div class="module-title-row">
     <div class="module-heading">
       <h1>Backup Manager</h1>
-      <p class="muted">Track Proxmox backup jobs, Docker container policies and manual backups.</p>
+      <p class="muted">Track Proxmox backup jobs, Run Docker container backups and track manual backups.</p>
     </div>
     <a class="button secondary" href="/system/site-administration?tab=backups">Storage settings</a>
   </div>
@@ -13,6 +13,7 @@
 
 <section class="panel section-gap">
   <h2>Proxmox backup jobs</h2>
+  <p class="muted">Proxmox backups are managed with Proxmox, the below is just a view-only display showing you your backup jobs in your linked host/s. Just enjoy the view.</p>
   <table>
     <thead><tr><th>Job</th><th>Host</th><th>Enabled</th><th>Last run</th><th>Last status</th><th>Schedule</th><th>Storage</th><th>VMs/CTs</th></tr></thead>
     <tbody>
@@ -36,7 +37,7 @@
 
 <section class="panel section-gap">
   <h2>Docker container backups</h2>
-  <p class="muted">Docker backups and restores are executed by the Docker Agent on the remote Docker host. Backup artifacts are encrypted before they are written to the configured storage target. Leave backup policy blank (or set it to full/auto/all) to include named volumes and all bind mounts automatically.</p>
+  <p class="muted">Docker backups and restores are executed by the Docker Agent on the remote Docker host. Backup artifacts are encrypted before they are written to the configured storage target. Leave backup policy blank (or set it to full/auto/all) to include named volumes and all bind mounts automatically. Restore currently reapplies archived paths into the existing container and does not delete newer files created after the backup.</p>
   <table>
     <thead><tr><th>Container</th><th>Host</th><th>State</th><th>Backup policy</th><th>Latest encrypted backup</th><th>Actions</th></tr></thead>
     <tbody>
@@ -89,10 +90,11 @@
             </form>
             <form method="post" action="/infrastructure/backup-manager/docker/{{ row.id }}/restore">
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-              <button class="button secondary" {% if not latest or not backup_ready %}disabled{% endif %}>Restore latest</button>
+              <button class="button secondary" {% if not latest or not backup_ready %}disabled{% endif %}>Restore latest (merge)</button>
             </form>
             {% if not agent_ready %}<small class="muted">Docker Agent required</small>{% endif %}
             {% if agent_ready and not backup_ready %}<small class="muted">Update Docker Agent for backups</small>{% endif %}
+            {% if backup_ready %}<small class="muted">Restore does not remove files added after the backup.</small>{% endif %}
           </div>
           {% endif %}
         </td>

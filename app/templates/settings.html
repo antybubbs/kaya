@@ -173,9 +173,10 @@
       <div class="remote-settings-grid">
         <div class="backup-targets-builder" data-backup-targets-builder>
           <div class="backup-targets-list" data-backup-targets-list></div>
+          <div class="backup-target-editor" data-backup-target-editor hidden></div>
           <div class="backup-targets-actions">
             <button type="button" class="button secondary" data-add-backup-target>Add target</button>
-            <small class="muted">Create targets one-by-one, then mark one as default. Backup Manager can pick per-container targets.</small>
+            <small class="muted">Saved targets are listed in a table. Add opens a target form, then save it. Use Test on any saved target to verify connectivity.</small>
           </div>
         </div>
         <label>
@@ -183,10 +184,6 @@
           <small>{% if settings.get('backup_remote_password_set') == '1' %}A password is saved. Enter a new one to replace it.{% else %}Optional remote storage password.{% endif %}</small>
           <input name="backup_remote_password" type="password" value="" autocomplete="new-password" placeholder="{% if settings.get('backup_remote_password_set') == '1' %}Saved password{% endif %}">
         </label>
-      </div>
-      <div class="form-actions">
-        <button type="submit" formaction="/system/site-administration/test-backup-storage" class="btn btn-secondary">Test storage access</button>
-        <span class="muted">Checks that Kaya can write, read and delete a small test file at this target.</span>
       </div>
     </div>
   </section>
@@ -288,6 +285,7 @@
   if (!builder) return;
 
   const list = builder.querySelector("[data-backup-targets-list]");
+  const editor = builder.querySelector("[data-backup-target-editor]");
   const addButton = builder.querySelector("[data-add-backup-target]");
   const targetsField = document.querySelector("#backup_targets_json");
   const defaultField = document.querySelector("#backup_default_target_name");
@@ -297,6 +295,10 @@
   const legacyShare = document.querySelector("#backup_remote_share");
   const legacyUsername = document.querySelector("#backup_remote_username");
   const form = document.querySelector("form.site-admin-form");
+  const csrf = form?.querySelector('input[name="csrf_token"]')?.value || "";
+
+  let targets = [];
+  let editIndex = -1;
 
   const safeParse = (value) => {
     try {
@@ -312,61 +314,211 @@
     return ["local", "smb", "ftp", "sftp"].includes(clean) ? clean : "local";
   };
 
-  const createRow = (target = {}) => {
-    const row = document.createElement("fieldset");
-    row.className = "backup-target-row";
-    row.innerHTML = `
-      <label><strong>Name</strong><input data-field="name" placeholder="NAS SMB" value="${String(target.name || "").replace(/"/g, "&quot;")}"></label>
-      <label><strong>Type</strong>
-        <select data-field="type">
-          <option value="local">Local path</option>
-          <option value="smb">SMB</option>
-          <option value="ftp">FTP</option>
-          <option value="sftp">SFTP</option>
-        </select>
-      </label>
-      <label><strong>Path</strong><input data-field="path" placeholder="/mnt/backups" value="${String(target.path || "").replace(/"/g, "&quot;")}"></label>
-      <label><strong>Remote host</strong><input data-field="remote_host" placeholder="backup.example.local" value="${String(target.remote_host || "").replace(/"/g, "&quot;")}"></label>
-      <label><strong>Remote share/path</strong><input data-field="remote_share" placeholder="backups" value="${String(target.remote_share || "").replace(/"/g, "&quot;")}"></label>
-      <label><strong>Remote username</strong><input data-field="remote_username" placeholder="backup-user" value="${String(target.remote_username || "").replace(/"/g, "&quot;")}"></label>
-      <label class="checkbox-label backup-target-default"><input type="radio" name="backup_default_target_pick"> Default target</label>
-      <button type="button" class="button secondary" data-remove-target>Remove</button>
-    `;
+  const text = (value) => String(value || "");
+  const esc = (value) => text(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 
-    row.querySelector('[data-field="type"]').value = normalizeType(target.type);
-    row.querySelector("[data-remove-target]").addEventListener("click", () => {
-      row.remove();
-      serialize();
-    });
-    row.querySelectorAll("input,select").forEach((element) => {
-      element.addEventListener("input", serialize);
-      element.addEventListener("change", serialize);
-    });
-    return row;
+  const normalizeTarget = (target = {}, index = 0) => {
+    const name = text(target.name || target.target_name || target.label).trim() || `Target ${index + 1}`;
+    return {
+      name,
+      type: normalizeType(target.type || target.storage_type || "local"),
+      path: text(target.path || target.storage_path || "").trim(),
+      remote_host: text(target.remote_host || target.host || "").trim(),
+      remote_share: text(target.remote_share || target.share || "").trim(),
+      remote_username: text(target.remote_username || target.username || "").trim(),
+    };
   };
 
-  const readTargets = () => {
-    return Array.from(list.querySelectorAll(".backup-target-row")).map((row) => {
-      const read = (name) => String(row.querySelector(`[data-field="${name}"]`)?.value || "").trim();
-      return {
+  const createInput = (name, value) => {
+    const input = document.createElement("input");
+    input.type = "hidden";
+    input.name = name;
+    input.value = value;
+    return input;
+  };
+
+  const submitTestForTarget = (target) => {
+    const post = document.createElement("form");
+    post.method = "post";
+    post.action = "/system/site-administration/test-backup-storage";
+    post.appendChild(createInput("csrf_token", csrf));
+    post.appendChild(createInput("backup_storage_type", target.type));
+    post.appendChild(createInput("backup_storage_path", target.path));
+    post.appendChild(createInput("backup_remote_host", target.remote_host));
+    post.appendChild(createInput("backup_remote_share", target.remote_share));
+    post.appendChild(createInput("backup_remote_username", target.remote_username));
+    post.appendChild(createInput("backup_remote_password", form?.querySelector('input[name="backup_remote_password"]')?.value || ""));
+    post.appendChild(createInput("backup_targets_json", targetsField.value));
+    post.appendChild(createInput("backup_default_target_name", defaultField.value));
+    post.style.display = "none";
+    document.body.appendChild(post);
+    post.submit();
+  };
+
+  const renderTable = () => {
+    if (!targets.length) {
+      list.innerHTML = '<div class="backup-target-empty muted">No backup targets saved yet.</div>';
+      return;
+    }
+
+    const table = document.createElement("table");
+    table.className = "backup-target-table";
+    table.innerHTML = `
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Path</th>
+          <th>Remote host</th>
+          <th>Share/path</th>
+          <th>Username</th>
+          <th>Default</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    `;
+    const body = table.querySelector("tbody");
+
+    targets.forEach((target, index) => {
+      const row = document.createElement("tr");
+      const isDefault = target.name === defaultField.value;
+      row.innerHTML = `
+        <td>${esc(target.name)}</td>
+        <td>${esc(target.type.toUpperCase())}</td>
+        <td>${esc(target.path || "-")}</td>
+        <td>${esc(target.remote_host || "-")}</td>
+        <td>${esc(target.remote_share || "-")}</td>
+        <td>${esc(target.remote_username || "-")}</td>
+        <td><input type="radio" name="backup_target_default_table" ${isDefault ? "checked" : ""} aria-label="Set ${esc(target.name)} as default"></td>
+        <td class="backup-target-actions"></td>
+      `;
+
+      row.querySelector('input[type="radio"]').addEventListener("change", () => {
+        defaultField.value = target.name;
+        serialize();
+      });
+
+      const actions = row.querySelector(".backup-target-actions");
+      const edit = document.createElement("button");
+      edit.type = "button";
+      edit.className = "button secondary";
+      edit.textContent = "Edit";
+      edit.addEventListener("click", () => openEditor(index));
+
+      const test = document.createElement("button");
+      test.type = "button";
+      test.className = "button secondary";
+      test.textContent = "Test";
+      test.addEventListener("click", () => {
+        serialize();
+        submitTestForTarget(targets[index]);
+      });
+
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "button secondary";
+      remove.textContent = "Remove";
+      remove.addEventListener("click", () => {
+        targets.splice(index, 1);
+        if (defaultField.value === target.name) {
+          defaultField.value = targets[0]?.name || "";
+        }
+        serialize();
+        render();
+      });
+
+      actions.append(edit, test, remove);
+      body.appendChild(row);
+    });
+
+    list.replaceChildren(table);
+  };
+
+  const closeEditor = () => {
+    editIndex = -1;
+    editor.innerHTML = "";
+    editor.hidden = true;
+    addButton.disabled = false;
+  };
+
+  const openEditor = (index = -1) => {
+    editIndex = index;
+    const source = index >= 0
+      ? targets[index]
+      : { name: "", type: "local", path: "/mnt/backups", remote_host: "", remote_share: "", remote_username: "" };
+
+    editor.innerHTML = `
+      <fieldset class="backup-target-form">
+        <legend>${index >= 0 ? "Edit backup target" : "New backup target"}</legend>
+        <label><strong>Name</strong><input data-edit-field="name" placeholder="NAS SMB" value="${esc(source.name)}"></label>
+        <label><strong>Type</strong>
+          <select data-edit-field="type">
+            <option value="local">Local path</option>
+            <option value="smb">SMB</option>
+            <option value="ftp">FTP</option>
+            <option value="sftp">SFTP</option>
+          </select>
+        </label>
+        <label><strong>Path</strong><input data-edit-field="path" placeholder="/mnt/backups" value="${esc(source.path)}"></label>
+        <label><strong>Remote host</strong><input data-edit-field="remote_host" placeholder="backup.example.local" value="${esc(source.remote_host)}"></label>
+        <label><strong>Remote share/path</strong><input data-edit-field="remote_share" placeholder="backups" value="${esc(source.remote_share)}"></label>
+        <label><strong>Remote username</strong><input data-edit-field="remote_username" placeholder="backup-user" value="${esc(source.remote_username)}"></label>
+        <div class="backup-target-form-actions">
+          <button type="button" class="button" data-save-target>Save target</button>
+          <button type="button" class="button secondary" data-cancel-target>Cancel</button>
+        </div>
+      </fieldset>
+    `;
+
+    editor.querySelector('[data-edit-field="type"]').value = source.type;
+    editor.querySelector("[data-cancel-target]").addEventListener("click", closeEditor);
+    editor.querySelector("[data-save-target]").addEventListener("click", () => {
+      const read = (name) => String(editor.querySelector(`[data-edit-field="${name}"]`)?.value || "").trim();
+      const next = {
         name: read("name"),
         type: normalizeType(read("type")),
         path: read("path"),
         remote_host: read("remote_host"),
         remote_share: read("remote_share"),
         remote_username: read("remote_username"),
-        defaultPicked: Boolean(row.querySelector('input[type="radio"]')?.checked),
       };
-    }).filter((target) => target.name.length > 0);
+      if (!next.name) {
+        editor.querySelector('[data-edit-field="name"]')?.focus();
+        return;
+      }
+
+      const duplicate = targets.findIndex((target, idx) => target.name.toLowerCase() === next.name.toLowerCase() && idx !== editIndex);
+      if (duplicate !== -1) {
+        editor.querySelector('[data-edit-field="name"]')?.focus();
+        return;
+      }
+
+      if (editIndex >= 0) {
+        const oldName = targets[editIndex].name;
+        targets[editIndex] = next;
+        if (defaultField.value === oldName) defaultField.value = next.name;
+      } else {
+        targets.push(next);
+        if (!defaultField.value) defaultField.value = next.name;
+      }
+
+      serialize();
+      render();
+      closeEditor();
+    });
+
+    editor.hidden = false;
+    addButton.disabled = true;
+    editor.querySelector('[data-edit-field="name"]')?.focus();
   };
 
   const serialize = () => {
-    const targets = readTargets();
-    const defaultTarget = targets.find((target) => target.defaultPicked)?.name
-      || defaultField.value
-      || targets[0]?.name
-      || "";
-
     targetsField.value = JSON.stringify(targets.map((target) => ({
       name: target.name,
       type: target.type,
@@ -375,9 +527,12 @@
       remote_share: target.remote_share,
       remote_username: target.remote_username,
     })));
-    defaultField.value = defaultTarget;
 
-    const selected = targets.find((target) => target.name === defaultTarget) || targets[0] || null;
+    if (!targets.some((target) => target.name === defaultField.value)) {
+      defaultField.value = targets[0]?.name || "";
+    }
+
+    const selected = targets.find((target) => target.name === defaultField.value) || targets[0] || null;
     legacyType.value = selected?.type || "local";
     legacyPath.value = selected?.path || "/mnt/backups";
     legacyHost.value = selected?.remote_host || "";
@@ -385,42 +540,31 @@
     legacyUsername.value = selected?.remote_username || "";
   };
 
+  const render = () => {
+    renderTable();
+  };
+
   const initialTargets = safeParse(targetsField.value);
-  const seedTargets = initialTargets.length
-    ? initialTargets
+  targets = initialTargets.length
+    ? initialTargets.map((target, index) => normalizeTarget(target, index))
     : [{
       name: "Default",
-      type: legacyType.value || "local",
-      path: legacyPath.value || "/mnt/backups",
-      remote_host: legacyHost.value || "",
-      remote_share: legacyShare.value || "",
-      remote_username: legacyUsername.value || "",
+      type: normalizeType(legacyType.value || "local"),
+      path: text(legacyPath.value || "/mnt/backups").trim(),
+      remote_host: text(legacyHost.value || "").trim(),
+      remote_share: text(legacyShare.value || "").trim(),
+      remote_username: text(legacyUsername.value || "").trim(),
     }];
 
-  seedTargets.forEach((target) => {
-    const row = createRow(target);
-    if (defaultField.value && String(target.name).toLowerCase() === defaultField.value.toLowerCase()) {
-      row.querySelector('input[type="radio"]').checked = true;
-    }
-    list.appendChild(row);
-  });
-
-  if (!list.querySelector('input[type="radio"]:checked')) {
-    const first = list.querySelector('input[type="radio"]');
-    if (first) first.checked = true;
+  if (!defaultField.value && targets.length) {
+    defaultField.value = targets[0].name;
   }
 
-  addButton?.addEventListener("click", () => {
-    const row = createRow({ type: "local", path: "/mnt/backups" });
-    if (!list.querySelector('input[type="radio"]:checked')) {
-      row.querySelector('input[type="radio"]').checked = true;
-    }
-    list.appendChild(row);
-    serialize();
-  });
+  addButton?.addEventListener("click", () => openEditor(-1));
 
   form?.addEventListener("submit", serialize);
   serialize();
+  render();
 })();
 </script>
 {% endblock %}
