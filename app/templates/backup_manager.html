@@ -90,7 +90,7 @@
             </form>
             <form method="post" action="/infrastructure/backup-manager/docker/{{ row.id }}/restore">
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-              <button class="button secondary" {% if not latest or not backup_ready %}disabled{% endif %}>Restore latest (merge)</button>
+              <button class="button secondary" {% if not latest or not backup_ready %}disabled{% endif %}>Restore latest</button>
             </form>
             {% if not agent_ready %}<small class="muted">Docker Agent required</small>{% endif %}
             {% if agent_ready and not backup_ready %}<small class="muted">Update Docker Agent for backups</small>{% endif %}
