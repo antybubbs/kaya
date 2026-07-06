@@ -182,6 +182,10 @@ def normalize_backup_targets_json(value: str) -> str:
         target_type = str(item.get("type") or "local").strip().lower()
         if target_type not in {"local", "smb", "ftp", "sftp"}:
             target_type = "local"
+        password = str(item.get("remote_password") or "").strip()
+        password_enc = str(item.get("remote_password_enc") or "").strip()
+        if password:
+            password_enc = encrypt_secret(password)
         cleaned.append(
             {
                 "name": name,
@@ -190,6 +194,7 @@ def normalize_backup_targets_json(value: str) -> str:
                 "remote_host": str(item.get("remote_host") or "").strip(),
                 "remote_share": str(item.get("remote_share") or "").strip(),
                 "remote_username": str(item.get("remote_username") or "").strip(),
+                "remote_password_enc": password_enc,
             }
         )
     return json.dumps(cleaned, separators=(",", ":"), ensure_ascii=True)
@@ -1898,6 +1903,7 @@ def test_backup_storage(
     backup_remote_share: str = Form(""),
     backup_remote_username: str = Form(""),
     backup_remote_password: str = Form(""),
+    backup_remote_password_enc: str = Form(""),
     backup_targets_json: str = Form("[]"),
     backup_default_target_name: str = Form(""),
     csrf_token: str = Form(...),
@@ -1906,6 +1912,10 @@ def test_backup_storage(
 ):
     validate_csrf_token(request, csrf_token)
 
+    effective_remote_password = backup_remote_password.strip()
+    if not effective_remote_password and backup_remote_password_enc.strip():
+        effective_remote_password = decrypt_secret(backup_remote_password_enc).strip()
+
     save_backup_settings(
         db,
         backup_storage_type=backup_storage_type,
@@ -1913,7 +1923,7 @@ def test_backup_storage(
         backup_remote_host=backup_remote_host,
         backup_remote_share=backup_remote_share,
         backup_remote_username=backup_remote_username,
-        backup_remote_password=backup_remote_password,
+        backup_remote_password=effective_remote_password,
     )
     save_site_setting(db, "backup_targets_json", normalize_backup_targets_json(backup_targets_json))
     save_site_setting(db, "backup_default_target_name", backup_default_target_name.strip())
@@ -1926,7 +1936,7 @@ def test_backup_storage(
         remote_host=backup_remote_host,
         remote_share=backup_remote_share,
         remote_username=backup_remote_username,
-        remote_password=backup_remote_password,
+        remote_password=effective_remote_password,
     )
     write_audit(
         db,

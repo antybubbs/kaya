@@ -104,6 +104,7 @@ def configured_backup_targets(db: Session) -> list[dict[str, str]]:
                     "remote_host": str(item.get("remote_host") or "").strip(),
                     "remote_share": str(item.get("remote_share") or "").strip(),
                     "remote_username": str(item.get("remote_username") or "").strip(),
+                    "remote_password_enc": str(item.get("remote_password_enc") or "").strip(),
                 }
             )
 
@@ -119,6 +120,7 @@ def configured_backup_targets(db: Session) -> list[dict[str, str]]:
             "remote_host": get_site_setting(db, "backup_remote_host") or "",
             "remote_share": get_site_setting(db, "backup_remote_share") or "",
             "remote_username": get_site_setting(db, "backup_remote_username") or "",
+            "remote_password_enc": get_site_setting(db, "backup_remote_password") or "",
         }
     ]
 
@@ -151,13 +153,17 @@ def default_backup_target(db: Session) -> dict[str, str]:
 
 def backup_target_payload(db: Session, target_name: str | None = None) -> dict:
     target = backup_target_by_name(db, target_name)
+    remote_password = decrypt_secret(target.get("remote_password_enc") or "").strip()
+    if not remote_password:
+        # Backward-compatible fallback for older single-target installs.
+        remote_password = decrypt_secret(get_site_setting(db, "backup_remote_password")).strip()
     return {
         "type": target["type"],
         "path": target["path"] or "/mnt/backups",
         "remote_host": target["remote_host"],
         "remote_share": target["remote_share"],
         "remote_username": target["remote_username"],
-        "remote_password": decrypt_secret(get_site_setting(db, "backup_remote_password")),
+        "remote_password": remote_password,
     }
 
 

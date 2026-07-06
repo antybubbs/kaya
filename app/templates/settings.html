@@ -21,16 +21,34 @@
 <form method="post" action="/system/site-administration" class="site-admin-form" data-settings-tabs>
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 
+  {% set admin_sections = [
+    {"key": "general", "label": "General", "children": []},
+    {"key": "security", "label": "Security", "children": []},
+    {"key": "modules", "label": "Module Settings", "children": [
+      {"key": "module-backup-manager", "label": "Backup Manager"}
+    ]},
+    {"key": "uploads", "label": "Uploads", "children": []},
+    {"key": "email", "label": "Email", "children": [
+      {"key": "email-general", "label": "General"},
+      {"key": "email-templates", "label": "Email Templates"}
+    ]}
+  ] %}
+
   <div class="category-tabs site-admin-tabs" role="tablist" aria-label="Site administration sections">
-    <button type="button" class="active" data-settings-tab="general" role="tab" aria-selected="true">General</button>
-    <button type="button" data-settings-tab="security" role="tab" aria-selected="false">Site Security</button>
-    <button type="button" data-settings-tab="backups" role="tab" aria-selected="false">Backup Manager</button>
-    <button type="button" data-settings-tab="uploads" role="tab" aria-selected="false">Uploads</button>
-    <button type="button" data-settings-tab="email" role="tab" aria-selected="false">Email</button>
-    <button type="button" data-settings-tab="email-templates" role="tab" aria-selected="false">Email Templates</button>
+    {% for section in admin_sections %}
+    <button type="button" {% if loop.first %}class="active"{% endif %} data-settings-parent-tab="{{ section.key }}" data-default-child="{{ section.children[0].key if section.children else section.key }}" role="tab" aria-selected="{{ 'true' if loop.first else 'false' }}">{{ section.label }}</button>
+    {% endfor %}
   </div>
 
-  <section class="settings-tab-panel active" data-settings-panel="general" role="tabpanel">
+  <div class="category-tabs site-admin-subtabs" data-settings-subtabs role="tablist" aria-label="Site administration subsection" hidden>
+    {% for section in admin_sections if section.children %}
+    {% for child in section.children %}
+    <button type="button" data-settings-child-tab="{{ child.key }}" data-settings-parent="{{ section.key }}" role="tab" aria-selected="false" hidden>{{ child.label }}</button>
+    {% endfor %}
+    {% endfor %}
+  </div>
+
+  <section class="settings-tab-panel active" data-settings-panel="general" data-settings-parent="general" role="tabpanel">
     <h2>General</h2>
 
     <div class="remote-settings-card" id="general">
@@ -44,7 +62,7 @@
     </div>
   </section>
 
-  <section class="settings-tab-panel" data-settings-panel="security" role="tabpanel" hidden>
+  <section class="settings-tab-panel" data-settings-panel="security" data-settings-parent="security" role="tabpanel" hidden>
     <h2>Site Security</h2>
 
     {% if security_check %}
@@ -158,7 +176,7 @@
     </div>
   </section>
 
-  <section class="settings-tab-panel" data-settings-panel="backups" role="tabpanel" hidden>
+  <section class="settings-tab-panel" data-settings-panel="module-backup-manager" data-settings-parent="modules" role="tabpanel" hidden>
     <h2>Backup Manager</h2>
 
     <div class="remote-settings-card">
@@ -188,7 +206,7 @@
     </div>
   </section>
 
-  <section class="settings-tab-panel" data-settings-panel="uploads" role="tabpanel" hidden>
+  <section class="settings-tab-panel" data-settings-panel="uploads" data-settings-parent="uploads" role="tabpanel" hidden>
     <h2>Uploads</h2>
 
     <div class="remote-settings-card" id="uploads">
@@ -202,7 +220,7 @@
     </div>
   </section>
 
-  <section class="settings-tab-panel" data-settings-panel="email" role="tabpanel" hidden>
+  <section class="settings-tab-panel" data-settings-panel="email-general" data-settings-parent="email" role="tabpanel" hidden>
     <h2>Email</h2>
 
     <div class="remote-settings-card" id="email">

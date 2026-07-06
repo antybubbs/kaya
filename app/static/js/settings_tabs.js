@@ -2,15 +2,56 @@
   const root = document.querySelector("[data-settings-tabs]");
   if (!root) return;
 
-  const tabs = Array.from(root.querySelectorAll("[data-settings-tab]"));
+  const parentTabs = Array.from(root.querySelectorAll("[data-settings-parent-tab]"));
+  const childTabs = Array.from(root.querySelectorAll("[data-settings-child-tab]"));
+  const childTabRow = root.querySelector("[data-settings-subtabs]");
   const panels = Array.from(root.querySelectorAll("[data-settings-panel]"));
   const storageKey = root.dataset.settingsStorageKey || "kaya.siteAdministration.activeTab";
 
+  const panelKeys = new Set(panels.map((panel) => panel.dataset.settingsPanel || "").filter(Boolean));
+  const childrenByParent = new Map();
+  childTabs.forEach((tab) => {
+    const parent = tab.dataset.settingsParent || "";
+    const key = tab.dataset.settingsChildTab || "";
+    if (!parent || !key) return;
+    if (!childrenByParent.has(parent)) childrenByParent.set(parent, []);
+    childrenByParent.get(parent).push(key);
+  });
+
+  const tabAliases = {
+    backups: "module-backup-manager",
+    "backup-manager": "module-backup-manager",
+    modules: "module-backup-manager",
+    module: "module-backup-manager",
+    email: "email-general",
+    templates: "email-templates",
+    "email_templates": "email-templates",
+    "email-template": "email-templates",
+  };
+
+  const normaliseRequestedTab = (value) => {
+    const clean = String(value || "").trim().toLowerCase();
+    if (!clean) return "";
+    const mapped = tabAliases[clean] || clean;
+    return panelKeys.has(mapped) ? mapped : "";
+  };
+
+  const updateQueryTab = (panelKey) => {
+    if (!panelKey) return;
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.set("tab", panelKey);
+      window.history.replaceState({}, "", url.toString());
+    } catch {
+      // Ignore URL update failures in restricted contexts.
+    }
+  };
+
   const readStoredTab = () => {
-    const requested = new URLSearchParams(window.location.search).get("tab");
+    const requested = normaliseRequestedTab(new URLSearchParams(window.location.search).get("tab"));
     if (requested) return requested;
     try {
-      return window.localStorage.getItem(storageKey);
+      return normaliseRequestedTab(window.localStorage.getItem(storageKey));
     } catch {
       return "";
     }
@@ -24,29 +65,71 @@
     }
   };
 
-  const activate = (name) => {
-    const fallback = tabs[0]?.dataset.settingsTab || "";
-    const activeName = panels.some((panel) => panel.dataset.settingsPanel === name) ? name : fallback;
+  const defaultPanelForParent = (parentKey) => {
+    const parentTab = parentTabs.find((tab) => tab.dataset.settingsParentTab === parentKey);
+    const preferred = parentTab?.dataset.defaultChild || "";
+    if (preferred && panelKeys.has(preferred)) return preferred;
+    const children = childrenByParent.get(parentKey) || [];
+    if (children.length && panelKeys.has(children[0])) return children[0];
+    if (panelKeys.has(parentKey)) return parentKey;
+    return panels[0]?.dataset.settingsPanel || "";
+  };
 
-    tabs.forEach((tab) => {
-      const active = tab.dataset.settingsTab === activeName;
+  const parentForPanel = (panelKey) => {
+    const panel = panels.find((item) => item.dataset.settingsPanel === panelKey);
+    if (panel?.dataset.settingsParent) return panel.dataset.settingsParent;
+    const childTab = childTabs.find((tab) => tab.dataset.settingsChildTab === panelKey);
+    return childTab?.dataset.settingsParent || panelKey;
+  };
+
+  const activate = (panelKey) => {
+    const fallback = defaultPanelForParent(parentTabs[0]?.dataset.settingsParentTab || "");
+    const activePanel = panelKeys.has(panelKey) ? panelKey : fallback;
+    const activeParent = parentForPanel(activePanel);
+    const activeChildren = childrenByParent.get(activeParent) || [];
+
+    parentTabs.forEach((tab) => {
+      const parentKey = tab.dataset.settingsParentTab;
+      const active = parentKey === activeParent;
+      tab.classList.toggle("active", active);
+      tab.setAttribute("aria-selected", active ? "true" : "false");
+    });
+
+    if (childTabRow) {
+      const showChildren = activeChildren.length > 0;
+      childTabRow.hidden = !showChildren;
+      childTabRow.classList.toggle("active", showChildren);
+    }
+
+    childTabs.forEach((tab) => {
+      const visible = tab.dataset.settingsParent === activeParent;
+      const active = visible && tab.dataset.settingsChildTab === activePanel;
+      tab.hidden = !visible;
       tab.classList.toggle("active", active);
       tab.setAttribute("aria-selected", active ? "true" : "false");
     });
 
     panels.forEach((panel) => {
-      const active = panel.dataset.settingsPanel === activeName;
+      const active = panel.dataset.settingsPanel === activePanel;
       panel.hidden = !active;
       panel.classList.toggle("active", active);
     });
 
-    if (activeName) {
-      writeStoredTab(activeName);
+    if (activePanel) {
+      writeStoredTab(activePanel);
+      updateQueryTab(activePanel);
     }
   };
 
-  tabs.forEach((tab) => {
-    tab.addEventListener("click", () => activate(tab.dataset.settingsTab));
+  parentTabs.forEach((tab) => {
+    tab.addEventListener("click", () => {
+      const parentKey = tab.dataset.settingsParentTab || "";
+      activate(defaultPanelForParent(parentKey));
+    });
+  });
+
+  childTabs.forEach((tab) => {
+    tab.addEventListener("click", () => activate(tab.dataset.settingsChildTab || ""));
   });
 
   const publicIpButton = root.querySelector("[data-public-ip-check]");
@@ -386,5 +469,6 @@
     render();
   }
 
-  activate(readStoredTab() || tabs[0]?.dataset.settingsTab || "");
+  const initial = readStoredTab() || defaultPanelForParent(parentTabs[0]?.dataset.settingsParentTab || "");
+  activate(initial);
 })();

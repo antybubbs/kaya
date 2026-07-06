@@ -460,6 +460,20 @@ html[data-theme=light] .backup-target-table th,html[data-theme=light] .backup-ta
   margin: 0;
 }
 
+.site-admin-subtabs {
+  margin: -6px 0 0;
+  padding-left: 14px;
+}
+
+.site-admin-subtabs[hidden] {
+  display: none !important;
+}
+
+.site-admin-subtabs button {
+  min-height: 34px;
+  padding: 7px 12px;
+}
+
 .site-admin-tabs button {
   align-items: center;
   background: rgba(15, 23, 42, .42);
@@ -513,6 +527,13 @@ html[data-theme=light] .backup-target-table th,html[data-theme=light] .backup-ta
   gap: 8px;
   justify-content: flex-end;
   padding-top: 14px;
+}
+
+@media (max-width: 850px) {
+  .site-admin-subtabs {
+    margin-top: -2px;
+    padding-left: 0;
+  }
 }
 
 /* Keep VM/Docker tabs on the right while action buttons stay grouped on the left. */
