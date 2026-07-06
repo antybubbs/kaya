@@ -94,7 +94,6 @@
             </form>
             {% if not agent_ready %}<small class="muted">Docker Agent required</small>{% endif %}
             {% if agent_ready and not backup_ready %}<small class="muted">Update Docker Agent for backups</small>{% endif %}
-            {% if backup_ready %}<small class="muted">Restore does not remove files added after the backup.</small>{% endif %}
           </div>
           {% endif %}
         </td>
