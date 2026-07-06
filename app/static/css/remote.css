@@ -91,8 +91,8 @@ body.remote-resizing{cursor:col-resize;user-select:none}
 .remote-tab-tool.active{background:#ffb357;border-color:#ffd08a;color:#050706}
 .remote-tab-record{font-size:10px;width:34px}
 .remote-layout-tools{align-items:center;display:flex;gap:6px;margin-left:auto;padding:0 8px 6px}
-.remote-layout-button{background:#111827;border:1px solid var(--line);border-radius:7px;color:var(--muted);font-size:12px;font-weight:900;height:30px;min-height:30px;padding:0 12px}
-.remote-layout-button:hover:not(:disabled),.remote-layout-button.active{background:rgba(255,138,0,.12);border-color:rgba(255,138,0,.65);color:var(--text)}
+.remote-layout-button{background:#ff8a00;border:1px solid #ffb357;border-radius:7px;color:#050706;font-size:12px;font-weight:900;height:30px;min-height:30px;padding:0 12px}
+.remote-layout-button:hover:not(:disabled),.remote-layout-button.active{background:#ffb357;border-color:#ffd08a;color:#050706}
 .remote-layout-button:disabled{cursor:not-allowed;opacity:.48}
 .remote-tab-panels{height:100%;min-height:0;position:relative}
 .remote-tab-panels>[hidden]{display:none!important}
@@ -233,7 +233,9 @@ html[data-kaya-theme=light-ops] .remote-settings-card header{border-bottom-color
 html[data-kaya-theme=light-ops] .remote-settings-grid label{color:#111827}
 html[data-kaya-theme=light-ops] .remote-settings-grid input,html[data-kaya-theme=light-ops] .remote-settings-grid select,html[data-kaya-theme=light-ops] .remote-settings-grid textarea{background:#fff;border-color:#cfd7e3;color:#111827}
 html[data-kaya-theme=light-ops] .remote-settings-tabs{border-bottom-color:#d8dee8}
-html[data-kaya-theme=light-ops] .remote-settings-tabs a,html[data-kaya-theme=light-ops] .remote-host-toolbar button,html[data-kaya-theme=light-ops] .remote-host-toolbar a,html[data-kaya-theme=light-ops] .remote-layout-button,html[data-kaya-theme=light-ops] .remote-protocol-icon{background:#fff8f0;border-color:rgba(255,138,0,.24);color:#7a3b00}
+html[data-kaya-theme=light-ops] .remote-settings-tabs a,html[data-kaya-theme=light-ops] .remote-host-toolbar button,html[data-kaya-theme=light-ops] .remote-host-toolbar a,html[data-kaya-theme=light-ops] .remote-protocol-icon{background:#fff8f0;border-color:rgba(255,138,0,.24);color:#7a3b00}
+html[data-kaya-theme=light-ops] .remote-layout-button{background:#ff8a00;border-color:#ffb357;color:#050706}
+html[data-kaya-theme=light-ops] .remote-layout-button:hover:not(:disabled),html[data-kaya-theme=light-ops] .remote-layout-button.active{background:#ffb357;border-color:#ffd08a;color:#050706}
 html[data-kaya-theme=light-ops] .remote-session-frame,html[data-kaya-theme=light-ops] .remote-console-empty{background:#f8f3ec;border-color:#d8dee8;color:#111827}
 html[data-kaya-theme=light-ops] .remote-recordings-table{background:#fff;border-color:#cfd7e3;box-shadow:0 1px 0 rgba(17,24,39,.04)}
 html[data-kaya-theme=light-ops] .remote-recordings-table th{background:#f2f5f8;border-bottom:1px solid #cfd7e3;color:#a84b00}
