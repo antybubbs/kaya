@@ -512,3 +512,89 @@ html[data-kaya-theme=light-ops] .compute-tabs a.active{
   border-color:#ff8a00!important;
   color:#101010!important;
 }
+
+/* Dark theme surface normalization: remove legacy slate/blue panel tints */
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .card,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .panel,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .login-card,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .monitor-card,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .remote-card,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .remote-settings-card,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .compute-host-card,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .resource-gauge,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .audit-summary-grid article,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .compute-summary-grid article,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .inventory-counts div,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .mini-metrics div,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .record-panel,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .record-fields>div,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .record-kv-list div,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .inline-edit-preview,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .service-card,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .compute-link-card,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .compute-link-empty,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .domain-dns-type,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .domain-record-list span,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .domain-dns-type span,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .runbook-page-card,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .runbook-side,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .runbook-content,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .rack-card,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .rack-create-panel,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .rack-elevation-panel,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .rack-side-panel,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .settings-content-panel,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .settings-internal-sidebar,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .dns-chart-panel,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .empty-state{
+  background:#14171d!important;
+  border-color:#2a303a!important;
+  color:#f5f5f2;
+  box-shadow:none!important;
+}
+
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .module-header,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .topbar,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .dashboard-hero,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .compute-hero,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .audit-hero,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .record-hero,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .about-hero{
+  background:linear-gradient(135deg,rgba(255,138,0,.055),rgba(20,23,29,.98) 42%,#12161c)!important;
+  border-color:#252c36!important;
+}
+
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .dns-bar-chart,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .audit-inspector dl,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .mini-metrics div,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .inventory-counts div{
+  background-color:#101319!important;
+}
+
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .app-topbar,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .account-popover,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .version-card,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .sidebar-flyout-popover,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) body.sidebar-collapsed .nav-link[href]:hover>.nav-label,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) body.sidebar-collapsed .nav-link[href]:focus>.nav-label{
+  background:#14171d!important;
+  border-color:#2a303a!important;
+  box-shadow:none!important;
+}
+
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .sidebar-flyout-popover:before{
+  border-right-color:#14171d!important;
+}
+
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .setup-page,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .login-wrap{
+  background:#0d0f13!important;
+}
+
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .setup-shell,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .setup-form-panel,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .setup-brand-panel{
+  background:#14171d!important;
+  border-color:#2a303a!important;
+  box-shadow:none!important;
+}
