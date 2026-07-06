@@ -47,16 +47,68 @@
 {% if active_tab == 'dashboard' %}
 {% set stats_data = stats.data if stats and stats.ok else {} %}
 {% set status_data = status.data if status and status.ok else {} %}
-<section class="cards">
-  <article class="card"><span>Server Status</span><strong>{{ provider.last_status or 'unknown' }}</strong></article>
-  <article class="card"><span>Blocking Status</span><strong>{{ stat_value(stats_data, 'status', 'blocking') }}</strong></article>
-  <article class="card"><span>Queries Today</span><strong>{{ stat_value(stats_data, 'queries.total', 'dns_queries_today', 'queries_today') }}</strong></article>
-  <article class="card"><span>Blocked Queries</span><strong>{{ stat_value(stats_data, 'queries.blocked', 'ads_blocked_today', 'blocked_queries') }}</strong></article>
-  <article class="card"><span>Block Percentage</span><strong>{{ stat_value(stats_data, 'queries.percent_blocked', 'ads_percentage_today') }}</strong></article>
-  <article class="card"><span>Active Clients</span><strong>{{ stat_value(stats_data, 'clients.active', 'unique_clients') }}</strong></article>
-  <article class="card"><span>Domains on Blocklist</span><strong>{{ stat_value(stats_data, 'gravity.domains_being_blocked', 'domains_being_blocked') }}</strong></article>
-  <article class="card"><span>Pi-hole Version</span><strong>{{ stat_value(status_data, 'version.core.local.version', 'version') }}</strong></article>
+{% set history_data = history.data if history and history.ok else {} %}
+{% set query_points = query_chart_points(history_data) %}
+{% set query_max = chart_max(query_points, 'total') %}
+{% set client_rows = client_activity_rows(stats_data, history_data.get('clients') if history_data else {}) %}
+{% set client_max = chart_max(client_rows, 'count') %}
+<section class="dns-summary-grid">
+  <article class="dns-summary-card dns-card-blue">
+    <span>Total Queries</span>
+    <strong>{{ display_number(stat_value(stats_data, 'queries.total', 'dns_queries_today', 'queries_today')) }}</strong>
+    <small>{{ display_number(stat_value(stats_data, 'clients.active', 'unique_clients')) }} active clients</small>
+  </article>
+  <article class="dns-summary-card dns-card-red">
+    <span>Queries Blocked</span>
+    <strong>{{ display_number(stat_value(stats_data, 'queries.blocked', 'ads_blocked_today', 'blocked_queries')) }}</strong>
+    <small>Blocked by policy</small>
+  </article>
+  <article class="dns-summary-card dns-card-amber">
+    <span>Percentage Blocked</span>
+    <strong>{{ display_number(stat_value(stats_data, 'queries.percent_blocked', 'ads_percentage_today'), '%') }}</strong>
+    <small>Current reporting window</small>
+  </article>
+  <article class="dns-summary-card dns-card-green">
+    <span>Domains on Lists</span>
+    <strong>{{ display_number(stat_value(stats_data, 'gravity.domains_being_blocked', 'domains_being_blocked')) }}</strong>
+    <small>Managed by Pi-hole</small>
+  </article>
 </section>
+
+<section class="dns-chart-panel">
+  <header><h2>Total queries</h2><span class="muted">Allowed and blocked queries over time</span></header>
+  {% if query_points %}
+  <div class="dns-bar-chart" style="--chart-max: {{ query_max if query_max else 1 }}">
+    {% for point in query_points %}
+    <div class="dns-bar" title="{{ point.label }}: {{ point.total }} total, {{ point.blocked }} blocked">
+      <span class="dns-bar-allowed" style="height: {{ ((point.allowed / (query_max if query_max else 1)) * 100)|round(2) }}%"></span>
+      <span class="dns-bar-blocked" style="height: {{ ((point.blocked / (query_max if query_max else 1)) * 100)|round(2) }}%"></span>
+      {% if loop.index0 % 12 == 0 %}<em>{{ point.label }}</em>{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty-state compact-empty">No query history returned by this provider yet.</div>
+  {% endif %}
+</section>
+
+<section class="dns-chart-panel">
+  <header><h2>Client activity</h2><span class="muted">Top clients by query volume</span></header>
+  {% if client_rows %}
+  <div class="dns-client-chart" style="--chart-max: {{ client_max if client_max else 1 }}">
+    {% for row in client_rows %}
+    <div class="dns-client-row">
+      <strong>{{ row.name }}</strong>
+      <div><span style="width: {{ ((row.count / (client_max if client_max else 1)) * 100)|round(2) }}%"></span></div>
+      <em>{{ display_number(row.count) }}</em>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty-state compact-empty">No client activity returned by this provider yet.</div>
+  {% endif %}
+</section>
+
 <section class="panel">
   <h2>Provider Details</h2>
   <div class="detail-grid">
@@ -64,6 +116,8 @@
     <div><label>Type</label><p>{{ provider.provider_type|upper }}</p></div>
     <div><label>Base URL</label><p class="mono">{{ provider.base_url }}</p></div>
     <div><label>Last checked</label><p>{{ provider.last_checked_at.strftime('%Y-%m-%d %H:%M') if provider.last_checked_at else '-' }}</p></div>
+    <div><label>Pi-hole Version</label><p>{{ stat_value(status_data, 'version.core.local.version', 'version') }}</p></div>
+    <div><label>Blocking Status</label><p>{{ stat_value(stats_data, 'status', 'blocking') }}</p></div>
   </div>
 </section>
 {% elif active_tab == 'query-log' %}

@@ -74,6 +74,78 @@ def stat_value(stats: dict[str, Any] | None, *keys: str) -> Any:
     return "-"
 
 
+def display_number(value: Any, suffix: str = "") -> str:
+    if value in (None, "") or value == "-":
+        return "-"
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if suffix:
+        return f"{numeric:.1f}{suffix}"
+    return f"{int(numeric):,}" if numeric.is_integer() else f"{numeric:,.1f}"
+
+
+def _timestamp_label(value: Any) -> str:
+    try:
+        stamp = int(float(value))
+        return datetime.fromtimestamp(stamp).strftime("%H:%M")
+    except (TypeError, ValueError, OSError):
+        return str(value)
+
+
+def query_chart_points(history_payload: Any) -> list[dict[str, Any]]:
+    payload = history_payload if isinstance(history_payload, dict) else {}
+    queries = payload.get("queries") if isinstance(payload.get("queries"), dict) else payload
+    domains = queries.get("domains_over_time") if isinstance(queries.get("domains_over_time"), dict) else {}
+    blocked = queries.get("ads_over_time") if isinstance(queries.get("ads_over_time"), dict) else {}
+    points: list[dict[str, Any]] = []
+    for key in sorted(set(domains) | set(blocked), key=lambda item: str(item)):
+        total = int(float(domains.get(key) or 0))
+        blocked_count = int(float(blocked.get(key) or 0))
+        points.append(
+            {
+                "label": _timestamp_label(key),
+                "total": total,
+                "blocked": blocked_count,
+                "allowed": max(total - blocked_count, 0),
+            }
+        )
+    return points[-144:]
+
+
+def client_activity_rows(stats_payload: Any, clients_payload: Any) -> list[dict[str, Any]]:
+    clients = list_from_payload(clients_payload, "clients", "top_sources", "top_clients", "data")
+    if not clients and isinstance(stats_payload, dict):
+        clients = list_from_payload(stats_payload, "top_sources", "top_clients", "clients", "data")
+    rows: list[dict[str, Any]] = []
+    if isinstance(clients, list):
+        for item in clients[:8]:
+            if isinstance(item, dict):
+                name = item.get("name") or item.get("client") or item.get("ip") or item.get("ip_address") or "-"
+                count = item.get("count") or item.get("queries") or item.get("total") or 0
+            elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                name, count = item[0], item[1]
+            else:
+                continue
+            try:
+                count_value = int(float(count))
+            except (TypeError, ValueError):
+                count_value = 0
+            rows.append({"name": str(name), "count": count_value})
+    return rows
+
+
+def chart_max(rows: list[dict[str, Any]], key: str) -> int:
+    values: list[int] = []
+    for row in rows:
+        try:
+            values.append(int(float(row.get(key) or 0)))
+        except (AttributeError, TypeError, ValueError):
+            continue
+    return max(values) if values else 1
+
+
 def call_provider(provider: DNSProviderConfig | None, method: str):
     if not provider:
         return None
@@ -94,13 +166,14 @@ def dns_manager(
     active_tab = tab if tab in DNS_TABS else "dashboard"
     enabled = dns_manager_enabled(db)
     provider = selected_provider(db) if enabled else None
-    status = stats = queries = clients = local_dns = dhcp = blocklists = None
+    status = stats = history = queries = clients = local_dns = dhcp = blocklists = None
     error = None
 
     if enabled and provider:
         if active_tab == "dashboard":
             status = call_provider(provider, "get_status")
             stats = call_provider(provider, "get_statistics")
+            history = call_provider(provider, "get_history")
         elif active_tab == "query-log":
             queries = provider_for(provider).get_query_log(limit=200)
         elif active_tab == "clients":
@@ -113,7 +186,7 @@ def dns_manager(
             blocklists = call_provider(provider, "get_blocklists")
 
         db.commit()
-        active_result = next((item for item in [status, stats, queries, clients, local_dns, dhcp, blocklists] if item and not item.ok), None)
+        active_result = next((item for item in [status, stats, history, queries, clients, local_dns, dhcp, blocklists] if item and not item.ok), None)
         error = active_result.message if active_result else None
 
     return templates.TemplateResponse(
@@ -128,6 +201,7 @@ def dns_manager(
             "tabs": DNS_TABS,
             "status": status,
             "stats": stats,
+            "history": history,
             "queries": queries,
             "clients": clients,
             "local_dns": local_dns,
@@ -136,6 +210,10 @@ def dns_manager(
             "error": error,
             "list_from_payload": list_from_payload,
             "stat_value": stat_value,
+            "display_number": display_number,
+            "query_chart_points": query_chart_points,
+            "client_activity_rows": client_activity_rows,
+            "chart_max": chart_max,
             **csrf_context(request),
         },
     )

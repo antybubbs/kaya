@@ -47,6 +47,10 @@ class DNSProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def get_history(self) -> DNSProviderResult:
+        raise NotImplementedError
+
+    @abstractmethod
     def get_clients(self) -> DNSProviderResult:
         raise NotImplementedError
 
@@ -200,6 +204,26 @@ class PiHoleProvider(DNSProvider):
             return DNSProviderResult(True, "Pi-hole statistics loaded.", data)
 
         return self._safe("Statistics", run)
+
+    def get_history(self) -> DNSProviderResult:
+        def run():
+            data: dict[str, Any] = {}
+            try:
+                data["queries"] = self._v6_or_legacy("/api/history", {"overTimeData10mins": ""})
+            except DNSProviderError as exc:
+                data["queries_error"] = str(exc)
+            try:
+                data["clients"] = self._legacy_api({"getClientNames": ""})
+            except DNSProviderError:
+                try:
+                    data["clients"] = self._legacy_api({"getQuerySources": ""})
+                except DNSProviderError as exc:
+                    data["clients_error"] = str(exc)
+            if not data or ("queries_error" in data and "clients_error" in data):
+                raise DNSProviderError("Pi-hole history data is unavailable from this API.")
+            return DNSProviderResult(True, "Pi-hole history loaded.", data)
+
+        return self._safe("History", run)
 
     def get_clients(self) -> DNSProviderResult:
         def run():

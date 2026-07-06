@@ -666,9 +666,210 @@ html[data-theme=light] .settings-content-panel {
   padding-top: 14px;
 }
 
+.dns-summary-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.dns-summary-card {
+  border: 1px solid rgba(255, 255, 255, .1);
+  border-radius: 8px;
+  color: #fff;
+  display: grid;
+  gap: 6px;
+  min-height: 118px;
+  overflow: hidden;
+  padding: 14px 16px;
+  position: relative;
+}
+
+.dns-summary-card:after {
+  background: rgba(0, 0, 0, .13);
+  border-radius: 50%;
+  content: "";
+  height: 86px;
+  position: absolute;
+  right: -14px;
+  top: 12px;
+  width: 86px;
+}
+
+.dns-summary-card span,
+.dns-summary-card strong,
+.dns-summary-card small {
+  position: relative;
+  z-index: 1;
+}
+
+.dns-summary-card span {
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.dns-summary-card strong {
+  font-size: clamp(28px, 3vw, 42px);
+  line-height: 1;
+}
+
+.dns-summary-card small {
+  align-self: end;
+  color: rgba(255, 255, 255, .82);
+  font-weight: 750;
+}
+
+.dns-card-blue {
+  background: linear-gradient(135deg, #06b6d4, #0284c7);
+}
+
+.dns-card-red {
+  background: linear-gradient(135deg, #ef4444, #b91c1c);
+}
+
+.dns-card-amber {
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+}
+
+.dns-card-green {
+  background: linear-gradient(135deg, #10b981, #047857);
+}
+
+.dns-chart-panel {
+  background: rgba(17, 24, 39, .82);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 14px;
+  overflow: hidden;
+  padding: 14px 16px 18px;
+}
+
+.dns-chart-panel header {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.dns-chart-panel h2 {
+  font-size: 17px;
+  margin: 0;
+}
+
+.dns-bar-chart {
+  align-items: end;
+  background:
+    repeating-linear-gradient(to top, rgba(148, 163, 184, .16) 0 1px, transparent 1px 36px),
+    linear-gradient(180deg, rgba(255, 255, 255, .02), transparent);
+  border-bottom: 1px solid rgba(148, 163, 184, .24);
+  border-left: 1px solid rgba(148, 163, 184, .24);
+  display: grid;
+  gap: 3px;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(4px, 1fr);
+  height: 220px;
+  overflow-x: auto;
+  padding: 10px 8px 26px;
+}
+
+.dns-bar {
+  align-items: end;
+  display: flex;
+  gap: 1px;
+  height: 100%;
+  min-width: 4px;
+  position: relative;
+}
+
+.dns-bar span {
+  border-radius: 2px 2px 0 0;
+  display: block;
+  min-height: 1px;
+  width: 50%;
+}
+
+.dns-bar-allowed {
+  background: #93c5fd;
+}
+
+.dns-bar-blocked {
+  background: #ef4444;
+}
+
+.dns-bar em {
+  bottom: -22px;
+  color: var(--muted);
+  font-size: 10px;
+  font-style: normal;
+  left: 0;
+  position: absolute;
+  transform: rotate(-25deg);
+  transform-origin: left center;
+  white-space: nowrap;
+}
+
+.dns-client-chart {
+  display: grid;
+  gap: 10px;
+}
+
+.dns-client-row {
+  align-items: center;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(120px, 220px) minmax(0, 1fr) 80px;
+}
+
+.dns-client-row strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dns-client-row div {
+  background: rgba(148, 163, 184, .16);
+  border: 1px solid rgba(148, 163, 184, .14);
+  border-radius: 999px;
+  height: 16px;
+  overflow: hidden;
+}
+
+.dns-client-row span {
+  background: linear-gradient(90deg, #22c55e, #06b6d4);
+  display: block;
+  height: 100%;
+  min-width: 2px;
+}
+
+.dns-client-row em {
+  color: var(--muted);
+  font-style: normal;
+  font-weight: 850;
+  text-align: right;
+}
+
+.compact-empty {
+  border-radius: 8px;
+  padding: 18px;
+}
+
 @media (max-width: 850px) {
   .settings-layout {
     grid-template-columns: 1fr;
+  }
+
+  .dns-summary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dns-client-row {
+    grid-template-columns: 1fr;
+  }
+
+  .dns-client-row em {
+    text-align: left;
   }
 
   .settings-internal-sidebar {
