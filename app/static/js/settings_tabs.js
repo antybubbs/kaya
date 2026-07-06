@@ -257,6 +257,8 @@
         remote_host: text(target.remote_host || target.host || "").trim(),
         remote_share: text(target.remote_share || target.share || "").trim(),
         remote_username: text(target.remote_username || target.username || "").trim(),
+        remote_password: "",
+        remote_password_enc: text(target.remote_password_enc || "").trim(),
       };
     };
 
@@ -278,7 +280,8 @@
       post.appendChild(createInput("backup_remote_host", target.remote_host));
       post.appendChild(createInput("backup_remote_share", target.remote_share));
       post.appendChild(createInput("backup_remote_username", target.remote_username));
-      post.appendChild(createInput("backup_remote_password", root.querySelector('input[name="backup_remote_password"]')?.value || ""));
+      post.appendChild(createInput("backup_remote_password", target.remote_password || ""));
+      post.appendChild(createInput("backup_remote_password_enc", target.remote_password_enc || ""));
       post.appendChild(createInput("backup_targets_json", targetsField.value));
       post.appendChild(createInput("backup_default_target_name", defaultField.value));
       post.style.display = "none";
@@ -377,7 +380,8 @@
       editIndex = index;
       const source = index >= 0
         ? targets[index]
-        : { name: "", type: "local", path: "/mnt/backups", remote_host: "", remote_share: "", remote_username: "" };
+        : { name: "", type: "local", path: "/mnt/backups", remote_host: "", remote_share: "", remote_username: "", remote_password: "", remote_password_enc: "" };
+      const hasSavedPassword = Boolean(source.remote_password_enc);
 
       editor.innerHTML = `
         <fieldset class="backup-target-form">
@@ -395,6 +399,11 @@
           <label><strong>Remote host</strong><input data-edit-field="remote_host" placeholder="backup.example.local" value="${esc(source.remote_host)}"></label>
           <label><strong>Remote share/path</strong><input data-edit-field="remote_share" placeholder="backups" value="${esc(source.remote_share)}"></label>
           <label><strong>Remote username</strong><input data-edit-field="remote_username" placeholder="backup-user" value="${esc(source.remote_username)}"></label>
+          <label>
+            <strong>Remote password</strong>
+            <small>${hasSavedPassword ? "A password is saved for this target. Enter a new one to replace it." : "Optional password for this target."}</small>
+            <input data-edit-field="remote_password" type="password" autocomplete="new-password" placeholder="${hasSavedPassword ? "Saved password" : ""}">
+          </label>
           <div class="backup-target-form-actions">
             <button type="button" class="button" data-save-target>Save target</button>
             <button type="button" class="button secondary" data-cancel-target>Cancel</button>
@@ -413,6 +422,8 @@
           remote_host: read("remote_host"),
           remote_share: read("remote_share"),
           remote_username: read("remote_username"),
+          remote_password: read("remote_password"),
+          remote_password_enc: editIndex >= 0 ? targets[editIndex].remote_password_enc || "" : "",
         };
         if (!next.name) {
           editor.querySelector('[data-edit-field="name"]')?.focus();
@@ -452,6 +463,8 @@
         remote_host: target.remote_host,
         remote_share: target.remote_share,
         remote_username: target.remote_username,
+        remote_password: target.remote_password || "",
+        remote_password_enc: target.remote_password_enc || "",
       })));
 
       if (!targets.some((target) => target.name === defaultField.value)) {
@@ -480,6 +493,8 @@
         remote_host: text(legacyHost.value || "").trim(),
         remote_share: text(legacyShare.value || "").trim(),
         remote_username: text(legacyUsername.value || "").trim(),
+        remote_password: "",
+        remote_password_enc: "",
       }];
 
     if (!defaultField.value && targets.length) {

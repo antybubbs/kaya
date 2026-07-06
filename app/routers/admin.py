@@ -1923,7 +1923,7 @@ def test_backup_storage(
         backup_remote_host=backup_remote_host,
         backup_remote_share=backup_remote_share,
         backup_remote_username=backup_remote_username,
-        backup_remote_password=effective_remote_password,
+        backup_remote_password="",
     )
     save_site_setting(db, "backup_targets_json", normalize_backup_targets_json(backup_targets_json))
     save_site_setting(db, "backup_default_target_name", backup_default_target_name.strip())

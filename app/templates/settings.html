@@ -195,11 +195,6 @@
             <small class="muted">Saved targets are listed in a table. Add opens a target form, then save it. Use Test on any saved target to verify connectivity.</small>
           </div>
         </div>
-        <label>
-          <strong>Remote password</strong>
-          <small>{% if settings.get('backup_remote_password_set') == '1' %}A password is saved. Enter a new one to replace it.{% else %}Optional remote storage password.{% endif %}</small>
-          <input name="backup_remote_password" type="password" value="" autocomplete="new-password" placeholder="{% if settings.get('backup_remote_password_set') == '1' %}Saved password{% endif %}">
-        </label>
       </div>
     </div>
   </section>
