@@ -1,7 +1,7 @@
 (function () {
   const liveToggle = document.querySelector("[data-dns-live-toggle]");
   const liveStorageKey = "kaya.dns.queryLog.live";
-  const liveIntervalMs = 10000;
+  const liveIntervalMs = 30000;
   let liveTimer = null;
 
   function onQueryLogPage() {
@@ -26,18 +26,33 @@
   }
 
   if (liveToggle) {
+    const alertText = (document.querySelector(".alert")?.textContent || "").toLowerCase();
+    if (alertText.includes("seat") || alertText.includes("429")) {
+      localStorage.setItem(liveStorageKey, "0");
+      liveToggle.checked = false;
+      liveToggle.disabled = true;
+      liveToggle.closest("label")?.setAttribute("title", "Live refresh is paused while Pi-hole API seats are exhausted.");
+      return;
+    }
     setLiveMode(localStorage.getItem(liveStorageKey) === "1");
     liveToggle.addEventListener("change", () => setLiveMode(liveToggle.checked));
   }
 
-  document.querySelectorAll("[data-dns-domain-detail]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const row = button.closest("tr");
-      const detailRow = row ? row.nextElementSibling : null;
-      if (!detailRow || !detailRow.classList.contains("dns-domain-detail-row")) return;
-      const expanded = !detailRow.hidden;
-      detailRow.hidden = expanded;
-      button.setAttribute("aria-expanded", expanded ? "false" : "true");
+  document.addEventListener("click", (event) => {
+    document.querySelectorAll(".dns-domain-menu[open]").forEach((menu) => {
+      if (!menu.contains(event.target)) {
+        menu.open = false;
+      }
+    });
+  });
+
+  document.addEventListener("toggle", (event) => {
+    const activeMenu = event.target.closest(".dns-domain-menu");
+    if (!activeMenu || !activeMenu.open) return;
+    document.querySelectorAll(".dns-domain-menu[open]").forEach((menu) => {
+      if (menu !== activeMenu) {
+        menu.open = false;
+      }
     });
   });
 })();

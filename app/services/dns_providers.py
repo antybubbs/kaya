@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import ssl
+import threading
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
@@ -28,6 +31,11 @@ class DNSProviderResult:
     ok: bool
     message: str
     data: dict[str, Any] | list[dict[str, Any]] | None = None
+
+
+_PIHOLE_SESSION_CACHE: dict[str, dict[str, Any]] = {}
+_PIHOLE_SESSION_LOCK = threading.Lock()
+_PIHOLE_DEFAULT_SESSION_SECONDS = 20 * 60
 
 
 class DNSProvider(ABC):
@@ -82,6 +90,10 @@ class PiHoleProvider(DNSProvider):
     def _secret(self) -> str:
         return decrypt_secret(self.config.encrypted_secret or "").strip()
 
+    def _session_cache_key(self, secret: str) -> str:
+        secret_hash = hashlib.sha256(secret.encode("utf-8")).hexdigest()[:16]
+        return f"{self.config.id}:{self._base_url()}:{self.config.auth_method}:{secret_hash}"
+
     def _ssl_context(self):
         if self.config.ssl_verify:
             return None
@@ -117,7 +129,7 @@ class PiHoleProvider(DNSProvider):
                 detail = ""
             message = f"Pi-hole returned HTTP {exc.code}."
             if exc.code == 429:
-                message = "Pi-hole API seats are currently exhausted. Wait for an existing Pi-hole API session to expire, then retry."
+                message = "Pi-hole API seats are currently exhausted. Kaya will reuse one API session once a seat is available; wait for an existing Pi-hole session to expire, then refresh."
             if detail:
                 try:
                     parsed = json.loads(detail)
@@ -149,15 +161,49 @@ class PiHoleProvider(DNSProvider):
             return {}
         if self.config.auth_method == "api_token":
             raise DNSProviderError("Configured for legacy Pi-hole API token authentication.")
-        if self._sid:
-            return {"X-FTL-SID": self._sid}
-        data = self._request_json("/api/auth", method="POST", payload={"password": secret})
-        session = data.get("session") if isinstance(data.get("session"), dict) else data
-        sid = session.get("sid") if isinstance(session, dict) else None
-        if not sid:
-            raise DNSProviderError("Pi-hole authentication did not return a session.")
-        self._sid = sid
+        cache_key = self._session_cache_key(secret)
+        now = time.time()
+        with _PIHOLE_SESSION_LOCK:
+            cached = _PIHOLE_SESSION_CACHE.get(cache_key)
+            if cached and cached.get("sid") and float(cached.get("expires_at") or 0) > now:
+                self._sid = str(cached["sid"])
+                return {"X-FTL-SID": self._sid}
+            if self._sid:
+                return {"X-FTL-SID": self._sid}
+            data = self._request_json("/api/auth", method="POST", payload={"password": secret})
+            session = data.get("session") if isinstance(data.get("session"), dict) else data
+            sid = session.get("sid") if isinstance(session, dict) else None
+            if not sid:
+                raise DNSProviderError("Pi-hole authentication did not return a session.")
+            validity = session.get("validity") if isinstance(session, dict) else None
+            try:
+                ttl = max(60, min(int(validity), 24 * 60 * 60)) if validity else _PIHOLE_DEFAULT_SESSION_SECONDS
+            except (TypeError, ValueError):
+                ttl = _PIHOLE_DEFAULT_SESSION_SECONDS
+            self._sid = sid
+            _PIHOLE_SESSION_CACHE[cache_key] = {
+                "sid": self._sid,
+                "expires_at": now + max(30, ttl - 30),
+            }
         return {"X-FTL-SID": self._sid}
+
+    def _clear_cached_sid(self) -> None:
+        secret = self._secret()
+        if not secret or self.config.auth_method == "api_token":
+            self._sid = None
+            return
+        with _PIHOLE_SESSION_LOCK:
+            _PIHOLE_SESSION_CACHE.pop(self._session_cache_key(secret), None)
+        self._sid = None
+
+    def _v6_request_json(self, path: str) -> dict[str, Any]:
+        try:
+            return self._request_json(path, headers=self._v6_auth_headers())
+        except PiHoleHTTPError as exc:
+            if exc.status_code in {401, 403} and self._sid:
+                self._clear_cached_sid()
+                return self._request_json(path, headers=self._v6_auth_headers())
+            raise
 
     def _legacy_api(self, params: dict[str, Any]) -> dict[str, Any]:
         secret = self._secret()
@@ -173,7 +219,7 @@ class PiHoleProvider(DNSProvider):
 
     def _v6_or_legacy(self, v6_path: str, legacy_params: dict[str, Any]) -> dict[str, Any]:
         try:
-            return self._request_json(v6_path, headers=self._v6_auth_headers())
+            return self._v6_request_json(v6_path)
         except PiHoleHTTPError as exc:
             if exc.status_code not in {400, 401, 403, 404}:
                 raise
@@ -253,21 +299,21 @@ class PiHoleProvider(DNSProvider):
 
     def get_local_dns_records(self) -> DNSProviderResult:
         def run():
-            data = self._request_json("/api/config/dns/hosts", headers=self._v6_auth_headers())
+            data = self._v6_request_json("/api/config/dns/hosts")
             return DNSProviderResult(True, "Pi-hole local DNS records loaded.", data)
 
         return self._safe("Local DNS", run)
 
     def get_dhcp_leases(self) -> DNSProviderResult:
         def run():
-            data = self._request_json("/api/dhcp/leases", headers=self._v6_auth_headers())
+            data = self._v6_request_json("/api/dhcp/leases")
             return DNSProviderResult(True, "Pi-hole DHCP leases loaded.", data)
 
         return self._safe("DHCP", run)
 
     def get_blocklists(self) -> DNSProviderResult:
         def run():
-            data = self._request_json("/api/lists", headers=self._v6_auth_headers())
+            data = self._v6_request_json("/api/lists")
             return DNSProviderResult(True, "Pi-hole blocklists loaded.", data)
 
         return self._safe("Blocklists", run)

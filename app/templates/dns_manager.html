@@ -126,7 +126,7 @@
   <div class="dns-query-log-controls">
     <label class="checkbox-row dns-live-toggle">
       <input type="checkbox" data-dns-live-toggle>
-      <span><strong>Live query log</strong><small>Refresh this view automatically every 10 seconds.</small></span>
+      <span><strong>Live query log</strong><small>Refresh this view automatically every 30 seconds.</small></span>
     </label>
   </div>
   <table data-table-key="dns-query-log">
@@ -148,9 +148,23 @@
         <td>{{ client_name }}</td>
         <td>{{ client_ip }}</td>
         <td>
-          <button class="dns-domain-link" type="button" data-dns-domain-detail aria-expanded="false">
-            {{ domain }}
-          </button>
+          <details class="dns-domain-menu">
+            <summary>{{ domain }}</summary>
+            <div class="dns-domain-menu-panel">
+              <dl>
+                <div><dt>Root domain</dt><dd>{{ domain_root(domain) }}</dd></div>
+                <div><dt>Classification</dt><dd>{{ domain_kind(domain) }}</dd></div>
+                <div><dt>Client</dt><dd>{{ client_name }}{% if client_ip != '-' %} / {{ client_ip }}{% endif %}</dd></div>
+                <div><dt>Result</dt><dd>{{ qstatus }}{% if rtype != '-' %} / {{ rtype }}{% endif %}</dd></div>
+                <div><dt>Response</dt><dd>{{ rtime }}{% if upstream != '-' and upstream != 'None' %} via {{ upstream }}{% endif %}</dd></div>
+              </dl>
+              <div class="dns-domain-web-links">
+                <a href="https://lookup.icann.org/en/lookup?name={{ domain_root(domain) }}" target="_blank" rel="noopener noreferrer">WHOIS</a>
+                <a href="https://mxtoolbox.com/SuperTool.aspx?action=a%3a{{ domain }}" target="_blank" rel="noopener noreferrer">DNS lookup</a>
+                <a href="https://www.virustotal.com/gui/domain/{{ domain }}/details" target="_blank" rel="noopener noreferrer">Reputation</a>
+              </div>
+            </div>
+          </details>
           {% if flagged %}<span class="table-chip danger-chip">Flagged</span>{% endif %}
         </td>
         <td>{{ qtype }}</td>
@@ -173,20 +187,6 @@
             <input type="hidden" name="notes" value="Flagged from DNS query log.">
             <button class="button secondary small" type="submit" {% if flagged %}disabled title="Already flagged"{% endif %}>Flag</button>
           </form>
-        </td>
-      </tr>
-      <tr class="dns-domain-detail-row" hidden>
-        <td colspan="10">
-          <div class="dns-domain-detail">
-            <div><span>Domain</span><strong class="mono">{{ domain }}</strong></div>
-            <div><span>Root domain</span><strong>{{ domain_root(domain) }}</strong></div>
-            <div><span>Classification</span><strong>{{ domain_kind(domain) }}</strong></div>
-            <div><span>Client</span><strong>{{ client_name }}{% if client_ip != '-' %} / {{ client_ip }}{% endif %}</strong></div>
-            <div><span>Query result</span><strong>{{ qstatus }}{% if rtype != '-' %} / {{ rtype }}{% endif %}</strong></div>
-            <div><span>Response</span><strong>{{ rtime }}{% if upstream != '-' and upstream != 'None' %} via {{ upstream }}{% endif %}</strong></div>
-            <div><span>Observed</span><strong>{{ observed_at }}</strong></div>
-            <div><span>Manager</span><strong><a href="/networking/domain-manager?q={{ domain_root(domain) }}">Check Domain Manager</a></strong></div>
-          </div>
         </td>
       </tr>
       {% else %}
