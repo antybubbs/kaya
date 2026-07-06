@@ -86,6 +86,64 @@ def display_number(value: Any, suffix: str = "") -> str:
     return f"{int(numeric):,}" if numeric.is_integer() else f"{numeric:,.1f}"
 
 
+def payload_value(payload: Any, *keys: str) -> Any:
+    if not isinstance(payload, dict):
+        return None
+    for key in keys:
+        if key in payload and payload[key] not in (None, ""):
+            return payload[key]
+    return None
+
+
+def query_log_time(row: Any) -> str:
+    value = payload_value(row, "time", "timestamp", "date")
+    if value in (None, ""):
+        return "-"
+    try:
+        numeric = float(value)
+        return datetime.fromtimestamp(numeric).strftime("%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError, OSError):
+        return str(value)
+
+
+def query_client_name(row: Any) -> str:
+    client = payload_value(row, "client")
+    if isinstance(client, dict):
+        return str(payload_value(client, "name", "hostname", "host") or "-")
+    return str(payload_value(row, "client_name", "hostname", "name") or "-")
+
+
+def query_client_ip(row: Any) -> str:
+    client = payload_value(row, "client")
+    if isinstance(client, dict):
+        return str(payload_value(client, "ip", "address", "ip_address") or "-")
+    value = payload_value(row, "client_ip", "ip", "ip_address", "client")
+    return str(value or "-")
+
+
+def query_reply_type(row: Any) -> str:
+    reply = payload_value(row, "reply")
+    if isinstance(reply, dict):
+        return str(payload_value(reply, "type", "reply_type", "status") or "-")
+    return str(payload_value(row, "reply_type", "reply") or "-")
+
+
+def query_reply_time(row: Any) -> str:
+    reply = payload_value(row, "reply")
+    value = payload_value(reply, "time", "duration", "response_time") if isinstance(reply, dict) else payload_value(row, "reply_time", "response_time", "duration")
+    if value in (None, ""):
+        return "-"
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if seconds < 0.001:
+        return f"{seconds * 1000:.3f} ms"
+    if seconds < 1:
+        return f"{seconds * 1000:.2f} ms"
+    return f"{seconds:.2f} s"
+
+
 def _timestamp_label(value: Any) -> str:
     try:
         stamp = int(float(value))
@@ -213,6 +271,11 @@ def dns_manager(
             "list_from_payload": list_from_payload,
             "stat_value": stat_value,
             "display_number": display_number,
+            "query_log_time": query_log_time,
+            "query_client_name": query_client_name,
+            "query_client_ip": query_client_ip,
+            "query_reply_type": query_reply_type,
+            "query_reply_time": query_reply_time,
             "query_chart_points": query_chart_points,
             "client_activity_rows": client_activity_rows,
             "chart_max": chart_max,

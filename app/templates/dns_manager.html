@@ -124,20 +124,22 @@
 {% set rows = list_from_payload(queries.data if queries and queries.ok else {}, 'queries', 'data') %}
 <section class="panel">
   <table data-table-key="dns-query-log">
-    <thead><tr><th>Time</th><th>Client</th><th>Domain</th><th>Query Type</th><th>Status</th><th>Reply</th><th>Upstream</th></tr></thead>
+    <thead><tr><th>Time</th><th>Client Name</th><th>Client IP</th><th>Domain</th><th>Query Type</th><th>Status</th><th>Reply Type</th><th>Reply Time</th><th>Upstream</th></tr></thead>
     <tbody>
       {% for row in rows[:200] %}
       <tr>
-        <td>{{ row.time if row.time is defined else row.timestamp if row.timestamp is defined else '-' }}</td>
-        <td>{{ row.client if row.client is defined else row.client_ip if row.client_ip is defined else '-' }}</td>
+        <td>{{ query_log_time(row) }}</td>
+        <td>{{ query_client_name(row) }}</td>
+        <td>{{ query_client_ip(row) }}</td>
         <td><strong>{{ row.domain if row.domain is defined else row.query if row.query is defined else '-' }}</strong></td>
         <td>{{ row.type if row.type is defined else row.query_type if row.query_type is defined else '-' }}</td>
         <td>{{ row.status if row.status is defined else row.reply_type if row.reply_type is defined else '-' }}</td>
-        <td>{{ row.reply if row.reply is defined else '-' }}</td>
+        <td>{{ query_reply_type(row) }}</td>
+        <td>{{ query_reply_time(row) }}</td>
         <td>{{ row.upstream if row.upstream is defined else '-' }}</td>
       </tr>
       {% else %}
-      <tr><td colspan="7">No query log entries returned by this provider.</td></tr>
+      <tr><td colspan="9">No query log entries returned by this provider.</td></tr>
       {% endfor %}
     </tbody>
   </table>
