@@ -454,6 +454,7 @@ html[data-theme=light] .backup-target-table th,html[data-theme=light] .backup-ta
 .site-admin-form {
   display: grid;
   gap: 16px;
+  width: 100%;
 }
 
 .settings-layout {
@@ -461,6 +462,7 @@ html[data-theme=light] .backup-target-table th,html[data-theme=light] .backup-ta
   display: grid;
   gap: 18px;
   grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  width: 100%;
 }
 
 .settings-internal-sidebar {
@@ -519,7 +521,7 @@ html[data-theme=light] .backup-target-table th,html[data-theme=light] .backup-ta
 .settings-side-link.active,
 .settings-side-child.active {
   background: rgba(255, 138, 0, .12);
-  box-shadow: inset 3px 0 0 rgba(255, 138, 0, .85);
+  box-shadow: none;
   color: #ffffff !important;
 }
 
@@ -576,6 +578,14 @@ html[data-theme=light] .settings-side-child.active {
   min-width: 0;
   overflow: visible;
   padding: 18px;
+  justify-self: stretch;
+  width: 100%;
+}
+
+.site-admin-form .remote-settings-card,
+.site-admin-form .settings-tab-panel {
+  max-width: none;
+  width: 100%;
 }
 
 html[data-theme=light] .settings-content-panel {
