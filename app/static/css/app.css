@@ -495,10 +495,10 @@ html[data-theme=light] .backup-target-table th,html[data-theme=light] .backup-ta
 .settings-side-link,
 .settings-side-child {
   align-items: center;
-  background: transparent;
+  background: transparent !important;
   border: 0;
   border-radius: 8px;
-  color: var(--muted);
+  color: var(--muted) !important;
   cursor: pointer;
   display: flex;
   font-size: 13px;
@@ -513,14 +513,14 @@ html[data-theme=light] .backup-target-table th,html[data-theme=light] .backup-ta
 .settings-side-link:hover,
 .settings-side-child:hover {
   background: rgba(148, 163, 184, .1);
-  color: var(--text);
+  color: var(--text) !important;
 }
 
 .settings-side-link.active,
 .settings-side-child.active {
-  background: rgba(255, 138, 0, .12);
+  background: rgba(255, 138, 0, .12) !important;
   box-shadow: inset 3px 0 0 rgba(255, 138, 0, .85);
-  color: var(--text);
+  color: var(--text) !important;
 }
 
 .settings-side-group>summary.settings-side-link {
