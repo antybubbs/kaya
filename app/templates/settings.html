@@ -162,37 +162,22 @@
     <h2>Backups</h2>
 
     <div class="remote-settings-card">
-      <header><span>Default backup storage</span></header>
+      <header><span>Backup targets</span></header>
+      <input type="hidden" name="backup_targets_json" id="backup_targets_json" value="{{ settings.get('backup_targets_json', '[]') }}">
+      <input type="hidden" name="backup_default_target_name" id="backup_default_target_name" value="{{ settings.get('backup_default_target_name', '') }}">
+      <input type="hidden" name="backup_storage_type" id="backup_storage_type" value="{{ settings.get('backup_storage_type', 'local') }}">
+      <input type="hidden" name="backup_storage_path" id="backup_storage_path" value="{{ settings.get('backup_storage_path', '/mnt/backups') }}">
+      <input type="hidden" name="backup_remote_host" id="backup_remote_host" value="{{ settings.get('backup_remote_host', '') }}">
+      <input type="hidden" name="backup_remote_share" id="backup_remote_share" value="{{ settings.get('backup_remote_share', '') }}">
+      <input type="hidden" name="backup_remote_username" id="backup_remote_username" value="{{ settings.get('backup_remote_username', '') }}">
       <div class="remote-settings-grid">
-        <label>
-          <strong>Storage type</strong>
-          <small>Where Backup Manager should point manual records and future backup runners by default.</small>
-          <select name="backup_storage_type">
-            {% for value,label in [('local','Local path or mounted share'),('smb','SMB share'),('ftp','FTP server'),('sftp','SFTP server')] %}
-            <option value="{{ value }}" {% if settings.get('backup_storage_type', 'local') == value %}selected{% endif %}>{{ label }}</option>
-            {% endfor %}
-          </select>
-        </label>
-        <label>
-          <strong>Storage path</strong>
-          <small>For Local storage, use a path such as /mnt/backups. For remote storage, use Remote share/path below.</small>
-          <input name="backup_storage_path" value="{{ settings.get('backup_storage_path', '/mnt/backups') }}" placeholder="/mnt/backups">
-        </label>
-        <label>
-          <strong>Remote host</strong>
-          <small>Hostname or IP for SMB, FTP or SFTP targets.</small>
-          <input name="backup_remote_host" value="{{ settings.get('backup_remote_host', '') }}" placeholder="backup-nas.example.local">
-        </label>
-        <label>
-          <strong>Remote share/path</strong>
-          <small>For SMB, use share or share/folder, for example home or home/kaya-backups.</small>
-          <input name="backup_remote_share" value="{{ settings.get('backup_remote_share', '') }}" placeholder="backups">
-        </label>
-        <label>
-          <strong>Remote username</strong>
-          <small>Optional account used by future remote backup runners.</small>
-          <input name="backup_remote_username" value="{{ settings.get('backup_remote_username', '') }}" autocomplete="username">
-        </label>
+        <div class="backup-targets-builder" data-backup-targets-builder>
+          <div class="backup-targets-list" data-backup-targets-list></div>
+          <div class="backup-targets-actions">
+            <button type="button" class="button secondary" data-add-backup-target>Add target</button>
+            <small class="muted">Create targets one-by-one, then mark one as default. Backup Manager can pick per-container targets.</small>
+          </div>
+        </div>
         <label>
           <strong>Remote password</strong>
           <small>{% if settings.get('backup_remote_password_set') == '1' %}A password is saved. Enter a new one to replace it.{% else %}Optional remote storage password.{% endif %}</small>
@@ -297,4 +282,145 @@
 
 {% block extra_scripts %}
 <script src="/static/js/settings_tabs.js?v={{ asset_version }}"></script>
+<script>
+(() => {
+  const builder = document.querySelector("[data-backup-targets-builder]");
+  if (!builder) return;
+
+  const list = builder.querySelector("[data-backup-targets-list]");
+  const addButton = builder.querySelector("[data-add-backup-target]");
+  const targetsField = document.querySelector("#backup_targets_json");
+  const defaultField = document.querySelector("#backup_default_target_name");
+  const legacyType = document.querySelector("#backup_storage_type");
+  const legacyPath = document.querySelector("#backup_storage_path");
+  const legacyHost = document.querySelector("#backup_remote_host");
+  const legacyShare = document.querySelector("#backup_remote_share");
+  const legacyUsername = document.querySelector("#backup_remote_username");
+  const form = document.querySelector("form.site-admin-form");
+
+  const safeParse = (value) => {
+    try {
+      const parsed = JSON.parse(value || "[]");
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  };
+
+  const normalizeType = (value) => {
+    const clean = String(value || "local").trim().toLowerCase();
+    return ["local", "smb", "ftp", "sftp"].includes(clean) ? clean : "local";
+  };
+
+  const createRow = (target = {}) => {
+    const row = document.createElement("fieldset");
+    row.className = "backup-target-row";
+    row.innerHTML = `
+      <label><strong>Name</strong><input data-field="name" placeholder="NAS SMB" value="${String(target.name || "").replace(/"/g, "&quot;")}"></label>
+      <label><strong>Type</strong>
+        <select data-field="type">
+          <option value="local">Local path</option>
+          <option value="smb">SMB</option>
+          <option value="ftp">FTP</option>
+          <option value="sftp">SFTP</option>
+        </select>
+      </label>
+      <label><strong>Path</strong><input data-field="path" placeholder="/mnt/backups" value="${String(target.path || "").replace(/"/g, "&quot;")}"></label>
+      <label><strong>Remote host</strong><input data-field="remote_host" placeholder="backup.example.local" value="${String(target.remote_host || "").replace(/"/g, "&quot;")}"></label>
+      <label><strong>Remote share/path</strong><input data-field="remote_share" placeholder="backups" value="${String(target.remote_share || "").replace(/"/g, "&quot;")}"></label>
+      <label><strong>Remote username</strong><input data-field="remote_username" placeholder="backup-user" value="${String(target.remote_username || "").replace(/"/g, "&quot;")}"></label>
+      <label class="checkbox-label backup-target-default"><input type="radio" name="backup_default_target_pick"> Default target</label>
+      <button type="button" class="button secondary" data-remove-target>Remove</button>
+    `;
+
+    row.querySelector('[data-field="type"]').value = normalizeType(target.type);
+    row.querySelector("[data-remove-target]").addEventListener("click", () => {
+      row.remove();
+      serialize();
+    });
+    row.querySelectorAll("input,select").forEach((element) => {
+      element.addEventListener("input", serialize);
+      element.addEventListener("change", serialize);
+    });
+    return row;
+  };
+
+  const readTargets = () => {
+    return Array.from(list.querySelectorAll(".backup-target-row")).map((row) => {
+      const read = (name) => String(row.querySelector(`[data-field="${name}"]`)?.value || "").trim();
+      return {
+        name: read("name"),
+        type: normalizeType(read("type")),
+        path: read("path"),
+        remote_host: read("remote_host"),
+        remote_share: read("remote_share"),
+        remote_username: read("remote_username"),
+        defaultPicked: Boolean(row.querySelector('input[type="radio"]')?.checked),
+      };
+    }).filter((target) => target.name.length > 0);
+  };
+
+  const serialize = () => {
+    const targets = readTargets();
+    const defaultTarget = targets.find((target) => target.defaultPicked)?.name
+      || defaultField.value
+      || targets[0]?.name
+      || "";
+
+    targetsField.value = JSON.stringify(targets.map((target) => ({
+      name: target.name,
+      type: target.type,
+      path: target.path,
+      remote_host: target.remote_host,
+      remote_share: target.remote_share,
+      remote_username: target.remote_username,
+    })));
+    defaultField.value = defaultTarget;
+
+    const selected = targets.find((target) => target.name === defaultTarget) || targets[0] || null;
+    legacyType.value = selected?.type || "local";
+    legacyPath.value = selected?.path || "/mnt/backups";
+    legacyHost.value = selected?.remote_host || "";
+    legacyShare.value = selected?.remote_share || "";
+    legacyUsername.value = selected?.remote_username || "";
+  };
+
+  const initialTargets = safeParse(targetsField.value);
+  const seedTargets = initialTargets.length
+    ? initialTargets
+    : [{
+      name: "Default",
+      type: legacyType.value || "local",
+      path: legacyPath.value || "/mnt/backups",
+      remote_host: legacyHost.value || "",
+      remote_share: legacyShare.value || "",
+      remote_username: legacyUsername.value || "",
+    }];
+
+  seedTargets.forEach((target) => {
+    const row = createRow(target);
+    if (defaultField.value && String(target.name).toLowerCase() === defaultField.value.toLowerCase()) {
+      row.querySelector('input[type="radio"]').checked = true;
+    }
+    list.appendChild(row);
+  });
+
+  if (!list.querySelector('input[type="radio"]:checked')) {
+    const first = list.querySelector('input[type="radio"]');
+    if (first) first.checked = true;
+  }
+
+  addButton?.addEventListener("click", () => {
+    const row = createRow({ type: "local", path: "/mnt/backups" });
+    if (!list.querySelector('input[type="radio"]:checked')) {
+      row.querySelector('input[type="radio"]').checked = true;
+    }
+    list.appendChild(row);
+    serialize();
+  });
+
+  form?.addEventListener("submit", serialize);
+  serialize();
+})();
+</script>
 {% endblock %}

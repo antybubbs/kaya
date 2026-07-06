@@ -36,7 +36,7 @@
 
 <section class="panel section-gap">
   <h2>Docker container backups</h2>
-  <p class="muted">Docker backups and restores are executed by the Docker Agent on the remote Docker host. Backup artifacts are encrypted before they are written to the configured storage target.</p>
+  <p class="muted">Docker backups and restores are executed by the Docker Agent on the remote Docker host. Backup artifacts are encrypted before they are written to the configured storage target. Leave backup policy blank (or set it to full/auto/all) to include named volumes and all bind mounts automatically.</p>
   <table>
     <thead><tr><th>Container</th><th>Host</th><th>State</th><th>Backup policy</th><th>Latest encrypted backup</th><th>Actions</th></tr></thead>
     <tbody>
@@ -51,7 +51,19 @@
         <td>
           {% if user.role in ['admin','editor'] %}
           <form class="backup-inline-form" method="post" action="/infrastructure/backup-manager/docker/{{ row.id }}">
-            <input name="backup_policy" value="{{ row.backup_policy or '' }}" placeholder="Bind mounts to {{ backup_target }}">
+            <select name="backup_policy_mode" aria-label="Backup policy mode">
+              {% set policy_mode = backup_policy_mode(row.backup_policy) %}
+              <option value="full" {% if policy_mode == 'full' %}selected{% endif %}>Full data (named volumes + bind mounts)</option>
+              <option value="volumes" {% if policy_mode == 'volumes' %}selected{% endif %}>Named volumes only</option>
+              <option value="custom" {% if policy_mode == 'custom' %}selected{% endif %}>Custom container paths</option>
+            </select>
+            <input name="backup_policy_paths" value="{{ backup_policy_paths(row.backup_policy) }}" placeholder="/config,/data (used for Custom only)">
+            <select name="backup_target_name" aria-label="Backup target">
+              {% set selected_target = workload_target_map.get(row.id) or default_target_name %}
+              {% for target in backup_targets %}
+              <option value="{{ target.name }}" {% if selected_target and selected_target|lower == target.name|lower %}selected{% endif %}>{{ target.name }} ({{ target.type|upper }})</option>
+              {% endfor %}
+            </select>
             <input name="owner" value="{{ row.owner or '' }}" placeholder="Owner">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button>Save</button>
@@ -73,7 +85,7 @@
           <div class="backup-action-row">
             <form method="post" action="/infrastructure/backup-manager/docker/{{ row.id }}/backup">
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-              <button {% if not backup_ready %}disabled{% endif %}>Back up now</button>
+              <button class="button" {% if not backup_ready %}disabled{% endif %}>Back up now</button>
             </form>
             <form method="post" action="/infrastructure/backup-manager/docker/{{ row.id }}/restore">
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

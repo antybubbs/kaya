@@ -30,6 +30,8 @@ DEFAULT_SITE_SETTINGS = {
     "backup_remote_share": "",
     "backup_remote_username": "",
     "backup_remote_password": "",
+    "backup_targets_json": "[]",
+    "backup_default_target_name": "",
     "smtp_enabled": "",
     "smtp_host": "",
     "smtp_port": "587",

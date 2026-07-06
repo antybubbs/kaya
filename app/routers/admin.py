@@ -88,6 +88,8 @@ SITE_SETTING_KEYS = {
     "backup_remote_share": "",
     "backup_remote_username": "",
     "backup_remote_password": "",
+    "backup_targets_json": "[]",
+    "backup_default_target_name": "",
     "guacd_host": "",
     "guacd_port": "4822",
     "smtp_enabled": "",
@@ -155,6 +157,42 @@ def save_backup_remote_password(db: Session, password: str) -> None:
     if not password:
         return
     save_site_setting(db, "backup_remote_password", encrypt_secret(password))
+
+
+def normalize_backup_targets_json(value: str) -> str:
+    try:
+        payload = json.loads(value or "[]")
+    except (TypeError, ValueError):
+        payload = []
+    if not isinstance(payload, list):
+        payload = []
+
+    cleaned: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        key = name.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        target_type = str(item.get("type") or "local").strip().lower()
+        if target_type not in {"local", "smb", "ftp", "sftp"}:
+            target_type = "local"
+        cleaned.append(
+            {
+                "name": name,
+                "type": target_type,
+                "path": str(item.get("path") or "").strip(),
+                "remote_host": str(item.get("remote_host") or "").strip(),
+                "remote_share": str(item.get("remote_share") or "").strip(),
+                "remote_username": str(item.get("remote_username") or "").strip(),
+            }
+        )
+    return json.dumps(cleaned, separators=(",", ":"), ensure_ascii=True)
 
 
 def save_backup_settings(
@@ -1755,6 +1793,8 @@ def save_settings(
     backup_remote_share: str = Form(""),
     backup_remote_username: str = Form(""),
     backup_remote_password: str = Form(""),
+    backup_targets_json: str = Form("[]"),
+    backup_default_target_name: str = Form(""),
     smtp_enabled: str = Form(""),
     smtp_host: str = Form(""),
     smtp_port: str = Form("587"),
@@ -1815,6 +1855,13 @@ def save_settings(
         backup_remote_username=backup_remote_username,
         backup_remote_password=backup_remote_password,
     )
+    normalized_targets = normalize_backup_targets_json(backup_targets_json)
+    save_site_setting(db, "backup_targets_json", normalized_targets)
+    default_name = backup_default_target_name.strip()
+    if default_name:
+        save_site_setting(db, "backup_default_target_name", default_name)
+    else:
+        save_site_setting(db, "backup_default_target_name", "")
 
     db.commit()
 
@@ -1851,6 +1898,8 @@ def test_backup_storage(
     backup_remote_share: str = Form(""),
     backup_remote_username: str = Form(""),
     backup_remote_password: str = Form(""),
+    backup_targets_json: str = Form("[]"),
+    backup_default_target_name: str = Form(""),
     csrf_token: str = Form(...),
     db: Session = Depends(get_db),
     user=Depends(require_admin),
@@ -1866,6 +1915,8 @@ def test_backup_storage(
         backup_remote_username=backup_remote_username,
         backup_remote_password=backup_remote_password,
     )
+    save_site_setting(db, "backup_targets_json", normalize_backup_targets_json(backup_targets_json))
+    save_site_setting(db, "backup_default_target_name", backup_default_target_name.strip())
     db.commit()
 
     passed, detail = test_backup_storage_target(

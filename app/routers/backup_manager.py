@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.core.security import decrypt_secret, encrypt_secret
 from app.db.session import get_db
-from app.models.models import BackupJob, BackupRecord, ComputeHost, ComputeInventoryItem, ComputeWorkload
+from app.models.models import BackupJob, BackupRecord, ComputeHost, ComputeInventoryItem, ComputeWorkload, RemoteManagerSetting
 from app.routers.auth import require_editor, require_user
 from app.services.audit import write_audit
 from app.services.site_settings import get_site_setting
@@ -66,23 +66,134 @@ def require_agent_host(request: Request, db: Session) -> ComputeHost:
 
 
 def backup_target_summary(db: Session) -> str:
-    target_type = get_site_setting(db, "backup_storage_type") or "local"
-    if target_type == "local":
-        return get_site_setting(db, "backup_storage_path") or "/mnt/backups"
-    host = get_site_setting(db, "backup_remote_host")
-    share = get_site_setting(db, "backup_remote_share")
-    return f"{target_type.upper()} {host}{('/' + share) if share else ''}".strip()
+    target = default_backup_target(db)
+    if target["type"] == "local":
+        return target["path"] or "/mnt/backups"
+    host = target.get("remote_host") or ""
+    share = target.get("remote_share") or ""
+    return f"{target['type'].upper()} {host}{('/' + share) if share else ''}".strip()
 
 
-def backup_target_payload(db: Session) -> dict:
+def configured_backup_targets(db: Session) -> list[dict[str, str]]:
+    raw = get_site_setting(db, "backup_targets_json")
+    try:
+        data = json.loads(raw or "[]")
+    except (TypeError, ValueError):
+        data = []
+    targets: list[dict[str, str]] = []
+    seen: set[str] = set()
+    if isinstance(data, list):
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            key = name.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            target_type = str(item.get("type") or "local").strip().lower()
+            if target_type not in {"local", "smb", "ftp", "sftp"}:
+                target_type = "local"
+            targets.append(
+                {
+                    "name": name,
+                    "type": target_type,
+                    "path": str(item.get("path") or "").strip(),
+                    "remote_host": str(item.get("remote_host") or "").strip(),
+                    "remote_share": str(item.get("remote_share") or "").strip(),
+                    "remote_username": str(item.get("remote_username") or "").strip(),
+                }
+            )
+
+    if targets:
+        return targets
+
+    # Backward-compatible fallback to the single-target settings.
+    return [
+        {
+            "name": "Default",
+            "type": (get_site_setting(db, "backup_storage_type") or "local").strip().lower(),
+            "path": get_site_setting(db, "backup_storage_path") or "/mnt/backups",
+            "remote_host": get_site_setting(db, "backup_remote_host") or "",
+            "remote_share": get_site_setting(db, "backup_remote_share") or "",
+            "remote_username": get_site_setting(db, "backup_remote_username") or "",
+        }
+    ]
+
+
+def default_backup_target_name(db: Session, targets: list[dict[str, str]] | None = None) -> str:
+    all_targets = targets if targets is not None else configured_backup_targets(db)
+    preferred = (get_site_setting(db, "backup_default_target_name") or "").strip()
+    if preferred and any(target["name"].casefold() == preferred.casefold() for target in all_targets):
+        return preferred
+    return all_targets[0]["name"] if all_targets else ""
+
+
+def backup_target_by_name(db: Session, target_name: str | None) -> dict[str, str]:
+    targets = configured_backup_targets(db)
+    chosen = (target_name or "").strip()
+    if chosen:
+        for target in targets:
+            if target["name"].casefold() == chosen.casefold():
+                return target
+    default_name = default_backup_target_name(db, targets)
+    for target in targets:
+        if target["name"].casefold() == default_name.casefold():
+            return target
+    return targets[0]
+
+
+def default_backup_target(db: Session) -> dict[str, str]:
+    return backup_target_by_name(db, None)
+
+
+def backup_target_payload(db: Session, target_name: str | None = None) -> dict:
+    target = backup_target_by_name(db, target_name)
     return {
-        "type": get_site_setting(db, "backup_storage_type") or "local",
-        "path": get_site_setting(db, "backup_storage_path") or "/mnt/backups",
-        "remote_host": get_site_setting(db, "backup_remote_host"),
-        "remote_share": get_site_setting(db, "backup_remote_share"),
-        "remote_username": get_site_setting(db, "backup_remote_username"),
+        "type": target["type"],
+        "path": target["path"] or "/mnt/backups",
+        "remote_host": target["remote_host"],
+        "remote_share": target["remote_share"],
+        "remote_username": target["remote_username"],
         "remote_password": decrypt_secret(get_site_setting(db, "backup_remote_password")),
     }
+
+
+def workload_target_setting_key(workload_id: int) -> str:
+    return f"backup_workload_target_{workload_id}"
+
+
+def load_workload_target_map(db: Session, workload_ids: list[int]) -> dict[int, str]:
+    keys = [workload_target_setting_key(workload_id) for workload_id in workload_ids]
+    if not keys:
+        return {}
+    rows = db.query(RemoteManagerSetting).filter(RemoteManagerSetting.key.in_(keys)).all()
+    mapping: dict[int, str] = {}
+    for row in rows:
+        if not row.value:
+            continue
+        try:
+            workload_id = int(row.key.rsplit("_", 1)[1])
+        except (ValueError, IndexError):
+            continue
+        mapping[workload_id] = row.value
+    return mapping
+
+
+def set_workload_target(db: Session, workload_id: int, target_name: str) -> None:
+    key = workload_target_setting_key(workload_id)
+    row = db.query(RemoteManagerSetting).filter(RemoteManagerSetting.key == key).first()
+    clean = target_name.strip()
+    if not clean:
+        if row:
+            db.delete(row)
+        return
+    if not row:
+        row = RemoteManagerSetting(key=key)
+        db.add(row)
+    row.value = clean
 
 
 def bytes_label(value: int | None) -> str:
@@ -110,12 +221,85 @@ def latest_successful_backup(db: Session, workload_id: int) -> BackupJob | None:
     )
 
 
+
+def backup_contains_restorable_paths(job: BackupJob | None) -> bool:
+    if not job:
+        return False
+    data = metadata(job.metadata_json)
+    path_count = data.get("path_count")
+    if isinstance(path_count, int):
+        return path_count > 0
+    paths = data.get("paths")
+    if isinstance(paths, list):
+        return len(paths) > 0
+    # Older jobs may not include path metadata; allow restore attempts.
+    return True
+
+
+
+def bind_mount_paths(workload: ComputeWorkload) -> list[str]:
+    data = metadata(workload.metadata_json)
+    mounts = data.get("mounts") if isinstance(data, dict) else None
+    if not isinstance(mounts, list):
+        return []
+    found: set[str] = set()
+    for mount in mounts:
+        if not isinstance(mount, dict):
+            continue
+        if str(mount.get("Type") or "").strip().lower() != "bind":
+            continue
+        destination = str(mount.get("Destination") or "").strip().rstrip("/")
+        if destination.startswith("/"):
+            found.add(destination or "/")
+    return sorted(found)
+
+
+def effective_backup_policy(workload: ComputeWorkload) -> tuple[str | None, list[str], str]:
+    raw_policy = (workload.backup_policy or "").strip()
+    mode = "explicit"
+    if not raw_policy:
+        mode = "auto"
+    elif raw_policy.lower() in {"full", "auto", "all", "default"}:
+        mode = raw_policy.lower()
+    else:
+        return raw_policy, [], mode
+
+    binds = bind_mount_paths(workload)
+    if not binds:
+        return None, [], mode
+    return f"paths={','.join(binds)}", binds, mode
+
+
+def backup_policy_mode(value: str | None) -> str:
+    clean = (value or "").strip().lower()
+    if clean in {"", "auto", "all", "full", "default"}:
+        return "full"
+    if clean in {"volumes", "volumes-only", "named-volumes"}:
+        return "volumes"
+    if clean.startswith("paths="):
+        return "custom"
+    return "custom"
+
+
+def backup_policy_paths(value: str | None) -> str:
+    clean = (value or "").strip()
+    if clean.lower().startswith("paths="):
+        return clean.split("=", 1)[1]
+    return ""
+
+
 def create_docker_job(db: Session, workload: ComputeWorkload, operation: str, user_id: int | None, source_job: BackupJob | None = None) -> BackupJob:
     backup_key = secrets.token_urlsafe(32) if operation == "backup" else None
+    policy, auto_bind_paths, policy_mode = effective_backup_policy(workload)
+    target_name = load_workload_target_map(db, [workload.id]).get(workload.id) or default_backup_target_name(db)
     payload = {
         "container": workload.name,
         "external_id": workload.external_id,
-        "policy": workload.backup_policy,
+        "policy": policy,
+        "requested_policy": workload.backup_policy,
+        "policy_mode": policy_mode,
+        "auto_bind_paths": auto_bind_paths,
+        "target_name": target_name,
         "source_job_id": source_job.id if source_job else None,
         "source_artifact": source_job.artifact_path if source_job else None,
         "source_size_bytes": source_job.size_bytes if source_job else None,
@@ -186,6 +370,9 @@ def backup_home(
         row.id: latest_successful_backup(db, row.id)
         for row in docker_workloads
     }
+    workload_target_map = load_workload_target_map(db, [row.id for row in docker_workloads])
+    backup_targets = configured_backup_targets(db)
+    default_target_name = default_backup_target_name(db, backup_targets)
     recent_jobs = (
         db.query(BackupJob)
         .order_by(BackupJob.created_at.desc())
@@ -205,6 +392,11 @@ def backup_home(
             "backup_target": backup_target_summary(db),
             "bytes_label": bytes_label,
             "agent_supports_docker_backups": agent_supports_docker_backups,
+            "backup_targets": backup_targets,
+            "default_target_name": default_target_name,
+            "workload_target_map": workload_target_map,
+            "backup_policy_mode": backup_policy_mode,
+            "backup_policy_paths": backup_policy_paths,
             **csrf_context(request),
         },
     )
@@ -256,7 +448,10 @@ def create_manual_backup(
 def update_docker_backup_policy(
     request: Request,
     workload_id: int,
+    backup_policy_mode: str = Form(""),
+    backup_policy_paths: str = Form("", max_length=4000),
     backup_policy: str = Form("", max_length=255),
+    backup_target_name: str = Form("", max_length=255),
     owner: str = Form("", max_length=255),
     csrf_token: str = Form(...),
     db: Session = Depends(get_db),
@@ -266,8 +461,19 @@ def update_docker_backup_policy(
     row = db.get(ComputeWorkload, workload_id)
     if not row or row.kind != "container":
         raise HTTPException(404, "Docker container not found")
-    row.backup_policy = backup_policy.strip() or None
+    mode = backup_policy_mode.strip().lower()
+    if mode in {"", "full", "auto", "all", "default"}:
+        row.backup_policy = "auto"
+    elif mode in {"volumes", "volumes-only", "named-volumes"}:
+        row.backup_policy = "volumes-only"
+    elif mode == "custom":
+        raw_paths = backup_policy_paths.replace("\r", "\n").replace(";", ",").replace("\n", ",")
+        path_tokens = [token.strip().rstrip("/") or "/" for token in raw_paths.split(",") if token.strip().startswith("/")]
+        row.backup_policy = f"paths={','.join(dict.fromkeys(path_tokens))}" if path_tokens else "auto"
+    else:
+        row.backup_policy = backup_policy.strip() or None
     row.owner = owner.strip() or None
+    set_workload_target(db, workload_id, backup_target_name)
     db.commit()
     write_audit(db, user, "update", "docker_backup_policy", str(row.id), request.client.host if request.client else None, detail=row.name)
     return RedirectResponse("/infrastructure/backup-manager", status_code=303)
@@ -310,6 +516,11 @@ def queue_docker_restore(
     source_job = latest_successful_backup(db, row.id)
     if not source_job:
         raise HTTPException(400, "No successful encrypted backup is available to restore")
+    if not backup_contains_restorable_paths(source_job):
+        raise HTTPException(
+            400,
+            "Latest backup contains metadata only and no restorable data paths. Run a new backup with blank/full/auto policy.",
+        )
     job = create_docker_job(db, row, "restore", user.id, source_job=source_job)
     db.commit()
     write_audit(db, user, "queue_restore", "backup_job", str(job.id), request.client.host if request.client else None, detail=row.name)
@@ -340,7 +551,7 @@ def agent_jobs(request: Request, db: Session = Depends(get_db)):
                 "container": job.workload.name if job.workload else job_metadata.get("container"),
                 "external_id": job.workload.external_id if job.workload else job_metadata.get("external_id"),
                 "policy": job_metadata.get("policy"),
-                "target": backup_target_payload(db),
+                "target": backup_target_payload(db, job_metadata.get("target_name")),
                 "encryption": {
                     "enabled": job.encryption_enabled,
                     "mode": "agent-aes-256-gcm",
