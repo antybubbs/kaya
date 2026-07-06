@@ -1,7 +1,7 @@
 (function () {
   const liveToggle = document.querySelector("[data-dns-live-toggle]");
   const liveStorageKey = "kaya.dns.queryLog.live";
-  const liveIntervalMs = 30000;
+  const liveIntervalMs = 2000;
   let liveTimer = null;
 
   function onQueryLogPage() {
