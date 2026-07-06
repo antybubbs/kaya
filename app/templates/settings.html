@@ -23,8 +23,8 @@
 
   <div class="category-tabs site-admin-tabs" role="tablist" aria-label="Site administration sections">
     <button type="button" class="active" data-settings-tab="general" role="tab" aria-selected="true">General</button>
-    <button type="button" data-settings-tab="security" role="tab" aria-selected="false">Security</button>
-    <button type="button" data-settings-tab="backups" role="tab" aria-selected="false">Backups</button>
+    <button type="button" data-settings-tab="security" role="tab" aria-selected="false">Site Security</button>
+    <button type="button" data-settings-tab="backups" role="tab" aria-selected="false">Backup Manager</button>
     <button type="button" data-settings-tab="uploads" role="tab" aria-selected="false">Uploads</button>
     <button type="button" data-settings-tab="email" role="tab" aria-selected="false">Email</button>
     <button type="button" data-settings-tab="email-templates" role="tab" aria-selected="false">Email Templates</button>
@@ -45,7 +45,7 @@
   </section>
 
   <section class="settings-tab-panel" data-settings-panel="security" role="tabpanel" hidden>
-    <h2>Security</h2>
+    <h2>Site Security</h2>
 
     {% if security_check %}
     <div class="remote-settings-card">
@@ -159,7 +159,7 @@
   </section>
 
   <section class="settings-tab-panel" data-settings-panel="backups" role="tabpanel" hidden>
-    <h2>Backups</h2>
+    <h2>Backup Manager</h2>
 
     <div class="remote-settings-card">
       <header><span>Backup targets</span></header>
