@@ -268,10 +268,10 @@ class PiHoleProvider(DNSProvider):
             except DNSProviderError as exc:
                 data["queries_error"] = str(exc)
             try:
-                data["clients"] = self._legacy_api({"getClientNames": ""})
+                data["clients"] = self._legacy_api({"getQuerySources": ""})
             except DNSProviderError:
                 try:
-                    data["clients"] = self._legacy_api({"getQuerySources": ""})
+                    data["clients"] = self._legacy_api({"getClientNames": ""})
                 except DNSProviderError as exc:
                     data["clients_error"] = str(exc)
             if not data or ("queries_error" in data and "clients_error" in data):

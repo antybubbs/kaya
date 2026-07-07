@@ -267,7 +267,7 @@ html[data-kaya-theme=command] .remote-card{background:#14171d!important;border-c
 html[data-kaya-theme=command] .table-scroll thead th,
 html[data-kaya-theme=command] .audit-table th{background:#1a1f27!important;border-bottom-color:#303845!important}
 
-.dns-card-blue{background:linear-gradient(135deg,#2a303a,#181d24)!important}
+.dns-card-blue{background:linear-gradient(135deg,#38bdf8,#2563eb)!important}
 .dns-bar-allowed{background:#ffb357!important}
 .dns-client-row span{background:linear-gradient(90deg,#ff8a00,#22c55e)!important}
 
@@ -759,4 +759,56 @@ html[data-kaya-theme=light-ops] .dns-domain-web-links{
 html[data-kaya-theme=light-ops] .dns-domain-web-links a{
   background:#fff8f0;
   color:#7a3b00;
+}
+
+/* DNS dashboard spacing and light surfaces */
+.dns-manager-tabs{
+  margin-bottom:14px;
+}
+
+.dns-summary-grid{
+  margin-bottom:14px;
+}
+
+.dns-chart-panel{
+  margin-bottom:14px;
+}
+
+html[data-theme=light] .dns-chart-panel,
+html[data-kaya-theme=light-ops] .dns-chart-panel{
+  background:#fff!important;
+  border-color:#d8dee8!important;
+  color:#111827!important;
+}
+
+html[data-theme=light] .dns-chart-panel h2,
+html[data-kaya-theme=light-ops] .dns-chart-panel h2{
+  color:#111827!important;
+}
+
+html[data-theme=light] .dns-chart-panel .muted,
+html[data-kaya-theme=light-ops] .dns-chart-panel .muted{
+  color:#64748b!important;
+}
+
+html[data-theme=light] .dns-chart-panel .compact-empty,
+html[data-kaya-theme=light-ops] .dns-chart-panel .compact-empty{
+  background:#f8fafc!important;
+  border-color:#d8dee8!important;
+  color:#1f2937!important;
+}
+
+html[data-theme=light] .dns-bar-chart,
+html[data-kaya-theme=light-ops] .dns-bar-chart{
+  background:
+    repeating-linear-gradient(to top,rgba(100,116,139,.18) 0 1px,transparent 1px 36px),
+    linear-gradient(180deg,rgba(15,23,42,.025),transparent);
+  border-bottom-color:rgba(100,116,139,.28);
+  border-left-color:rgba(100,116,139,.28);
+}
+
+html[data-theme=light] .dns-client-row div,
+html[data-kaya-theme=light-ops] .dns-client-row div{
+  background:#eef2f7;
+  border-color:#d8dee8;
 }

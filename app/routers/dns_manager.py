@@ -210,9 +210,37 @@ def query_chart_points(history_payload: Any) -> list[dict[str, Any]]:
     domains = queries.get("domains_over_time") if isinstance(queries.get("domains_over_time"), dict) else {}
     blocked = queries.get("ads_over_time") if isinstance(queries.get("ads_over_time"), dict) else {}
     points: list[dict[str, Any]] = []
+
+    def to_int(value: Any) -> int:
+        try:
+            return int(float(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    history_rows = list_from_payload(queries, "history", "data", "queries")
+    if history_rows:
+        for index, row in enumerate(history_rows):
+            if not isinstance(row, dict):
+                continue
+            label = row.get("timestamp") or row.get("time") or row.get("date") or index
+            blocked_count = to_int(row.get("blocked") or row.get("ads") or row.get("ads_count"))
+            allowed = to_int(row.get("allowed") or row.get("permitted"))
+            total = to_int(row.get("total") or row.get("queries") or row.get("count"))
+            if not total and allowed:
+                total = allowed + blocked_count
+            points.append(
+                {
+                    "label": _timestamp_label(label),
+                    "total": total,
+                    "blocked": blocked_count,
+                    "allowed": max(total - blocked_count, 0),
+                }
+            )
+        return points[-144:]
+
     for key in sorted(set(domains) | set(blocked), key=lambda item: str(item)):
-        total = int(float(domains.get(key) or 0))
-        blocked_count = int(float(blocked.get(key) or 0))
+        total = to_int(domains.get(key))
+        blocked_count = to_int(blocked.get(key))
         points.append(
             {
                 "label": _timestamp_label(key),
@@ -228,6 +256,18 @@ def client_activity_rows(stats_payload: Any, clients_payload: Any) -> list[dict[
     clients = list_from_payload(clients_payload, "clients", "top_sources", "top_clients", "data")
     if not clients and isinstance(stats_payload, dict):
         clients = list_from_payload(stats_payload, "top_sources", "top_clients", "clients", "data")
+    if not clients and isinstance(clients_payload, dict):
+        for key in ("top_sources", "top_clients", "clients", "data"):
+            value = clients_payload.get(key)
+            if isinstance(value, dict):
+                clients = list(value.items())
+                break
+    if not clients and isinstance(stats_payload, dict):
+        for key in ("top_sources", "top_clients", "clients", "data"):
+            value = stats_payload.get(key)
+            if isinstance(value, dict):
+                clients = list(value.items())
+                break
     rows: list[dict[str, Any]] = []
     if isinstance(clients, list):
         for item in clients[:8]:

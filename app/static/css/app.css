@@ -670,6 +670,7 @@ html[data-theme=light] .settings-content-panel {
   display: grid;
   gap: 14px;
   grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-bottom: 14px;
 }
 
 .dns-summary-card {
@@ -740,6 +741,7 @@ html[data-theme=light] .settings-content-panel {
   border-radius: 8px;
   display: grid;
   gap: 14px;
+  margin-bottom: 14px;
   overflow: hidden;
   padding: 14px 16px 18px;
 }
@@ -853,6 +855,53 @@ html[data-theme=light] .settings-content-panel {
 .compact-empty {
   border-radius: 8px;
   padding: 18px;
+}
+
+.dns-manager-tabs {
+  margin-bottom: 14px;
+}
+
+.dns-chart-panel + .panel {
+  margin-top: 0;
+}
+
+html[data-theme=light] .dns-chart-panel,
+html[data-kaya-theme=light-ops] .dns-chart-panel {
+  background: #fff;
+  border-color: #d8dee8;
+  color: #111827;
+}
+
+html[data-theme=light] .dns-chart-panel h2,
+html[data-kaya-theme=light-ops] .dns-chart-panel h2 {
+  color: #111827;
+}
+
+html[data-theme=light] .dns-chart-panel .muted,
+html[data-kaya-theme=light-ops] .dns-chart-panel .muted {
+  color: #64748b;
+}
+
+html[data-theme=light] .dns-chart-panel .compact-empty,
+html[data-kaya-theme=light-ops] .dns-chart-panel .compact-empty {
+  background: #f8fafc;
+  border-color: #d8dee8;
+  color: #1f2937;
+}
+
+html[data-theme=light] .dns-bar-chart,
+html[data-kaya-theme=light-ops] .dns-bar-chart {
+  background:
+    repeating-linear-gradient(to top, rgba(100, 116, 139, .18) 0 1px, transparent 1px 36px),
+    linear-gradient(180deg, rgba(15, 23, 42, .025), transparent);
+  border-bottom-color: rgba(100, 116, 139, .28);
+  border-left-color: rgba(100, 116, 139, .28);
+}
+
+html[data-theme=light] .dns-client-row div,
+html[data-kaya-theme=light-ops] .dns-client-row div {
+  background: #eef2f7;
+  border-color: #d8dee8;
 }
 
 @media (max-width: 850px) {
