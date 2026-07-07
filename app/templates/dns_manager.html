@@ -54,7 +54,7 @@
 {% set blocklists_data = blocklists.data if blocklists and blocklists.ok else {} %}
 {% set query_points = query_chart_points(history_data) %}
 {% set query_max = chart_max(query_points, 'total') %}
-{% set client_rows = client_activity_rows(stats_data, history_data.get('clients') if history_data else {}) %}
+{% set client_rows = client_activity_rows(stats_data, history_data.get('clients') if history_data else {}, query_log_data) %}
 {% set client_max = chart_max(client_rows, 'count') %}
 {% set inventory_rows = network_client_inventory(clients_data, dhcp_data, query_log_data) %}
 {% set unknown_inventory_rows = inventory_rows|selectattr('is_unknown')|list %}
@@ -171,7 +171,7 @@
 
 <section class="dns-insight-grid">
   <section class="dns-chart-panel">
-    <header><h2>Client activity</h2><span class="muted">Top clients by query volume</span></header>
+    <header><h2>Top DNS Talkers</h2><span class="muted">Clients generating the most recent lookups</span></header>
     {% if client_rows %}
     <div class="dns-client-chart" style="--chart-max: {{ client_max if client_max else 1 }}">
       {% for row in client_rows %}
@@ -183,7 +183,7 @@
       {% endfor %}
     </div>
     {% else %}
-    <div class="empty-state compact-empty">No client activity returned by this provider yet.</div>
+    <div class="empty-state compact-empty">No per-client query activity returned by this provider yet.</div>
     {% endif %}
   </section>
 

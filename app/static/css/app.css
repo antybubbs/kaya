@@ -752,6 +752,7 @@ html[data-theme=light] .settings-content-panel {
 }
 
 .dns-insight-grid {
+  align-items: start;
   display: grid;
   gap: 14px;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -883,6 +884,11 @@ html[data-theme=light] .settings-content-panel {
 .dns-risk-list,
 .dns-mini-table {
   display: grid;
+  gap: 0;
+}
+
+.dns-watch-list,
+.dns-mini-table {
   gap: 10px;
 }
 
@@ -897,6 +903,25 @@ html[data-theme=light] .settings-content-panel {
   gap: 10px;
   grid-template-columns: minmax(0, 1fr) auto;
   padding: 10px 12px;
+}
+
+.dns-risk-list {
+  border: 1px solid rgba(148, 163, 184, .16);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.dns-risk-item {
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid rgba(148, 163, 184, .14);
+  border-radius: 0;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, auto);
+  min-height: 48px;
+}
+
+.dns-risk-item:last-child {
+  border-bottom: 0;
 }
 
 .dns-watch-item.urgent {

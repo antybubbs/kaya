@@ -282,7 +282,7 @@ def query_chart_points(history_payload: Any) -> list[dict[str, Any]]:
     return points[-144:]
 
 
-def client_activity_rows(stats_payload: Any, clients_payload: Any) -> list[dict[str, Any]]:
+def client_activity_rows(stats_payload: Any, clients_payload: Any, query_payload: Any | None = None) -> list[dict[str, Any]]:
     clients = list_from_payload(clients_payload, "clients", "top_sources", "top_clients", "data")
     if not clients and isinstance(stats_payload, dict):
         clients = list_from_payload(stats_payload, "top_sources", "top_clients", "clients", "data")
@@ -308,12 +308,32 @@ def client_activity_rows(stats_payload: Any, clients_payload: Any) -> list[dict[
                 name, count = item[0], item[1]
             else:
                 continue
+            name = str(name)
+            if name.strip().lower() in {"active", "total"}:
+                continue
             try:
                 count_value = int(float(count))
             except (TypeError, ValueError):
                 count_value = 0
-            rows.append({"name": str(name), "count": count_value})
-    return rows
+            if count_value:
+                rows.append({"name": name, "count": count_value})
+    if rows:
+        return sorted(rows, key=lambda row: row["count"], reverse=True)[:8]
+
+    recent_clients: dict[str, dict[str, Any]] = {}
+    for item in list_from_payload(query_payload or {}, "queries", "data")[:300]:
+        if not isinstance(item, dict):
+            continue
+        ip = query_client_ip(item)
+        name = query_client_name(item)
+        key = ip if ip != "-" else name
+        if key == "-":
+            continue
+        row = recent_clients.setdefault(key, {"name": name if name != "-" else ip, "ip": ip, "count": 0})
+        if row["name"] == "-" and name != "-":
+            row["name"] = name
+        row["count"] += 1
+    return sorted(recent_clients.values(), key=lambda row: row["count"], reverse=True)[:8]
 
 
 def _rows_from_any(payload: Any, *keys: str) -> list[Any]:
