@@ -1846,9 +1846,9 @@ def settings_page(
 def public_ip_check(user=Depends(require_admin)):
     try:
         ip_address, source = lookup_public_ip()
-    except RuntimeError as exc:
+    except RuntimeError:
         return JSONResponse(
-            {"ok": False, "error": str(exc)},
+            {"ok": False, "error": "Public IP lookup failed."},
             status_code=status.HTTP_502_BAD_GATEWAY,
         )
     return {"ok": True, "ip": ip_address, "source": source}
