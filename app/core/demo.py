@@ -30,11 +30,8 @@ def demo_request_is_blocked(method: str, path: str) -> bool:
         return False
 
     clean_path = path.rstrip("/") or "/"
-    if clean_path.startswith("/remote-manager/"):
+    if clean_path.startswith(("/remote-manager/", "/infrastructure/backup-manager/api/agent")):
         return True
-
-    if method.upper() in {"GET", "HEAD", "OPTIONS"}:
-        return False
 
     protected_prefixes = (
         "/setup",
@@ -43,11 +40,15 @@ def demo_request_is_blocked(method: str, path: str) -> bool:
         "/admin/security",
         "/system/site-administration",
         "/remote-manager",
+        "/infrastructure/backup-manager",
+        "/networking/dns-manager/investigations",
     )
-    if path.startswith(protected_prefixes):
+    if method.upper() not in {"GET", "HEAD", "OPTIONS"} and path.startswith(protected_prefixes):
         return True
 
     network_actions = (
+        "/security/public-ip",
+        "/security/inbound",
         "/ping",
         "/check",
         "/check-now",
@@ -58,4 +59,7 @@ def demo_request_is_blocked(method: str, path: str) -> bool:
         "/agent/checkin",
         "/agent/token",
     )
-    return any(path.endswith(action) or action in path for action in network_actions)
+    if any(path.endswith(action) or action in path for action in network_actions):
+        return True
+
+    return False

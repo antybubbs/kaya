@@ -11,11 +11,15 @@ from app.core.security import encrypt_secret, hash_password
 from app.db.session import Base
 from app.models.models import (
     AuditLog,
+    BackupJob,
+    BackupRecord,
     ComputeEvent,
     ComputeHost,
     ComputeInventoryItem,
     ComputeMetric,
     ComputeWorkload,
+    DNSInvestigation,
+    DNSProviderConfig,
     DomainRecord,
     HardwareAsset,
     IPAddress,
@@ -83,6 +87,30 @@ def seed_database(database_path: Path) -> None:
             RemoteManagerSetting(key="guacamole_enabled", value="0"),
             RemoteManagerSetting(key="guacd_host", value=""),
             RemoteManagerSetting(key="guacd_port", value="4822"),
+            RemoteManagerSetting(key="dns_manager_enabled", value="1"),
+            RemoteManagerSetting(key="dns_cache_enabled", value="1"),
+            RemoteManagerSetting(key="dns_refresh_interval_seconds", value="300"),
+            RemoteManagerSetting(key="backup_targets_json", value=json.dumps([
+                {
+                    "name": "Demo NAS",
+                    "type": "smb",
+                    "path": "/mnt/backups/demo-nas",
+                    "remote_host": "nas-01.lab.home.arpa",
+                    "remote_share": "KayaBackups/Demo",
+                    "remote_username": "kaya-demo",
+                    "remote_password_enc": encrypt_secret("demo-password-only"),
+                },
+                {
+                    "name": "Offsite Vault",
+                    "type": "sftp",
+                    "path": "/mnt/backups/offsite",
+                    "remote_host": "backup-vault.example.invalid",
+                    "remote_share": "/kaya/demo",
+                    "remote_username": "kaya-offsite",
+                    "remote_password_enc": encrypt_secret("demo-password-only"),
+                },
+            ], separators=(",", ":"))),
+            RemoteManagerSetting(key="backup_default_target_name", value="Demo NAS"),
         ])
 
         db.add_all([
@@ -100,6 +128,52 @@ def seed_database(database_path: Path) -> None:
         db.add_all([
             DomainRecord(name="kaya-demo.example", registrar="Example Registrar", dns_provider="Example DNS", status="active", expires_at=now + timedelta(days=240), auto_renew=True, nameservers="ns1.example.invalid\nns2.example.invalid", dns_records=json.dumps([{"type": "A", "name": "demo", "value": "192.0.2.10"}]), notes="Reserved example domain; no live lookup is performed."),
             DomainRecord(name="lab-services.example", registrar="Example Registrar", dns_provider="Example DNS", status="active", expires_at=now + timedelta(days=120), auto_renew=False, nameservers="ns1.example.invalid", notes="Reserved example domain; no live lookup is performed."),
+        ])
+        dns_provider = DNSProviderConfig(
+            name="Demo Pi-hole",
+            provider_type="pihole",
+            base_url="https://pihole.demo.invalid",
+            auth_method="password",
+            encrypted_secret=encrypt_secret("demo-password-only"),
+            ssl_verify=True,
+            timeout_seconds=5,
+            is_enabled=True,
+            description="Synthetic provider used by the public demo. No live DNS service is contacted.",
+            last_status="online",
+            last_checked_at=now - timedelta(minutes=2),
+        )
+        db.add(dns_provider)
+        db.flush()
+        db.add(RemoteManagerSetting(key="dns_default_provider_id", value=str(dns_provider.id)))
+        db.add_all([
+            DNSInvestigation(
+                provider_id=dns_provider.id,
+                domain="phish-demo.example.invalid",
+                client_name="unknown-android",
+                client_ip="10.20.30.88",
+                query_type="A",
+                status="open",
+                reply_type="gravity",
+                reply_time="0.3 ms",
+                upstream="-",
+                observed_at=(now - timedelta(minutes=18)).strftime("%Y-%m-%d %H:%M:%S"),
+                notes="Demo investigation showing how a suspicious blocked query is tracked.",
+                created_by_id=users["editor"].id,
+            ),
+            DNSInvestigation(
+                provider_id=dns_provider.id,
+                domain="casino-demo.example.invalid",
+                client_name="guest-tablet",
+                client_ip="10.20.40.23",
+                query_type="A",
+                status="open",
+                reply_type="regex",
+                reply_time="0.5 ms",
+                upstream="-",
+                observed_at=(now - timedelta(minutes=42)).strftime("%Y-%m-%d %H:%M:%S"),
+                notes="Synthetic policy hit for the reports view.",
+                created_by_id=users["admin"].id,
+            ),
         ])
 
         space = RunbookSpace(name="Lab Operations", description="Common operating procedures for the demo lab", sort_order=10)
@@ -124,8 +198,51 @@ def seed_database(database_path: Path) -> None:
         db.add_all([
             ComputeInventoryItem(host_id=host.id, external_id="local-lvm", name="local-lvm", kind="storage", status="available", size_bytes=2_199_023_255_552, metadata_json=json.dumps({"type": "lvmthin"}), last_seen_at=now),
             ComputeInventoryItem(host_id=host.id, external_id="iso/debian-12.iso", name="debian-12.iso", kind="iso", status="available", size_bytes=671_088_640, last_seen_at=now),
+            ComputeInventoryItem(host_id=host.id, external_id="backup-vzdump-nightly", name="Nightly VM backup", kind="backup", status="enabled", metadata_json=json.dumps({"last_status": "successful", "last_task": {"starttime": int((now - timedelta(hours=7)).timestamp())}, "schedule": "daily 02:15", "storage": "Demo NAS", "vmid": "100,101"}), last_seen_at=now - timedelta(minutes=4)),
+            ComputeInventoryItem(host_id=host.id, external_id="backup-dev-weekly", name="Weekly development backup", kind="backup", status="enabled", metadata_json=json.dumps({"last_status": "warning", "last_task": {"starttime": int((now - timedelta(days=2)).timestamp())}, "schedule": "sun 03:00", "storage": "Offsite Vault", "vmid": "102"}), last_seen_at=now - timedelta(minutes=4)),
             ComputeMetric(host_id=host.id, cpu_percent=18.6, memory_used=38_654_705_664, memory_total=68_719_476_736, storage_used=1_099_511_627_776, storage_total=2_199_023_255_552, recorded_at=now - timedelta(minutes=4)),
             ComputeEvent(host_id=host.id, workload_id=workloads[0].id, event_type="started", detail="Workload started successfully", created_at=now - timedelta(hours=3)),
+        ])
+
+        docker_host = ComputeHost(
+            name="docker-01",
+            platform="docker_agent",
+            base_url="http://10.20.10.31:8088",
+            agent_token_hash="0" * 64,
+            verify_tls=True,
+            is_enabled=False,
+            poll_interval_seconds=60,
+            owner="Infrastructure",
+            notes="Synthetic Docker Agent host; agent polling is disabled in the public demo.",
+            status="online",
+            version="Docker 27.5 / Kaya Agent demo",
+            cpu_percent=22.4,
+            memory_used=6_442_450_944,
+            memory_total=17_179_869_184,
+            storage_used=188_978_561_024,
+            storage_total=536_870_912_000,
+            metadata_json=json.dumps({"agent_capabilities": {"docker_backups": True}}),
+            last_synced_at=now - timedelta(minutes=6),
+            agent_last_seen_at=now - timedelta(minutes=6),
+        )
+        db.add(docker_host)
+        db.flush()
+        docker_workloads = [
+            ComputeWorkload(host_id=docker_host.id, external_id="demo-grafana", name="grafana", kind="container", node="docker-01", status="running", cpu_percent=2.4, cpu_total=2, memory_used=412_090_368, memory_total=1_073_741_824, storage_used=2_147_483_648, storage_total=10_737_418_240, uptime_seconds=864_000, owner="Observability", backup_policy="auto", tags="monitoring,dashboard", metadata_json=json.dumps({"mounts": [{"Type": "bind", "Destination": "/var/lib/grafana"}, {"Type": "volume", "Destination": "/etc/grafana"}]}), last_seen_at=now),
+            ComputeWorkload(host_id=docker_host.id, external_id="demo-vaultwarden", name="vaultwarden", kind="container", node="docker-01", status="running", cpu_percent=1.1, cpu_total=1, memory_used=268_435_456, memory_total=536_870_912, storage_used=1_610_612_736, storage_total=8_589_934_592, uptime_seconds=432_000, owner="Home", backup_policy="paths=/data", tags="passwords,critical", metadata_json=json.dumps({"mounts": [{"Type": "bind", "Destination": "/data"}]}), last_seen_at=now),
+            ComputeWorkload(host_id=docker_host.id, external_id="demo-paperless", name="paperless-ngx", kind="container", node="docker-01", status="running", cpu_percent=4.8, cpu_total=2, memory_used=805_306_368, memory_total=2_147_483_648, storage_used=16_106_127_360, storage_total=53_687_091_200, uptime_seconds=259_200, owner="Admin", backup_policy="volumes-only", tags="documents", metadata_json=json.dumps({"mounts": [{"Type": "volume", "Destination": "/usr/src/paperless/data"}, {"Type": "bind", "Destination": "/usr/src/paperless/media"}]}), last_seen_at=now),
+        ]
+        db.add_all(docker_workloads)
+        db.flush()
+        db.add_all([
+            BackupRecord(name="NAS configuration export", source_type="manual", target="Demo NAS / appliance-configs", schedule="Every Friday 22:00", owner="Infrastructure", last_status="successful", last_run_at=now - timedelta(days=1, hours=3), notes="Synthetic manual record for network device configuration backups.", is_enabled=True),
+            BackupRecord(name="Domain registrar CSV export", source_type="manual", target="Offsite Vault / domain-exports", schedule="Monthly", owner="Admin", last_status="successful", last_run_at=now - timedelta(days=9), notes="Example governance backup outside the Docker/Proxmox agents.", is_enabled=True),
+            BackupRecord(name="Laptop recovery image", source_type="manual", target="Demo NAS / endpoints", schedule="Ad hoc", owner="Support", last_status="failed", last_run_at=now - timedelta(days=3, hours=4), notes="Failure shown intentionally so the demo has something to triage.", is_enabled=True),
+        ])
+        db.add_all([
+            BackupJob(host_id=docker_host.id, workload_id=docker_workloads[0].id, operation="backup", status="successful", encryption_enabled=True, encrypted_backup_key=encrypt_secret("demo-backup-key-grafana"), artifact_path="/mnt/backups/demo-nas/docker-01/grafana-20260707-0215.tar.zst.enc", size_bytes=734_003_200, metadata_json=json.dumps({"target_name": "Demo NAS", "path_count": 2, "paths": ["/var/lib/grafana", "/etc/grafana"]}), requested_by_id=users["admin"].id, created_at=now - timedelta(hours=8), dispatched_at=now - timedelta(hours=8, minutes=-1), started_at=now - timedelta(hours=7, minutes=58), finished_at=now - timedelta(hours=7, minutes=51)),
+            BackupJob(host_id=docker_host.id, workload_id=docker_workloads[1].id, operation="backup", status="successful", encryption_enabled=True, encrypted_backup_key=encrypt_secret("demo-backup-key-vaultwarden"), artifact_path="/mnt/backups/demo-nas/docker-01/vaultwarden-20260707-0217.tar.zst.enc", size_bytes=86_507_520, metadata_json=json.dumps({"target_name": "Demo NAS", "path_count": 1, "paths": ["/data"]}), requested_by_id=users["editor"].id, created_at=now - timedelta(hours=8), dispatched_at=now - timedelta(hours=7, minutes=59), started_at=now - timedelta(hours=7, minutes=57), finished_at=now - timedelta(hours=7, minutes=54)),
+            BackupJob(host_id=docker_host.id, workload_id=docker_workloads[2].id, operation="backup", status="failed", encryption_enabled=True, encrypted_backup_key=encrypt_secret("demo-backup-key-paperless"), artifact_path=None, size_bytes=None, error="Demo failure: media path was unavailable during scan.", metadata_json=json.dumps({"target_name": "Offsite Vault", "path_count": 0}), requested_by_id=users["admin"].id, created_at=now - timedelta(hours=2), dispatched_at=now - timedelta(hours=2, minutes=-1), started_at=now - timedelta(hours=1, minutes=58), finished_at=now - timedelta(hours=1, minutes=55)),
         ])
 
         list_values = {
