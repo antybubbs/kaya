@@ -337,12 +337,19 @@ def read_saved_backup_password(db: Session, fallback_password: str = "") -> str:
 
 def _resolve_backup_path(path_value: str, base_dir: str = "/mnt/backups") -> Path:
     base = Path(base_dir).resolve()
-    raw_value = (path_value or "").strip()
+    raw_path = path_value.strip()
+
+    if not raw_path:
+        candidate = base_path
+    else:
+        user_path = Path(raw_path)
+        candidate = user_path if user_path.is_absolute() else (base_path / user_path)
+
     candidate = Path(raw_value) if raw_value else base
     if not candidate.is_absolute():
         candidate = base / candidate
     resolved = candidate.resolve(strict=False)
-    if base != resolved and base not in resolved.parents:
+        return None, f"{raw_path or candidate} is outside the allowed backup root {base_path}."
         raise ValueError(f"Path must stay within {base}.")
     return resolved
 
