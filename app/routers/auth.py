@@ -7,13 +7,14 @@ from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 from app.core.config import get_settings
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.core.demo import DEMO_ACCOUNTS, demo_generation, demo_login_email
 from app.core.security import hash_password, verify_password
 from app.core.totp import decrypted_totp_secret, encrypted_totp_secret, generate_totp_secret, provisioning_uri, qr_code_data_uri, verify_totp
 from app.db.session import get_db
-from app.models.models import PasswordResetToken, User
+from app.models.models import AuditLog, PasswordResetToken, User
 from app.services.audit import write_audit
 from app.services.mail import MailConfigurationError, render_email_template, send_mail
 from app.services.sessions import end_user_session, start_user_session, touch_user_session
@@ -28,22 +29,71 @@ DUMMY_PASSWORD_HASH = hash_password("not-the-real-password")
 settings = get_settings()
 PASSWORD_RESET_TOKEN_HOURS = 1
 PASSWORD_RESET_MESSAGE = "If that email matches an active account and mail is configured, a reset link will be sent shortly."
+MAX_PASSWORD_RESET_ATTEMPTS = 5
+PASSWORD_RESET_WINDOW_SECONDS = 60 * 60
+PASSWORD_RESET_ATTEMPTS: dict[str, list[float]] = {}
 
 
 def client_key(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
-def login_is_limited(key: str) -> bool:
+def recent_attempts(cache: dict[str, list[float]], key: str, window_seconds: int) -> list[float]:
     now = time.monotonic()
-    attempts = [attempt for attempt in LOGIN_FAILURES.get(key, []) if now - attempt < LOGIN_WINDOW_SECONDS]
-    LOGIN_FAILURES[key] = attempts
-    return len(attempts) >= MAX_LOGIN_ATTEMPTS
+    attempts = [attempt for attempt in cache.get(key, []) if now - attempt < window_seconds]
+    cache[key] = attempts
+    return attempts
+
+
+def login_is_limited(db: Session, key: str, attempted_email: str) -> bool:
+    attempts = recent_attempts(LOGIN_FAILURES, key, LOGIN_WINDOW_SECONDS)
+    since = datetime.utcnow() - timedelta(seconds=LOGIN_WINDOW_SECONDS)
+    metadata_match = f'"attempted_email":"{attempted_email[:255]}"'
+    audit_identity_filters = [AuditLog.ip_address == key]
+    if attempted_email:
+        audit_identity_filters.append(AuditLog.metadata_json.contains(metadata_match))
+    audit_count = (
+        db.query(AuditLog)
+        .filter(
+            AuditLog.action.in_(["login_failed", "login_blocked", "2fa_failed"]),
+            AuditLog.created_at >= since,
+            or_(*audit_identity_filters),
+        )
+        .count()
+    )
+    return max(len(attempts), audit_count) >= MAX_LOGIN_ATTEMPTS
+
+
+def password_reset_is_limited(db: Session, user: User | None, email: str, key: str) -> bool:
+    cache_keys = [f"ip:{key}", f"email:{email[:255]}"]
+    cached = max(
+        len(recent_attempts(PASSWORD_RESET_ATTEMPTS, cache_key, PASSWORD_RESET_WINDOW_SECONDS))
+        for cache_key in cache_keys
+    )
+    if cached >= MAX_PASSWORD_RESET_ATTEMPTS:
+        return True
+    if not user:
+        return False
+    since = datetime.utcnow() - timedelta(seconds=PASSWORD_RESET_WINDOW_SECONDS)
+    token_count = (
+        db.query(PasswordResetToken)
+        .filter(PasswordResetToken.user_id == user.id, PasswordResetToken.created_at >= since)
+        .count()
+    )
+    return token_count >= MAX_PASSWORD_RESET_ATTEMPTS
+
+
+def record_password_reset_attempt(email: str, key: str) -> None:
+    now = time.monotonic()
+    for cache_key in [f"ip:{key}", f"email:{email[:255]}"]:
+        attempts = recent_attempts(PASSWORD_RESET_ATTEMPTS, cache_key, PASSWORD_RESET_WINDOW_SECONDS)
+        attempts.append(now)
+        PASSWORD_RESET_ATTEMPTS[cache_key] = attempts
 
 
 def record_login_failure(key: str) -> None:
     now = time.monotonic()
-    attempts = [attempt for attempt in LOGIN_FAILURES.get(key, []) if now - attempt < LOGIN_WINDOW_SECONDS]
+    attempts = recent_attempts(LOGIN_FAILURES, key, LOGIN_WINDOW_SECONDS)
     attempts.append(now)
     LOGIN_FAILURES[key] = attempts
 
@@ -108,6 +158,7 @@ def require_editor(request: Request, db: Session = Depends(get_db)) -> User:
 @router.get("/login")
 def login_page(
     request: Request,
+    setup_complete: str = "",
     db: Session = Depends(get_db)
 ):
     admin = db.query(User).filter(User.role == "admin").first()
@@ -120,7 +171,12 @@ def login_page(
     return templates.TemplateResponse(
         request,
         "login.html",
-        {"error": None, "demo_accounts": DEMO_ACCOUNTS if settings.demo_mode else None, **csrf_context(request, include_version=False)}
+        {
+            "error": None,
+            "setup_complete": setup_complete == "1",
+            "demo_accounts": DEMO_ACCOUNTS if settings.demo_mode else None,
+            **csrf_context(request, include_version=False),
+        }
     )
 @router.get("/setup")
 def setup_page(
@@ -170,7 +226,10 @@ def forgot_password_submit(
 
     clean_email = email.strip().lower()
     user = db.query(User).filter(User.email == clean_email, User.is_active == True).first()
-    if user:
+    key = client_key(request)
+    limited = password_reset_is_limited(db, user, clean_email, key)
+    record_password_reset_attempt(clean_email, key)
+    if user and not limited:
         raw_token = secrets.token_urlsafe(32)
         now = datetime.utcnow()
         db.query(PasswordResetToken).filter(
@@ -220,6 +279,19 @@ def forgot_password_submit(
                 detail="Password reset email could not be sent",
                 severity="warning",
             )
+    elif limited:
+        write_audit(
+            db,
+            user,
+            "password_reset_blocked",
+            "user",
+            str(user.id) if user else None,
+            request.client.host if request.client else None,
+            detail="Password reset blocked by rate limit",
+            severity="warning",
+            status_code=429,
+            metadata={"attempted_email": clean_email[:255]},
+        )
 
     return templates.TemplateResponse(
         request,
@@ -396,13 +468,14 @@ def setup_submit(
         detail="Created the initial administrator account",
     )
 
-    return RedirectResponse("/login", status_code=303)
+    return RedirectResponse("/login?setup_complete=1", status_code=303)
 
 @router.post("/login")
 def login(request: Request, email: str = Form(""), password: str = Form(""), totp_code: str = Form(""), csrf_token: str = Form(...), db: Session = Depends(get_db)):
     validate_csrf_token(request, csrf_token)
     key = client_key(request)
-    if login_is_limited(key):
+    attempted_email = email.strip().lower()
+    if login_is_limited(db, key, attempted_email):
         write_audit(
             db,
             None,
@@ -412,7 +485,7 @@ def login(request: Request, email: str = Form(""), password: str = Form(""), tot
             detail="Login blocked by rate limit",
             severity="warning",
             status_code=429,
-            metadata={"attempted_email": email.strip().lower()[:255]},
+            metadata={"attempted_email": attempted_email[:255]},
         )
         return templates.TemplateResponse(request, "login.html", {"error": "Too many failed sign-in attempts. Try again later.", "demo_accounts": DEMO_ACCOUNTS if settings.demo_mode else None, **csrf_context(request, include_version=False)}, status_code=429)
 

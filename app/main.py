@@ -48,6 +48,21 @@ app.add_middleware(
     max_age=60 * 60 * 8,
 )
 
+
+@app.middleware("http")
+async def secure_session_cookie_on_https(request: Request, call_next):
+    response = await call_next(request)
+    request_is_https = (
+        request.url.scheme == "https"
+        or request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip() == "https"
+    )
+    if request_is_https:
+        for index, (name, value) in enumerate(response.raw_headers):
+            if name.lower() == b"set-cookie" and b"session=" in value and b" secure" not in value.lower():
+                response.raw_headers[index] = (name, value + b"; Secure")
+    return response
+
+
 @app.exception_handler(PermissionError)
 async def permission_handler(request: Request, exc: PermissionError):
     if request.session.get("user_id"):

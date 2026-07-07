@@ -450,6 +450,26 @@ html[data-theme=light] .backup-target-table th,html[data-theme=light] .backup-ta
   object-fit: contain;
 }
 
+.setup-security-note {
+  background: rgba(251, 191, 36, .12);
+  border: 1px solid rgba(251, 191, 36, .38);
+  border-radius: 8px;
+  color: #fde68a;
+  display: grid;
+  gap: 6px;
+  line-height: 1.45;
+  margin: 0 0 18px;
+  padding: 12px;
+}
+
+.setup-security-note strong {
+  color: #fef3c7;
+}
+
+.setup-security-note span {
+  color: #dbe4ef;
+}
+
 /* Site Administration tabs */
 .site-admin-form {
   display: grid;

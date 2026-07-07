@@ -37,6 +37,11 @@
       </div>
       {% endif %}
       {% if success %}<div class="success">{{ success }}</div>{% endif %}
+      {% if setup_complete %}
+      <div class="success">
+        Administrator created. Before exposing Kaya outside your private network, go to Site Administration &gt; Security and review the public URL, trusted hosts, HTTPS, and remote access settings.
+      </div>
+      {% endif %}
       {% if error %}<div class="alert">{{ error }}</div>{% endif %}
       <form method="post" action="/login" class="stack">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

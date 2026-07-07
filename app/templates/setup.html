@@ -27,6 +27,11 @@
       <div class="alert">{{ error }}</div>
       {% endif %}
 
+      <div class="setup-security-note">
+        <strong>Review security before exposing Kaya.</strong>
+        <span>Kaya keeps first-run setup simple so you do not get locked out. Before publishing this service outside your private network, sign in and review Site Administration &gt; Security.</span>
+      </div>
+
       <form class="setup-form" method="post" action="/setup">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 
