@@ -303,6 +303,18 @@ html[data-kaya-theme=light-ops] .sidebar .nav-subgroup:has(.nav-link.active)>sum
   padding-top:0;
 }
 
+.demo-banner ~ .sidebar{
+  height:calc(100vh - 96px);
+  top:96px;
+}
+
+@media(max-width:850px){
+  .demo-banner ~ .sidebar{
+    height:auto;
+    top:auto;
+  }
+}
+
 .sidebar-collapse-button{
   background:rgba(255,138,0,.16);
   border:1px solid rgba(255,138,0,.48);

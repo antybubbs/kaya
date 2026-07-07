@@ -137,11 +137,18 @@ def proxmox_guest_addresses(host,node_name,endpoint,guest):
         pass
     return addresses
 
-def proxmox_backup_tasks(host):
-    try:
-        tasks=pve(host,'/cluster/tasks?typefilter=vzdump&limit=100') or []
-    except Exception:
-        return []
+def proxmox_backup_tasks(host,node_names=None):
+    tasks=[]; seen=set()
+    for path in ['/cluster/tasks?typefilter=vzdump&limit=500', *[f'/nodes/{node}/tasks?typefilter=vzdump&limit=500' for node in (node_names or [])]]:
+        try:
+            rows=pve(host,path) or []
+        except Exception:
+            continue
+        for task in rows:
+            identity=task.get('upid') or f"{task.get('node')}:{task.get('starttime')}:{task.get('type')}:{task.get('id')}"
+            if identity in seen:
+                continue
+            seen.add(identity); tasks.append(task)
     return sorted(tasks,key=lambda item:item.get('starttime') or 0,reverse=True)
 
 def proxmox_backup_task_status(task):
@@ -157,7 +164,8 @@ def proxmox_matching_backup_task(job,tasks):
     vmids={part for part in raw_vmids.split(',') if part}
     for task in tasks:
         task_id=str(task.get('id') or '')
-        if not vmids or task_id in vmids:
+        upid=str(task.get('upid') or '')
+        if not vmids or task_id in vmids or any(f":vzdump:{vmid}:" in upid for vmid in vmids):
             return task
     return None
 
@@ -206,7 +214,7 @@ def collect_proxmox(host):
         elif kind=='storage': items.append({'external_id':x.get('id'),'name':x.get('storage') or x.get('id'),'kind':'storage','status':x.get('status'),'size_bytes':x.get('maxdisk'),'metadata':{'node':x.get('node'),'used':x.get('disk'),'type':x.get('plugintype')}})
     try: jobs=pve(host,'/cluster/backup') or []
     except Exception: jobs=[]
-    backup_tasks=proxmox_backup_tasks(host)
+    backup_tasks=proxmox_backup_tasks(host,node_names)
     for x in jobs:
         task=proxmox_matching_backup_task(x,backup_tasks)
         task_status=proxmox_backup_task_status(task)
