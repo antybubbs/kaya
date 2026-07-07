@@ -259,7 +259,3 @@ It reflects the philosophy behind the project: your infrastructure
 should feel organised, trusted and completely under your control.
 
 ------------------------------------------------------------------------
-
-# 📄 Licence
-
-Licensed under **MIT**.
