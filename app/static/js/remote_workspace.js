@@ -205,7 +205,7 @@
     if (opened) opened.focus();
   };
 
-  const openRdpPopoutForHandoff = (tab, token, requestId) => {
+  const openPopoutForHandoff = (tab, requestId) => {
     const name = `kaya_remote_${tab.remoteId}_${tab.protocol}`;
     const url = new URL(tab.url, window.location.origin);
     url.searchParams.set("popout", "1");
@@ -215,13 +215,12 @@
     const opened = window.open(url.toString(), name, sessionWindowFeatures());
     const pending = pendingPopouts.get(requestId);
     if (pending) {
-      pending.token = token;
       pending.window = opened;
     }
     if (opened) opened.focus();
   };
 
-  const requestRdpPopoutHandoff = (tab) => {
+  const requestPopoutHandoff = (tab) => {
     const iframe = panels.querySelector(`[data-remote-panel="${CSS.escape(tab.id)}"] iframe`);
     if (!iframe || !iframe.contentWindow) {
       popOutSession(tab);
@@ -348,8 +347,8 @@
       popout.textContent = "P";
       popout.addEventListener("click", (event) => {
         event.stopPropagation();
-        if (tab.protocol === "rdp") {
-          requestRdpPopoutHandoff(tab);
+        if (tab.protocol === "rdp" || tab.protocol === "ssh") {
+          requestPopoutHandoff(tab);
           return;
         }
         popOutSession(tab);
@@ -581,9 +580,11 @@
         pendingPopouts.delete(data.requestId);
         return;
       }
-      if (data.ok && data.token) {
+      if (data.ok && (data.token || data.password)) {
         pending.timeout = window.setTimeout(() => pendingPopouts.delete(data.requestId), 30000);
-        openRdpPopoutForHandoff(tab, data.token, data.requestId);
+        pending.token = data.token || "";
+        pending.password = data.password || "";
+        openPopoutForHandoff(tab, data.requestId);
       } else {
         pendingPopouts.delete(data.requestId);
         popOutSession(tab);
@@ -591,11 +592,12 @@
     }
     if (data.type === "kaya:remote-popout-ready") {
       const pending = pendingPopouts.get(data.requestId);
-      if (!pending?.token || !event.source) return;
+      if ((!pending?.token && !pending?.password) || !event.source) return;
       event.source.postMessage({
         type: "kaya:remote-popout-connect",
         requestId: data.requestId,
         token: pending.token,
+        password: pending.password,
       }, event.origin);
     }
     if (data.type === "kaya:remote-popout-connected") {

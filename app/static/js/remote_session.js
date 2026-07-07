@@ -605,6 +605,10 @@
   let pendingWriteFrame = null;
   let pendingWriteChunks = [];
   let rawControlOutput = false;
+  let sessionPassword = "";
+  let popoutConnectedNotified = false;
+  const popoutHash = new URLSearchParams(window.location.hash.slice(1));
+  const popoutRequestId = popoutHash.get("requestId") || "";
   const submitButton = passwordForm.querySelector('button[type="submit"]');
   const recordingButton = document.querySelector("[data-recording-toggle]");
   const recordingStatus = document.querySelector("[data-recording-status]");
@@ -818,6 +822,36 @@
       window.setTimeout(fit, 50);
       if (connected) term.focus();
     }
+    if (event.data && event.data.type === "kaya:remote-popout-request") {
+      const ok = connected && Boolean(sessionPassword);
+      event.source?.postMessage({
+        type: "kaya:remote-popout-state",
+        requestId: event.data.requestId,
+        ok,
+        password: ok ? sessionPassword : "",
+      }, event.origin);
+    }
+    if (event.data && event.data.type === "kaya:remote-popout-connect") {
+      if (!popoutRequestId || event.data.requestId !== popoutRequestId || !event.data.password) return;
+      if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
+      sessionPassword = String(event.data.password);
+      passwordInput.value = sessionPassword;
+      passwordForm.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    }
+    if (event.data && event.data.type === "kaya:remote-popout-detached") {
+      closeHandled = true;
+      connected = false;
+      sessionPassword = "";
+      clearIdleTimer();
+      stopRecording();
+      syncRecordingButton();
+      writeTerminal("\r\nSession moved to the pop-out window.\r\n");
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        sendTerminalMessage("disconnect");
+        socket.close();
+      }
+      passwordForm.hidden = false;
+    }
     if (event.data && event.data.type === "kaya:remote-recording-toggle") {
       if (recordingActive) {
         stopRecording();
@@ -855,6 +889,7 @@
   window.addEventListener("beforeunload", () => {
     clearIdleTimer();
     stopRecording();
+    sessionPassword = "";
     if (socket && socket.readyState === WebSocket.OPEN) {
       sendTerminalMessage("disconnect");
     }
@@ -881,12 +916,13 @@
     term.reset();
     writeTerminal("Connecting...\r\n");
     closeHandled = false;
+    sessionPassword = passwordInput.value;
     socket = new WebSocket(wsUrl);
     if (submitButton) submitButton.disabled = true;
 
     socket.addEventListener("open", () => {
       sendTerminalMessage("connectToHost", {
-        password: passwordInput.value,
+        password: sessionPassword,
         cols: term.cols,
         rows: term.rows,
       });
@@ -915,14 +951,21 @@
         syncRecordingButton();
         if (recordingAuto) startRecording("auto");
         fit();
+        if (popoutRequestId && !popoutConnectedNotified) {
+          popoutConnectedNotified = true;
+          window.opener?.postMessage({ type: "kaya:remote-popout-connected", requestId: popoutRequestId }, window.location.origin);
+          window.parent?.postMessage({ type: "kaya:remote-popout-connected", requestId: popoutRequestId }, window.location.origin);
+        }
       } else if (message.type === "error") {
         connected = false;
+        sessionPassword = "";
         clearIdleTimer();
         stopRecording();
         syncRecordingButton();
         writeTerminal(`\r\n${message.message || "SSH connection failed."}\r\n`);
       } else if (message.type === "closed") {
         connected = false;
+        sessionPassword = "";
         clearIdleTimer();
         stopRecording();
         syncRecordingButton();
@@ -936,6 +979,7 @@
         }
       } else if (message.type === "sessionTakenOver" || message.type === "sessionExpired") {
         connected = false;
+        sessionPassword = "";
         clearIdleTimer();
         stopRecording();
         syncRecordingButton();
@@ -955,6 +999,7 @@
     });
     socket.addEventListener("close", () => {
       connected = false;
+      sessionPassword = "";
       clearIdleTimer();
       stopRecording();
       syncRecordingButton();
@@ -971,4 +1016,10 @@
       writeTerminal("\r\nSession error.\r\n");
     });
   });
+
+  if (popoutRequestId && window.opener && !window.opener.closed) {
+    window.setTimeout(() => {
+      window.opener.postMessage({ type: "kaya:remote-popout-ready", requestId: popoutRequestId }, window.location.origin);
+    }, 50);
+  }
 })();
