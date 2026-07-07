@@ -83,6 +83,10 @@ fi
 echo "Starting Kaya with ENCRYPTION_KEY length: ${#ENCRYPTION_KEY}"
 
 echo "Running database migrations..."
+if [ "${SQLITE_PRE_MIGRATION_BACKUP:-true}" = "true" ] && [ -f /app/data/kaya.db ]; then
+    cp /app/data/kaya.db /app/data/kaya.db.pre-migration
+    chown kaya:kaya /app/data/kaya.db.pre-migration
+fi
 gosu kaya python /app/scripts/migrate_sqlite.py
 
 exec gosu kaya "$@"

@@ -545,6 +545,7 @@ def agent_jobs(request: Request, db: Session = Depends(get_db)):
     )
     now = datetime.utcnow()
     response = []
+    audit_events = []
     for job in jobs:
         job.status = "dispatched"
         job.dispatched_at = now
@@ -567,7 +568,30 @@ def agent_jobs(request: Request, db: Session = Depends(get_db)):
                 "source_size_bytes": job_metadata.get("source_size_bytes"),
             }
         )
+        audit_events.append(
+            {
+                "job_id": str(job.id),
+                "detail": f"Dispatched {job.operation} job to agent host {host.name}",
+                "metadata": {
+                    "host_id": host.id,
+                    "host": host.name,
+                    "operation": job.operation,
+                    "target_name": job_metadata.get("target_name"),
+                },
+            }
+        )
     db.commit()
+    for event in audit_events:
+        write_audit(
+            db,
+            None,
+            "dispatch",
+            "backup_job",
+            event["job_id"],
+            request.client.host if request.client else None,
+            detail=event["detail"],
+            metadata=event["metadata"],
+        )
     return {"ok": True, "jobs": response}
 
 
@@ -604,4 +628,22 @@ async def agent_job_status(job_id: int, request: Request, db: Session = Depends(
         existing.update(payload["metadata"])
         job.metadata_json = json.dumps(existing)
     db.commit()
+    write_audit(
+        db,
+        None,
+        "agent_status",
+        "backup_job",
+        str(job.id),
+        request.client.host if request.client else None,
+        detail=f"Agent host {host.name} reported backup job {job.id} as {job.status}",
+        severity="warning" if job.status == "failed" else "info",
+        metadata={
+            "host_id": host.id,
+            "host": host.name,
+            "status": job.status,
+            "operation": job.operation,
+            "artifact_reported": bool(job.artifact_path),
+            "size_bytes": job.size_bytes,
+        },
+    )
     return JSONResponse({"ok": True, "job": job.id, "status": job.status})
