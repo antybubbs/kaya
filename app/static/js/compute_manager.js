@@ -8,10 +8,6 @@
       field.hidden = value !== "proxmox";
     });
 
-    document.querySelectorAll("[data-direct-connection-field]").forEach((field) => {
-      field.hidden = value === "docker_agent";
-    });
-
     document.querySelectorAll("[data-docker-agent-field]").forEach((field) => {
       field.hidden = value !== "docker_agent";
     });

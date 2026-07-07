@@ -1,0 +1,677 @@
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any
+
+from fastapi import APIRouter, Depends, Form, Query, Request
+from fastapi.responses import RedirectResponse
+from fastapi.templating import Jinja2Templates
+from sqlalchemy.orm import Session
+
+from app.core.csrf import csrf_context, validate_csrf_token
+from app.db.session import get_db
+from app.models.models import DNSInvestigation, DNSProviderConfig
+from app.routers.auth import require_user
+from app.services.dns_providers import DNSProvider, provider_for
+from app.services.audit import write_audit
+from app.services.site_settings import get_site_setting
+
+router = APIRouter(prefix="/networking/dns-manager")
+templates = Jinja2Templates(directory="app/templates")
+
+DNS_TABS = ["dashboard", "query-log", "clients", "local-dns", "dhcp", "blocklists", "reports"]
+
+
+def dns_manager_enabled(db: Session) -> bool:
+    return get_site_setting(db, "dns_manager_enabled") == "1"
+
+
+def configured_providers(db: Session) -> list[DNSProviderConfig]:
+    return (
+        db.query(DNSProviderConfig)
+        .filter(DNSProviderConfig.is_enabled == True)  # noqa: E712
+        .order_by(DNSProviderConfig.name.asc())
+        .all()
+    )
+
+
+def selected_provider(db: Session) -> DNSProviderConfig | None:
+    providers = configured_providers(db)
+    preferred = (get_site_setting(db, "dns_default_provider_id") or "").strip()
+    if preferred.isdigit():
+        for provider in providers:
+            if provider.id == int(preferred):
+                return provider
+    return providers[0] if providers else None
+
+
+def list_from_payload(payload: Any, *keys: str) -> list[Any]:
+    if isinstance(payload, list):
+        return payload
+    if not isinstance(payload, dict):
+        return []
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, list):
+            return value
+        if isinstance(value, dict):
+            nested = list_from_payload(value, *keys)
+            if nested:
+                return nested
+    return []
+
+
+def stat_value(stats: dict[str, Any] | None, *keys: str) -> Any:
+    if not isinstance(stats, dict):
+        return "-"
+    for key in keys:
+        current: Any = stats
+        for part in key.split("."):
+            if not isinstance(current, dict) or part not in current:
+                current = None
+                break
+            current = current[part]
+        if current not in (None, ""):
+            return current
+    return "-"
+
+
+def display_number(value: Any, suffix: str = "") -> str:
+    if value in (None, "") or value == "-":
+        return "-"
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if suffix:
+        return f"{numeric:.1f}{suffix}"
+    return f"{int(numeric):,}" if numeric.is_integer() else f"{numeric:,.1f}"
+
+
+def to_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(float(value or default))
+    except (TypeError, ValueError):
+        return default
+
+
+def timestamp_sort_value(value: Any) -> float:
+    if value in (None, ""):
+        return 0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        pass
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError, OSError):
+        return 0
+
+
+def timestamp_display(value: Any) -> str:
+    stamp = timestamp_sort_value(value)
+    if not stamp:
+        return str(value or "-")
+    try:
+        return datetime.fromtimestamp(stamp).strftime("%Y-%m-%d %H:%M")
+    except (ValueError, OSError):
+        return str(value or "-")
+
+
+def payload_value(payload: Any, *keys: str) -> Any:
+    if not isinstance(payload, dict):
+        return None
+    for key in keys:
+        if key in payload and payload[key] not in (None, ""):
+            return payload[key]
+    return None
+
+
+def query_log_time(row: Any) -> str:
+    value = payload_value(row, "time", "timestamp", "date")
+    if value in (None, ""):
+        return "-"
+    try:
+        numeric = float(value)
+        return datetime.fromtimestamp(numeric).strftime("%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError, OSError):
+        return str(value)
+
+
+def query_client_name(row: Any) -> str:
+    client = payload_value(row, "client")
+    if isinstance(client, dict):
+        return str(payload_value(client, "name", "hostname", "host") or "-")
+    return str(payload_value(row, "client_name", "hostname", "name") or "-")
+
+
+def query_client_ip(row: Any) -> str:
+    client = payload_value(row, "client")
+    if isinstance(client, dict):
+        return str(payload_value(client, "ip", "address", "ip_address") or "-")
+    value = payload_value(row, "client_ip", "ip", "ip_address", "client")
+    return str(value or "-")
+
+
+def query_reply_type(row: Any) -> str:
+    reply = payload_value(row, "reply")
+    if isinstance(reply, dict):
+        return str(payload_value(reply, "type", "reply_type", "status") or "-")
+    return str(payload_value(row, "reply_type", "reply") or "-")
+
+
+def query_reply_time(row: Any) -> str:
+    reply = payload_value(row, "reply")
+    value = payload_value(reply, "time", "duration", "response_time") if isinstance(reply, dict) else payload_value(row, "reply_time", "response_time", "duration")
+    if value in (None, ""):
+        return "-"
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if seconds < 0.001:
+        return f"{seconds * 1000:.3f} ms"
+    if seconds < 1:
+        return f"{seconds * 1000:.2f} ms"
+    return f"{seconds:.2f} s"
+
+
+def query_domain(row: Any) -> str:
+    return str(payload_value(row, "domain", "query") or "-")
+
+
+def query_type(row: Any) -> str:
+    return str(payload_value(row, "type", "query_type") or "-")
+
+
+def query_status(row: Any) -> str:
+    return str(payload_value(row, "status", "reply_status", "reply_type") or "-")
+
+
+def query_upstream(row: Any) -> str:
+    return str(payload_value(row, "upstream", "forwarded_to", "server") or "-")
+
+
+def domain_root(domain: str) -> str:
+    clean = (domain or "").strip(".").lower()
+    if not clean or clean == "-":
+        return "-"
+    parts = [part for part in clean.split(".") if part]
+    if len(parts) <= 2:
+        return clean
+    return ".".join(parts[-2:])
+
+
+def domain_kind(domain: str) -> str:
+    clean = (domain or "").strip(".").lower()
+    if not clean or clean == "-":
+        return "Unknown"
+    if clean.endswith(".local") or clean.endswith(".lan") or clean.endswith(".home.arpa"):
+        return "Local network"
+    if clean.endswith(".in-addr.arpa") or clean.endswith(".ip6.arpa"):
+        return "Reverse lookup"
+    if clean.startswith("_"):
+        return "Service discovery"
+    return "External domain"
+
+
+def open_investigation_domains(db: Session, provider: DNSProviderConfig | None) -> set[str]:
+    if not provider:
+        return set()
+    rows = (
+        db.query(DNSInvestigation.domain)
+        .filter(DNSInvestigation.provider_id == provider.id, DNSInvestigation.status == "open")
+        .all()
+    )
+    return {str(domain).lower() for domain, in rows if domain}
+
+
+def _timestamp_label(value: Any) -> str:
+    try:
+        stamp = int(float(value))
+        return datetime.fromtimestamp(stamp).strftime("%H:%M")
+    except (TypeError, ValueError, OSError):
+        return str(value)
+
+
+def query_chart_points(history_payload: Any) -> list[dict[str, Any]]:
+    payload = history_payload if isinstance(history_payload, dict) else {}
+    queries = payload.get("queries") if isinstance(payload.get("queries"), dict) else payload
+    domains = queries.get("domains_over_time") if isinstance(queries.get("domains_over_time"), dict) else {}
+    blocked = queries.get("ads_over_time") if isinstance(queries.get("ads_over_time"), dict) else {}
+    points: list[dict[str, Any]] = []
+
+    def to_int(value: Any) -> int:
+        try:
+            return int(float(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    history_rows = list_from_payload(queries, "history", "data", "queries")
+    if history_rows:
+        for index, row in enumerate(history_rows):
+            if not isinstance(row, dict):
+                continue
+            label = row.get("timestamp") or row.get("time") or row.get("date") or index
+            blocked_count = to_int(row.get("blocked") or row.get("ads") or row.get("ads_count"))
+            allowed = to_int(row.get("allowed") or row.get("permitted"))
+            total = to_int(row.get("total") or row.get("queries") or row.get("count"))
+            if not total and allowed:
+                total = allowed + blocked_count
+            points.append(
+                {
+                    "label": _timestamp_label(label),
+                    "total": total,
+                    "blocked": blocked_count,
+                    "allowed": max(total - blocked_count, 0),
+                }
+            )
+        return points[-144:]
+
+    for key in sorted(set(domains) | set(blocked), key=lambda item: str(item)):
+        total = to_int(domains.get(key))
+        blocked_count = to_int(blocked.get(key))
+        points.append(
+            {
+                "label": _timestamp_label(key),
+                "total": total,
+                "blocked": blocked_count,
+                "allowed": max(total - blocked_count, 0),
+            }
+        )
+    return points[-144:]
+
+
+def client_activity_rows(stats_payload: Any, clients_payload: Any, query_payload: Any | None = None) -> list[dict[str, Any]]:
+    clients = list_from_payload(clients_payload, "clients", "top_sources", "top_clients", "data")
+    if not clients and isinstance(stats_payload, dict):
+        clients = list_from_payload(stats_payload, "top_sources", "top_clients", "clients", "data")
+    if not clients and isinstance(clients_payload, dict):
+        for key in ("top_sources", "top_clients", "clients", "data"):
+            value = clients_payload.get(key)
+            if isinstance(value, dict):
+                clients = list(value.items())
+                break
+    if not clients and isinstance(stats_payload, dict):
+        for key in ("top_sources", "top_clients", "clients", "data"):
+            value = stats_payload.get(key)
+            if isinstance(value, dict):
+                clients = list(value.items())
+                break
+    rows: list[dict[str, Any]] = []
+    if isinstance(clients, list):
+        for item in clients[:8]:
+            if isinstance(item, dict):
+                name = item.get("name") or item.get("client") or item.get("ip") or item.get("ip_address") or "-"
+                count = item.get("count") or item.get("queries") or item.get("total") or 0
+            elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                name, count = item[0], item[1]
+            else:
+                continue
+            name = str(name)
+            if name.strip().lower() in {"active", "total"}:
+                continue
+            try:
+                count_value = int(float(count))
+            except (TypeError, ValueError):
+                count_value = 0
+            if count_value:
+                rows.append({"name": name, "count": count_value})
+    if rows:
+        return sorted(rows, key=lambda row: row["count"], reverse=True)[:8]
+
+    recent_clients: dict[str, dict[str, Any]] = {}
+    for item in list_from_payload(query_payload or {}, "queries", "data")[:300]:
+        if not isinstance(item, dict):
+            continue
+        ip = query_client_ip(item)
+        name = query_client_name(item)
+        key = ip if ip != "-" else name
+        if key == "-":
+            continue
+        row = recent_clients.setdefault(key, {"name": name if name != "-" else ip, "ip": ip, "count": 0})
+        if row["name"] == "-" and name != "-":
+            row["name"] = name
+        row["count"] += 1
+    return sorted(recent_clients.values(), key=lambda row: row["count"], reverse=True)[:8]
+
+
+def _rows_from_any(payload: Any, *keys: str) -> list[Any]:
+    rows = list_from_payload(payload, *keys)
+    if rows:
+        return rows
+    if isinstance(payload, dict):
+        for key in keys:
+            value = payload.get(key)
+            if isinstance(value, dict):
+                return list(value.values())
+    return []
+
+
+def dhcp_lease_rows(dhcp_payload: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in _rows_from_any(dhcp_payload, "leases", "data"):
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            {
+                "name": str(payload_value(item, "name", "hostname", "host") or "-"),
+                "ip": str(payload_value(item, "ip", "address", "ip_address") or "-"),
+                "mac": str(payload_value(item, "mac", "hwaddr", "mac_address") or "-"),
+                "expires": payload_value(item, "expires", "expiry", "expires_at", "valid_until"),
+                "static": payload_value(item, "static", "reserved", "reservation"),
+            }
+        )
+    return rows
+
+
+def network_client_inventory(clients_payload: Any, dhcp_payload: Any, query_payload: Any) -> list[dict[str, Any]]:
+    inventory: dict[str, dict[str, Any]] = {}
+
+    def merge(row: dict[str, Any], source: str) -> None:
+        ip = str(row.get("ip") or "-")
+        mac = str(row.get("mac") or "-")
+        key = mac if mac != "-" else ip
+        if key == "-":
+            return
+        existing = inventory.setdefault(
+            key,
+            {
+                "name": "-",
+                "ip": "-",
+                "mac": "-",
+                "first_seen": None,
+                "last_seen": None,
+                "queries": 0,
+                "sources": set(),
+            },
+        )
+        for field in ("name", "ip", "mac"):
+            value = str(row.get(field) or "-").strip()
+            if value and value != "-" and existing[field] == "-":
+                existing[field] = value
+        for field in ("first_seen", "last_seen"):
+            value = row.get(field)
+            if value and timestamp_sort_value(value) > timestamp_sort_value(existing.get(field)):
+                existing[field] = value
+        existing["queries"] += to_int(row.get("queries"))
+        existing["sources"].add(source)
+
+    for item in _rows_from_any(clients_payload, "devices", "clients", "data"):
+        if not isinstance(item, dict):
+            continue
+        merge(
+            {
+                "name": payload_value(item, "name", "hostname", "host"),
+                "ip": payload_value(item, "ip", "address", "ip_address"),
+                "mac": payload_value(item, "mac", "hwaddr", "mac_address"),
+                "first_seen": payload_value(item, "first_seen", "firstSeen", "firstSeenAt", "created_at"),
+                "last_seen": payload_value(item, "last_seen", "lastSeen", "lastQuery", "last_query", "updated_at"),
+                "queries": payload_value(item, "queries", "count", "total"),
+            },
+            "Pi-hole network",
+        )
+
+    for lease in dhcp_lease_rows(dhcp_payload):
+        merge(
+            {
+                "name": lease["name"],
+                "ip": lease["ip"],
+                "mac": lease["mac"],
+                "last_seen": lease["expires"],
+            },
+            "DHCP lease",
+        )
+
+    for item in list_from_payload(query_payload, "queries", "data")[:200]:
+        if not isinstance(item, dict):
+            continue
+        merge(
+            {
+                "name": query_client_name(item),
+                "ip": query_client_ip(item),
+                "last_seen": payload_value(item, "time", "timestamp", "date"),
+                "queries": 1,
+            },
+            "Recent query",
+        )
+
+    rows = []
+    now = datetime.now().timestamp()
+    for row in inventory.values():
+        first_seen_stamp = timestamp_sort_value(row.get("first_seen"))
+        recent_first_seen = bool(first_seen_stamp and now - first_seen_stamp <= 24 * 60 * 60)
+        unknown_name = row["name"] in {"-", "", row["ip"]}
+        row["is_new"] = recent_first_seen
+        row["is_unknown"] = unknown_name or row["mac"] == "-"
+        row["source_label"] = ", ".join(sorted(row["sources"]))
+        row["first_seen_label"] = timestamp_display(row.get("first_seen"))
+        row["last_seen_label"] = timestamp_display(row.get("last_seen"))
+        rows.append(row)
+    return sorted(rows, key=lambda item: (not item["is_new"], not item["is_unknown"], -timestamp_sort_value(item.get("last_seen"))))
+
+
+def attention_client_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [row for row in rows if row.get("is_new") or row.get("is_unknown")]
+
+
+RISKY_DOMAIN_TERMS: dict[str, tuple[str, ...]] = {
+    "Adult content": ("porn", "xxx", "adult", "sex", "camgirl", "onlyfans"),
+    "Gambling": ("casino", "betting", "bet365", "poker", "gambling"),
+    "Malware/phishing": ("malware", "phish", "trojan", "botnet", "cryptominer"),
+    "Piracy/torrents": ("torrent", "pirate", "warez"),
+}
+
+
+def risky_blocked_queries(query_payload: Any) -> list[dict[str, Any]]:
+    rows: dict[str, dict[str, Any]] = {}
+    for item in list_from_payload(query_payload, "queries", "data")[:300]:
+        if not isinstance(item, dict):
+            continue
+        status_text = f"{query_status(item)} {query_reply_type(item)}".lower()
+        if not any(term in status_text for term in ("block", "gravity", "deny", "regex")):
+            continue
+        domain = query_domain(item).strip().strip(".").lower()
+        if not domain or domain == "-":
+            continue
+        category = ""
+        for label, terms in RISKY_DOMAIN_TERMS.items():
+            if any(term in domain for term in terms):
+                category = label
+                break
+        if not category:
+            continue
+        key = f"{domain}|{query_client_ip(item)}"
+        row = rows.setdefault(
+            key,
+            {
+                "domain": domain,
+                "category": category,
+                "client": query_client_name(item),
+                "client_ip": query_client_ip(item),
+                "status": query_status(item),
+                "count": 0,
+                "last_seen": payload_value(item, "time", "timestamp", "date"),
+            },
+        )
+        row["count"] += 1
+        if timestamp_sort_value(payload_value(item, "time", "timestamp", "date")) > timestamp_sort_value(row.get("last_seen")):
+            row["last_seen"] = payload_value(item, "time", "timestamp", "date")
+    result = list(rows.values())
+    for row in result:
+        row["last_seen_label"] = timestamp_display(row.get("last_seen"))
+    return sorted(result, key=lambda item: (-item["count"], -timestamp_sort_value(item.get("last_seen"))))[:8]
+
+
+def chart_max(rows: list[dict[str, Any]], key: str) -> int:
+    values: list[int] = []
+    for row in rows:
+        try:
+            values.append(int(float(row.get(key) or 0)))
+        except (AttributeError, TypeError, ValueError):
+            continue
+    return max(values) if values else 1
+
+
+def call_provider(provider: DNSProviderConfig | None, method: str, client: DNSProvider | None = None):
+    if not provider:
+        return None
+    dns_client = client or provider_for(provider)
+    result = getattr(dns_client, method)()
+    provider.last_status = "online" if result.ok else "error"
+    provider.last_error = "" if result.ok else result.message
+    provider.last_checked_at = datetime.utcnow()
+    return result
+
+
+@router.post("/investigations")
+def flag_dns_investigation(
+    request: Request,
+    domain: str = Form(..., max_length=500),
+    client_name: str = Form("", max_length=255),
+    client_ip: str = Form("", max_length=80),
+    query_type_value: str = Form("", alias="query_type", max_length=40),
+    reply_status: str = Form("", max_length=40),
+    reply_type: str = Form("", max_length=120),
+    reply_time: str = Form("", max_length=80),
+    upstream: str = Form("", max_length=255),
+    observed_at: str = Form("", max_length=80),
+    notes: str = Form("", max_length=2000),
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+    user=Depends(require_user),
+):
+    validate_csrf_token(request, csrf_token)
+    clean_domain = domain.strip().strip(".").lower()
+    if clean_domain and clean_domain != "-":
+        provider = selected_provider(db) if dns_manager_enabled(db) else None
+        row = DNSInvestigation(
+            provider_id=provider.id if provider else None,
+            domain=clean_domain,
+            client_name=client_name.strip() or None,
+            client_ip=client_ip.strip() or None,
+            query_type=query_type_value.strip() or None,
+            status="open",
+            reply_type=reply_type.strip() or reply_status.strip() or None,
+            reply_time=reply_time.strip() or None,
+            upstream=upstream.strip() or None,
+            observed_at=observed_at.strip() or None,
+            notes=notes.strip() or None,
+            created_by_id=user.id,
+        )
+        db.add(row)
+        db.commit()
+        write_audit(
+            db,
+            user,
+            "flag",
+            "dns_investigation",
+            str(row.id),
+            request.client.host if request.client else None,
+            detail=f"Flagged DNS query for {clean_domain}",
+            severity="warning",
+            metadata={
+                "domain": clean_domain,
+                "client_name": client_name,
+                "client_ip": client_ip,
+                "query_type": query_type_value,
+                "reply_type": reply_type,
+                "upstream": upstream,
+            },
+        )
+    return RedirectResponse("/networking/dns-manager?tab=query-log", status_code=303)
+
+
+@router.get("")
+def dns_manager(
+    request: Request,
+    tab: str = Query("dashboard"),
+    db: Session = Depends(get_db),
+    user=Depends(require_user),
+):
+    active_tab = tab if tab in DNS_TABS else "dashboard"
+    enabled = dns_manager_enabled(db)
+    provider = selected_provider(db) if enabled else None
+    status = stats = history = queries = clients = local_dns = dhcp = blocklists = None
+    error = None
+    flagged_domains: set[str] = set()
+    investigations: list[DNSInvestigation] = []
+
+    if enabled and provider:
+        dns_client = provider_for(provider)
+        if active_tab == "dashboard":
+            status = call_provider(provider, "get_status", dns_client)
+            stats = call_provider(provider, "get_statistics", dns_client)
+            history = call_provider(provider, "get_history", dns_client)
+            clients = call_provider(provider, "get_clients", dns_client)
+            dhcp = call_provider(provider, "get_dhcp_leases", dns_client)
+            queries = dns_client.get_query_log(limit=300)
+            blocklists = call_provider(provider, "get_blocklists", dns_client)
+        elif active_tab == "query-log":
+            queries = dns_client.get_query_log(limit=200)
+        elif active_tab == "clients":
+            clients = call_provider(provider, "get_clients", dns_client)
+        elif active_tab == "local-dns":
+            local_dns = call_provider(provider, "get_local_dns_records", dns_client)
+        elif active_tab == "dhcp":
+            dhcp = call_provider(provider, "get_dhcp_leases", dns_client)
+        elif active_tab == "blocklists":
+            blocklists = call_provider(provider, "get_blocklists", dns_client)
+
+        db.commit()
+        active_result = next((item for item in [status, stats, history, queries, clients, local_dns, dhcp, blocklists] if item and not item.ok), None)
+        error = active_result.message if active_result else None
+        flagged_domains = open_investigation_domains(db, provider)
+        investigations = (
+            db.query(DNSInvestigation)
+            .filter(DNSInvestigation.provider_id == provider.id, DNSInvestigation.status == "open")
+            .order_by(DNSInvestigation.created_at.desc())
+            .limit(100)
+            .all()
+        )
+
+    return templates.TemplateResponse(
+        request,
+        "dns_manager.html",
+        {
+            "user": user,
+            "enabled": enabled,
+            "provider": provider,
+            "providers": configured_providers(db) if enabled else [],
+            "active_tab": active_tab,
+            "tabs": DNS_TABS,
+            "status": status,
+            "stats": stats,
+            "history": history,
+            "queries": queries,
+            "clients": clients,
+            "local_dns": local_dns,
+            "dhcp": dhcp,
+            "blocklists": blocklists,
+            "error": error,
+            "flagged_domains": flagged_domains,
+            "investigations": investigations,
+            "list_from_payload": list_from_payload,
+            "stat_value": stat_value,
+            "display_number": display_number,
+            "query_domain": query_domain,
+            "query_type": query_type,
+            "query_status": query_status,
+            "query_upstream": query_upstream,
+            "query_log_time": query_log_time,
+            "query_client_name": query_client_name,
+            "query_client_ip": query_client_ip,
+            "query_reply_type": query_reply_type,
+            "query_reply_time": query_reply_time,
+            "domain_root": domain_root,
+            "domain_kind": domain_kind,
+            "query_chart_points": query_chart_points,
+            "client_activity_rows": client_activity_rows,
+            "dhcp_lease_rows": dhcp_lease_rows,
+            "network_client_inventory": network_client_inventory,
+            "attention_client_rows": attention_client_rows,
+            "risky_blocked_queries": risky_blocked_queries,
+            "chart_max": chart_max,
+            **csrf_context(request),
+        },
+    )

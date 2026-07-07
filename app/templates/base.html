@@ -79,7 +79,7 @@
       <summary><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="11" rx="2"></rect><path d="M8 20h8M12 16v4"></path></svg></span><span class="nav-label">Infrastructure</span></summary>
       <div class="nav-children">
         <a class="nav-link" href="/infrastructure/rack-manager"><span class="nav-label">Rack Manager</span></a>
-        <span class="nav-link disabled" title="Coming soon"><span class="nav-label">Backup Manager</span></span>
+        <a class="nav-link" href="/infrastructure/backup-manager"><span class="nav-label">Backup Manager</span></a>
         <a class="nav-link" href="/infrastructure/asset-manager"><span class="nav-label">Asset Manager</span></a>
         <a class="nav-link" href="/infrastructure/vm-docker-manager"><span class="nav-label">VM/Docker Manager</span></a>
       </div>
@@ -90,7 +90,6 @@
         <a class="nav-link" href="/remote-manager"><span class="nav-label">Remote</span></a>
         {% if user.role == 'admin' %}
         <a class="nav-link" href="/remote-manager/recordings"><span class="nav-label">Session Recording</span></a>
-        <a class="nav-link" href="/remote-manager/settings"><span class="nav-label">Remote Manager Settings</span></a>
         {% endif %}
       </div>
     </details>
@@ -99,7 +98,7 @@
       <div class="nav-children">
         <a class="nav-link" href="/networking/vlan-ip-manager"><span class="nav-label">VLAN/IP Manager</span></a>
         <a class="nav-link" href="/networking/ip-wan-monitor"><span class="nav-label">IP/WAN Monitor</span></a>
-        <span class="nav-link disabled" title="Coming soon"><span class="nav-label">DNS Manager</span></span>
+        <a class="nav-link" href="/networking/dns-manager"><span class="nav-label">DNS Manager</span></a>
         <a class="nav-link" href="/networking/domain-manager"><span class="nav-label">Domain Manager</span></a>
       </div>
     </details>

@@ -353,12 +353,12 @@ def setup_submit(
             status_code=400
         )
 
-    if len(password) < 8:
+    if len(password) < 12:
         return templates.TemplateResponse(
             request,
             "setup.html",
             {
-                "error": "Password must be at least 8 characters.",
+                "error": "Password must be at least 12 characters.",
                 **csrf_context(request, include_version=False)
             },
             status_code=400

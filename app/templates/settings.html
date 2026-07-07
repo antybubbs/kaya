@@ -21,28 +21,455 @@
 <form method="post" action="/system/site-administration" class="site-admin-form" data-settings-tabs>
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 
-  <div class="category-tabs site-admin-tabs" role="tablist" aria-label="Site administration sections">
-    <button type="button" class="active" data-settings-tab="general" role="tab" aria-selected="true">General</button>
-    <button type="button" data-settings-tab="uploads" role="tab" aria-selected="false">Uploads</button>
-    <button type="button" data-settings-tab="email" role="tab" aria-selected="false">Email</button>
-    <button type="button" data-settings-tab="email-templates" role="tab" aria-selected="false">Email Templates</button>
-  </div>
+  <div class="settings-layout">
+    <aside class="panel settings-internal-sidebar" aria-label="Site administration sections">
+      <div class="settings-side-section">
+        <a href="/system/site-administration?tab=general" class="settings-side-link active" data-settings-parent-tab="general" data-default-child="general" aria-selected="true">General</a>
+        <a href="/system/site-administration?tab=security" class="settings-side-link" data-settings-parent-tab="security" data-default-child="security" aria-selected="false">Security</a>
+        <a href="/system/site-administration?tab=uploads" class="settings-side-link" data-settings-parent-tab="uploads" data-default-child="uploads" aria-selected="false">Uploads</a>
+      </div>
 
-  <section class="settings-tab-panel active" data-settings-panel="general" role="tabpanel">
+      <details class="settings-side-group" data-settings-details="email" open>
+        <summary class="settings-side-link" data-settings-parent-tab="email" data-default-child="email-general" aria-selected="false">Email</summary>
+        <div class="settings-side-children">
+          <a href="/system/site-administration?tab=email-general" class="settings-side-child" data-settings-child-tab="email-general" data-settings-parent="email" aria-selected="false">General</a>
+          <a href="/system/site-administration?tab=email-templates" class="settings-side-child" data-settings-child-tab="email-templates" data-settings-parent="email" aria-selected="false">Email Templates</a>
+        </div>
+      </details>
+
+      <details class="settings-side-group" data-settings-details="modules" open>
+        <summary class="settings-side-link" data-settings-parent-tab="modules" data-default-child="module-backup-manager" aria-selected="false">Module Settings</summary>
+        <div class="settings-side-children">
+          <a href="/system/site-administration?tab=module-backup-manager" class="settings-side-child" data-settings-child-tab="module-backup-manager" data-settings-parent="modules" aria-selected="false">Backup Manager</a>
+          <a href="/system/site-administration?tab=module-dns-manager" class="settings-side-child" data-settings-child-tab="module-dns-manager" data-settings-parent="modules" aria-selected="false">DNS Manager</a>
+          <a href="/system/site-administration?tab=module-remote-manager" class="settings-side-child" data-settings-child-tab="module-remote-manager" data-settings-parent="modules" aria-selected="false">Remote Manager</a>
+        </div>
+      </details>
+    </aside>
+
+    <main class="settings-content-panel">
+  <section class="settings-tab-panel active" data-settings-panel="general" data-settings-parent="general" role="tabpanel">
     <h2>General</h2>
 
     <div class="remote-settings-card" id="general">
       <div class="remote-settings-grid">
         <label>
           <strong>Base URL</strong>
-          <small>The public URL used to access {{ brand.name }}. Once configured, {{ brand.name }} will automatically trust this hostname instead of allowing requests from any host.</small>
+          <small>The public URL used for links in emails and integrations.</small>
           <input name="base_url" type="url" value="{{ settings.get('base_url', '') }}" placeholder="http://localhost:8080">
         </label>
       </div>
     </div>
   </section>
 
-  <section class="settings-tab-panel" data-settings-panel="uploads" role="tabpanel" hidden>
+  <section class="settings-tab-panel" data-settings-panel="security" data-settings-parent="security" role="tabpanel" hidden>
+    <h2>Site Security</h2>
+
+    {% if security_check %}
+    <div class="remote-settings-card">
+      <header><span>Current security check</span></header>
+      <div class="security-check-grid">
+        <div>
+          <span>Current host</span>
+          <strong class="mono">{{ security_check.current_host or 'unknown' }}</strong>
+          <small>The Host header Kaya is seeing for this browser request.</small>
+        </div>
+        <div>
+          <span>Outbound public IP</span>
+          <strong class="mono" data-public-ip-result>Not checked</strong>
+          <small data-public-ip-detail>Checks the public IP Kaya uses when it reaches external services.</small>
+          <button type="button" class="button secondary" data-public-ip-check>Check outbound IP</button>
+        </div>
+        <div>
+          <span>Inbound DNS</span>
+          <strong class="mono" data-inbound-result>Not checked</strong>
+          <small data-inbound-detail>Resolves the current browser hostname to show where users are routed.</small>
+          <button type="button" class="button secondary" data-inbound-check>Check inbound DNS</button>
+        </div>
+        <div>
+          <span>Trusted host check</span>
+          {% if security_check.host_filter_enabled %}
+            <strong class="table-chip {% if security_check.host_allowed %}good{% else %}danger-chip{% endif %}">{% if security_check.host_allowed %}Passing{% else %}Blocked{% endif %}</strong>
+            <small>{% if security_check.host_allowed %}This host is in the effective allow-list.{% else %}Saving this would block the current browser host.{% endif %}</small>
+          {% else %}
+            <strong class="table-chip muted-chip">Not enforced</strong>
+            <small>Host filtering is off, so direct IPs and changing reverse proxies keep working.</small>
+          {% endif %}
+        </div>
+        <div>
+          <span>Frame ancestors</span>
+          <strong class="mono">{{ security_check.frame_ancestors }}</strong>
+          <small>The value Kaya will send in Content-Security-Policy.</small>
+        </div>
+        <div>
+          <span>HSTS</span>
+          {% if security_check.hsts_active %}
+            <strong class="table-chip good">Active</strong>
+            <small class="mono">{{ security_check.hsts_header }}</small>
+          {% elif security_check.hsts_enabled %}
+            <strong class="table-chip muted-chip">Waiting for HTTPS</strong>
+            <small>HSTS is configured, but this request was not HTTPS.</small>
+          {% else %}
+            <strong class="table-chip muted-chip">Off</strong>
+            <small>Browsers will not be told to force HTTPS yet.</small>
+          {% endif %}
+        </div>
+        <div>
+          <span>RDP token lifetime</span>
+          <strong>{{ security_check.rdp_token_ttl_minutes }} minutes</strong>
+          <small>Browser RDP handoff tokens expire after this time.</small>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
+    <div class="remote-settings-card" id="security">
+      <header><span>Host and proxy hardening</span></header>
+      {{ switch('trusted_hosts_enabled', 'Restrict trusted hosts', 'Reject requests whose Host header is not in the allow-list. Leave this off for first install or changing proxy/IP setups.') }}
+      <div class="remote-settings-grid">
+        <label>
+          <strong>Allowed hosts</strong>
+          <small>One hostname or IP per line, or comma-separated. Include the address users type in their browser, for example kaya.example.com, xxx.xxx.xxx.xxx, or *.example.com.</small>
+          <textarea name="allowed_hosts" rows="4" placeholder="kaya.example.com&#10;xxx.xxx.xxx.xxx">{{ settings.get('allowed_hosts', '') }}</textarea>
+        </label>
+      </div>
+    </div>
+
+    <div class="remote-settings-card">
+      <header><span>Browser security headers</span></header>
+      <div class="remote-settings-grid">
+        <label>
+          <strong>Frame embedding policy</strong>
+          <small>Controls which sites can embed Kaya in a frame. Self only is the safest default for normal installs.</small>
+          <select name="csp_frame_ancestors">
+            <option value="self" {% if settings.get('csp_frame_ancestors', 'self') == 'self' %}selected{% endif %}>Self only</option>
+            <option value="none" {% if settings.get('csp_frame_ancestors') == 'none' %}selected{% endif %}>Block all framing</option>
+            <option value="custom" {% if settings.get('csp_frame_ancestors') == 'custom' %}selected{% endif %}>Self plus trusted sites</option>
+          </select>
+        </label>
+        <label>
+          <strong>Trusted frame sources</strong>
+          <small>Only used by "Self plus trusted sites". Use full origins such as https://portal.example.com.</small>
+          <textarea name="csp_frame_ancestor_sources" rows="3" placeholder="https://portal.example.com">{{ settings.get('csp_frame_ancestor_sources', '') }}</textarea>
+        </label>
+      </div>
+      {{ switch('hsts_enabled', 'Enable HSTS', 'Tell browsers to use HTTPS for future visits. Enable only after HTTPS is working through your reverse proxy.') }}
+      {{ switch('hsts_include_subdomains', 'Include subdomains in HSTS', 'Apply the HTTPS-only rule to subdomains too. Use only if all subdomains are HTTPS-ready.') }}
+      <div class="remote-settings-grid">
+        <label>
+          <strong>HSTS max age</strong>
+          <small>How long browsers remember the HTTPS-only rule, in seconds. 31536000 is one year.</small>
+          <input name="hsts_max_age" type="number" min="300" max="63072000" value="{{ settings.get('hsts_max_age', '31536000') }}">
+        </label>
+      </div>
+    </div>
+
+    <div class="remote-settings-card">
+      <header><span>Remote access tokens</span></header>
+      <div class="remote-settings-grid">
+        <label>
+          <strong>RDP token lifetime</strong>
+          <small>Minutes that a prepared browser RDP handoff token can be used. Shorter is safer; 5 to 15 minutes is recommended.</small>
+          <input name="rdp_token_ttl_minutes" type="number" min="5" max="60" value="{{ settings.get('rdp_token_ttl_minutes', '10') }}">
+        </label>
+      </div>
+    </div>
+  </section>
+
+  <section class="settings-tab-panel" data-settings-panel="module-backup-manager" data-settings-parent="modules" role="tabpanel" hidden>
+    <h2>Backup Manager</h2>
+
+    <div class="remote-settings-card">
+      <header><span>Backup targets</span></header>
+      <small class="muted">Saved targets are listed below.</small>
+      <input type="hidden" name="backup_targets_json" id="backup_targets_json" value="{{ settings.get('backup_targets_json', '[]') }}">
+      <input type="hidden" name="backup_default_target_name" id="backup_default_target_name" value="{{ settings.get('backup_default_target_name', '') }}">
+      <input type="hidden" name="backup_storage_type" id="backup_storage_type" value="{{ settings.get('backup_storage_type', 'local') }}">
+      <input type="hidden" name="backup_storage_path" id="backup_storage_path" value="{{ settings.get('backup_storage_path', '/mnt/backups') }}">
+      <input type="hidden" name="backup_remote_host" id="backup_remote_host" value="{{ settings.get('backup_remote_host', '') }}">
+      <input type="hidden" name="backup_remote_share" id="backup_remote_share" value="{{ settings.get('backup_remote_share', '') }}">
+      <input type="hidden" name="backup_remote_username" id="backup_remote_username" value="{{ settings.get('backup_remote_username', '') }}">
+      <div class="remote-settings-grid">
+        <div class="backup-targets-builder" data-backup-targets-builder>
+          <div class="backup-targets-list" data-backup-targets-list></div>
+          <div class="backup-target-editor" data-backup-target-editor hidden></div>
+          <div class="backup-targets-actions">
+            <button type="button" class="button secondary" data-add-backup-target>Add target</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="settings-tab-panel" data-settings-panel="module-dns-manager" data-settings-parent="modules" role="tabpanel" hidden>
+    <h2>DNS Manager</h2>
+    {% set dns_default_id = settings.get('dns_default_provider_id', '') %}
+    {% set dns_ns = namespace(provider=none) %}
+    {% for item in dns_providers or [] %}
+      {% if (dns_default_id and item.id|string == dns_default_id) or (not dns_default_id and loop.first) %}
+        {% set dns_ns.provider = item %}
+      {% endif %}
+    {% endfor %}
+    {% set dns_provider = dns_ns.provider %}
+
+    <div class="remote-settings-card">
+      <header><span>General</span></header>
+      <div class="remote-settings-grid two">
+        <label class="remote-setting-row">
+          <span><strong>Enable DNS Manager</strong><small>Show and use DNS Manager for configured providers.</small></span>
+          <input class="remote-switch" name="dns_manager_enabled" type="checkbox" value="1" {% if settings.get('dns_manager_enabled') == '1' %}checked{% endif %}>
+        </label>
+        <label class="remote-setting-row">
+          <span><strong>Enable caching</strong><small>Allow DNS Manager to reuse recent provider responses where supported.</small></span>
+          <input class="remote-switch" name="dns_cache_enabled" type="checkbox" value="1" {% if settings.get('dns_cache_enabled', '1') == '1' %}checked{% endif %}>
+        </label>
+        <label>
+          <strong>Default DNS provider</strong>
+          <small>Provider used when DNS Manager opens.</small>
+          <select name="dns_default_provider_id">
+            <option value="">First enabled provider</option>
+            {% for item in dns_providers or [] %}
+            <option value="{{ item.id }}" {% if settings.get('dns_default_provider_id') == item.id|string %}selected{% endif %}>{{ item.name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>
+          <strong>Default refresh interval</strong>
+          <small>Minimum time between automatic refreshes.</small>
+          <input name="dns_refresh_interval_seconds" type="number" min="30" max="86400" value="{{ settings.get('dns_refresh_interval_seconds', '300') }}">
+        </label>
+      </div>
+    </div>
+
+    <div class="remote-settings-card">
+      <header><span>Pi-hole connection</span></header>
+      <div class="remote-settings-grid two">
+        <input name="dns_provider_id" type="hidden" value="{{ dns_provider.id if dns_provider else '' }}">
+        <label>
+          <strong>Display name</strong>
+          <small>Name shown inside DNS Manager.</small>
+          <input name="dns_provider_name" value="{{ dns_provider.name if dns_provider else '' }}" placeholder="Home Pi-hole">
+        </label>
+        <label>
+          <strong>Provider type</strong>
+          <small>Pi-hole is the first supported provider.</small>
+          <select name="dns_provider_type">
+            <option value="pihole" selected>Pi-hole</option>
+          </select>
+        </label>
+        <label>
+          <strong>Base URL</strong>
+          <small>Pi-hole URL Kaya should connect to.</small>
+          <input name="dns_provider_base_url" type="url" value="{{ dns_provider.base_url if dns_provider else '' }}" placeholder="https://pihole.example.local">
+        </label>
+        <label>
+          <strong>Authentication method</strong>
+          <small>Use an application password or API credential supported by your Pi-hole version.</small>
+          <select name="dns_provider_auth_method">
+            {% set auth_method = dns_provider.auth_method if dns_provider else 'password' %}
+            <option value="password" {% if auth_method == 'password' %}selected{% endif %}>Application password</option>
+            <option value="api_token" {% if auth_method == 'api_token' %}selected{% endif %}>API credential</option>
+          </select>
+        </label>
+        <label>
+          <strong>Application password/API credential</strong>
+          <small>{% if dns_provider and dns_provider.encrypted_secret %}A credential is saved. Enter a new one to replace it.{% else %}Stored encrypted by Kaya.{% endif %}</small>
+          <input name="dns_provider_secret" type="password" value="" autocomplete="new-password" placeholder="{% if dns_provider and dns_provider.encrypted_secret %}Saved credential{% endif %}">
+        </label>
+        <label>
+          <strong>Connection timeout</strong>
+          <small>Seconds before Kaya gives up on a provider request.</small>
+          <input name="dns_provider_timeout_seconds" type="number" min="1" max="60" value="{{ dns_provider.timeout_seconds if dns_provider else 10 }}">
+        </label>
+        <label class="remote-setting-row">
+          <span><strong>Verify SSL certificate</strong><small>Disable only for trusted internal endpoints with self-signed certificates.</small></span>
+          <input class="remote-switch" name="dns_provider_ssl_verify" type="checkbox" value="1" {% if not dns_provider or dns_provider.ssl_verify %}checked{% endif %}>
+        </label>
+        <label class="remote-setting-row">
+          <span><strong>Provider enabled</strong><small>Disabled providers stay saved but are ignored by DNS Manager.</small></span>
+          <input class="remote-switch" name="dns_provider_enabled" type="checkbox" value="1" {% if not dns_provider or dns_provider.is_enabled %}checked{% endif %}>
+        </label>
+        <label class="wide">
+          <strong>Description</strong>
+          <small>Optional internal note for administrators.</small>
+          <textarea name="dns_provider_description" placeholder="Location, purpose, or owner">{{ dns_provider.description if dns_provider and dns_provider.description else '' }}</textarea>
+        </label>
+      </div>
+      <div class="remote-settings-actions">
+        <button class="button secondary" type="submit" formaction="/system/site-administration/test-dns-provider" formmethod="post">Test Pi-hole connection</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="settings-tab-panel" data-settings-panel="module-remote-manager" data-settings-parent="modules" role="tabpanel" hidden>
+    <h2>Remote Manager</h2>
+
+    <div class="remote-settings-card" id="remote-manager-general">
+      <header><span>General</span></header>
+      <div class="remote-settings-grid">
+        {{ switch('split_screen_enabled', 'Enable split screen sessions', 'Allow users to place two live sessions side by side in Remote Manager') }}
+        {{ switch('guacamole_enabled', 'Enable Guacamole for RDP', 'Guacamole is installed alongside Kaya if you used the standard docker compose file. These settings are automatically populated with the local container name unless you use your own guacd server.') }}
+        <label>
+          <strong>guacd host</strong>
+          <small>Host name or IP address of the Guacamole daemon.</small>
+          <input name="guacd_host" value="{{ settings.get('guacd_host', 'guacd') or 'guacd' }}">
+        </label>
+        <label>
+          <strong>guacd port</strong>
+          <small>Port used by the Guacamole daemon.</small>
+          <input name="guacd_port" type="number" min="1" max="65535" value="{{ settings.get('guacd_port', '4822') or '4822' }}">
+        </label>
+        <label>
+          <strong>Idle timeout</strong>
+          <small>Disconnect inactive sessions after this many minutes. Use 0 to disable.</small>
+          <input name="session_idle_timeout_minutes" type="number" min="0" max="1440" value="{{ settings.get('session_idle_timeout_minutes', '0') or '0' }}">
+        </label>
+      </div>
+    </div>
+
+    <div class="remote-settings-card" id="remote-manager-recording">
+      <header><span>Session Recording</span></header>
+      <div class="remote-settings-grid remote-recording-settings-grid">
+        <label>
+          <strong>Recording mode</strong>
+          <select name="recording_mode">
+            {% set recording_mode = settings.get('recording_mode', 'manual') %}
+            <option value="off" {% if recording_mode == 'off' %}selected{% endif %}>Off</option>
+            <option value="manual" {% if recording_mode == 'manual' %}selected{% endif %}>Manual only</option>
+            <option value="all" {% if recording_mode == 'all' %}selected{% endif %}>Auto-record all sessions</option>
+            <option value="categories" {% if recording_mode == 'categories' %}selected{% endif %}>Auto-record selected categories</option>
+          </select>
+        </label>
+        <label>
+          <strong>Recorded categories</strong>
+          <small>Comma or line separated.</small>
+          <textarea name="recording_categories" rows="4" placeholder="Servers&#10;Privileged">{{ settings.get('recording_categories', '') }}</textarea>
+        </label>
+        <label>
+          <strong>Pause recording after</strong>
+          <small>Minutes with no screen change. Use 0 to disable.</small>
+          <input name="recording_pause_idle_minutes" type="number" min="0" max="1440" value="{{ settings.get('recording_pause_idle_minutes', '5') or '5' }}">
+        </label>
+      </div>
+    </div>
+
+    <div class="remote-settings-card" id="remote-manager-terminal">
+      <header><span>Terminal Appearance</span></header>
+      <div class="terminal-preview">
+        <div><span class="term-green">deploy@web-01</span>:<span class="term-blue">~</span>$ ls -la</div>
+        <div>total 48</div>
+        <div><span class="term-cyan">drwxr-xr-x</span> 5 deploy deploy 4096 May 1 09:12 .</div>
+        <div><span class="term-cyan">drwxr-xr-x</span> 3 root root 4096 Apr 15 18:44 ..</div>
+        <div>-rw-r--r-- 1 deploy deploy 220 Apr 15 18:44 <span class="term-white">.bash_logout</span></div>
+        <div><span class="term-green">-rwxr-xr-x</span> 1 deploy deploy 8192 May 1 08:55 deploy.sh</div>
+        <div><span class="term-green">deploy@kaya</span>:<span class="term-blue">~</span>$ <span class="term-cursor"></span></div>
+      </div>
+      <div class="remote-settings-grid two">
+        <label>
+          <strong>Color theme</strong>
+          <select name="terminal_theme">
+            {% for value, label in [('kaya','Kaya Default'),('kayaDark','Kaya Dark'),('kayaLight','Kaya Light'),('nightOwl','Night Owl'),('dracula','Dracula'),('monokai','Monokai'),('nord','Nord'),('oneDark','One Dark'),('tokyoNight','Tokyo Night'),('gruvboxDark','Gruvbox Dark'),('solarizedDark','Solarized Dark'),('catppuccinMocha','Catppuccin Mocha')] %}
+            <option value="{{ value }}" {% if settings.get('terminal_theme', 'kaya') == value %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>
+          <strong>Font family</strong>
+          <select name="terminal_font_family">
+            {% for value, label in [('Caskaydia Cove Nerd Font Mono','Caskaydia Cove Nerd Font Mono')] %}
+            <option value="{{ value }}" {% if settings.get('terminal_font_family', 'Caskaydia Cove Nerd Font Mono') == value %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>
+          <strong>Font size</strong>
+          <small>{{ settings.get('terminal_font_size', '14') }}px</small>
+          <input name="terminal_font_size" type="range" min="8" max="28" value="{{ settings.get('terminal_font_size', '14') }}">
+        </label>
+        <label>
+          <strong>Cursor style</strong>
+          <select name="terminal_cursor_style">
+            {% set cursor_style = settings.get('terminal_cursor_style', 'bar') %}
+            <option value="bar" {% if cursor_style == 'bar' %}selected{% endif %}>Bar</option>
+            <option value="block" {% if cursor_style == 'block' %}selected{% endif %}>Block</option>
+            <option value="underline" {% if cursor_style == 'underline' %}selected{% endif %}>Underline</option>
+          </select>
+        </label>
+        <label>
+          <strong>Letter spacing</strong>
+          <small>{{ settings.get('terminal_letter_spacing', '0') }}px</small>
+          <input name="terminal_letter_spacing" type="range" min="0" max="4" value="{{ settings.get('terminal_letter_spacing', '0') }}">
+        </label>
+        <label>
+          <strong>Line height</strong>
+          <small>{{ settings.get('terminal_line_height', '1') }}</small>
+          <input name="terminal_line_height" type="range" min="0.8" max="2" step="0.1" value="{{ settings.get('terminal_line_height', '1') }}">
+        </label>
+        <label>
+          <strong>Bell style</strong>
+          <select name="terminal_bell_style">
+            {% set bell_style = settings.get('terminal_bell_style', 'none') %}
+            <option value="none" {% if bell_style == 'none' %}selected{% endif %}>None</option>
+            <option value="sound" {% if bell_style == 'sound' %}selected{% endif %}>Sound</option>
+            <option value="visual" {% if bell_style == 'visual' %}selected{% endif %}>Visual</option>
+          </select>
+        </label>
+        <label>
+          <strong>Backspace mode</strong>
+          <select name="terminal_backspace_mode">
+            {% set backspace_mode = settings.get('terminal_backspace_mode', 'normal') %}
+            <option value="normal" {% if backspace_mode == 'normal' %}selected{% endif %}>Normal (DEL)</option>
+            <option value="bs" {% if backspace_mode == 'bs' %}selected{% endif %}>Backspace (BS)</option>
+          </select>
+        </label>
+      </div>
+      {{ switch('terminal_cursor_blink', 'Cursor blinking', 'Enable blinking animation for the terminal cursor') }}
+      {{ switch('terminal_syntax_highlighting', 'Syntax highlighting', 'Colour prompts, paths, links, IPs, and command status text') }}
+      {{ switch('terminal_right_click_selects_word', 'Right-click selects word', 'Select the word under cursor on right-click') }}
+      <div class="remote-settings-grid">
+        <label>
+          <strong>Scrollback buffer</strong>
+          <small>{{ settings.get('terminal_scrollback', '10000') }} lines kept in history.</small>
+          <input name="terminal_scrollback" type="range" min="1000" max="100000" step="1000" value="{{ settings.get('terminal_scrollback', '10000') }}">
+        </label>
+      </div>
+    </div>
+
+    <div class="remote-settings-card" id="remote-manager-rdp">
+      <header><span>RDP</span></header>
+      {{ switch('rdp_disable_audio', 'Disable audio', 'Mute all audio from the remote session') }}
+      {{ switch('rdp_enable_audio_input', 'Enable audio input', 'Forward local microphone to the remote session') }}
+      {{ switch('rdp_enable_wallpaper', 'Wallpaper', 'Show desktop wallpaper') }}
+      {{ switch('rdp_enable_theming', 'Theming', 'Enable visual themes and styles') }}
+      {{ switch('rdp_enable_font_smoothing', 'Font smoothing', 'Enable ClearType font rendering') }}
+      {{ switch('rdp_enable_full_window_drag', 'Full window drag', 'Show window contents while dragging') }}
+      {{ switch('rdp_enable_desktop_composition', 'Desktop composition', 'Enable desktop composition effects') }}
+      {{ switch('rdp_enable_menu_animations', 'Menu animations', 'Enable menu fade and slide animations') }}
+      {{ switch('rdp_disable_bitmap_caching', 'Disable bitmap caching', 'Turn off bitmap cache') }}
+      {{ switch('rdp_disable_offscreen_caching', 'Disable offscreen caching', 'Turn off offscreen cache') }}
+      {{ switch('rdp_disable_glyph_caching', 'Disable glyph caching', 'Turn off glyph cache') }}
+      {{ switch('rdp_enable_gfx', 'Enable GFX', 'Use RemoteFX graphics pipeline') }}
+      <div class="remote-settings-grid">
+        <label>
+          <strong>Resize method</strong>
+          <small>How remote resolution changes are applied.</small>
+          <select name="rdp_resize_method">
+            {% set resize_method = settings.get('rdp_resize_method', 'display-update') %}
+            <option value="display-update" {% if resize_method == 'display-update' %}selected{% endif %}>Display Update (fast)</option>
+            <option value="reconnect" {% if resize_method == 'reconnect' %}selected{% endif %}>Reconnect (VPN-safe)</option>
+          </select>
+        </label>
+      </div>
+    </div>
+
+    <div class="remote-settings-card" id="remote-manager-redirection">
+      <header><span>Device Redirection</span></header>
+      {{ switch('rdp_enable_printing', 'Enable printing', 'Redirect local printers to the remote session') }}
+      {{ switch('rdp_enable_drive', 'Enable drive redirection', 'Map a local folder as a drive in the remote session') }}
+    </div>
+  </section>
+
+  <section class="settings-tab-panel" data-settings-panel="uploads" data-settings-parent="uploads" role="tabpanel" hidden>
     <h2>Uploads</h2>
 
     <div class="remote-settings-card" id="uploads">
@@ -56,7 +483,7 @@
     </div>
   </section>
 
-  <section class="settings-tab-panel" data-settings-panel="email" role="tabpanel" hidden>
+  <section class="settings-tab-panel" data-settings-panel="email-general" data-settings-parent="email" role="tabpanel" hidden>
     <h2>Email</h2>
 
     <div class="remote-settings-card" id="email">
@@ -105,7 +532,7 @@
     </div>
   </section>
 
-  <section class="settings-tab-panel" data-settings-panel="email-templates" role="tabpanel" hidden>
+  <section class="settings-tab-panel" data-settings-panel="email-templates" data-settings-parent="email" role="tabpanel" hidden>
     <h2>Email Templates</h2>
 
     <div class="remote-settings-card" id="email-templates">
@@ -127,11 +554,13 @@
 
   <div class="site-admin-actions">
     <button type="submit" class="btn btn-primary">Save settings</button>
-    <button type="submit" formaction="/system/site-administration/test-email" class="btn btn-secondary">Send test email</button>
+  </div>
+    </main>
   </div>
 </form>
 {% endblock %}
 
 {% block extra_scripts %}
 <script src="/static/js/settings_tabs.js?v={{ asset_version }}"></script>
+<script src="/static/js/remote_settings.js?v={{ asset_version }}"></script>
 {% endblock %}

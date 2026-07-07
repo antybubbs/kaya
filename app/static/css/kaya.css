@@ -82,8 +82,8 @@ a:hover,.panel a:hover{color:#ffd08a}
 .button.secondary,.ghost,.icon-button,.table-settings>summary,.category-tabs a,.compute-tabs a,.runbook-view-toggle .button,.runbook-editor-toolbar>button,.runbook-code-copy,.remote-host-toolbar button,.remote-host-toolbar a,.remote-layout-button,.remote-tab-tool,.remote-protocol-icon{background:#18140f;border-color:rgba(255,138,0,.28);color:#f5f5f2}
 .button.secondary:hover,.ghost:hover,.icon-button:hover,.table-settings>summary:hover,.category-tabs a:hover,.compute-tabs a:hover,.runbook-view-toggle .button:hover,.runbook-editor-toolbar>button:hover,.runbook-editor-toolbar>button:focus-visible,.runbook-code-copy:hover,.remote-host-toolbar button:hover,.remote-host-toolbar a:hover,.remote-layout-button:hover,.remote-tab-tool:hover,.remote-protocol-icon:hover{background:rgba(255,138,0,.13);border-color:rgba(255,138,0,.34);color:#fff}
 .category-tabs a.active,.compute-tabs a.active,.runbook-view-toggle .button.active,.remote-layout-button.active{background:rgba(255,138,0,.17);border-color:rgba(255,138,0,.5);box-shadow:inset 0 -2px 0 var(--kaya-orange);color:#fff}
-.site-admin-form{max-width:1040px}
-.settings-tab-panel{max-width:680px}
+.site-admin-form{max-width:none;width:100%}
+.settings-tab-panel{max-width:none;width:100%}
 .site-admin-tabs button{background:#161c24;border:1px solid #2b3340;border-radius:8px;color:#b9c2cf;font-size:13px;min-height:38px;padding:9px 15px;transition:background .12s,border-color .12s,color .12s,box-shadow .12s}
 .site-admin-tabs button:hover{background:#202835;border-color:rgba(255,138,0,.38);color:#f8fafc}
 .site-admin-tabs button.active,.site-admin-tabs button[aria-selected=true]{background:#1b2430;border-color:rgba(255,138,0,.55);box-shadow:inset 0 -2px 0 var(--kaya-orange);color:#fff}
@@ -91,6 +91,13 @@ a:hover,.panel a:hover{color:#ffd08a}
 .settings-tab-panel .remote-settings-card{background:#14171d!important;border-color:#2a303a!important}
 .settings-tab-panel .remote-settings-card .remote-setting-row{border-bottom-color:#2a303a}
 .settings-tab-panel .remote-settings-card .remote-settings-grid{background:transparent}
+.security-check-grid{display:grid;gap:12px;grid-template-columns:repeat(2,minmax(0,1fr));padding:14px}
+.security-check-grid div{background:#10141a;border:1px solid #2a303a;border-radius:8px;display:grid;gap:6px;min-width:0;padding:12px}
+.security-check-grid span{color:#9ca3af;font-size:12px;font-weight:850;text-transform:uppercase}
+.security-check-grid strong{overflow-wrap:anywhere}
+.security-check-grid small{color:#9ca3af;font-size:12px;line-height:1.35}
+.security-check-grid button{justify-self:start;margin-top:2px}
+.table-chip.danger-chip{background:rgba(239,68,68,.11);border-color:rgba(239,68,68,.34);color:#fca5a5}
 .panel th,.table-head th{color:#ffc477!important}
 .table-chip{background:rgba(255,138,0,.1);border-color:rgba(255,138,0,.26);color:#ffd08a}
 .table-chip.muted-chip{background:rgba(156,163,175,.1);border-color:rgba(156,163,175,.22);color:#cbd5e1}
@@ -228,6 +235,8 @@ html[data-kaya-theme=light-ops] .site-admin-tabs button.active,html[data-kaya-th
 html[data-kaya-theme=light-ops] .site-admin-actions,html[data-kaya-theme=light-ops] .remote-settings-actions{border-top:0!important}
 html[data-kaya-theme=light-ops] .settings-tab-panel .remote-settings-card{background:#fff!important;border-color:#d8dee8!important}
 html[data-kaya-theme=light-ops] .settings-tab-panel .remote-settings-card .remote-setting-row{border-bottom-color:#d8dee8}
+html[data-kaya-theme=light-ops] .security-check-grid div{background:#f8fafc;border-color:#d8dee8}
+html[data-kaya-theme=light-ops] .security-check-grid span,html[data-kaya-theme=light-ops] .security-check-grid small{color:#64748b}
 
 /* Global hero treatment and blue-surface cleanup */
 .topbar,.module-header,.record-hero,.about-hero,.audit-hero,.dashboard-hero,.compute-hero{background:radial-gradient(circle at 86% 8%,rgba(255,138,0,.11),transparent 36%),#12161c!important;border-color:#252c36!important}
@@ -258,7 +267,11 @@ html[data-kaya-theme=command] .remote-card{background:#14171d!important;border-c
 html[data-kaya-theme=command] .table-scroll thead th,
 html[data-kaya-theme=command] .audit-table th{background:#1a1f27!important;border-bottom-color:#303845!important}
 
-@media(max-width:900px){.site-admin-form,.settings-tab-panel{max-width:none}}
+.dns-card-blue{background:linear-gradient(135deg,#38bdf8,#2563eb)!important}
+.dns-bar-allowed{background:#ffb357!important}
+.dns-client-row span{background:linear-gradient(90deg,#ff8a00,#22c55e)!important}
+
+@media(max-width:900px){.site-admin-form,.settings-tab-panel{max-width:none}.security-check-grid{grid-template-columns:1fr}}
 
 /* Sidebar selected modules: remove orange outline/rail */
 .sidebar .nav-link.active,
@@ -498,4 +511,319 @@ html[data-kaya-theme=light-ops] .compute-tabs a.active{
   background:#ff8a00!important;
   border-color:#ff8a00!important;
   color:#101010!important;
+}
+
+/* Dark theme surface normalization: remove legacy slate/blue panel tints */
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .card,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .panel,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .login-card,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .monitor-card,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .remote-card,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .remote-settings-card,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .compute-host-card,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .resource-gauge,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .audit-summary-grid article,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .compute-summary-grid article,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .inventory-counts div,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .mini-metrics div,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .record-panel,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .record-fields>div,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .record-kv-list div,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .inline-edit-preview,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .service-card,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .compute-link-card,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .compute-link-empty,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .domain-dns-type,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .domain-record-list span,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .domain-dns-type span,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .runbook-page-card,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .runbook-side,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .runbook-content,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .rack-card,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .rack-create-panel,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .rack-elevation-panel,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .rack-side-panel,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .settings-content-panel,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .settings-internal-sidebar,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .dns-chart-panel,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .empty-state{
+  background:#14171d!important;
+  border-color:#2a303a!important;
+  color:#f5f5f2;
+  box-shadow:none!important;
+}
+
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .module-header,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .topbar,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .dashboard-hero,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .compute-hero,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .audit-hero,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .record-hero,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .about-hero{
+  background:linear-gradient(135deg,rgba(255,138,0,.055),rgba(20,23,29,.98) 42%,#12161c)!important;
+  border-color:#252c36!important;
+}
+
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .dns-bar-chart,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .audit-inspector dl,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .mini-metrics div,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .inventory-counts div{
+  background-color:#101319!important;
+}
+
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .app-topbar,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .account-popover,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .version-card,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .sidebar-flyout-popover,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) body.sidebar-collapsed .nav-link[href]:hover>.nav-label,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) body.sidebar-collapsed .nav-link[href]:focus>.nav-label{
+  background:#14171d!important;
+  border-color:#2a303a!important;
+  box-shadow:none!important;
+}
+
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .sidebar-flyout-popover:before{
+  border-right-color:#14171d!important;
+}
+
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .setup-page,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .login-wrap{
+  background:#0d0f13!important;
+}
+
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .setup-shell,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .setup-form-panel,
+html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .setup-brand-panel{
+  background:#14171d!important;
+  border-color:#2a303a!important;
+  box-shadow:none!important;
+}
+
+/* DNS Manager query log interactions */
+.dns-query-log-panel{
+  display:grid;
+  gap:12px;
+}
+
+.dns-query-log-controls{
+  align-items:center;
+  display:flex;
+  justify-content:flex-start;
+}
+
+.dns-live-toggle{
+  align-items:center;
+  background:#101319;
+  border:1px solid #2a303a;
+  border-radius:8px;
+  display:inline-flex;
+  gap:10px;
+  padding:9px 12px;
+}
+
+.dns-live-toggle input{
+  flex:0 0 auto;
+  min-height:0;
+  width:auto;
+}
+
+.dns-live-toggle span{
+  display:grid;
+  gap:2px;
+}
+
+.dns-live-toggle small{
+  color:var(--kaya-muted);
+  font-size:11px;
+  font-weight:650;
+}
+
+.dns-query-row-new{
+  animation:dns-query-row-in 520ms ease-out;
+}
+
+@keyframes dns-query-row-in{
+  from{
+    background:rgba(249,151,39,.22);
+    transform:translateY(-6px);
+  }
+  to{
+    background:transparent;
+    transform:translateY(0);
+  }
+}
+
+.dns-domain-menu{
+  display:inline-grid;
+  max-width:min(520px,42vw);
+  position:relative;
+}
+
+.dns-domain-menu>summary{
+  background:transparent!important;
+  border:0!important;
+  color:#f5f5f2!important;
+  cursor:pointer;
+  display:inline;
+  font:inherit;
+  font-weight:850;
+  list-style:none;
+  min-height:0;
+  overflow:hidden;
+  padding:0!important;
+  text-align:left;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+
+.dns-domain-menu>summary::-webkit-details-marker{
+  display:none;
+}
+
+.dns-domain-menu>summary:hover{
+  color:#ffb357!important;
+  text-decoration:underline;
+}
+
+.dns-flag-form{
+  margin:0;
+}
+
+.dns-flag-form button:disabled{
+  cursor:not-allowed;
+  opacity:.62;
+}
+
+.dns-domain-menu-panel{
+  background:#101319;
+  border:1px solid #2a303a;
+  border-radius:8px;
+  box-shadow:0 18px 42px rgba(0,0,0,.36);
+  display:grid;
+  gap:10px;
+  left:0;
+  min-width:min(520px,70vw);
+  padding:12px;
+  position:absolute;
+  top:calc(100% + 8px);
+  z-index:25;
+}
+
+.dns-domain-menu-panel dl{
+  display:grid;
+  gap:6px;
+  margin:0;
+}
+
+.dns-domain-menu-panel dl div{
+  display:grid;
+  gap:8px;
+  grid-template-columns:110px minmax(0,1fr);
+}
+
+.dns-domain-menu-panel dt{
+  color:var(--kaya-muted);
+  font-size:11px;
+  font-weight:850;
+  text-transform:uppercase;
+}
+
+.dns-domain-menu-panel dd{
+  margin:0;
+  overflow-wrap:anywhere;
+}
+
+.dns-domain-web-links{
+  align-items:center;
+  border-top:1px solid #2a303a;
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  padding-top:10px;
+}
+
+.dns-domain-web-links a{
+  background:#18140f;
+  border:1px solid rgba(255,138,0,.28);
+  border-radius:7px;
+  color:#ffb357;
+  font-size:11px;
+  font-weight:850;
+  padding:5px 8px;
+}
+
+.dns-domain-web-links a:hover{
+  background:rgba(255,138,0,.13);
+  color:#fff;
+}
+
+html[data-kaya-theme=light-ops] .dns-live-toggle,
+html[data-kaya-theme=light-ops] .dns-domain-menu-panel{
+  background:#fff!important;
+  border-color:#d8dee8!important;
+}
+
+html[data-kaya-theme=light-ops] .dns-domain-menu>summary{
+  color:#111827!important;
+}
+
+html[data-kaya-theme=light-ops] .dns-domain-web-links{
+  border-top-color:#d8dee8;
+}
+
+html[data-kaya-theme=light-ops] .dns-domain-web-links a{
+  background:#fff8f0;
+  color:#7a3b00;
+}
+
+/* DNS dashboard spacing and light surfaces */
+.dns-manager-tabs{
+  margin-bottom:14px;
+}
+
+.dns-summary-grid{
+  margin-bottom:14px;
+}
+
+.dns-chart-panel{
+  margin-bottom:14px;
+}
+
+html[data-theme=light] .dns-chart-panel,
+html[data-kaya-theme=light-ops] .dns-chart-panel{
+  background:#fff!important;
+  border-color:#d8dee8!important;
+  color:#111827!important;
+}
+
+html[data-theme=light] .dns-chart-panel h2,
+html[data-kaya-theme=light-ops] .dns-chart-panel h2{
+  color:#111827!important;
+}
+
+html[data-theme=light] .dns-chart-panel .muted,
+html[data-kaya-theme=light-ops] .dns-chart-panel .muted{
+  color:#64748b!important;
+}
+
+html[data-theme=light] .dns-chart-panel .compact-empty,
+html[data-kaya-theme=light-ops] .dns-chart-panel .compact-empty{
+  background:#f8fafc!important;
+  border-color:#d8dee8!important;
+  color:#1f2937!important;
+}
+
+html[data-theme=light] .dns-bar-chart,
+html[data-kaya-theme=light-ops] .dns-bar-chart{
+  background:
+    repeating-linear-gradient(to top,rgba(100,116,139,.18) 0 1px,transparent 1px 36px),
+    linear-gradient(180deg,rgba(15,23,42,.025),transparent);
+  border-bottom-color:rgba(100,116,139,.28);
+  border-left-color:rgba(100,116,139,.28);
+}
+
+html[data-theme=light] .dns-client-row div,
+html[data-kaya-theme=light-ops] .dns-client-row div{
+  background:#eef2f7;
+  border-color:#d8dee8;
 }

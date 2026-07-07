@@ -96,7 +96,15 @@ Open your browser:
 http://SERVER-IP:8080/setup
 ```
 
+Kaya works without an environment file. By default it accepts the hostname or IP address you use to reach it, whether that is direct Docker port access or a reverse proxy such as NetBird.
+
+For hardened installs, set `ALLOWED_HOSTS` to your known hostnames or IPs. When `ALLOWED_HOSTS` is blank, Kaya does not enforce host filtering.
+
 Complete the setup wizard to create your administrator account.
+
+After first sign-in, open **System Settings -> Site Administration -> Security** to harden the install. This page lets admins restrict trusted hostnames, tune frame-embedding rules, enable HTTPS security headers and shorten browser RDP token lifetime without editing an environment file.
+
+The Security tab includes a current-request check so admins can confirm the host allow-list, inbound DNS, outbound public IP, frame policy, HSTS state and RDP token lifetime after saving.
 
 Within a few moments Kaya will:
 
@@ -122,6 +130,7 @@ services:
     volumes:
       - ./data:/app/data
       - ./uploads:/app/uploads
+      - ./data/remote-recordings:/app/data/remote-recordings
 
     environment:
       DATABASE_URL: sqlite:////app/data/kaya.db
@@ -131,6 +140,10 @@ services:
 
     cap_add:
       - NET_RAW
+
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=128m
 
   guacd:
     image: guacamole/guacd:1.6.0
@@ -151,6 +164,7 @@ docker compose up -d
   |-------------| -------------------------------|
   |`./data`     | Database and application data  | 
   |`./uploads`  | User uploads                   |
+  |`./data/remote-recordings`| SSH and RDP session recordings |
 
 Back up these folders regularly.
 
@@ -176,6 +190,12 @@ BASE_URL=https://kaya.example.com
 ALLOWED_HOSTS=kaya.example.com
 SESSION_COOKIE_SECURE=true
 ```
+
+These are optional hardening settings. Kaya will still work through a reverse proxy without them, but `BASE_URL` should be set before enabling password reset emails so links point at the public address.
+
+When Kaya sits behind a reverse proxy on the same host, you can bind the container to loopback with `127.0.0.1:8080:8080` and let the proxy be the public entry point.
+
+The same host allow-list and HTTPS hardening can also be managed from **System Settings -> Site Administration -> Security** after setup.
 
 ------------------------------------------------------------------------
 
@@ -209,7 +229,7 @@ Kaya
 
 # 🤖 AI-Assisted Development
 
-Kaya is developed by a human developer with AI acting as a development
+Kaya is developed by a human with AI acting as a development
 assistant.
 
 AI is used to speed up repetitive coding tasks, explore implementation

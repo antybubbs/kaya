@@ -32,9 +32,10 @@
   <section class="remote-settings-card" id="general">
     <header><span>General</span></header>
     <div class="remote-settings-grid">
-      {{ switch('guacamole_enabled', 'Enable Guacamole for RDP', 'You will need to configure Guacamole separately - more information available in the documentation') }}
+      {{ switch('split_screen_enabled', 'Enable split screen sessions', 'Allow users to place two live sessions side by side in Remote Manager') }}
+      {{ switch('guacamole_enabled', 'Enable Guacamole for RDP', 'Guacamole is installed alongside Kaya if you used the standard docker compose file. The below settings are automatically populated with the local container name. If you have your own guacd server, enter the details and click save.') }}
       <label>guacd host
-        <input name="guacd_host" value="{{ settings.guacd_host }}" placeholder="192.168.1.91">
+        <input name="guacd_host" value="{{ settings.guacd_host or 'guacd' }}"> 
       </label>
       <label>guacd port
         <input name="guacd_port" type="number" min="1" max="65535" value="{{ settings.guacd_port or '4822' }}">

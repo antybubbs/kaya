@@ -1,0 +1,384 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="module-header">
+  <div class="module-title-row">
+    <div class="module-heading">
+      <h1>DNS Manager</h1>
+      <p class="muted">Manage and monitor DNS providers from Kaya.</p>
+    </div>
+    {% if provider %}
+    <span class="module-stat">Provider <strong>{{ provider.name }}</strong></span>
+    {% endif %}
+  </div>
+  <div class="module-toolbar">
+    <div class="module-primary-actions">
+      {% if user.role == 'admin' %}
+      <a class="button secondary" href="/system/site-administration?tab=dns-manager">Provider settings</a>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+{% if not enabled %}
+<section class="empty-state">
+  <h2>DNS Manager is not enabled</h2>
+  <p class="muted">Enable DNS Manager and configure a Pi-hole provider in Site Administration.</p>
+  {% if user.role == 'admin' %}<a class="button" href="/system/site-administration?tab=dns-manager">Open settings</a>{% endif %}
+</section>
+{% elif not provider %}
+<section class="empty-state">
+  <h2>No DNS provider configured</h2>
+  <p class="muted">Add an enabled Pi-hole provider in Site Administration before opening DNS Manager.</p>
+  {% if user.role == 'admin' %}<a class="button" href="/system/site-administration?tab=dns-manager">Add provider</a>{% endif %}
+</section>
+{% else %}
+{% if error %}<div class="alert">{{ error }}</div>{% endif %}
+
+<nav class="category-tabs dns-manager-tabs" aria-label="DNS Manager sections">
+  <a href="/networking/dns-manager?tab=dashboard" class="{% if active_tab == 'dashboard' %}active{% endif %}">Dashboard</a>
+  <a href="/networking/dns-manager?tab=query-log" class="{% if active_tab == 'query-log' %}active{% endif %}">Query Log</a>
+  <a href="/networking/dns-manager?tab=clients" class="{% if active_tab == 'clients' %}active{% endif %}">Clients</a>
+  <a href="/networking/dns-manager?tab=local-dns" class="{% if active_tab == 'local-dns' %}active{% endif %}">Local DNS</a>
+  <a href="/networking/dns-manager?tab=dhcp" class="{% if active_tab == 'dhcp' %}active{% endif %}">DHCP</a>
+  <a href="/networking/dns-manager?tab=blocklists" class="{% if active_tab == 'blocklists' %}active{% endif %}">Blocklists</a>
+  <a href="/networking/dns-manager?tab=reports" class="{% if active_tab == 'reports' %}active{% endif %}">Reports</a>
+</nav>
+
+{% if active_tab == 'dashboard' %}
+{% set stats_data = stats.data if stats and stats.ok else {} %}
+{% set status_data = status.data if status and status.ok else {} %}
+{% set history_data = history.data if history and history.ok else {} %}
+{% set clients_data = clients.data if clients and clients.ok else {} %}
+{% set dhcp_data = dhcp.data if dhcp and dhcp.ok else {} %}
+{% set query_log_data = queries.data if queries and queries.ok else {} %}
+{% set blocklists_data = blocklists.data if blocklists and blocklists.ok else {} %}
+{% set query_points = query_chart_points(history_data) %}
+{% set query_max = chart_max(query_points, 'total') %}
+{% set client_rows = client_activity_rows(stats_data, history_data.get('clients') if history_data else {}, query_log_data) %}
+{% set client_max = chart_max(client_rows, 'count') %}
+{% set inventory_rows = network_client_inventory(clients_data, dhcp_data, query_log_data) %}
+{% set unknown_inventory_rows = inventory_rows|selectattr('is_unknown')|list %}
+{% set attention_rows = attention_client_rows(inventory_rows) %}
+{% set dhcp_rows = dhcp_lease_rows(dhcp_data) %}
+{% set risky_rows = risky_blocked_queries(query_log_data) %}
+{% set blocklist_rows = list_from_payload(blocklists_data, 'lists', 'blocklists', 'data') %}
+<section class="dns-summary-grid">
+  <article class="dns-summary-card dns-card-blue">
+    <span>Total Queries</span>
+    <strong>{{ display_number(stat_value(stats_data, 'queries.total', 'dns_queries_today', 'queries_today')) }}</strong>
+    <small>{{ display_number(stat_value(stats_data, 'clients.active', 'unique_clients')) }} active clients</small>
+  </article>
+  <article class="dns-summary-card dns-card-red">
+    <span>Queries Blocked</span>
+    <strong>{{ display_number(stat_value(stats_data, 'queries.blocked', 'ads_blocked_today', 'blocked_queries')) }}</strong>
+    <small>Blocked by policy</small>
+  </article>
+  <article class="dns-summary-card dns-card-amber">
+    <span>Percentage Blocked</span>
+    <strong>{{ display_number(stat_value(stats_data, 'queries.percent_blocked', 'ads_percentage_today'), '%') }}</strong>
+    <small>Current reporting window</small>
+  </article>
+  <article class="dns-summary-card dns-card-green">
+    <span>Domains on Lists</span>
+    <strong>{{ display_number(stat_value(stats_data, 'gravity.domains_being_blocked', 'domains_being_blocked')) }}</strong>
+    <small>Managed by Pi-hole</small>
+  </article>
+  <article class="dns-summary-card dns-card-purple">
+    <span>Network Clients</span>
+    <strong>{{ display_number(inventory_rows|length) }}</strong>
+    <small>{{ display_number(unknown_inventory_rows|length) }} need a closer look</small>
+  </article>
+  <article class="dns-summary-card dns-card-teal">
+    <span>DHCP Leases</span>
+    <strong>{{ display_number(dhcp_rows|length) }}</strong>
+    <small>Currently reported by provider</small>
+  </article>
+  <article class="dns-summary-card dns-card-rose">
+    <span>New / Unrecognised</span>
+    <strong>{{ display_number(attention_rows|length) }}</strong>
+    <small>First seen recently or unnamed</small>
+  </article>
+  <article class="dns-summary-card dns-card-slate">
+    <span>Blocklists</span>
+    <strong>{{ display_number(blocklist_rows|length) }}</strong>
+    <small>{{ display_number(risky_rows|length) }} concerning blocked hits</small>
+  </article>
+</section>
+
+<section class="dns-insight-grid">
+  <article class="dns-chart-panel dns-insight-panel">
+    <header><h2>New or Unrecognised Devices</h2><span class="muted">Useful for spotting unexpected network joins</span></header>
+    {% if attention_rows %}
+    <div class="dns-watch-list">
+      {% for row in attention_rows[:8] %}
+      <div class="dns-watch-item {% if row.is_new %}urgent{% endif %}">
+        <div>
+          <strong>{{ row.name }}</strong>
+          <span>{{ row.ip }}{% if row.mac != '-' %} / {{ row.mac }}{% endif %}</span>
+        </div>
+        <div>
+          {% if row.is_new %}<span class="table-chip danger-chip">New</span>{% endif %}
+          {% if row.is_unknown %}<span class="table-chip">Unrecognised</span>{% endif %}
+          <small>{{ row.source_label }}</small>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state compact-empty">No new or unrecognised devices reported by the provider.</div>
+    {% endif %}
+  </article>
+
+  <article class="dns-chart-panel dns-insight-panel">
+    <header><h2>Blocked Sites of Concern</h2><span class="muted">Adult, gambling, malware, and piracy terms</span></header>
+    {% if risky_rows %}
+    <div class="dns-risk-list">
+      {% for row in risky_rows %}
+      <div class="dns-risk-item">
+        <div>
+          <strong>{{ row.domain }}</strong>
+          <span>{{ row.client }}{% if row.client_ip != '-' %} / {{ row.client_ip }}{% endif %}</span>
+        </div>
+        <div>
+          <span class="table-chip danger-chip">{{ row.category }}</span>
+          <small>{{ row.count }} blocked{% if row.last_seen_label != '-' %} - {{ row.last_seen_label }}{% endif %}</small>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state compact-empty">No concerning blocked domains found in the latest query log.</div>
+    {% endif %}
+  </article>
+</section>
+
+<section class="dns-chart-panel">
+  <header><h2>Total queries</h2><span class="muted">Allowed and blocked queries over time</span></header>
+  {% if query_points %}
+  <div class="dns-bar-chart" style="--chart-max: {{ query_max if query_max else 1 }}">
+    {% for point in query_points %}
+    <div class="dns-bar" title="{{ point.label }}: {{ point.total }} total, {{ point.blocked }} blocked">
+      <span class="dns-bar-allowed" style="height: {{ ((point.allowed / (query_max if query_max else 1)) * 100)|round(2) }}%"></span>
+      <span class="dns-bar-blocked" style="height: {{ ((point.blocked / (query_max if query_max else 1)) * 100)|round(2) }}%"></span>
+      {% if loop.index0 % 12 == 0 %}<em>{{ point.label }}</em>{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty-state compact-empty">No query history returned by this provider yet.</div>
+  {% endif %}
+</section>
+
+<section class="dns-insight-grid">
+  <section class="dns-chart-panel">
+    <header><h2>Top DNS Talkers</h2><span class="muted">Clients generating the most recent lookups</span></header>
+    {% if client_rows %}
+    <div class="dns-client-chart" style="--chart-max: {{ client_max if client_max else 1 }}">
+      {% for row in client_rows %}
+      <div class="dns-client-row">
+        <strong>{{ row.name }}</strong>
+        <div><span style="width: {{ ((row.count / (client_max if client_max else 1)) * 100)|round(2) }}%"></span></div>
+        <em>{{ display_number(row.count) }}</em>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state compact-empty">No per-client query activity returned by this provider yet.</div>
+    {% endif %}
+  </section>
+
+  <section class="dns-chart-panel dns-insight-panel">
+    <header><h2>DHCP Lease Snapshot</h2><span class="muted">Recently assigned addresses</span></header>
+    {% if dhcp_rows %}
+    <div class="dns-mini-table">
+      {% for row in dhcp_rows[:8] %}
+      <div>
+        <strong>{{ row.name }}</strong>
+        <span>{{ row.ip }}</span>
+        <em>{{ row.mac }}</em>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state compact-empty">No DHCP leases returned by this provider.</div>
+    {% endif %}
+  </section>
+</section>
+
+<section class="panel">
+  <h2>Provider Details</h2>
+  <div class="detail-grid">
+    <div><label>Provider</label><p>{{ provider.name }}</p></div>
+    <div><label>Type</label><p>{{ provider.provider_type|upper }}</p></div>
+    <div><label>Base URL</label><p class="mono">{{ provider.base_url }}</p></div>
+    <div><label>Last checked</label><p>{{ provider.last_checked_at.strftime('%Y-%m-%d %H:%M') if provider.last_checked_at else '-' }}</p></div>
+    <div><label>Pi-hole Version</label><p>{{ stat_value(status_data, 'version.core.local.version', 'version') }}</p></div>
+    <div><label>Blocking Status</label><p>{{ stat_value(stats_data, 'status', 'blocking') }}</p></div>
+  </div>
+</section>
+{% elif active_tab == 'query-log' %}
+{% set rows = list_from_payload(queries.data if queries and queries.ok else {}, 'queries', 'data') %}
+<section class="panel dns-query-log-panel" data-dns-query-log>
+  <div class="dns-query-log-controls">
+    <label class="checkbox-row dns-live-toggle">
+      <input type="checkbox" data-dns-live-toggle>
+      <span><strong>Live query log</strong></span>
+    </label>
+  </div>
+  <table data-table-key="dns-query-log" data-dns-query-log-table>
+    <thead><tr><th>Time</th><th>Client Name</th><th>Client IP</th><th>Domain</th><th>Query Type</th><th>Status</th><th>Reply Type</th><th>Reply Time</th><th>Upstream</th><th data-col="actions">Actions</th></tr></thead>
+    <tbody data-dns-query-log-body>
+      {% for row in rows[:200] %}
+      {% set observed_at = query_log_time(row) %}
+      {% set client_name = query_client_name(row) %}
+      {% set client_ip = query_client_ip(row) %}
+      {% set domain = query_domain(row) %}
+      {% set qtype = query_type(row) %}
+      {% set qstatus = query_status(row) %}
+      {% set rtype = query_reply_type(row) %}
+      {% set rtime = query_reply_time(row) %}
+      {% set upstream = query_upstream(row) %}
+      {% set flagged = domain|lower in flagged_domains %}
+      <tr data-query-key="{{ observed_at }}|{{ client_ip }}|{{ domain }}|{{ qtype }}|{{ qstatus }}|{{ rtype }}">
+        <td>{{ query_log_time(row) }}</td>
+        <td>{{ client_name }}</td>
+        <td>{{ client_ip }}</td>
+        <td>
+          <details class="dns-domain-menu">
+            <summary>{{ domain }}</summary>
+            <div class="dns-domain-menu-panel">
+              <dl>
+                <div><dt>Root domain</dt><dd>{{ domain_root(domain) }}</dd></div>
+                <div><dt>Classification</dt><dd>{{ domain_kind(domain) }}</dd></div>
+                <div><dt>Client</dt><dd>{{ client_name }}{% if client_ip != '-' %} / {{ client_ip }}{% endif %}</dd></div>
+                <div><dt>Result</dt><dd>{{ qstatus }}{% if rtype != '-' %} / {{ rtype }}{% endif %}</dd></div>
+                <div><dt>Response</dt><dd>{{ rtime }}{% if upstream != '-' and upstream != 'None' %} via {{ upstream }}{% endif %}</dd></div>
+              </dl>
+              <div class="dns-domain-web-links">
+                <a href="https://lookup.icann.org/en/lookup?name={{ domain_root(domain) }}" target="_blank" rel="noopener noreferrer">WHOIS</a>
+                <a href="https://mxtoolbox.com/SuperTool.aspx?action=a%3a{{ domain }}" target="_blank" rel="noopener noreferrer">DNS lookup</a>
+                <a href="https://www.virustotal.com/gui/domain/{{ domain }}/details" target="_blank" rel="noopener noreferrer">Reputation</a>
+              </div>
+            </div>
+          </details>
+          {% if flagged %}<span class="table-chip danger-chip">Flagged</span>{% endif %}
+        </td>
+        <td>{{ qtype }}</td>
+        <td>{{ qstatus }}</td>
+        <td>{{ rtype }}</td>
+        <td>{{ rtime }}</td>
+        <td>{{ upstream }}</td>
+        <td>
+          <form method="post" action="/networking/dns-manager/investigations" class="dns-flag-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="domain" value="{{ domain }}">
+            <input type="hidden" name="client_name" value="{{ client_name }}">
+            <input type="hidden" name="client_ip" value="{{ client_ip }}">
+            <input type="hidden" name="query_type" value="{{ qtype }}">
+            <input type="hidden" name="reply_status" value="{{ qstatus }}">
+            <input type="hidden" name="reply_type" value="{{ rtype }}">
+            <input type="hidden" name="reply_time" value="{{ rtime }}">
+            <input type="hidden" name="upstream" value="{{ upstream }}">
+            <input type="hidden" name="observed_at" value="{{ observed_at }}">
+            <input type="hidden" name="notes" value="Flagged from DNS query log.">
+            <button class="button secondary small" type="submit" {% if flagged %}disabled title="Already flagged"{% endif %}>Flag</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="10">No query log entries returned by this provider.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% elif active_tab == 'clients' %}
+{% set rows = list_from_payload(clients.data if clients and clients.ok else {}, 'clients', 'devices', 'data') %}
+<section class="panel">
+  <table data-table-key="dns-clients">
+    <thead><tr><th>Hostname</th><th>IP Address</th><th>MAC Address</th><th>Queries</th><th>Blocked Queries</th><th>Last Seen</th></tr></thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td><strong>{{ row.name if row.name is defined else row.hostname if row.hostname is defined else '-' }}</strong></td>
+        <td>{{ row.ip if row.ip is defined else row.ip_address if row.ip_address is defined else '-' }}</td>
+        <td>{{ row.mac if row.mac is defined else row.hwaddr if row.hwaddr is defined else '-' }}</td>
+        <td>{{ row.queries if row.queries is defined else '-' }}</td>
+        <td>{{ row.blocked_queries if row.blocked_queries is defined else '-' }}</td>
+        <td>{{ row.last_seen if row.last_seen is defined else '-' }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6">No clients returned by this provider.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% elif active_tab == 'local-dns' %}
+{% set rows = list_from_payload(local_dns.data if local_dns and local_dns.ok else {}, 'hosts', 'records', 'data') %}
+<section class="panel">
+  <table data-table-key="dns-local-records">
+    <thead><tr><th>Hostname</th><th>IP Address</th><th>Description</th></tr></thead>
+    <tbody>
+      {% for row in rows %}
+      <tr><td><strong>{{ row.name if row.name is defined else row.hostname if row.hostname is defined else '-' }}</strong></td><td>{{ row.ip if row.ip is defined else row.address if row.address is defined else '-' }}</td><td>{{ row.comment if row.comment is defined else row.description if row.description is defined else '-' }}</td></tr>
+      {% else %}
+      <tr><td colspan="3">No local DNS records returned by this provider.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% elif active_tab == 'dhcp' %}
+{% set rows = list_from_payload(dhcp.data if dhcp and dhcp.ok else {}, 'leases', 'data') %}
+<section class="panel">
+  <table data-table-key="dns-dhcp">
+    <thead><tr><th>Hostname</th><th>IP Address</th><th>MAC Address</th><th>Lease Expiry</th><th>Static Reservation</th></tr></thead>
+    <tbody>
+      {% for row in rows %}
+      <tr><td><strong>{{ row.name if row.name is defined else row.hostname if row.hostname is defined else '-' }}</strong></td><td>{{ row.ip if row.ip is defined else '-' }}</td><td>{{ row.mac if row.mac is defined else '-' }}</td><td>{{ row.expires if row.expires is defined else row.expiry if row.expiry is defined else '-' }}</td><td>{{ row.static if row.static is defined else '-' }}</td></tr>
+      {% else %}
+      <tr><td colspan="5">No DHCP leases returned by this provider.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% elif active_tab == 'blocklists' %}
+{% set rows = list_from_payload(blocklists.data if blocklists and blocklists.ok else {}, 'lists', 'blocklists', 'data') %}
+<section class="panel">
+  <table data-table-key="dns-blocklists">
+    <thead><tr><th>Blocklist Name</th><th>Status</th><th>Last Updated</th></tr></thead>
+    <tbody>
+      {% for row in rows %}
+      <tr><td><strong>{{ row.address if row.address is defined else row.name if row.name is defined else '-' }}</strong></td><td>{{ row.enabled if row.enabled is defined else row.status if row.status is defined else '-' }}</td><td>{{ row.date_updated if row.date_updated is defined else row.updated_at if row.updated_at is defined else '-' }}</td></tr>
+      {% else %}
+      <tr><td colspan="3">No blocklists returned by this provider.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% else %}
+<section class="panel">
+  <h2>Open investigations</h2>
+  <table data-table-key="dns-investigations">
+    <thead><tr><th>Flagged</th><th>Domain</th><th>Client</th><th>Query Type</th><th>Reply</th><th>Observed</th><th>Notes</th></tr></thead>
+    <tbody>
+      {% for item in investigations %}
+      <tr>
+        <td>{{ item.created_at.strftime('%Y-%m-%d %H:%M') if item.created_at else '-' }}</td>
+        <td><strong class="mono">{{ item.domain }}</strong></td>
+        <td>{{ item.client_name or '-' }}{% if item.client_ip %}<br><span class="muted">{{ item.client_ip }}</span>{% endif %}</td>
+        <td>{{ item.query_type or '-' }}</td>
+        <td>{{ item.reply_type or '-' }}{% if item.reply_time %}<br><span class="muted">{{ item.reply_time }}</span>{% endif %}</td>
+        <td>{{ item.observed_at or '-' }}</td>
+        <td>{{ item.notes or '-' }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7">No DNS queries have been flagged for investigation.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+{% endif %}
+{% endblock %}
+{% block extra_scripts %}
+<script src="/static/js/dns_manager.js?v={{ asset_version }}" defer></script>
+{% endblock %}

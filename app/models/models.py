@@ -200,6 +200,46 @@ class DomainRecordHistory(Base):
     domain = relationship("DomainRecord")
 
 
+class DNSProviderConfig(Base):
+    __tablename__ = "dns_providers"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), index=True)
+    provider_type: Mapped[str] = mapped_column(String(40), default="pihole", index=True)
+    base_url: Mapped[str] = mapped_column(String(500))
+    auth_method: Mapped[str] = mapped_column(String(40), default="password")
+    encrypted_secret: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ssl_verify: Mapped[bool] = mapped_column(Boolean, default=True)
+    timeout_seconds: Mapped[int] = mapped_column(Integer, default=10)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_status: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class DNSInvestigation(Base):
+    __tablename__ = "dns_investigations"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    provider_id: Mapped[int | None] = mapped_column(ForeignKey("dns_providers.id", ondelete="SET NULL"), nullable=True, index=True)
+    domain: Mapped[str] = mapped_column(String(500), index=True)
+    client_name: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    client_ip: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    query_type: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(40), default="open", index=True)
+    reply_type: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    reply_time: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    upstream: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    observed_at: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    provider = relationship("DNSProviderConfig")
+    created_by = relationship("User")
+
+
 class HardwareAsset(Base):
     __tablename__ = "hardware_assets"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -444,6 +484,48 @@ class ComputeEvent(Base):
     event_type: Mapped[str] = mapped_column(String(50), index=True)
     detail: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class BackupRecord(Base):
+    __tablename__ = "backup_records"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), index=True)
+    source_type: Mapped[str] = mapped_column(String(40), default="manual", index=True)
+    source_ref: Mapped[str | None] = mapped_column(String(500), nullable=True, index=True)
+    target: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    schedule: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    owner: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    last_status: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class BackupJob(Base):
+    __tablename__ = "backup_jobs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    host_id: Mapped[int] = mapped_column(ForeignKey("compute_hosts.id"), index=True)
+    workload_id: Mapped[int | None] = mapped_column(ForeignKey("compute_workloads.id"), nullable=True, index=True)
+    operation: Mapped[str] = mapped_column(String(30), index=True)
+    status: Mapped[str] = mapped_column(String(40), default="queued", index=True)
+    encryption_enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    encrypted_backup_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    artifact_path: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    log: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    requested_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    host = relationship("ComputeHost")
+    workload = relationship("ComputeWorkload")
+    requested_by = relationship("User")
 
 
 class AuditLog(Base):

@@ -15,6 +15,7 @@ from app.models.models import ComputeEvent, ComputeHost, ComputeInventoryItem, C
 from app.routers.auth import require_editor, require_user
 from app.services.audit import write_audit
 from app.services.compute_monitor import compute_summary, prune_missing_workloads, reconcile_workload, sync_host, workload_identity
+from app.services.site_settings import get_site_setting
 from datetime import datetime, timedelta
 
 
@@ -112,12 +113,12 @@ def new_host(request:Request,user=Depends(require_editor)):
 def create_host(request:Request,name:str=Form(...,max_length=255),platform:str=Form(...),base_url:str=Form("",max_length=500),token_id:str=Form('',max_length=255),token_secret:str=Form('',max_length=2000),verify_tls:str=Form(''),is_enabled:str=Form(''),poll_interval_seconds:int=Form(30),owner:str=Form('',max_length=255),notes:str=Form('',max_length=10000),csrf_token:str=Form(...),db:Session=Depends(get_db),user=Depends(require_editor)):
     validate_csrf_token(request,csrf_token); platform=platform.strip().lower(); clean_name=name.strip(); clean_url=base_url.strip()
     error=None
-    if platform not in {'docker','docker_agent','proxmox'}:
-        error='Choose Docker, Docker Agent or Proxmox.'
+    if platform not in {'docker_agent','proxmox'}:
+        error='Choose Docker Agent or Proxmox.'
     elif not clean_name:
         error='Name is required.'
-    elif platform != 'docker_agent' and not clean_url:
-        error='Connection URL is required.'
+    elif platform == 'proxmox' and not clean_url:
+        error='Proxmox connection URL is required.'
     elif platform=='proxmox' and (not token_id.strip() or not token_secret.strip()): error='Proxmox requires an API token ID and secret.'
     elif db.query(ComputeHost).filter(ComputeHost.name==clean_name).first(): error='A host with that name already exists.'
     if error: return templates.TemplateResponse(request,'compute_host_form.html',context(user=user,host=None,error=error,**csrf_context(request)),status_code=400)
@@ -145,7 +146,9 @@ def render_host_detail(request:Request,host:ComputeHost,db:Session,user,agent_to
     workloads=db.query(ComputeWorkload).filter_by(host_id=host.id).order_by(ComputeWorkload.kind,ComputeWorkload.name).all()
     items=db.query(ComputeInventoryItem).filter_by(host_id=host.id).order_by(ComputeInventoryItem.kind,ComputeInventoryItem.name).all()
     metrics=db.query(ComputeMetric).filter(ComputeMetric.host_id==host.id,ComputeMetric.workload_id.is_(None)).order_by(ComputeMetric.recorded_at.desc()).limit(120).all()[::-1]
-    return templates.TemplateResponse(request,'compute_host_detail.html',context(user=user,host=host,workloads=workloads,items=items,metrics=metrics,agent_token=agent_token,**csrf_context(request)),status_code=status_code)
+    backup_storage_path=get_site_setting(db,'backup_storage_path') or '/mnt/backups'
+    backup_storage_type=get_site_setting(db,'backup_storage_type') or 'local'
+    return templates.TemplateResponse(request,'compute_host_detail.html',context(user=user,host=host,workloads=workloads,items=items,metrics=metrics,agent_token=agent_token,backup_storage_path=backup_storage_path,backup_storage_type=backup_storage_type,**csrf_context(request)),status_code=status_code)
 
 @router.get('/hosts/{host_id}')
 def host_detail(request:Request,host_id:int,db:Session=Depends(get_db),user=Depends(require_user)):
@@ -164,12 +167,19 @@ def update_host(request:Request,host_id:int,name:str=Form(...),platform:str=Form
     validate_csrf_token(request,csrf_token); host=db.get(ComputeHost,host_id)
     if not host: raise HTTPException(404,'Host not found')
     platform=platform.strip().lower()
-    if platform not in {'docker','docker_agent','proxmox'}:
+    if platform not in {'docker_agent','proxmox'}:
         raise HTTPException(400,'Invalid platform')
+    if not name.strip():
+        raise HTTPException(400,'Name is required')
+    if platform == 'proxmox' and not base_url.strip():
+        raise HTTPException(400,'Proxmox connection URL is required')
     host.name=name.strip(); host.platform=platform
     host.base_url=f'agent://{host.name}' if platform == 'docker_agent' else base_url.strip()
     host.token_id=token_id.strip() or None
-    if token_secret.strip(): host.encrypted_token=encrypt_secret(token_secret.strip())
+    if platform == 'docker_agent':
+        host.encrypted_token=None
+    elif token_secret.strip():
+        host.encrypted_token=encrypt_secret(token_secret.strip())
     if platform == 'docker_agent' and not host.agent_token_hash:
         agent_token=secrets.token_urlsafe(32)
         host.agent_token_hash=hash_agent_token(agent_token)

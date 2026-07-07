@@ -11,6 +11,7 @@
   const hostRail = root.querySelector(".remote-host-rail");
   const hostResizer = root.querySelector("[data-remote-host-resizer]");
   const noResults = root.querySelector("[data-remote-no-results]");
+  const splitFeatureEnabled = root.dataset.remoteSplitEnabled !== "0";
   const sessionVersion = root.dataset.remoteSessionVersion || "1";
   const storageKey = `kaya.remote.tabs.${sessionVersion}`;
   const railWidthStorageKey = "kaya.remote.hostRailWidth";
@@ -204,7 +205,7 @@
     if (opened) opened.focus();
   };
 
-  const openRdpPopoutForHandoff = (tab, token, requestId) => {
+  const openPopoutForHandoff = (tab, requestId) => {
     const name = `kaya_remote_${tab.remoteId}_${tab.protocol}`;
     const url = new URL(tab.url, window.location.origin);
     url.searchParams.set("popout", "1");
@@ -214,13 +215,12 @@
     const opened = window.open(url.toString(), name, sessionWindowFeatures());
     const pending = pendingPopouts.get(requestId);
     if (pending) {
-      pending.token = token;
       pending.window = opened;
     }
     if (opened) opened.focus();
   };
 
-  const requestRdpPopoutHandoff = (tab) => {
+  const requestPopoutHandoff = (tab) => {
     const iframe = panels.querySelector(`[data-remote-panel="${CSS.escape(tab.id)}"] iframe`);
     if (!iframe || !iframe.contentWindow) {
       popOutSession(tab);
@@ -255,6 +255,13 @@
   const iconFor = (protocol) => (protocol === "rdp" ? "RDP" : ">_");
 
   const setSplitEnabled = (enabled) => {
+    if (!splitFeatureEnabled) {
+      splitEnabled = false;
+      splitIds = [];
+      render();
+      save();
+      return;
+    }
     splitEnabled = enabled && tabs.length > 1;
     if (splitEnabled) {
       const current = activeId || tabs[0]?.id || "";
@@ -268,6 +275,7 @@
   };
 
   const ensureLayoutTools = () => {
+    if (!splitFeatureEnabled) return;
     const tools = document.createElement("div");
     tools.className = "remote-layout-tools";
     tools.dataset.remoteLayoutTools = "";
@@ -339,8 +347,8 @@
       popout.textContent = "P";
       popout.addEventListener("click", (event) => {
         event.stopPropagation();
-        if (tab.protocol === "rdp") {
-          requestRdpPopoutHandoff(tab);
+        if (tab.protocol === "rdp" || tab.protocol === "ssh") {
+          requestPopoutHandoff(tab);
           return;
         }
         popOutSession(tab);
@@ -361,6 +369,8 @@
       button.appendChild(tools);
       tabbar.appendChild(button);
     });
+
+    ensureLayoutTools();
 
     panels.classList.toggle("is-split", splitEnabled && shownIds.length > 1);
 
@@ -570,9 +580,11 @@
         pendingPopouts.delete(data.requestId);
         return;
       }
-      if (data.ok && data.token) {
+      if (data.ok && (data.token || data.password)) {
         pending.timeout = window.setTimeout(() => pendingPopouts.delete(data.requestId), 30000);
-        openRdpPopoutForHandoff(tab, data.token, data.requestId);
+        pending.token = data.token || "";
+        pending.password = data.password || "";
+        openPopoutForHandoff(tab, data.requestId);
       } else {
         pendingPopouts.delete(data.requestId);
         popOutSession(tab);
@@ -580,11 +592,12 @@
     }
     if (data.type === "kaya:remote-popout-ready") {
       const pending = pendingPopouts.get(data.requestId);
-      if (!pending?.token || !event.source) return;
+      if ((!pending?.token && !pending?.password) || !event.source) return;
       event.source.postMessage({
         type: "kaya:remote-popout-connect",
         requestId: data.requestId,
         token: pending.token,
+        password: pending.password,
       }, event.origin);
     }
     if (data.type === "kaya:remote-popout-connected") {
@@ -655,7 +668,7 @@
   const restored = safeParse(window.sessionStorage.getItem(storageKey));
   tabs = Array.isArray(restored.tabs) ? restored.tabs : [];
   activeId = restored.activeId || tabs[0]?.id || "";
-  splitEnabled = Boolean(restored.splitEnabled);
+  splitEnabled = splitFeatureEnabled && Boolean(restored.splitEnabled);
   splitIds = Array.isArray(restored.splitIds) ? restored.splitIds : [];
   applyHostGrouping();
   render();

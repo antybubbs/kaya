@@ -6,21 +6,27 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
-from starlette.middleware.trustedhost import TrustedHostMiddleware
 from sqlalchemy import text
 from sqlalchemy.orm import Session
-from app.core.config import get_settings, trusted_hosts
+from app.core.config import get_settings
 from app.core.demo import demo_request_is_blocked
 from app.core.security import decrypt_secret, hash_password
 from app.db.session import Base, engine, SessionLocal
 from app.models.models import AuditLog, User, VLAN
-from app.routers import auth, dashboard, licences, admin, ip_addresses, hardware_assets, network_monitor, remote_manager, runbooks, domain_manager, compute_manager, rack_manager
+from app.routers import auth, dashboard, licences, admin, ip_addresses, hardware_assets, network_monitor, remote_manager, runbooks, domain_manager, compute_manager, rack_manager, backup_manager, dns_manager
 from app.services.guacamole_bridge import stop_guacamole_bridge
 from app.services.kaya_remote_service import start_kaya_remote_service, stop_kaya_remote_service
 from app.services.network_monitor import monitor_loop
 from app.services.domain_polling import domain_poll_loop
 from app.services.compute_monitor import compute_monitor_loop
 from app.services.audit import begin_request_context, end_request_context, request_event_written, write_audit
+from app.services.site_settings import (
+    effective_allowed_hosts,
+    frame_ancestor_directive,
+    host_is_allowed,
+    hsts_header_value,
+    load_security_settings,
+)
 
 settings = get_settings()
 app = FastAPI(
@@ -33,12 +39,6 @@ domain_poll_task = None
 compute_monitor_task = None
 app.state.demo_mode = settings.demo_mode
 app.state.demo_reset_schedule = settings.demo_reset_schedule
-
-if settings.app_env == "production":
-    app.add_middleware(
-        TrustedHostMiddleware,
-        allowed_hosts=trusted_hosts(settings),
-    )
 
 app.add_middleware(
     SessionMiddleware,
@@ -75,14 +75,30 @@ async def protect_public_demo(request: Request, call_next):
 
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
+    security = {}
+    if not request.url.path.startswith("/static/"):
+        db = SessionLocal()
+        try:
+            security = load_security_settings(db)
+        finally:
+            db.close()
+        if security.get("trusted_hosts_enabled") == "1" or settings.allowed_hosts.strip():
+            allowed_hosts = effective_allowed_hosts(security, settings)
+            if not host_is_allowed(request.headers.get("host", ""), allowed_hosts):
+                return PlainTextResponse("Invalid host header", status_code=400)
+
     response = await call_next(request)
     is_static_asset = request.url.path.startswith(f"{settings.root_path}/static") if settings.root_path else request.url.path.startswith("/static")
     path = request.url.path
     if settings.root_path and path.startswith(settings.root_path):
         path = path[len(settings.root_path):] or "/"
     is_remote_panel = path.startswith("/remote-manager/") and path.endswith("/panel")
+    frame_ancestors = frame_ancestor_directive(security)
     response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "SAMEORIGIN" if is_remote_panel else "DENY"
+    if frame_ancestors == "'none'":
+        response.headers["X-Frame-Options"] = "DENY"
+    elif frame_ancestors == "'self'":
+        response.headers["X-Frame-Options"] = "SAMEORIGIN" if is_remote_panel else "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     ws_scheme = "wss" if request.url.scheme == "https" else "ws"
@@ -96,15 +112,16 @@ async def security_headers(request: Request, call_next):
     "worker-src 'self' blob:; "
     "object-src 'none'; "
     "base-uri 'self'; "
-    "frame-ancestors *; "
+    f"frame-ancestors {frame_ancestors}; "
     "form-action 'self'"
     )
     if is_static_asset:
         response.headers["Cache-Control"] = "public, max-age=604800, immutable"
     else:
         response.headers["Cache-Control"] = "no-store"
-    if settings.session_cookie_secure:
-        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    request_is_https = request.url.scheme == "https" or request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip() == "https"
+    if request_is_https and (settings.session_cookie_secure or security.get("hsts_enabled") == "1"):
+        response.headers["Strict-Transport-Security"] = hsts_header_value(security)
     return response
 
 
@@ -362,6 +379,18 @@ def migrate_existing_database():
                 if column not in domain_columns:
                     conn.execute(text(f"ALTER TABLE domain_records ADD COLUMN {column} {definition}"))
 
+        dns_provider_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(dns_providers)"))}
+        if not dns_provider_columns:
+            conn.execute(text("CREATE TABLE dns_providers (id INTEGER NOT NULL PRIMARY KEY, name VARCHAR(255) NOT NULL, provider_type VARCHAR(40) DEFAULT 'pihole' NOT NULL, base_url VARCHAR(500) NOT NULL, auth_method VARCHAR(40) DEFAULT 'password' NOT NULL, encrypted_secret TEXT, ssl_verify BOOLEAN DEFAULT 1 NOT NULL, timeout_seconds INTEGER DEFAULT 10 NOT NULL, is_enabled BOOLEAN DEFAULT 1 NOT NULL, description TEXT, last_status VARCHAR(40), last_error TEXT, last_checked_at DATETIME, created_at DATETIME, updated_at DATETIME)"))
+            for column in ["name", "provider_type", "is_enabled", "last_status", "last_checked_at"]:
+                conn.execute(text(f"CREATE INDEX ix_dns_providers_{column} ON dns_providers ({column})"))
+
+        dns_investigation_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(dns_investigations)"))}
+        if not dns_investigation_columns:
+            conn.execute(text("CREATE TABLE dns_investigations (id INTEGER NOT NULL PRIMARY KEY, provider_id INTEGER REFERENCES dns_providers(id) ON DELETE SET NULL, domain VARCHAR(500) NOT NULL, client_name VARCHAR(255), client_ip VARCHAR(80), query_type VARCHAR(40), status VARCHAR(40) DEFAULT 'open' NOT NULL, reply_type VARCHAR(120), reply_time VARCHAR(80), upstream VARCHAR(255), observed_at VARCHAR(80), notes TEXT, created_by_id INTEGER REFERENCES users(id) ON DELETE SET NULL, created_at DATETIME, updated_at DATETIME)"))
+            for column in ["provider_id", "domain", "client_name", "client_ip", "query_type", "status", "reply_type", "created_by_id", "created_at"]:
+                conn.execute(text(f"CREATE INDEX ix_dns_investigations_{column} ON dns_investigations ({column})"))
+
         audit_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(audit_logs)"))}
         if audit_columns:
             for column, definition in {
@@ -407,6 +436,18 @@ def migrate_existing_database():
                     assignments = ["agent_token_hash = :token_hash", *[f"{name} = NULL" for name in legacy_columns]]
                     conn.execute(text(f"UPDATE compute_hosts SET {', '.join(assignments)} WHERE id = :id"), {"token_hash": token_hash, "id": row["id"]})
 
+        backup_record_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(backup_records)"))}
+        if not backup_record_columns:
+            conn.execute(text("CREATE TABLE backup_records (id INTEGER NOT NULL PRIMARY KEY, name VARCHAR(255) NOT NULL, source_type VARCHAR(40) DEFAULT 'manual' NOT NULL, source_ref VARCHAR(500), target VARCHAR(500), schedule VARCHAR(255), owner VARCHAR(255), last_status VARCHAR(40), last_run_at DATETIME, notes TEXT, is_enabled BOOLEAN DEFAULT 1 NOT NULL, created_at DATETIME, updated_at DATETIME)"))
+            for column in ["name", "source_type", "source_ref", "owner", "last_status", "last_run_at", "is_enabled"]:
+                conn.execute(text(f"CREATE INDEX ix_backup_records_{column} ON backup_records ({column})"))
+
+        backup_job_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(backup_jobs)"))}
+        if not backup_job_columns:
+            conn.execute(text("CREATE TABLE backup_jobs (id INTEGER NOT NULL PRIMARY KEY, host_id INTEGER NOT NULL REFERENCES compute_hosts(id), workload_id INTEGER REFERENCES compute_workloads(id), operation VARCHAR(30) NOT NULL, status VARCHAR(40) DEFAULT 'queued' NOT NULL, encryption_enabled BOOLEAN DEFAULT 1 NOT NULL, encrypted_backup_key TEXT, artifact_path VARCHAR(1000), size_bytes INTEGER, error TEXT, log TEXT, metadata_json TEXT, requested_by_id INTEGER REFERENCES users(id), created_at DATETIME, dispatched_at DATETIME, started_at DATETIME, finished_at DATETIME, updated_at DATETIME)"))
+            for column in ["host_id", "workload_id", "operation", "status", "encryption_enabled", "requested_by_id", "created_at", "dispatched_at", "started_at", "finished_at"]:
+                conn.execute(text(f"CREATE INDEX ix_backup_jobs_{column} ON backup_jobs ({column})"))
+
 
 @app.on_event("startup")
 async def on_startup():
@@ -443,6 +484,8 @@ app.include_router(runbooks.router)
 app.include_router(domain_manager.router)
 app.include_router(compute_manager.router)
 app.include_router(rack_manager.router)
+app.include_router(backup_manager.router)
+app.include_router(dns_manager.router)
 app.include_router(admin.router)
 
 @app.get("/healthz", include_in_schema=False)

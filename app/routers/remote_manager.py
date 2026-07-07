@@ -1,9 +1,6 @@
 import asyncio
-import base64
-import hashlib
 import json
 import shutil
-import secrets
 import subprocess
 import time
 from dataclasses import dataclass
@@ -19,22 +16,23 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
 from starlette import status
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from cryptography.hazmat.primitives import padding
 
 from app.core.config import get_settings
 from app.core.csrf import csrf_context, validate_csrf_token
+from app.core.security import encrypt_secret
 from app.db.session import SessionLocal, get_db
 from app.models.models import RemoteAccess, RemoteManagerSetting, RemoteSessionRecording, User
 from app.routers.auth import require_admin, require_editor, require_user
 from app.services.audit import write_audit
 from app.services.guacamole_bridge import restart_guacamole_bridge, start_guacamole_bridge
+from app.services.site_settings import get_site_setting
 
 router = APIRouter(prefix="/remote-manager")
 templates = Jinja2Templates(directory="app/templates")
 PROTOCOLS = {"ssh", "rdp"}
 SETTINGS = {
     "guacamole_enabled": "0",
+    "split_screen_enabled": "1",
     "guacd_host": "",
     "guacd_port": "4822",
     "session_idle_timeout_minutes": "0",
@@ -74,7 +72,7 @@ SETTINGS = {
 TERMINAL_SETTING_KEYS = [key for key in SETTINGS if key.startswith("terminal_")]
 RDP_SETTING_KEYS = [key for key in SETTINGS if key.startswith("rdp_")]
 SETTING_KEYS = set(SETTINGS)
-RDP_TOKEN_TTL_SECONDS = 12 * 60 * 60
+DEFAULT_RDP_TOKEN_TTL_MINUTES = 10
 GUACAMOLE_LITE_URL = "ws://127.0.0.1:30008"
 RECORDING_ROOT = Path("/app/data/remote-recordings")
 
@@ -235,6 +233,7 @@ def clean_float_text(value: str, default: float, minimum: float, maximum: float)
 
 def clean_global_setting(key: str, value: str) -> str:
     if key in {
+        "split_screen_enabled",
         "terminal_cursor_blink",
         "terminal_right_click_selects_word",
         "terminal_syntax_highlighting",
@@ -365,7 +364,7 @@ def settings_map(db: Session) -> dict[str, str]:
         values["guacd_host"] = env_guacd_host
     if env_guacd_port:
         values["guacd_port"] = str(env_guacd_port)
-    for key in ("recording_mode", "recording_categories", "recording_pause_idle_minutes", *TERMINAL_SETTING_KEYS, *RDP_SETTING_KEYS):
+    for key in ("split_screen_enabled", "recording_mode", "recording_categories", "recording_pause_idle_minutes", *TERMINAL_SETTING_KEYS, *RDP_SETTING_KEYS):
         values[key] = clean_global_setting(key, values.get(key, SETTINGS[key]))
     return values
 
@@ -380,9 +379,20 @@ def set_setting(db: Session, key: str, value: str) -> None:
 
 def cleanup_rdp_tokens() -> None:
     now = time.time()
-    expired = [token for token, session in rdp_tokens.items() if now - session.created_at > RDP_TOKEN_TTL_SECONDS]
+    expired = [token for token, session in rdp_tokens.items() if now - session.created_at > rdp_token_ttl_seconds()]
     for token in expired:
         rdp_tokens.pop(token, None)
+
+
+def rdp_token_ttl_seconds() -> int:
+    db = SessionLocal()
+    try:
+        minutes = int(get_site_setting(db, "rdp_token_ttl_minutes") or DEFAULT_RDP_TOKEN_TTL_MINUTES)
+    except ValueError:
+        minutes = DEFAULT_RDP_TOKEN_TTL_MINUTES
+    finally:
+        db.close()
+    return max(5, min(minutes, 60)) * 60
 
 
 def guac_element(value: object) -> str:
@@ -452,23 +462,9 @@ async def read_guac_instruction(reader: asyncio.StreamReader) -> tuple[str, list
             return instructions[0]
 
 
-def guacamole_key() -> bytes:
-    app_settings = get_settings()
-    return hashlib.sha256(f"{app_settings.secret_key}_guacamole".encode("utf-8")).digest()
-
-
 def encrypt_guacamole_token(token_object: dict[str, object]) -> str:
-    iv = secrets.token_bytes(16)
-    padder = padding.PKCS7(128).padder()
     plaintext = json.dumps(token_object, separators=(",", ":")).encode("utf-8")
-    padded = padder.update(plaintext) + padder.finalize()
-    encryptor = Cipher(algorithms.AES(guacamole_key()), modes.CBC(iv)).encryptor()
-    encrypted = encryptor.update(padded) + encryptor.finalize()
-    payload = {
-        "iv": base64.b64encode(iv).decode("ascii"),
-        "value": base64.b64encode(encrypted).decode("ascii"),
-    }
-    return base64.b64encode(json.dumps(payload, separators=(",", ":")).encode("utf-8")).decode("ascii")
+    return encrypt_secret(plaintext.decode("utf-8"))
 
 
 def create_rdp_guacamole_token(row: RemoteAccess, username: str, password: str, width: int, height: int, dpi: int, timezone: str, rdp_settings: dict[str, str]) -> str:
@@ -554,12 +550,13 @@ async def tcp_check(host: str, port: int, timeout: float = 5) -> tuple[bool, str
 def remote_list(request: Request, db: Session = Depends(get_db), user=Depends(require_user)):
     demo_mode = get_settings().demo_mode
     rows = [] if demo_mode else db.query(RemoteAccess).filter(RemoteAccess.is_enabled == True).options(selectinload(RemoteAccess.ip_address)).order_by(RemoteAccess.protocol.asc(), RemoteAccess.display_name.asc(), RemoteAccess.id.asc()).all()
-    return templates.TemplateResponse(request, "remote_manager.html", {"user": user, "rows": rows, "remote_label": remote_label, "remote_manager_locked": demo_mode, **csrf_context(request)})
+    settings = settings_map(db)
+    return templates.TemplateResponse(request, "remote_manager.html", {"user": user, "rows": rows, "remote_label": remote_label, "remote_manager_locked": demo_mode, "split_screen_enabled": settings.get("split_screen_enabled", "1") == "1", **csrf_context(request)})
 
 
 @router.get("/settings")
 def remote_settings(request: Request, db: Session = Depends(get_db), user=Depends(require_admin)):
-    return templates.TemplateResponse(request, "remote_manager_settings.html", {"user": user, "settings": settings_map(db), "message": None, **csrf_context(request)})
+    return RedirectResponse("/system/site-administration?tab=module-remote-manager", status_code=303)
 
 
 @router.post("/settings")
@@ -567,6 +564,7 @@ async def save_remote_settings(request: Request, csrf_token: str = Form(...), gu
     validate_csrf_token(request, csrf_token)
     form = await request.form()
     set_setting(db, "guacamole_enabled", "1" if guacamole_enabled else "0")
+    set_setting(db, "split_screen_enabled", "1" if form.get("split_screen_enabled") else "0")
     set_setting(db, "guacd_host", guacd_host.strip())
     set_setting(db, "guacd_port", str(clean_port(guacd_port, "rdp")))
     set_setting(db, "session_idle_timeout_minutes", clean_global_setting("session_idle_timeout_minutes", str(form.get("session_idle_timeout_minutes", "0"))))
@@ -578,7 +576,7 @@ async def save_remote_settings(request: Request, csrf_token: str = Form(...), gu
     db.commit()
     restart_guacamole_bridge()
     write_audit(db, user, "update", "remote_manager_settings", ip_address=request.client.host if request.client else None, detail="Updated Remote Manager settings")
-    return templates.TemplateResponse(request, "remote_manager_settings.html", {"user": user, "settings": settings_map(db), "message": "Settings saved.", **csrf_context(request)})
+    return RedirectResponse("/system/site-administration?tab=module-remote-manager", status_code=303)
 
 
 @router.get("/recordings")

@@ -1,22 +1,28 @@
 from pathlib import Path
+import io
 import tempfile
 import json
+import socket
 import smtplib
+from ftplib import FTP
 from datetime import datetime, timedelta
+from urllib.request import urlopen
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import PlainTextResponse, RedirectResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 from sqlalchemy.orm import selectinload
 from starlette import status
 from urllib.parse import urlencode
+import smbclient
 
 from app.core.config import get_settings
 from app.core.branding import APP_BRAND_NAME
 from app.core.csrf import csrf_context, validate_csrf_token
-from app.core.security import encrypt_secret, hash_password, verify_password
+from app.core.security import decrypt_secret, encrypt_secret, hash_password, verify_password
 from app.core.totp import (
     decrypted_totp_secret,
     encrypted_totp_secret,
@@ -30,6 +36,7 @@ from app.models.models import (
     AppSession,
     AuditLog,
     CustomField,
+    DNSProviderConfig,
     ManagedListItem,
     RemoteManagerSetting,
     User,
@@ -43,7 +50,23 @@ from app.services.importer import ImportCSVError, import_csv, import_ip_addresse
 from app.services.managed_lists import MANAGED_LIST_MODULES, MANAGED_LISTS, list_label
 from app.services.mail import MailConfigurationError, render_email_template, send_mail
 from app.services.sessions import active_since
-from app.services.site_settings import get_site_setting
+from app.services.dns_providers import provider_for
+from app.services.guacamole_bridge import restart_guacamole_bridge
+from app.services.site_settings import (
+    effective_allowed_hosts,
+    frame_ancestor_directive,
+    get_site_setting,
+    host_without_port,
+    host_is_allowed,
+    hsts_header_value,
+    load_security_settings,
+)
+from app.routers.remote_manager import (
+    RDP_SETTING_KEYS,
+    SETTINGS as REMOTE_MANAGER_SETTINGS,
+    TERMINAL_SETTING_KEYS,
+    clean_global_setting,
+)
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
@@ -60,9 +83,26 @@ SITE_SETTING_KEYS = {
     "app_name": APP_BRAND_NAME,
     "base_url": "http://localhost:8080",
     "max_upload_mb": "25",
+    "trusted_hosts_enabled": "",
     "allowed_hosts": "",
-    "guacd_host": "",
-    "guacd_port": "4822",
+    "csp_frame_ancestors": "self",
+    "csp_frame_ancestor_sources": "",
+    "hsts_enabled": "",
+    "hsts_include_subdomains": "",
+    "hsts_max_age": "31536000",
+    "rdp_token_ttl_minutes": "10",
+    "backup_storage_type": "local",
+    "backup_storage_path": "/mnt/backups",
+    "backup_remote_host": "",
+    "backup_remote_share": "",
+    "backup_remote_username": "",
+    "backup_remote_password": "",
+    "backup_targets_json": "[]",
+    "backup_default_target_name": "",
+    "dns_manager_enabled": "",
+    "dns_default_provider_id": "",
+    "dns_refresh_interval_seconds": "300",
+    "dns_cache_enabled": "1",
     "smtp_enabled": "",
     "smtp_host": "",
     "smtp_port": "587",
@@ -80,6 +120,7 @@ SITE_SETTING_KEYS = {
         "If you did not request this, you can ignore this email."
     ),
 }
+SITE_SETTING_KEYS.update(REMOTE_MANAGER_SETTINGS)
 
 
 def load_site_settings(db: Session) -> dict[str, str]:
@@ -92,9 +133,9 @@ def load_site_settings(db: Session) -> dict[str, str]:
     )
 
     for row in rows:
-        if row.key == "smtp_password":
-            settings["smtp_password"] = ""
-            settings["smtp_password_set"] = "1" if row.value else ""
+        if row.key in {"smtp_password", "backup_remote_password"}:
+            settings[row.key] = ""
+            settings[f"{row.key}_set"] = "1" if row.value else ""
         else:
             settings[row.key] = row.value or ""
 
@@ -122,6 +163,389 @@ def save_smtp_password(db: Session, password: str) -> None:
     if not password:
         return
     save_site_setting(db, "smtp_password", encrypt_secret(password))
+
+
+def save_backup_remote_password(db: Session, password: str) -> None:
+    if not password:
+        return
+    save_site_setting(db, "backup_remote_password", encrypt_secret(password))
+
+
+def dns_providers_for_admin(db: Session) -> list[DNSProviderConfig]:
+    return db.query(DNSProviderConfig).order_by(DNSProviderConfig.name.asc()).all()
+
+
+def save_dns_manager_settings(
+    db: Session,
+    *,
+    dns_manager_enabled: str,
+    dns_default_provider_id: str,
+    dns_refresh_interval_seconds: str,
+    dns_cache_enabled: str,
+    dns_provider_id: str,
+    dns_provider_name: str,
+    dns_provider_type: str,
+    dns_provider_base_url: str,
+    dns_provider_auth_method: str,
+    dns_provider_secret: str,
+    dns_provider_ssl_verify: str,
+    dns_provider_timeout_seconds: str,
+    dns_provider_enabled: str,
+    dns_provider_description: str,
+) -> None:
+    save_site_setting(db, "dns_manager_enabled", "1" if dns_manager_enabled else "")
+    save_site_setting(db, "dns_cache_enabled", "1" if dns_cache_enabled else "")
+    try:
+        refresh = max(30, min(int(dns_refresh_interval_seconds or "300"), 86400))
+    except ValueError:
+        refresh = 300
+    save_site_setting(db, "dns_refresh_interval_seconds", str(refresh))
+
+    name = dns_provider_name.strip()
+    base_url = dns_provider_base_url.strip().rstrip("/")
+    if not name or not base_url:
+        save_site_setting(db, "dns_default_provider_id", dns_default_provider_id.strip())
+        return
+
+    provider = None
+    if dns_provider_id.strip().isdigit():
+        provider = db.get(DNSProviderConfig, int(dns_provider_id.strip()))
+    if not provider:
+        provider = DNSProviderConfig(name=name, provider_type="pihole", base_url=base_url)
+        db.add(provider)
+        db.flush()
+
+    provider.name = name
+    provider.provider_type = dns_provider_type if dns_provider_type in {"pihole"} else "pihole"
+    provider.base_url = base_url
+    provider.auth_method = dns_provider_auth_method if dns_provider_auth_method in {"password", "api_token"} else "password"
+    if dns_provider_secret.strip():
+        provider.encrypted_secret = encrypt_secret(dns_provider_secret.strip())
+    provider.ssl_verify = bool(dns_provider_ssl_verify)
+    try:
+        provider.timeout_seconds = max(1, min(int(dns_provider_timeout_seconds or "10"), 60))
+    except ValueError:
+        provider.timeout_seconds = 10
+    provider.is_enabled = bool(dns_provider_enabled)
+    provider.description = dns_provider_description.strip() or None
+    provider.updated_at = datetime.utcnow()
+    save_site_setting(db, "dns_default_provider_id", str(provider.id))
+
+
+def save_remote_manager_settings(db: Session, form) -> bool:
+    previous_bridge_settings = {
+        key: get_site_setting(db, key)
+        for key in ("guacamole_enabled", "guacd_host", "guacd_port")
+    }
+    guacamole_enabled = "1" if form.get("guacamole_enabled") else "0"
+    guacd_host = str(form.get("guacd_host", "")).strip()
+    try:
+        guacd_port = max(1, min(int(str(form.get("guacd_port", "4822")) or "4822"), 65535))
+    except ValueError:
+        guacd_port = 4822
+
+    save_site_setting(db, "guacamole_enabled", guacamole_enabled)
+    save_site_setting(db, "split_screen_enabled", "1" if form.get("split_screen_enabled") else "0")
+    save_site_setting(db, "guacd_host", guacd_host)
+    save_site_setting(db, "guacd_port", str(guacd_port))
+    for key in (
+        "session_idle_timeout_minutes",
+        "recording_mode",
+        "recording_categories",
+        "recording_pause_idle_minutes",
+        *TERMINAL_SETTING_KEYS,
+        *RDP_SETTING_KEYS,
+    ):
+        save_site_setting(db, key, clean_global_setting(key, str(form.get(key, ""))))
+    return previous_bridge_settings != {
+        "guacamole_enabled": guacamole_enabled,
+        "guacd_host": guacd_host,
+        "guacd_port": str(guacd_port),
+    }
+
+
+def normalize_backup_targets_json(value: str) -> str:
+    try:
+        payload = json.loads(value or "[]")
+    except (TypeError, ValueError):
+        payload = []
+    if not isinstance(payload, list):
+        payload = []
+
+    cleaned: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        key = name.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        target_type = str(item.get("type") or "local").strip().lower()
+        if target_type not in {"local", "smb", "ftp", "sftp"}:
+            target_type = "local"
+        password = str(item.get("remote_password") or "").strip()
+        password_enc = str(item.get("remote_password_enc") or "").strip()
+        if password:
+            password_enc = encrypt_secret(password)
+        cleaned.append(
+            {
+                "name": name,
+                "type": target_type,
+                "path": str(item.get("path") or "").strip(),
+                "remote_host": str(item.get("remote_host") or "").strip(),
+                "remote_share": str(item.get("remote_share") or "").strip(),
+                "remote_username": str(item.get("remote_username") or "").strip(),
+                "remote_password_enc": password_enc,
+            }
+        )
+    return json.dumps(cleaned, separators=(",", ":"), ensure_ascii=True)
+
+
+def save_backup_settings(
+    db: Session,
+    *,
+    backup_storage_type: str,
+    backup_storage_path: str,
+    backup_remote_host: str,
+    backup_remote_share: str,
+    backup_remote_username: str,
+    backup_remote_password: str,
+) -> None:
+    if backup_storage_type not in {"local", "smb", "ftp", "sftp"}:
+        backup_storage_type = "local"
+    settings_to_save = {
+        "backup_storage_type": backup_storage_type,
+        "backup_storage_path": backup_storage_path,
+        "backup_remote_host": backup_remote_host,
+        "backup_remote_share": backup_remote_share,
+        "backup_remote_username": backup_remote_username,
+    }
+    for key, value in settings_to_save.items():
+        save_site_setting(db, key, value)
+    save_backup_remote_password(db, backup_remote_password)
+
+
+def read_saved_backup_password(db: Session, fallback_password: str = "") -> str:
+    if fallback_password:
+        return fallback_password.strip()
+    return decrypt_secret(get_site_setting(db, "backup_remote_password")).strip()
+
+
+def _resolve_backup_path(path_value: str, base_dir: str = "/mnt/backups") -> Path:
+    base = Path(base_dir).resolve()
+    raw_path = (path_value or "").strip()
+
+    if not raw_path:
+        candidate = base
+    else:
+        # Force user input to remain relative to base, even if an absolute
+        # path is supplied.
+        relative_input = raw_path.lstrip("/\\")
+        candidate = base / Path(relative_input)
+
+    resolved = candidate.resolve(strict=False)
+    try:
+        resolved.relative_to(base)
+    except ValueError:
+        raise ValueError(f"Path must stay within {base}.")
+    return resolved
+
+
+def resolve_backup_storage_path(path_value: str) -> tuple[Path | None, str | None]:
+    try:
+        target = _resolve_backup_path(path_value)
+    except ValueError as exc:
+        return None, str(exc)
+    return target, None
+
+
+def test_directory_read_write(path_value: str) -> tuple[bool, str]:
+    target, validation_error = resolve_backup_storage_path(path_value)
+    if validation_error:
+        return False, validation_error
+    if not target.exists():
+        return False, f"{target} does not exist from inside Kaya."
+    if not target.is_dir():
+        return False, f"{target} is not a directory."
+
+    test_file = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            delete=False,
+            dir=target,
+            prefix=".kaya-storage-test-",
+            suffix=".txt",
+            encoding="utf-8",
+        ) as handle:
+            test_file = Path(handle.name)
+            handle.write("kaya storage test")
+
+        if test_file.read_text(encoding="utf-8") != "kaya storage test":
+            return False, f"Kaya wrote to {target}, but could not read the same data back."
+        test_file.unlink()
+    except OSError as exc:
+        return False, f"Kaya could not write, read and delete a test file in {target}: {exc}"
+    finally:
+        if test_file and test_file.exists():
+            try:
+                test_file.unlink()
+            except OSError:
+                pass
+
+    return True, f"Kaya can write, read and delete files in {target}."
+
+
+def test_tcp_connection(host: str, port: int) -> tuple[bool, str]:
+    if not host.strip():
+        return False, "Remote host is required for this storage type."
+    try:
+        with socket.create_connection((host.strip(), port), timeout=8):
+            return True, f"Kaya can reach {host.strip()} on port {port}."
+    except OSError as exc:
+        return False, f"Kaya cannot reach {host.strip()} on port {port}: {exc}"
+
+
+def test_ftp_storage(
+    *,
+    host: str,
+    remote_path: str,
+    username: str,
+    password: str,
+) -> tuple[bool, str]:
+    host = host.strip()
+    if not host:
+        return False, "Remote host is required for FTP storage."
+
+    marker = ".kaya-storage-test.txt"
+    payload = b"kaya storage test"
+    ftp = FTP()
+    try:
+        ftp.connect(host, 21, timeout=8)
+        ftp.login(username.strip() or "anonymous", password or "anonymous@")
+        if remote_path.strip():
+            ftp.cwd(remote_path.strip())
+        ftp.storbinary(f"STOR {marker}", io.BytesIO(payload))
+        downloaded = io.BytesIO()
+        ftp.retrbinary(f"RETR {marker}", downloaded.write)
+        ftp.delete(marker)
+        ftp.quit()
+    except OSError as exc:
+        return False, f"Kaya could not reach the FTP server: {exc}"
+    except Exception as exc:
+        try:
+            ftp.quit()
+        except Exception:
+            pass
+        return False, f"Kaya could not write, read and delete a test file over FTP: {exc}"
+
+    if downloaded.getvalue() != payload:
+        return False, "Kaya uploaded a test file over FTP, but the downloaded data did not match."
+    return True, f"Kaya can write, read and delete files on FTP storage at {host}."
+
+
+def smb_unc_path(host: str, remote_share: str, *children: str) -> str:
+    host = host.strip().strip("\\/")
+    share_path = remote_share.strip().strip("\\/")
+    if not host:
+        raise ValueError("Remote host is required for SMB storage.")
+    if not share_path:
+        raise ValueError("Remote share/path is required for SMB storage.")
+    parts = [part for part in share_path.replace("\\", "/").split("/") if part]
+    share = parts[0]
+    path_parts = parts[1:]
+    for child in children:
+        path_parts.extend(part for part in str(child).replace("\\", "/").split("/") if part)
+    suffix = ("\\" + "\\".join(path_parts)) if path_parts else ""
+    return f"\\\\{host}\\{share}{suffix}"
+
+
+def test_smb_storage(
+    *,
+    host: str,
+    remote_share: str,
+    username: str,
+    password: str,
+) -> tuple[bool, str]:
+    try:
+        target = smb_unc_path(host, remote_share)
+    except ValueError as exc:
+        return False, str(exc)
+
+    marker = f".kaya-storage-test-{uuid4().hex}.txt"
+    payload = b"kaya storage test"
+    test_path = smb_unc_path(host, remote_share, marker)
+    try:
+        smbclient.register_session(host.strip(), username=username.strip() or None, password=password or None)
+        with smbclient.open_file(test_path, mode="wb") as handle:
+            handle.write(payload)
+        with smbclient.open_file(test_path, mode="rb") as handle:
+            downloaded = handle.read()
+        smbclient.remove(test_path)
+    except Exception as exc:
+        return False, f"Kaya could not write, read and delete a test file on SMB target {target}: {exc}"
+    finally:
+        try:
+            smbclient.delete_session(host.strip())
+        except Exception:
+            pass
+
+    if downloaded != payload:
+        return False, f"Kaya wrote to SMB target {target}, but the downloaded data did not match."
+    return True, f"Kaya can write, read and delete files on SMB target {target}."
+
+
+def test_backup_storage_target(
+    db: Session,
+    *,
+    storage_type: str,
+    storage_path: str,
+    remote_host: str,
+    remote_share: str,
+    remote_username: str,
+    remote_password: str,
+) -> tuple[bool, str]:
+    storage_type = storage_type if storage_type in {"local", "smb", "ftp", "sftp"} else "local"
+
+    if storage_type == "local":
+        return test_directory_read_write(storage_path)
+
+    mounted_ok, mounted_detail = test_directory_read_write(storage_path)
+    if mounted_ok:
+        return True, f"{mounted_detail} This is the path Kaya will use for {storage_type.upper()} storage."
+
+    if storage_type == "ftp":
+        password = read_saved_backup_password(db, remote_password)
+        return test_ftp_storage(
+            host=remote_host,
+            remote_path=remote_share,
+            username=remote_username,
+            password=password,
+        )
+
+    if storage_type == "smb":
+        password = read_saved_backup_password(db, remote_password)
+        return test_smb_storage(
+            host=remote_host,
+            remote_share=remote_share,
+            username=remote_username,
+            password=password,
+        )
+
+    port = 445 if storage_type == "smb" else 22
+    reachable, reachable_detail = test_tcp_connection(remote_host, port)
+    if reachable:
+        return (
+            False,
+            f"{reachable_detail} Read/write was not verified because {storage_type.upper()} must be mounted at "
+            f"{storage_path.strip() or '/mnt/backups'} for Kaya to test file access directly. Mount the share there, "
+            "or test it from the backup agent when agent-side remote storage is enabled.",
+        )
+    return False, f"{mounted_detail} {reachable_detail}"
 
 
 def save_email_settings(
@@ -169,6 +593,114 @@ def save_email_settings(
     for key, value in settings_to_save.items():
         save_site_setting(db, key, value)
     save_smtp_password(db, smtp_password)
+
+
+def save_security_settings(
+    db: Session,
+    *,
+    trusted_hosts_enabled: str,
+    allowed_hosts: str,
+    csp_frame_ancestors: str,
+    csp_frame_ancestor_sources: str,
+    hsts_enabled: str,
+    hsts_include_subdomains: str,
+    hsts_max_age: str,
+    rdp_token_ttl_minutes: str,
+) -> None:
+    if csp_frame_ancestors not in {"none", "self", "custom"}:
+        csp_frame_ancestors = "self"
+    try:
+        clean_hsts_max_age = str(max(300, min(int(hsts_max_age or 31536000), 63072000)))
+    except ValueError:
+        clean_hsts_max_age = "31536000"
+    try:
+        clean_rdp_ttl = str(max(5, min(int(rdp_token_ttl_minutes or 10), 60)))
+    except ValueError:
+        clean_rdp_ttl = "10"
+
+    settings_to_save = {
+        "trusted_hosts_enabled": "1" if trusted_hosts_enabled else "",
+        "allowed_hosts": allowed_hosts,
+        "csp_frame_ancestors": csp_frame_ancestors,
+        "csp_frame_ancestor_sources": csp_frame_ancestor_sources,
+        "hsts_enabled": "1" if hsts_enabled else "",
+        "hsts_include_subdomains": "1" if hsts_include_subdomains else "",
+        "hsts_max_age": clean_hsts_max_age,
+        "rdp_token_ttl_minutes": clean_rdp_ttl,
+    }
+    for key, value in settings_to_save.items():
+        save_site_setting(db, key, value)
+
+
+def include_current_host(allowed_hosts: str, request: Request) -> str:
+    current_host = request.headers.get("host", "").strip()
+    if not current_host:
+        return allowed_hosts
+    existing = {
+        part.strip().lower()
+        for part in str(allowed_hosts or "").replace("\r", "\n").replace(",", "\n").split("\n")
+        if part.strip()
+    }
+    if current_host.lower() in existing:
+        return allowed_hosts
+    separator = "\n" if allowed_hosts.strip() else ""
+    return f"{allowed_hosts.strip()}{separator}{current_host}"
+
+
+def security_check_context(request: Request, db: Session) -> dict[str, object]:
+    app_settings = get_settings()
+    security = load_security_settings(db)
+    allowed_hosts = effective_allowed_hosts(security, app_settings)
+    current_host = request.headers.get("host", "")
+    host_filter_enabled = security.get("trusted_hosts_enabled") == "1" or bool(app_settings.allowed_hosts.strip())
+    request_is_https = (
+        request.url.scheme == "https"
+        or request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip() == "https"
+    )
+    hsts_enabled = security.get("hsts_enabled") == "1" or app_settings.session_cookie_secure
+    return {
+        "current_host": current_host,
+        "host_filter_enabled": host_filter_enabled,
+        "host_allowed": (not host_filter_enabled) or host_is_allowed(current_host, allowed_hosts),
+        "allowed_hosts": allowed_hosts,
+        "frame_ancestors": frame_ancestor_directive(security),
+        "hsts_enabled": hsts_enabled,
+        "hsts_active": request_is_https and hsts_enabled,
+        "hsts_header": hsts_header_value(security) if hsts_enabled else "",
+        "request_is_https": request_is_https,
+        "rdp_token_ttl_minutes": security.get("rdp_token_ttl_minutes") or "10",
+    }
+
+
+def lookup_public_ip() -> tuple[str, str]:
+    services = [
+        ("ipify", "https://api.ipify.org?format=json"),
+        ("ifconfig.me", "https://ifconfig.me/ip"),
+    ]
+    last_error = "Public IP check failed"
+    for name, url in services:
+        try:
+            with urlopen(url, timeout=5) as response:
+                body = response.read(512).decode("utf-8", errors="replace").strip()
+            if name == "ipify":
+                payload = json.loads(body)
+                ip_address = str(payload.get("ip", "")).strip()
+            else:
+                ip_address = body
+            if ip_address:
+                return ip_address, name
+        except Exception as exc:
+            last_error = f"{name}: {type(exc).__name__}"
+    raise RuntimeError(last_error)
+
+
+def lookup_inbound_addresses(host: str) -> list[str]:
+    addresses = {
+        result[4][0]
+        for result in socket.getaddrinfo(host, None)
+        if result[4] and result[4][0]
+    }
+    return sorted(addresses)
 
 
 @router.get("/admin")
@@ -1331,6 +1863,8 @@ def settings_page(
         {
             "user": user,
             "settings": load_site_settings(db),
+            "dns_providers": dns_providers_for_admin(db),
+            "security_check": security_check_context(request, db),
             "message": None,
             "error": None,
             **csrf_context(request),
@@ -1338,8 +1872,46 @@ def settings_page(
     )
 
 
+@router.get("/system/site-administration/security/public-ip")
+def public_ip_check(user=Depends(require_admin)):
+    try:
+        ip_address, source = lookup_public_ip()
+    except RuntimeError:
+        return JSONResponse(
+            {"ok": False, "error": "Public IP lookup failed."},
+            status_code=status.HTTP_502_BAD_GATEWAY,
+        )
+    return {"ok": True, "ip": ip_address, "source": source}
+
+
+@router.get("/system/site-administration/security/inbound")
+def inbound_check(request: Request, user=Depends(require_admin)):
+    host = host_without_port(request.headers.get("host", ""))
+    if not host:
+        return JSONResponse(
+            {"ok": False, "error": "Kaya could not read a Host header from this request."},
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        addresses = lookup_inbound_addresses(host)
+    except OSError as exc:
+        return JSONResponse(
+            {"ok": False, "host": host, "error": f"DNS lookup failed: {type(exc).__name__}"},
+            status_code=status.HTTP_502_BAD_GATEWAY,
+        )
+
+    if not addresses:
+        return JSONResponse(
+            {"ok": False, "host": host, "error": "DNS lookup returned no addresses."},
+            status_code=status.HTTP_502_BAD_GATEWAY,
+        )
+
+    return {"ok": True, "host": host, "addresses": addresses}
+
+
 @router.post("/system/site-administration")
-def save_settings(
+async def save_settings(
     request: Request,
     app_name: str = Form(APP_BRAND_NAME),
     base_url: str = Form("http://localhost:8080"),
@@ -1348,6 +1920,36 @@ def save_settings(
     guacd_host: str = Form(""),
     guacd_port: str = Form(""),
     max_upload_mb: str = Form("25"),
+    trusted_hosts_enabled: str = Form(""),
+    allowed_hosts: str = Form(""),
+    csp_frame_ancestors: str = Form("self"),
+    csp_frame_ancestor_sources: str = Form(""),
+    hsts_enabled: str = Form(""),
+    hsts_include_subdomains: str = Form(""),
+    hsts_max_age: str = Form("31536000"),
+    rdp_token_ttl_minutes: str = Form("10"),
+    backup_storage_type: str = Form("local"),
+    backup_storage_path: str = Form("/mnt/backups"),
+    backup_remote_host: str = Form(""),
+    backup_remote_share: str = Form(""),
+    backup_remote_username: str = Form(""),
+    backup_remote_password: str = Form(""),
+    backup_targets_json: str = Form("[]"),
+    backup_default_target_name: str = Form(""),
+    dns_manager_enabled: str = Form(""),
+    dns_default_provider_id: str = Form(""),
+    dns_refresh_interval_seconds: str = Form("300"),
+    dns_cache_enabled: str = Form(""),
+    dns_provider_id: str = Form(""),
+    dns_provider_name: str = Form(""),
+    dns_provider_type: str = Form("pihole"),
+    dns_provider_base_url: str = Form(""),
+    dns_provider_auth_method: str = Form("password"),
+    dns_provider_secret: str = Form(""),
+    dns_provider_ssl_verify: str = Form(""),
+    dns_provider_timeout_seconds: str = Form("10"),
+    dns_provider_enabled: str = Form(""),
+    dns_provider_description: str = Form(""),
     smtp_enabled: str = Form(""),
     smtp_host: str = Form(""),
     smtp_port: str = Form("587"),
@@ -1364,6 +1966,7 @@ def save_settings(
     user=Depends(require_admin),
 ):
     validate_csrf_token(request, csrf_token)
+    form = await request.form()
 
     save_email_settings(
         db,
@@ -1386,8 +1989,57 @@ def save_settings(
         email_template_password_reset_subject=email_template_password_reset_subject,
         email_template_password_reset_body=email_template_password_reset_body,
     )
+    if trusted_hosts_enabled:
+        allowed_hosts = include_current_host(allowed_hosts, request)
+    save_security_settings(
+        db,
+        trusted_hosts_enabled=trusted_hosts_enabled,
+        allowed_hosts=allowed_hosts,
+        csp_frame_ancestors=csp_frame_ancestors,
+        csp_frame_ancestor_sources=csp_frame_ancestor_sources,
+        hsts_enabled=hsts_enabled,
+        hsts_include_subdomains=hsts_include_subdomains,
+        hsts_max_age=hsts_max_age,
+        rdp_token_ttl_minutes=rdp_token_ttl_minutes,
+    )
+    save_backup_settings(
+        db,
+        backup_storage_type=backup_storage_type,
+        backup_storage_path=backup_storage_path,
+        backup_remote_host=backup_remote_host,
+        backup_remote_share=backup_remote_share,
+        backup_remote_username=backup_remote_username,
+        backup_remote_password=backup_remote_password,
+    )
+    normalized_targets = normalize_backup_targets_json(backup_targets_json)
+    save_site_setting(db, "backup_targets_json", normalized_targets)
+    default_name = backup_default_target_name.strip()
+    if default_name:
+        save_site_setting(db, "backup_default_target_name", default_name)
+    else:
+        save_site_setting(db, "backup_default_target_name", "")
+    save_dns_manager_settings(
+        db,
+        dns_manager_enabled=dns_manager_enabled,
+        dns_default_provider_id=dns_default_provider_id,
+        dns_refresh_interval_seconds=dns_refresh_interval_seconds,
+        dns_cache_enabled=dns_cache_enabled,
+        dns_provider_id=dns_provider_id,
+        dns_provider_name=dns_provider_name,
+        dns_provider_type=dns_provider_type,
+        dns_provider_base_url=dns_provider_base_url,
+        dns_provider_auth_method=dns_provider_auth_method,
+        dns_provider_secret=dns_provider_secret,
+        dns_provider_ssl_verify=dns_provider_ssl_verify,
+        dns_provider_timeout_seconds=dns_provider_timeout_seconds,
+        dns_provider_enabled=dns_provider_enabled,
+        dns_provider_description=dns_provider_description,
+    )
+    guacamole_bridge_changed = save_remote_manager_settings(db, form)
 
     db.commit()
+    if guacamole_bridge_changed:
+        restart_guacamole_bridge()
 
     write_audit(
         db,
@@ -1405,8 +2057,162 @@ def save_settings(
         {
             "user": user,
             "settings": load_site_settings(db),
+            "dns_providers": dns_providers_for_admin(db),
+            "security_check": security_check_context(request, db),
             "message": "Settings saved successfully.",
             "error": None,
+            **csrf_context(request),
+        },
+    )
+
+
+@router.post("/system/site-administration/test-backup-storage")
+def test_backup_storage(
+    request: Request,
+    backup_storage_type: str = Form("local"),
+    backup_storage_path: str = Form("/mnt/backups"),
+    backup_remote_host: str = Form(""),
+    backup_remote_share: str = Form(""),
+    backup_remote_username: str = Form(""),
+    backup_remote_password: str = Form(""),
+    backup_remote_password_enc: str = Form(""),
+    backup_targets_json: str = Form("[]"),
+    backup_default_target_name: str = Form(""),
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    validate_csrf_token(request, csrf_token)
+
+    effective_remote_password = backup_remote_password.strip()
+    if not effective_remote_password and backup_remote_password_enc.strip():
+        effective_remote_password = decrypt_secret(backup_remote_password_enc).strip()
+
+    save_backup_settings(
+        db,
+        backup_storage_type=backup_storage_type,
+        backup_storage_path=backup_storage_path,
+        backup_remote_host=backup_remote_host,
+        backup_remote_share=backup_remote_share,
+        backup_remote_username=backup_remote_username,
+        backup_remote_password="",
+    )
+    save_site_setting(db, "backup_targets_json", normalize_backup_targets_json(backup_targets_json))
+    save_site_setting(db, "backup_default_target_name", backup_default_target_name.strip())
+    db.commit()
+
+    passed, detail = test_backup_storage_target(
+        db,
+        storage_type=backup_storage_type,
+        storage_path=backup_storage_path,
+        remote_host=backup_remote_host,
+        remote_share=backup_remote_share,
+        remote_username=backup_remote_username,
+        remote_password=effective_remote_password,
+    )
+    write_audit(
+        db,
+        user,
+        "test_backup_storage",
+        "settings",
+        None,
+        request.client.host if request.client else None,
+        detail=detail,
+        severity="info" if passed else "warning",
+    )
+    db.commit()
+
+    return templates.TemplateResponse(
+        request,
+        "settings.html",
+        {
+            "user": user,
+            "settings": load_site_settings(db),
+            "dns_providers": dns_providers_for_admin(db),
+            "security_check": security_check_context(request, db),
+            "message": f"Backup storage test passed: {detail}" if passed else None,
+            "error": None if passed else f"Backup storage test failed: {detail}",
+            **csrf_context(request),
+        },
+    )
+
+
+@router.post("/system/site-administration/test-dns-provider")
+def test_dns_provider(
+    request: Request,
+    dns_manager_enabled: str = Form(""),
+    dns_default_provider_id: str = Form(""),
+    dns_refresh_interval_seconds: str = Form("300"),
+    dns_cache_enabled: str = Form(""),
+    dns_provider_id: str = Form(""),
+    dns_provider_name: str = Form(""),
+    dns_provider_type: str = Form("pihole"),
+    dns_provider_base_url: str = Form(""),
+    dns_provider_auth_method: str = Form("password"),
+    dns_provider_secret: str = Form(""),
+    dns_provider_ssl_verify: str = Form(""),
+    dns_provider_timeout_seconds: str = Form("10"),
+    dns_provider_enabled: str = Form(""),
+    dns_provider_description: str = Form(""),
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    validate_csrf_token(request, csrf_token)
+    save_dns_manager_settings(
+        db,
+        dns_manager_enabled=dns_manager_enabled,
+        dns_default_provider_id=dns_default_provider_id,
+        dns_refresh_interval_seconds=dns_refresh_interval_seconds,
+        dns_cache_enabled=dns_cache_enabled,
+        dns_provider_id=dns_provider_id,
+        dns_provider_name=dns_provider_name,
+        dns_provider_type=dns_provider_type,
+        dns_provider_base_url=dns_provider_base_url,
+        dns_provider_auth_method=dns_provider_auth_method,
+        dns_provider_secret=dns_provider_secret,
+        dns_provider_ssl_verify=dns_provider_ssl_verify,
+        dns_provider_timeout_seconds=dns_provider_timeout_seconds,
+        dns_provider_enabled=dns_provider_enabled,
+        dns_provider_description=dns_provider_description,
+    )
+    db.commit()
+
+    provider_id = (get_site_setting(db, "dns_default_provider_id") or "").strip()
+    provider = db.get(DNSProviderConfig, int(provider_id)) if provider_id.isdigit() else None
+    if not provider:
+        passed = False
+        detail = "DNS provider settings were saved, but no provider is configured to test."
+    else:
+        result = provider_for(provider).test_connection()
+        passed = result.ok
+        detail = result.message
+        provider.last_status = "online" if passed else "error"
+        provider.last_error = "" if passed else detail
+        provider.last_checked_at = datetime.utcnow()
+        db.commit()
+
+    write_audit(
+        db,
+        user,
+        "test_connection",
+        "dns_provider",
+        str(provider.id) if provider else None,
+        request.client.host if request.client else None,
+        detail=detail,
+        severity="info" if passed else "warning",
+    )
+    db.commit()
+    return templates.TemplateResponse(
+        request,
+        "settings.html",
+        {
+            "user": user,
+            "settings": load_site_settings(db),
+            "dns_providers": dns_providers_for_admin(db),
+            "security_check": security_check_context(request, db),
+            "message": detail if passed else None,
+            "error": None if passed else detail,
             **csrf_context(request),
         },
     )
@@ -1422,6 +2228,14 @@ def send_test_email(
     guacd_host: str = Form(""),
     guacd_port: str = Form(""),
     max_upload_mb: str = Form("25"),
+    trusted_hosts_enabled: str = Form(""),
+    allowed_hosts: str = Form(""),
+    csp_frame_ancestors: str = Form("self"),
+    csp_frame_ancestor_sources: str = Form(""),
+    hsts_enabled: str = Form(""),
+    hsts_include_subdomains: str = Form(""),
+    hsts_max_age: str = Form("31536000"),
+    rdp_token_ttl_minutes: str = Form("10"),
     smtp_enabled: str = Form(""),
     smtp_host: str = Form(""),
     smtp_port: str = Form("587"),
@@ -1460,6 +2274,19 @@ def send_test_email(
         smtp_from_name=smtp_from_name,
         email_template_password_reset_subject=email_template_password_reset_subject,
         email_template_password_reset_body=email_template_password_reset_body,
+    )
+    if trusted_hosts_enabled:
+        allowed_hosts = include_current_host(allowed_hosts, request)
+    save_security_settings(
+        db,
+        trusted_hosts_enabled=trusted_hosts_enabled,
+        allowed_hosts=allowed_hosts,
+        csp_frame_ancestors=csp_frame_ancestors,
+        csp_frame_ancestor_sources=csp_frame_ancestor_sources,
+        hsts_enabled=hsts_enabled,
+        hsts_include_subdomains=hsts_include_subdomains,
+        hsts_max_age=hsts_max_age,
+        rdp_token_ttl_minutes=rdp_token_ttl_minutes,
     )
     db.commit()
 
@@ -1506,6 +2333,8 @@ def send_test_email(
         {
             "user": user,
             "settings": load_site_settings(db),
+            "dns_providers": dns_providers_for_admin(db),
+            "security_check": security_check_context(request, db),
             "message": message,
             "error": error,
             "test_email_to": recipient,

@@ -137,6 +137,30 @@ def proxmox_guest_addresses(host,node_name,endpoint,guest):
         pass
     return addresses
 
+def proxmox_backup_tasks(host):
+    try:
+        tasks=pve(host,'/cluster/tasks?typefilter=vzdump&limit=100') or []
+    except Exception:
+        return []
+    return sorted(tasks,key=lambda item:item.get('starttime') or 0,reverse=True)
+
+def proxmox_backup_task_status(task):
+    if not task:
+        return None
+    status=str(task.get('status') or task.get('exitstatus') or '').strip()
+    if not status:
+        return 'running'
+    return 'successful' if status.upper() == 'OK' else 'failed'
+
+def proxmox_matching_backup_task(job,tasks):
+    raw_vmids=str(job.get('vmid') or '').replace(';',',').replace(' ', ',')
+    vmids={part for part in raw_vmids.split(',') if part}
+    for task in tasks:
+        task_id=str(task.get('id') or '')
+        if not vmids or task_id in vmids:
+            return task
+    return None
+
 def collect_proxmox(host):
     version=pve(host,'/version') or {}
     resources=pve(host,'/cluster/resources') or []
@@ -182,8 +206,12 @@ def collect_proxmox(host):
         elif kind=='storage': items.append({'external_id':x.get('id'),'name':x.get('storage') or x.get('id'),'kind':'storage','status':x.get('status'),'size_bytes':x.get('maxdisk'),'metadata':{'node':x.get('node'),'used':x.get('disk'),'type':x.get('plugintype')}})
     try: jobs=pve(host,'/cluster/backup') or []
     except Exception: jobs=[]
+    backup_tasks=proxmox_backup_tasks(host)
     for x in jobs:
-        eid=str(x.get('id') or f"{x.get('storage')}:{x.get('schedule')}:{x.get('vmid','all')}"); items.append({'external_id':eid,'name':x.get('id') or f"Backup to {x.get('storage','storage')}",'kind':'backup','status':'enabled' if x.get('enabled',1) else 'disabled','size_bytes':None,'metadata':x})
+        task=proxmox_matching_backup_task(x,backup_tasks)
+        task_status=proxmox_backup_task_status(task)
+        metadata={**x,'last_task':task,'last_status':task_status}
+        eid=str(x.get('id') or f"{x.get('storage')}:{x.get('schedule')}:{x.get('vmid','all')}"); items.append({'external_id':eid,'name':x.get('id') or f"Backup to {x.get('storage','storage')}",'kind':'backup','status':'enabled' if x.get('enabled',1) else 'disabled','size_bytes':None,'metadata':metadata})
     cpu=sum(float(x.get('cpu') or 0)*100 for x in nodes)/len(nodes) if nodes else None
     limited=bool(nodes) and not any(x.get('maxmem') for x in nodes)
     warning='Connected, but the API token cannot read node capacity or guests. Assign PVEAuditor to the API token at / with Propagate enabled.' if limited else None
