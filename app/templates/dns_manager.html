@@ -48,10 +48,20 @@
 {% set stats_data = stats.data if stats and stats.ok else {} %}
 {% set status_data = status.data if status and status.ok else {} %}
 {% set history_data = history.data if history and history.ok else {} %}
+{% set clients_data = clients.data if clients and clients.ok else {} %}
+{% set dhcp_data = dhcp.data if dhcp and dhcp.ok else {} %}
+{% set query_log_data = queries.data if queries and queries.ok else {} %}
+{% set blocklists_data = blocklists.data if blocklists and blocklists.ok else {} %}
 {% set query_points = query_chart_points(history_data) %}
 {% set query_max = chart_max(query_points, 'total') %}
 {% set client_rows = client_activity_rows(stats_data, history_data.get('clients') if history_data else {}) %}
 {% set client_max = chart_max(client_rows, 'count') %}
+{% set inventory_rows = network_client_inventory(clients_data, dhcp_data, query_log_data) %}
+{% set unknown_inventory_rows = inventory_rows|selectattr('is_unknown')|list %}
+{% set attention_rows = attention_client_rows(inventory_rows) %}
+{% set dhcp_rows = dhcp_lease_rows(dhcp_data) %}
+{% set risky_rows = risky_blocked_queries(query_log_data) %}
+{% set blocklist_rows = list_from_payload(blocklists_data, 'lists', 'blocklists', 'data') %}
 <section class="dns-summary-grid">
   <article class="dns-summary-card dns-card-blue">
     <span>Total Queries</span>
@@ -73,6 +83,73 @@
     <strong>{{ display_number(stat_value(stats_data, 'gravity.domains_being_blocked', 'domains_being_blocked')) }}</strong>
     <small>Managed by Pi-hole</small>
   </article>
+  <article class="dns-summary-card dns-card-purple">
+    <span>Network Clients</span>
+    <strong>{{ display_number(inventory_rows|length) }}</strong>
+    <small>{{ display_number(unknown_inventory_rows|length) }} need a closer look</small>
+  </article>
+  <article class="dns-summary-card dns-card-teal">
+    <span>DHCP Leases</span>
+    <strong>{{ display_number(dhcp_rows|length) }}</strong>
+    <small>Currently reported by provider</small>
+  </article>
+  <article class="dns-summary-card dns-card-rose">
+    <span>New / Unrecognised</span>
+    <strong>{{ display_number(attention_rows|length) }}</strong>
+    <small>First seen recently or unnamed</small>
+  </article>
+  <article class="dns-summary-card dns-card-slate">
+    <span>Blocklists</span>
+    <strong>{{ display_number(blocklist_rows|length) }}</strong>
+    <small>{{ display_number(risky_rows|length) }} concerning blocked hits</small>
+  </article>
+</section>
+
+<section class="dns-insight-grid">
+  <article class="dns-chart-panel dns-insight-panel">
+    <header><h2>New or Unrecognised Devices</h2><span class="muted">Useful for spotting unexpected network joins</span></header>
+    {% if attention_rows %}
+    <div class="dns-watch-list">
+      {% for row in attention_rows[:8] %}
+      <div class="dns-watch-item {% if row.is_new %}urgent{% endif %}">
+        <div>
+          <strong>{{ row.name }}</strong>
+          <span>{{ row.ip }}{% if row.mac != '-' %} / {{ row.mac }}{% endif %}</span>
+        </div>
+        <div>
+          {% if row.is_new %}<span class="table-chip danger-chip">New</span>{% endif %}
+          {% if row.is_unknown %}<span class="table-chip">Unrecognised</span>{% endif %}
+          <small>{{ row.source_label }}</small>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state compact-empty">No new or unrecognised devices reported by the provider.</div>
+    {% endif %}
+  </article>
+
+  <article class="dns-chart-panel dns-insight-panel">
+    <header><h2>Blocked Sites of Concern</h2><span class="muted">Adult, gambling, malware, and piracy terms</span></header>
+    {% if risky_rows %}
+    <div class="dns-risk-list">
+      {% for row in risky_rows %}
+      <div class="dns-risk-item">
+        <div>
+          <strong>{{ row.domain }}</strong>
+          <span>{{ row.client }}{% if row.client_ip != '-' %} / {{ row.client_ip }}{% endif %}</span>
+        </div>
+        <div>
+          <span class="table-chip danger-chip">{{ row.category }}</span>
+          <small>{{ row.count }} blocked{% if row.last_seen_label != '-' %} - {{ row.last_seen_label }}{% endif %}</small>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state compact-empty">No concerning blocked domains found in the latest query log.</div>
+    {% endif %}
+  </article>
 </section>
 
 <section class="dns-chart-panel">
@@ -92,21 +169,40 @@
   {% endif %}
 </section>
 
-<section class="dns-chart-panel">
-  <header><h2>Client activity</h2><span class="muted">Top clients by query volume</span></header>
-  {% if client_rows %}
-  <div class="dns-client-chart" style="--chart-max: {{ client_max if client_max else 1 }}">
-    {% for row in client_rows %}
-    <div class="dns-client-row">
-      <strong>{{ row.name }}</strong>
-      <div><span style="width: {{ ((row.count / (client_max if client_max else 1)) * 100)|round(2) }}%"></span></div>
-      <em>{{ display_number(row.count) }}</em>
+<section class="dns-insight-grid">
+  <section class="dns-chart-panel">
+    <header><h2>Client activity</h2><span class="muted">Top clients by query volume</span></header>
+    {% if client_rows %}
+    <div class="dns-client-chart" style="--chart-max: {{ client_max if client_max else 1 }}">
+      {% for row in client_rows %}
+      <div class="dns-client-row">
+        <strong>{{ row.name }}</strong>
+        <div><span style="width: {{ ((row.count / (client_max if client_max else 1)) * 100)|round(2) }}%"></span></div>
+        <em>{{ display_number(row.count) }}</em>
+      </div>
+      {% endfor %}
     </div>
-    {% endfor %}
-  </div>
-  {% else %}
-  <div class="empty-state compact-empty">No client activity returned by this provider yet.</div>
-  {% endif %}
+    {% else %}
+    <div class="empty-state compact-empty">No client activity returned by this provider yet.</div>
+    {% endif %}
+  </section>
+
+  <section class="dns-chart-panel dns-insight-panel">
+    <header><h2>DHCP Lease Snapshot</h2><span class="muted">Recently assigned addresses</span></header>
+    {% if dhcp_rows %}
+    <div class="dns-mini-table">
+      {% for row in dhcp_rows[:8] %}
+      <div>
+        <strong>{{ row.name }}</strong>
+        <span>{{ row.ip }}</span>
+        <em>{{ row.mac }}</em>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state compact-empty">No DHCP leases returned by this provider.</div>
+    {% endif %}
+  </section>
 </section>
 
 <section class="panel">

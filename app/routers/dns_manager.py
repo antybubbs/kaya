@@ -88,6 +88,36 @@ def display_number(value: Any, suffix: str = "") -> str:
     return f"{int(numeric):,}" if numeric.is_integer() else f"{numeric:,.1f}"
 
 
+def to_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(float(value or default))
+    except (TypeError, ValueError):
+        return default
+
+
+def timestamp_sort_value(value: Any) -> float:
+    if value in (None, ""):
+        return 0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        pass
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError, OSError):
+        return 0
+
+
+def timestamp_display(value: Any) -> str:
+    stamp = timestamp_sort_value(value)
+    if not stamp:
+        return str(value or "-")
+    try:
+        return datetime.fromtimestamp(stamp).strftime("%Y-%m-%d %H:%M")
+    except (ValueError, OSError):
+        return str(value or "-")
+
+
 def payload_value(payload: Any, *keys: str) -> Any:
     if not isinstance(payload, dict):
         return None
@@ -286,6 +316,173 @@ def client_activity_rows(stats_payload: Any, clients_payload: Any) -> list[dict[
     return rows
 
 
+def _rows_from_any(payload: Any, *keys: str) -> list[Any]:
+    rows = list_from_payload(payload, *keys)
+    if rows:
+        return rows
+    if isinstance(payload, dict):
+        for key in keys:
+            value = payload.get(key)
+            if isinstance(value, dict):
+                return list(value.values())
+    return []
+
+
+def dhcp_lease_rows(dhcp_payload: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in _rows_from_any(dhcp_payload, "leases", "data"):
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            {
+                "name": str(payload_value(item, "name", "hostname", "host") or "-"),
+                "ip": str(payload_value(item, "ip", "address", "ip_address") or "-"),
+                "mac": str(payload_value(item, "mac", "hwaddr", "mac_address") or "-"),
+                "expires": payload_value(item, "expires", "expiry", "expires_at", "valid_until"),
+                "static": payload_value(item, "static", "reserved", "reservation"),
+            }
+        )
+    return rows
+
+
+def network_client_inventory(clients_payload: Any, dhcp_payload: Any, query_payload: Any) -> list[dict[str, Any]]:
+    inventory: dict[str, dict[str, Any]] = {}
+
+    def merge(row: dict[str, Any], source: str) -> None:
+        ip = str(row.get("ip") or "-")
+        mac = str(row.get("mac") or "-")
+        key = mac if mac != "-" else ip
+        if key == "-":
+            return
+        existing = inventory.setdefault(
+            key,
+            {
+                "name": "-",
+                "ip": "-",
+                "mac": "-",
+                "first_seen": None,
+                "last_seen": None,
+                "queries": 0,
+                "sources": set(),
+            },
+        )
+        for field in ("name", "ip", "mac"):
+            value = str(row.get(field) or "-").strip()
+            if value and value != "-" and existing[field] == "-":
+                existing[field] = value
+        for field in ("first_seen", "last_seen"):
+            value = row.get(field)
+            if value and timestamp_sort_value(value) > timestamp_sort_value(existing.get(field)):
+                existing[field] = value
+        existing["queries"] += to_int(row.get("queries"))
+        existing["sources"].add(source)
+
+    for item in _rows_from_any(clients_payload, "devices", "clients", "data"):
+        if not isinstance(item, dict):
+            continue
+        merge(
+            {
+                "name": payload_value(item, "name", "hostname", "host"),
+                "ip": payload_value(item, "ip", "address", "ip_address"),
+                "mac": payload_value(item, "mac", "hwaddr", "mac_address"),
+                "first_seen": payload_value(item, "first_seen", "firstSeen", "firstSeenAt", "created_at"),
+                "last_seen": payload_value(item, "last_seen", "lastSeen", "lastQuery", "last_query", "updated_at"),
+                "queries": payload_value(item, "queries", "count", "total"),
+            },
+            "Pi-hole network",
+        )
+
+    for lease in dhcp_lease_rows(dhcp_payload):
+        merge(
+            {
+                "name": lease["name"],
+                "ip": lease["ip"],
+                "mac": lease["mac"],
+                "last_seen": lease["expires"],
+            },
+            "DHCP lease",
+        )
+
+    for item in list_from_payload(query_payload, "queries", "data")[:200]:
+        if not isinstance(item, dict):
+            continue
+        merge(
+            {
+                "name": query_client_name(item),
+                "ip": query_client_ip(item),
+                "last_seen": payload_value(item, "time", "timestamp", "date"),
+                "queries": 1,
+            },
+            "Recent query",
+        )
+
+    rows = []
+    now = datetime.now().timestamp()
+    for row in inventory.values():
+        first_seen_stamp = timestamp_sort_value(row.get("first_seen"))
+        recent_first_seen = bool(first_seen_stamp and now - first_seen_stamp <= 24 * 60 * 60)
+        unknown_name = row["name"] in {"-", "", row["ip"]}
+        row["is_new"] = recent_first_seen
+        row["is_unknown"] = unknown_name or row["mac"] == "-"
+        row["source_label"] = ", ".join(sorted(row["sources"]))
+        row["first_seen_label"] = timestamp_display(row.get("first_seen"))
+        row["last_seen_label"] = timestamp_display(row.get("last_seen"))
+        rows.append(row)
+    return sorted(rows, key=lambda item: (not item["is_new"], not item["is_unknown"], -timestamp_sort_value(item.get("last_seen"))))
+
+
+def attention_client_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [row for row in rows if row.get("is_new") or row.get("is_unknown")]
+
+
+RISKY_DOMAIN_TERMS: dict[str, tuple[str, ...]] = {
+    "Adult content": ("porn", "xxx", "adult", "sex", "camgirl", "onlyfans"),
+    "Gambling": ("casino", "betting", "bet365", "poker", "gambling"),
+    "Malware/phishing": ("malware", "phish", "trojan", "botnet", "cryptominer"),
+    "Piracy/torrents": ("torrent", "pirate", "warez"),
+}
+
+
+def risky_blocked_queries(query_payload: Any) -> list[dict[str, Any]]:
+    rows: dict[str, dict[str, Any]] = {}
+    for item in list_from_payload(query_payload, "queries", "data")[:300]:
+        if not isinstance(item, dict):
+            continue
+        status_text = f"{query_status(item)} {query_reply_type(item)}".lower()
+        if not any(term in status_text for term in ("block", "gravity", "deny", "regex")):
+            continue
+        domain = query_domain(item).strip().strip(".").lower()
+        if not domain or domain == "-":
+            continue
+        category = ""
+        for label, terms in RISKY_DOMAIN_TERMS.items():
+            if any(term in domain for term in terms):
+                category = label
+                break
+        if not category:
+            continue
+        key = f"{domain}|{query_client_ip(item)}"
+        row = rows.setdefault(
+            key,
+            {
+                "domain": domain,
+                "category": category,
+                "client": query_client_name(item),
+                "client_ip": query_client_ip(item),
+                "status": query_status(item),
+                "count": 0,
+                "last_seen": payload_value(item, "time", "timestamp", "date"),
+            },
+        )
+        row["count"] += 1
+        if timestamp_sort_value(payload_value(item, "time", "timestamp", "date")) > timestamp_sort_value(row.get("last_seen")):
+            row["last_seen"] = payload_value(item, "time", "timestamp", "date")
+    result = list(rows.values())
+    for row in result:
+        row["last_seen_label"] = timestamp_display(row.get("last_seen"))
+    return sorted(result, key=lambda item: (-item["count"], -timestamp_sort_value(item.get("last_seen"))))[:8]
+
+
 def chart_max(rows: list[dict[str, Any]], key: str) -> int:
     values: list[int] = []
     for row in rows:
@@ -386,6 +583,10 @@ def dns_manager(
             status = call_provider(provider, "get_status", dns_client)
             stats = call_provider(provider, "get_statistics", dns_client)
             history = call_provider(provider, "get_history", dns_client)
+            clients = call_provider(provider, "get_clients", dns_client)
+            dhcp = call_provider(provider, "get_dhcp_leases", dns_client)
+            queries = dns_client.get_query_log(limit=300)
+            blocklists = call_provider(provider, "get_blocklists", dns_client)
         elif active_tab == "query-log":
             queries = dns_client.get_query_log(limit=200)
         elif active_tab == "clients":
@@ -446,6 +647,10 @@ def dns_manager(
             "domain_kind": domain_kind,
             "query_chart_points": query_chart_points,
             "client_activity_rows": client_activity_rows,
+            "dhcp_lease_rows": dhcp_lease_rows,
+            "network_client_inventory": network_client_inventory,
+            "attention_client_rows": attention_client_rows,
+            "risky_blocked_queries": risky_blocked_queries,
             "chart_max": chart_max,
             **csrf_context(request),
         },

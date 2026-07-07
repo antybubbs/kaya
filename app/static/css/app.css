@@ -735,6 +735,33 @@ html[data-theme=light] .settings-content-panel {
   background: linear-gradient(135deg, #10b981, #047857);
 }
 
+.dns-card-purple {
+  background: linear-gradient(135deg, #7c3aed, #4338ca);
+}
+
+.dns-card-teal {
+  background: linear-gradient(135deg, #14b8a6, #0f766e);
+}
+
+.dns-card-rose {
+  background: linear-gradient(135deg, #f43f5e, #be123c);
+}
+
+.dns-card-slate {
+  background: linear-gradient(135deg, #475569, #1e293b);
+}
+
+.dns-insight-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  margin-bottom: 14px;
+}
+
+.dns-insight-grid > .dns-chart-panel {
+  margin-bottom: 0;
+}
+
 .dns-chart-panel {
   background: rgba(17, 24, 39, .82);
   border: 1px solid var(--line);
@@ -852,6 +879,70 @@ html[data-theme=light] .settings-content-panel {
   text-align: right;
 }
 
+.dns-watch-list,
+.dns-risk-list,
+.dns-mini-table {
+  display: grid;
+  gap: 10px;
+}
+
+.dns-watch-item,
+.dns-risk-item,
+.dns-mini-table > div {
+  align-items: center;
+  background: rgba(15, 23, 42, .36);
+  border: 1px solid rgba(148, 163, 184, .16);
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 10px 12px;
+}
+
+.dns-watch-item.urgent {
+  border-color: rgba(248, 113, 113, .38);
+  box-shadow: inset 3px 0 0 rgba(248, 113, 113, .75);
+}
+
+.dns-watch-item strong,
+.dns-risk-item strong,
+.dns-mini-table strong {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dns-watch-item span,
+.dns-risk-item span,
+.dns-mini-table span,
+.dns-mini-table em {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.dns-watch-item > div:last-child,
+.dns-risk-item > div:last-child {
+  align-items: end;
+  display: grid;
+  gap: 6px;
+  justify-items: end;
+  text-align: right;
+}
+
+.dns-watch-item small,
+.dns-risk-item small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.dns-mini-table > div {
+  grid-template-columns: minmax(120px, 1fr) minmax(90px, auto) minmax(120px, auto);
+}
+
 .compact-empty {
   border-radius: 8px;
   padding: 18px;
@@ -904,6 +995,16 @@ html[data-kaya-theme=light-ops] .dns-client-row div {
   border-color: #d8dee8;
 }
 
+html[data-theme=light] .dns-watch-item,
+html[data-theme=light] .dns-risk-item,
+html[data-theme=light] .dns-mini-table > div,
+html[data-kaya-theme=light-ops] .dns-watch-item,
+html[data-kaya-theme=light-ops] .dns-risk-item,
+html[data-kaya-theme=light-ops] .dns-mini-table > div {
+  background: #f8fafc;
+  border-color: #d8dee8;
+}
+
 @media (max-width: 850px) {
   .settings-layout {
     grid-template-columns: 1fr;
@@ -913,7 +1014,17 @@ html[data-kaya-theme=light-ops] .dns-client-row div {
     grid-template-columns: 1fr;
   }
 
+  .dns-insight-grid {
+    grid-template-columns: 1fr;
+  }
+
   .dns-client-row {
+    grid-template-columns: 1fr;
+  }
+
+  .dns-watch-item,
+  .dns-risk-item,
+  .dns-mini-table > div {
     grid-template-columns: 1fr;
   }
 
