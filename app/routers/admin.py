@@ -335,8 +335,24 @@ def read_saved_backup_password(db: Session, fallback_password: str = "") -> str:
     return decrypt_secret(get_site_setting(db, "backup_remote_password")).strip()
 
 
+def _resolve_backup_path(path_value: str, base_dir: str = "/mnt/backups") -> Path:
+    base = Path(base_dir).resolve()
+    raw_value = (path_value or "").strip()
+    candidate = Path(raw_value) if raw_value else base
+    if not candidate.is_absolute():
+        candidate = base / candidate
+    resolved = candidate.resolve(strict=False)
+    if base != resolved and base not in resolved.parents:
+        raise ValueError(f"Path must stay within {base}.")
+    return resolved
+
+
 def resolve_backup_storage_path(path_value: str) -> tuple[Path | None, str | None]:
-    base_path = Path("/mnt/backups").resolve(strict=False)
+    try:
+        target = _resolve_backup_path(path_value)
+    except ValueError as exc:
+        return False, str(exc)
+
     candidate = Path(path_value.strip() or str(base_path))
     resolved = candidate.resolve(strict=False)
     try:
