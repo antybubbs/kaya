@@ -51,6 +51,7 @@ from app.services.managed_lists import MANAGED_LIST_MODULES, MANAGED_LISTS, list
 from app.services.mail import MailConfigurationError, render_email_template, send_mail
 from app.services.sessions import active_since
 from app.services.dns_providers import provider_for
+from app.services.guacamole_bridge import restart_guacamole_bridge
 from app.services.site_settings import (
     effective_allowed_hosts,
     frame_ancestor_directive,
@@ -59,6 +60,12 @@ from app.services.site_settings import (
     host_is_allowed,
     hsts_header_value,
     load_security_settings,
+)
+from app.routers.remote_manager import (
+    RDP_SETTING_KEYS,
+    SETTINGS as REMOTE_MANAGER_SETTINGS,
+    TERMINAL_SETTING_KEYS,
+    clean_global_setting,
 )
 
 router = APIRouter()
@@ -96,8 +103,6 @@ SITE_SETTING_KEYS = {
     "dns_default_provider_id": "",
     "dns_refresh_interval_seconds": "300",
     "dns_cache_enabled": "1",
-    "guacd_host": "",
-    "guacd_port": "4822",
     "smtp_enabled": "",
     "smtp_host": "",
     "smtp_port": "587",
@@ -115,6 +120,7 @@ SITE_SETTING_KEYS = {
         "If you did not request this, you can ignore this email."
     ),
 }
+SITE_SETTING_KEYS.update(REMOTE_MANAGER_SETTINGS)
 
 
 def load_site_settings(db: Session) -> dict[str, str]:
@@ -224,6 +230,38 @@ def save_dns_manager_settings(
     provider.description = dns_provider_description.strip() or None
     provider.updated_at = datetime.utcnow()
     save_site_setting(db, "dns_default_provider_id", str(provider.id))
+
+
+def save_remote_manager_settings(db: Session, form) -> bool:
+    previous_bridge_settings = {
+        key: get_site_setting(db, key)
+        for key in ("guacamole_enabled", "guacd_host", "guacd_port")
+    }
+    guacamole_enabled = "1" if form.get("guacamole_enabled") else "0"
+    guacd_host = str(form.get("guacd_host", "")).strip()
+    try:
+        guacd_port = max(1, min(int(str(form.get("guacd_port", "4822")) or "4822"), 65535))
+    except ValueError:
+        guacd_port = 4822
+
+    save_site_setting(db, "guacamole_enabled", guacamole_enabled)
+    save_site_setting(db, "split_screen_enabled", "1" if form.get("split_screen_enabled") else "0")
+    save_site_setting(db, "guacd_host", guacd_host)
+    save_site_setting(db, "guacd_port", str(guacd_port))
+    for key in (
+        "session_idle_timeout_minutes",
+        "recording_mode",
+        "recording_categories",
+        "recording_pause_idle_minutes",
+        *TERMINAL_SETTING_KEYS,
+        *RDP_SETTING_KEYS,
+    ):
+        save_site_setting(db, key, clean_global_setting(key, str(form.get(key, ""))))
+    return previous_bridge_settings != {
+        "guacamole_enabled": guacamole_enabled,
+        "guacd_host": guacd_host,
+        "guacd_port": str(guacd_port),
+    }
 
 
 def normalize_backup_targets_json(value: str) -> str:
@@ -1843,7 +1881,7 @@ def inbound_check(request: Request, user=Depends(require_admin)):
 
 
 @router.post("/system/site-administration")
-def save_settings(
+async def save_settings(
     request: Request,
     app_name: str = Form(APP_BRAND_NAME),
     base_url: str = Form("http://localhost:8080"),
@@ -1898,6 +1936,7 @@ def save_settings(
     user=Depends(require_admin),
 ):
     validate_csrf_token(request, csrf_token)
+    form = await request.form()
 
     save_email_settings(
         db,
@@ -1966,8 +2005,11 @@ def save_settings(
         dns_provider_enabled=dns_provider_enabled,
         dns_provider_description=dns_provider_description,
     )
+    guacamole_bridge_changed = save_remote_manager_settings(db, form)
 
     db.commit()
+    if guacamole_bridge_changed:
+        restart_guacamole_bridge()
 
     write_audit(
         db,

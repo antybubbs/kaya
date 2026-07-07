@@ -1,6 +1,6 @@
 (() => {
-  const form = document.querySelector(".remote-settings-shell");
   const preview = document.querySelector(".terminal-preview");
+  const form = preview?.closest("form") || document.querySelector(".remote-settings-shell");
   if (!form || !preview) return;
 
   const themes = {

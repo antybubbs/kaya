@@ -556,7 +556,7 @@ def remote_list(request: Request, db: Session = Depends(get_db), user=Depends(re
 
 @router.get("/settings")
 def remote_settings(request: Request, db: Session = Depends(get_db), user=Depends(require_admin)):
-    return templates.TemplateResponse(request, "remote_manager_settings.html", {"user": user, "settings": settings_map(db), "message": None, **csrf_context(request)})
+    return RedirectResponse("/system/site-administration?tab=module-remote-manager", status_code=303)
 
 
 @router.post("/settings")
@@ -576,7 +576,7 @@ async def save_remote_settings(request: Request, csrf_token: str = Form(...), gu
     db.commit()
     restart_guacamole_bridge()
     write_audit(db, user, "update", "remote_manager_settings", ip_address=request.client.host if request.client else None, detail="Updated Remote Manager settings")
-    return templates.TemplateResponse(request, "remote_manager_settings.html", {"user": user, "settings": settings_map(db), "message": "Settings saved.", **csrf_context(request)})
+    return RedirectResponse("/system/site-administration?tab=module-remote-manager", status_code=303)
 
 
 @router.get("/recordings")

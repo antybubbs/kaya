@@ -42,6 +42,7 @@
         <div class="settings-side-children">
           <a href="/system/site-administration?tab=module-backup-manager" class="settings-side-child" data-settings-child-tab="module-backup-manager" data-settings-parent="modules" aria-selected="false">Backup Manager</a>
           <a href="/system/site-administration?tab=module-dns-manager" class="settings-side-child" data-settings-child-tab="module-dns-manager" data-settings-parent="modules" aria-selected="false">DNS Manager</a>
+          <a href="/system/site-administration?tab=module-remote-manager" class="settings-side-child" data-settings-child-tab="module-remote-manager" data-settings-parent="modules" aria-selected="false">Remote Manager</a>
         </div>
       </details>
     </aside>
@@ -300,6 +301,174 @@
     </div>
   </section>
 
+  <section class="settings-tab-panel" data-settings-panel="module-remote-manager" data-settings-parent="modules" role="tabpanel" hidden>
+    <h2>Remote Manager</h2>
+
+    <div class="remote-settings-card" id="remote-manager-general">
+      <header><span>General</span></header>
+      <div class="remote-settings-grid">
+        {{ switch('split_screen_enabled', 'Enable split screen sessions', 'Allow users to place two live sessions side by side in Remote Manager') }}
+        {{ switch('guacamole_enabled', 'Enable Guacamole for RDP', 'Guacamole is installed alongside Kaya if you used the standard docker compose file. These settings are automatically populated with the local container name unless you use your own guacd server.') }}
+        <label>
+          <strong>guacd host</strong>
+          <small>Host name or IP address of the Guacamole daemon.</small>
+          <input name="guacd_host" value="{{ settings.get('guacd_host', 'guacd') or 'guacd' }}">
+        </label>
+        <label>
+          <strong>guacd port</strong>
+          <small>Port used by the Guacamole daemon.</small>
+          <input name="guacd_port" type="number" min="1" max="65535" value="{{ settings.get('guacd_port', '4822') or '4822' }}">
+        </label>
+        <label>
+          <strong>Idle timeout</strong>
+          <small>Disconnect inactive sessions after this many minutes. Use 0 to disable.</small>
+          <input name="session_idle_timeout_minutes" type="number" min="0" max="1440" value="{{ settings.get('session_idle_timeout_minutes', '0') or '0' }}">
+        </label>
+      </div>
+    </div>
+
+    <div class="remote-settings-card" id="remote-manager-recording">
+      <header><span>Session Recording</span></header>
+      <div class="remote-settings-grid remote-recording-settings-grid">
+        <label>
+          <strong>Recording mode</strong>
+          <select name="recording_mode">
+            {% set recording_mode = settings.get('recording_mode', 'manual') %}
+            <option value="off" {% if recording_mode == 'off' %}selected{% endif %}>Off</option>
+            <option value="manual" {% if recording_mode == 'manual' %}selected{% endif %}>Manual only</option>
+            <option value="all" {% if recording_mode == 'all' %}selected{% endif %}>Auto-record all sessions</option>
+            <option value="categories" {% if recording_mode == 'categories' %}selected{% endif %}>Auto-record selected categories</option>
+          </select>
+        </label>
+        <label>
+          <strong>Recorded categories</strong>
+          <small>Comma or line separated.</small>
+          <textarea name="recording_categories" rows="4" placeholder="Servers&#10;Privileged">{{ settings.get('recording_categories', '') }}</textarea>
+        </label>
+        <label>
+          <strong>Pause recording after</strong>
+          <small>Minutes with no screen change. Use 0 to disable.</small>
+          <input name="recording_pause_idle_minutes" type="number" min="0" max="1440" value="{{ settings.get('recording_pause_idle_minutes', '5') or '5' }}">
+        </label>
+      </div>
+    </div>
+
+    <div class="remote-settings-card" id="remote-manager-terminal">
+      <header><span>Terminal Appearance</span></header>
+      <div class="terminal-preview">
+        <div><span class="term-green">deploy@web-01</span>:<span class="term-blue">~</span>$ ls -la</div>
+        <div>total 48</div>
+        <div><span class="term-cyan">drwxr-xr-x</span> 5 deploy deploy 4096 May 1 09:12 .</div>
+        <div><span class="term-cyan">drwxr-xr-x</span> 3 root root 4096 Apr 15 18:44 ..</div>
+        <div>-rw-r--r-- 1 deploy deploy 220 Apr 15 18:44 <span class="term-white">.bash_logout</span></div>
+        <div><span class="term-green">-rwxr-xr-x</span> 1 deploy deploy 8192 May 1 08:55 deploy.sh</div>
+        <div><span class="term-green">deploy@kaya</span>:<span class="term-blue">~</span>$ <span class="term-cursor"></span></div>
+      </div>
+      <div class="remote-settings-grid two">
+        <label>
+          <strong>Color theme</strong>
+          <select name="terminal_theme">
+            {% for value, label in [('kaya','Kaya Default'),('kayaDark','Kaya Dark'),('kayaLight','Kaya Light'),('nightOwl','Night Owl'),('dracula','Dracula'),('monokai','Monokai'),('nord','Nord'),('oneDark','One Dark'),('tokyoNight','Tokyo Night'),('gruvboxDark','Gruvbox Dark'),('solarizedDark','Solarized Dark'),('catppuccinMocha','Catppuccin Mocha')] %}
+            <option value="{{ value }}" {% if settings.get('terminal_theme', 'kaya') == value %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>
+          <strong>Font family</strong>
+          <select name="terminal_font_family">
+            {% for value, label in [('Caskaydia Cove Nerd Font Mono','Caskaydia Cove Nerd Font Mono')] %}
+            <option value="{{ value }}" {% if settings.get('terminal_font_family', 'Caskaydia Cove Nerd Font Mono') == value %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>
+          <strong>Font size</strong>
+          <small>{{ settings.get('terminal_font_size', '14') }}px</small>
+          <input name="terminal_font_size" type="range" min="8" max="28" value="{{ settings.get('terminal_font_size', '14') }}">
+        </label>
+        <label>
+          <strong>Cursor style</strong>
+          <select name="terminal_cursor_style">
+            {% set cursor_style = settings.get('terminal_cursor_style', 'bar') %}
+            <option value="bar" {% if cursor_style == 'bar' %}selected{% endif %}>Bar</option>
+            <option value="block" {% if cursor_style == 'block' %}selected{% endif %}>Block</option>
+            <option value="underline" {% if cursor_style == 'underline' %}selected{% endif %}>Underline</option>
+          </select>
+        </label>
+        <label>
+          <strong>Letter spacing</strong>
+          <small>{{ settings.get('terminal_letter_spacing', '0') }}px</small>
+          <input name="terminal_letter_spacing" type="range" min="0" max="4" value="{{ settings.get('terminal_letter_spacing', '0') }}">
+        </label>
+        <label>
+          <strong>Line height</strong>
+          <small>{{ settings.get('terminal_line_height', '1') }}</small>
+          <input name="terminal_line_height" type="range" min="0.8" max="2" step="0.1" value="{{ settings.get('terminal_line_height', '1') }}">
+        </label>
+        <label>
+          <strong>Bell style</strong>
+          <select name="terminal_bell_style">
+            {% set bell_style = settings.get('terminal_bell_style', 'none') %}
+            <option value="none" {% if bell_style == 'none' %}selected{% endif %}>None</option>
+            <option value="sound" {% if bell_style == 'sound' %}selected{% endif %}>Sound</option>
+            <option value="visual" {% if bell_style == 'visual' %}selected{% endif %}>Visual</option>
+          </select>
+        </label>
+        <label>
+          <strong>Backspace mode</strong>
+          <select name="terminal_backspace_mode">
+            {% set backspace_mode = settings.get('terminal_backspace_mode', 'normal') %}
+            <option value="normal" {% if backspace_mode == 'normal' %}selected{% endif %}>Normal (DEL)</option>
+            <option value="bs" {% if backspace_mode == 'bs' %}selected{% endif %}>Backspace (BS)</option>
+          </select>
+        </label>
+      </div>
+      {{ switch('terminal_cursor_blink', 'Cursor blinking', 'Enable blinking animation for the terminal cursor') }}
+      {{ switch('terminal_syntax_highlighting', 'Syntax highlighting', 'Colour prompts, paths, links, IPs, and command status text') }}
+      {{ switch('terminal_right_click_selects_word', 'Right-click selects word', 'Select the word under cursor on right-click') }}
+      <div class="remote-settings-grid">
+        <label>
+          <strong>Scrollback buffer</strong>
+          <small>{{ settings.get('terminal_scrollback', '10000') }} lines kept in history.</small>
+          <input name="terminal_scrollback" type="range" min="1000" max="100000" step="1000" value="{{ settings.get('terminal_scrollback', '10000') }}">
+        </label>
+      </div>
+    </div>
+
+    <div class="remote-settings-card" id="remote-manager-rdp">
+      <header><span>RDP</span></header>
+      {{ switch('rdp_disable_audio', 'Disable audio', 'Mute all audio from the remote session') }}
+      {{ switch('rdp_enable_audio_input', 'Enable audio input', 'Forward local microphone to the remote session') }}
+      {{ switch('rdp_enable_wallpaper', 'Wallpaper', 'Show desktop wallpaper') }}
+      {{ switch('rdp_enable_theming', 'Theming', 'Enable visual themes and styles') }}
+      {{ switch('rdp_enable_font_smoothing', 'Font smoothing', 'Enable ClearType font rendering') }}
+      {{ switch('rdp_enable_full_window_drag', 'Full window drag', 'Show window contents while dragging') }}
+      {{ switch('rdp_enable_desktop_composition', 'Desktop composition', 'Enable desktop composition effects') }}
+      {{ switch('rdp_enable_menu_animations', 'Menu animations', 'Enable menu fade and slide animations') }}
+      {{ switch('rdp_disable_bitmap_caching', 'Disable bitmap caching', 'Turn off bitmap cache') }}
+      {{ switch('rdp_disable_offscreen_caching', 'Disable offscreen caching', 'Turn off offscreen cache') }}
+      {{ switch('rdp_disable_glyph_caching', 'Disable glyph caching', 'Turn off glyph cache') }}
+      {{ switch('rdp_enable_gfx', 'Enable GFX', 'Use RemoteFX graphics pipeline') }}
+      <div class="remote-settings-grid">
+        <label>
+          <strong>Resize method</strong>
+          <small>How remote resolution changes are applied.</small>
+          <select name="rdp_resize_method">
+            {% set resize_method = settings.get('rdp_resize_method', 'display-update') %}
+            <option value="display-update" {% if resize_method == 'display-update' %}selected{% endif %}>Display Update (fast)</option>
+            <option value="reconnect" {% if resize_method == 'reconnect' %}selected{% endif %}>Reconnect (VPN-safe)</option>
+          </select>
+        </label>
+      </div>
+    </div>
+
+    <div class="remote-settings-card" id="remote-manager-redirection">
+      <header><span>Device Redirection</span></header>
+      {{ switch('rdp_enable_printing', 'Enable printing', 'Redirect local printers to the remote session') }}
+      {{ switch('rdp_enable_drive', 'Enable drive redirection', 'Map a local folder as a drive in the remote session') }}
+    </div>
+  </section>
+
   <section class="settings-tab-panel" data-settings-panel="uploads" data-settings-parent="uploads" role="tabpanel" hidden>
     <h2>Uploads</h2>
 
@@ -393,4 +562,5 @@
 
 {% block extra_scripts %}
 <script src="/static/js/settings_tabs.js?v={{ asset_version }}"></script>
+<script src="/static/js/remote_settings.js?v={{ asset_version }}"></script>
 {% endblock %}
