@@ -335,8 +335,21 @@ def read_saved_backup_password(db: Session, fallback_password: str = "") -> str:
     return decrypt_secret(get_site_setting(db, "backup_remote_password")).strip()
 
 
+def resolve_backup_storage_path(path_value: str) -> tuple[Path | None, str | None]:
+    base_path = Path("/mnt/backups").resolve(strict=False)
+    candidate = Path(path_value.strip() or str(base_path))
+    resolved = candidate.resolve(strict=False)
+    try:
+        resolved.relative_to(base_path)
+    except ValueError:
+        return None, f"{candidate} is outside the allowed backup root {base_path}."
+    return resolved, None
+
+
 def test_directory_read_write(path_value: str) -> tuple[bool, str]:
-    target = Path(path_value.strip() or "/mnt/backups")
+    target, validation_error = resolve_backup_storage_path(path_value)
+    if validation_error:
+        return False, validation_error
     if not target.exists():
         return False, f"{target} does not exist from inside Kaya."
     if not target.is_dir():
