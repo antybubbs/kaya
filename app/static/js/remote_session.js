@@ -477,9 +477,9 @@
     lineHeight: readFloat(root.dataset.terminalLineHeight, 1, 0.8, 2),
     bellStyle: root.dataset.terminalBellStyle || "none",
     backspaceMode: root.dataset.terminalBackspaceMode || "normal",
-    cursorBlink: true,
+    cursorBlink: root.dataset.terminalCursorBlink !== "0",
     rightClickSelectsWord: root.dataset.terminalRightClickSelectsWord === "1",
-    syntaxHighlighting: true,
+    syntaxHighlighting: root.dataset.terminalSyntaxHighlighting !== "0",
     scrollback: readInt(root.dataset.terminalScrollback, 10000, 1000, 100000),
   };
   const idleTimeoutMinutes = readInt(root.dataset.idleTimeoutMinutes, 0, 0, 1440);
@@ -602,6 +602,10 @@
   let connected = false;
   let closeHandled = false;
   let idleTimer = null;
+  let pendingWriteFrame = null;
+  let pendingWriteChunks = [];
+  let rawControlOutput = false;
+  const submitButton = passwordForm.querySelector('button[type="submit"]');
   const recordingButton = document.querySelector("[data-recording-toggle]");
   const recordingStatus = document.querySelector("[data-recording-status]");
   const recordingEnabled = root.dataset.recordingEnabled === "1";
@@ -726,21 +730,41 @@
     recordingChunks.push(text);
   };
 
+  const flushTerminalWrites = () => {
+    pendingWriteFrame = null;
+    if (!pendingWriteChunks.length) return;
+    const text = pendingWriteChunks.join("");
+    pendingWriteChunks = [];
+    term.write(text);
+  };
+
+  const queueTerminalWrite = (text) => {
+    if (!text) return;
+    pendingWriteChunks.push(text);
+    if (pendingWriteFrame) return;
+    pendingWriteFrame = window.requestAnimationFrame(flushTerminalWrites);
+  };
+
+  const cancelPendingTerminalWrites = () => {
+    if (pendingWriteFrame) {
+      window.cancelAnimationFrame(pendingWriteFrame);
+      pendingWriteFrame = null;
+    }
+    pendingWriteChunks = [];
+  };
+
   const writeTerminal = (data) => {
     const text = typeof data === "string" ? data : String(data || "");
     recordTerminalText(text);
     
     const hasAnsi = /\x1b\[/.test(text);
+    const hasControlOutput = /[\x00-\x08\x0b\x0c\x0d\x0e-\x1f\x7f]/.test(text);
+    const writeRaw = rawControlOutput || hasAnsi || hasControlOutput || !terminalSettings.syntaxHighlighting;
+    rawControlOutput = hasIncompleteAnsiSequence(text);
 
-    if (hasAnsi) {
-      term.write(text);
-    } else {
-      term.write(
-        terminalSettings.syntaxHighlighting
-          ? highlightTerminalOutput(text)
-          : text
-      );
-    }
+    queueTerminalWrite(
+      writeRaw ? text : highlightTerminalOutput(text)
+    );
   };
 
   const sendTerminalMessage = (type, data = {}) => {
@@ -849,14 +873,16 @@
 
   passwordForm.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (socket && socket.readyState === WebSocket.OPEN) return;
+    if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
 
     const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
     const wsUrl = `${scheme}//${window.location.host}${root.dataset.wsUrl}`;
+    cancelPendingTerminalWrites();
     term.reset();
     writeTerminal("Connecting...\r\n");
     closeHandled = false;
     socket = new WebSocket(wsUrl);
+    if (submitButton) submitButton.disabled = true;
 
     socket.addEventListener("open", () => {
       sendTerminalMessage("connectToHost", {
@@ -868,9 +894,8 @@
       passwordForm.hidden = true;
       fit();
       term.focus();
-      term.options.cursorBlink = true;
+      term.options.cursorBlink = terminalSettings.cursorBlink;
       term.options.cursorStyle = terminalSettings.cursorStyle;
-      term.refresh(0, term.rows - 1);
     });
 
     socket.addEventListener("message", (event) => {
@@ -902,8 +927,7 @@
         stopRecording();
         syncRecordingButton();
         closeHandled = true;
-        
-          term.reset();
+        writeTerminal(`\r\n${message.message || "SSH session closed."}\r\n`);
 
         try {
           socket.close();
@@ -926,10 +950,7 @@
       }
 
       if (connected && document.visibilityState === "visible") {
-        window.setTimeout(() => {
-          term.focus();
-          term.refresh(0, term.rows - 1);
-        }, 0);
+        window.setTimeout(() => term.focus(), 0);
       }
     });
     socket.addEventListener("close", () => {
@@ -943,7 +964,11 @@
       }
 
       passwordForm.hidden = false;
+      if (submitButton) submitButton.disabled = false;
     });
-    socket.addEventListener("error", () => writeTerminal("\r\nSession error.\r\n"));
+    socket.addEventListener("error", () => {
+      if (submitButton) submitButton.disabled = false;
+      writeTerminal("\r\nSession error.\r\n");
+    });
   });
 })();
