@@ -129,9 +129,9 @@
       <span><strong>Live query log</strong></span>
     </label>
   </div>
-  <table data-table-key="dns-query-log">
+  <table data-table-key="dns-query-log" data-dns-query-log-table>
     <thead><tr><th>Time</th><th>Client Name</th><th>Client IP</th><th>Domain</th><th>Query Type</th><th>Status</th><th>Reply Type</th><th>Reply Time</th><th>Upstream</th><th data-col="actions">Actions</th></tr></thead>
-    <tbody>
+    <tbody data-dns-query-log-body>
       {% for row in rows[:200] %}
       {% set observed_at = query_log_time(row) %}
       {% set client_name = query_client_name(row) %}
@@ -143,7 +143,7 @@
       {% set rtime = query_reply_time(row) %}
       {% set upstream = query_upstream(row) %}
       {% set flagged = domain|lower in flagged_domains %}
-      <tr>
+      <tr data-query-key="{{ observed_at }}|{{ client_ip }}|{{ domain }}|{{ qtype }}|{{ qstatus }}|{{ rtype }}">
         <td>{{ query_log_time(row) }}</td>
         <td>{{ client_name }}</td>
         <td>{{ client_ip }}</td>

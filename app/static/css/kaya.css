@@ -638,6 +638,21 @@ html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .setup-brand-panel
   font-weight:650;
 }
 
+.dns-query-row-new{
+  animation:dns-query-row-in 520ms ease-out;
+}
+
+@keyframes dns-query-row-in{
+  from{
+    background:rgba(249,151,39,.22);
+    transform:translateY(-6px);
+  }
+  to{
+    background:transparent;
+    transform:translateY(0);
+  }
+}
+
 .dns-domain-menu{
   display:inline-grid;
   max-width:min(520px,42vw);
