@@ -337,19 +337,18 @@ def read_saved_backup_password(db: Session, fallback_password: str = "") -> str:
 
 def _resolve_backup_path(path_value: str, base_dir: str = "/mnt/backups") -> Path:
     base = Path(base_dir).resolve()
-    raw_path = path_value.strip()
+    raw_path = (path_value or "").strip()
 
     if not raw_path:
-        candidate = base_path
+        candidate = base
     else:
         user_path = Path(raw_path)
-        candidate = user_path if user_path.is_absolute() else (base_path / user_path)
+        candidate = user_path if user_path.is_absolute() else (base / user_path)
 
-    candidate = Path(raw_value) if raw_value else base
-    if not candidate.is_absolute():
-        candidate = base / candidate
     resolved = candidate.resolve(strict=False)
-        return None, f"{raw_path or candidate} is outside the allowed backup root {base_path}."
+    try:
+        resolved.relative_to(base)
+    except ValueError:
         raise ValueError(f"Path must stay within {base}.")
     return resolved
 
@@ -358,15 +357,8 @@ def resolve_backup_storage_path(path_value: str) -> tuple[Path | None, str | Non
     try:
         target = _resolve_backup_path(path_value)
     except ValueError as exc:
-        return False, str(exc)
-
-    candidate = Path(path_value.strip() or str(base_path))
-    resolved = candidate.resolve(strict=False)
-    try:
-        resolved.relative_to(base_path)
-    except ValueError:
-        return None, f"{candidate} is outside the allowed backup root {base_path}."
-    return resolved, None
+        return None, str(exc)
+    return target, None
 
 
 def test_directory_read_write(path_value: str) -> tuple[bool, str]:
