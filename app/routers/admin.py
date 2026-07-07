@@ -342,8 +342,10 @@ def _resolve_backup_path(path_value: str, base_dir: str = "/mnt/backups") -> Pat
     if not raw_path:
         candidate = base
     else:
-        user_path = Path(raw_path)
-        candidate = user_path if user_path.is_absolute() else (base / user_path)
+        # Force user input to remain relative to base, even if an absolute
+        # path is supplied.
+        relative_input = raw_path.lstrip("/\\")
+        candidate = base / Path(relative_input)
 
     resolved = candidate.resolve(strict=False)
     try:
