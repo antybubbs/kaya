@@ -146,11 +146,21 @@ def save_site_setting(db: Session, key: str, value: str) -> None:
     if key not in SITE_SETTING_KEYS:
         return
 
-    row = (
-        db.query(RemoteManagerSetting)
-        .filter(RemoteManagerSetting.key == key)
-        .first()
+    row = next(
+        (
+            obj for obj in db.new
+            if isinstance(obj, RemoteManagerSetting) and obj.key == key
+        ),
+        None,
     )
+
+    if not row:
+        with db.no_autoflush:
+            row = (
+                db.query(RemoteManagerSetting)
+                .filter(RemoteManagerSetting.key == key)
+                .first()
+            )
 
     if not row:
         row = RemoteManagerSetting(key=key)
