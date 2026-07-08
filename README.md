@@ -30,14 +30,6 @@ infrastructure a place to belong. Whether you're managing a homelab, a
 business environment or customer systems, Kaya provides one clean,
 modern workspace to organise everything that matters.
 
-No subscriptions.
-
-No cloud dependency.
-
-No vendor lock-in.
-
-Just your infrastructure, your data and your rules.
-
 ------------------------------------------------------------------------
 
 # ✨ Features
@@ -255,7 +247,7 @@ we'd love to hear from you.
 
 *Kaya* means **home** in several Southern African languages.
 
-It reflects the philosophy behind the project: your infrastructure
-should feel organised, trusted and completely under your control.
+It reflects the philosophy behind the project: our infrastructure
+should feel organised, trusted and completely under our control.
 
 ------------------------------------------------------------------------

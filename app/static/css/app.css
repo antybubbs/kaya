@@ -1101,3 +1101,53 @@ html[data-kaya-theme=light-ops] .dns-mini-table > div {
     margin-left: 12px;
   }
 }
+
+/* Runbook header actions */
+.runbook-header .module-toolbar {
+  align-items: center;
+  justify-content: space-between;
+}
+
+.runbook-header .module-primary-actions {
+  flex: 0 1 auto;
+}
+
+.runbook-header .module-secondary-actions {
+  justify-content: flex-end;
+  margin-left: auto;
+}
+
+.runbook-view-toggle {
+  background: transparent;
+  border: 0;
+  gap: 8px;
+  padding: 0;
+}
+
+.runbook-view-toggle .button {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--text);
+}
+
+.runbook-view-toggle .button:hover {
+  background: var(--panel2);
+  color: var(--text);
+}
+
+.runbook-view-toggle .button.active {
+  background: linear-gradient(135deg, var(--accent), #818cf8);
+  border-color: transparent;
+  color: #02111f;
+}
+
+@media (max-width: 850px) {
+  .runbook-header .module-toolbar {
+    align-items: stretch;
+  }
+
+  .runbook-header .module-secondary-actions {
+    justify-content: flex-start;
+    margin-left: 0;
+  }
+}
