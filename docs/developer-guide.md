@@ -89,4 +89,4 @@ To run without Docker, install Python dependencies and Node dependencies, then r
 
 ## Documentation Maintenance
 
-Documentation is version-controlled and should be updated with code changes. The documentation version should match Kaya's version. While Kaya reports `dev`, docs should also use `dev`.
+Documentation is version-controlled and should be updated with code changes. The documentation version should match Kaya's version. 
