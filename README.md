@@ -3,8 +3,8 @@
 
 > **Your Infrastructure. Your Home.**
 >
-> A modern, self-hosted infrastructure platform built for homelabs,
-> businesses and IT professionals who want complete control of their
+> A self-hosted infrastructure platform built for homelabs,
+> and users who want complete control of their
 > infrastructure.
 
 ![GitHub
