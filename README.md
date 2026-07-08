@@ -99,13 +99,6 @@ After first sign-in, open **System Settings -> Site Administration -> Security**
 
 The Security tab includes a current-request check so admins can confirm the host allow-list, inbound DNS, outbound public IP, frame policy, HSTS state and RDP token lifetime after saving.
 
-Within a few moments Kaya will:
-
--   Generate its application secrets
--   Create the SQLite database
--   Prepare persistent storage
--   Guide you through first-time setup
-
 ------------------------------------------------------------------------
 
 # 🐳 Docker Compose
