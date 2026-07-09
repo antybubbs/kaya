@@ -137,27 +137,27 @@
           </div>
           <div class="field-errors" id="allowed-hosts-errors" data-host-errors aria-live="polite">
             {% for item in allowed_host_errors or [] %}
-            <p>{% if item.line %}<strong>Line {{ item.line }} — {{ item.value }}</strong>: {% endif %}{{ item.message }}</p>
+            <p>{% if item.line %}<strong>Line {{ item.line }} - {{ item.value }}</strong>: {% endif %}{{ item.message }}</p>
             {% endfor %}
           </div>
         </label>
-      </div>
-      <div class="current-host-status" data-current-host-status aria-live="polite">
-        <div class="current-host-heading">
-          <span class="status-icon" data-host-status-icon aria-hidden="true">●</span>
-          <span>
-            <small>Current request host</small>
-            <strong class="mono" data-current-host-value>{{ security_check.current_host if security_check else 'unknown' }}</strong>
-          </span>
+        <div class="current-host-status" data-current-host-status aria-live="polite">
+          <div class="current-host-heading">
+            <span class="status-icon" data-host-status-icon aria-hidden="true">&#9679;</span>
+            <span>
+              <small>Current request host</small>
+              <strong class="mono" data-current-host-value>{{ security_check.current_host if security_check else 'unknown' }}</strong>
+            </span>
+          </div>
+          <p data-host-status-message>
+            {% if security_check and not security_check.host_filter_enabled %}Host validation is currently inactive.
+            {% elif security_check and security_check.host_allowed %}Current host is allowed
+            {% else %}Current host is not included in the allow list.{% endif %}
+          </p>
         </div>
-        <p data-host-status-message>
-          {% if security_check and not security_check.host_filter_enabled %}Host validation is currently inactive.
-          {% elif security_check and security_check.host_allowed %}Current host is allowed
-          {% else %}Current host is not included in the allow list.{% endif %}
-        </p>
-      </div>
-      <div class="host-lockout-warning" data-host-lockout-warning hidden>
-        <strong>Warning:</strong> The current hostname is not in the allow list. Saving these settings may prevent access to Kaya.
+        <div class="host-lockout-warning" data-host-lockout-warning hidden>
+          <strong>Warning:</strong> The current hostname is not in the allow list. Saving these settings may prevent access to Kaya.
+        </div>
       </div>
     </div>
 

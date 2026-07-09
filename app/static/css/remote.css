@@ -160,7 +160,7 @@ body.remote-resizing{cursor:col-resize;user-select:none}
 .field-errors{display:grid;gap:5px}
 .field-errors:empty{display:none}
 .field-errors p{color:var(--danger,#f87171);font-size:12px;font-weight:700;margin:0}
-.current-host-status{background:rgba(148,163,184,.07);border:1px solid var(--line);border-radius:9px;display:grid;gap:8px;margin:0 14px 14px;padding:13px 14px}
+.current-host-status{background:rgba(148,163,184,.07);border:1px solid var(--line);border-radius:9px;display:grid;gap:8px;padding:13px 14px}
 .current-host-heading{align-items:center;display:flex;gap:11px}
 .current-host-heading>span:last-child{display:grid;gap:3px;min-width:0}
 .current-host-heading small{color:var(--muted);font-size:11px;font-weight:850;text-transform:uppercase}
@@ -169,7 +169,7 @@ body.remote-resizing{cursor:col-resize;user-select:none}
 .status-icon{color:var(--muted);font-size:15px}
 .current-host-status.is-allowed .status-icon,.current-host-status.is-allowed p{color:var(--accent2,#22c55e)}
 .current-host-status.is-warning .status-icon,.current-host-status.is-warning p{color:#f59e0b}
-.host-lockout-warning{background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.48);border-radius:9px;color:#fbbf24;font-size:12px;line-height:1.45;margin:0 14px 16px;padding:11px 13px}
+.host-lockout-warning{background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.48);border-radius:9px;color:#fbbf24;font-size:12px;line-height:1.45;padding:11px 13px}
 html[data-kaya-theme=light-ops] .host-examples{background:#f8fafc}
 html[data-kaya-theme=light-ops] .host-lockout-warning{color:#92400e}
 .remote-settings-grid{display:grid;gap:14px;padding:14px 0}
