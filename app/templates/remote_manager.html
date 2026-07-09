@@ -3,9 +3,29 @@
 {% block main_class %}remote-main{% endblock %}
 {% block content %}
 {% if remote_manager_locked %}
-<section class="panel demo-remote-lock">
-  <h1>Remote Manager is locked in the public demo</h1>
-  <p class="muted">Live SSH, RDP, connection checks and remote host configuration are disabled here to protect this site and other people's infrastructure.</p>
+<section class="panel demo-remote-lock demo-remote-showcase">
+  <div class="demo-remote-copy">
+    <span class="table-chip muted-chip">Public demo safety</span>
+    <h1>Remote Manager is locked in the public demo</h1>
+    <p class="muted">Live SSH, RDP, connection checks and remote host configuration are disabled here to protect this site and other people's infrastructure.</p>
+    <p>In a real Kaya install, this area opens browser-based SSH and RDP sessions, supports split-screen work, and can record sessions for later audit.</p>
+    <div class="demo-remote-points">
+      <span>SSH terminal workspace</span>
+      <span>RDP desktop sessions</span>
+      <span>Session recording controls</span>
+      <span>Per-host access notes</span>
+    </div>
+  </div>
+  <div class="demo-remote-stills" aria-label="Remote Manager session previews">
+    <figure class="demo-remote-still demo-remote-still-featured">
+      <img src="/static/img/Remote_Manager_SSH.png" alt="Kaya Remote Manager SSH session preview">
+      <figcaption>SSH session preview</figcaption>
+    </figure>
+    <figure class="demo-remote-still">
+      <img src="/static/img/Remote_Manager_RDP.png" alt="Kaya Remote Manager RDP session preview">
+      <figcaption>RDP session preview</figcaption>
+    </figure>
+  </div>
 </section>
 {% else %}
 <div class="remote-workspace" data-remote-tabs data-remote-session-version="kaya-split-ui-1" data-remote-split-enabled="{{ '1' if split_screen_enabled else '0' }}">
