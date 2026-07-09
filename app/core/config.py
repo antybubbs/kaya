@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     max_recording_upload_mb: int = 1024
     min_recording_free_mb: int = 256
     allowed_hosts: str = ""
+    forwarded_allow_ips: str = "127.0.0.1"
     github_repo: str = "antybubbs/Kaya"
     guacd_host: str = ""
     guacd_port: str = ""

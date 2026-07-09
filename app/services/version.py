@@ -1,7 +1,7 @@
+import asyncio
 import json
 import re
 import threading
-import time
 from dataclasses import dataclass
 from urllib.error import URLError
 from urllib.request import Request, urlopen
@@ -11,14 +11,12 @@ from app.core.config import get_settings
 
 @dataclass
 class VersionCache:
-    checked_at: float = 0
     latest_version: str | None = None
     release_url: str | None = None
 
 
 _cache = VersionCache()
 _cache_lock = threading.Lock()
-_refreshing = False
 
 SHA_PATTERN = re.compile(r"^[0-9a-f]{7,40}$")
 DEV_PATTERN = re.compile(r"^dev\d+\.\d+\.\d+$", re.IGNORECASE)
@@ -75,40 +73,29 @@ def _fetch_latest_release() -> tuple[str | None, str | None]:
     return data.get("tag_name"), data.get("html_url")
 
 
-def _refresh_latest_release() -> None:
-    global _refreshing
-
+def refresh_latest_release() -> bool:
     latest, release_url = _fetch_latest_release()
 
+    if not latest:
+        return False
+
     with _cache_lock:
-        _cache.checked_at = time.monotonic()
         _cache.latest_version = latest
         _cache.release_url = release_url
-        _refreshing = False
+    return True
+
+
+async def version_check_loop() -> None:
+    while True:
+        with _cache_lock:
+            has_cached_release = bool(_cache.latest_version)
+        interval = get_settings().version_check_interval_seconds
+        await asyncio.sleep(interval if has_cached_release else min(interval, 30))
+        await asyncio.to_thread(refresh_latest_release)
 
 
 def latest_release() -> tuple[str | None, str | None]:
-    global _refreshing
-
-    settings = get_settings()
-    cache_seconds = settings.version_check_interval_seconds
-    now = time.monotonic()
-
     with _cache_lock:
-        latest = _cache.latest_version
-        release_url = _cache.release_url
-        checked_at = _cache.checked_at
-
-        if now - checked_at < cache_seconds:
-            return latest, release_url
-
-        if not _refreshing:
-            _refreshing = True
-            threading.Thread(
-                target=_refresh_latest_release,
-                daemon=True,
-            ).start()
-
         return _cache.latest_version, _cache.release_url
 
 

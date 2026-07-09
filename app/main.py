@@ -20,13 +20,16 @@ from app.services.network_monitor import monitor_loop
 from app.services.domain_polling import domain_poll_loop
 from app.services.compute_monitor import compute_monitor_loop
 from app.services.audit import begin_request_context, end_request_context, request_event_written, write_audit
+from app.services.client_ip import TrustedProxyMiddleware, client_ip
 from app.services.site_settings import (
     effective_allowed_hosts,
     frame_ancestor_directive,
     host_is_allowed,
     hsts_header_value,
     load_security_settings,
+    get_site_setting,
 )
+from app.services.version import refresh_latest_release, version_check_loop
 
 settings = get_settings()
 app = FastAPI(
@@ -37,6 +40,7 @@ app = FastAPI(
 monitor_task = None
 domain_poll_task = None
 compute_monitor_task = None
+version_check_task = None
 app.state.demo_mode = settings.demo_mode
 app.state.demo_reset_schedule = settings.demo_reset_schedule
 
@@ -155,8 +159,9 @@ async def audit_requests(request: Request, call_next):
         request_id=request_id,
         method=request.method,
         path=path,
-        ip_address=None if settings.demo_mode else (request.client.host if request.client else None),
+        ip_address=None if settings.demo_mode else client_ip(request),
         user_agent=None if settings.demo_mode else ((request.headers.get("user-agent") or "")[:2000] or None),
+        redact_client=settings.demo_mode,
     )
     started = perf_counter()
     response = None
@@ -222,6 +227,8 @@ async def audit_requests(request: Request, call_next):
         raise
     finally:
         end_request_context(token)
+
+app.add_middleware(TrustedProxyMiddleware, trusted_proxies=settings.forwarded_allow_ips)
 
 Path("/app/uploads").mkdir(parents=True, exist_ok=True)
 Path("/app/data").mkdir(parents=True, exist_ok=True)
@@ -467,6 +474,9 @@ def migrate_existing_database():
 @app.on_event("startup")
 async def on_startup():
     bootstrap()
+    await asyncio.to_thread(refresh_latest_release)
+    global version_check_task
+    version_check_task = asyncio.create_task(version_check_loop())
     if settings.demo_mode:
         return
     start_kaya_remote_service()
@@ -478,6 +488,8 @@ async def on_startup():
 
 @app.on_event("shutdown")
 async def on_shutdown():
+    if version_check_task:
+        version_check_task.cancel()
     if monitor_task:
         monitor_task.cancel()
     if domain_poll_task:
@@ -506,6 +518,15 @@ app.include_router(admin.router)
 @app.get("/healthz", include_in_schema=False)
 def healthz():
     return {"status": "ok"}
+
+
+@app.get("/api/site-timezone", include_in_schema=False)
+def site_timezone():
+    db = SessionLocal()
+    try:
+        return {"timezone": get_site_setting(db, "timezone_region") or "UTC"}
+    finally:
+        db.close()
 
 @app.get("/")
 def root(request: Request):

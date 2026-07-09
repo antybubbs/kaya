@@ -175,6 +175,7 @@ Typical environment variables:
 BASE_URL=https://kaya.example.com
 ALLOWED_HOSTS=kaya.example.com
 SESSION_COOKIE_SECURE=true
+FORWARDED_ALLOW_IPS=172.20.0.0/16
 ```
 
 These are optional hardening settings. Kaya will still work through a reverse proxy without them, but `BASE_URL` should be set before enabling password reset emails so links point at the public address.
@@ -182,6 +183,18 @@ These are optional hardening settings. Kaya will still work through a reverse pr
 When Kaya sits behind a reverse proxy on the same host, you can bind the container to loopback with `127.0.0.1:8080:8080` and let the proxy be the public entry point.
 
 The same host allow-list and HTTPS hardening can also be managed from **System Settings -> Site Administration -> Security** after setup.
+
+`FORWARDED_ALLOW_IPS` must contain only the IP address or CIDR of the proxy that
+connects directly to Kaya. Its secure default is `127.0.0.1`, suitable for
+direct LAN use. Docker proxy users normally set a dedicated Docker network
+CIDR; NetBird proxy users may use the proxy's single `100.x` address (or
+`100.64.0.0/10` only when all peers are trusted). For Cloudflare Tunnel, trust
+the local `cloudflared` container rather than Cloudflare's public ranges. Do not
+use `*`. See [Reverse proxies and real client IPs](docs/deployment.md#reverse-proxies-and-real-client-ips).
+
+This setting is separate from `ALLOWED_HOSTS`: trusted proxies control which
+machine may report client IP/protocol headers, while allowed hosts control the
+hostname entered in the browser.
 
 ------------------------------------------------------------------------
 
@@ -241,7 +254,7 @@ we'd love to hear from you.
 
 *Kaya* means **home** in several Southern African languages.
 
-It reflects the philosophy behind the project: your infrastructure
-should feel organised, trusted and completely under your control.
+It reflects the philosophy behind the project: our infrastructure
+should feel organised, trusted and completely under our control.
 
 ------------------------------------------------------------------------

@@ -33,7 +33,7 @@
       <div><dt>DNS Provider</dt><dd>{{ display_dns_provider(record) or '-' }}</dd></div>
       <div><dt>Status</dt><dd>{{ display_status(record) or '-' }}</dd></div>
       <div><dt>Expires</dt><dd>{{ expires_at.strftime('%Y-%m-%d') if expires_at else '-' }}</dd></div>
-      <div><dt>Last Lookup</dt><dd>{{ record.last_lookup_at.strftime('%Y-%m-%d %H:%M') if record.last_lookup_at else '-' }}</dd></div>
+      <div><dt>Last Lookup</dt><dd>{{ local_time(record.last_lookup_at, 'minute') }}</dd></div>
     </dl>
   </section>
 
@@ -100,7 +100,7 @@
       {% for entry in history %}
       {% for change in history_changes(entry.changes) %}
       <tr>
-        <td>{{ entry.checked_at.strftime('%Y-%m-%d %H:%M') }}</td>
+        <td>{{ local_time(entry.checked_at, 'minute') }}</td>
         <td>{{ entry.source|title }}</td>
         <td><strong>{{ change.label }}</strong></td>
         <td class="mono">{% if change.before is mapping or (change.before is sequence and change.before is not string) %}{{ change.before|tojson }}{% else %}{{ change.before if change.before is not none else '-' }}{% endif %}</td>

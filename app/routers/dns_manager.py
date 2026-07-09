@@ -384,6 +384,7 @@ def network_client_inventory(clients_payload: Any, dhcp_payload: Any, query_payl
                 "first_seen": None,
                 "last_seen": None,
                 "queries": 0,
+                "blocked_queries": 0,
                 "sources": set(),
             },
         )
@@ -396,22 +397,43 @@ def network_client_inventory(clients_payload: Any, dhcp_payload: Any, query_payl
             if value and timestamp_sort_value(value) > timestamp_sort_value(existing.get(field)):
                 existing[field] = value
         existing["queries"] += to_int(row.get("queries"))
+        existing["blocked_queries"] += to_int(row.get("blocked_queries"))
         existing["sources"].add(source)
 
-    for item in _rows_from_any(clients_payload, "devices", "clients", "data"):
-        if not isinstance(item, dict):
-            continue
+    def merge_client_item(item: dict[str, Any], source: str) -> None:
         merge(
             {
-                "name": payload_value(item, "name", "hostname", "host"),
+                "name": payload_value(item, "name", "hostname", "host", "client"),
                 "ip": payload_value(item, "ip", "address", "ip_address"),
                 "mac": payload_value(item, "mac", "hwaddr", "mac_address"),
                 "first_seen": payload_value(item, "first_seen", "firstSeen", "firstSeenAt", "created_at"),
                 "last_seen": payload_value(item, "last_seen", "lastSeen", "lastQuery", "last_query", "updated_at"),
                 "queries": payload_value(item, "queries", "count", "total"),
+                "blocked_queries": payload_value(item, "blocked_queries", "blocked", "ads"),
             },
-            "Pi-hole network",
+            source,
         )
+
+    for item in _rows_from_any(clients_payload, "devices", "clients", "data"):
+        if not isinstance(item, dict):
+            continue
+        merge_client_item(item, "Pi-hole network")
+        for nested_key in ("ips", "addresses", "ip_addresses"):
+            nested_rows = item.get(nested_key)
+            if isinstance(nested_rows, list):
+                for nested in nested_rows:
+                    if not isinstance(nested, dict):
+                        continue
+                    nested.setdefault("mac", payload_value(item, "mac", "hwaddr", "mac_address"))
+                    merge_client_item(nested, "Pi-hole network")
+
+    if isinstance(clients_payload, dict):
+        for key in ("top_sources", "top_clients", "clients", "data"):
+            value = clients_payload.get(key)
+            if not isinstance(value, dict):
+                continue
+            for name, count in value.items():
+                merge({"name": name, "ip": name, "queries": count}, "Pi-hole activity")
 
     for lease in dhcp_lease_rows(dhcp_payload):
         merge(
@@ -427,12 +449,14 @@ def network_client_inventory(clients_payload: Any, dhcp_payload: Any, query_payl
     for item in list_from_payload(query_payload, "queries", "data")[:200]:
         if not isinstance(item, dict):
             continue
+        status_text = f"{query_status(item)} {query_reply_type(item)}".lower()
         merge(
             {
                 "name": query_client_name(item),
                 "ip": query_client_ip(item),
                 "last_seen": payload_value(item, "time", "timestamp", "date"),
                 "queries": 1,
+                "blocked_queries": 1 if any(term in status_text for term in ("block", "gravity", "deny", "regex")) else 0,
             },
             "Recent query",
         )
@@ -709,6 +733,8 @@ def dns_manager(
                 queries = demo_payloads["queries"]
             elif active_tab == "clients":
                 clients = demo_payloads["clients"]
+                dhcp = demo_payloads["dhcp"]
+                queries = demo_payloads["queries"]
             elif active_tab == "local-dns":
                 local_dns = demo_payloads["local_dns"]
             elif active_tab == "dhcp":
@@ -729,6 +755,8 @@ def dns_manager(
                 queries = dns_client.get_query_log(limit=200)
             elif active_tab == "clients":
                 clients = call_provider(provider, "get_clients", dns_client)
+                dhcp = call_provider(provider, "get_dhcp_leases", dns_client)
+                queries = dns_client.get_query_log(limit=500)
             elif active_tab == "local-dns":
                 local_dns = call_provider(provider, "get_local_dns_records", dns_client)
             elif active_tab == "dhcp":

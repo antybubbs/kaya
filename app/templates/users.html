@@ -10,7 +10,7 @@
   <td>{{ row.role }}</td>
   <td>{{ 'Active' if row.is_active else 'Disabled' }}</td>
   <td>{{ 'Enabled' if row.totp_enabled else 'Off' }}</td>
-  <td>{{ row.created_at }}</td>
+  <td>{{ local_time(row.created_at) }}</td>
   <td><a href="/team/users/{{ row.id }}/edit">Edit</a></td>
 </tr>
 {% endfor %}

@@ -4,7 +4,7 @@
 <div class="topbar">
   <div>
     <h1>{{ recording.remote_label }}</h1>
-    <p class="muted">{{ recording.protocol|upper }} recording from {{ recording.started_at.strftime('%Y-%m-%d %H:%M') if recording.started_at else recording.created_at.strftime('%Y-%m-%d %H:%M') }}</p>
+    <p class="muted">{{ recording.protocol|upper }} recording from {{ local_time(recording.started_at or recording.created_at, 'minute') }}</p>
   </div>
   <div class="topbar-actions">
     <a class="button secondary" href="/remote-manager/recordings">Back</a>

@@ -6,16 +6,18 @@ from fastapi import Request
 from sqlalchemy.orm import Session
 
 from app.models.models import AppSession, User
+from app.core.config import get_settings
+from app.services.client_ip import client_ip
 
 SESSION_SYNC_SECONDS = 60
 ACTIVE_WINDOW_MINUTES = 30
 
 
 def request_ip(request: Request) -> str | None:
-    forwarded = request.headers.get("x-forwarded-for", "")
-    if forwarded:
-        return forwarded.split(",")[0].strip()[:80]
-    return request.client.host[:80] if request.client and request.client.host else None
+    if get_settings().demo_mode:
+        return None
+    value = client_ip(request)
+    return value[:80] if value else None
 
 
 def request_user_agent(request: Request) -> str | None:

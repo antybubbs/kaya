@@ -58,6 +58,13 @@
           <small>The public URL used for links in emails and integrations.</small>
           <input name="base_url" type="url" value="{{ settings.get('base_url', '') }}" placeholder="http://localhost:8080">
         </label>
+        <label>
+          <strong>Time Zone Region</strong>
+          <small>Used to display site timestamps. Dates remain stored safely in UTC.</small>
+          <select name="timezone_region" data-timezone-select data-selected-timezone="{{ settings.get('timezone_region', 'UTC') }}">
+            <option value="{{ settings.get('timezone_region', 'UTC') }}">{{ settings.get('timezone_region', 'UTC') }}</option>
+          </select>
+        </label>
       </div>
     </div>
   </section>
@@ -66,6 +73,45 @@
     <h2>Site Security</h2>
 
     {% if security_check %}
+    <div class="remote-settings-card">
+      <header><span>Client IP and trusted proxy</span></header>
+      <p class="muted">Trusted proxies affect audit logs, login sessions, rate limiting and security logs. Kaya accepts forwarded client details only when the immediate connection comes from an IP or network listed in <code>FORWARDED_ALLOW_IPS</code>.</p>
+      <div class="security-check-grid">
+        <div>
+          <span>Client IP used by Kaya</span>
+          <strong class="mono">{{ security_check.client_ip or 'unknown' }}</strong>
+          <small>Recorded consistently in sessions and security activity (source: {{ security_check.client_ip_source }}).</small>
+        </div>
+        <div>
+          <span>Immediate connecting IP</span>
+          <strong class="mono">{{ security_check.immediate_ip or 'unknown' }}</strong>
+          <small>The machine or container connected directly to Kaya.</small>
+        </div>
+        <div>
+          <span>Forwarded client header</span>
+          <strong class="mono">{{ security_check.forwarded_for or 'Not present' }}</strong>
+          <small>Shown for diagnosis; ignored unless the immediate connection is trusted.</small>
+        </div>
+        <div>
+          <span>Request came through a trusted proxy</span>
+          <strong class="table-chip {% if security_check.trusted_proxy %}good{% else %}muted-chip{% endif %}">{{ 'Yes' if security_check.trusted_proxy else 'No' }}</strong>
+          <small>{{ 'Forwarded client information may be used.' if security_check.trusted_proxy else 'The immediate connecting IP is used.' }}</small>
+        </div>
+        <div>
+          <span>Configured trusted proxy IPs/networks</span>
+          <strong class="mono">{{ security_check.trusted_proxy_config or '127.0.0.1' }}</strong>
+          <small>Set <code>FORWARDED_ALLOW_IPS</code> in <code>.env</code>, then recreate the Kaya container.</small>
+        </div>
+      </div>
+      {% if '*' in security_check.trusted_proxy_config.split(',') %}
+      <div class="alert"><strong>Unsafe trusted proxy setting:</strong> <code>*</code> lets every direct client claim any IP address. Replace it with the proxy IP or Docker network CIDR.</div>
+      {% endif %}
+      {% if security_check.trusted_proxy_config_errors %}
+      <div class="alert"><strong>Invalid trusted proxy value:</strong> {{ security_check.trusted_proxy_config_errors|join(', ') }}. Use comma-separated IP addresses or CIDR networks.</div>
+      {% endif %}
+      <p class="muted"><strong>   Different setting:</strong> Allowed hosts below controls which browser hostnames may open Kaya. It does not decide which proxy IPs are trusted.</p>
+    </div>
+
     <div class="remote-settings-card">
       <header><span>Current security check</span></header>
       <div class="security-check-grid">
@@ -123,15 +169,41 @@
     </div>
     {% endif %}
 
-    <div class="remote-settings-card" id="security">
+    <div class="remote-settings-card security-settings-card" id="security" data-host-hardening data-current-host="{{ security_check.current_host if security_check else '' }}">
       <header><span>Host and proxy hardening</span></header>
-      {{ switch('trusted_hosts_enabled', 'Restrict trusted hosts', 'Reject requests whose Host header is not in the allow-list. Leave this off for first install or changing proxy/IP setups.') }}
+      {{ switch('trusted_hosts_enabled', 'Restrict trusted hosts', 'Only allow requests for the hostnames or IP addresses listed below. Enable this after configuring your domain name or reverse proxy. Leave this disabled during initial setup or while changing your network configuration.') }}
       <div class="remote-settings-grid">
-        <label>
+        <label class="allowed-hosts-field {% if allowed_host_errors %}field-invalid{% endif %}">
           <strong>Allowed hosts</strong>
-          <small>One hostname or IP per line, or comma-separated. Include the address users type in their browser, for example kaya.example.com, xxx.xxx.xxx.xxx, or *.example.com.</small>
-          <textarea name="allowed_hosts" rows="4" placeholder="kaya.example.com&#10;xxx.xxx.xxx.xxx">{{ settings.get('allowed_hosts', '') }}</textarea>
+          <small>Enter one hostname, wildcard domain or IP address per line. These must match the address users enter in their browser.</small>
+          <textarea name="allowed_hosts" rows="6" spellcheck="false" aria-describedby="allowed-hosts-examples allowed-hosts-errors" aria-invalid="{% if allowed_host_errors %}true{% else %}false{% endif %}" placeholder="kaya.example.com&#10;*.example.com&#10;192.168.1.10">{{ settings.get('allowed_hosts', '') }}</textarea>
+          <div class="host-examples" id="allowed-hosts-examples">
+            <span>Examples</span>
+            <code>kaya.example.com<br>*.example.com<br>192.168.1.10<br>10.0.0.5</code>
+          </div>
+          <div class="field-errors" id="allowed-hosts-errors" data-host-errors aria-live="polite">
+            {% for item in allowed_host_errors or [] %}
+            <p>{% if item.line %}<strong>Line {{ item.line }} - {{ item.value }}</strong>: {% endif %}{{ item.message }}</p>
+            {% endfor %}
+          </div>
         </label>
+        <div class="current-host-status" data-current-host-status aria-live="polite">
+          <div class="current-host-heading">
+            <span class="status-icon" data-host-status-icon aria-hidden="true">&#9679;</span>
+            <span>
+              <small>Current request host</small>
+              <strong class="mono" data-current-host-value>{{ security_check.current_host if security_check else 'unknown' }}</strong>
+            </span>
+          </div>
+          <p data-host-status-message>
+            {% if security_check and not security_check.host_filter_enabled %}Host validation is currently inactive.
+            {% elif security_check and security_check.host_allowed %}Current host is allowed
+            {% else %}Current host is not included in the allow list.{% endif %}
+          </p>
+        </div>
+        <div class="host-lockout-warning" data-host-lockout-warning hidden>
+          <strong>Warning:</strong> The current hostname is not in the allow list. Saving these settings may prevent access to Kaya.
+        </div>
       </div>
     </div>
 

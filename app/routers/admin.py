@@ -2,6 +2,7 @@ from pathlib import Path
 import io
 import tempfile
 import json
+import re
 import socket
 import smtplib
 from ftplib import FTP
@@ -44,6 +45,7 @@ from app.models.models import (
 from app.routers.auth import require_admin
 from app.services.about import collect_about
 from app.services.audit import write_audit
+from app.services.client_ip import client_ip_details, validate_trusted_proxies
 from app.services.custom_fields import FIELD_TYPES, make_field_key
 from app.services.exporter import export_ip_addresses_csv, export_licences_csv
 from app.services.importer import ImportCSVError, import_csv, import_ip_addresses_csv
@@ -60,6 +62,8 @@ from app.services.site_settings import (
     host_is_allowed,
     hsts_header_value,
     load_security_settings,
+    split_hosts,
+    validate_allowed_hosts,
 )
 from app.routers.remote_manager import (
     RDP_SETTING_KEYS,
@@ -82,6 +86,7 @@ CUSTOM_FIELD_MODULES = {
 SITE_SETTING_KEYS = {
     "app_name": APP_BRAND_NAME,
     "base_url": "http://localhost:8080",
+    "timezone_region": "UTC",
     "max_upload_mb": "25",
     "trusted_hosts_enabled": "",
     "allowed_hosts": "",
@@ -642,32 +647,18 @@ def save_security_settings(
         save_site_setting(db, key, value)
 
 
-def include_current_host(allowed_hosts: str, request: Request) -> str:
-    current_host = request.headers.get("host", "").strip()
-    if not current_host:
-        return allowed_hosts
-    existing = {
-        part.strip().lower()
-        for part in str(allowed_hosts or "").replace("\r", "\n").replace(",", "\n").split("\n")
-        if part.strip()
-    }
-    if current_host.lower() in existing:
-        return allowed_hosts
-    separator = "\n" if allowed_hosts.strip() else ""
-    return f"{allowed_hosts.strip()}{separator}{current_host}"
-
-
 def security_check_context(request: Request, db: Session) -> dict[str, object]:
     app_settings = get_settings()
     security = load_security_settings(db)
     allowed_hosts = effective_allowed_hosts(security, app_settings)
-    current_host = request.headers.get("host", "")
+    current_host = host_without_port(request.headers.get("host", ""))
     host_filter_enabled = security.get("trusted_hosts_enabled") == "1" or bool(app_settings.allowed_hosts.strip())
     request_is_https = (
         request.url.scheme == "https"
         or request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip() == "https"
     )
     hsts_enabled = security.get("hsts_enabled") == "1" or app_settings.session_cookie_secure
+    proxy = client_ip_details(request)
     return {
         "current_host": current_host,
         "host_filter_enabled": host_filter_enabled,
@@ -679,6 +670,13 @@ def security_check_context(request: Request, db: Session) -> dict[str, object]:
         "hsts_header": hsts_header_value(security) if hsts_enabled else "",
         "request_is_https": request_is_https,
         "rdp_token_ttl_minutes": security.get("rdp_token_ttl_minutes") or "10",
+        "client_ip": proxy.client_ip,
+        "immediate_ip": proxy.immediate_ip,
+        "forwarded_for": proxy.forwarded_for,
+        "trusted_proxy": proxy.trusted_proxy,
+        "trusted_proxy_config": proxy.trusted_proxy_config,
+        "trusted_proxy_config_errors": validate_trusted_proxies(proxy.trusted_proxy_config),
+        "client_ip_source": proxy.source,
     }
 
 
@@ -1925,6 +1923,7 @@ async def save_settings(
     request: Request,
     app_name: str = Form(APP_BRAND_NAME),
     base_url: str = Form("http://localhost:8080"),
+    timezone_region: str = Form("UTC"),
     github_repo: str = Form("antybubbs/Kaya"),
     version_check_interval_seconds: str = Form("1800"),
     guacd_host: str = Form(""),
@@ -1977,6 +1976,46 @@ async def save_settings(
 ):
     validate_csrf_token(request, csrf_token)
     form = await request.form()
+    timezone_region = timezone_region.strip()
+    if not timezone_region or len(timezone_region) > 100 or not re.fullmatch(r"[A-Za-z0-9_+\-/]+", timezone_region):
+        timezone_region = "UTC"
+    save_site_setting(db, "timezone_region", timezone_region)
+
+    allowed_host_errors = validate_allowed_hosts(allowed_hosts)
+    if trusted_hosts_enabled and not split_hosts(allowed_hosts):
+        allowed_host_errors.insert(
+            0,
+            {
+                "line": None,
+                "value": "",
+                "message": (
+                    "Host restriction is enabled but no allowed hosts have been configured. "
+                    "At least one hostname or IP address must be added before this setting can be enabled."
+                ),
+            },
+        )
+    if allowed_host_errors:
+        submitted_settings = load_site_settings(db)
+        for key, value in form.items():
+            if key in submitted_settings and key not in {"csrf_token", "smtp_password"}:
+                submitted_settings[key] = str(value)
+        submitted_settings["trusted_hosts_enabled"] = "1" if trusted_hosts_enabled else ""
+        submitted_settings["allowed_hosts"] = allowed_hosts
+        return templates.TemplateResponse(
+            request,
+            "settings.html",
+            {
+                "user": user,
+                "settings": submitted_settings,
+                "dns_providers": dns_providers_for_admin(db),
+                "security_check": security_check_context(request, db),
+                "allowed_host_errors": allowed_host_errors,
+                "message": None,
+                "error": "Review the highlighted allowed-host entries before saving.",
+                **csrf_context(request),
+            },
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        )
 
     save_email_settings(
         db,
@@ -1999,8 +2038,6 @@ async def save_settings(
         email_template_password_reset_subject=email_template_password_reset_subject,
         email_template_password_reset_body=email_template_password_reset_body,
     )
-    if trusted_hosts_enabled:
-        allowed_hosts = include_current_host(allowed_hosts, request)
     save_security_settings(
         db,
         trusted_hosts_enabled=trusted_hosts_enabled,

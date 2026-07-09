@@ -61,12 +61,13 @@ def write_audit(
 ):
     context = _request_context.get() or {}
     resolved_status = status_code if status_code is not None else context.get("status_code")
+    resolved_ip_address = None if context.get("redact_client") else (ip_address or context.get("ip_address"))
     row = AuditLog(
         user_id=user.id if user else context.get("user_id"),
         action=action,
         entity=entity,
         entity_id=entity_id,
-        ip_address=ip_address or context.get("ip_address"),
+        ip_address=resolved_ip_address,
         detail=detail,
         category=category or category_for(action, entity),
         severity=severity or severity_for(action, resolved_status),

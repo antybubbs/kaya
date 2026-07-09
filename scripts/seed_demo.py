@@ -13,6 +13,8 @@ from app.models.models import (
     AuditLog,
     BackupJob,
     BackupRecord,
+    CustomField,
+    CustomFieldValue,
     ComputeEvent,
     ComputeHost,
     ComputeInventoryItem,
@@ -26,6 +28,9 @@ from app.models.models import (
     Licence,
     ManagedListItem,
     NetworkMonitor,
+    NetworkMonitorCheck,
+    Rack,
+    RackItem,
     RemoteAccess,
     RemoteManagerSetting,
     RunbookPage,
@@ -62,31 +67,78 @@ def seed_database(database_path: Path) -> None:
             VLAN(name="Servers", description="Application and virtualisation hosts"),
             VLAN(name="IoT", description="Isolated smart-home devices"),
             VLAN(name="Guests", description="Guest wireless clients"),
+            VLAN(name="Security", description="Cameras, NVRs and restricted physical-security systems"),
+            VLAN(name="Lab DMZ", description="Reverse proxies, tunnels and public-facing demo services"),
         ]
         db.add_all(vlans)
         db.flush()
 
         addresses = [
             IPAddress(vlan_id=vlans[0].id, address="10.20.1.1", category="Network", name="core-router", description="Primary lab gateway", assignment_type="Static", notes="Demo address only"),
+            IPAddress(vlan_id=vlans[0].id, address="10.20.1.2", category="Network", name="core-switch", description="Main managed switch", assignment_type="Static", notes="Synthetic switch management address."),
             IPAddress(vlan_id=vlans[1].id, address="10.20.10.11", category="Compute", name="pve-01", description="Primary Proxmox node", assignment_type="Static"),
+            IPAddress(vlan_id=vlans[1].id, address="10.20.10.12", category="Compute", name="pve-02", description="Secondary Proxmox node used for failover demos", assignment_type="Static"),
             IPAddress(vlan_id=vlans[1].id, address="10.20.10.21", category="Storage", name="nas-01", description="Shared storage appliance", assignment_type="Static"),
             IPAddress(vlan_id=vlans[1].id, address="10.20.10.31", category="Services", name="docker-01", description="Container services host", assignment_type="Static"),
+            IPAddress(vlan_id=vlans[5].id, address="10.20.20.10", category="Services", name="reverse-proxy", description="Public entry point for demo services", assignment_type="Static", notes="Represents Nginx Proxy Manager, Traefik or Caddy."),
             IPAddress(vlan_id=vlans[2].id, address="10.20.30.42", category="IoT", name="living-room-display", description="Dashboard display", assignment_type="Dynamic"),
+            IPAddress(vlan_id=vlans[2].id, address="10.20.30.55", category="IoT", name="garage-sensor", description="Environmental sensor", assignment_type="Dynamic"),
+            IPAddress(vlan_id=vlans[3].id, address="10.20.40.23", category="Guest", name="guest-tablet", description="Example guest client seen in DNS investigations", assignment_type="Dynamic"),
+            IPAddress(vlan_id=vlans[4].id, address="10.20.50.15", category="Security", name="front-door-camera", description="PoE camera at the front door", assignment_type="Static"),
+            IPAddress(vlan_id=vlans[4].id, address="10.20.50.20", category="Security", name="nvr-01", description="Network video recorder", assignment_type="Static"),
         ]
         db.add_all(addresses)
         db.flush()
+        monitors = []
+        monitor_samples = [
+            (addresses[0], "up", 3, None),
+            (addresses[1], "up", 2, None),
+            (addresses[2], "up", 4, None),
+            (addresses[3], "warning", 18, "High packet jitter during the last check."),
+            (addresses[4], "up", 5, None),
+            (addresses[5], "up", 6, None),
+            (addresses[6], "up", 7, None),
+            (addresses[10], "down", None, "Demo outage: camera stopped responding to ICMP."),
+            (addresses[11], "up", 5, None),
+        ]
+        for index, (row, last_status, latency, error) in enumerate(monitor_samples):
+            monitor = NetworkMonitor(
+                ip_address_id=row.id,
+                display_name=row.name,
+                is_enabled=False,
+                interval_seconds=300,
+                timeout_ms=1500,
+                notify_enabled=index in {3, 7},
+                last_status=last_status,
+                last_latency_ms=latency,
+                last_error=error,
+                last_checked_at=now - timedelta(minutes=3 + index),
+            )
+            monitors.append(monitor)
+        db.add_all(monitors)
+        db.flush()
+        for monitor in monitors:
+            db.add_all([
+                NetworkMonitorCheck(monitor_id=monitor.id, status="up", latency_ms=monitor.last_latency_ms or 5, checked_at=now - timedelta(minutes=33)),
+                NetworkMonitorCheck(monitor_id=monitor.id, status=monitor.last_status or "up", latency_ms=monitor.last_latency_ms, error=monitor.last_error, checked_at=monitor.last_checked_at or now),
+            ])
         db.add_all([
-            NetworkMonitor(ip_address_id=row.id, display_name=row.name, is_enabled=False, interval_seconds=300, timeout_ms=1500, last_status="up", last_latency_ms=4, last_checked_at=now - timedelta(minutes=3))
-            for row in addresses[:4]
-        ])
-        db.add_all([
-            RemoteAccess(ip_address_id=addresses[1].id, display_name="Proxmox console", is_enabled=True, protocol="ssh", port=22, username="demo", notes="Live connections are disabled in the public demo."),
-            RemoteAccess(ip_address_id=addresses[3].id, display_name="Docker host", is_enabled=True, protocol="ssh", port=22, username="demo", notes="Live connections are disabled in the public demo."),
+            RemoteAccess(ip_address_id=addresses[2].id, display_name="Proxmox console", is_enabled=True, protocol="ssh", port=22, username="demo", host_key_fingerprint="SHA256:demo-proxmox-host-key", notes="Live connections are disabled in the public demo."),
+            RemoteAccess(ip_address_id=addresses[4].id, display_name="NAS shell", is_enabled=True, protocol="ssh", port=22, username="demo", host_key_fingerprint="SHA256:demo-nas-host-key", notes="Synthetic SSH target for browsing Remote Manager layout."),
+            RemoteAccess(ip_address_id=addresses[5].id, display_name="Docker host", is_enabled=True, protocol="ssh", port=22, username="demo", host_key_fingerprint="SHA256:demo-docker-host-key", notes="Live connections are disabled in the public demo."),
+            RemoteAccess(ip_address_id=addresses[11].id, display_name="NVR desktop", is_enabled=True, protocol="rdp", port=3389, username="demo-admin", notes="Synthetic RDP target. The public demo shows a still preview instead of opening a live session."),
         ])
         db.add_all([
             RemoteManagerSetting(key="guacamole_enabled", value="0"),
             RemoteManagerSetting(key="guacd_host", value=""),
             RemoteManagerSetting(key="guacd_port", value="4822"),
+            RemoteManagerSetting(key="split_screen_enabled", value="1"),
+            RemoteManagerSetting(key="recording_enabled", value="1"),
+            RemoteManagerSetting(key="recording_auto_enabled", value="0"),
+            RemoteManagerSetting(key="recording_max_upload_mb", value="512"),
+            RemoteManagerSetting(key="ssh_font_size", value="14"),
+            RemoteManagerSetting(key="ssh_theme", value="kaya-dark"),
+            RemoteManagerSetting(key="rdp_resize_method", value="display-update"),
             RemoteManagerSetting(key="dns_manager_enabled", value="1"),
             RemoteManagerSetting(key="dns_cache_enabled", value="1"),
             RemoteManagerSetting(key="dns_refresh_interval_seconds", value="300"),
@@ -113,21 +165,43 @@ def seed_database(database_path: Path) -> None:
             RemoteManagerSetting(key="backup_default_target_name", value="Demo NAS"),
         ])
 
-        db.add_all([
-            HardwareAsset(asset_tag="SRV-001", name="Virtualisation Server", category="Server", status="In use", manufacturer="Dell", model="PowerEdge R730", serial_number="DEMO-SRV-001", location="Lab Rack U10", assigned_to="Infrastructure", purchase_date=date(2023, 4, 12), purchase_cost="GBP 850", warranty_expires=date(2027, 4, 12), supplier="Demo Hardware Ltd", notes="Synthetic public demo record."),
+        assets = [
+            HardwareAsset(asset_tag="SRV-001", name="Virtualisation Server", category="Server", status="In use", manufacturer="Dell", model="PowerEdge R730", serial_number="DEMO-SRV-001", location="Lab Rack U10", assigned_to="Infrastructure", purchase_date=date(2023, 4, 12), purchase_cost="GBP 850", warranty_expires=date(2027, 4, 12), supplier="Demo Hardware Ltd", notes="Synthetic public demo record. Runs Proxmox workloads shown in VM/Docker Manager."),
+            HardwareAsset(asset_tag="SRV-002", name="Secondary Proxmox Node", category="Server", status="Maintenance", manufacturer="HP", model="ProLiant DL380 Gen9", serial_number="DEMO-SRV-002", location="Lab Rack U14", assigned_to="Infrastructure", purchase_date=date(2022, 11, 3), purchase_cost="GBP 760", warranty_expires=date(2026, 11, 3), supplier="Demo Hardware Ltd", notes="Shown in maintenance to demonstrate asset status filtering."),
             HardwareAsset(asset_tag="NET-001", name="Core Switch", category="Network", status="In use", manufacturer="Ubiquiti", model="USW-Pro-24", serial_number="DEMO-NET-001", location="Lab Rack U18", assigned_to="Infrastructure", purchase_date=date(2024, 2, 8), purchase_cost="GBP 620", notes="Synthetic public demo record."),
+            HardwareAsset(asset_tag="NET-002", name="PoE Access Switch", category="Network", status="In use", manufacturer="TP-Link", model="TL-SG2210MP", serial_number="DEMO-NET-002", location="Lab Rack U21", assigned_to="Security", purchase_date=date(2024, 5, 21), purchase_cost="GBP 210", notes="Feeds demo camera and IoT endpoints."),
             HardwareAsset(asset_tag="STO-001", name="NAS Appliance", category="Storage", status="In use", manufacturer="Synology", model="DS1821+", serial_number="DEMO-STO-001", location="Lab Rack U6", assigned_to="Infrastructure", purchase_date=date(2023, 9, 18), purchase_cost="GBP 1,100", notes="Synthetic public demo record."),
+            HardwareAsset(asset_tag="PWR-001", name="Rack UPS", category="Power", status="In use", manufacturer="APC", model="Smart-UPS 1500", serial_number="DEMO-PWR-001", location="Lab Rack U1", assigned_to="Infrastructure", purchase_date=date(2023, 1, 11), purchase_cost="GBP 420", notes="Used to demonstrate rack power equipment."),
+            HardwareAsset(asset_tag="CAM-001", name="Front Door Camera", category="Security", status="In use", manufacturer="Reolink", model="RLC-811A", serial_number="DEMO-CAM-001", location="Front Door", assigned_to="Security", purchase_date=date(2024, 7, 14), purchase_cost="GBP 92", notes="Synthetic endpoint shown as down in Network Monitor."),
             HardwareAsset(asset_tag="LAP-014", name="Admin Laptop", category="Laptop", status="Spare", manufacturer="Lenovo", model="ThinkPad T14", serial_number="DEMO-LAP-014", location="Office", assigned_to="Lab Admin", purchase_date=date(2024, 6, 3), purchase_cost="GBP 780", notes="Synthetic public demo record."),
+        ]
+        db.add_all(assets)
+        db.flush()
+        rack = Rack(name="Demo Lab Rack", location="Garage lab", height_u=24, description="Synthetic rack layout used to show rack elevation, occupancy and linked hardware assets.", sort_order=10)
+        db.add(rack)
+        db.flush()
+        db.add_all([
+            RackItem(rack_id=rack.id, hardware_asset_id=assets[5].id, name="Rack UPS", start_u=1, height_u=2, mount_side="both", category="Power", color="#dc2626", notes="Power base for the demo rack."),
+            RackItem(rack_id=rack.id, hardware_asset_id=assets[4].id, name="NAS Appliance", start_u=5, height_u=2, mount_side="front", category="Storage", color="#7c3aed", notes="Shared storage and backup target."),
+            RackItem(rack_id=rack.id, hardware_asset_id=assets[0].id, name="Virtualisation Server", start_u=10, height_u=2, mount_side="front", category="Server", color="#2563eb", notes="Runs the Proxmox demo workloads."),
+            RackItem(rack_id=rack.id, hardware_asset_id=assets[1].id, name="Secondary Proxmox Node", start_u=13, height_u=2, mount_side="front", category="Server", color="#2563eb", notes="Maintenance-state server for rack filtering."),
+            RackItem(rack_id=rack.id, hardware_asset_id=assets[2].id, name="Core Switch", start_u=18, height_u=1, mount_side="front", category="Switch", color="#059669", notes="Network core."),
+            RackItem(rack_id=rack.id, hardware_asset_id=assets[3].id, name="PoE Access Switch", start_u=20, height_u=1, mount_side="front", category="Switch", color="#059669", notes="PoE edge switch."),
+            RackItem(rack_id=rack.id, name="Patch Panel A", start_u=22, height_u=1, mount_side="front", category="Patch", color="#d97706", notes="Synthetic patch panel."),
         ])
 
         db.add_all([
             Licence(licence_id="LIC-001", organisation="Kaya Demo", product="Windows Server 2025", vendor="Microsoft", encrypted_product_key=encrypt_secret("DEMO-ONLY-AAAAA-BBBBB-CCCCC"), licence_type="Volume", activations="2", seats=4, osa_status="Active", expiry_date=date.today() + timedelta(days=210), is_favourite=True, notes="Not a real product key."),
             Licence(licence_id="LIC-002", organisation="Kaya Demo", product="Backup Suite", vendor="Example Software", encrypted_product_key=encrypt_secret("DEMO-ONLY-DDDDD-EEEEE-FFFFF"), licence_type="Subscription", activations="1", seats=10, osa_status="Active", expiry_date=date.today() + timedelta(days=95), notes="Not a real product key."),
+            Licence(licence_id="LIC-003", organisation="Kaya Demo", product="Remote Support Tool", vendor="ExampleOps", encrypted_product_key=encrypt_secret("DEMO-ONLY-GGGGG-HHHHH-IIIII"), licence_type="Per technician", activations="5", seats=5, osa_status="Renewal due", expiry_date=date.today() + timedelta(days=28), is_favourite=True, notes="Short-dated licence to make renewal views interesting."),
+            Licence(licence_id="LIC-004", organisation="Kaya Demo", product="Design Suite", vendor="Example Creative", encrypted_product_key=encrypt_secret("DEMO-ONLY-JJJJJ-KKKKK-LLLLL"), licence_type="Subscription", activations="3", seats=3, osa_status="Active", expiry_date=date.today() + timedelta(days=310), notes="Synthetic workstation application licence."),
         ])
 
         db.add_all([
             DomainRecord(name="kaya-demo.example", registrar="Example Registrar", dns_provider="Example DNS", status="active", expires_at=now + timedelta(days=240), auto_renew=True, nameservers="ns1.example.invalid\nns2.example.invalid", dns_records=json.dumps([{"type": "A", "name": "demo", "value": "192.0.2.10"}]), notes="Reserved example domain; no live lookup is performed."),
             DomainRecord(name="lab-services.example", registrar="Example Registrar", dns_provider="Example DNS", status="active", expires_at=now + timedelta(days=120), auto_renew=False, nameservers="ns1.example.invalid", notes="Reserved example domain; no live lookup is performed."),
+            DomainRecord(name="vpn-lab.example", registrar="Example Registrar", dns_provider="Cloudflare Demo", status="active", expires_at=now + timedelta(days=35), auto_renew=True, nameservers="arya.ns.cloudflare.invalid\nwest.ns.cloudflare.invalid", dns_records=json.dumps([{"type": "CNAME", "name": "tunnel", "value": "demo-tunnel.example.invalid"}, {"type": "TXT", "name": "_acme-challenge", "value": "demo-token"}]), notes="Synthetic tunnel/domain record for reverse-proxy demos."),
+            DomainRecord(name="expired-lab.example", registrar="Example Registrar", dns_provider="Example DNS", status="attention", expires_at=now - timedelta(days=2), auto_renew=False, nameservers="ns1.example.invalid", lookup_error="Demo warning: renewal check found the domain past its expected date.", notes="Intentionally expired demo domain so status badges are visible."),
         ])
         dns_provider = DNSProviderConfig(
             name="Demo Pi-hole",
@@ -177,12 +251,16 @@ def seed_database(database_path: Path) -> None:
         ])
 
         space = RunbookSpace(name="Lab Operations", description="Common operating procedures for the demo lab", sort_order=10)
-        db.add(space)
+        security_space = RunbookSpace(name="Security & Access", description="Example security operations and access workflows", sort_order=20)
+        db.add_all([space, security_space])
         db.flush()
         db.add_all([
             RunbookPage(space_id=space.id, title="Welcome to Kaya", slug="welcome-to-kaya", summary="A quick tour of this public demo.", body="# Welcome\n\nTry creating and editing inventory. Everything resets during the daily refresh.\n\n> All records and credentials in this demo are synthetic.", tags="welcome,demo", is_pinned=True, created_by_id=users["admin"].id, updated_by_id=users["admin"].id),
-            RunbookPage(space_id=space.id, title="Patch night checklist", slug="patch-night-checklist", summary="Example monthly maintenance workflow.", body="## Before maintenance\n\n- Confirm backups\n- Review monitoring\n- Notify users\n\n## After maintenance\n\n- Validate services\n- Record changes", tags="maintenance,checklist", is_pinned=True, created_by_id=users["editor"].id, updated_by_id=users["editor"].id),
-            RunbookPage(space_id=space.id, title="Restore a container", slug="restore-a-container", summary="Example recovery procedure.", body="1. Select the latest verified backup.\n2. Restore into an isolated network.\n3. Validate data and configuration.\n4. Promote the restored workload.", tags="backup,recovery", created_by_id=users["editor"].id, updated_by_id=users["editor"].id),
+            RunbookPage(space_id=space.id, title="Patch night checklist", slug="patch-night-checklist", summary="Example monthly maintenance workflow.", body="## Before maintenance\n\n- Confirm backups\n- Review monitoring\n- Notify users\n\n```bash\n# Demo-only example\ndocker compose pull && docker compose up -d\n```\n\n## After maintenance\n\n- Validate services\n- Record changes\n- Watch DNS and network monitor alerts for 30 minutes", tags="maintenance,checklist", is_pinned=True, created_by_id=users["editor"].id, updated_by_id=users["editor"].id),
+            RunbookPage(space_id=space.id, title="Restore a container", slug="restore-a-container", summary="Example recovery procedure.", body="1. Select the latest verified backup.\n2. Restore into an isolated network.\n3. Validate data and configuration.\n4. Promote the restored workload.\n\n```yaml\nservice: vaultwarden\nrestore_target: docker-01\nvalidation: login-page-healthcheck\n```", tags="backup,recovery", created_by_id=users["editor"].id, updated_by_id=users["editor"].id),
+            RunbookPage(space_id=space.id, title="New service onboarding", slug="new-service-onboarding", summary="Template for adding a service to Kaya.", body="## Capture the basics\n\n- Add the IP address and VLAN\n- Add the hardware or compute workload owner\n- Add a backup record\n- Add Remote Manager notes if access is required\n\n## Before go-live\n\n- Add DNS records\n- Add monitoring\n- Document rollback steps", tags="template,onboarding", created_by_id=users["admin"].id, updated_by_id=users["admin"].id),
+            RunbookPage(space_id=security_space.id, title="Investigate blocked DNS query", slug="investigate-blocked-dns-query", summary="Example DNS Manager triage workflow.", body="## Triage\n\n1. Open DNS Manager and review open investigations.\n2. Match the client IP to IP Address Manager.\n3. Check whether the device belongs on its VLAN.\n4. Close or escalate the investigation.\n\n> Demo investigations are synthetic and safe.", tags="dns,security,triage", is_pinned=True, created_by_id=users["editor"].id, updated_by_id=users["editor"].id),
+            RunbookPage(space_id=security_space.id, title="Remote access policy", slug="remote-access-policy", summary="How Remote Manager is used in the demo environment.", body="## Public demo behaviour\n\nRemote Manager is locked on the public demo. Kaya still shows the layout and settings, but it does not open live SSH or RDP sessions.\n\n## Real deployment guidance\n\n- Use named accounts\n- Record sensitive sessions only when policy allows\n- Keep trusted proxy settings accurate\n- Review audit logs after administrative access", tags="remote-access,policy", created_by_id=users["admin"].id, updated_by_id=users["admin"].id),
         ])
 
         host = ComputeHost(name="pve-01", platform="proxmox", base_url="https://10.20.10.11:8006", verify_tls=True, is_enabled=False, poll_interval_seconds=60, owner="Infrastructure", notes="Synthetic demo host; polling is disabled.", status="online", version="8.4", cpu_percent=18.6, memory_used=38_654_705_664, memory_total=68_719_476_736, storage_used=1_099_511_627_776, storage_total=2_199_023_255_552, last_synced_at=now - timedelta(minutes=4))
@@ -246,16 +324,36 @@ def seed_database(database_path: Path) -> None:
         ])
 
         list_values = {
-            ("hardware_assets", "category"): ["Server", "Network", "Storage", "Laptop"],
-            ("ip_addresses", "category"): ["Network", "Compute", "Storage", "Services", "IoT"],
-            ("licences", "licence_type"): ["Volume", "Subscription", "Perpetual"],
+            ("hardware_assets", "category"): ["Server", "Network", "Storage", "Power", "Security", "Laptop"],
+            ("hardware_assets", "status"): ["In use", "Spare", "Maintenance", "Retired"],
+            ("hardware_assets", "location"): ["Garage lab", "Office", "Front Door", "Lab Rack U10", "Lab Rack U18"],
+            ("ip_addresses", "category"): ["Network", "Compute", "Storage", "Services", "IoT", "Guest", "Security"],
+            ("licences", "licence_type"): ["Volume", "Subscription", "Perpetual", "Per technician"],
         }
         for (module, list_key), values in list_values.items():
             db.add_all(ManagedListItem(module=module, list_key=list_key, value=value, sort_order=index) for index, value in enumerate(values))
 
+        custom_fields = [
+            CustomField(module="hardware_assets", label="Support contract", field_key="support_contract", field_type="text", is_active=True, sort_order=10),
+            CustomField(module="hardware_assets", label="Criticality", field_key="criticality", field_type="select", options="Low\nMedium\nHigh\nCritical", is_active=True, sort_order=20),
+            CustomField(module="ip_addresses", label="Owner team", field_key="owner_team", field_type="text", is_active=True, sort_order=10),
+        ]
+        db.add_all(custom_fields)
+        db.flush()
+        db.add_all([
+            CustomFieldValue(field_id=custom_fields[0].id, entity_type="hardware_asset", entity_id=assets[0].id, value="DemoCare 24x7"),
+            CustomFieldValue(field_id=custom_fields[1].id, entity_type="hardware_asset", entity_id=assets[0].id, value="Critical"),
+            CustomFieldValue(field_id=custom_fields[1].id, entity_type="hardware_asset", entity_id=assets[4].id, value="High"),
+            CustomFieldValue(field_id=custom_fields[2].id, entity_type="ip_address", entity_id=addresses[6].id, value="Platform"),
+            CustomFieldValue(field_id=custom_fields[2].id, entity_type="ip_address", entity_id=addresses[10].id, value="Security"),
+        ])
+
         db.add_all([
             AuditLog(user_id=users["admin"].id, action="create", entity="demo", detail="Created the public demo baseline", category="system", severity="info", created_at=now - timedelta(days=1)),
             AuditLog(user_id=users["editor"].id, action="update", entity="runbook_page", entity_id="2", detail="Updated patch night checklist", category="activity", severity="info", created_at=now - timedelta(hours=6)),
+            AuditLog(user_id=users["admin"].id, action="backup", entity="compute_workload", entity_id=str(docker_workloads[0].id), detail="Demo backup completed for grafana", category="activity", severity="info", created_at=now - timedelta(hours=7, minutes=51)),
+            AuditLog(user_id=users["editor"].id, action="investigate", entity="dns_investigation", entity_id="1", detail="Opened DNS investigation for phish-demo.example.invalid", category="security", severity="warning", created_at=now - timedelta(minutes=18)),
+            AuditLog(user_id=users["admin"].id, action="alert", entity="network_monitor", entity_id=str(monitors[7].id), detail="Front door camera monitor is down in demo data", category="security", severity="warning", created_at=now - timedelta(minutes=9)),
         ])
         db.commit()
 
