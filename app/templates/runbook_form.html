@@ -24,7 +24,7 @@
   <section class="runbook-editor-layout">
     <section class="panel runbook-editor-pane runbook-write-pane">
       <div class="runbook-editor-pane-heading"><label for="runbook-markdown">Markdown</label><span>Ctrl+B &middot; Ctrl+I &middot; Ctrl+K</span></div>
-      <div class="runbook-editor-toolbar" role="toolbar" aria-label="Markdown formatting">
+      <div class="runbook-editor-toolbar" role="toolbar" aria-label="Markdown formatting" data-runbook-image-upload-url="/documentation/runbook-manager/images">
         <button type="button" data-markdown-action="heading" title="Heading">H</button>
         <button type="button" data-markdown-action="bold" title="Bold"><strong>B</strong></button>
         <button type="button" data-markdown-action="italic" title="Italic"><em>I</em></button>
@@ -39,8 +39,9 @@
           </select>
         </label>
         <button class="runbook-code-insert" type="button" data-markdown-action="code-block">Code box</button>
+        <span class="runbook-paste-status" data-runbook-paste-status aria-live="polite"></span>
       </div>
-      <textarea id="runbook-markdown" name="body" data-runbook-markdown spellcheck="true" placeholder="# Recovery steps&#10;&#10;- Check service health&#10;- Restore the latest backup&#10;&#10;```bash&#10;docker compose ps&#10;```">{{ page.body if page and page.body else '' }}</textarea>
+      <textarea id="runbook-markdown" name="body" data-runbook-markdown spellcheck="true" placeholder="# Recovery steps&#10;&#10;- Check service health&#10;- Restore the latest backup&#10;&#10;Paste screenshots directly here, or add code:&#10;&#10;```bash&#10;docker compose ps&#10;```">{{ page.body if page and page.body else '' }}</textarea>
     </section>
     <section class="panel runbook-editor-pane">
       <div class="runbook-editor-pane-heading"><h2>Preview</h2><span>Live Markdown preview</span></div>
@@ -55,5 +56,5 @@
 {% endblock %}
 {% block extra_scripts %}
 <script src="/static/vendor/highlight/highlight.min.js?v=11.11.1" defer></script>
-<script src="/static/js/runbooks.js?v={{ asset_version }}&runbook-editor=smart-paste-2" defer></script>
+<script src="/static/js/runbooks.js?v={{ asset_version }}&runbook-editor=image-paste-1" defer></script>
 {% endblock %}

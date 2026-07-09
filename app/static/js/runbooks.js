@@ -55,8 +55,14 @@
   const cleanLanguage = (value) => String(value || "").trim().toLowerCase().replace(/[^a-z0-9_+#.-]/g, "").slice(0, 40);
 
   const inline = (value) => {
+    const images = [];
     const links = [];
-    let rendered = escapeHtml(value).replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|\/[^\s)]+|#[^\s)]+)\)/g, (_match, label, href) => {
+    let rendered = escapeHtml(value).replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+|\/[^\s)]+)\)/g, (_match, alt, src) => {
+      const token = `@@RUNBOOKIMAGE${images.length}@@`;
+      images.push(`<img src="${src}" alt="${alt}" loading="lazy">`);
+      return token;
+    });
+    rendered = rendered.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|\/[^\s)]+|#[^\s)]+)\)/g, (_match, label, href) => {
       const token = `@@RUNBOOKLINK${links.length}@@`;
       const external = href.startsWith("http");
       links.push(`<a href="${href}"${external ? ' target="_blank" rel="noopener noreferrer"' : ""}>${label}</a>`);
@@ -67,6 +73,9 @@
       .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
       .replace(/\*([^*]+)\*/g, "<em>$1</em>")
       .replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
+    images.forEach((image, index) => {
+      rendered = rendered.replace(`@@RUNBOOKIMAGE${index}@@`, image);
+    });
     links.forEach((link, index) => {
       rendered = rendered.replace(`@@RUNBOOKLINK${index}@@`, link);
     });
@@ -135,6 +144,16 @@
   if (!textarea || !preview) {
     highlightCode();
     return;
+  }
+  const toolbar = document.querySelector("[data-runbook-image-upload-url]");
+  const pasteStatus = document.querySelector("[data-runbook-paste-status]");
+  const uploadImageUrl = toolbar?.dataset.runbookImageUploadUrl || "";
+  const csrfToken = textarea.form?.querySelector('input[name="csrf_token"]')?.value || "";
+
+  function setPasteStatus(message, tone = "") {
+    if (!pasteStatus) return;
+    pasteStatus.textContent = message || "";
+    pasteStatus.dataset.tone = tone;
   }
 
   function render(markdown) {
@@ -438,7 +457,68 @@
       .trim();
   }
 
+  function fileExtensionForImage(file) {
+    const byType = {
+      "image/gif": "gif",
+      "image/jpeg": "jpg",
+      "image/png": "png",
+      "image/webp": "webp",
+    };
+    return byType[file.type] || "png";
+  }
+
+  function insertMarkdownAtCursor(markdown) {
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const before = start > 0 && textarea.value[start - 1] !== "\n" ? "\n\n" : "";
+    const after = end < textarea.value.length && textarea.value[end] !== "\n" ? "\n\n" : "";
+    textarea.setRangeText(`${before}${markdown}${after}`, start, end, "end");
+    textarea.focus();
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+
+  async function uploadPastedImage(file, index) {
+    if (!uploadImageUrl || !csrfToken) throw new Error("Image uploads are not ready on this page.");
+    const extension = fileExtensionForImage(file);
+    const uploadFile = file.name ? file : new File([file], `pasted-image-${index + 1}.${extension}`, { type: file.type || "image/png" });
+    const formData = new FormData();
+    formData.append("csrf_token", csrfToken);
+    formData.append("image", uploadFile);
+    const response = await fetch(uploadImageUrl, {
+      method: "POST",
+      body: formData,
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.detail || "Image upload failed.");
+    return payload.markdown || `![Pasted image](${payload.url})`;
+  }
+
+  async function pasteImages(files) {
+    setPasteStatus(files.length === 1 ? "Uploading pasted image..." : `Uploading ${files.length} pasted images...`);
+    const markdown = [];
+    for (const [index, file] of files.entries()) {
+      markdown.push(await uploadPastedImage(file, index));
+    }
+    insertMarkdownAtCursor(markdown.join("\n\n"));
+    setPasteStatus(files.length === 1 ? "Image inserted." : "Images inserted.", "success");
+    window.setTimeout(() => setPasteStatus(""), 2400);
+  }
+
   textarea.addEventListener("paste", (event) => {
+    const imageFiles = Array.from(event.clipboardData?.items || [])
+      .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+      .map((item) => item.getAsFile())
+      .filter(Boolean);
+    if (imageFiles.length) {
+      event.preventDefault();
+      pasteImages(imageFiles).catch((error) => {
+        setPasteStatus(error.message || "Image paste failed.", "error");
+      });
+      return;
+    }
+
     const html = event.clipboardData?.getData("text/html") || "";
     if (!html) return;
     const markdown = pastedHtmlToMarkdown(html);

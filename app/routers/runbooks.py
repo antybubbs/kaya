@@ -1,14 +1,17 @@
 import html
 import re
 from datetime import datetime
+from pathlib import Path
+from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
-from fastapi.responses import RedirectResponse
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from starlette import status
 
+from app.core.config import get_settings
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.db.session import get_db
 from app.models.models import RunbookPage, RunbookPageHistory, RunbookSpace
@@ -17,6 +20,13 @@ from app.services.audit import write_audit
 
 router = APIRouter(prefix="/documentation/runbook-manager")
 templates = Jinja2Templates(directory="app/templates")
+RUNBOOK_IMAGE_TYPES = {
+    ".gif": ("image/gif", (b"GIF87a", b"GIF89a")),
+    ".jpg": ("image/jpeg", (b"\xff\xd8\xff",)),
+    ".jpeg": ("image/jpeg", (b"\xff\xd8\xff",)),
+    ".png": ("image/png", (b"\x89PNG\r\n\x1a\n",)),
+    ".webp": ("image/webp", (b"RIFF",)),
+}
 
 
 def slugify(value: str) -> str:
@@ -55,6 +65,26 @@ def clean_tags(tags: str) -> str | None:
     return ", ".join(parts) or None
 
 
+def runbook_image_dir() -> Path:
+    path = Path(get_settings().upload_dir) / "runbook_images"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def validate_runbook_image(filename: str, data: bytes) -> tuple[str, str]:
+    suffix = Path(filename or "").suffix.lower() or ".png"
+    allowed = RUNBOOK_IMAGE_TYPES.get(suffix)
+    if not allowed:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Image must be a PNG, JPEG, GIF, or WebP file.")
+    content_type, signatures = allowed
+    if suffix == ".webp":
+        if len(data) < 12 or not data.startswith(b"RIFF") or data[8:12] != b"WEBP":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Image content does not match its file type.")
+    elif not any(data.startswith(signature) for signature in signatures):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Image content does not match its file type.")
+    return suffix, content_type
+
+
 def markdown_to_html(markdown: str | None) -> str:
     if not markdown:
         return '<p class="muted">No content yet.</p>'
@@ -72,7 +102,14 @@ def markdown_to_html(markdown: str | None) -> str:
 
     def inline(text: str) -> str:
         escaped = html.escape(text)
+        images: list[str] = []
         links: list[str] = []
+
+        def replace_image(match: re.Match) -> str:
+            alt = html.escape(match.group(1), quote=True)
+            src = match.group(2)
+            images.append(f'<img src="{src}" alt="{alt}" loading="lazy">')
+            return f"@@RUNBOOKIMAGE{len(images) - 1}@@"
 
         def replace_link(match: re.Match) -> str:
             label = match.group(1)
@@ -82,6 +119,11 @@ def markdown_to_html(markdown: str | None) -> str:
             links.append(f'<a href="{href}"{attributes}>{label}</a>')
             return f"@@RUNBOOKLINK{len(links) - 1}@@"
 
+        escaped = re.sub(
+            r"!\[([^\]]*)\]\((https?://[^\s)]+|/[^\s)]+)\)",
+            replace_image,
+            escaped,
+        )
         escaped = re.sub(
             r"\[([^\]]+)\]\((https?://[^\s)]+|/[^\s)]+|#[^\s)]+)\)",
             replace_link,
@@ -95,6 +137,8 @@ def markdown_to_html(markdown: str | None) -> str:
             r'<a href="\1" target="_blank" rel="noopener noreferrer">\1</a>',
             escaped,
         )
+        for index, image in enumerate(images):
+            escaped = escaped.replace(f"@@RUNBOOKIMAGE{index}@@", image)
         for index, link in enumerate(links):
             escaped = escaped.replace(f"@@RUNBOOKLINK{index}@@", link)
         return escaped
@@ -306,6 +350,38 @@ def create_space(
     db.commit()
     write_audit(db, user, "create", "runbook_space", str(row.id), request.client.host if request.client else None, detail=row.name)
     return RedirectResponse(f"/documentation/runbook-manager?space={row.id}", status_code=303)
+
+
+@router.post("/images")
+async def upload_runbook_image(
+    request: Request,
+    csrf_token: str = Form(...),
+    image: UploadFile = File(...),
+    user=Depends(require_editor),
+):
+    validate_csrf_token(request, csrf_token)
+    data = await image.read(get_settings().max_upload_mb * 1024 * 1024 + 1)
+    if len(data) > get_settings().max_upload_mb * 1024 * 1024:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=f"Image is larger than {get_settings().max_upload_mb} MB.")
+    suffix, content_type = validate_runbook_image(image.filename or "pasted-image.png", data)
+    stored = f"runbook-{uuid4().hex}{suffix}"
+    path = runbook_image_dir() / stored
+    path.write_bytes(data)
+    alt = Path(image.filename or "Pasted image").stem.replace("-", " ").replace("_", " ").strip() or "Pasted image"
+    alt = re.sub(r"[\[\]()]+", "", alt)[:120] or "Pasted image"
+    url = f"/documentation/runbook-manager/images/{stored}"
+    return JSONResponse({"url": url, "markdown": f"![{alt}]({url})", "content_type": content_type})
+
+
+@router.get("/images/{filename}")
+def runbook_image(filename: str, user=Depends(require_user)):
+    if not re.fullmatch(r"runbook-[a-f0-9]{32}\.(png|jpg|jpeg|gif|webp)", filename):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
+    path = runbook_image_dir() / filename
+    if not path.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
+    suffix, content_type = validate_runbook_image(filename, path.read_bytes())
+    return FileResponse(path, media_type=content_type)
 
 
 @router.get("/new")
