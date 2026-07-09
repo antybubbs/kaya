@@ -85,6 +85,28 @@ def validate_runbook_image(filename: str, data: bytes) -> tuple[str, str]:
     return suffix, content_type
 
 
+def runbook_image_content_type(filename: str) -> str:
+    suffix = Path(filename).suffix.lower()
+    allowed = RUNBOOK_IMAGE_TYPES.get(suffix)
+    if not allowed:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
+    return allowed[0]
+
+
+def safe_runbook_image_path(filename: str) -> Path:
+    if not re.fullmatch(r"runbook-[a-f0-9]{32}\.(png|jpg|jpeg|gif|webp)", filename):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
+    base_dir = runbook_image_dir().resolve()
+    path = (base_dir / filename).resolve()
+    try:
+        path.relative_to(base_dir)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
+    return path
+
+
 def markdown_to_html(markdown: str | None) -> str:
     if not markdown:
         return '<p class="muted">No content yet.</p>'
@@ -375,12 +397,8 @@ async def upload_runbook_image(
 
 @router.get("/images/{filename}")
 def runbook_image(filename: str, user=Depends(require_user)):
-    if not re.fullmatch(r"runbook-[a-f0-9]{32}\.(png|jpg|jpeg|gif|webp)", filename):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
-    path = runbook_image_dir() / filename
-    if not path.exists():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
-    suffix, content_type = validate_runbook_image(filename, path.read_bytes())
+    path = safe_runbook_image_path(filename)
+    content_type = runbook_image_content_type(path.name)
     return FileResponse(path, media_type=content_type)
 
 
