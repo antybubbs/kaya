@@ -385,6 +385,20 @@ def migrate_existing_database():
             conn.execute(text("CREATE INDEX ix_runbook_page_history_page_id ON runbook_page_history (page_id)"))
             conn.execute(text("CREATE INDEX ix_runbook_page_history_saved_by_id ON runbook_page_history (saved_by_id)"))
             conn.execute(text("CREATE INDEX ix_runbook_page_history_saved_at ON runbook_page_history (saved_at)"))
+        runbook_image_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(runbook_images)"))}
+        if not runbook_image_columns:
+            conn.execute(text("CREATE TABLE runbook_images (id INTEGER NOT NULL PRIMARY KEY, original_filename VARCHAR(255), content_type VARCHAR(120) NOT NULL, size_bytes INTEGER DEFAULT 0 NOT NULL, data BLOB, uploaded_by_id INTEGER REFERENCES users(id) ON DELETE SET NULL, created_at DATETIME)"))
+            conn.execute(text("CREATE INDEX ix_runbook_images_uploaded_by_id ON runbook_images (uploaded_by_id)"))
+            conn.execute(text("CREATE INDEX ix_runbook_images_created_at ON runbook_images (created_at)"))
+        elif "stored_filename" in runbook_image_columns:
+            conn.execute(text("ALTER TABLE runbook_images RENAME TO runbook_images_legacy"))
+            conn.execute(text("CREATE TABLE runbook_images (id INTEGER NOT NULL PRIMARY KEY, original_filename VARCHAR(255), content_type VARCHAR(120) NOT NULL, size_bytes INTEGER DEFAULT 0 NOT NULL, data BLOB, uploaded_by_id INTEGER REFERENCES users(id) ON DELETE SET NULL, created_at DATETIME)"))
+            conn.execute(text("INSERT INTO runbook_images (id, original_filename, content_type, size_bytes, uploaded_by_id, created_at) SELECT id, original_filename, content_type, size_bytes, uploaded_by_id, created_at FROM runbook_images_legacy"))
+            conn.execute(text("DROP TABLE runbook_images_legacy"))
+            conn.execute(text("CREATE INDEX ix_runbook_images_uploaded_by_id ON runbook_images (uploaded_by_id)"))
+            conn.execute(text("CREATE INDEX ix_runbook_images_created_at ON runbook_images (created_at)"))
+        elif "data" not in runbook_image_columns:
+            conn.execute(text("ALTER TABLE runbook_images ADD COLUMN data BLOB"))
         domain_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(domain_records)"))}
         if not domain_columns:
             conn.execute(text("CREATE TABLE domain_records (id INTEGER NOT NULL PRIMARY KEY, name VARCHAR(255) NOT NULL UNIQUE, registrar VARCHAR(255), dns_provider VARCHAR(255), status VARCHAR(120), expires_at DATETIME, auto_renew BOOLEAN DEFAULT 0 NOT NULL, nameservers TEXT, lookup_registrar VARCHAR(255), lookup_dns_provider VARCHAR(255), lookup_status VARCHAR(120), lookup_expires_at DATETIME, lookup_nameservers TEXT, dns_records TEXT, lookup_error TEXT, last_lookup_at DATETIME, notes TEXT, created_at DATETIME, updated_at DATETIME)"))

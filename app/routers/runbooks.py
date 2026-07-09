@@ -1,11 +1,9 @@
 import html
 import re
 from datetime import datetime
-from pathlib import Path
-from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
@@ -14,7 +12,7 @@ from starlette import status
 from app.core.config import get_settings
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.db.session import get_db
-from app.models.models import RunbookPage, RunbookPageHistory, RunbookSpace
+from app.models.models import RunbookImage, RunbookPage, RunbookPageHistory, RunbookSpace
 from app.routers.auth import require_editor, require_user
 from app.services.audit import write_audit
 
@@ -65,14 +63,9 @@ def clean_tags(tags: str) -> str | None:
     return ", ".join(parts) or None
 
 
-def runbook_image_dir() -> Path:
-    path = Path(get_settings().upload_dir) / "runbook_images"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
 def validate_runbook_image(filename: str, data: bytes) -> tuple[str, str]:
-    suffix = Path(filename or "").suffix.lower() or ".png"
+    clean_filename = (filename or "").replace("\\", "/").rsplit("/", 1)[-1]
+    suffix = f".{clean_filename.rsplit('.', 1)[-1].lower()}" if "." in clean_filename else ".png"
     allowed = RUNBOOK_IMAGE_TYPES.get(suffix)
     if not allowed:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Image must be a PNG, JPEG, GIF, or WebP file.")
@@ -85,26 +78,10 @@ def validate_runbook_image(filename: str, data: bytes) -> tuple[str, str]:
     return suffix, content_type
 
 
-def runbook_image_content_type(filename: str) -> str:
-    suffix = Path(filename).suffix.lower()
-    allowed = RUNBOOK_IMAGE_TYPES.get(suffix)
-    if not allowed:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
-    return allowed[0]
-
-
-def safe_runbook_image_path(filename: str) -> Path:
-    if not re.fullmatch(r"runbook-[a-f0-9]{32}\.(png|jpg|jpeg|gif|webp)", filename):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
-    base_dir = runbook_image_dir().resolve()
-    path = (base_dir / filename).resolve()
-    try:
-        path.relative_to(base_dir)
-    except ValueError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
-    if not path.exists() or not path.is_file():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
-    return path
+def filename_stem(filename: str | None, fallback: str = "Pasted image") -> str:
+    clean_filename = (filename or "").replace("\\", "/").rsplit("/", 1)[-1]
+    stem = clean_filename.rsplit(".", 1)[0] if "." in clean_filename else clean_filename
+    return stem or fallback
 
 
 def markdown_to_html(markdown: str | None) -> str:
@@ -379,27 +356,36 @@ async def upload_runbook_image(
     request: Request,
     csrf_token: str = Form(...),
     image: UploadFile = File(...),
+    db: Session = Depends(get_db),
     user=Depends(require_editor),
 ):
     validate_csrf_token(request, csrf_token)
     data = await image.read(get_settings().max_upload_mb * 1024 * 1024 + 1)
     if len(data) > get_settings().max_upload_mb * 1024 * 1024:
         raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=f"Image is larger than {get_settings().max_upload_mb} MB.")
-    suffix, content_type = validate_runbook_image(image.filename or "pasted-image.png", data)
-    stored = f"runbook-{uuid4().hex}{suffix}"
-    path = runbook_image_dir() / stored
-    path.write_bytes(data)
-    alt = Path(image.filename or "Pasted image").stem.replace("-", " ").replace("_", " ").strip() or "Pasted image"
+    _suffix, content_type = validate_runbook_image(image.filename or "pasted-image.png", data)
+    row = RunbookImage(
+        original_filename=image.filename or None,
+        content_type=content_type,
+        size_bytes=len(data),
+        data=data,
+        uploaded_by_id=user.id,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    alt = filename_stem(image.filename).replace("-", " ").replace("_", " ").strip() or "Pasted image"
     alt = re.sub(r"[\[\]()]+", "", alt)[:120] or "Pasted image"
-    url = f"/documentation/runbook-manager/images/{stored}"
+    url = f"/documentation/runbook-manager/images/{row.id}"
     return JSONResponse({"url": url, "markdown": f"![{alt}]({url})", "content_type": content_type})
 
 
-@router.get("/images/{filename}")
-def runbook_image(filename: str, user=Depends(require_user)):
-    path = safe_runbook_image_path(filename)
-    content_type = runbook_image_content_type(path.name)
-    return FileResponse(path, media_type=content_type)
+@router.get("/images/{image_id}")
+def runbook_image(image_id: int, db: Session = Depends(get_db), user=Depends(require_user)):
+    image = db.get(RunbookImage, image_id)
+    if not image or not image.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
+    return Response(content=image.data, media_type=image.content_type)
 
 
 @router.get("/new")
