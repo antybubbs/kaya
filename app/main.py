@@ -161,6 +161,7 @@ async def audit_requests(request: Request, call_next):
         path=path,
         ip_address=None if settings.demo_mode else client_ip(request),
         user_agent=None if settings.demo_mode else ((request.headers.get("user-agent") or "")[:2000] or None),
+        redact_client=settings.demo_mode,
     )
     started = perf_counter()
     response = None

@@ -78,3 +78,26 @@ def test_sessions_and_audit_logs_use_the_same_client_ip():
 
     assert expected == "198.51.100.25"
     assert row.ip_address == expected
+
+
+def test_demo_audit_context_redacts_explicit_client_ip():
+    db = RecordingSession()
+    token, _ = begin_request_context(
+        request_id="demo-test",
+        method="POST",
+        path="/login",
+        ip_address=None,
+        redact_client=True,
+    )
+    try:
+        row = write_audit(
+            db,
+            None,
+            "login_failed",
+            "user",
+            ip_address="198.51.100.25",
+        )
+    finally:
+        end_request_context(token)
+
+    assert row.ip_address is None

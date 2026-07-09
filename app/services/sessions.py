@@ -6,6 +6,7 @@ from fastapi import Request
 from sqlalchemy.orm import Session
 
 from app.models.models import AppSession, User
+from app.core.config import get_settings
 from app.services.client_ip import client_ip
 
 SESSION_SYNC_SECONDS = 60
@@ -13,6 +14,8 @@ ACTIVE_WINDOW_MINUTES = 30
 
 
 def request_ip(request: Request) -> str | None:
+    if get_settings().demo_mode:
+        return None
     value = client_ip(request)
     return value[:80] if value else None
 

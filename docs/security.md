@@ -65,6 +65,11 @@ Demo mode:
 
 Any new route that mutates data, reaches into the network, performs remote access, or exposes secrets must be reviewed against demo-mode restrictions.
 
+Demo mode also redacts client IP addresses and user agents from request audit
+records and does not store client IP addresses in login sessions. The public
+demo uses shared accounts, so visitor network identifiers must not be persisted
+where another demo user could view them.
+
 ## Current Risks
 
 - Rate limits are in-memory and not distributed.
