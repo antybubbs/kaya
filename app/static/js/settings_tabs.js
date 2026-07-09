@@ -214,6 +214,89 @@
     });
   }
 
+  const hostHardening = root.querySelector("[data-host-hardening]");
+  if (hostHardening) {
+    const toggle = hostHardening.querySelector('input[name="trusted_hosts_enabled"]');
+    const field = hostHardening.querySelector('textarea[name="allowed_hosts"]');
+    const statusBox = hostHardening.querySelector("[data-current-host-status]");
+    const statusMessage = hostHardening.querySelector("[data-host-status-message]");
+    const warning = hostHardening.querySelector("[data-host-lockout-warning]");
+    const errors = hostHardening.querySelector("[data-host-errors]");
+    const currentHost = String(hostHardening.dataset.currentHost || "").trim();
+
+    const hostWithoutPort = (value) => {
+      const host = String(value || "").trim().toLowerCase();
+      if (host.startsWith("[")) return host.slice(1).split("]", 1)[0];
+      return (host.match(/:/g) || []).length === 1 ? host.slice(0, host.lastIndexOf(":")) : host;
+    };
+    const matches = (host, pattern) => {
+      const cleanHost = hostWithoutPort(host);
+      const cleanPattern = hostWithoutPort(pattern);
+      if (cleanPattern === "*") return true;
+      if (cleanPattern.startsWith("*.")) {
+        const suffix = cleanPattern.slice(1);
+        return cleanHost.endsWith(suffix) && cleanHost !== cleanPattern.slice(2);
+      }
+      return cleanHost === cleanPattern;
+    };
+    const invalidEntryMessage = (entry) => {
+      if (entry.includes("://")) return "Enter only the hostname or IP address, without http:// or https://.";
+      if (entry === "*") return "";
+      const candidate = entry.startsWith("[") && entry.endsWith("]") ? entry.slice(1, -1) : entry;
+      if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(candidate)) {
+        return candidate.split(".").every((part) => Number(part) <= 255) ? "" : "Enter a valid IPv4 address.";
+      }
+      if (candidate.includes(":") && /^[0-9a-f:]+$/i.test(candidate)) return "";
+      const hostname = candidate.startsWith("*.") ? candidate.slice(2) : candidate;
+      if (hostname.includes("*")) return "A wildcard is only supported at the start of a domain, for example *.example.com.";
+      if (!hostname.includes(".")) return "Enter a fully qualified hostname, such as kaya.example.com, or an IP address.";
+      const valid = hostname.replace(/\.$/, "").split(".").every((label) =>
+        /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label));
+      return valid ? "" : "Use letters, numbers and hyphens in each hostname label.";
+    };
+    const updateHostStatus = () => {
+      const enabled = Boolean(toggle?.checked);
+      const entries = String(field?.value || "").split(/[\n,]/).map((item) => item.trim()).filter(Boolean);
+      const allowed = entries.some((entry) => matches(currentHost, entry));
+      statusBox?.classList.toggle("is-allowed", enabled && allowed);
+      statusBox?.classList.toggle("is-warning", enabled && !allowed);
+      if (statusMessage) {
+        statusMessage.textContent = !enabled
+          ? "Host validation is currently inactive."
+          : allowed ? "Current host is allowed" : "Current host is not included in the allow list.";
+      }
+      if (warning) warning.hidden = !enabled || allowed;
+    };
+    toggle?.addEventListener("change", updateHostStatus);
+    field?.addEventListener("input", () => {
+      updateHostStatus();
+      field.setAttribute("aria-invalid", "false");
+      field.closest("label")?.classList.remove("field-invalid");
+      if (errors) errors.replaceChildren();
+    });
+    root.addEventListener("submit", (event) => {
+      const value = String(field?.value || "");
+      const entryErrors = [];
+      value.split(/\r?\n/).forEach((line, index) => {
+        line.split(",").map((item) => item.trim()).filter(Boolean).forEach((entry) => {
+          const message = invalidEntryMessage(entry);
+          if (message) entryErrors.push(`<p><strong>Line ${index + 1} — ${entry.replace(/[&<>"]/g, "")}</strong>: ${message}</p>`);
+        });
+      });
+      if (toggle?.checked && !value.trim()) {
+        entryErrors.unshift("<p>Host restriction is enabled but no allowed hosts have been configured. At least one hostname or IP address must be added before this setting can be enabled.</p>");
+      }
+      if (!entryErrors.length) return;
+      event.preventDefault();
+      field.setAttribute("aria-invalid", "true");
+      field.closest("label")?.classList.add("field-invalid");
+      if (errors) errors.innerHTML = entryErrors.join("");
+      activate("security");
+      field.focus();
+    });
+    updateHostStatus();
+  }
+
   const builder = root.querySelector("[data-backup-targets-builder]");
   if (builder) {
     const list = builder.querySelector("[data-backup-targets-list]");

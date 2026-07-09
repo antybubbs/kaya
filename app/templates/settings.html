@@ -123,15 +123,41 @@
     </div>
     {% endif %}
 
-    <div class="remote-settings-card" id="security">
+    <div class="remote-settings-card security-settings-card" id="security" data-host-hardening data-current-host="{{ security_check.current_host if security_check else '' }}">
       <header><span>Host and proxy hardening</span></header>
-      {{ switch('trusted_hosts_enabled', 'Restrict trusted hosts', 'Reject requests whose Host header is not in the allow-list. Leave this off for first install or changing proxy/IP setups.') }}
+      {{ switch('trusted_hosts_enabled', 'Restrict trusted hosts', 'Only allow requests for the hostnames or IP addresses listed below. Enable this after configuring your domain name or reverse proxy. Leave this disabled during initial setup or while changing your network configuration.') }}
       <div class="remote-settings-grid">
-        <label>
+        <label class="allowed-hosts-field {% if allowed_host_errors %}field-invalid{% endif %}">
           <strong>Allowed hosts</strong>
-          <small>One hostname or IP per line, or comma-separated. Include the address users type in their browser, for example kaya.example.com, xxx.xxx.xxx.xxx, or *.example.com.</small>
-          <textarea name="allowed_hosts" rows="4" placeholder="kaya.example.com&#10;xxx.xxx.xxx.xxx">{{ settings.get('allowed_hosts', '') }}</textarea>
+          <small>Enter one hostname, wildcard domain or IP address per line. These must match the address users enter in their browser.</small>
+          <textarea name="allowed_hosts" rows="6" spellcheck="false" aria-describedby="allowed-hosts-examples allowed-hosts-errors" aria-invalid="{% if allowed_host_errors %}true{% else %}false{% endif %}" placeholder="kaya.example.com&#10;*.example.com&#10;192.168.1.10">{{ settings.get('allowed_hosts', '') }}</textarea>
+          <div class="host-examples" id="allowed-hosts-examples">
+            <span>Examples</span>
+            <code>kaya.example.com<br>*.example.com<br>192.168.1.10<br>10.0.0.5</code>
+          </div>
+          <div class="field-errors" id="allowed-hosts-errors" data-host-errors aria-live="polite">
+            {% for item in allowed_host_errors or [] %}
+            <p>{% if item.line %}<strong>Line {{ item.line }} — {{ item.value }}</strong>: {% endif %}{{ item.message }}</p>
+            {% endfor %}
+          </div>
         </label>
+      </div>
+      <div class="current-host-status" data-current-host-status aria-live="polite">
+        <div class="current-host-heading">
+          <span class="status-icon" data-host-status-icon aria-hidden="true">●</span>
+          <span>
+            <small>Current request host</small>
+            <strong class="mono" data-current-host-value>{{ security_check.current_host if security_check else 'unknown' }}</strong>
+          </span>
+        </div>
+        <p data-host-status-message>
+          {% if security_check and not security_check.host_filter_enabled %}Host validation is currently inactive.
+          {% elif security_check and security_check.host_allowed %}Current host is allowed
+          {% else %}Current host is not included in the allow list.{% endif %}
+        </p>
+      </div>
+      <div class="host-lockout-warning" data-host-lockout-warning hidden>
+        <strong>Warning:</strong> The current hostname is not in the allow list. Saving these settings may prevent access to Kaya.
       </div>
     </div>
 

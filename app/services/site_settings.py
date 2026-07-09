@@ -1,4 +1,6 @@
 from fnmatch import fnmatch
+import ipaddress
+import re
 from urllib.parse import urlparse
 
 from sqlalchemy.orm import Session
@@ -89,6 +91,52 @@ def split_hosts(value: str) -> list[str]:
         for part in str(value or "").replace("\r", "\n").replace(",", "\n").split("\n")
         if part.strip()
     ]
+
+
+def validate_allowed_hosts(value: str) -> list[dict[str, object]]:
+    """Return line-aware validation errors without changing the stored value."""
+    errors: list[dict[str, object]] = []
+    entries = str(value or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    for line_number, raw_entry in enumerate(entries, start=1):
+        # Commas remain supported for backwards compatibility with existing settings.
+        for raw_part in raw_entry.split(","):
+            entry = raw_part.strip()
+            if not entry:
+                continue
+            reason = _invalid_host_reason(entry)
+            if reason:
+                errors.append({"line": line_number, "value": entry, "message": reason})
+    return errors
+
+
+def _invalid_host_reason(entry: str) -> str | None:
+    if "://" in entry:
+        return "Enter only the hostname or IP address, without http:// or https://."
+    if entry == "*":
+        return None
+
+    candidate = entry
+    if candidate.startswith("[") and candidate.endswith("]"):
+        candidate = candidate[1:-1]
+    try:
+        ipaddress.ip_address(candidate)
+        return None
+    except ValueError:
+        pass
+
+    wildcard = candidate.startswith("*.")
+    hostname = candidate[2:] if wildcard else candidate
+    if "*" in hostname:
+        return "A wildcard is only supported at the start of a domain, for example *.example.com."
+    if "." not in hostname:
+        return "Enter a fully qualified hostname, such as kaya.example.com, or an IP address."
+    if len(hostname) > 253:
+        return "The hostname is too long."
+    labels = hostname.rstrip(".").split(".")
+    hostname_label = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+    if any(not hostname_label.fullmatch(label) for label in labels):
+        return "Use letters, numbers and hyphens in each hostname label."
+    return None
 
 
 def host_without_port(value: str) -> str:

@@ -60,6 +60,8 @@ from app.services.site_settings import (
     host_is_allowed,
     hsts_header_value,
     load_security_settings,
+    split_hosts,
+    validate_allowed_hosts,
 )
 from app.routers.remote_manager import (
     RDP_SETTING_KEYS,
@@ -642,26 +644,11 @@ def save_security_settings(
         save_site_setting(db, key, value)
 
 
-def include_current_host(allowed_hosts: str, request: Request) -> str:
-    current_host = request.headers.get("host", "").strip()
-    if not current_host:
-        return allowed_hosts
-    existing = {
-        part.strip().lower()
-        for part in str(allowed_hosts or "").replace("\r", "\n").replace(",", "\n").split("\n")
-        if part.strip()
-    }
-    if current_host.lower() in existing:
-        return allowed_hosts
-    separator = "\n" if allowed_hosts.strip() else ""
-    return f"{allowed_hosts.strip()}{separator}{current_host}"
-
-
 def security_check_context(request: Request, db: Session) -> dict[str, object]:
     app_settings = get_settings()
     security = load_security_settings(db)
     allowed_hosts = effective_allowed_hosts(security, app_settings)
-    current_host = request.headers.get("host", "")
+    current_host = host_without_port(request.headers.get("host", ""))
     host_filter_enabled = security.get("trusted_hosts_enabled") == "1" or bool(app_settings.allowed_hosts.strip())
     request_is_https = (
         request.url.scheme == "https"
@@ -1978,6 +1965,42 @@ async def save_settings(
     validate_csrf_token(request, csrf_token)
     form = await request.form()
 
+    allowed_host_errors = validate_allowed_hosts(allowed_hosts)
+    if trusted_hosts_enabled and not split_hosts(allowed_hosts):
+        allowed_host_errors.insert(
+            0,
+            {
+                "line": None,
+                "value": "",
+                "message": (
+                    "Host restriction is enabled but no allowed hosts have been configured. "
+                    "At least one hostname or IP address must be added before this setting can be enabled."
+                ),
+            },
+        )
+    if allowed_host_errors:
+        submitted_settings = load_site_settings(db)
+        for key, value in form.items():
+            if key in submitted_settings and key not in {"csrf_token", "smtp_password"}:
+                submitted_settings[key] = str(value)
+        submitted_settings["trusted_hosts_enabled"] = "1" if trusted_hosts_enabled else ""
+        submitted_settings["allowed_hosts"] = allowed_hosts
+        return templates.TemplateResponse(
+            request,
+            "settings.html",
+            {
+                "user": user,
+                "settings": submitted_settings,
+                "dns_providers": dns_providers_for_admin(db),
+                "security_check": security_check_context(request, db),
+                "allowed_host_errors": allowed_host_errors,
+                "message": None,
+                "error": "Review the highlighted allowed-host entries before saving.",
+                **csrf_context(request),
+            },
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        )
+
     save_email_settings(
         db,
         app_name=app_name,
@@ -1999,8 +2022,6 @@ async def save_settings(
         email_template_password_reset_subject=email_template_password_reset_subject,
         email_template_password_reset_body=email_template_password_reset_body,
     )
-    if trusted_hosts_enabled:
-        allowed_hosts = include_current_host(allowed_hosts, request)
     save_security_settings(
         db,
         trusted_hosts_enabled=trusted_hosts_enabled,

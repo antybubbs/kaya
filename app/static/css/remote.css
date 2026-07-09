@@ -150,6 +150,28 @@ body.remote-resizing{cursor:col-resize;user-select:none}
 .remote-settings-card header{align-items:center;border-bottom:1px solid var(--line);color:var(--text);display:flex;font-size:13px;font-weight:900;min-height:42px;padding:10px 14px}
 .remote-settings-card>header+*,.remote-settings-card>.remote-setting-row,.remote-settings-card>.remote-settings-grid{margin:0 14px}
 .remote-settings-card>.remote-setting-row:last-child,.remote-settings-card>.remote-settings-grid:last-child{margin-bottom:10px}
+.security-settings-card{gap:0}
+.security-settings-card>.remote-settings-grid{padding:20px 0}
+.allowed-hosts-field textarea{font-family:"Caskaydia Cove Nerd Font Mono",Consolas,monospace;line-height:1.55}
+.host-examples{align-items:start;background:#0d1117;border:1px solid var(--line);border-radius:8px;display:grid;gap:7px;padding:10px 12px}
+.host-examples span{color:var(--muted);font-size:11px;font-weight:850;text-transform:uppercase}
+.host-examples code{color:var(--muted);font-size:12px;line-height:1.55}
+.field-invalid textarea{border-color:var(--danger,#f87171);box-shadow:0 0 0 2px rgba(248,113,113,.12)}
+.field-errors{display:grid;gap:5px}
+.field-errors:empty{display:none}
+.field-errors p{color:var(--danger,#f87171);font-size:12px;font-weight:700;margin:0}
+.current-host-status{background:rgba(148,163,184,.07);border:1px solid var(--line);border-radius:9px;display:grid;gap:8px;margin:0 14px 14px;padding:13px 14px}
+.current-host-heading{align-items:center;display:flex;gap:11px}
+.current-host-heading>span:last-child{display:grid;gap:3px;min-width:0}
+.current-host-heading small{color:var(--muted);font-size:11px;font-weight:850;text-transform:uppercase}
+.current-host-heading strong{font-size:13px;overflow-wrap:anywhere}
+.current-host-status p{color:var(--muted);font-size:12px;font-weight:750;margin:0 0 0 25px}
+.status-icon{color:var(--muted);font-size:15px}
+.current-host-status.is-allowed .status-icon,.current-host-status.is-allowed p{color:var(--accent2,#22c55e)}
+.current-host-status.is-warning .status-icon,.current-host-status.is-warning p{color:#f59e0b}
+.host-lockout-warning{background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.48);border-radius:9px;color:#fbbf24;font-size:12px;line-height:1.45;margin:0 14px 16px;padding:11px 13px}
+html[data-kaya-theme=light-ops] .host-examples{background:#f8fafc}
+html[data-kaya-theme=light-ops] .host-lockout-warning{color:#92400e}
 .remote-settings-grid{display:grid;gap:14px;padding:14px 0}
 .remote-settings-grid.two{grid-template-columns:repeat(2,minmax(0,1fr))}
 .remote-settings-grid label{color:var(--text);display:grid;font-size:13px;font-weight:800;gap:8px;letter-spacing:0;text-transform:none}
