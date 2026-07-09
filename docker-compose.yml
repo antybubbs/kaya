@@ -7,6 +7,16 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: sqlite:////app/data/kaya.db
+      # Controls which immediate connecting IPs may supply client forwarding
+      # headers. This is separate from ALLOWED_HOSTS, which checks browser
+      # hostnames. Keep the default for direct/LAN access without a proxy.
+      #
+      # No reverse proxy:       127.0.0.1
+      # Docker reverse proxy:   proxy container IP or Docker network CIDR
+      # NetBird reverse proxy:  100.64.0.0/10
+      # Cloudflare Tunnel:      local cloudflared container/IP only; do not
+      #                         trust all Cloudflare address ranges here.
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
     ports:
       - "${KAYA_PORT:-8080}:8080"
     volumes:

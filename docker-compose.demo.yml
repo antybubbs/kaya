@@ -11,6 +11,7 @@ services:
       APP_ENV: production
       BASE_URL: ${BASE_URL:-https://demo.example.com}
       ALLOWED_HOSTS: ${ALLOWED_HOSTS:-demo.example.com}
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
       SESSION_COOKIE_SECURE: "true"
       DEMO_MODE: "true"
       DEMO_RESET_SCHEDULE: ${DEMO_RESET_SCHEDULE:-03:00 UTC}
@@ -57,4 +58,4 @@ services:
         else
           echo "Public demo seed database does not exist yet; Kaya will create it during startup."
         fi
-        exec /usr/local/bin/kaya-entrypoint sh -c 'exec uvicorn app.main:app --host 0.0.0.0 --port 8080 --proxy-headers --forwarded-allow-ips "$${FORWARDED_ALLOW_IPS:-*}"'
+        exec /usr/local/bin/kaya-entrypoint sh -c 'exec uvicorn app.main:app --host 0.0.0.0 --port 8080 --no-proxy-headers'

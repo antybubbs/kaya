@@ -20,6 +20,7 @@ from app.services.network_monitor import monitor_loop
 from app.services.domain_polling import domain_poll_loop
 from app.services.compute_monitor import compute_monitor_loop
 from app.services.audit import begin_request_context, end_request_context, request_event_written, write_audit
+from app.services.client_ip import TrustedProxyMiddleware, client_ip
 from app.services.site_settings import (
     effective_allowed_hosts,
     frame_ancestor_directive,
@@ -158,7 +159,7 @@ async def audit_requests(request: Request, call_next):
         request_id=request_id,
         method=request.method,
         path=path,
-        ip_address=None if settings.demo_mode else (request.client.host if request.client else None),
+        ip_address=None if settings.demo_mode else client_ip(request),
         user_agent=None if settings.demo_mode else ((request.headers.get("user-agent") or "")[:2000] or None),
     )
     started = perf_counter()
@@ -225,6 +226,8 @@ async def audit_requests(request: Request, call_next):
         raise
     finally:
         end_request_context(token)
+
+app.add_middleware(TrustedProxyMiddleware, trusted_proxies=settings.forwarded_allow_ips)
 
 Path("/app/uploads").mkdir(parents=True, exist_ok=True)
 Path("/app/data").mkdir(parents=True, exist_ok=True)

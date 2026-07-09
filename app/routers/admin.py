@@ -45,6 +45,7 @@ from app.models.models import (
 from app.routers.auth import require_admin
 from app.services.about import collect_about
 from app.services.audit import write_audit
+from app.services.client_ip import client_ip_details, validate_trusted_proxies
 from app.services.custom_fields import FIELD_TYPES, make_field_key
 from app.services.exporter import export_ip_addresses_csv, export_licences_csv
 from app.services.importer import ImportCSVError, import_csv, import_ip_addresses_csv
@@ -657,6 +658,7 @@ def security_check_context(request: Request, db: Session) -> dict[str, object]:
         or request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip() == "https"
     )
     hsts_enabled = security.get("hsts_enabled") == "1" or app_settings.session_cookie_secure
+    proxy = client_ip_details(request)
     return {
         "current_host": current_host,
         "host_filter_enabled": host_filter_enabled,
@@ -668,6 +670,13 @@ def security_check_context(request: Request, db: Session) -> dict[str, object]:
         "hsts_header": hsts_header_value(security) if hsts_enabled else "",
         "request_is_https": request_is_https,
         "rdp_token_ttl_minutes": security.get("rdp_token_ttl_minutes") or "10",
+        "client_ip": proxy.client_ip,
+        "immediate_ip": proxy.immediate_ip,
+        "forwarded_for": proxy.forwarded_for,
+        "trusted_proxy": proxy.trusted_proxy,
+        "trusted_proxy_config": proxy.trusted_proxy_config,
+        "trusted_proxy_config_errors": validate_trusted_proxies(proxy.trusted_proxy_config),
+        "client_ip_source": proxy.source,
     }
 
 
