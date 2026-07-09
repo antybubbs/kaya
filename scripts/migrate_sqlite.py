@@ -78,6 +78,30 @@ def main():
             cur.execute(f"CREATE INDEX ix_dns_investigations_{column} ON dns_investigations ({column})")
         migrations_applied.append("dns_investigations")
 
+    runbook_image_columns = {row[1] for row in cur.execute("PRAGMA table_info(runbook_images)").fetchall()} if table_exists(cur, "runbook_images") else set()
+    if not runbook_image_columns:
+        cur.execute(
+            "CREATE TABLE runbook_images (id INTEGER NOT NULL PRIMARY KEY, original_filename VARCHAR(255), content_type VARCHAR(120) NOT NULL, size_bytes INTEGER DEFAULT 0 NOT NULL, data BLOB, uploaded_by_id INTEGER REFERENCES users(id) ON DELETE SET NULL, created_at DATETIME)"
+        )
+        for column in ["uploaded_by_id", "created_at"]:
+            cur.execute(f"CREATE INDEX ix_runbook_images_{column} ON runbook_images ({column})")
+        migrations_applied.append("runbook_images")
+    elif "stored_filename" in runbook_image_columns:
+        cur.execute("ALTER TABLE runbook_images RENAME TO runbook_images_legacy")
+        cur.execute(
+            "CREATE TABLE runbook_images (id INTEGER NOT NULL PRIMARY KEY, original_filename VARCHAR(255), content_type VARCHAR(120) NOT NULL, size_bytes INTEGER DEFAULT 0 NOT NULL, data BLOB, uploaded_by_id INTEGER REFERENCES users(id) ON DELETE SET NULL, created_at DATETIME)"
+        )
+        cur.execute(
+            "INSERT INTO runbook_images (id, original_filename, content_type, size_bytes, uploaded_by_id, created_at) SELECT id, original_filename, content_type, size_bytes, uploaded_by_id, created_at FROM runbook_images_legacy"
+        )
+        cur.execute("DROP TABLE runbook_images_legacy")
+        for column in ["uploaded_by_id", "created_at"]:
+            cur.execute(f"CREATE INDEX ix_runbook_images_{column} ON runbook_images ({column})")
+        migrations_applied.append("runbook_images.blob_storage")
+    elif "data" not in runbook_image_columns:
+        cur.execute("ALTER TABLE runbook_images ADD COLUMN data BLOB")
+        migrations_applied.append("runbook_images.data")
+
     conn.commit()
     conn.close()
 

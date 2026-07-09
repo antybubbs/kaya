@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.session import Base
 
@@ -387,6 +387,18 @@ class RunbookPageHistory(Base):
     saved_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     page = relationship("RunbookPage")
     saved_by = relationship("User")
+
+
+class RunbookImage(Base):
+    __tablename__ = "runbook_images"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    original_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    content_type: Mapped[str] = mapped_column(String(120))
+    size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    data: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    uploaded_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    uploaded_by = relationship("User")
 
 
 class ComputeHost(Base):
