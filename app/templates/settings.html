@@ -58,6 +58,13 @@
           <small>The public URL used for links in emails and integrations.</small>
           <input name="base_url" type="url" value="{{ settings.get('base_url', '') }}" placeholder="http://localhost:8080">
         </label>
+        <label>
+          <strong>Time Zone Region</strong>
+          <small>Used to display site timestamps. Dates remain stored safely in UTC.</small>
+          <select name="timezone_region" data-timezone-select data-selected-timezone="{{ settings.get('timezone_region', 'UTC') }}">
+            <option value="{{ settings.get('timezone_region', 'UTC') }}">{{ settings.get('timezone_region', 'UTC') }}</option>
+          </select>
+        </label>
       </div>
     </div>
   </section>

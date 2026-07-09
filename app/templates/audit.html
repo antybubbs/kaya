@@ -64,7 +64,7 @@
       <tbody>
       {% for log in logs %}
         <tr>
-          <td class="audit-time"><strong>{{ log.created_at.strftime('%Y-%m-%d') }}</strong><span>{{ log.created_at.strftime('%H:%M:%S') }}</span></td>
+          <td class="audit-time">{{ local_time(log.created_at) }}</td>
           <td><span class="audit-severity {{ log.severity }}">{{ log.severity|title }}</span></td>
           <td class="audit-actor">{% if log.user %}<strong>{{ log.user.email }}</strong><span>User #{{ log.user.id }}</span>{% else %}<strong>System / anonymous</strong><span>Unauthenticated</span>{% endif %}</td>
           <td><span class="audit-action">{{ log.action|replace('_',' ')|title }}</span><small>{{ log.category|replace('_',' ')|title }}</small></td>
@@ -78,7 +78,7 @@
               <dl>
                 <div><dt>Request ID</dt><dd class="mono">{{ log.request_id or '-' }}</dd></div>
                 {% if not request.app.state.demo_mode %}<div><dt>User agent</dt><dd>{{ log.user_agent or '-' }}</dd></div>{% endif %}
-                <div><dt>Recorded</dt><dd>{{ log.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</dd></div>
+                <div><dt>Recorded</dt><dd>{{ local_time(log.created_at) }}</dd></div>
                 {% for key,value in log.metadata_data.items() %}<div><dt>{{ key|replace('_',' ')|title }}</dt><dd class="mono">{{ value }}</dd></div>{% endfor %}
               </dl>
             </details>

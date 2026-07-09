@@ -40,7 +40,7 @@
 <td>{{ row.backup_policy or '-' }}</td>
 </tr>{% else %}<tr><td colspan="10" class="muted">No workloads match this view yet.</td>
 </tr>{% endfor %}</tbody></table></section>
-<section class="compute-lower-grid section-gap"><section class="panel"><h2>Docker & platform inventory</h2><div class="inventory-counts">{% for kind in ['image','network','volume','compose','storage','backup'] %}<div><span>{{ kind|title }}</span><strong>{{ items|selectattr('kind','equalto',kind)|list|length }}</strong></div>{% endfor %}</div></section><section class="panel"><h2>Recent activity</h2><div class="event-feed">{% for event in events %}<div><i class="event-{{ event.event_type }}"></i><p>{{ event.detail }}<small>{{ event.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</small></p></div>{% else %}<p class="muted">Activity will appear after the first sync.</p>{% endfor %}</div></section></section>
+<section class="compute-lower-grid section-gap"><section class="panel"><h2>Docker & platform inventory</h2><div class="inventory-counts">{% for kind in ['image','network','volume','compose','storage','backup'] %}<div><span>{{ kind|title }}</span><strong>{{ items|selectattr('kind','equalto',kind)|list|length }}</strong></div>{% endfor %}</div></section><section class="panel"><h2>Recent activity</h2><div class="event-feed">{% for event in events %}<div><i class="event-{{ event.event_type }}"></i><p>{{ event.detail }}<small>{{ local_time(event.created_at) }}</small></p></div>{% else %}<p class="muted">Activity will appear after the first sync.</p>{% endfor %}</div></section></section>
 {% endif %}
 <script src="/static/js/compute_manager.js?v={{ asset_version }}" defer></script>
 {% endblock %}

@@ -98,8 +98,8 @@
         <td>{{ session.user.email }}{% if session.session_id == current_session_id %} <span class="table-chip">Current</span>{% endif %}</td>
         <td>{{ session.user.role }}</td>
         <td class="mono">{{ session.ip_address or '-' }}</td>
-        <td>{{ session.created_at }}</td>
-        <td>{{ session.last_seen_at }}</td>
+        <td>{{ local_time(session.created_at) }}</td>
+        <td>{{ local_time(session.last_seen_at) }}</td>
         <td>{{ session.user_agent or '-' }}</td>
       </tr>
       {% else %}

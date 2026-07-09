@@ -80,7 +80,7 @@
         </div>
         {% endif %}
         <footer>
-          <span>Updated {{ page.updated_at.strftime('%d %b %Y %H:%M') if page.updated_at else '-' }}</span>
+          <span>Updated {{ local_time(page.updated_at, 'friendly') }}</span>
           <a href="/documentation/runbook-manager/{{ page.slug }}">Open</a>
         </footer>
       </article>
@@ -115,8 +115,8 @@
             <td>{{ page.summary or '-' }}</td>
             <td>{% if page.tags %}{{ page.tags }}{% else %}-{% endif %}</td>
             <td>{% if page.is_pinned %}Yes{% else %}No{% endif %}</td>
-            <td>{{ page.updated_at.strftime('%Y-%m-%d %H:%M') if page.updated_at else '-' }}</td>
-            <td>{{ page.created_at.strftime('%Y-%m-%d %H:%M') if page.created_at else '-' }}</td>
+            <td>{{ local_time(page.updated_at, 'minute') }}</td>
+            <td>{{ local_time(page.created_at, 'minute') }}</td>
           </tr>
           {% endfor %}
         </tbody>

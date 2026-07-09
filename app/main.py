@@ -26,6 +26,7 @@ from app.services.site_settings import (
     host_is_allowed,
     hsts_header_value,
     load_security_settings,
+    get_site_setting,
 )
 from app.services.version import refresh_latest_release, version_check_loop
 
@@ -513,6 +514,15 @@ app.include_router(admin.router)
 @app.get("/healthz", include_in_schema=False)
 def healthz():
     return {"status": "ok"}
+
+
+@app.get("/api/site-timezone", include_in_schema=False)
+def site_timezone():
+    db = SessionLocal()
+    try:
+        return {"timezone": get_site_setting(db, "timezone_region") or "UTC"}
+    finally:
+        db.close()
 
 @app.get("/")
 def root(request: Request):

@@ -22,7 +22,7 @@
         <td><strong>{{ job.name }}</strong></td>
         <td>{{ job.host.name }}</td>
         <td><span class="compute-state {{ job.status }}">{{ job.status }}</span></td>
-        <td>{{ job.last_run_at.strftime('%Y-%m-%d %H:%M') if job.last_run_at else '-' }}</td>
+        <td>{{ local_time(job.last_run_at, 'minute') }}</td>
         <td><span class="compute-state {{ job.last_status }}">{{ job.last_status }}</span></td>
         <td>{{ job.schedule }}</td>
         <td>{{ job.storage }}</td>
@@ -75,7 +75,7 @@
         </td>
         <td>
           {% if latest %}
-            <strong>{{ latest.finished_at.strftime('%Y-%m-%d %H:%M') if latest.finished_at else 'Complete' }}</strong>
+            <strong>{{ local_time(latest.finished_at, 'minute', 'Complete') }}</strong>
             <small class="muted">{{ bytes_label(latest.size_bytes) }} · encrypted</small>
           {% else %}
             <span class="muted">No backup yet</span>
@@ -119,7 +119,7 @@
         <td><span class="compute-state {{ job.status }}">{{ job.status }}</span>{% if job.error %}<small class="muted">{{ job.error }}</small>{% endif %}</td>
         <td>{% if job.encryption_enabled %}Yes{% else %}No{% endif %}</td>
         <td class="mono">{{ job.artifact_path or '-' }}</td>
-        <td>{{ (job.finished_at or job.started_at or job.dispatched_at or job.created_at).strftime('%Y-%m-%d %H:%M') }}</td>
+        <td>{{ local_time(job.finished_at or job.started_at or job.dispatched_at or job.created_at, 'minute') }}</td>
       </tr>
       {% else %}
       <tr><td colspan="8">No Docker backup or restore jobs have been queued yet.</td></tr>
@@ -140,7 +140,7 @@
         <td>{{ row.schedule or '-' }}</td>
         <td class="mono">{{ row.target or backup_target }}</td>
         <td>{{ row.owner or '-' }}</td>
-        <td>{{ row.last_run_at.strftime('%Y-%m-%d %H:%M') if row.last_run_at else '-' }}</td>
+        <td>{{ local_time(row.last_run_at, 'minute') }}</td>
       </tr>
       {% else %}
       <tr><td colspan="6">No manual backups added yet.</td></tr>

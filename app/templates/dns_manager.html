@@ -211,7 +211,7 @@
     <div><label>Provider</label><p>{{ provider.name }}</p></div>
     <div><label>Type</label><p>{{ provider.provider_type|upper }}</p></div>
     <div><label>Base URL</label><p class="mono">{{ provider.base_url }}</p></div>
-    <div><label>Last checked</label><p>{{ provider.last_checked_at.strftime('%Y-%m-%d %H:%M') if provider.last_checked_at else '-' }}</p></div>
+    <div><label>Last checked</label><p>{{ local_time(provider.last_checked_at, 'minute') }}</p></div>
     <div><label>Pi-hole Version</label><p>{{ stat_value(status_data, 'version.core.local.version', 'version') }}</p></div>
     <div><label>Blocking Status</label><p>{{ stat_value(stats_data, 'status', 'blocking') }}</p></div>
   </div>
@@ -371,7 +371,7 @@
     <tbody>
       {% for item in investigations %}
       <tr>
-        <td>{{ item.created_at.strftime('%Y-%m-%d %H:%M') if item.created_at else '-' }}</td>
+        <td>{{ local_time(item.created_at, 'minute') }}</td>
         <td><strong class="mono">{{ item.domain }}</strong></td>
         <td>{{ item.client_name or '-' }}{% if item.client_ip %}<br><span class="muted">{{ item.client_ip }}</span>{% endif %}</td>
         <td>{{ item.query_type or '-' }}</td>

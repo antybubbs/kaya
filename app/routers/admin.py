@@ -2,6 +2,7 @@ from pathlib import Path
 import io
 import tempfile
 import json
+import re
 import socket
 import smtplib
 from ftplib import FTP
@@ -84,6 +85,7 @@ CUSTOM_FIELD_MODULES = {
 SITE_SETTING_KEYS = {
     "app_name": APP_BRAND_NAME,
     "base_url": "http://localhost:8080",
+    "timezone_region": "UTC",
     "max_upload_mb": "25",
     "trusted_hosts_enabled": "",
     "allowed_hosts": "",
@@ -1912,6 +1914,7 @@ async def save_settings(
     request: Request,
     app_name: str = Form(APP_BRAND_NAME),
     base_url: str = Form("http://localhost:8080"),
+    timezone_region: str = Form("UTC"),
     github_repo: str = Form("antybubbs/Kaya"),
     version_check_interval_seconds: str = Form("1800"),
     guacd_host: str = Form(""),
@@ -1964,6 +1967,10 @@ async def save_settings(
 ):
     validate_csrf_token(request, csrf_token)
     form = await request.form()
+    timezone_region = timezone_region.strip()
+    if not timezone_region or len(timezone_region) > 100 or not re.fullmatch(r"[A-Za-z0-9_+\-/]+", timezone_region):
+        timezone_region = "UTC"
+    save_site_setting(db, "timezone_region", timezone_region)
 
     allowed_host_errors = validate_allowed_hosts(allowed_hosts)
     if trusted_hosts_enabled and not split_hosts(allowed_hosts):

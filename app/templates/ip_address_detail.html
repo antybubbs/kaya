@@ -86,7 +86,7 @@
         <dl class="compute-link-facts">
           <div><dt>Status</dt><dd><span class="compute-state {{ workload.status }}">{{ workload.status|title }}</span></dd></div>
           <div><dt>Uptime</dt><dd>{{ uptime_label(workload.uptime_seconds) }}</dd></div>
-          <div><dt>Last seen</dt><dd>{{ workload.last_seen_at.strftime('%Y-%m-%d %H:%M') if workload.last_seen_at else '-' }}</dd></div>
+          <div><dt>Last seen</dt><dd>{{ local_time(workload.last_seen_at, 'minute') }}</dd></div>
         </dl>
         <div class="compute-link-actions">
           <a class="button secondary" href="/infrastructure/vm-docker-manager/hosts/{{ workload.host.id }}">Host record</a>

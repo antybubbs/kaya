@@ -36,7 +36,7 @@
     <tbody>
       {% for row in recordings %}
       <tr>
-        <td><strong>{{ (row.started_at or row.created_at).strftime('%d %b %Y') }}</strong><span>{{ (row.started_at or row.created_at).strftime('%H:%M') }}</span></td>
+        <td>{{ local_time(row.started_at or row.created_at, 'friendly') }}</td>
         <td><a href="/remote-manager/recordings/{{ row.id }}">{{ row.remote_label }}</a><span>{{ row.remote_address or '' }}</span></td>
         <td><span class="recording-pill">{{ row.protocol|upper }}</span></td>
         <td>{{ row.category or 'Uncategorised' }}</td>

@@ -1,3 +1,6 @@
+{% macro local_time(value, format='datetime', fallback='-') -%}
+{% if value %}<time data-utc-time="{{ value.isoformat() }}Z" data-time-format="{{ format }}">{{ value.strftime('%Y-%m-%d %H:%M:%S') }}</time>{% else %}{{ fallback }}{% endif %}
+{%- endmacro %}
 <!doctype html>
 <html lang="en">
 <head>
@@ -172,5 +175,6 @@
 {% block public %}{% endblock %}
 {% endif %}
 {% block extra_scripts %}{% endblock %}
+<script src="/static/js/timezone.js?v={{ asset_version }}" defer></script>
 </body>
 </html>

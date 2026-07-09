@@ -54,7 +54,7 @@
         <td>{{ display_dns_provider(row) or '-' }}</td>
         <td>{{ expires_at.strftime('%Y-%m-%d') if expires_at else '-' }}</td>
         <td><span class="table-chip domain-state-{{ state }}">{{ state|title }}</span></td>
-        <td>{{ row.last_lookup_at.strftime('%Y-%m-%d %H:%M') if row.last_lookup_at else '-' }}</td>
+        <td>{{ local_time(row.last_lookup_at, 'minute') }}</td>
       </tr>
       {% endfor %}
     </tbody>
