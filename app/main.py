@@ -27,6 +27,7 @@ from app.services.site_settings import (
     hsts_header_value,
     load_security_settings,
 )
+from app.services.version import refresh_latest_release, version_check_loop
 
 settings = get_settings()
 app = FastAPI(
@@ -37,6 +38,7 @@ app = FastAPI(
 monitor_task = None
 domain_poll_task = None
 compute_monitor_task = None
+version_check_task = None
 app.state.demo_mode = settings.demo_mode
 app.state.demo_reset_schedule = settings.demo_reset_schedule
 
@@ -467,6 +469,9 @@ def migrate_existing_database():
 @app.on_event("startup")
 async def on_startup():
     bootstrap()
+    await asyncio.to_thread(refresh_latest_release)
+    global version_check_task
+    version_check_task = asyncio.create_task(version_check_loop())
     if settings.demo_mode:
         return
     start_kaya_remote_service()
@@ -478,6 +483,8 @@ async def on_startup():
 
 @app.on_event("shutdown")
 async def on_shutdown():
+    if version_check_task:
+        version_check_task.cancel()
     if monitor_task:
         monitor_task.cancel()
     if domain_poll_task:
