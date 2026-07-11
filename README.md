@@ -62,7 +62,7 @@ However, a few caveats.
 - The data resets every night.
 - Its probably (highly likley to be) rough around the edges, this is because its the main app with a few restrictions in place - we may have not picked up everything and most likley broke things trying to "make it safe"
 
-Our suggestion - install it in your own environment and throw the kitchen sink at it.
+My suggestion - install it in your own environment and throw the kitchen sink at it.
 
 ------------------------------------------------------------------------
 
@@ -93,15 +93,17 @@ Open your browser:
 http://SERVER-IP:8080/setup
 ```
 
-Kaya works without an environment file. By default it accepts the hostname or IP address you use to reach it, whether that is direct Docker port access or a reverse proxy such as NetBird.
+Kaya works without an environment file, I wanted this to be easier to install. By default it accepts the hostname or IP address you use to reach it, whether that is direct Docker port access or a reverse proxy such as NetBird.
 
-For hardened installs, set `ALLOWED_HOSTS` to your known hostnames or IPs. When `ALLOWED_HOSTS` is blank, Kaya does not enforce host filtering.
+For hardened installs, set `ALLOWED_HOSTS` to your known hostnames or IPs in your compose file. When `ALLOWED_HOSTS` is blank, Kaya does not enforce host filtering.
 
 Complete the setup wizard to create your administrator account.
 
-After first sign-in, open **System Settings -> Site Administration -> Security** to harden the install. This page lets admins restrict trusted hostnames, tune frame-embedding rules, enable HTTPS security headers and shorten browser RDP token lifetime without editing an environment file.
+After first sign-in, open **System Settings -> Site Administration -> Security** to harden the install. This page lets you restrict trusted hostnames, tune frame-embedding rules, enable HTTPS security headers and shorten browser RDP token lifetime without editing an environment file.
 
-The Security tab includes a current-request check so admins can confirm the host allow-list, inbound DNS, outbound public IP, frame policy, HSTS state and RDP token lifetime after saving.
+The Security tab includes a current-request check so you can confirm the host allow-list, inbound DNS, outbound public IP, frame policy, HSTS state and RDP token lifetime after saving.
+
+My suggestion, install Kaya and sort the settings out in your Site Administration. 
 
 ------------------------------------------------------------------------
 
@@ -171,7 +173,7 @@ docker compose up -d
 
 # 🌐 Reverse Proxy
 
-Kaya works behind Nginx, Caddy, Traefik and Cloudflare.
+Kaya works behind Nginx, Caddy, Traefik, Netbird and Cloudflare.
 
 Typical environment variables:
 
@@ -179,7 +181,7 @@ Typical environment variables:
 BASE_URL=https://kaya.example.com
 ALLOWED_HOSTS=kaya.example.com
 SESSION_COOKIE_SECURE=true
-FORWARDED_ALLOW_IPS=172.20.0.0/16
+FORWARDED_ALLOW_IPS=172.20.0.0/16 (This is important)
 ```
 
 These are optional hardening settings. Kaya will still work through a reverse proxy without them, but `BASE_URL` should be set before enabling password reset emails so links point at the public address.
@@ -189,7 +191,7 @@ When Kaya sits behind a reverse proxy on the same host, you can bind the contain
 The same host allow-list and HTTPS hardening can also be managed from **System Settings -> Site Administration -> Security** after setup.
 
 `FORWARDED_ALLOW_IPS` must contain only the IP address or CIDR of the proxy that
-connects directly to Kaya. Its secure default is `127.0.0.1`, suitable for
+connects directly to Kaya. It secure default is `127.0.0.1`, suitable for
 direct LAN use. Docker proxy users normally set a dedicated Docker network
 CIDR; NetBird proxy users may use the proxy's single `100.x` address (or
 `100.64.0.0/10` only when all peers are trusted). For Cloudflare Tunnel, trust
@@ -234,7 +236,7 @@ Kaya
 
 Kaya is developed by me with AI acting as my assisstant.
 
-I have over 20 years in the IT field as 1st/2nd/3rd and now senior management.
+I have over 20 years in the IT field as 1st/2nd/3rd, Dev Ops and now senior management.
 
 I have developed small tools in the past within my roles without AI which took me ages.
 
@@ -244,11 +246,7 @@ I am not looking to sell Kaya or make any money from it, I thought what I create
 
 # 🤝 Contributing
 
-Ideas, bug reports, feature requests and pull requests are always
-welcome.
-
-If you've built something with Kaya or have suggestions to improve it,
-I would love to hear from you.
+Feel free
 
 ------------------------------------------------------------------------
 
@@ -258,5 +256,7 @@ I would love to hear from you.
 
 It reflects the philosophy behind the project: our infrastructure
 should feel organised, trusted and completely under our control.
+
+I am orignally from South Africa and thus wanted something to remind me of "Home" :-)
 
 ------------------------------------------------------------------------
