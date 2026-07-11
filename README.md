@@ -1,4 +1,4 @@
-# 🏡 Kaya
+# Kaya
 <img width="2551" height="1272" alt="Screenshot 2026-07-07 203240" src="https://github.com/user-attachments/assets/2a956170-9e90-4562-af47-1ed581ad9db2" />
 
 > **Your Infrastructure. Your Home.**
@@ -37,23 +37,23 @@ Use it, dont use it. Its up to you really (but it is quite cool if I do say so m
 
 ------------------------------------------------------------------------
 
-# ✨ Features
+# Features
  | Feature                | Description                                     |
  |------------------------|-------------------------------------------------|
- | 🖥️ Infrastructure      | Manage servers, VMs, devices and assets         |
- | 🐳 Docker              | Monitor Docker hosts and containers             |
- | 🔐 Remote Access       | Browser-based SSH and RDP with session recording|
- | 🌐 Networking          | IP addresses, VLANs, DNS, domains and WAN links |
- | 📚 Documentation       | Built-in runbooks and operational notes         |
- | 🔑 Licence Management  | Organise software licences and keys             |
- | 👥 Multi-user          | Role-based access control                       |
- | 📝 Audit Logs          | Track important actions                         |
- | 📁 File Storage        | Secure document uploads                         |
- | ⚡ Lightweight         | Fast, simple and self-hosted                    |
+ | Infrastructure      | Manage servers, VMs, devices and assets         |
+ | Docker              | Monitor Docker hosts and containers             |
+ | Remote Access       | Browser-based SSH and RDP with session recording|
+ | Networking          | IP addresses, VLANs, DNS, domains and WAN links |
+ | Documentation       | Built-in runbooks and operational notes         |
+ | Licence Management  | Organise software licences and keys             |
+ | Multi-user          | Role-based access control                       |
+ | Audit Logs          | Track important actions                         |
+ | File Storage        | Secure document uploads                         |
+ | Lightweight         | Fast, simple and self-hosted                    |
 
 ------------------------------------------------------------------------
 
-# 📸 Live Demo
+# Live Demo
 
 Want to kick the tyres? Go ahead. https://demo.kaya-app.uk 
 
@@ -66,7 +66,7 @@ My suggestion - install it in your own environment and throw the kitchen sink at
 
 ------------------------------------------------------------------------
 
-# 🚀 Quick Start
+# Quick Start
 
 ## Prerequisites
 
@@ -107,7 +107,7 @@ My suggestion, install Kaya and sort the settings out in your Site Administratio
 
 ------------------------------------------------------------------------
 
-# 🐳 Docker Compose
+# Docker Compose
 
 ``` yaml
 services:
@@ -150,7 +150,7 @@ docker compose up -d
 
 ------------------------------------------------------------------------
 
-# 📂 Persistent Data
+# Persistent Data
 
   | Path        | Description                    |
   |-------------| -------------------------------|
@@ -162,7 +162,7 @@ Back up these folders regularly.
 
 ------------------------------------------------------------------------
 
-# 🔄 Updating
+# Updating
 
 ``` bash
 docker compose pull
@@ -171,7 +171,7 @@ docker compose up -d
 
 ------------------------------------------------------------------------
 
-# 🌐 Reverse Proxy
+# Reverse Proxy
 
 Kaya works behind Nginx, Caddy, Traefik, Netbird and Cloudflare.
 
@@ -204,7 +204,7 @@ hostname entered in the browser.
 
 ------------------------------------------------------------------------
 
-# 🏗️ Architecture
+# Architecture
 
 ``` text
 Browser
@@ -219,7 +219,7 @@ Kaya
 
 ------------------------------------------------------------------------
 
-# 🗺️ Roadmap
+# Roadmap
 
 I mean, I could throw something here that looks like a roadmap. 
 
@@ -227,7 +227,7 @@ But who am I kidding, the roadmap is like a pub crawl, we hopping all through th
 
 ------------------------------------------------------------------------
 
-# 🤖 AI Disclosure
+# AI Disclosure
 
 Kaya is developed by me with AI acting as my assisstant.
 
@@ -239,13 +239,13 @@ I am not looking to sell Kaya or make any money from it, I thought what I create
 
 ------------------------------------------------------------------------
 
-# 🤝 Contributing
+# Contributing
 
 Feel free
 
 ------------------------------------------------------------------------
 
-# ❤️ Why "Kaya"?
+# Why "Kaya"?
 
 *Kaya* means **home** in several Southern African languages.
 
