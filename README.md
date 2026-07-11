@@ -221,14 +221,9 @@ Kaya
 
 # 🗺️ Roadmap
 
--   ✅ Infrastructure Management
--   ✅ Browser-based Remote Access
--   ✅ Documentation & Runbooks
--   🚧 Monitoring & Metrics
--   🚧 REST API Expansion
--   🚧 Notifications
--   🧪 Mobile Companion
--   🧪 High Availability
+I mean, I could throw something here that looks like a roadmap. 
+
+But who am I kidding, the roadmap is like a pub crawl, we hopping all through them.
 
 ------------------------------------------------------------------------
 
