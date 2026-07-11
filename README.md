@@ -31,6 +31,10 @@ infrastructure a place to belong. Whether you're managing a homelab, a
 business environment or customer systems, Kaya provides one clean,
 modern workspace to organise everything that matters.
 
+I personally use Kaya for my homelab management. This repo is for me to manage the App and updates and to share the journey as I go.
+
+Use it, dont use it. Its up to you really (but it is quite cool if I do say so myself)
+
 ------------------------------------------------------------------------
 
 # ✨ Features
@@ -226,17 +230,15 @@ Kaya
 
 ------------------------------------------------------------------------
 
-# 🤖 AI-Assisted Development
+# 🤖 AI Disclosure
 
-Kaya is developed by a human with AI acting as a development
-assistant.
+Kaya is developed by me with AI acting as my assisstant.
 
-AI is used to speed up repetitive coding tasks, explore implementation
-ideas and improve productivity. Every suggestion is reviewed, tested and
-refined before becoming part of the project.
+I have over 20 years in the IT field as 1st/2nd/3rd and now senior management.
 
-The architecture, security decisions and overall direction of Kaya
-remain entirely human-led.
+I have developed small tools in the past within my roles without AI which took me ages.
+
+I am not looking to sell Kaya or make any money from it, I thought what I created would be cool to share. 
 
 ------------------------------------------------------------------------
 
@@ -246,7 +248,7 @@ Ideas, bug reports, feature requests and pull requests are always
 welcome.
 
 If you've built something with Kaya or have suggestions to improve it,
-we'd love to hear from you.
+I would love to hear from you.
 
 ------------------------------------------------------------------------
 
