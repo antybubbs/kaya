@@ -206,8 +206,8 @@ def query_upstream(row: Any) -> str:
 
 def filtered_query_rows(payload: Any, domain_filter: str = "", client_filter: str = "") -> list[dict[str, Any]]:
     rows = [row for row in list_from_payload(payload, "queries", "data") if isinstance(row, dict)]
-    clean_domain = domain_filter.strip().rstrip(".").lower()
-    clean_client = client_filter.strip().lower()
+    clean_domain = (domain_filter or "").strip().lower()
+    clean_client = (client_filter or "").strip().lower()
     if clean_domain:
         rows = [row for row in rows if query_domain(row).strip().rstrip(".").lower() == clean_domain]
     if clean_client:
