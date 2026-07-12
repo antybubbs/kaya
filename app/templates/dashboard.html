@@ -22,10 +22,10 @@
   <div class="dashboard-dns-state"><strong>Waiting for DNS data.</strong><span class="muted">Open DNS Manager and run the first provider analysis.</span><a href="{{ dns_summary.dashboard_target }}">Open DNS Manager</a></div>
   {% else %}
   <div class="dashboard-dns-metrics">
-    <a href="{{ dns_summary.reports_target }}" aria-label="Open DNS reports for queries today"><span>Queries today</span><strong>{{ '{:,}'.format(dns_summary.queries_today) if dns_summary.queries_today is not none else 'No data' }}</strong><small>Current provider day</small></a>
+    <a href="{{ dns_summary.reports_target }}" aria-label="Open DNS reports for queries today"><span>Total Queries</span><strong>{{ '{:,}'.format(dns_summary.queries_today) if dns_summary.queries_today is not none else 'No data' }}</strong><small>Current provider day</small></a>
     <a href="{{ dns_summary.blocked_target }}" aria-label="Open DNS query log for blocked queries"><span>Blocked</span><strong>{% if dns_summary.blocked_percentage is not none %}{{ '%.1f'|format(dns_summary.blocked_percentage) }}%{% else %}Unavailable{% endif %}</strong><small>{% if dns_summary.blocked_queries_today is not none %}{{ '{:,}'.format(dns_summary.blocked_queries_today) }} queries{% else %}No current data{% endif %}</small></a>
     <a href="{{ dns_summary.clients_target }}" aria-label="Open DNS clients"><span>Active clients</span><strong>{{ dns_summary.active_clients_24h if dns_summary.active_clients_24h is not none else 'No data' }}</strong><small>Seen in stored snapshots · 24 hours</small></a>
-    <a href="{{ dns_summary.attention_target }}" aria-label="Open active warning and critical DNS insights"><span>Attention</span><strong>{{ dns_summary.attention_count }}</strong><small>{% if dns_summary.attention_count %}{{ dns_summary.critical_insight_count }} critical · {{ dns_summary.warning_insight_count }} warning{% else %}No issues{% endif %}</small></a>
+    <a href="{{ dns_summary.attention_target }}" aria-label="Open active warning and critical DNS insights"><span>Needs Attention</span><strong>{{ dns_summary.attention_count }}</strong><small>{% if dns_summary.attention_count %}{{ dns_summary.critical_insight_count }} critical · {{ dns_summary.warning_insight_count }} warning{% else %}No issues{% endif %}</small></a>
   </div>
   {% if dns_summary.featured_insight %}
   <div class="dashboard-dns-feature severity-{{ dns_summary.featured_insight.severity }}">
