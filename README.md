@@ -17,17 +17,17 @@ release](https://img.shields.io/github/v/release/antybubbs/kaya)
 
 ## Welcome Home
 
-Lets be honest, homelab infrastrcuture never stays small.
+Lets be honest, homelab infrastrcuture never stays small. I am guilty of this.
 
 A Raspberry Pi becomes a server. One Docker container becomes twenty. A
-virtual machine becomes a cluster. Before long you're juggling IP
+virtual machine becomes a cluster. Before long we are all juggling IP
 addresses, documentation, credentials, licences, runbooks and bookmarks
 across half a dozen different places all while trying to keep your end users (family, friends) happy!
 
 **Kaya brings it all together.**
 
 Named after the Southern African word for **home**, Kaya gives your
-infrastructure a place to belong. Whether you're managing a homelab, a
+infrastructure a place to belong. Whether you're managing your own home infrastructure, a
 business environment or customer systems, Kaya provides one clean,
 modern workspace to organise everything that matters.
 
@@ -60,7 +60,7 @@ Want to kick the tyres? Go ahead. https://demo.kaya-app.uk
 However, a few caveats.
 - The demo does not have a functional Remote Manager module.
 - The data resets every night.
-- Its probably (highly likley to be) rough around the edges, this is because its the main app with a few restrictions in place - we may have not picked up everything and most likley broke things trying to "make it safe"
+- Its probably (highly likley to be) rough around the edges, this is because its the main app with a few restrictions in place - I probably have not picked up everything and most likley broke things trying to "make it safe"
 
 My suggestion - install it in your own environment and throw the kitchen sink at it.
 
