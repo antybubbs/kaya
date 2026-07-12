@@ -204,17 +204,34 @@ def query_upstream(row: Any) -> str:
     return str(payload_value(row, "upstream", "forwarded_to", "server") or "-")
 
 
-def filtered_query_rows(payload: Any, domain_filter: str = "", client_filter: str = "") -> list[dict[str, Any]]:
-    rows = [row for row in list_from_payload(payload, "queries", "data") if isinstance(row, dict)]
-    clean_domain = (domain_filter or "").strip().lower()
-    clean_client = (client_filter or "").strip().lower()
+def filtered_query_rows(
+    payload: Any,
+    domain_filter: str = "",
+    client_filter: str = "",
+) -> list[dict[str, Any]]:
+    rows = rows_for_payload(payload, "queries", "data") if isinstance(payload, dict) else []
+
+    clean_domain = domain_filter.strip().lower() if isinstance(domain_filter, str) else ""
+    clean_client = client_filter.strip().lower() if isinstance(client_filter, str) else ""
+
     if clean_domain:
-        rows = [row for row in rows if query_domain(row).strip().rstrip(".").lower() == clean_domain]
+        rows = [
+            row
+            for row in rows
+            if query_domain(row).strip().rstrip(".").lower() == clean_domain
+        ]
+
     if clean_client:
         rows = [
-            row for row in rows
-            if clean_client in {query_client_name(row).strip().lower(), query_client_ip(row).strip().lower()}
+            row
+            for row in rows
+            if clean_client
+            in {
+                query_client_name(row).strip().lower(),
+                query_client_ip(row).strip().lower(),
+            }
         ]
+
     return rows
 
 
