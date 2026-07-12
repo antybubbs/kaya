@@ -254,6 +254,10 @@ def migrate_existing_database():
     if not settings.database_url.startswith("sqlite"):
         return
     with engine.begin() as conn:
+        dashboard_preference_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(dashboard_preferences)"))}
+        if not dashboard_preference_columns:
+            conn.execute(text("CREATE TABLE dashboard_preferences (id INTEGER NOT NULL PRIMARY KEY, user_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE, preference_version INTEGER DEFAULT 1 NOT NULL, layout_json TEXT NOT NULL, created_at DATETIME, updated_at DATETIME)"))
+            conn.execute(text("CREATE UNIQUE INDEX ix_dashboard_preferences_user_id ON dashboard_preferences (user_id)"))
         columns = {row[1] for row in conn.execute(text("PRAGMA table_info(users)"))}
         if "totp_secret" not in columns:
             conn.execute(text("ALTER TABLE users ADD COLUMN totp_secret TEXT"))

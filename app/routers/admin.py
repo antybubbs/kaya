@@ -104,6 +104,13 @@ SITE_SETTING_KEYS = {
     "backup_remote_password": "",
     "backup_targets_json": "[]",
     "backup_default_target_name": "",
+    "dashboard_customisation_enabled": "1",
+    "dashboard_monitor_mode_enabled": "1",
+    "dashboard_poll_interval_seconds": "5",
+    "dashboard_recent_activity_limit": "10",
+    "dashboard_show_source_age": "1",
+    "dashboard_attention_required": "1",
+    "dashboard_globally_disabled_widgets": "",
     "dns_manager_enabled": "",
     "dns_default_provider_id": "",
     "dns_refresh_interval_seconds": "300",
@@ -1945,6 +1952,13 @@ async def save_settings(
     backup_remote_password: str = Form(""),
     backup_targets_json: str = Form("[]"),
     backup_default_target_name: str = Form(""),
+    dashboard_customisation_enabled: str = Form(""),
+    dashboard_monitor_mode_enabled: str = Form(""),
+    dashboard_poll_interval_seconds: str = Form("5"),
+    dashboard_recent_activity_limit: str = Form("10"),
+    dashboard_show_source_age: str = Form(""),
+    dashboard_attention_required: str = Form(""),
+    dashboard_globally_disabled_widgets: str = Form(""),
     dns_manager_enabled: str = Form(""),
     dns_default_provider_id: str = Form(""),
     dns_refresh_interval_seconds: str = Form("300"),
@@ -2065,6 +2079,22 @@ async def save_settings(
         save_site_setting(db, "backup_default_target_name", default_name)
     else:
         save_site_setting(db, "backup_default_target_name", "")
+    save_site_setting(db, "dashboard_customisation_enabled", "1" if dashboard_customisation_enabled else "")
+    save_site_setting(db, "dashboard_monitor_mode_enabled", "1" if dashboard_monitor_mode_enabled else "")
+    save_site_setting(db, "dashboard_show_source_age", "1" if dashboard_show_source_age else "")
+    save_site_setting(db, "dashboard_attention_required", "1" if dashboard_attention_required else "")
+    disabled_widget_keys = ",".join(sorted({key.strip() for key in dashboard_globally_disabled_widgets.split(",") if re.fullmatch(r"[a-z0-9_]+", key.strip())}))
+    save_site_setting(db, "dashboard_globally_disabled_widgets", disabled_widget_keys)
+    try:
+        dashboard_poll_interval_seconds = str(max(5, min(int(dashboard_poll_interval_seconds), 300)))
+    except ValueError:
+        dashboard_poll_interval_seconds = "5"
+    try:
+        dashboard_recent_activity_limit = str(max(1, min(int(dashboard_recent_activity_limit), 20)))
+    except ValueError:
+        dashboard_recent_activity_limit = "10"
+    save_site_setting(db, "dashboard_poll_interval_seconds", dashboard_poll_interval_seconds)
+    save_site_setting(db, "dashboard_recent_activity_limit", dashboard_recent_activity_limit)
     save_dns_manager_settings(
         db,
         dns_manager_enabled=dns_manager_enabled,

@@ -1,41 +1,24 @@
 {% extends "base.html" %}{% block content %}
-<section class="dashboard-hero"><div><span class="eyebrow">{{ brand.name }} overview</span><h1>Infrastructure at a glance</h1><p class="muted">Live health and capacity across your connected environment.</p></div><span class="live-indicator"><i></i> Live <small data-live-age>waiting for data</small></span></section>
-<section class="compute-summary-grid"><article><span>Compute hosts</span><strong data-summary="online_hosts">{{ compute.online_hosts }}</strong><small>{{ compute.hosts }} connected</small></article><article><span>Workloads</span><strong data-summary="workloads">{{ compute.workloads }}</strong><small>VMs and containers</small></article><article class="good"><span>Running</span><strong data-summary="running">{{ compute.running }}</strong><small>healthy</small></article><article><span>Stopped</span><strong data-summary="stopped">{{ compute.stopped }}</strong><small>inactive</small></article><article class="{% if compute.warnings %}warn{% endif %}"><span>Attention</span><strong data-summary="warnings">{{ compute.warnings }}</strong><small>warnings</small></article></section>
-<section class="compute-resource-grid"><article class="resource-gauge"><div><span>Compute CPU</span><strong data-resource="cpu_percent">{{ compute.cpu_percent if compute.cpu_percent is not none else '-' }}{% if compute.cpu_percent is not none %}%{% endif %}</strong></div><div class="resource-track"><i data-resource-bar="cpu_percent" style="width:{{ compute.cpu_percent or 0 }}%"></i></div></article><article class="resource-gauge"><div><span>Memory</span><strong data-resource="memory_percent">{{ compute.memory_percent if compute.memory_percent is not none else '-' }}{% if compute.memory_percent is not none %}%{% endif %}</strong></div><div class="resource-track"><i data-resource-bar="memory_percent" style="width:{{ compute.memory_percent or 0 }}%"></i></div></article><article class="resource-gauge"><div><span>Storage</span><strong data-resource="storage_percent">{{ compute.storage_percent if compute.storage_percent is not none else '-' }}{% if compute.storage_percent is not none %}%{% endif %}</strong></div><div class="resource-track"><i data-resource-bar="storage_percent" style="width:{{ compute.storage_percent or 0 }}%"></i></div></article></section>
-<section class="panel dashboard-dns-summary dns-status-{{ dns_summary.provider_status }}" aria-labelledby="dashboard-dns-title">
-  <header>
-    <div>
-      <h2 id="dashboard-dns-title">DNS Manager</h2>
-      {% if dns_summary.provider_name %}<p class="muted">{{ dns_summary.provider_name }} · Stored DNS health and activity</p>{% else %}<p class="muted">DNS health and activity summary</p>{% endif %}
+<main class="dashboard-shell" data-dashboard data-config='{{ dashboard_config|tojson }}' data-csrf-token="{{ csrf_token }}">
+  <section class="dashboard-hero">
+    <div><span class="eyebrow">{{ brand.name }} overview</span><h1>Operational dashboard</h1><p class="muted">Environment health and items needing attention.</p></div>
+    <div class="dashboard-actions">
+      <span class="live-indicator" data-live-state="updating"><i></i><strong data-live-label>Updating</strong><small data-live-age>waiting for data</small></span>
+      {% if dashboard_config.customisation_enabled %}<button class="button secondary" type="button" data-edit-dashboard aria-pressed="false">Edit dashboard</button><button class="button secondary" type="button" data-manage-widgets>Manage widgets</button>{% endif %}
+      {% if dashboard_config.monitor_mode_enabled %}<button class="button secondary" type="button" data-monitor-mode>Monitor mode</button>{% endif %}
     </div>
-    <div class="dashboard-dns-header-actions">
-      <span class="dashboard-dns-status" aria-label="DNS provider status: {{ dns_summary.provider_status_label }}"><i aria-hidden="true"></i>{{ dns_summary.provider_status_label }}</span>
-      {% if dns_summary.last_updated_at %}<span class="muted dashboard-dns-age" data-dns-summary-age="{{ dns_summary.last_updated_at.isoformat() }}Z">Updated {{ local_time(dns_summary.last_updated_at, 'minute') }}</span>{% endif %}
-      {% if dns_summary.configured %}<a class="button secondary" href="{{ dns_summary.dashboard_target }}">Open DNS Manager</a>{% elif user.role == 'admin' and not dns_summary.error %}<a class="button secondary" href="{{ dns_summary.settings_target }}">Configure DNS Manager</a>{% endif %}
-    </div>
-  </header>
-  {% if dns_summary.error %}
-  <div class="dashboard-dns-state"><strong>DNS summary is currently unavailable.</strong><span class="muted">The remainder of the dashboard is unaffected.</span><a href="{{ dns_summary.dashboard_target }}">Open DNS Manager</a></div>
-  {% elif not dns_summary.configured %}
-  <div class="dashboard-dns-state"><strong>No DNS provider has been configured.</strong><span class="muted">Connect a supported DNS provider to view DNS health and activity.</span></div>
-  {% elif not dns_summary.last_updated_at %}
-  <div class="dashboard-dns-state"><strong>Waiting for DNS data.</strong><span class="muted">Open DNS Manager and run the first provider analysis.</span><a href="{{ dns_summary.dashboard_target }}">Open DNS Manager</a></div>
-  {% else %}
-  <div class="dashboard-dns-metrics">
-    <a href="{{ dns_summary.reports_target }}" aria-label="Open DNS reports for queries today"><span>Total Queries</span><strong>{{ '{:,}'.format(dns_summary.queries_today) if dns_summary.queries_today is not none else 'No data' }}</strong><small>Current provider day</small></a>
-    <a href="{{ dns_summary.blocked_target }}" aria-label="Open DNS query log for blocked queries"><span>Blocked</span><strong>{% if dns_summary.blocked_percentage is not none %}{{ '%.1f'|format(dns_summary.blocked_percentage) }}%{% else %}Unavailable{% endif %}</strong><small>{% if dns_summary.blocked_queries_today is not none %}{{ '{:,}'.format(dns_summary.blocked_queries_today) }} queries{% else %}No current data{% endif %}</small></a>
-    <a href="{{ dns_summary.clients_target }}" aria-label="Open DNS clients"><span>Active clients</span><strong>{{ dns_summary.active_clients_24h if dns_summary.active_clients_24h is not none else 'No data' }}</strong><small>Seen in stored snapshots · 24 hours</small></a>
-    <a href="{{ dns_summary.attention_target }}" aria-label="Open active warning and critical DNS insights"><span>Needs Attention</span><strong>{{ dns_summary.attention_count }}</strong><small>{% if dns_summary.attention_count %}{{ dns_summary.critical_insight_count }} critical · {{ dns_summary.warning_insight_count }} warning{% else %}No issues{% endif %}</small></a>
-  </div>
-  {% if dns_summary.featured_insight %}
-  <div class="dashboard-dns-feature severity-{{ dns_summary.featured_insight.severity }}">
-    <span class="dashboard-dns-feature-severity"><i aria-hidden="true"></i>{{ dns_summary.featured_insight.severity_label }}</span>
-    <div><strong>{{ dns_summary.featured_insight.title }}</strong><p>{{ dns_summary.featured_insight.summary }}</p></div>
-    <a href="{{ dns_summary.featured_insight.target }}">View insight</a>
-  </div>
-  {% else %}
-  <div class="dashboard-dns-healthy"><i aria-hidden="true"></i><span><strong>No DNS issues currently require attention.</strong><small>Provider data is available and no unacknowledged insight is active.</small></span></div>
-  {% endif %}
-  {% endif %}
-</section>
-<section class="panel dashboard-launch"><div><h2>VM / Docker Manager</h2><p class="muted">Connect Docker and Proxmox to unlock live workload monitoring, history and alerts.</p></div><a class="button" href="/infrastructure/vm-docker-manager">Open manager</a></section><script src="/static/js/compute_manager.js?v={{ asset_version }}" defer></script>{% endblock %}
+  </section>
+  <div class="dashboard-save-state" data-save-state role="status" aria-live="polite"></div>
+  <section class="dashboard-grid" data-dashboard-grid aria-label="Dashboard widgets">
+  {# Compatibility markers for the preserved dashboard sections: compute-resource-grid, dashboard-dns-summary, VM / Docker Manager. #}
+  {% for item in dashboard_config.layout.widgets if item.enabled %}{% set definition = dashboard_config.widgets|selectattr('key','equalto',item.key)|first %}{% if definition %}
+    <article class="panel dashboard-widget width-{{ item.width }}" data-widget-key="{{ item.key }}" data-width="{{ item.width }}" draggable="false">
+      <header><button type="button" class="widget-drag-handle" data-drag-handle aria-label="Move {{ definition.name }}" title="Drag to move">&#x2630;</button><div><h2>{{ definition.name }}</h2><small>{{ definition.module }}</small></div><a href="{{ definition.target_url }}">Open</a></header>
+      <div class="widget-body" data-widget-body><div class="widget-loading">Loading current data...</div></div>
+      <footer><span data-widget-state>Loading</span><span data-source-age></span><label class="widget-size-control">Size <select data-widget-size aria-label="Size for {{ definition.name }}">{% for size in ['small','medium','large','full'] %}<option value="{{ size }}" {% if size == item.width %}selected{% endif %}>{{ size|title }}</option>{% endfor %}</select></label></footer>
+    </article>{% endif %}{% endfor %}
+  </section>
+  <dialog class="widget-manager" data-widget-manager aria-labelledby="widget-manager-title"><form method="dialog"><header><div><span class="eyebrow">Dashboard layout</span><h2 id="widget-manager-title">Manage widgets</h2><p>Choose what appears on your dashboard. Changes save automatically.</p></div><button type="submit" class="icon-button widget-manager-close" aria-label="Close widget manager" title="Close">&times;</button></header><div class="widget-manager-toolbar"><span data-widget-enabled-count></span><span class="widget-manager-saved" data-widget-manager-saved role="status" aria-live="polite"></span></div><div class="widget-options" data-widget-options></div><footer><button type="button" class="button secondary danger" data-reset-dashboard>Reset to defaults</button><button class="button" type="submit">Done</button></footer></form></dialog>
+</main>
+<script src="/static/js/dashboard.js?v={{ asset_version }}" defer></script>
+{% endblock %}

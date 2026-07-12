@@ -319,6 +319,17 @@ class DNSRecognisedDevice(Base):
     hardware_asset = relationship("HardwareAsset")
 
 
+class DashboardPreference(Base):
+    __tablename__ = "dashboard_preferences"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), unique=True, index=True)
+    preference_version: Mapped[int] = mapped_column(Integer, default=1)
+    layout_json: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    user = relationship("User")
+
+
 class HardwareAsset(Base):
     __tablename__ = "hardware_assets"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

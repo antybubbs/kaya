@@ -35,6 +35,13 @@ DEFAULT_SITE_SETTINGS = {
     "backup_remote_password": "",
     "backup_targets_json": "[]",
     "backup_default_target_name": "",
+    "dashboard_customisation_enabled": "1",
+    "dashboard_monitor_mode_enabled": "1",
+    "dashboard_poll_interval_seconds": "5",
+    "dashboard_recent_activity_limit": "10",
+    "dashboard_show_source_age": "1",
+    "dashboard_attention_required": "1",
+    "dashboard_globally_disabled_widgets": "",
     "smtp_enabled": "",
     "smtp_host": "",
     "smtp_port": "587",
@@ -129,6 +136,8 @@ def _invalid_host_reason(entry: str) -> str | None:
     hostname = candidate[2:] if wildcard else candidate
     if "*" in hostname:
         return "A wildcard is only supported at the start of a domain, for example *.example.com."
+    if not re.fullmatch(r"[A-Za-z0-9.-]+", hostname):
+        return "Use letters, numbers and hyphens in each hostname label."
     if "." not in hostname:
         return "Enter a fully qualified hostname, such as kaya.example.com, or an IP address."
     if len(hostname) > 253:
