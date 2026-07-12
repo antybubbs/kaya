@@ -111,6 +111,7 @@ class PiHoleProvider(DNSProvider):
         payload: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
         timeout_seconds: int | None = None,
+        allow_non_json: bool = False,
     ) -> dict[str, Any]:
         body = None
         request_headers = {"Accept": "application/json", **(headers or {})}
@@ -157,6 +158,8 @@ class PiHoleProvider(DNSProvider):
         try:
             parsed = json.loads(raw or "{}")
         except json.JSONDecodeError as exc:
+            if allow_non_json:
+                return {"output": raw.strip()}
             raise DNSProviderError("Pi-hole returned an invalid JSON response.") from exc
         return parsed if isinstance(parsed, dict) else {"data": parsed}
 
@@ -331,6 +334,7 @@ class PiHoleProvider(DNSProvider):
                 payload={},
                 headers=self._v6_auth_headers(),
                 timeout_seconds=120,
+                allow_non_json=True,
             )
             return DNSProviderResult(True, "Pi-hole blocklists updated successfully.", data)
 
