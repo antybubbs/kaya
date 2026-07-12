@@ -59,8 +59,17 @@
 
       if (!response.ok) return;
 
-      const data = await response.json();
+  const data = await response.json();
+      // Refresh DNS dashboard summary
+  const dnsResponse = await fetch("/dashboard/api/dns-summary", {
+    headers: { Accept: "application/json" },
+  });
 
+  let dns = null;
+
+    if (dnsResponse.ok) {
+    dns = await dnsResponse.json();
+    }
       lastUpdate = Date.now();
       
       document.querySelectorAll("[data-summary]").forEach((el) => {
@@ -98,6 +107,41 @@
         set("[data-host-memory]", host.memory);
         set("[data-host-storage]", host.storage);
       });
+      
+      if (dns) {
+
+    const status = document.querySelector(".dashboard-dns-status");
+    if (status) {
+        status.lastChild.textContent = dns.provider_status_label;
+    }
+
+    const ageElement = document.querySelector("[data-dns-summary-age]");
+    if (ageElement && dns.last_updated_at) {
+        ageElement.dataset.dnsSummaryAge = dns.last_updated_at;
+        renderDnsAge();
+    }
+
+    const metrics = document.querySelectorAll(".dashboard-dns-metrics strong");
+
+    if (metrics.length >= 4) {
+
+        metrics[0].textContent =
+            dns.queries_today == null
+                ? "No data"
+                : Number(dns.queries_today).toLocaleString();
+
+        metrics[1].textContent =
+            dns.blocked_percentage == null
+                ? "Unavailable"
+                : `${Number(dns.blocked_percentage).toFixed(1)}%`;
+
+        metrics[2].textContent =
+            dns.active_clients_24h ?? "No data";
+
+        metrics[3].textContent =
+            dns.attention_count;
+    }
+}
     } catch (_) {
       age.textContent = "connection interrupted";
     }

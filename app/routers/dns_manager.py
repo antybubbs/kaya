@@ -959,27 +959,27 @@ def dns_manager(
             elif active_tab == "blocklists":
                 blocklists = demo_payloads["blocklists"]
         else:
-            dns_client = provider_for(provider)
+            provider_client = provider_for(provider)
             if active_tab == "dashboard":
-                status = call_provider(provider, "get_status", dns_client)
-                stats = call_provider(provider, "get_statistics", dns_client)
-                history = call_provider(provider, "get_history", dns_client)
-                clients = call_provider(provider, "get_clients", dns_client)
-                dhcp = call_provider(provider, "get_dhcp_leases", dns_client)
-                queries = dns_client.get_query_log(limit=300)
-                blocklists = call_provider(provider, "get_blocklists", dns_client)
+                status = call_provider(provider, "get_status", provider_client)
+                stats = call_provider(provider, "get_statistics", provider_client)
+                history = call_provider(provider, "get_history", provider_client)
+                clients = call_provider(provider, "get_clients", provider_client)
+                dhcp = call_provider(provider, "get_dhcp_leases", provider_client)
+                queries = provider_client.get_query_log(limit=300)
+                blocklists = call_provider(provider, "get_blocklists", provider_client)
             elif active_tab == "query-log":
-                queries = dns_client.get_query_log(limit=200)
+                queries = provider_client.get_query_log(limit=200)
             elif active_tab == "clients":
-                clients = call_provider(provider, "get_clients", dns_client)
-                dhcp = call_provider(provider, "get_dhcp_leases", dns_client)
-                queries = dns_client.get_query_log(limit=500)
+                clients = call_provider(provider, "get_clients", provider_client)
+                dhcp = call_provider(provider, "get_dhcp_leases", provider_client)
+                queries = provider_client.get_query_log(limit=500)
             elif active_tab == "local-dns":
-                local_dns = call_provider(provider, "get_local_dns_records", dns_client)
+                local_dns = call_provider(provider, "get_local_dns_records", provider_client)
             elif active_tab == "dhcp":
-                dhcp = call_provider(provider, "get_dhcp_leases", dns_client)
+                dhcp = call_provider(provider, "get_dhcp_leases", provider_client)
             elif active_tab == "blocklists":
-                blocklists = call_provider(provider, "get_blocklists", dns_client)
+                blocklists = call_provider(provider, "get_blocklists", provider_client)
 
             db.commit()
         active_result = next((item for item in [status, stats, history, queries, clients, local_dns, dhcp, blocklists] if item and not item.ok), None)

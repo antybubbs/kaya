@@ -10,7 +10,7 @@ from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from app.models.models import DNSInsight, DNSProviderConfig, DNSStatisticsSnapshot, User
-from app.services.dns_insights import DEFAULT_THRESHOLDS, SEVERITY_LABELS
+from app.services.dns_insights import (AnalysisAlreadyRunning,DEFAULT_THRESHOLDS,SEVERITY_LABELS,analyse_provider,)
 from app.services.site_settings import get_site_setting
 
 
@@ -249,3 +249,63 @@ def get_dns_dashboard_summary(db: Session, user: User) -> DNSDashboardSummary:
     except Exception:
         logger.exception("Unable to build DNS dashboard summary")
         return _empty_summary(error=True)
+
+def get_refreshed_dns_dashboard_summary(
+    db: Session,
+    user: User,
+    *,
+    max_age_seconds: int = 60,
+) -> DNSDashboardSummary:
+    """
+    Return the DNS dashboard summary.
+
+    If the latest stored DNS snapshot is older than max_age_seconds,
+    refresh the provider data before returning the summary.
+    """
+
+    provider = _selected_provider(db)
+
+    if not provider:
+        return _empty_summary()
+
+    latest = (
+        db.query(DNSStatisticsSnapshot)
+        .filter(
+            DNSStatisticsSnapshot.provider_id == provider.id,
+            DNSStatisticsSnapshot.provider_connected == True,  # noqa: E712
+        )
+        .order_by(DNSStatisticsSnapshot.period_end.desc())
+        .first()
+    )
+
+    now = datetime.utcnow()
+
+    needs_refresh = (
+        latest is None
+        or latest.period_end is None
+        or now - latest.period_end >= timedelta(seconds=max_age_seconds)
+    )
+
+    if needs_refresh:
+        try:
+            analyse_provider(
+                db,
+                provider,
+                known_hostnames_raw=get_site_setting(
+                    db,
+                    "dns_known_hostnames",
+                )
+                or "[]",
+            )
+        except AnalysisAlreadyRunning:
+            # Another request is already refreshing this provider.
+            # Return the most recent stored summary instead.
+            pass
+        except Exception:
+            # Do not allow a DNS provider failure to break the main dashboard.
+            logger.exception(
+                "Unable to refresh DNS data for the main dashboard",
+                extra={"provider_id": provider.id},
+            )
+
+    return get_dns_dashboard_summary(db, user)

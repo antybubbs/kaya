@@ -297,4 +297,66 @@
       }
     });
   });
+
+  document.addEventListener("toggle", function (event) {
+    const details = event.target;
+
+    if (
+        !(details instanceof HTMLDetailsElement) ||
+        !details.classList.contains("dns-domain-menu") ||
+        !details.open
+    ) {
+        return;
+    }
+
+    const summary = details.querySelector("summary");
+    const panel = details.querySelector(".dns-domain-menu-panel");
+
+    if (!summary || !panel) {
+        return;
+    }
+
+    // Close any other open domain menus.
+  document.querySelectorAll(".dns-domain-menu[open]").forEach((item) => {
+        if (item !== details) {
+            item.removeAttribute("open");
+        }
+    });
+
+    const summaryRect = summary.getBoundingClientRect();
+
+    // Measure the popup after it becomes visible.
+    requestAnimationFrame(() => {
+        const panelRect = panel.getBoundingClientRect();
+        const margin = 12;
+
+        let left = summaryRect.left;
+        let top = summaryRect.bottom + 8;
+
+        // Keep popup inside the right edge of the viewport.
+        if (left + panelRect.width > window.innerWidth - margin) {
+            left = window.innerWidth - panelRect.width - margin;
+        }
+
+        // If there is not enough room below, open it above.
+        if (top + panelRect.height > window.innerHeight - margin) {
+            top = summaryRect.top - panelRect.height - 8;
+        }
+
+        // Keep popup inside the viewport.
+        left = Math.max(margin, left);
+        top = Math.max(margin, top);
+
+        details.style.setProperty("--dns-popup-left", `${left}px`);
+        details.style.setProperty("--dns-popup-top", `${top}px`);
+    });
+  }, true);
+
+  document.addEventListener("click", function (event) {
+    document.querySelectorAll(".dns-domain-menu[open]").forEach((details) => {
+        if (!details.contains(event.target)) {
+            details.removeAttribute("open");
+        }
+    });
+  });
 })();

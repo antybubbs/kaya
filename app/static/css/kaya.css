@@ -840,3 +840,86 @@ html[data-kaya-theme=light-ops] .dns-client-row div{
   background:#eef2f7;
   border-color:#d8dee8;
 }
+
+/* Allow DNS query detail menus to extend below the table, fix overflow issues//--antybubbs--// */
+.panel.dns-query-log-panel{
+  overflow-x:auto;
+  overflow-y:visible;
+  min-height:calc(100vh - 260px);
+  padding-bottom:220px;
+}
+
+/* Markdown editor toolbar buttons in dark mode, Shit was dark yoh!//--antybubbs--// */
+html:not([data-theme="light"]):not([data-kaya-theme="light-ops"])
+.runbook-editor-toolbar button,
+html:not([data-theme="light"]):not([data-kaya-theme="light-ops"])
+.runbook-editor-toolbar .button,
+html:not([data-theme="light"]):not([data-kaya-theme="light-ops"])
+.runbook-editor-toolbar select{
+  background:#21170d!important;
+  border:1px solid rgba(255,138,0,.48)!important;
+  color:#ffe3b0!important;
+  -webkit-text-fill-color:#ffe3b0!important;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.04);
+}
+
+html:not([data-theme="light"]):not([data-kaya-theme="light-ops"])
+.runbook-editor-toolbar button:hover,
+html:not([data-theme="light"]):not([data-kaya-theme="light-ops"])
+.runbook-editor-toolbar .button:hover{
+  background:rgba(255,138,0,.18)!important;
+  border-color:rgba(255,138,0,.72)!important;
+  color:#fff!important;
+  -webkit-text-fill-color:#fff!important;
+}
+
+html:not([data-theme="light"]):not([data-kaya-theme="light-ops"])
+.runbook-editor-toolbar button:focus-visible{
+  outline:2px solid var(--kaya-orange);
+  outline-offset:2px;
+}
+
+/* DNS query log domain popup, to avoid the cutting off if drop down is at bottom of table//--antybubs--// */
+.panel.dns-query-log-panel{
+  min-height:calc(100vh - 240px);
+  overflow:visible!important;
+  padding-bottom:220px;
+  position:relative;
+}
+
+.panel.dns-query-log-panel table,
+.panel.dns-query-log-panel tbody,
+.panel.dns-query-log-panel tr,
+.panel.dns-query-log-panel td{
+  overflow:visible!important;
+}
+
+.dns-domain-menu[open]{
+  position:relative;
+  z-index:1000;
+}
+
+.dns-domain-menu-panel{
+  z-index:9999!important;
+}
+
+/* DNS domain popup rendered above all panels */
+.dns-domain-menu-panel{
+  display:none;
+}
+
+.dns-domain-menu[open] .dns-domain-menu-panel{
+  display:grid;
+  position:fixed!important;
+  left:var(--dns-popup-left, 20px)!important;
+  top:var(--dns-popup-top, 20px)!important;
+  bottom:auto!important;
+  width:min(520px, calc(100vw - 32px));
+  max-height:calc(100vh - 32px);
+  overflow:auto;
+  z-index:99999!important;
+}
+
+.dns-domain-menu[open]{
+  z-index:99999;
+}
