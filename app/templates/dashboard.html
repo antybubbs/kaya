@@ -2,4 +2,40 @@
 <section class="dashboard-hero"><div><span class="eyebrow">{{ brand.name }} overview</span><h1>Infrastructure at a glance</h1><p class="muted">Live health and capacity across your connected environment.</p></div><span class="live-indicator"><i></i> Live <small data-live-age>waiting for data</small></span></section>
 <section class="compute-summary-grid"><article><span>Compute hosts</span><strong data-summary="online_hosts">{{ compute.online_hosts }}</strong><small>{{ compute.hosts }} connected</small></article><article><span>Workloads</span><strong data-summary="workloads">{{ compute.workloads }}</strong><small>VMs and containers</small></article><article class="good"><span>Running</span><strong data-summary="running">{{ compute.running }}</strong><small>healthy</small></article><article><span>Stopped</span><strong data-summary="stopped">{{ compute.stopped }}</strong><small>inactive</small></article><article class="{% if compute.warnings %}warn{% endif %}"><span>Attention</span><strong data-summary="warnings">{{ compute.warnings }}</strong><small>warnings</small></article></section>
 <section class="compute-resource-grid"><article class="resource-gauge"><div><span>Compute CPU</span><strong data-resource="cpu_percent">{{ compute.cpu_percent if compute.cpu_percent is not none else '-' }}{% if compute.cpu_percent is not none %}%{% endif %}</strong></div><div class="resource-track"><i data-resource-bar="cpu_percent" style="width:{{ compute.cpu_percent or 0 }}%"></i></div></article><article class="resource-gauge"><div><span>Memory</span><strong data-resource="memory_percent">{{ compute.memory_percent if compute.memory_percent is not none else '-' }}{% if compute.memory_percent is not none %}%{% endif %}</strong></div><div class="resource-track"><i data-resource-bar="memory_percent" style="width:{{ compute.memory_percent or 0 }}%"></i></div></article><article class="resource-gauge"><div><span>Storage</span><strong data-resource="storage_percent">{{ compute.storage_percent if compute.storage_percent is not none else '-' }}{% if compute.storage_percent is not none %}%{% endif %}</strong></div><div class="resource-track"><i data-resource-bar="storage_percent" style="width:{{ compute.storage_percent or 0 }}%"></i></div></article></section>
+<section class="panel dashboard-dns-summary dns-status-{{ dns_summary.provider_status }}" aria-labelledby="dashboard-dns-title">
+  <header>
+    <div>
+      <h2 id="dashboard-dns-title">DNS Manager</h2>
+      {% if dns_summary.provider_name %}<p class="muted">{{ dns_summary.provider_name }} · Stored DNS health and activity</p>{% else %}<p class="muted">DNS health and activity summary</p>{% endif %}
+    </div>
+    <div class="dashboard-dns-header-actions">
+      <span class="dashboard-dns-status" aria-label="DNS provider status: {{ dns_summary.provider_status_label }}"><i aria-hidden="true"></i>{{ dns_summary.provider_status_label }}</span>
+      {% if dns_summary.last_updated_at %}<span class="muted dashboard-dns-age" data-dns-summary-age="{{ dns_summary.last_updated_at.isoformat() }}Z">Updated {{ local_time(dns_summary.last_updated_at, 'minute') }}</span>{% endif %}
+      {% if dns_summary.configured %}<a class="button secondary" href="{{ dns_summary.dashboard_target }}">Open DNS Manager</a>{% elif user.role == 'admin' and not dns_summary.error %}<a class="button secondary" href="{{ dns_summary.settings_target }}">Configure DNS Manager</a>{% endif %}
+    </div>
+  </header>
+  {% if dns_summary.error %}
+  <div class="dashboard-dns-state"><strong>DNS summary is currently unavailable.</strong><span class="muted">The remainder of the dashboard is unaffected.</span><a href="{{ dns_summary.dashboard_target }}">Open DNS Manager</a></div>
+  {% elif not dns_summary.configured %}
+  <div class="dashboard-dns-state"><strong>No DNS provider has been configured.</strong><span class="muted">Connect a supported DNS provider to view DNS health and activity.</span></div>
+  {% elif not dns_summary.last_updated_at %}
+  <div class="dashboard-dns-state"><strong>Waiting for DNS data.</strong><span class="muted">Open DNS Manager and run the first provider analysis.</span><a href="{{ dns_summary.dashboard_target }}">Open DNS Manager</a></div>
+  {% else %}
+  <div class="dashboard-dns-metrics">
+    <a href="{{ dns_summary.reports_target }}" aria-label="Open DNS reports for queries today"><span>Queries today</span><strong>{{ '{:,}'.format(dns_summary.queries_today) if dns_summary.queries_today is not none else 'No data' }}</strong><small>Current provider day</small></a>
+    <a href="{{ dns_summary.blocked_target }}" aria-label="Open DNS query log for blocked queries"><span>Blocked</span><strong>{% if dns_summary.blocked_percentage is not none %}{{ '%.1f'|format(dns_summary.blocked_percentage) }}%{% else %}Unavailable{% endif %}</strong><small>{% if dns_summary.blocked_queries_today is not none %}{{ '{:,}'.format(dns_summary.blocked_queries_today) }} queries{% else %}No current data{% endif %}</small></a>
+    <a href="{{ dns_summary.clients_target }}" aria-label="Open DNS clients"><span>Active clients</span><strong>{{ dns_summary.active_clients_24h if dns_summary.active_clients_24h is not none else 'No data' }}</strong><small>Seen in stored snapshots · 24 hours</small></a>
+    <a href="{{ dns_summary.attention_target }}" aria-label="Open active warning and critical DNS insights"><span>Attention</span><strong>{{ dns_summary.attention_count }}</strong><small>{% if dns_summary.attention_count %}{{ dns_summary.critical_insight_count }} critical · {{ dns_summary.warning_insight_count }} warning{% else %}No issues{% endif %}</small></a>
+  </div>
+  {% if dns_summary.featured_insight %}
+  <div class="dashboard-dns-feature severity-{{ dns_summary.featured_insight.severity }}">
+    <span class="dashboard-dns-feature-severity"><i aria-hidden="true"></i>{{ dns_summary.featured_insight.severity_label }}</span>
+    <div><strong>{{ dns_summary.featured_insight.title }}</strong><p>{{ dns_summary.featured_insight.summary }}</p></div>
+    <a href="{{ dns_summary.featured_insight.target }}">View insight</a>
+  </div>
+  {% else %}
+  <div class="dashboard-dns-healthy"><i aria-hidden="true"></i><span><strong>No DNS issues currently require attention.</strong><small>Provider data is available and no unacknowledged insight is active.</small></span></div>
+  {% endif %}
+  {% endif %}
+</section>
 <section class="panel dashboard-launch"><div><h2>VM / Docker Manager</h2><p class="muted">Connect Docker and Proxmox to unlock live workload monitoring, history and alerts.</p></div><a class="button" href="/infrastructure/vm-docker-manager">Open manager</a></section><script src="/static/js/compute_manager.js?v={{ asset_version }}" defer></script>{% endblock %}

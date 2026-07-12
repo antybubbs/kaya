@@ -990,7 +990,9 @@ def dns_manager(
             query = query.filter(DNSInsight.status == "active", DNSInsight.acknowledged_at.is_not(None))
         elif insight_status == "resolved":
             query = query.filter(DNSInsight.status == "resolved")
-        if insight_severity in SEVERITY_LABELS:
+        if insight_severity == "attention":
+            query = query.filter(DNSInsight.severity.in_(["critical", "warning"]))
+        elif insight_severity in SEVERITY_LABELS:
             query = query.filter(DNSInsight.severity == insight_severity)
         if insight_category in CATEGORY_LABELS:
             query = query.filter(DNSInsight.category == insight_category)

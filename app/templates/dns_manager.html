@@ -357,6 +357,7 @@
     <label>Severity
       <select name="insight_severity">
         <option value="all">All</option>
+        <option value="attention" {% if insight_filters.severity == 'attention' %}selected{% endif %}>Attention (warning + critical)</option>
         {% for value, label in severity_labels.items() %}<option value="{{ value }}" {% if insight_filters.severity == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
       </select>
     </label>
@@ -393,7 +394,7 @@
         <h2 id="insight-section-{{ section_key }}">{{ section_label }}</h2>
         <div class="dns-insight-list">
           {% for insight in section_rows %}
-          <article class="dns-insight-card severity-{{ insight.severity }}" data-insight-id="{{ insight.id }}">
+          <article id="dns-insight-{{ insight.id }}" class="dns-insight-card severity-{{ insight.severity }}" data-insight-id="{{ insight.id }}">
             <header>
               <div>
                 <span class="dns-insight-severity" aria-label="Severity: {{ severity_labels.get(insight.severity, insight.severity) }}"><i aria-hidden="true"></i>{{ severity_labels.get(insight.severity, insight.severity) }}</span>

@@ -16,6 +16,23 @@
   platform?.addEventListener("change", togglePlatform);
   togglePlatform();
 
+  const dnsAge = document.querySelector("[data-dns-summary-age]");
+  const renderDnsAge = () => {
+    if (!dnsAge) return;
+    const updated = new Date(dnsAge.dataset.dnsSummaryAge || "");
+    if (Number.isNaN(updated.getTime())) return;
+    const seconds = Math.max(0, Math.floor((Date.now() - updated.getTime()) / 1000));
+    const relative = seconds < 60
+      ? `${seconds} second${seconds === 1 ? "" : "s"}`
+      : seconds < 3600
+        ? `${Math.floor(seconds / 60)} minute${Math.floor(seconds / 60) === 1 ? "" : "s"}`
+        : `${Math.floor(seconds / 3600)} hour${Math.floor(seconds / 3600) === 1 ? "" : "s"}`;
+    dnsAge.textContent = `Updated ${relative} ago`;
+    dnsAge.title = updated.toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" });
+  };
+  renderDnsAge();
+  if (dnsAge) setInterval(renderDnsAge, 30000);
+
   const age = document.querySelector("[data-live-age]");
   if (!age) return;
 
