@@ -25,6 +25,8 @@ class DemoModeSafetyTests(unittest.TestCase):
         self.assertTrue(self.blocked("POST", "/networking/dns-manager/investigations"))
         self.assertTrue(self.blocked("POST", "/networking/dns-manager/known-hostnames"))
         self.assertTrue(self.blocked("POST", "/networking/dns-manager/blocklists/update"))
+        self.assertTrue(self.blocked("POST", "/networking/dns-manager/insights/analyse"))
+        self.assertTrue(self.blocked("POST", "/networking/dns-manager/insights/42/acknowledge"))
 
     def test_blocks_security_network_checks(self):
         self.assertTrue(self.blocked("GET", "/system/site-administration/security/public-ip"))

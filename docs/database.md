@@ -94,3 +94,13 @@ Bootstrap ensures a default VLAN named `VLAN 1`.
 The first real admin is created through `/setup`.
 
 Demo mode seeds synthetic users, VLANs, IPs, monitors, remotes, DNS provider data, hardware assets, licences, domains, runbooks, compute hosts/workloads, backup records/jobs, managed lists, and audit rows.
+
+# DNS insight persistence
+
+DNS Manager adds three additive tables:
+
+- `dns_insights` stores stable rule results and active, acknowledged and resolved lifecycle timestamps.
+- `dns_statistics_snapshots` stores bounded hourly provider aggregates with 30-day retention.
+- `dns_recognised_devices` stores stable provider-scoped device identities and observed IP/hostname changes.
+
+Existing databases are upgraded idempotently during normal application bootstrap. Existing DNS providers, investigations and recognised-hostname settings are preserved; recognised hostname settings are imported lazily into stable device records when a successful analysis observes the device.

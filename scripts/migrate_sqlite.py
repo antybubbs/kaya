@@ -78,6 +78,33 @@ def main():
             cur.execute(f"CREATE INDEX ix_dns_investigations_{column} ON dns_investigations ({column})")
         migrations_applied.append("dns_investigations")
 
+    if not table_exists(cur, "dns_insights"):
+        cur.execute(
+            "CREATE TABLE dns_insights (id INTEGER NOT NULL PRIMARY KEY, provider_id INTEGER NOT NULL REFERENCES dns_providers(id) ON DELETE CASCADE, insight_key VARCHAR(500) NOT NULL, rule_key VARCHAR(120) NOT NULL, category VARCHAR(40) NOT NULL, severity VARCHAR(20) NOT NULL, status VARCHAR(20) DEFAULT 'active' NOT NULL, title VARCHAR(255) NOT NULL, summary VARCHAR(1000) NOT NULL, detail TEXT, entity_type VARCHAR(40), entity_identifier VARCHAR(500), current_value VARCHAR(255), comparison_value VARCHAR(255), percentage_change FLOAT, action_type VARCHAR(60), metadata_json TEXT, first_detected_at DATETIME, last_detected_at DATETIME, resolved_at DATETIME, acknowledged_at DATETIME, acknowledged_by_id INTEGER REFERENCES users(id) ON DELETE SET NULL, dismissed_at DATETIME, created_at DATETIME, updated_at DATETIME)"
+        )
+        cur.execute("CREATE UNIQUE INDEX uq_dns_insights_provider_key ON dns_insights (provider_id, insight_key)")
+        for column in ["provider_id", "insight_key", "rule_key", "category", "severity", "status", "entity_type", "entity_identifier", "first_detected_at", "last_detected_at", "resolved_at", "acknowledged_at", "acknowledged_by_id", "dismissed_at", "created_at"]:
+            cur.execute(f"CREATE INDEX ix_dns_insights_{column} ON dns_insights ({column})")
+        migrations_applied.append("dns_insights")
+
+    if not table_exists(cur, "dns_statistics_snapshots"):
+        cur.execute(
+            "CREATE TABLE dns_statistics_snapshots (id INTEGER NOT NULL PRIMARY KEY, provider_id INTEGER NOT NULL REFERENCES dns_providers(id) ON DELETE CASCADE, period_start DATETIME NOT NULL, period_end DATETIME NOT NULL, total_queries INTEGER, blocked_queries INTEGER, failed_queries INTEGER, cached_queries INTEGER, forwarded_queries INTEGER, active_clients INTEGER, blocking_enabled BOOLEAN, provider_connected BOOLEAN DEFAULT 1 NOT NULL, client_aggregates_json TEXT, domain_aggregates_json TEXT, response_aggregates_json TEXT, created_at DATETIME)"
+        )
+        cur.execute("CREATE UNIQUE INDEX uq_dns_snapshots_provider_period ON dns_statistics_snapshots (provider_id, period_start)")
+        for column in ["provider_id", "period_start", "period_end", "created_at"]:
+            cur.execute(f"CREATE INDEX ix_dns_statistics_snapshots_{column} ON dns_statistics_snapshots ({column})")
+        migrations_applied.append("dns_statistics_snapshots")
+
+    if not table_exists(cur, "dns_recognised_devices"):
+        cur.execute(
+            "CREATE TABLE dns_recognised_devices (id INTEGER NOT NULL PRIMARY KEY, provider_id INTEGER NOT NULL REFERENCES dns_providers(id) ON DELETE CASCADE, identity_type VARCHAR(30) NOT NULL, identity_value VARCHAR(500) NOT NULL, hostname VARCHAR(255), previous_hostname VARCHAR(255), current_ip VARCHAR(80), previous_ip VARCHAR(80), mac_address VARCHAR(120), provider_client_id VARCHAR(255), hardware_asset_id INTEGER REFERENCES hardware_assets(id) ON DELETE SET NULL, first_seen_at DATETIME, last_seen_at DATETIME, is_suppressed BOOLEAN DEFAULT 0 NOT NULL, created_at DATETIME, updated_at DATETIME)"
+        )
+        cur.execute("CREATE UNIQUE INDEX uq_dns_devices_provider_identity ON dns_recognised_devices (provider_id, identity_type, identity_value)")
+        for column in ["provider_id", "identity_type", "identity_value", "hostname", "current_ip", "mac_address", "provider_client_id", "hardware_asset_id", "first_seen_at", "last_seen_at", "is_suppressed"]:
+            cur.execute(f"CREATE INDEX ix_dns_recognised_devices_{column} ON dns_recognised_devices ({column})")
+        migrations_applied.append("dns_recognised_devices")
+
     runbook_image_columns = {row[1] for row in cur.execute("PRAGMA table_info(runbook_images)").fetchall()} if table_exists(cur, "runbook_images") else set()
     if not runbook_image_columns:
         cur.execute(

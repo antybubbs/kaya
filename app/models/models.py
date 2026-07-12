@@ -240,6 +240,83 @@ class DNSInvestigation(Base):
     created_by = relationship("User")
 
 
+class DNSInsight(Base):
+    __tablename__ = "dns_insights"
+    __table_args__ = (UniqueConstraint("provider_id", "insight_key", name="uq_dns_insights_provider_key"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    provider_id: Mapped[int] = mapped_column(ForeignKey("dns_providers.id", ondelete="CASCADE"), index=True)
+    insight_key: Mapped[str] = mapped_column(String(500), index=True)
+    rule_key: Mapped[str] = mapped_column(String(120), index=True)
+    category: Mapped[str] = mapped_column(String(40), index=True)
+    severity: Mapped[str] = mapped_column(String(20), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="active", index=True)
+    title: Mapped[str] = mapped_column(String(255))
+    summary: Mapped[str] = mapped_column(String(1000))
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    entity_type: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    entity_identifier: Mapped[str | None] = mapped_column(String(500), nullable=True, index=True)
+    current_value: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    comparison_value: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    percentage_change: Mapped[float | None] = mapped_column(Float, nullable=True)
+    action_type: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    first_detected_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    last_detected_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    acknowledged_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    dismissed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    provider = relationship("DNSProviderConfig")
+    acknowledged_by = relationship("User")
+
+
+class DNSStatisticsSnapshot(Base):
+    __tablename__ = "dns_statistics_snapshots"
+    __table_args__ = (UniqueConstraint("provider_id", "period_start", name="uq_dns_snapshots_provider_period"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    provider_id: Mapped[int] = mapped_column(ForeignKey("dns_providers.id", ondelete="CASCADE"), index=True)
+    period_start: Mapped[datetime] = mapped_column(DateTime, index=True)
+    period_end: Mapped[datetime] = mapped_column(DateTime, index=True)
+    total_queries: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    blocked_queries: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    failed_queries: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cached_queries: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    forwarded_queries: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    active_clients: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    blocking_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    provider_connected: Mapped[bool] = mapped_column(Boolean, default=True)
+    client_aggregates_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    domain_aggregates_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    response_aggregates_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    provider = relationship("DNSProviderConfig")
+
+
+class DNSRecognisedDevice(Base):
+    __tablename__ = "dns_recognised_devices"
+    __table_args__ = (UniqueConstraint("provider_id", "identity_type", "identity_value", name="uq_dns_devices_provider_identity"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    provider_id: Mapped[int] = mapped_column(ForeignKey("dns_providers.id", ondelete="CASCADE"), index=True)
+    identity_type: Mapped[str] = mapped_column(String(30), index=True)
+    identity_value: Mapped[str] = mapped_column(String(500), index=True)
+    hostname: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    previous_hostname: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    current_ip: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    previous_ip: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    mac_address: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    provider_client_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    hardware_asset_id: Mapped[int | None] = mapped_column(ForeignKey("hardware_assets.id", ondelete="SET NULL"), nullable=True, index=True)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    is_suppressed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    provider = relationship("DNSProviderConfig")
+    hardware_asset = relationship("HardwareAsset")
+
+
 class HardwareAsset(Base):
     __tablename__ = "hardware_assets"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

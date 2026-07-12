@@ -44,6 +44,8 @@ def demo_request_is_blocked(method: str, path: str) -> bool:
         "/networking/dns-manager/investigations",
         "/networking/dns-manager/known-hostnames",
         "/networking/dns-manager/blocklists/update",
+        "/networking/dns-manager/insights/analyse",
+        "/networking/dns-manager/insights/",
     )
     if method.upper() not in {"GET", "HEAD", "OPTIONS"} and path.startswith(protected_prefixes):
         return True

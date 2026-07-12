@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 from typing import Any
 from urllib.parse import urlencode
@@ -13,16 +13,25 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.db.session import get_db
-from app.models.models import DNSInvestigation, DNSProviderConfig, RemoteManagerSetting
+from app.models.models import DNSInsight, DNSInvestigation, DNSProviderConfig, DNSStatisticsSnapshot, RemoteManagerSetting
 from app.routers.auth import require_user
 from app.services.dns_providers import DNSProvider, DNSProviderResult, provider_for
 from app.services.audit import write_audit
 from app.services.site_settings import get_site_setting
+from app.services.dns_insights import (
+    CATEGORY_LABELS,
+    SEVERITY_LABELS,
+    SEVERITY_ORDER,
+    AnalysisAlreadyRunning,
+    analyse_provider,
+    calculate_health_score,
+    insight_action_target,
+)
 
 router = APIRouter(prefix="/networking/dns-manager")
 templates = Jinja2Templates(directory="app/templates")
 
-DNS_TABS = ["dashboard", "query-log", "clients", "local-dns", "dhcp", "blocklists", "reports"]
+DNS_TABS = ["dashboard", "insights", "reports", "query-log", "clients", "local-dns", "dhcp", "blocklists"]
 
 
 def dns_manager_enabled(db: Session) -> bool:
@@ -749,12 +758,22 @@ def mark_known_hostname(
     values.add(clean)
     save_known_hostnames(db, values)
     db.commit()
+    write_audit(
+        db, user, "recognise", "dns_device", clean, request.client.host if request.client else None,
+        detail="Marked DNS hostname as known", metadata={"hostname": clean},
+    )
     return RedirectResponse(f"/networking/dns-manager?tab={return_tab if return_tab in DNS_TABS else 'clients'}", status_code=303)
 
 
 @router.get("/connection-status")
-def dns_connection_status(db: Session = Depends(get_db), user=Depends(require_user)):
+def dns_connection_status(provider_id: int | None = Query(None), db: Session = Depends(get_db), user=Depends(require_user)):
     provider = selected_provider(db) if dns_manager_enabled(db) else None
+    if provider_id is not None and dns_manager_enabled(db):
+        provider = (
+            db.query(DNSProviderConfig)
+            .filter(DNSProviderConfig.id == provider_id, DNSProviderConfig.is_enabled == True)  # noqa: E712
+            .first()
+        )
     if not provider:
         return JSONResponse({"connected": False, "message": "No enabled provider is configured."})
     if get_settings().demo_mode:
@@ -781,8 +800,76 @@ def update_dns_blocklists(
         result = DNSProviderResult(True, "Demo Pi-hole blocklists updated successfully.")
     else:
         result = provider_for(provider).update_blocklists()
+    write_audit(
+        db, user, "refresh", "dns_blocklists", str(provider.id) if provider else None,
+        request.client.host if request.client else None,
+        detail="DNS provider blocklist refresh succeeded" if result.ok else "DNS provider blocklist refresh failed",
+        severity="info" if result.ok else "warning",
+        metadata={"provider_id": provider.id if provider else None, "outcome": "success" if result.ok else "failed"},
+    )
     params = urlencode({"tab": "blocklists", "notice": result.message, "notice_kind": "success" if result.ok else "error"})
     return RedirectResponse(f"/networking/dns-manager?{params}", status_code=303)
+
+
+@router.post("/insights/analyse")
+def analyse_dns_insights(
+    request: Request,
+    provider_id: int = Form(...),
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+    user=Depends(require_user),
+):
+    validate_csrf_token(request, csrf_token)
+    if user.role not in {"admin", "editor"}:
+        raise HTTPException(status_code=403, detail="Editor access is required.")
+    provider = (
+        db.query(DNSProviderConfig)
+        .filter(DNSProviderConfig.id == provider_id, DNSProviderConfig.is_enabled == True)  # noqa: E712
+        .first()
+    )
+    if not provider:
+        raise HTTPException(status_code=404, detail="DNS provider not found.")
+    try:
+        result = analyse_provider(db, provider, known_hostnames_raw=get_site_setting(db, "dns_known_hostnames"))
+    except AnalysisAlreadyRunning as exc:
+        return JSONResponse({"ok": False, "message": str(exc)}, status_code=409)
+    except Exception:
+        write_audit(
+            db, user, "analyse", "dns_insights", str(provider.id), request.client.host if request.client else None,
+            detail=f"DNS insight analysis failed for {provider.name}", severity="warning",
+            metadata={"provider_id": provider.id, "outcome": "failed"},
+        )
+        return JSONResponse({"ok": False, "message": "Unable to update DNS insights. Previous successful results have been preserved."}, status_code=502)
+    write_audit(
+        db, user, "analyse", "dns_insights", str(provider.id), request.client.host if request.client else None,
+        detail=f"DNS insight analysis completed for {provider.name}",
+        metadata={"provider_id": provider.id, "created": result.created, "updated": result.updated, "resolved": result.resolved},
+    )
+    return JSONResponse({"ok": True, "message": "DNS insights updated.", "active": result.active, "analysed_at": result.generated_at.isoformat()})
+
+
+@router.post("/insights/{insight_id}/acknowledge")
+def acknowledge_dns_insight(
+    insight_id: int,
+    request: Request,
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+    user=Depends(require_user),
+):
+    validate_csrf_token(request, csrf_token)
+    if user.role not in {"admin", "editor"}:
+        raise HTTPException(status_code=403, detail="Editor access is required.")
+    insight = db.get(DNSInsight, insight_id)
+    if not insight:
+        raise HTTPException(status_code=404, detail="DNS insight not found.")
+    insight.acknowledged_at = datetime.utcnow()
+    insight.acknowledged_by_id = user.id
+    db.commit()
+    write_audit(
+        db, user, "acknowledge", "dns_insight", str(insight.id), request.client.host if request.client else None,
+        detail=f"Acknowledged DNS insight {insight.rule_key}", metadata={"provider_id": insight.provider_id, "insight_id": insight.id},
+    )
+    return JSONResponse({"ok": True, "message": "Insight acknowledged."})
 
 
 @router.get("")
@@ -791,12 +878,25 @@ def dns_manager(
     tab: str = Query("dashboard"),
     notice: str = Query("", max_length=500),
     notice_kind: str = Query("", max_length=20),
+    provider_id: int | None = Query(None),
+    insight_status: str = Query("active", max_length=20),
+    insight_severity: str = Query("all", max_length=20),
+    insight_category: str = Query("all", max_length=40),
+    insight_period: str = Query("30d", max_length=20),
     db: Session = Depends(get_db),
     user=Depends(require_user),
 ):
     active_tab = tab if tab in DNS_TABS else "dashboard"
     enabled = dns_manager_enabled(db)
     provider = selected_provider(db) if enabled else None
+    if active_tab == "insights" and enabled and provider_id is not None:
+        requested_provider = (
+            db.query(DNSProviderConfig)
+            .filter(DNSProviderConfig.id == provider_id, DNSProviderConfig.is_enabled == True)  # noqa: E712
+            .first()
+        )
+        if requested_provider:
+            provider = requested_provider
     status = stats = history = queries = clients = local_dns = dhcp = blocklists = None
     error = None
     flagged_domains: set[str] = set()
@@ -861,6 +961,41 @@ def dns_manager(
         )
 
     recognised_hostnames = known_hostnames(db)
+    insight_rows: list[DNSInsight] = []
+    last_analysis_at = None
+    health_score = None
+    insight_summary = {"active": 0, "warnings": 0, "critical": 0, "acknowledged": 0}
+    if active_tab == "insights" and provider:
+        query = db.query(DNSInsight).filter(DNSInsight.provider_id == provider.id)
+        if insight_status == "active":
+            query = query.filter(DNSInsight.status == "active", DNSInsight.acknowledged_at.is_(None))
+        elif insight_status == "acknowledged":
+            query = query.filter(DNSInsight.status == "active", DNSInsight.acknowledged_at.is_not(None))
+        elif insight_status == "resolved":
+            query = query.filter(DNSInsight.status == "resolved")
+        if insight_severity in SEVERITY_LABELS:
+            query = query.filter(DNSInsight.severity == insight_severity)
+        if insight_category in CATEGORY_LABELS:
+            query = query.filter(DNSInsight.category == insight_category)
+        period_days = {"today": 1, "24h": 1, "7d": 7, "30d": 30}.get(insight_period, 30)
+        query = query.filter(DNSInsight.last_detected_at >= datetime.utcnow() - timedelta(days=period_days))
+        insight_rows = query.all()
+        insight_rows.sort(key=lambda item: (SEVERITY_ORDER.get(item.severity, 9), -item.last_detected_at.timestamp()))
+        last_snapshot = (
+            db.query(DNSStatisticsSnapshot)
+            .filter(DNSStatisticsSnapshot.provider_id == provider.id, DNSStatisticsSnapshot.provider_connected == True)  # noqa: E712
+            .order_by(DNSStatisticsSnapshot.period_end.desc())
+            .first()
+        )
+        last_analysis_at = last_snapshot.period_end if last_snapshot else None
+        all_provider_insights = db.query(DNSInsight).filter(DNSInsight.provider_id == provider.id).all()
+        health_score = calculate_health_score(provider, all_provider_insights, last_analysis_at)
+        insight_summary = {
+            "active": sum(1 for item in all_provider_insights if item.status == "active"),
+            "warnings": sum(1 for item in all_provider_insights if item.status == "active" and item.severity == "warning"),
+            "critical": sum(1 for item in all_provider_insights if item.status == "active" and item.severity == "critical"),
+            "acknowledged": sum(1 for item in all_provider_insights if item.status == "active" and item.acknowledged_at),
+        }
     return templates.TemplateResponse(
         request,
         "dns_manager.html",
@@ -885,6 +1020,14 @@ def dns_manager(
             "recognised_hostnames": recognised_hostnames,
             "flagged_domains": flagged_domains,
             "investigations": investigations,
+            "insight_rows": insight_rows,
+            "last_analysis_at": last_analysis_at,
+            "health_score": health_score,
+            "insight_summary": insight_summary,
+            "category_labels": CATEGORY_LABELS,
+            "severity_labels": SEVERITY_LABELS,
+            "insight_action_target": insight_action_target,
+            "insight_filters": {"status": insight_status, "severity": insight_severity, "category": insight_category, "period": insight_period},
             "list_from_payload": list_from_payload,
             "stat_value": stat_value,
             "display_number": display_number,
