@@ -436,10 +436,15 @@ def migrate_existing_database():
 
         dns_snapshot_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(dns_statistics_snapshots)"))}
         if not dns_snapshot_columns:
-            conn.execute(text("CREATE TABLE dns_statistics_snapshots (id INTEGER NOT NULL PRIMARY KEY, provider_id INTEGER NOT NULL REFERENCES dns_providers(id) ON DELETE CASCADE, period_start DATETIME NOT NULL, period_end DATETIME NOT NULL, total_queries INTEGER, blocked_queries INTEGER, failed_queries INTEGER, cached_queries INTEGER, forwarded_queries INTEGER, active_clients INTEGER, blocking_enabled BOOLEAN, provider_connected BOOLEAN DEFAULT 1 NOT NULL, client_aggregates_json TEXT, domain_aggregates_json TEXT, response_aggregates_json TEXT, created_at DATETIME)"))
+            conn.execute(text("CREATE TABLE dns_statistics_snapshots (id INTEGER NOT NULL PRIMARY KEY, provider_id INTEGER NOT NULL REFERENCES dns_providers(id) ON DELETE CASCADE, period_start DATETIME NOT NULL, period_end DATETIME NOT NULL, total_queries INTEGER, blocked_queries INTEGER, failed_queries INTEGER, cached_queries INTEGER, forwarded_queries INTEGER, active_clients INTEGER, blocking_enabled BOOLEAN, provider_connected BOOLEAN DEFAULT 1 NOT NULL, client_aggregates_json TEXT, domain_aggregates_json TEXT, response_aggregates_json TEXT, capabilities_json TEXT, analysis_summary_json TEXT, created_at DATETIME)"))
             conn.execute(text("CREATE UNIQUE INDEX uq_dns_snapshots_provider_period ON dns_statistics_snapshots (provider_id, period_start)"))
             for column in ["provider_id", "period_start", "period_end", "created_at"]:
                 conn.execute(text(f"CREATE INDEX ix_dns_statistics_snapshots_{column} ON dns_statistics_snapshots ({column})"))
+        else:
+            if "capabilities_json" not in dns_snapshot_columns:
+                conn.execute(text("ALTER TABLE dns_statistics_snapshots ADD COLUMN capabilities_json TEXT"))
+            if "analysis_summary_json" not in dns_snapshot_columns:
+                conn.execute(text("ALTER TABLE dns_statistics_snapshots ADD COLUMN analysis_summary_json TEXT"))
 
         dns_device_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(dns_recognised_devices)"))}
         if not dns_device_columns:

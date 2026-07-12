@@ -204,6 +204,20 @@ def query_upstream(row: Any) -> str:
     return str(payload_value(row, "upstream", "forwarded_to", "server") or "-")
 
 
+def filtered_query_rows(payload: Any, domain_filter: str = "", client_filter: str = "") -> list[dict[str, Any]]:
+    rows = [row for row in list_from_payload(payload, "queries", "data") if isinstance(row, dict)]
+    clean_domain = domain_filter.strip().rstrip(".").lower()
+    clean_client = client_filter.strip().lower()
+    if clean_domain:
+        rows = [row for row in rows if query_domain(row).strip().rstrip(".").lower() == clean_domain]
+    if clean_client:
+        rows = [
+            row for row in rows
+            if clean_client in {query_client_name(row).strip().lower(), query_client_ip(row).strip().lower()}
+        ]
+    return rows
+
+
 def domain_root(domain: str) -> str:
     clean = (domain or "").strip(".").lower()
     if not clean or clean == "-":
@@ -883,6 +897,8 @@ def dns_manager(
     insight_severity: str = Query("all", max_length=20),
     insight_category: str = Query("all", max_length=40),
     insight_period: str = Query("30d", max_length=20),
+    dns_domain: str = Query("", max_length=500),
+    dns_client: str = Query("", max_length=255),
     db: Session = Depends(get_db),
     user=Depends(require_user),
 ):
@@ -965,6 +981,7 @@ def dns_manager(
     last_analysis_at = None
     health_score = None
     insight_summary = {"active": 0, "warnings": 0, "critical": 0, "acknowledged": 0}
+    analysis_coverage = None
     if active_tab == "insights" and provider:
         query = db.query(DNSInsight).filter(DNSInsight.provider_id == provider.id)
         if insight_status == "active":
@@ -988,6 +1005,37 @@ def dns_manager(
             .first()
         )
         last_analysis_at = last_snapshot.period_end if last_snapshot else None
+        if last_snapshot:
+            try:
+                capabilities = json.loads(last_snapshot.capabilities_json or "[]")
+            except (TypeError, ValueError):
+                capabilities = []
+            try:
+                summary_data = json.loads(last_snapshot.analysis_summary_json or "{}")
+            except (TypeError, ValueError):
+                summary_data = {}
+            try:
+                domain_data = json.loads(last_snapshot.domain_aggregates_json or "{}")
+            except (TypeError, ValueError):
+                domain_data = {}
+            analysis_coverage = {
+                "capabilities": capabilities if isinstance(capabilities, list) else [],
+                "query_sample_count": summary_data.get("query_sample_count"),
+                "clients_analysed": summary_data.get("clients_analysed"),
+                "recognised_clients": summary_data.get("recognised_clients"),
+                "unrecognised_clients": summary_data.get("unrecognised_clients"),
+                "rules_evaluated": summary_data.get("rules_evaluated"),
+                "rules_skipped": summary_data.get("rules_skipped"),
+                "insights_generated": summary_data.get("insights_generated"),
+                "baseline_available": summary_data.get("baseline_available", False),
+                "total_queries": last_snapshot.total_queries,
+                "blocked_queries": last_snapshot.blocked_queries,
+                "failed_queries": last_snapshot.failed_queries,
+                "active_clients": last_snapshot.active_clients,
+                "blocking_enabled": last_snapshot.blocking_enabled,
+                "top_blocked_domains": domain_data.get("top_blocked_domains", []) if isinstance(domain_data, dict) else [],
+                "top_client_domain_pairs": domain_data.get("top_client_domain_pairs", []) if isinstance(domain_data, dict) else [],
+            }
         all_provider_insights = db.query(DNSInsight).filter(DNSInsight.provider_id == provider.id).all()
         health_score = calculate_health_score(provider, all_provider_insights, last_analysis_at)
         insight_summary = {
@@ -1024,6 +1072,7 @@ def dns_manager(
             "last_analysis_at": last_analysis_at,
             "health_score": health_score,
             "insight_summary": insight_summary,
+            "analysis_coverage": analysis_coverage,
             "category_labels": CATEGORY_LABELS,
             "severity_labels": SEVERITY_LABELS,
             "insight_action_target": insight_action_target,
@@ -1036,6 +1085,8 @@ def dns_manager(
             "query_type": query_type,
             "query_status": query_status,
             "query_upstream": query_upstream,
+            "filtered_query_rows": filtered_query_rows,
+            "dns_query_filters": {"domain": dns_domain, "client": dns_client},
             "query_log_time": query_log_time,
             "query_client_name": query_client_name,
             "query_client_ip": query_client_ip,

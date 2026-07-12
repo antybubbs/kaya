@@ -89,12 +89,19 @@ def main():
 
     if not table_exists(cur, "dns_statistics_snapshots"):
         cur.execute(
-            "CREATE TABLE dns_statistics_snapshots (id INTEGER NOT NULL PRIMARY KEY, provider_id INTEGER NOT NULL REFERENCES dns_providers(id) ON DELETE CASCADE, period_start DATETIME NOT NULL, period_end DATETIME NOT NULL, total_queries INTEGER, blocked_queries INTEGER, failed_queries INTEGER, cached_queries INTEGER, forwarded_queries INTEGER, active_clients INTEGER, blocking_enabled BOOLEAN, provider_connected BOOLEAN DEFAULT 1 NOT NULL, client_aggregates_json TEXT, domain_aggregates_json TEXT, response_aggregates_json TEXT, created_at DATETIME)"
+            "CREATE TABLE dns_statistics_snapshots (id INTEGER NOT NULL PRIMARY KEY, provider_id INTEGER NOT NULL REFERENCES dns_providers(id) ON DELETE CASCADE, period_start DATETIME NOT NULL, period_end DATETIME NOT NULL, total_queries INTEGER, blocked_queries INTEGER, failed_queries INTEGER, cached_queries INTEGER, forwarded_queries INTEGER, active_clients INTEGER, blocking_enabled BOOLEAN, provider_connected BOOLEAN DEFAULT 1 NOT NULL, client_aggregates_json TEXT, domain_aggregates_json TEXT, response_aggregates_json TEXT, capabilities_json TEXT, analysis_summary_json TEXT, created_at DATETIME)"
         )
         cur.execute("CREATE UNIQUE INDEX uq_dns_snapshots_provider_period ON dns_statistics_snapshots (provider_id, period_start)")
         for column in ["provider_id", "period_start", "period_end", "created_at"]:
             cur.execute(f"CREATE INDEX ix_dns_statistics_snapshots_{column} ON dns_statistics_snapshots ({column})")
         migrations_applied.append("dns_statistics_snapshots")
+    else:
+        if not column_exists(cur, "dns_statistics_snapshots", "capabilities_json"):
+            cur.execute("ALTER TABLE dns_statistics_snapshots ADD COLUMN capabilities_json TEXT")
+            migrations_applied.append("dns_statistics_snapshots.capabilities_json")
+        if not column_exists(cur, "dns_statistics_snapshots", "analysis_summary_json"):
+            cur.execute("ALTER TABLE dns_statistics_snapshots ADD COLUMN analysis_summary_json TEXT")
+            migrations_applied.append("dns_statistics_snapshots.analysis_summary_json")
 
     if not table_exists(cur, "dns_recognised_devices"):
         cur.execute(

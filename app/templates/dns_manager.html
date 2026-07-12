@@ -8,8 +8,8 @@
     </div>
     {% if provider %}
     <div class="dns-provider-state">
-      <span class="dns-connection-indicator {% if status and status.ok %}is-connected{% else %}is-disconnected{% endif %}" data-dns-connection-status title="{{ status.message if status else 'Checking provider connectivity' }}">
-        <i aria-hidden="true"></i><span data-dns-connection-label>{% if status and status.ok %}Connected{% else %}Disconnected{% endif %}</span>
+      <span class="dns-connection-indicator {% if (status and status.ok) or (not status and provider.last_status == 'online') %}is-connected{% else %}is-disconnected{% endif %}" data-dns-connection-status title="{{ status.message if status else provider.last_error or 'Using the latest provider connectivity check' }}">
+        <i aria-hidden="true"></i><span data-dns-connection-label>{% if (status and status.ok) or (not status and provider.last_status == 'online') %}Connected{% else %}Disconnected{% endif %}</span>
       </span>
       <span class="module-stat">Provider <strong>{{ provider.name }}</strong></span>
     </div>
@@ -286,6 +286,62 @@
     <article><span>Provider Status</span><strong>{{ 'Connected' if provider.last_status == 'online' else 'Disconnected' if provider.last_status else 'Unknown' }}</strong></article>
   </section>
 
+  {% if analysis_coverage %}
+  <section class="dns-analysis-coverage" aria-labelledby="dns-analysis-coverage-title">
+    <header>
+      <div><h2 id="dns-analysis-coverage-title">Analysis coverage</h2><p class="muted">Evidence retrieved and evaluated during the last successful analysis.</p></div>
+      <span class="table-chip good">Analysis completed</span>
+    </header>
+    <div class="dns-analysis-metrics">
+      <article><span>Provider datasets</span><strong>{{ analysis_coverage.capabilities|length }}</strong><small>{{ analysis_coverage.capabilities|join(', ') if analysis_coverage.capabilities else 'No capability record; analyse again' }}</small></article>
+      <article><span>Recent queries evaluated</span><strong>{{ display_number(analysis_coverage.query_sample_count) if analysis_coverage.query_sample_count is not none else 'Unknown' }}</strong><small>Bounded provider query sample</small></article>
+      <article><span>Clients analysed</span><strong>{{ display_number(analysis_coverage.clients_analysed) if analysis_coverage.clients_analysed is not none else 'Unknown' }}</strong><small>{{ display_number(analysis_coverage.recognised_clients) if analysis_coverage.recognised_clients is not none else '?' }} recognised / {{ display_number(analysis_coverage.unrecognised_clients) if analysis_coverage.unrecognised_clients is not none else '?' }} unrecognised</small></article>
+      <article><span>Rules evaluated</span><strong>{{ analysis_coverage.rules_evaluated if analysis_coverage.rules_evaluated is not none else 'Unknown' }}</strong><small>{{ analysis_coverage.rules_skipped if analysis_coverage.rules_skipped is not none else '?' }} skipped because required data or history was unavailable</small></article>
+      <article><span>Provider query total</span><strong>{{ display_number(analysis_coverage.total_queries) if analysis_coverage.total_queries is not none else 'Unavailable' }}</strong><small>{{ display_number(analysis_coverage.blocked_queries) if analysis_coverage.blocked_queries is not none else '?' }} blocked</small></article>
+      <article><span>Trend baseline</span><strong>{{ 'Available' if analysis_coverage.baseline_available else 'Collecting' }}</strong><small>{% if analysis_coverage.baseline_available %}Historical comparison rules can run{% else %}Trend insights need another comparable hourly snapshot{% endif %}</small></article>
+    </div>
+    <div class="dns-analysis-evidence">
+      <section>
+        <header><h3>Top blocked domains to investigate</h3><span class="muted">Latest provider query sample</span></header>
+        {% if analysis_coverage.top_blocked_domains %}
+        <div class="dns-evidence-list">
+          {% for item in analysis_coverage.top_blocked_domains[:10] %}
+          <article>
+            <div><strong title="{{ item.domain }}">{{ item.domain }}</strong><small>{{ item.count }} blocked request{% if item.count != 1 %}s{% endif %}</small></div>
+            <div class="dns-evidence-clients">
+              {% for client in item.clients %}<a class="table-chip" href="/networking/dns-manager?tab=query-log&amp;dns_domain={{ item.domain|urlencode }}&amp;dns_client={{ client.name|urlencode }}">{{ client.name }} ({{ client.count }})</a>{% endfor %}
+            </div>
+            <a class="button secondary small" href="/networking/dns-manager?tab=query-log&amp;dns_domain={{ item.domain|urlencode }}">Investigate domain</a>
+          </article>
+          {% endfor %}
+        </div>
+        {% else %}<p class="muted">No blocked domain activity was present in the retrieved query sample.</p>{% endif %}
+      </section>
+      <section>
+        <header><h3>Most active client-domain relationships</h3><span class="muted">Factual activity, not a security conclusion</span></header>
+        {% if analysis_coverage.top_client_domain_pairs %}
+        <div class="dns-evidence-list compact">
+          {% for item in analysis_coverage.top_client_domain_pairs[:10] %}
+          <article>
+            <div><strong title="{{ item.client }}">{{ item.client }}</strong><small title="{{ item.domain }}">{{ item.domain }}</small></div>
+            <span class="dns-evidence-count">{{ item.count }}</span>
+            <a class="button secondary small" href="/networking/dns-manager?tab=query-log&amp;dns_domain={{ item.domain|urlencode }}&amp;dns_client={{ item.client|urlencode }}">View queries</a>
+          </article>
+          {% endfor %}
+        </div>
+        {% else %}<p class="muted">No client-domain relationships were returned in the latest query sample.</p>{% endif %}
+      </section>
+    </div>
+    {% if analysis_coverage.query_sample_count == 0 %}
+    <div class="alert">The provider connected, but no recent query rows were returned. Client security and recent-activity rules could not produce meaningful findings.</div>
+    {% elif analysis_coverage.rules_skipped %}
+    <p class="muted dns-analysis-note">Skipped rules are expected on first run or when the provider does not expose the required dataset. They do not reduce the health score.</p>
+    {% endif %}
+  </section>
+  {% elif last_analysis_at %}
+  <section class="dns-analysis-coverage"><p class="muted">This analysis predates coverage diagnostics. Run <strong>Analyse now</strong> again to see exactly what data and rules were evaluated.</p></section>
+  {% endif %}
+
   <form class="dns-insight-filters" method="get" action="/networking/dns-manager" data-dns-insight-filters>
     <input type="hidden" name="tab" value="insights">
     <label>Provider
@@ -379,13 +435,21 @@
   </div>
 </section>
 {% elif active_tab == 'query-log' %}
-{% set rows = list_from_payload(queries.data if queries and queries.ok else {}, 'queries', 'data') %}
+{% set rows = filtered_query_rows(queries.data if queries and queries.ok else {}, dns_query_filters.domain, dns_query_filters.client) %}
 <section class="panel dns-query-log-panel" data-dns-query-log>
   <div class="dns-query-log-controls">
     <label class="checkbox-row dns-live-toggle">
       <input type="checkbox" data-dns-live-toggle>
       <span><strong>Live query log</strong></span>
     </label>
+    {% if dns_query_filters.domain or dns_query_filters.client %}
+    <div class="dns-query-filter-summary">
+      <span>Filtered investigation:</span>
+      {% if dns_query_filters.client %}<span class="table-chip">Client {{ dns_query_filters.client }}</span>{% endif %}
+      {% if dns_query_filters.domain %}<span class="table-chip">Domain {{ dns_query_filters.domain }}</span>{% endif %}
+      <a class="button secondary small" href="/networking/dns-manager?tab=query-log">Clear filters</a>
+    </div>
+    {% endif %}
   </div>
   <table data-table-key="dns-query-log" data-dns-query-log-table>
     <thead><tr><th>Time</th><th>Client Name</th><th>Client IP</th><th>Domain</th><th>Query Type</th><th>Status</th><th>Reply Type</th><th>Reply Time</th><th>Upstream</th><th data-col="actions">Actions</th></tr></thead>

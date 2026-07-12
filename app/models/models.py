@@ -290,6 +290,8 @@ class DNSStatisticsSnapshot(Base):
     client_aggregates_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     domain_aggregates_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     response_aggregates_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    capabilities_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    analysis_summary_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     provider = relationship("DNSProviderConfig")
 

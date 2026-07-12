@@ -8,6 +8,7 @@ import logging
 import threading
 import time
 from typing import Any
+from urllib.parse import urlencode
 
 from sqlalchemy.orm import Session
 
@@ -67,6 +68,8 @@ class DNSInsightThresholds:
     minimum_network_queries: int = 500
     blocked_query_warning_percent: float = 35.0
     nxdomain_warning_percent: float = 25.0
+    repeated_blocked_domain_attempts: int = 5
+    frequent_client_domain_attempts: int = 10
     inactive_recognised_device_days: int = 7
     snapshot_retention_days: int = 30
 
@@ -247,6 +250,14 @@ def _query_status(row: dict[str, Any]) -> str:
     reply = row.get("reply")
     reply_type = reply.get("type") if isinstance(reply, dict) else row.get("reply_type")
     return f"{row.get('status') or ''} {reply_type or ''}".strip().lower()
+
+
+def _query_domain(row: dict[str, Any]) -> str:
+    return str(row.get("domain") or row.get("query") or "-").strip().rstrip(".").lower()
+
+
+def _client_label(client: NormalisedClient) -> str:
+    return client.hostname if client.hostname not in {"", "-", "*"} else client.ip
 
 
 def _identity(hostname: str, ip: str, mac: str, provider_client_id: str = "") -> tuple[str, str]:
@@ -569,7 +580,7 @@ class NewDeviceRule(DNSInsightRule):
                 category=InsightCategory.DEVICES,
                 severity=InsightSeverity.INFORMATION,
                 title="New unrecognised device",
-                summary=f"{client.hostname or client.ip} is present in current DNS activity and has not been recognised in Kaya.",
+                summary=f"{_client_label(client)} is present in current DNS activity and has not been recognised in Kaya.",
                 detail="Review the hostname and stable identity before marking this device as known. An IP address alone may change through DHCP.",
                 entity_type="client",
                 entity_identifier=client.identity_value,
@@ -636,7 +647,7 @@ class HighClientVolumeRule(DNSInsightRule):
                 category=InsightCategory.NETWORK,
                 severity=InsightSeverity.WARNING,
                 title="Unusually high client query volume",
-                summary=f"{client.hostname or client.ip} generated {client.queries:,} recent queries, {change:.0f}% above the previous comparable snapshot.",
+                summary=f"{_client_label(client)} generated {client.queries:,} recent queries, {change:.0f}% above the previous comparable snapshot.",
                 detail="This observation is based on the available aggregate baseline and does not by itself indicate a fault or security incident.",
                 entity_type="client",
                 entity_identifier=client.identity_value,
@@ -667,7 +678,7 @@ class HighBlockedRateRule(DNSInsightRule):
                 category=InsightCategory.SECURITY,
                 severity=InsightSeverity.WARNING,
                 title="High blocked-query volume",
-                summary=f"{client.hostname or client.ip} had {client.blocked_queries:,} blocked requests out of {client.queries:,} recent queries ({rate:.1f}%).",
+                summary=f"{_client_label(client)} had {client.blocked_queries:,} blocked requests out of {client.queries:,} recent queries ({rate:.1f}%).",
                 detail="An unusually high blocked proportion may be caused by software, telemetry, filtering policy, or other automated activity and may require investigation.",
                 entity_type="client",
                 entity_identifier=client.identity_value,
@@ -696,7 +707,7 @@ class NXDomainSpikeRule(DNSInsightRule):
                 category=InsightCategory.SECURITY,
                 severity=InsightSeverity.WARNING,
                 title="Excessive NXDOMAIN responses",
-                summary=f"{client.hostname or client.ip} received NXDOMAIN for {rate:.1f}% of its recent DNS requests.",
+                summary=f"{_client_label(client)} received NXDOMAIN for {rate:.1f}% of its recent DNS requests.",
                 detail="Possible causes include misconfigured software, broken applications, tracking or telemetry, incorrect names, or other automated request patterns. This is not proof of compromise.",
                 entity_type="client",
                 entity_identifier=client.identity_value,
@@ -704,6 +715,54 @@ class NXDomainSpikeRule(DNSInsightRule):
                 action_type="query_log",
             ))
         return RuleEvaluation(True, insights[:10])
+
+
+class RepeatedBlockedDomainRule(DNSInsightRule):
+    key = "repeated_blocked_domain"
+
+    def evaluate(self, context, thresholds):
+        if "queries" not in context.capabilities:
+            return RuleEvaluation(False)
+        pairs: dict[tuple[str, str, str], dict[str, Any]] = {}
+        for row in context.query_rows:
+            status = _query_status(row)
+            if not any(term in status for term in ("block", "gravity", "deny", "regex")):
+                continue
+            domain = _query_domain(row)
+            client_name, client_ip = _query_client(row)
+            client_label = client_name if client_name not in {"", "-", "*"} else client_ip
+            if domain == "-" or client_label == "-":
+                continue
+            key = (client_label.lower(), client_ip, domain)
+            item = pairs.setdefault(key, {"client": client_label, "client_ip": client_ip, "domain": domain, "count": 0, "first": None, "last": None})
+            item["count"] += 1
+            observed = _timestamp(row.get("time") or row.get("timestamp") or row.get("date"))
+            if observed:
+                item["first"] = min(item["first"], observed) if item["first"] else observed
+                item["last"] = max(item["last"], observed) if item["last"] else observed
+        candidates = sorted(pairs.values(), key=lambda item: item["count"], reverse=True)
+        insights = []
+        for item in candidates:
+            if item["count"] < thresholds.repeated_blocked_domain_attempts:
+                continue
+            timing = ""
+            if item["first"] and item["last"]:
+                timing = f" The first observed attempt was {item['first'].strftime('%d/%m/%Y %H:%M')} and the most recent was {item['last'].strftime('%d/%m/%Y %H:%M')}."
+            insights.append(GeneratedInsight(
+                key=f"{self.key}:{item['client'].lower()}:{item['domain']}",
+                rule_key=self.key,
+                category=InsightCategory.SECURITY,
+                severity=InsightSeverity.WARNING,
+                title="Repeated requests for a blocked domain",
+                summary=f"{item['client']} requested {item['domain']} {item['count']:,} times in the latest provider query sample.",
+                detail="Repeated blocked requests may be caused by an application, telemetry, advertising, filtering policy, or other automated activity and may require investigation." + timing,
+                entity_type="domain",
+                entity_identifier=item["domain"],
+                current_value=f"{item['count']:,} blocked attempts",
+                action_type="query_log_client_domain",
+                metadata={"domain": item["domain"], "client": item["client"], "client_ip": item["client_ip"], "attempts": item["count"]},
+            ))
+        return RuleEvaluation(True, insights[:15])
 
 
 class NetworkVolumeTrendRule(DNSInsightRule):
@@ -743,6 +802,7 @@ RULES: tuple[DNSInsightRule, ...] = (
     HighClientVolumeRule(),
     HighBlockedRateRule(),
     NXDomainSpikeRule(),
+    RepeatedBlockedDomainRule(),
     NetworkVolumeTrendRule(),
 )
 
@@ -778,7 +838,14 @@ def _recommendations(insights: list[GeneratedInsight]) -> list[GeneratedInsight]
     return recommendations
 
 
-def _snapshot(db: Session, context: DNSInsightContext) -> DNSStatisticsSnapshot:
+def _snapshot(
+    db: Session,
+    context: DNSInsightContext,
+    *,
+    rules_evaluated: int,
+    rules_skipped: int,
+    insights_generated: int,
+) -> DNSStatisticsSnapshot:
     period_start = context.generated_at.replace(minute=0, second=0, microsecond=0)
     row = (
         db.query(DNSStatisticsSnapshot)
@@ -798,6 +865,43 @@ def _snapshot(db: Session, context: DNSInsightContext) -> DNSStatisticsSnapshot:
     row.client_aggregates_json = json.dumps({client.identity_value: {"queries": client.queries, "blocked": client.blocked_queries, "nxdomain": client.nxdomain_queries} for client in context.clients[:200]})
     response_counts = Counter(_query_status(item) for item in context.query_rows)
     row.response_aggregates_json = json.dumps(dict(response_counts.most_common(50)))
+    blocked_domains: dict[str, dict[str, Any]] = {}
+    client_domain_pairs: Counter[tuple[str, str, str]] = Counter()
+    for item in context.query_rows:
+        domain = _query_domain(item)
+        client_name, client_ip = _query_client(item)
+        client_label = client_name if client_name not in {"", "-", "*"} else client_ip
+        if domain == "-" or client_label == "-":
+            continue
+        status = _query_status(item)
+        blocked = any(term in status for term in ("block", "gravity", "deny", "regex"))
+        client_domain_pairs[(client_label, client_ip, domain)] += 1
+        if blocked:
+            entry = blocked_domains.setdefault(domain, {"count": 0, "clients": Counter()})
+            entry["count"] += 1
+            entry["clients"][client_label] += 1
+    top_blocked = [
+        {"domain": domain, "count": data["count"], "clients": [{"name": name, "count": count} for name, count in data["clients"].most_common(5)]}
+        for domain, data in sorted(blocked_domains.items(), key=lambda pair: pair[1]["count"], reverse=True)[:15]
+    ]
+    top_pairs = [
+        {"client": client, "client_ip": client_ip, "domain": domain, "count": count}
+        for (client, client_ip, domain), count in client_domain_pairs.most_common(15)
+    ]
+    row.domain_aggregates_json = json.dumps({"top_blocked_domains": top_blocked, "top_client_domain_pairs": top_pairs})
+    row.capabilities_json = json.dumps(sorted(context.capabilities))
+    row.analysis_summary_json = json.dumps(
+        {
+            "query_sample_count": len(context.query_rows),
+            "clients_analysed": len(context.clients),
+            "recognised_clients": sum(1 for client in context.clients if client.recognised),
+            "unrecognised_clients": sum(1 for client in context.clients if not client.recognised),
+            "rules_evaluated": rules_evaluated,
+            "rules_skipped": rules_skipped,
+            "insights_generated": insights_generated,
+            "baseline_available": context.previous_snapshot is not None,
+        }
+    )
     return row
 
 
@@ -883,7 +987,13 @@ def analyse_provider(
         evaluated_rules.add("recommendation")
         created, updated, resolved = _persist_insights(db, context, generated, evaluated_rules)
         if context.connected:
-            _snapshot(db, context)
+            _snapshot(
+                db,
+                context,
+                rules_evaluated=len(evaluated_rules),
+                rules_skipped=skipped,
+                insights_generated=len(generated),
+            )
             cutoff = context.generated_at - timedelta(days=thresholds.snapshot_retention_days)
             db.query(DNSStatisticsSnapshot).filter(DNSStatisticsSnapshot.provider_id == provider.id, DNSStatisticsSnapshot.period_start < cutoff).delete(synchronize_session=False)
         db.commit()
@@ -944,4 +1054,16 @@ ACTION_TARGETS = {
 
 
 def insight_action_target(insight: DNSInsight) -> str | None:
-    return ACTION_TARGETS.get(insight.action_type or "")
+    action_type = insight.action_type or ""
+    if action_type == "query_log_client_domain":
+        try:
+            metadata = json.loads(insight.metadata_json or "{}")
+        except (TypeError, ValueError):
+            metadata = {}
+        params = {"tab": "query-log"}
+        if metadata.get("domain"):
+            params["dns_domain"] = str(metadata["domain"])
+        if metadata.get("client"):
+            params["dns_client"] = str(metadata["client"])
+        return f"/networking/dns-manager?{urlencode(params)}"
+    return ACTION_TARGETS.get(action_type)

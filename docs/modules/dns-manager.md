@@ -54,7 +54,9 @@ Insights use the categories System, Network Activity, Security, Devices, Usage T
 - **Information:** a meaningful observation without urgent action.
 - **Healthy:** a positive supported condition. The initial implementation avoids filling the page with unnecessary healthy cards.
 
-Initial rules cover provider connectivity, stale analysis data, disabled blocking, supported blocklist age, new unrecognised devices, recognised-device IP changes, high client volume when a baseline exists, high blocked-query rate, excessive NXDOMAIN responses, network-wide query-volume changes and linked recommendations.
+Initial rules cover provider connectivity, stale analysis data, disabled blocking, supported blocklist age, new unrecognised devices, recognised-device IP changes, high client volume when a baseline exists, high blocked-query rate, excessive NXDOMAIN responses, repeated client requests for the same blocked domain, network-wide query-volume changes and linked recommendations.
+
+The Analysis coverage area also retains the latest bounded evidence for top blocked domains, the clients contributing to each blocked domain, and the most active client-domain relationships. These are factual sample summaries rather than security conclusions. Each row links to the Query Log with the relevant client and domain filters preserved.
 
 Rules are provider-neutral and skip themselves when their required capability is unavailable. A failed rule does not stop the remaining analysis.
 

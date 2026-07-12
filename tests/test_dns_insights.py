@@ -19,6 +19,7 @@ from app.services.dns_insights import (
     NormalisedClient,
     NXDomainSpikeRule,
     ProviderDisconnectedRule,
+    RepeatedBlockedDomainRule,
     _persist_insights,
     calculate_health_score,
 )
@@ -89,6 +90,25 @@ def test_network_volume_change_requires_material_volume_and_change():
     assert evaluation.insights[0].percentage_change == 50
 
 
+def test_repeated_blocked_domain_identifies_client_domain_pair():
+    rows = [
+        {
+            "time": 1783849200 + index,
+            "domain": "blocked.example",
+            "client": {"name": "media-player", "ip": "10.0.0.20"},
+            "status": "blocked",
+            "reply": {"type": "gravity"},
+        }
+        for index in range(6)
+    ]
+    evaluation = RepeatedBlockedDomainRule().evaluate(context(query_rows=rows), DNSInsightThresholds())
+    assert evaluation.supported is True
+    assert len(evaluation.insights) == 1
+    assert evaluation.insights[0].metadata["domain"] == "blocked.example"
+    assert evaluation.insights[0].metadata["client"] == "media-player"
+    assert evaluation.insights[0].current_value == "6 blocked attempts"
+
+
 def test_health_score_is_deterministic_and_unsupported_freshness_has_no_deduction():
     provider = SimpleNamespace(last_status="online")
     insight = SimpleNamespace(status="active", severity="warning", rule_key="blocking_disabled")
@@ -125,4 +145,3 @@ def test_insight_lifecycle_resolves_and_reactivates_without_duplicate():
         assert reactivated.status == "active"
         assert reactivated.first_detected_at == first_detected
         assert db.query(DNSInsight).count() == 1
-
