@@ -6,6 +6,66 @@
   const liveIntervalMs = 2000;
   let liveTimer = null;
   let refreshInFlight = false;
+  const dashboardWidgets = document.querySelector("[data-dns-dashboard-widgets]");
+  const dashboardRefreshSelect = document.querySelector("[data-dns-refresh-interval]");
+  const dashboardRefreshKey = "kaya.dns.dashboard.refreshInterval";
+  const connectionStatus = document.querySelector("[data-dns-connection-status]");
+  let dashboardTimer = null;
+  let dashboardRefreshInFlight = false;
+
+  async function refreshDashboardWidgets() {
+    if (!dashboardWidgets || dashboardRefreshInFlight || document.hidden) return;
+    dashboardRefreshInFlight = true;
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.set("tab", "dashboard");
+      const response = await fetch(url.toString(), { credentials: "same-origin", headers: { Accept: "text/html" } });
+      if (!response.ok) throw new Error(`DNS dashboard refresh failed: ${response.status}`);
+      const doc = new DOMParser().parseFromString(await response.text(), "text/html");
+      const nextWidgets = doc.querySelector("[data-dns-dashboard-widgets]");
+      if (nextWidgets) dashboardWidgets.innerHTML = nextWidgets.innerHTML;
+    } catch (error) {
+      console.warn(error);
+    } finally {
+      dashboardRefreshInFlight = false;
+    }
+  }
+
+  function setDashboardInterval(value) {
+    if (!dashboardRefreshSelect) return;
+    const interval = [30000, 60000, 300000].includes(Number(value)) ? Number(value) : 30000;
+    dashboardRefreshSelect.value = String(interval);
+    localStorage.setItem(dashboardRefreshKey, String(interval));
+    if (dashboardTimer) window.clearInterval(dashboardTimer);
+    dashboardTimer = window.setInterval(refreshDashboardWidgets, interval);
+  }
+
+  async function refreshConnectionStatus() {
+    if (!connectionStatus || document.hidden) return;
+    try {
+      const response = await fetch("/networking/dns-manager/connection-status", { credentials: "same-origin", headers: { Accept: "application/json" } });
+      if (!response.ok) throw new Error(`DNS connection check failed: ${response.status}`);
+      const result = await response.json();
+      connectionStatus.classList.toggle("is-connected", Boolean(result.connected));
+      connectionStatus.classList.toggle("is-disconnected", !result.connected);
+      connectionStatus.title = result.message || "";
+      const label = connectionStatus.querySelector("[data-dns-connection-label]");
+      if (label) label.textContent = result.connected ? "Connected" : "Disconnected";
+    } catch (error) {
+      connectionStatus.classList.remove("is-connected");
+      connectionStatus.classList.add("is-disconnected");
+      connectionStatus.title = error.message;
+    }
+  }
+
+  if (dashboardRefreshSelect) {
+    setDashboardInterval(localStorage.getItem(dashboardRefreshKey) || "30000");
+    dashboardRefreshSelect.addEventListener("change", () => setDashboardInterval(dashboardRefreshSelect.value));
+  }
+  if (connectionStatus) {
+    refreshConnectionStatus();
+    window.setInterval(refreshConnectionStatus, 30000);
+  }
 
   function onQueryLogPage() {
     return Boolean(queryLogPanel && queryLogBody);

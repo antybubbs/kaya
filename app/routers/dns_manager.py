@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
 from typing import Any
+from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, Form, Query, Request
-from fastapi.responses import RedirectResponse
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.db.session import get_db
-from app.models.models import DNSInvestigation, DNSProviderConfig
+from app.models.models import DNSInvestigation, DNSProviderConfig, RemoteManagerSetting
 from app.routers.auth import require_user
 from app.services.dns_providers import DNSProvider, DNSProviderResult, provider_for
 from app.services.audit import write_audit
@@ -114,7 +116,7 @@ def timestamp_display(value: Any) -> str:
     if not stamp:
         return str(value or "-")
     try:
-        return datetime.fromtimestamp(stamp).strftime("%Y-%m-%d %H:%M")
+        return datetime.fromtimestamp(stamp).strftime("%d/%m/%Y %H:%M")
     except (ValueError, OSError):
         return str(value or "-")
 
@@ -134,7 +136,7 @@ def query_log_time(row: Any) -> str:
         return "-"
     try:
         numeric = float(value)
-        return datetime.fromtimestamp(numeric).strftime("%Y-%m-%d %H:%M:%S")
+        return datetime.fromtimestamp(numeric).strftime("%d/%m/%Y %H:%M:%S")
     except (TypeError, ValueError, OSError):
         return str(value)
 
@@ -366,7 +368,28 @@ def dhcp_lease_rows(dhcp_payload: Any) -> list[dict[str, Any]]:
     return rows
 
 
-def network_client_inventory(clients_payload: Any, dhcp_payload: Any, query_payload: Any) -> list[dict[str, Any]]:
+def normalise_hostname(value: Any) -> str:
+    return str(value or "").strip().rstrip(".").lower()
+
+
+def known_hostnames(db: Session) -> set[str]:
+    raw = get_site_setting(db, "dns_known_hostnames") or "[]"
+    try:
+        values = json.loads(raw)
+    except (TypeError, ValueError):
+        values = []
+    return {normalise_hostname(value) for value in values if normalise_hostname(value)} if isinstance(values, list) else set()
+
+
+def save_known_hostnames(db: Session, values: set[str]) -> None:
+    row = db.query(RemoteManagerSetting).filter(RemoteManagerSetting.key == "dns_known_hostnames").first()
+    if not row:
+        row = RemoteManagerSetting(key="dns_known_hostnames")
+        db.add(row)
+    row.value = json.dumps(sorted(values))
+
+
+def network_client_inventory(clients_payload: Any, dhcp_payload: Any, query_payload: Any, recognised_hostnames: set[str] | None = None) -> list[dict[str, Any]]:
     inventory: dict[str, dict[str, Any]] = {}
 
     def merge(row: dict[str, Any], source: str) -> None:
@@ -462,13 +485,17 @@ def network_client_inventory(clients_payload: Any, dhcp_payload: Any, query_payl
         )
 
     rows = []
+    recognised_hostnames = recognised_hostnames or set()
     now = datetime.now().timestamp()
     for row in inventory.values():
         first_seen_stamp = timestamp_sort_value(row.get("first_seen"))
         recent_first_seen = bool(first_seen_stamp and now - first_seen_stamp <= 24 * 60 * 60)
+        hostname_key = normalise_hostname(row["name"])
         unknown_name = row["name"] in {"-", "", row["ip"]}
         row["is_new"] = recent_first_seen
-        row["is_unknown"] = unknown_name or row["mac"] == "-"
+        row["is_known"] = bool(hostname_key and not unknown_name and hostname_key in recognised_hostnames)
+        row["is_unknown"] = not row["is_known"]
+        row["hostname_key"] = hostname_key
         row["source_label"] = ", ".join(sorted(row["sources"]))
         row["first_seen_label"] = timestamp_display(row.get("first_seen"))
         row["last_seen_label"] = timestamp_display(row.get("last_seen"))
@@ -703,10 +730,67 @@ def flag_dns_investigation(
     return RedirectResponse("/networking/dns-manager?tab=query-log", status_code=303)
 
 
+@router.post("/known-hostnames")
+def mark_known_hostname(
+    request: Request,
+    hostname: str = Form(..., max_length=255),
+    return_tab: str = Form("clients"),
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+    user=Depends(require_user),
+):
+    validate_csrf_token(request, csrf_token)
+    if user.role not in {"admin", "editor"}:
+        raise HTTPException(status_code=403, detail="Editor access is required.")
+    clean = normalise_hostname(hostname)
+    if not clean or clean == "-":
+        raise HTTPException(status_code=400, detail="A hostname is required.")
+    values = known_hostnames(db)
+    values.add(clean)
+    save_known_hostnames(db, values)
+    db.commit()
+    return RedirectResponse(f"/networking/dns-manager?tab={return_tab if return_tab in DNS_TABS else 'clients'}", status_code=303)
+
+
+@router.get("/connection-status")
+def dns_connection_status(db: Session = Depends(get_db), user=Depends(require_user)):
+    provider = selected_provider(db) if dns_manager_enabled(db) else None
+    if not provider:
+        return JSONResponse({"connected": False, "message": "No enabled provider is configured."})
+    if get_settings().demo_mode:
+        return JSONResponse({"connected": True, "message": "Demo Pi-hole connected."})
+    result = call_provider(provider, "test_connection", provider_for(provider))
+    db.commit()
+    return JSONResponse({"connected": result.ok, "message": result.message})
+
+
+@router.post("/blocklists/update")
+def update_dns_blocklists(
+    request: Request,
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+    user=Depends(require_user),
+):
+    validate_csrf_token(request, csrf_token)
+    if user.role not in {"admin", "editor"}:
+        raise HTTPException(status_code=403, detail="Editor access is required.")
+    provider = selected_provider(db) if dns_manager_enabled(db) else None
+    if not provider:
+        result = DNSProviderResult(False, "No enabled provider is configured.")
+    elif get_settings().demo_mode:
+        result = DNSProviderResult(True, "Demo Pi-hole blocklists updated successfully.")
+    else:
+        result = provider_for(provider).update_blocklists()
+    params = urlencode({"tab": "blocklists", "notice": result.message, "notice_kind": "success" if result.ok else "error"})
+    return RedirectResponse(f"/networking/dns-manager?{params}", status_code=303)
+
+
 @router.get("")
 def dns_manager(
     request: Request,
     tab: str = Query("dashboard"),
+    notice: str = Query("", max_length=500),
+    notice_kind: str = Query("", max_length=20),
     db: Session = Depends(get_db),
     user=Depends(require_user),
 ):
@@ -776,6 +860,7 @@ def dns_manager(
             .all()
         )
 
+    recognised_hostnames = known_hostnames(db)
     return templates.TemplateResponse(
         request,
         "dns_manager.html",
@@ -795,11 +880,15 @@ def dns_manager(
             "dhcp": dhcp,
             "blocklists": blocklists,
             "error": error,
+            "notice": notice,
+            "notice_kind": notice_kind,
+            "recognised_hostnames": recognised_hostnames,
             "flagged_domains": flagged_domains,
             "investigations": investigations,
             "list_from_payload": list_from_payload,
             "stat_value": stat_value,
             "display_number": display_number,
+            "timestamp_display": timestamp_display,
             "query_domain": query_domain,
             "query_type": query_type,
             "query_status": query_status,

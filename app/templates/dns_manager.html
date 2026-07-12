@@ -7,7 +7,12 @@
       <p class="muted">Manage and monitor DNS providers from Kaya.</p>
     </div>
     {% if provider %}
-    <span class="module-stat">Provider <strong>{{ provider.name }}</strong></span>
+    <div class="dns-provider-state">
+      <span class="dns-connection-indicator {% if status and status.ok %}is-connected{% else %}is-disconnected{% endif %}" data-dns-connection-status title="{{ status.message if status else 'Checking provider connectivity' }}">
+        <i aria-hidden="true"></i><span data-dns-connection-label>{% if status and status.ok %}Connected{% else %}Disconnected{% endif %}</span>
+      </span>
+      <span class="module-stat">Provider <strong>{{ provider.name }}</strong></span>
+    </div>
     {% endif %}
   </div>
   <div class="module-toolbar">
@@ -16,6 +21,16 @@
       <a class="button secondary" href="/system/site-administration?tab=module-dns-manager">Provider settings</a>
       {% endif %}
     </div>
+    {% if active_tab == 'dashboard' %}
+    <label class="dns-refresh-control">
+      <span>Auto refresh</span>
+      <select data-dns-refresh-interval>
+        <option value="30000">30 seconds</option>
+        <option value="60000">1 minute</option>
+        <option value="300000">5 minutes</option>
+      </select>
+    </label>
+    {% endif %}
   </div>
 </section>
 
@@ -33,6 +48,7 @@
 </section>
 {% else %}
 {% if error %}<div class="alert">{{ error }}</div>{% endif %}
+{% if notice %}<div class="alert {% if notice_kind == 'success' %}success{% endif %}">{{ notice }}</div>{% endif %}
 
 <nav class="category-tabs dns-manager-tabs" aria-label="DNS Manager sections">
   <a href="/networking/dns-manager?tab=dashboard" class="{% if active_tab == 'dashboard' %}active{% endif %}">Dashboard</a>
@@ -45,6 +61,7 @@
 </nav>
 
 {% if active_tab == 'dashboard' %}
+<div data-dns-dashboard-widgets>
 {% set stats_data = stats.data if stats and stats.ok else {} %}
 {% set status_data = status.data if status and status.ok else {} %}
 {% set history_data = history.data if history and history.ok else {} %}
@@ -56,7 +73,7 @@
 {% set query_max = chart_max(query_points, 'total') %}
 {% set client_rows = client_activity_rows(stats_data, history_data.get('clients') if history_data else {}, query_log_data) %}
 {% set client_max = chart_max(client_rows, 'count') %}
-{% set inventory_rows = network_client_inventory(clients_data, dhcp_data, query_log_data) %}
+{% set inventory_rows = network_client_inventory(clients_data, dhcp_data, query_log_data, recognised_hostnames) %}
 {% set unknown_inventory_rows = inventory_rows|selectattr('is_unknown')|list %}
 {% set attention_rows = attention_client_rows(inventory_rows) %}
 {% set dhcp_rows = dhcp_lease_rows(dhcp_data) %}
@@ -119,6 +136,15 @@
         <div>
           {% if row.is_new %}<span class="table-chip danger-chip">New</span>{% endif %}
           {% if row.is_unknown %}<span class="table-chip">Unrecognised</span>{% endif %}
+          {% if row.is_known %}<span class="table-chip good">Known</span>{% endif %}
+          {% if row.is_unknown and row.hostname_key and user.role in ['admin', 'editor'] %}
+          <form method="post" action="/networking/dns-manager/known-hostnames" class="dns-known-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="hostname" value="{{ row.name }}">
+            <input type="hidden" name="return_tab" value="dashboard">
+            <button class="button secondary small" type="submit">Mark known</button>
+          </form>
+          {% endif %}
           <small>{{ row.source_label }}</small>
         </div>
       </div>
@@ -154,6 +180,10 @@
 
 <section class="dns-chart-panel">
   <header><h2>Total queries</h2><span class="muted">Allowed and blocked queries over time</span></header>
+  <div class="dns-chart-legend" aria-label="Chart colour legend">
+    <span><i class="dns-legend-allowed"></i>Allowed</span>
+    <span><i class="dns-legend-blocked"></i>Blocked</span>
+  </div>
   {% if query_points %}
   <div class="dns-bar-chart" style="--chart-max: {{ query_max if query_max else 1 }}">
     {% for point in query_points %}
@@ -216,6 +246,7 @@
     <div><label>Blocking Status</label><p>{{ stat_value(stats_data, 'status', 'blocking') }}</p></div>
   </div>
 </section>
+</div>
 {% elif active_tab == 'query-log' %}
 {% set rows = list_from_payload(queries.data if queries and queries.ok else {}, 'queries', 'data') %}
 <section class="panel dns-query-log-panel" data-dns-query-log>
@@ -295,7 +326,7 @@
 {% set clients_data = clients.data if clients and clients.ok else {} %}
 {% set dhcp_data = dhcp.data if dhcp and dhcp.ok else {} %}
 {% set query_log_data = queries.data if queries and queries.ok else {} %}
-{% set rows = network_client_inventory(clients_data, dhcp_data, query_log_data) %}
+{% set rows = network_client_inventory(clients_data, dhcp_data, query_log_data, recognised_hostnames) %}
 <section class="panel">
   <table data-table-key="dns-clients">
     <thead><tr><th>Hostname</th><th>IP Address</th><th>MAC Address</th><th>Queries</th><th>Blocked Queries</th><th>Last Seen</th><th>Source</th><th>Flags</th></tr></thead>
@@ -312,7 +343,15 @@
         <td>
           {% if row.is_new %}<span class="table-chip danger-chip">New</span>{% endif %}
           {% if row.is_unknown %}<span class="table-chip">Unrecognised</span>{% endif %}
-          {% if not row.is_new and not row.is_unknown %}-{% endif %}
+          {% if row.is_known %}<span class="table-chip good">Known</span>{% endif %}
+          {% if row.is_unknown and row.hostname_key and user.role in ['admin', 'editor'] %}
+          <form method="post" action="/networking/dns-manager/known-hostnames" class="dns-known-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="hostname" value="{{ row.name }}">
+            <input type="hidden" name="return_tab" value="clients">
+            <button class="button secondary small" type="submit">Mark known</button>
+          </form>
+          {% endif %}
         </td>
       </tr>
       {% else %}
@@ -342,7 +381,7 @@
     <thead><tr><th>Hostname</th><th>IP Address</th><th>MAC Address</th><th>Lease Expiry</th><th>Static Reservation</th></tr></thead>
     <tbody>
       {% for row in rows %}
-      <tr><td><strong>{{ row.name if row.name is defined else row.hostname if row.hostname is defined else '-' }}</strong></td><td>{{ row.ip if row.ip is defined else '-' }}</td><td>{{ row.mac if row.mac is defined else '-' }}</td><td>{{ row.expires if row.expires is defined else row.expiry if row.expiry is defined else '-' }}</td><td>{{ row.static if row.static is defined else '-' }}</td></tr>
+      <tr><td><strong>{{ row.name if row.name is defined else row.hostname if row.hostname is defined else '-' }}</strong></td><td>{{ row.ip if row.ip is defined else '-' }}</td><td>{{ row.mac if row.mac is defined else '-' }}</td><td>{{ timestamp_display(row.expires if row.expires is defined else row.expiry if row.expiry is defined else none) }}</td><td>{{ row.static if row.static is defined else '-' }}</td></tr>
       {% else %}
       <tr><td colspan="5">No DHCP leases returned by this provider.</td></tr>
       {% endfor %}
@@ -352,11 +391,18 @@
 {% elif active_tab == 'blocklists' %}
 {% set rows = list_from_payload(blocklists.data if blocklists and blocklists.ok else {}, 'lists', 'blocklists', 'data') %}
 <section class="panel">
+  {% if user.role in ['admin', 'editor'] %}
+  <form method="post" action="/networking/dns-manager/blocklists/update" class="dns-blocklist-actions">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="button secondary" type="submit">Refresh blocklists from Pi-hole</button>
+    <span class="muted">Runs a Pi-hole gravity update without leaving Kaya.</span>
+  </form>
+  {% endif %}
   <table data-table-key="dns-blocklists">
     <thead><tr><th>Blocklist Name</th><th>Status</th><th>Last Updated</th></tr></thead>
     <tbody>
       {% for row in rows %}
-      <tr><td><strong>{{ row.address if row.address is defined else row.name if row.name is defined else '-' }}</strong></td><td>{{ row.enabled if row.enabled is defined else row.status if row.status is defined else '-' }}</td><td>{{ row.date_updated if row.date_updated is defined else row.updated_at if row.updated_at is defined else '-' }}</td></tr>
+      <tr><td><strong>{{ row.address if row.address is defined else row.name if row.name is defined else '-' }}</strong></td><td>{{ row.enabled if row.enabled is defined else row.status if row.status is defined else '-' }}</td><td>{{ timestamp_display(row.date_updated if row.date_updated is defined else row.updated_at if row.updated_at is defined else none) }}</td></tr>
       {% else %}
       <tr><td colspan="3">No blocklists returned by this provider.</td></tr>
       {% endfor %}
