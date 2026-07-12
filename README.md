@@ -69,6 +69,8 @@ However, a few caveats.
 
 My suggestion - install it in your own environment and throw the kitchen sink at it.
 
+If you need any support - come on over to our Dicord Server: https://discord.gg/2hn6G7Qr9N 
+
 ------------------------------------------------------------------------
 
 # Quick Start
