@@ -209,7 +209,7 @@ def filtered_query_rows(
     domain_filter: str = "",
     client_filter: str = "",
 ) -> list[dict[str, Any]]:
-    rows = rows_for_payload(payload, "queries", "data") if isinstance(payload, dict) else []
+    rows = list_from_payload(payload, "queries", "data") if isinstance(payload, dict) else []
 
     clean_domain = domain_filter.strip().lower() if isinstance(domain_filter, str) else ""
     clean_client = client_filter.strip().lower() if isinstance(client_filter, str) else ""
