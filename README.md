@@ -1,5 +1,10 @@
 # Kaya
+Dark Mode
 <img width="2551" height="1272" alt="Screenshot 2026-07-07 203240" src="https://github.com/user-attachments/assets/2a956170-9e90-4562-af47-1ed581ad9db2" />
+
+Light Mode
+<img width="2547" height="1270" alt="Dashboard-Light" src="https://github.com/user-attachments/assets/f69d9ba3-9c2d-4b30-b875-2d0ae2d0fbf4" />
+
 
 > **Your Infrastructure. Your Home.**
 >
