@@ -38,9 +38,12 @@ def test_mobile_shell_and_pwa_metadata_are_global():
     assert "data-mobile-nav-toggle" in base
     assert "data-mobile-nav-overlay" in base
     assert "data-install-kaya" in base
+    assert "data-ios-install-guide" in base
+    assert "Add to Home Screen" in base
     assert "@media (max-width:1023px)" in responsive
     assert "transform:translateX(-105%)" in responsive
     assert ".table-scroll" in responsive
+    assert "white-space:nowrap" in responsive
     assert "font-size:16px!important" in responsive
 
 

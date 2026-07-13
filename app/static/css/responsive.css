@@ -12,6 +12,15 @@
 .pwa-update-toast{align-items:center;background:#15191f;border:1px solid rgba(255,138,0,.48);border-radius:9px;bottom:16px;box-shadow:0 16px 40px rgba(0,0,0,.35);display:flex;gap:12px;left:16px;padding:10px 12px;position:fixed;z-index:121}
 .pwa-update-toast[hidden],.connection-banner[hidden]{display:none}
 .pwa-update-toast button{min-height:34px}
+.pwa-install-dialog{background:#11161f;border:1px solid rgba(255,138,0,.42);border-radius:14px;color:var(--text);max-width:430px;padding:0;width:calc(100% - 28px)}
+.pwa-install-dialog::backdrop{background:rgba(2,6,12,.78);backdrop-filter:blur(3px)}
+.pwa-install-dialog form{display:grid;gap:14px;padding:20px}
+.pwa-install-dialog header{align-items:flex-start;display:flex;gap:14px;justify-content:space-between}
+.pwa-install-dialog h2{font-size:20px;margin:0 0 4px}
+.pwa-install-dialog p{color:var(--muted);font-size:12px;margin:0}
+.pwa-install-dialog ol{display:grid;gap:10px;margin:0;padding-left:22px}
+.pwa-install-dialog li{line-height:1.45;padding-left:3px}
+.pwa-install-dialog footer{display:flex;justify-content:flex-end}
 
 @media (max-width:1023px){
   :root{--mobile-header-height:56px}
@@ -73,7 +82,8 @@
   .panel:has(table){overflow:visible;padding:12px}
   .table-scroll{border:1px solid rgba(148,163,184,.18);border-radius:8px;position:relative;width:100%}
   .table-scroll:focus-within{outline:2px solid var(--accent);outline-offset:2px}
-  .panel table{min-width:720px}
+  .panel table{min-width:720px;table-layout:auto}
+  .panel table th,.panel table td{overflow-wrap:normal;white-space:nowrap;word-break:normal}
   .category-tabs{scrollbar-width:thin}
 
   .dashboard-grid{grid-template-columns:1fr!important}

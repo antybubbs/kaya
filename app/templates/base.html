@@ -194,5 +194,19 @@
   <span>A new version of Kaya is available.</span>
   <button type="button" data-pwa-refresh>Refresh</button>
 </div>
+<dialog class="pwa-install-dialog" data-ios-install-guide aria-labelledby="pwa-install-title">
+  <form method="dialog">
+    <header>
+      <div><h2 id="pwa-install-title">Install Kaya on iPhone</h2><p>Add Kaya to your Home Screen for an app-like experience.</p></div>
+      <button class="icon-button" type="submit" aria-label="Close install instructions">&times;</button>
+    </header>
+    <ol>
+      <li>Open Kaya in <strong>Safari</strong>.</li>
+      <li>Tap the <strong>Share</strong> button in Safari.</li>
+      <li>Choose <strong>Add to Home Screen</strong>, then tap <strong>Add</strong>.</li>
+    </ol>
+    <footer><button class="button" type="submit">Got it</button></footer>
+  </form>
+</dialog>
 </body>
 </html>

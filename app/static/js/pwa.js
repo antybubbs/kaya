@@ -3,6 +3,7 @@
   const updateToast = document.querySelector("[data-pwa-update]");
   const refreshButton = document.querySelector("[data-pwa-refresh]");
   const installButton = document.querySelector("[data-install-kaya]");
+  const iosInstallGuide = document.querySelector("[data-ios-install-guide]");
   const connectionBanner = document.querySelector("[data-connection-banner]");
   let installPrompt = null;
   let refreshing = false;
@@ -10,6 +11,11 @@
 
   function standalone() {
     return window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
+  }
+
+  function iosDevice() {
+    return /iPad|iPhone|iPod/i.test(navigator.userAgent) ||
+      (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
   }
 
   function setConnectionState() {
@@ -41,17 +47,25 @@
   });
 
   installButton?.addEventListener("click", async () => {
-    if (!installPrompt) return;
-    installButton.hidden = true;
-    await installPrompt.prompt();
-    await installPrompt.userChoice;
-    installPrompt = null;
+    if (installPrompt) {
+      installButton.hidden = true;
+      await installPrompt.prompt();
+      await installPrompt.userChoice;
+      installPrompt = null;
+      return;
+    }
+    if (iosDevice() && iosInstallGuide) {
+      if (typeof iosInstallGuide.showModal === "function") iosInstallGuide.showModal();
+      else iosInstallGuide.setAttribute("open", "");
+    }
   });
 
   window.addEventListener("appinstalled", () => {
     installPrompt = null;
     if (installButton) installButton.hidden = true;
   });
+
+  if (installButton && iosDevice() && !standalone()) installButton.hidden = false;
 
   if (!("serviceWorker" in navigator) || !window.isSecureContext) return;
 
