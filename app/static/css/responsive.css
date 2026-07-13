@@ -42,10 +42,12 @@
   .account-menu .avatar{height:40px;width:40px}
   .account-popover{max-height:calc(100dvh - 76px);max-width:calc(100vw - 24px);overflow:auto;position:fixed;right:12px;top:calc(var(--mobile-header-height) + env(safe-area-inset-top) + 4px)}
 
-  .sidebar,.demo-banner~.sidebar,body.sidebar-collapsed .sidebar{bottom:0;display:flex!important;height:100dvh;inset:0 auto 0 0;max-width:88vw;overflow-y:auto;padding:calc(var(--mobile-header-height) + env(safe-area-inset-top) + 10px) 12px calc(16px + env(safe-area-inset-bottom));position:fixed!important;top:0!important;transform:translateX(-105%);transition:transform .2s ease;width:min(320px,88vw)!important;z-index:89}
+  .sidebar,.demo-banner~.sidebar,body.sidebar-collapsed .sidebar{bottom:0;display:flex!important;height:100dvh;inset:0 auto 0 0;max-width:88vw;overflow-x:hidden;overflow-y:auto;padding:calc(var(--mobile-header-height) + env(safe-area-inset-top) + 10px) 12px calc(16px + env(safe-area-inset-bottom));position:fixed!important;top:0!important;transform:translateX(-105%);transition:transform .2s ease;width:min(320px,88vw)!important;z-index:89;-webkit-overflow-scrolling:touch;overscroll-behavior-y:contain}
   body.mobile-nav-open .sidebar{transform:translateX(0)}
   body.sidebar-collapsed .sidebar .nav-label,body.sidebar-collapsed .sidebar .version-card{display:initial}
   body.sidebar-collapsed .sidebar .nav-link,body.sidebar-collapsed .sidebar .nav-group>summary{justify-content:flex-start;padding:8px 10px}
+  .sidebar>.nav-tree,body.sidebar-collapsed .sidebar>.nav-tree{flex:0 0 auto;min-height:auto;overflow:visible!important}
+  .sidebar>.version-card,body.sidebar-collapsed .sidebar>.version-card{flex:0 0 auto;margin-top:12px;position:static;width:100%}
   .mobile-nav-overlay{background:rgba(2,6,12,.72);border:0;border-radius:0;bottom:0;cursor:default;display:block;left:0;min-height:0;opacity:0;padding:0;pointer-events:none;position:fixed;right:0;top:0;transition:opacity .2s ease;width:100%;z-index:88}
   body.mobile-nav-open .mobile-nav-overlay{opacity:1;pointer-events:auto}
 
