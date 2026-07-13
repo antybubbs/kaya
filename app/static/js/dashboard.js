@@ -32,7 +32,7 @@
     body.dataset.hasData="1"; const source=card.querySelector("[data-source-age]"); source.textContent=config.show_source_age && result.data.source_updated_at ? `Source ${relative(result.data.source_updated_at)}` : ""; source.title=result.data.source_updated_at || "";
   }
   async function refresh() {
-    if(inFlight || document.hidden) return; inFlight=true; setLive("updating","Updating");
+    if(inFlight || document.hidden) return; if(!navigator.onLine){setLive("lost","Offline");return;} inFlight=true; setLive("updating","Updating");
     try { const response=await fetch("/api/dashboard/snapshot",{headers:{Accept:"application/json"}}); if(response.status===401||response.status===403){stop();setLive("lost","Session expired");return;} if(!response.ok)throw new Error(); const data=await response.json(); Object.entries(data.widgets||{}).forEach(([key,value])=>{const card=grid.querySelector(`[data-widget-key="${CSS.escape(key)}"]`);if(card)renderWidget(card,value);}); lastSuccess=Date.now(); failures=0; setLive("live","Live"); age.textContent="updated just now"; age.title=data.generated_at || ""; }
     catch(_error){ failures++; setLive(failures>=LOST_FAILURES?"lost":"delayed",failures>=LOST_FAILURES?"Connection lost":"Delayed"); }
     finally{inFlight=false;}
@@ -41,12 +41,14 @@
   function stop(){clearInterval(timer);timer=null;}
   async function save(){ try{const response=await fetch("/api/dashboard/preferences",{method:"PUT",headers:{"Content-Type":"application/json","X-CSRF-Token":csrf},body:JSON.stringify(layout)});if(!response.ok)throw new Error();layout=(await response.json()).layout;saveState.textContent="Dashboard layout saved";setTimeout(()=>saveState.textContent="",2500);}catch(_){saveState.textContent="Could not save dashboard layout";} }
   function syncOrder(){layout.widgets.forEach(row=>{const card=grid.querySelector(`[data-widget-key="${CSS.escape(row.key)}"]`);if(card){row.position=[...grid.children].indexOf(card)+1;row.width=card.dataset.width;}});save();}
-  root.querySelector("[data-edit-dashboard]")?.addEventListener("click",event=>{editing=!editing;root.classList.toggle("is-editing",editing);event.currentTarget.setAttribute("aria-pressed",String(editing));event.currentTarget.textContent=editing?"Finish editing":"Edit dashboard";grid.querySelectorAll("[data-widget-key]").forEach(x=>x.draggable=editing);});
+  const coarsePointer=window.matchMedia("(pointer: coarse)");
+  root.querySelector("[data-edit-dashboard]")?.addEventListener("click",event=>{editing=!editing;root.classList.toggle("is-editing",editing);event.currentTarget.setAttribute("aria-pressed",String(editing));event.currentTarget.textContent=editing?"Finish editing":"Edit dashboard";grid.querySelectorAll("[data-widget-key]").forEach(x=>x.draggable=editing&&!coarsePointer.matches);});
   grid.addEventListener("pointerdown",event=>{dragArmed=Boolean(event.target.closest("[data-drag-handle]"));});
   grid.addEventListener("dragstart",event=>{if(!editing||!dragArmed){event.preventDefault();return;} dragged=event.target.closest("[data-widget-key]");dragged.classList.add("is-dragging");});
   grid.addEventListener("dragover",event=>{if(!dragged)return;event.preventDefault();const target=event.target.closest("[data-widget-key]");if(target&&target!==dragged)grid.insertBefore(dragged,target);});
   grid.addEventListener("dragend",()=>{dragArmed=false;if(dragged){dragged.classList.remove("is-dragging");dragged=null;syncOrder();}});
   grid.addEventListener("keydown",event=>{const handle=event.target.closest("[data-drag-handle]");if(!editing||!handle||!event.altKey||!["ArrowLeft","ArrowRight","ArrowUp","ArrowDown"].includes(event.key))return;event.preventDefault();const card=handle.closest("[data-widget-key]"), sibling=["ArrowLeft","ArrowUp"].includes(event.key)?card.previousElementSibling:card.nextElementSibling;if(sibling){grid.insertBefore(card,["ArrowLeft","ArrowUp"].includes(event.key)?sibling:sibling.nextElementSibling);syncOrder();handle.focus();}});
+  grid.addEventListener("click",event=>{const button=event.target.closest("[data-widget-move]");if(!editing||!button)return;const card=button.closest("[data-widget-key]"),up=button.dataset.widgetMove==="up",sibling=up?card.previousElementSibling:card.nextElementSibling;if(!sibling)return;grid.insertBefore(card,up?sibling:sibling.nextElementSibling);syncOrder();button.focus();});
   grid.addEventListener("change",event=>{if(!event.target.matches("[data-widget-size]"))return;const card=event.target.closest("[data-widget-key]");card.classList.remove(...["small","medium","large","full"].map(x=>`width-${x}`));card.classList.add(`width-${event.target.value}`);card.dataset.width=event.target.value;syncOrder();});
   const dialog=root.querySelector("[data-widget-manager]");
   function updateManagerCount(){const enabled=layout.widgets.filter(x=>x.enabled).length;const count=dialog.querySelector("[data-widget-enabled-count]");if(count)count.textContent=`${enabled} of ${(config.widgets||[]).length} widgets enabled`;}
@@ -56,5 +58,5 @@
   dialog?.querySelector("[data-reset-dashboard]")?.addEventListener("click",async()=>{if(!confirm("Reset your dashboard to the site defaults?"))return;const response=await fetch("/api/dashboard/preferences/reset",{method:"POST",headers:{"X-CSRF-Token":csrf}});if(response.ok)location.reload();});
   root.querySelector("[data-monitor-mode]")?.addEventListener("click",()=>{const active=root.classList.toggle("is-monitor-mode");document.documentElement.classList.toggle("dashboard-monitor-mode",active);layout.monitor_mode=active;save();});
   if(layout.monitor_mode){root.classList.add("is-monitor-mode");document.documentElement.classList.add("dashboard-monitor-mode");}
-  document.addEventListener("visibilitychange",()=>{if(!document.hidden)refresh();}); window.addEventListener("pagehide",stop); refresh(); timer=setInterval(refresh,INTERVAL); setInterval(tick,1000);
+  document.addEventListener("visibilitychange",()=>{if(!document.hidden)refresh();}); window.addEventListener("online",refresh); window.addEventListener("pagehide",stop); refresh(); timer=setInterval(refresh,INTERVAL); setInterval(tick,1000);
 })();

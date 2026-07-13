@@ -3,7 +3,7 @@ import asyncio
 from time import perf_counter
 from uuid import uuid4
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 from sqlalchemy import text
@@ -234,6 +234,20 @@ Path("/app/uploads").mkdir(parents=True, exist_ok=True)
 Path("/app/data").mkdir(parents=True, exist_ok=True)
 Path("/app/data/remote-recordings").mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
+
+
+@app.get("/manifest.webmanifest", name="manifest", include_in_schema=False)
+def pwa_manifest():
+    return FileResponse("app/static/manifest.webmanifest", media_type="application/manifest+json")
+
+
+@app.get("/service-worker.js", name="service_worker", include_in_schema=False)
+def pwa_service_worker():
+    return FileResponse(
+        "app/static/service-worker.js",
+        media_type="application/javascript",
+        headers={"Service-Worker-Allowed": settings.root_path or "/"},
+    )
 
 
 def bootstrap():

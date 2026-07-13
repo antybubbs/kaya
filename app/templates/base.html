@@ -5,24 +5,31 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>{{ title or brand.name }}</title>
   <meta name="application-name" content="{{ brand.name }}">
+  <meta name="theme-color" content="#0d0f13">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta property="og:title" content="{{ title or brand.name }}">
   <meta property="og:description" content="{{ brand.tagline }}">
   <link rel="icon" href="{{ brand.favicon }}" type="image/svg+xml">
   <link rel="icon" sizes="32x32" href="{{ brand.favicon_32 }}">
   <link rel="apple-touch-icon" sizes="180x180" href="/static/brand/kaya-apple-touch-icon-180.png">
+  <link rel="manifest" href="{{ request.url_for('manifest') }}">
   <link rel="stylesheet" href="/static/css/app.css?v={{ asset_version }}">
   <link rel="stylesheet" href="/static/css/imports.css?v={{ asset_version }}">
   <link rel="stylesheet" href="/static/css/demo.css?v={{ asset_version }}">
   <link rel="stylesheet" href="/static/css/kaya.css?v={{ asset_version }}">
   {% block extra_head %}{% endblock %}
+  <link rel="stylesheet" href="{{ request.url_for('static', path='css/responsive.css') }}?v={{ asset_version }}">
   <script src="/static/js/sidebar.js?v={{ asset_version }}" defer></script>
   <script src="/static/js/tables.js?v={{ asset_version }}" defer></script>
   <script src="/static/js/inline_edit.js?v={{ asset_version }}" defer></script>
+  <script src="{{ request.url_for('static', path='js/pwa.js') }}?v={{ asset_version }}" defer></script>
 </head>
-<body>
+<body data-app-root="{{ request.scope.get('root_path', '') }}">
 {% if request.app.state.demo_mode %}
 <div class="demo-banner"><strong>Public demo</strong><span>Sample data resets daily at {{ request.app.state.demo_reset_schedule }}. Identity, security and live connection actions are disabled.</span></div>
 {% set demo_notice = request.session.pop('demo_notice', None) %}
@@ -36,6 +43,9 @@
 {% if user %}
 <header class="app-topbar">
   <div class="app-topbar-brand">
+    <button class="mobile-menu-button" type="button" data-mobile-nav-toggle aria-label="Open navigation" aria-controls="app-navigation" aria-expanded="false">
+      <span aria-hidden="true"></span><span aria-hidden="true"></span><span aria-hidden="true"></span>
+    </button>
     <a class="app-brand-link" href="/dashboard" data-reset-sidebar>
       <img class="brand-logo" src="{{ brand.icon }}" alt="" width="38" height="38">
       <span class="app-brand-name">{{ brand.name }}</span>
@@ -49,6 +59,7 @@
     </button>
   </div>
   <div class="app-topbar-main">
+    <span class="mobile-page-title" data-mobile-page-title>{{ title or brand.name }}</span>
     <div class="topbar-session-tabs">{% block topbar_session %}{% endblock %}</div>
     <div class="app-topbar-spacer"></div>
     <div class="topbar-actions">
@@ -66,6 +77,7 @@
             <span>{{ user.email }}</span>
           </div>
           <a class="account-link" href="/profile">Profile Settings</a>
+          <button class="account-link" type="button" data-install-kaya hidden>Install Kaya</button>
           <form method="post" action="/logout">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="account-link logout-link" type="submit">Log out</button>
@@ -75,7 +87,7 @@
     </div>
   </div>
 </header>
-<aside class="sidebar">
+<aside class="sidebar" id="app-navigation" aria-label="Primary navigation">
   <nav class="nav-tree">
     <a class="nav-link" href="/dashboard" data-reset-sidebar><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="8" rx="1.5"></rect><rect x="14" y="3" width="7" height="5" rx="1.5"></rect><rect x="14" y="12" width="7" height="9" rx="1.5"></rect><rect x="3" y="15" width="7" height="6" rx="1.5"></rect></svg></span><span class="nav-label">Dashboard</span></a>
     <details class="nav-group" data-sidebar-menu="infrastructure">
@@ -168,6 +180,7 @@
   </div>
   {% endif %}
 </aside>
+<button class="mobile-nav-overlay" type="button" data-mobile-nav-overlay aria-label="Close navigation" tabindex="-1"></button>
 <main class="content {% block main_class %}{% endblock %}">
 {% block content %}{% endblock %}
 </main>
@@ -176,5 +189,10 @@
 {% endif %}
 {% block extra_scripts %}{% endblock %}
 <script src="/static/js/timezone.js?v={{ asset_version }}" defer></script>
+<div class="connection-banner" data-connection-banner role="status" aria-live="polite" hidden></div>
+<div class="pwa-update-toast" data-pwa-update role="status" aria-live="polite" hidden>
+  <span>A new version of Kaya is available.</span>
+  <button type="button" data-pwa-refresh>Refresh</button>
+</div>
 </body>
 </html>

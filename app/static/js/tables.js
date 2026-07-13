@@ -133,6 +133,9 @@
     if (!table.closest(".table-scroll")) {
       const scrollWrap = document.createElement("div");
       scrollWrap.className = "table-scroll";
+      scrollWrap.tabIndex = 0;
+      scrollWrap.setAttribute("role", "region");
+      scrollWrap.setAttribute("aria-label", `${key.replace(/[._-]+/g, " ")} table; scroll horizontally for more columns`);
       parent.insertBefore(scrollWrap, table);
       scrollWrap.appendChild(table);
     }
