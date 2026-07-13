@@ -1,6 +1,15 @@
 document.addEventListener('DOMContentLoaded', () => {
   const form = document.querySelector('[data-rack-device-form]');
   const rails = document.querySelector('.rack-rails[data-rack-id]');
+  const deleteForm = document.querySelector('[data-rack-delete-form]');
+
+  deleteForm?.addEventListener('submit', (event) => {
+    const rackName = deleteForm.dataset.rackName || 'this rack';
+    const itemCount = Number.parseInt(deleteForm.dataset.rackItemCount || '0', 10);
+    const placements = `${itemCount} device placement${itemCount === 1 ? '' : 's'}`;
+    const confirmed = window.confirm(`Delete rack "${rackName}"? This permanently removes the rack and ${placements}. Linked hardware assets will remain.`);
+    if (!confirmed) event.preventDefault();
+  });
 
   if (form) {
     const assetSelect = form.querySelector('[data-asset-select]');

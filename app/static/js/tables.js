@@ -68,6 +68,11 @@
     toolbar.className = "table-toolbar";
     toolbar.innerHTML = '<details class="table-settings"><summary>Table settings</summary><div class="table-settings-panel"></div></details>';
     const panel = toolbar.querySelector(".table-settings-panel");
+    const tableFilters = parent.querySelector(":scope > .table-panel-filters");
+    if (tableFilters) {
+      toolbar.classList.add("has-filters");
+      toolbar.prepend(tableFilters);
+    }
 
     headers.forEach((header, index) => {
       const columnKey = header.dataset.col || String(index);

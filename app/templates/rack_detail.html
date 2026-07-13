@@ -75,6 +75,13 @@
         <button type="submit">Save Rack</button>
       </form>
     </section>
+    <section class="panel section-gap danger-zone rack-danger-zone">
+      <div class="panel-heading"><div><h2>Danger Zone</h2><p class="muted">Permanently delete this rack and its {{ rack.items|length }} device placement{% if rack.items|length != 1 %}s{% endif %}. Linked hardware assets will remain in Asset Manager.</p></div></div>
+      <form method="post" action="/infrastructure/rack-manager/{{ rack.id }}/delete" data-rack-delete-form data-rack-name="{{ rack.name }}" data-rack-item-count="{{ rack.items|length }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="button danger" type="submit">Delete Rack</button>
+      </form>
+    </section>
     {% endif %}
     <section class="panel section-gap">
       <div class="panel-heading"><div><h2>Placed devices</h2><p class="muted">{{ active_side|title }} elevation, top to bottom.</p></div></div>

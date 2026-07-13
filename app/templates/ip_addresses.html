@@ -18,16 +18,16 @@
       {% if user.role in ['admin','editor'] %}<a class="button" href="/networking/vlan-ip-manager/new">Add IP</a>{% endif %}
     </div>
   </div>
-  <nav class="category-tabs module-filters" aria-label="VLAN/IP categories">
+</section>
+<section class="panel">
+<form method="post" action="/networking/vlan-ip-manager/bulk-update" data-ip-bulk-form>
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <nav class="category-tabs table-panel-filters" aria-label="VLAN/IP categories">
     <a class="{% if not active_category %}active{% endif %}" href="/networking/vlan-ip-manager{% if q %}?q={{ q|urlencode }}{% endif %}">All</a>
     {% for category in categories %}
     <a class="{% if active_category == category %}active{% endif %}" href="/networking/vlan-ip-manager?category={{ category|urlencode }}{% if q %}&q={{ q|urlencode }}{% endif %}">{{ category }}</a>
     {% endfor %}
   </nav>
-</section>
-<section class="panel">
-<form method="post" action="/networking/vlan-ip-manager/bulk-update" data-ip-bulk-form>
-  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <div class="bulk-action-bar" data-bulk-bar hidden>
     <strong><span data-selected-count>0</span> selected</strong>
     <label>Category

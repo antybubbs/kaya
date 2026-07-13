@@ -1164,3 +1164,15 @@ html[data-kaya-theme=light-ops] .dns-mini-table > div {
     margin-left: 0;
   }
 }
+
+/* Keep table-specific category filters with the table controls. */
+.table-toolbar.has-filters {
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.table-toolbar .table-panel-filters {
+  margin: 0;
+  min-width: 0;
+  padding: 0;
+}

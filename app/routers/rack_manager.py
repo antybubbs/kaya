@@ -186,6 +186,28 @@ def update_rack(request: Request, rack_id: int, name: str = Form(..., max_length
     return RedirectResponse(f"/infrastructure/rack-manager/{rack.id}", status_code=303)
 
 
+@router.post("/{rack_id}/delete")
+def delete_rack(request: Request, rack_id: int, csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_editor)):
+    validate_csrf_token(request, csrf_token)
+    rack = db.get(Rack, rack_id)
+    if not rack:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Rack not found")
+    rack_name = rack.name
+    item_count = len(rack.items)
+    db.delete(rack)
+    db.commit()
+    write_audit(
+        db,
+        user,
+        "delete",
+        "rack",
+        str(rack_id),
+        request.client.host if request.client else None,
+        detail=f"{rack_name} ({item_count} rack placement{'s' if item_count != 1 else ''} removed)",
+    )
+    return RedirectResponse("/infrastructure/rack-manager", status_code=303)
+
+
 @router.post("/{rack_id}/items/new")
 def create_item(request: Request, rack_id: int, hardware_asset_id: int = Form(0), name: str = Form("", max_length=255), start_u: int = Form(...), height_u: int = Form(1), mount_side: str = Form("front", max_length=20), category: str = Form("", max_length=120), color: str = Form("", max_length=40), notes: str = Form("", max_length=10000), csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_editor)):
     validate_csrf_token(request, csrf_token)
