@@ -121,6 +121,26 @@ def find_valid_reset_token(db: Session, token: str) -> PasswordResetToken | None
     )
 
 
+def login_template_context(request: Request, db: Session, **overrides) -> dict:
+    """Build one consistent login context for initial, error and 2FA renders."""
+    authentication_mode = get_site_setting(db, "authentication_mode")
+    oidc_provider = db.query(OIDCProvider).filter_by(is_enabled=True).order_by(OIDCProvider.id.asc()).first()
+    context = {
+        "error": None,
+        "success": None,
+        "setup_complete": False,
+        "requires_2fa": False,
+        "demo_accounts": DEMO_ACCOUNTS if settings.demo_mode else None,
+        "authentication_mode": authentication_mode,
+        "oidc_provider": oidc_provider,
+        "oidc_button_label": get_site_setting(db, "oidc_button_label"),
+        "show_local_preferred": get_site_setting(db, "oidc_show_local_preferred") == "1",
+        **csrf_context(request, include_version=False),
+    }
+    context.update(overrides)
+    return context
+
+
 def current_user(request: Request, db: Session = Depends(get_db)) -> User | None:
     user_id = request.session.get("user_id")
     if not user_id:
@@ -176,17 +196,10 @@ def login_page(
     return templates.TemplateResponse(
         request,
         "login.html",
-        {
-            "error": None,
-            "setup_complete": setup_complete == "1",
-            "demo_accounts": DEMO_ACCOUNTS if settings.demo_mode else None,
-            "authentication_mode": authentication_mode,
-            "oidc_provider": oidc_provider,
-            "oidc_button_label": get_site_setting(db, "oidc_button_label"),
-            "show_local_preferred": get_site_setting(db, "oidc_show_local_preferred") == "1",
-            **csrf_context(request, include_version=False),
-        }
+        login_template_context(request, db, setup_complete=setup_complete == "1"),
     )
+
+
 @router.get("/setup")
 def setup_page(
     request: Request,
@@ -502,7 +515,12 @@ def login(request: Request, email: str = Form(""), password: str = Form(""), tot
             status_code=429,
             metadata={"attempted_email": attempted_email[:255]},
         )
-        return templates.TemplateResponse(request, "login.html", {"error": "Too many failed sign-in attempts. Try again later.", "demo_accounts": DEMO_ACCOUNTS if settings.demo_mode else None, **csrf_context(request, include_version=False)}, status_code=429)
+        return templates.TemplateResponse(
+            request,
+            "login.html",
+            login_template_context(request, db, error="Too many failed sign-in attempts. Try again later."),
+            status_code=429,
+        )
 
     pending_user_id = request.session.get("pending_2fa_user_id")
     if pending_user_id:
@@ -520,7 +538,12 @@ def login(request: Request, email: str = Form(""), password: str = Form(""), tot
                 severity="warning",
                 status_code=401,
             )
-            return templates.TemplateResponse(request, "login.html", {"error": "Invalid authentication code", "requires_2fa": True, **csrf_context(request, include_version=False)}, status_code=401)
+            return templates.TemplateResponse(
+                request,
+                "login.html",
+                login_template_context(request, db, error="Invalid authentication code", requires_2fa=True),
+                status_code=401,
+            )
         request.session.clear()
         request.session["user_id"] = user.id
         start_user_session(db, request, user)
@@ -544,7 +567,12 @@ def login(request: Request, email: str = Form(""), password: str = Form(""), tot
             status_code=401,
             metadata={"attempted_email": email.strip().lower()[:255]},
         )
-        return templates.TemplateResponse(request, "login.html", {"error": "Invalid email or password", "demo_accounts": DEMO_ACCOUNTS if settings.demo_mode else None, **csrf_context(request, include_version=False)}, status_code=401)
+        return templates.TemplateResponse(
+            request,
+            "login.html",
+            login_template_context(request, db, error="Invalid email or password"),
+            status_code=401,
+        )
     if user.totp_enabled:
         request.session.clear()
         request.session["pending_2fa_user_id"] = user.id
@@ -557,7 +585,11 @@ def login(request: Request, email: str = Form(""), password: str = Form(""), tot
             request.client.host if request.client else None,
             detail="Password verified; awaiting authentication code",
         )
-        return templates.TemplateResponse(request, "login.html", {"error": None, "requires_2fa": True, **csrf_context(request, include_version=False)})
+        return templates.TemplateResponse(
+            request,
+            "login.html",
+            login_template_context(request, db, requires_2fa=True),
+        )
     request.session.clear()
     request.session["user_id"] = user.id
     if settings.demo_mode:

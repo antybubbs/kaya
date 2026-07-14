@@ -24,6 +24,7 @@
   <link rel="stylesheet" href="/static/css/kaya.css?v={{ asset_version }}">
   {% block extra_head %}{% endblock %}
   <link rel="stylesheet" href="{{ request.url_for('static', path='css/responsive.css') }}?v={{ asset_version }}">
+  <link rel="stylesheet" href="{{ request.url_for('static', path='css/sidebar.css') }}?v={{ asset_version }}">
   <script src="/static/js/sidebar.js?v={{ asset_version }}" defer></script>
   <script src="/static/js/tables.js?v={{ asset_version }}" defer></script>
   <script src="/static/js/inline_edit.js?v={{ asset_version }}" defer></script>
@@ -160,7 +161,6 @@
       <div class="nav-children">
         <a class="nav-link" href="/system/site-administration"><span class="nav-label">Site Administration</span></a>
         <a class="nav-link" href="/system/audit-logs"><span class="nav-label">Audit Logs</span></a>
-        <span class="nav-link disabled" title="Coming soon"><span class="nav-label">IDP Integration</span></span>
         <a class="nav-link" href="/system/about"><span class="nav-label">About {{ brand.name }}</span></a>
       </div>
     </details>
