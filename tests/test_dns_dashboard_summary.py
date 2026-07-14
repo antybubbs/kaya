@@ -135,6 +135,21 @@ def test_dashboard_dns_refresh_uses_last_attempt_to_throttle_offline_retries(mon
         assert len(calls) == 1
 
 
+def test_dashboard_dns_refresh_never_contacts_provider_in_demo(monkeypatch):
+    with database() as db:
+        provider = add_provider(db)
+        add_snapshot(db, provider, period_end=datetime.utcnow() - timedelta(hours=39))
+        account = add_user(db)
+        calls = []
+        monkeypatch.setattr(dns_dashboard_service, "get_settings", lambda: type("Settings", (), {"demo_mode": True})())
+        monkeypatch.setattr(dns_dashboard_service, "analyse_provider", lambda *args, **kwargs: calls.append((args, kwargs)))
+
+        summary = get_refreshed_dns_dashboard_summary(db, account, max_age_seconds=0)
+
+        assert summary.configured is True
+        assert calls == []
+
+
 def test_attention_counts_exclude_info_resolved_acknowledged_and_dismissed():
     with database() as db:
         provider = add_provider(db)

@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.models.models import DNSInsight, DNSProviderConfig, DNSStatisticsSnapshot, User
 from app.services.dns_insights import (AnalysisAlreadyRunning,DEFAULT_THRESHOLDS,SEVERITY_LABELS,analyse_provider,)
 from app.services.site_settings import get_site_setting
@@ -262,6 +263,9 @@ def get_refreshed_dns_dashboard_summary(
     If the latest stored DNS snapshot is older than max_age_seconds,
     refresh the provider data before returning the summary.
     """
+
+    if get_settings().demo_mode:
+        return get_dns_dashboard_summary(db, user)
 
     provider = _selected_provider(db)
 

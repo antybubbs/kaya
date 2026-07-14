@@ -66,6 +66,20 @@ def test_polling_interval_is_one_of_the_supported_choices(db, stored, expected):
     account=user(db); db.add(RemoteManagerSetting(key="dashboard_poll_interval_seconds",value=stored)); db.commit()
     assert config(db,account)["poll_interval_seconds"] == expected
 
+def test_demo_hides_shared_dashboard_editing_controls(db, monkeypatch):
+    account=user(db)
+    db.add_all([
+        RemoteManagerSetting(key="dashboard_customisation_enabled", value="1"),
+        RemoteManagerSetting(key="dashboard_monitor_mode_enabled", value="1"),
+    ])
+    db.commit()
+    monkeypatch.setattr(dashboard_service, "get_settings", lambda: type("Settings", (), {"demo_mode": True})())
+
+    result = config(db, account)
+
+    assert result["customisation_enabled"] is False
+    assert result["monitor_mode_enabled"] is False
+
 def test_malformed_preferences_fall_back_safely(db):
     account=user(db); db.add(DashboardPreference(user_id=account.id,preference_version=99,layout_json="not json"));db.commit()
     assert preferences(db,account) == default_layout(db,account)

@@ -2,13 +2,16 @@ from starlette.requests import Request
 
 from app.services.audit import begin_request_context, end_request_context, write_audit
 from app.services.client_ip import client_ip, inspect_client_ip
-from app.services.sessions import request_ip as session_request_ip
+from app.services.sessions import request_ip as session_request_ip, request_user_agent as session_request_user_agent
+import app.services.sessions as session_service
 
 
-def make_request(immediate_ip: str, forwarded_for: str | None, trusted: str) -> Request:
+def make_request(immediate_ip: str, forwarded_for: str | None, trusted: str, user_agent: str | None = None) -> Request:
     headers = []
     if forwarded_for is not None:
         headers.append((b"x-forwarded-for", forwarded_for.encode("ascii")))
+    if user_agent is not None:
+        headers.append((b"user-agent", user_agent.encode("ascii")))
     scope = {
         "type": "http",
         "method": "GET",
@@ -101,3 +104,11 @@ def test_demo_audit_context_redacts_explicit_client_ip():
         end_request_context(token)
 
     assert row.ip_address is None
+
+
+def test_demo_sessions_do_not_store_visitor_fingerprinting_data(monkeypatch):
+    request = make_request("198.51.100.25", None, "127.0.0.1", "Demo Browser/1.0")
+    monkeypatch.setattr(session_service, "get_settings", lambda: type("Settings", (), {"demo_mode": True})())
+
+    assert session_request_ip(request) is None
+    assert session_request_user_agent(request) is None
