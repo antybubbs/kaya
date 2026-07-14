@@ -32,6 +32,31 @@ class DemoModeSafetyTests(unittest.TestCase):
         self.assertTrue(self.blocked("GET", "/system/site-administration/security/public-ip"))
         self.assertTrue(self.blocked("GET", "/system/site-administration/security/inbound"))
 
+    def test_blocks_all_destructive_delete_routes(self):
+        paths = (
+            "/networking/vlan-ip-manager/ip-addresses/1/delete",
+            "/security/license-keys/1/delete",
+            "/infrastructure/hardware-assets/1/delete",
+            "/infrastructure/hardware-assets/1/attachments/2/delete",
+            "/network-monitor/1/delete",
+            "/networking/dns-manager/investigations/1/delete",
+            "/infrastructure/backup-manager/manual/1/delete",
+            "/documentation/runbook-manager/pages/1/delete",
+            "/documentation/runbook-manager/spaces/1/delete",
+            "/infrastructure/rack-manager/racks/1/delete",
+            "/infrastructure/vm-docker-manager/hosts/1/delete",
+            "/networking/domains/1/delete",
+            "/system/site-administration/custom-fields/1/delete",
+        )
+        for path in paths:
+            with self.subTest(path=path):
+                self.assertTrue(self.blocked("POST", path))
+
+    def test_blocks_shared_dashboard_preference_changes(self):
+        self.assertTrue(self.blocked("PUT", "/api/dashboard/preferences"))
+        self.assertTrue(self.blocked("POST", "/api/dashboard/preferences/reset"))
+        self.assertFalse(self.blocked("GET", "/api/dashboard/snapshot"))
+
     def test_allows_read_only_module_pages(self):
         self.assertFalse(self.blocked("GET", "/networking/dns-manager"))
         self.assertFalse(self.blocked("GET", "/infrastructure/backup-manager"))

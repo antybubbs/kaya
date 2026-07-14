@@ -10,6 +10,7 @@ from time import perf_counter
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.models.models import (AppSession, AuditLog, BackupJob, BackupRecord, ComputeEvent,
     ComputeHost, ComputeWorkload, DashboardPreference, DNSInsight, DomainRecord, HardwareAsset,
     IPAddress, Licence, NetworkMonitor, RemoteAccess, RunbookPage, User, VLAN)
@@ -192,4 +193,5 @@ def config(db: Session, user: User) -> dict:
         poll_interval = 10
     if poll_interval not in {10, 30, 60, 300}:
         poll_interval = 10
-    return {"version":VERSION,"poll_interval_seconds":poll_interval,"customisation_enabled":get_site_setting(db,"dashboard_customisation_enabled")=="1","monitor_mode_enabled":get_site_setting(db,"dashboard_monitor_mode_enabled")=="1","show_source_age":get_site_setting(db,"dashboard_show_source_age")=="1","layout":preferences(db,user),"widgets":registry(db,user)}
+    demo_mode = get_settings().demo_mode
+    return {"version":VERSION,"poll_interval_seconds":poll_interval,"customisation_enabled":not demo_mode and get_site_setting(db,"dashboard_customisation_enabled")=="1","monitor_mode_enabled":not demo_mode and get_site_setting(db,"dashboard_monitor_mode_enabled")=="1","show_source_age":get_site_setting(db,"dashboard_show_source_age")=="1","layout":preferences(db,user),"widgets":registry(db,user)}

@@ -21,6 +21,8 @@ def request_ip(request: Request) -> str | None:
 
 
 def request_user_agent(request: Request) -> str | None:
+    if get_settings().demo_mode:
+        return None
     user_agent = request.headers.get("user-agent", "").strip()
     return user_agent[:500] or None
 

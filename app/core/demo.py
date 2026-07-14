@@ -30,6 +30,8 @@ def demo_request_is_blocked(method: str, path: str) -> bool:
         return False
 
     clean_path = path.rstrip("/") or "/"
+    if method.upper() not in {"GET", "HEAD", "OPTIONS"} and clean_path.endswith("/delete"):
+        return True
     if clean_path.startswith(("/remote-manager/", "/infrastructure/backup-manager/api/agent")):
         return True
 
@@ -39,6 +41,7 @@ def demo_request_is_blocked(method: str, path: str) -> bool:
         "/team/users",
         "/admin/security",
         "/system/site-administration",
+        "/api/dashboard/preferences",
         "/remote-manager",
         "/infrastructure/backup-manager",
         "/networking/dns-manager/investigations",
