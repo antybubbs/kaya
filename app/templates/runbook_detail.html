@@ -63,11 +63,11 @@
         {% endif %}
       </section>
       {% if user.role in ['admin','editor'] %}
-      <section class="panel">
+      <section class="panel danger-zone">
         <h2>Danger Zone</h2>
-        <form method="post" action="/documentation/runbook-manager/{{ page.slug }}/delete">
+        <form method="post" action="/documentation/runbook-manager/{{ page.slug }}/delete" data-confirm-delete="Delete runbook page {{ page.title }}? This cannot be undone.">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <button class="button secondary" type="submit">Delete Page</button>
+          <button class="button danger" type="submit">Delete Page</button>
         </form>
       </section>
       {% endif %}

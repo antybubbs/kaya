@@ -21,8 +21,8 @@
 </div>
 <div>
 <h2>Fields</h2>
-<table><thead><tr><th>Name</th><th>Type</th><th>Required</th><th>Status</th><th>Options</th><th></th></tr></thead><tbody>
-{% for row in rows %}<tr><td>{{ row.label }}</td><td>{{ field_types.get(row.field_type, row.field_type) }}</td><td>{{ 'Yes' if row.is_required else 'No' }}</td><td>{{ 'Active' if row.is_active else 'Inactive' }}</td><td>{{ row.options or '-' }}</td><td><form method="post" action="/data/custom-fields/{{ row.id }}/toggle"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit">{{ 'Disable' if row.is_active else 'Enable' }}</button></form></td></tr>{% endfor %}
+<table><thead><tr><th>Name</th><th>Type</th><th>Required</th><th>Status</th><th>Options</th><th>Actions</th></tr></thead><tbody>
+{% for row in rows %}<tr><td>{{ row.label }}</td><td>{{ field_types.get(row.field_type, row.field_type) }}</td><td>{{ 'Yes' if row.is_required else 'No' }}</td><td>{{ 'Active' if row.is_active else 'Inactive' }}</td><td>{{ row.options or '-' }}</td><td><div class="inline-actions"><form method="post" action="/data/custom-fields/{{ row.id }}/toggle"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit">{{ 'Disable' if row.is_active else 'Enable' }}</button></form><form method="post" action="/data/custom-fields/{{ row.id }}/delete" data-confirm-delete="Delete custom field {{ row.label }} and all saved values?"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button danger" type="submit">Delete</button></form></div></td></tr>{% endfor %}
 </tbody></table>
 </div>
 </section>

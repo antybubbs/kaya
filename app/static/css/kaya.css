@@ -71,10 +71,11 @@ input,textarea,select{background:#0d1117;border:1px solid #2a303a;border-radius:
 @media(max-width:850px){body:before{left:0}.app-topbar{left:0}.app-topbar-brand{border-right:0;flex:0 0 auto;padding:0 10px}.app-brand-name{font-size:16px}.app-topbar-main{padding:0 12px}.content{margin:0;padding:20px}.sidebar{position:static;top:auto;width:auto}.topbar,.module-header,.record-hero{padding:14px}.login-card{padding:24px}}
 
 /* Full-width operational layout and compact controls */
-.content{max-width:none;width:calc(100vw - 260px);padding:78px 24px 28px}.app-topbar{width:100%}body.sidebar-collapsed .content{width:calc(100vw - 76px)}body.sidebar-collapsed .app-topbar{left:0;width:100%}.dashboard-hero,.dashboard-launch,.module-header,.record-hero,.topbar,.compute-summary-grid,.compute-resource-grid,.compute-host-grid,.compute-lower-grid,.panel,.remote-card{max-width:none}.compute-summary-grid{grid-template-columns:repeat(5,minmax(0,1fr))}.compute-resource-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.dashboard-launch{display:flex}.dashboard-launch>div{min-width:0}.dashboard-launch .button{margin-left:auto}.module-toolbar{align-items:flex-start;justify-content:flex-start}.module-primary-actions{align-items:flex-start;display:flex;flex:0 0 auto;flex-direction:column;flex-wrap:nowrap;gap:8px;min-width:0}.module-secondary-actions{align-items:center;display:flex;flex:0 0 auto;gap:8px;margin-left:0}.module-toolbar .list-search{flex:0 0 auto;min-width:220px;width:min(100%,520px)}.module-toolbar .list-search input{max-width:none;width:100%}.panel table{width:100%}
-.module-header{align-content:start;display:grid;gap:10px;padding:16px 18px}.module-header .module-title-row,.module-header .module-toolbar{margin:0}.module-header .module-title-row{align-items:flex-start}.module-header .module-toolbar{align-items:flex-start;gap:8px}.module-header .module-primary-actions{align-items:flex-start;flex:0 0 auto;gap:8px}.module-header .module-primary-actions .list-search,.module-header .module-filters{margin:0}
+.content{max-width:none;width:calc(100vw - 260px);padding:78px 24px 28px}.app-topbar{width:100%}body.sidebar-collapsed .content{width:calc(100vw - 76px)}body.sidebar-collapsed .app-topbar{left:0;width:100%}.dashboard-hero,.dashboard-launch,.module-header,.record-hero,.topbar,.compute-summary-grid,.compute-resource-grid,.compute-host-grid,.compute-lower-grid,.panel,.remote-card{max-width:none}.compute-summary-grid{grid-template-columns:repeat(5,minmax(0,1fr))}.compute-resource-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.dashboard-launch{display:flex}.dashboard-launch>div{min-width:0}.dashboard-launch .button{margin-left:auto}.module-toolbar{align-items:center;justify-content:flex-start}.module-primary-actions{align-items:center;display:flex;flex:0 0 auto;flex-direction:row;flex-wrap:wrap;gap:8px;min-width:0}.module-secondary-actions{align-items:center;display:flex;flex:0 0 auto;gap:8px;margin-left:0}.module-toolbar .list-search{flex:0 0 auto;min-width:220px;width:min(100%,520px)}.module-toolbar .list-search input{max-width:none;width:100%}.panel table{width:100%}
+.module-header{align-content:start;display:grid;gap:6px 8px;grid-template-columns:max-content minmax(0,1fr) max-content;padding:10px 14px}.module-header .module-title-row,.module-header .module-toolbar{margin:0}.module-header .module-title-row{align-items:flex-start;grid-column:1/-1}.module-header .module-toolbar{display:contents}.module-header .module-primary-actions{align-items:center;flex:0 0 auto;flex-direction:row!important;flex-wrap:nowrap;gap:8px;grid-column:1;grid-row:2;width:auto}.module-header .module-primary-actions .list-search,.module-header .module-filters{margin:0}.module-header>.module-filters{align-self:center;grid-column:2;grid-row:2;justify-self:start;width:auto}.module-header .module-secondary-actions,.module-header .module-toolbar>.compute-tabs,.module-header .module-toolbar>.dns-refresh-control{align-self:center;grid-column:3;grid-row:2;justify-self:end;margin-left:0}
+.module-header .button,.module-header button,.module-header .favourites-menu>summary{white-space:nowrap}.module-header .module-primary-actions .button,.module-header .module-primary-actions button{min-height:32px}
 .button,button{border-radius:7px;font-size:12px;min-height:28px;padding:5px 10px}.button.small,td .button,td button,td form button,.panel td .button.secondary,.panel td button.button.secondary,.panel td form button{font-size:11px;min-height:26px;padding:4px 8px}.icon-button{height:30px;min-height:30px;width:30px}.sidebar-collapse-button{height:24px;min-height:24px;width:24px}.nav-link,.nav-group>summary,.nav-subgroup>summary{min-height:33px;padding:7px 9px}.live-indicator{font-size:12px;padding:5px 8px}.category-tabs a,.table-settings>summary{font-size:11px;min-height:28px;padding:5px 9px}input,textarea,select{font-size:12px;min-height:32px;padding:6px 9px}.search input{min-height:32px}.setup-form input{min-height:38px}.setup-form button{min-height:34px;padding:7px 12px}.login-card form button{min-height:32px}.remote-host-toolbar button,.remote-host-toolbar a,.remote-layout-button{font-size:11px;height:28px;min-height:28px;padding:0 8px}.remote-tab-tool{height:20px;min-height:20px;width:20px}.account-link{font-size:12px;padding:8px 13px}.favourites-menu>summary{min-height:30px;padding:6px 10px}.bulk-action-bar button{min-height:28px}
-@media(max-width:1200px){.compute-summary-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.compute-resource-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.module-primary-actions{width:100%}.module-toolbar .list-search{min-width:0;width:min(100%,520px)}}@media(max-width:850px){.content,.app-topbar,body.sidebar-collapsed .content,body.sidebar-collapsed .app-topbar{width:100%}.content{padding:18px}.compute-summary-grid,.compute-resource-grid{grid-template-columns:1fr}.dashboard-launch{align-items:flex-start}.dashboard-launch .button{margin-left:0}}
+@media(max-width:1200px){.compute-summary-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.compute-resource-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.module-toolbar .list-search{min-width:0;width:min(100%,520px)}}@media(max-width:850px){.content,.app-topbar,body.sidebar-collapsed .content,body.sidebar-collapsed .app-topbar{width:100%}.content{padding:18px}.compute-summary-grid,.compute-resource-grid{grid-template-columns:1fr}.dashboard-launch{align-items:flex-start}.dashboard-launch .button{margin-left:0}.module-header{grid-template-columns:1fr}.module-header .module-toolbar{display:flex}.module-header .module-title-row,.module-header .module-toolbar,.module-header>.module-filters{grid-column:1;grid-row:auto}.module-header .module-primary-actions{flex-wrap:wrap;width:100%}.module-header>.module-filters{width:100%}}
 
 /* Orange palette enforcement for legacy blue accents */
 a,.panel a,.audit-inspector>summary,.runbook-tree-title:hover{color:#ffb357}
@@ -839,4 +840,87 @@ html[data-theme=light] .dns-client-row div,
 html[data-kaya-theme=light-ops] .dns-client-row div{
   background:#eef2f7;
   border-color:#d8dee8;
+}
+
+/* Allow DNS query detail menus to extend below the table, fix overflow issues//--antybubbs--// */
+.panel.dns-query-log-panel{
+  overflow-x:auto;
+  overflow-y:visible;
+  min-height:calc(100vh - 260px);
+  padding-bottom:220px;
+}
+
+/* Markdown editor toolbar buttons in dark mode, Shit was dark yoh!//--antybubbs--// */
+html:not([data-theme="light"]):not([data-kaya-theme="light-ops"])
+.runbook-editor-toolbar button,
+html:not([data-theme="light"]):not([data-kaya-theme="light-ops"])
+.runbook-editor-toolbar .button,
+html:not([data-theme="light"]):not([data-kaya-theme="light-ops"])
+.runbook-editor-toolbar select{
+  background:#21170d!important;
+  border:1px solid rgba(255,138,0,.48)!important;
+  color:#ffe3b0!important;
+  -webkit-text-fill-color:#ffe3b0!important;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.04);
+}
+
+html:not([data-theme="light"]):not([data-kaya-theme="light-ops"])
+.runbook-editor-toolbar button:hover,
+html:not([data-theme="light"]):not([data-kaya-theme="light-ops"])
+.runbook-editor-toolbar .button:hover{
+  background:rgba(255,138,0,.18)!important;
+  border-color:rgba(255,138,0,.72)!important;
+  color:#fff!important;
+  -webkit-text-fill-color:#fff!important;
+}
+
+html:not([data-theme="light"]):not([data-kaya-theme="light-ops"])
+.runbook-editor-toolbar button:focus-visible{
+  outline:2px solid var(--kaya-orange);
+  outline-offset:2px;
+}
+
+/* DNS query log domain popup, to avoid the cutting off if drop down is at bottom of table//--antybubs--// */
+.panel.dns-query-log-panel{
+  min-height:calc(100vh - 240px);
+  overflow:visible!important;
+  padding-bottom:220px;
+  position:relative;
+}
+
+.panel.dns-query-log-panel table,
+.panel.dns-query-log-panel tbody,
+.panel.dns-query-log-panel tr,
+.panel.dns-query-log-panel td{
+  overflow:visible!important;
+}
+
+.dns-domain-menu[open]{
+  position:relative;
+  z-index:1000;
+}
+
+.dns-domain-menu-panel{
+  z-index:9999!important;
+}
+
+/* DNS domain popup rendered above all panels */
+.dns-domain-menu-panel{
+  display:none;
+}
+
+.dns-domain-menu[open] .dns-domain-menu-panel{
+  display:grid;
+  position:fixed!important;
+  left:var(--dns-popup-left, 20px)!important;
+  top:var(--dns-popup-top, 20px)!important;
+  bottom:auto!important;
+  width:min(520px, calc(100vw - 32px));
+  max-height:calc(100vh - 32px);
+  overflow:auto;
+  z-index:99999!important;
+}
+
+.dns-domain-menu[open]{
+  z-index:99999;
 }

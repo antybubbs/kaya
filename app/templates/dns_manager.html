@@ -7,7 +7,12 @@
       <p class="muted">Manage and monitor DNS providers from Kaya.</p>
     </div>
     {% if provider %}
-    <span class="module-stat">Provider <strong>{{ provider.name }}</strong></span>
+    <div class="dns-provider-state">
+      <span class="dns-connection-indicator {% if (status and status.ok) or (not status and provider.last_status == 'online') %}is-connected{% else %}is-disconnected{% endif %}" data-dns-connection-status title="{{ status.message if status else provider.last_error or 'Using the latest provider connectivity check' }}">
+        <i aria-hidden="true"></i><span data-dns-connection-label>{% if (status and status.ok) or (not status and provider.last_status == 'online') %}Connected{% else %}Disconnected{% endif %}</span>
+      </span>
+      <span class="module-stat">Provider <strong>{{ provider.name }}</strong></span>
+    </div>
     {% endif %}
   </div>
   <div class="module-toolbar">
@@ -16,6 +21,16 @@
       <a class="button secondary" href="/system/site-administration?tab=module-dns-manager">Provider settings</a>
       {% endif %}
     </div>
+    {% if active_tab == 'dashboard' %}
+    <label class="dns-refresh-control">
+      <span>Auto refresh</span>
+      <select data-dns-refresh-interval>
+        <option value="30000">30 seconds</option>
+        <option value="60000">1 minute</option>
+        <option value="300000">5 minutes</option>
+      </select>
+    </label>
+    {% endif %}
   </div>
 </section>
 
@@ -33,18 +48,21 @@
 </section>
 {% else %}
 {% if error %}<div class="alert">{{ error }}</div>{% endif %}
+{% if notice %}<div class="alert {% if notice_kind == 'success' %}success{% endif %}">{{ notice }}</div>{% endif %}
 
 <nav class="category-tabs dns-manager-tabs" aria-label="DNS Manager sections">
   <a href="/networking/dns-manager?tab=dashboard" class="{% if active_tab == 'dashboard' %}active{% endif %}">Dashboard</a>
+  <a href="/networking/dns-manager?tab=insights" class="{% if active_tab == 'insights' %}active{% endif %}">Insights</a>
+  <a href="/networking/dns-manager?tab=reports" class="{% if active_tab == 'reports' %}active{% endif %}">Reports</a>
   <a href="/networking/dns-manager?tab=query-log" class="{% if active_tab == 'query-log' %}active{% endif %}">Query Log</a>
   <a href="/networking/dns-manager?tab=clients" class="{% if active_tab == 'clients' %}active{% endif %}">Clients</a>
   <a href="/networking/dns-manager?tab=local-dns" class="{% if active_tab == 'local-dns' %}active{% endif %}">Local DNS</a>
   <a href="/networking/dns-manager?tab=dhcp" class="{% if active_tab == 'dhcp' %}active{% endif %}">DHCP</a>
   <a href="/networking/dns-manager?tab=blocklists" class="{% if active_tab == 'blocklists' %}active{% endif %}">Blocklists</a>
-  <a href="/networking/dns-manager?tab=reports" class="{% if active_tab == 'reports' %}active{% endif %}">Reports</a>
 </nav>
 
 {% if active_tab == 'dashboard' %}
+<div data-dns-dashboard-widgets>
 {% set stats_data = stats.data if stats and stats.ok else {} %}
 {% set status_data = status.data if status and status.ok else {} %}
 {% set history_data = history.data if history and history.ok else {} %}
@@ -56,7 +74,7 @@
 {% set query_max = chart_max(query_points, 'total') %}
 {% set client_rows = client_activity_rows(stats_data, history_data.get('clients') if history_data else {}, query_log_data) %}
 {% set client_max = chart_max(client_rows, 'count') %}
-{% set inventory_rows = network_client_inventory(clients_data, dhcp_data, query_log_data) %}
+{% set inventory_rows = network_client_inventory(clients_data, dhcp_data, query_log_data, recognised_hostnames) %}
 {% set unknown_inventory_rows = inventory_rows|selectattr('is_unknown')|list %}
 {% set attention_rows = attention_client_rows(inventory_rows) %}
 {% set dhcp_rows = dhcp_lease_rows(dhcp_data) %}
@@ -119,6 +137,15 @@
         <div>
           {% if row.is_new %}<span class="table-chip danger-chip">New</span>{% endif %}
           {% if row.is_unknown %}<span class="table-chip">Unrecognised</span>{% endif %}
+          {% if row.is_known %}<span class="table-chip good">Known</span>{% endif %}
+          {% if row.is_unknown and row.hostname_key and user.role in ['admin', 'editor'] %}
+          <form method="post" action="/networking/dns-manager/known-hostnames" class="dns-known-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="hostname" value="{{ row.name }}">
+            <input type="hidden" name="return_tab" value="dashboard">
+            <button class="button secondary small" type="submit">Mark known</button>
+          </form>
+          {% endif %}
           <small>{{ row.source_label }}</small>
         </div>
       </div>
@@ -154,6 +181,10 @@
 
 <section class="dns-chart-panel">
   <header><h2>Total queries</h2><span class="muted">Allowed and blocked queries over time</span></header>
+  <div class="dns-chart-legend" aria-label="Chart colour legend">
+    <span><i class="dns-legend-allowed"></i>Allowed</span>
+    <span><i class="dns-legend-blocked"></i>Blocked</span>
+  </div>
   {% if query_points %}
   <div class="dns-bar-chart" style="--chart-max: {{ query_max if query_max else 1 }}">
     {% for point in query_points %}
@@ -216,14 +247,210 @@
     <div><label>Blocking Status</label><p>{{ stat_value(stats_data, 'status', 'blocking') }}</p></div>
   </div>
 </section>
+</div>
+{% elif active_tab == 'insights' %}
+<section data-dns-insights-root data-provider-id="{{ provider.id }}" data-csrf-token="{{ csrf_token }}">
+  <div class="dns-insights-toolbar">
+    <div>
+      <h2>DNS Insights</h2>
+      <p class="muted">Rule-based observations about what may require attention. Insights are advisory, not definitive proof of a security incident.</p>
+    </div>
+    {% if user.role in ['admin', 'editor'] %}
+    <button class="button" type="button" data-dns-analyse-now>Analyse now</button>
+    {% endif %}
+  </div>
+  <div class="alert" data-dns-insights-message hidden></div>
+
+  <section class="dns-insights-summary" aria-labelledby="dns-insights-summary-title">
+    <h2 id="dns-insights-summary-title" class="sr-only">Insights summary</h2>
+    <article class="dns-health-card">
+      <span>DNS Health</span>
+      <strong>{{ health_score.score if health_score else '-' }}{% if health_score %} / 100{% endif %}</strong>
+      <small>{{ health_score.status if health_score else 'Not yet analysed' }}</small>
+      {% if health_score %}
+      <details class="dns-health-breakdown">
+        <summary>View breakdown</summary>
+        <div>
+          {% for factor in health_score.factors %}
+          <p><span>{{ factor.label }}</span><span>{{ factor.state }}</span><strong>{% if factor.deduction is none %}Unavailable{% elif factor.deduction %}-{{ factor.deduction }}{% else %}No deduction{% endif %}</strong></p>
+          {% endfor %}
+        </div>
+      </details>
+      {% endif %}
+    </article>
+    <article><span>Overall Status</span><strong>{{ health_score.status if health_score else 'Awaiting analysis' }}</strong></article>
+    <article><span>Active Insights</span><strong>{{ insight_summary.active }}</strong></article>
+    <article><span>Warnings / Critical</span><strong>{{ insight_summary.warnings }} / {{ insight_summary.critical }}</strong></article>
+    <article><span>Last Analysed</span><strong>{% if last_analysis_at %}{{ local_time(last_analysis_at, 'minute') }}{% else %}Never{% endif %}</strong></article>
+    <article><span>Provider</span><strong>{{ provider.name }}</strong><small>{{ provider.provider_type|replace('_', ' ')|title }}</small></article>
+    <article><span>Provider Status</span><strong>{{ 'Connected' if provider.last_status == 'online' else 'Disconnected' if provider.last_status else 'Unknown' }}</strong></article>
+  </section>
+
+  {% if analysis_coverage %}
+  <section class="dns-analysis-coverage" aria-labelledby="dns-analysis-coverage-title">
+    <header>
+      <div><h2 id="dns-analysis-coverage-title">Analysis coverage</h2><p class="muted">Evidence retrieved and evaluated during the last successful analysis.</p></div>
+      <span class="table-chip good">Analysis completed</span>
+    </header>
+    <div class="dns-analysis-metrics">
+      <article><span>Provider datasets</span><strong>{{ analysis_coverage.capabilities|length }}</strong><small>{{ analysis_coverage.capabilities|join(', ') if analysis_coverage.capabilities else 'No capability record; analyse again' }}</small></article>
+      <article><span>Recent queries evaluated</span><strong>{{ display_number(analysis_coverage.query_sample_count) if analysis_coverage.query_sample_count is not none else 'Unknown' }}</strong><small>Bounded provider query sample</small></article>
+      <article><span>Clients analysed</span><strong>{{ display_number(analysis_coverage.clients_analysed) if analysis_coverage.clients_analysed is not none else 'Unknown' }}</strong><small>{{ display_number(analysis_coverage.recognised_clients) if analysis_coverage.recognised_clients is not none else '?' }} recognised / {{ display_number(analysis_coverage.unrecognised_clients) if analysis_coverage.unrecognised_clients is not none else '?' }} unrecognised</small></article>
+      <article><span>Rules evaluated</span><strong>{{ analysis_coverage.rules_evaluated if analysis_coverage.rules_evaluated is not none else 'Unknown' }}</strong><small>{{ analysis_coverage.rules_skipped if analysis_coverage.rules_skipped is not none else '?' }} skipped because required data or history was unavailable</small></article>
+      <article><span>Provider query total</span><strong>{{ display_number(analysis_coverage.total_queries) if analysis_coverage.total_queries is not none else 'Unavailable' }}</strong><small>{{ display_number(analysis_coverage.blocked_queries) if analysis_coverage.blocked_queries is not none else '?' }} blocked</small></article>
+      <article><span>Trend baseline</span><strong>{{ 'Available' if analysis_coverage.baseline_available else 'Collecting' }}</strong><small>{% if analysis_coverage.baseline_available %}Historical comparison rules can run{% else %}Trend insights need another comparable hourly snapshot{% endif %}</small></article>
+    </div>
+    <div class="dns-analysis-evidence">
+      <section>
+        <header><h3>Top blocked domains to investigate</h3><span class="muted">Latest provider query sample</span></header>
+        {% if analysis_coverage.top_blocked_domains %}
+        <div class="dns-evidence-list">
+          {% for item in analysis_coverage.top_blocked_domains[:10] %}
+          <article>
+            <div><strong title="{{ item.domain }}">{{ item.domain }}</strong><small>{{ item.count }} blocked request{% if item.count != 1 %}s{% endif %}</small></div>
+            <div class="dns-evidence-clients">
+              {% for client in item.clients %}<a class="table-chip" href="/networking/dns-manager?tab=query-log&amp;dns_domain={{ item.domain|urlencode }}&amp;dns_client={{ client.name|urlencode }}">{{ client.name }} ({{ client.count }})</a>{% endfor %}
+            </div>
+            <a class="button secondary small" href="/networking/dns-manager?tab=query-log&amp;dns_domain={{ item.domain|urlencode }}">Investigate domain</a>
+          </article>
+          {% endfor %}
+        </div>
+        {% else %}<p class="muted">No blocked domain activity was present in the retrieved query sample.</p>{% endif %}
+      </section>
+      <section>
+        <header><h3>Most active client-domain relationships</h3><span class="muted">Factual activity, not a security conclusion</span></header>
+        {% if analysis_coverage.top_client_domain_pairs %}
+        <div class="dns-evidence-list compact">
+          {% for item in analysis_coverage.top_client_domain_pairs[:10] %}
+          <article>
+            <div><strong title="{{ item.client }}">{{ item.client }}</strong><small title="{{ item.domain }}">{{ item.domain }}</small></div>
+            <span class="dns-evidence-count">{{ item.count }}</span>
+            <a class="button secondary small" href="/networking/dns-manager?tab=query-log&amp;dns_domain={{ item.domain|urlencode }}&amp;dns_client={{ item.client|urlencode }}">View queries</a>
+          </article>
+          {% endfor %}
+        </div>
+        {% else %}<p class="muted">No client-domain relationships were returned in the latest query sample.</p>{% endif %}
+      </section>
+    </div>
+    {% if analysis_coverage.query_sample_count == 0 %}
+    <div class="alert">The provider connected, but no recent query rows were returned. Client security and recent-activity rules could not produce meaningful findings.</div>
+    {% elif analysis_coverage.rules_skipped %}
+    <p class="muted dns-analysis-note">Skipped rules are expected on first run or when the provider does not expose the required dataset. They do not reduce the health score.</p>
+    {% endif %}
+  </section>
+  {% elif last_analysis_at %}
+  <section class="dns-analysis-coverage"><p class="muted">This analysis predates coverage diagnostics. Run <strong>Analyse now</strong> again to see exactly what data and rules were evaluated.</p></section>
+  {% endif %}
+
+  <form class="dns-insight-filters" method="get" action="/networking/dns-manager" data-dns-insight-filters>
+    <input type="hidden" name="tab" value="insights">
+    <label>Provider
+      <select name="provider_id">
+        {% for item in providers %}<option value="{{ item.id }}" {% if item.id == provider.id %}selected{% endif %}>{{ item.name }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Status
+      <select name="insight_status">
+        {% for value, label in [('active','Active'),('acknowledged','Acknowledged'),('resolved','Resolved'),('all','All')] %}<option value="{{ value }}" {% if insight_filters.status == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Severity
+      <select name="insight_severity">
+        <option value="all">All</option>
+        <option value="attention" {% if insight_filters.severity == 'attention' %}selected{% endif %}>Attention (warning + critical)</option>
+        {% for value, label in severity_labels.items() %}<option value="{{ value }}" {% if insight_filters.severity == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Category
+      <select name="insight_category">
+        <option value="all">All</option>
+        {% for value, label in category_labels.items() %}<option value="{{ value }}" {% if insight_filters.category == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Time period
+      <select name="insight_period">
+        {% for value, label in [('today','Today'),('24h','Last 24 hours'),('7d','Last 7 days'),('30d','Last 30 days')] %}<option value="{{ value }}" {% if insight_filters.period == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+    </label>
+  </form>
+
+  <div data-dns-insight-results>
+    {% if not last_analysis_at and not insight_rows %}
+    <section class="empty-state">
+      <h2>Kaya has not yet collected enough DNS data to generate insights</h2>
+      <p class="muted">Run an analysis to collect current operational data. Trend insights become available after sufficient aggregate history has been retained.</p>
+      {% if user.role in ['admin', 'editor'] %}<button class="button" type="button" data-dns-analyse-now>Analyse now</button>{% endif %}
+    </section>
+    {% elif not insight_rows %}
+    <section class="empty-state compact-empty">
+      <h2>No matching insights</h2>
+      <p class="muted">No warning or critical DNS insights are currently active for these filters.</p>
+    </section>
+    {% else %}
+      {% for section_key, section_label in [('system','Important Alerts'),('network_activity','Network Activity'),('security','Security'),('devices','Devices'),('usage_trend','Usage Trends'),('recommendation','Recommendations')] %}
+      {% set section_rows = insight_rows|selectattr('category', 'equalto', section_key)|list %}
+      {% if section_rows %}
+      <section class="dns-insight-section" aria-labelledby="insight-section-{{ section_key }}">
+        <h2 id="insight-section-{{ section_key }}">{{ section_label }}</h2>
+        <div class="dns-insight-list">
+          {% for insight in section_rows %}
+          <article id="dns-insight-{{ insight.id }}" class="dns-insight-card severity-{{ insight.severity }}" data-insight-id="{{ insight.id }}">
+            <header>
+              <div>
+                <span class="dns-insight-severity" aria-label="Severity: {{ severity_labels.get(insight.severity, insight.severity) }}"><i aria-hidden="true"></i>{{ severity_labels.get(insight.severity, insight.severity) }}</span>
+                <span class="table-chip">{{ category_labels.get(insight.category, insight.category) }}</span>
+                {% if insight.acknowledged_at %}<span class="table-chip good">Acknowledged</span>{% endif %}
+              </div>
+              <time datetime="{{ insight.last_detected_at.isoformat() }}">{{ local_time(insight.last_detected_at, 'minute') }}</time>
+            </header>
+            <h3>{{ insight.title }}</h3>
+            <p>{{ insight.summary }}</p>
+            <details>
+              <summary>View details</summary>
+              <div class="dns-insight-detail">
+                {% if insight.detail %}<p>{{ insight.detail }}</p>{% endif %}
+                <dl>
+                  <div><dt>First detected</dt><dd>{{ local_time(insight.first_detected_at, 'minute') }}</dd></div>
+                  <div><dt>Most recent</dt><dd>{{ local_time(insight.last_detected_at, 'minute') }}</dd></div>
+                  {% if insight.current_value %}<div><dt>Current value</dt><dd>{{ insight.current_value }}</dd></div>{% endif %}
+                  {% if insight.comparison_value %}<div><dt>Comparison</dt><dd>{{ insight.comparison_value }}</dd></div>{% endif %}
+                  {% if insight.entity_identifier %}<div><dt>Related {{ insight.entity_type or 'item' }}</dt><dd class="mono" title="{{ insight.entity_identifier }}">{{ insight.entity_identifier }}</dd></div>{% endif %}
+                </dl>
+              </div>
+            </details>
+            <footer>
+              {% set action_target = insight_action_target(insight) %}
+              {% if action_target %}<a class="button secondary small" href="{{ action_target }}">Investigate</a>{% endif %}
+              {% if insight.action_type == 'analyse_now' and user.role in ['admin', 'editor'] %}<button class="button secondary small" type="button" data-dns-analyse-now>Refresh now</button>{% endif %}
+              {% if insight.status == 'active' and not insight.acknowledged_at and user.role in ['admin', 'editor'] %}
+              <button class="button secondary small" type="button" data-dns-acknowledge="{{ insight.id }}">Acknowledge</button>
+              {% endif %}
+            </footer>
+          </article>
+          {% endfor %}
+        </div>
+      </section>
+      {% endif %}
+      {% endfor %}
+    {% endif %}
+  </div>
+</section>
 {% elif active_tab == 'query-log' %}
-{% set rows = list_from_payload(queries.data if queries and queries.ok else {}, 'queries', 'data') %}
+{% set rows = filtered_query_rows(queries.data if queries and queries.ok else {}, dns_query_filters.domain, dns_query_filters.client) %}
 <section class="panel dns-query-log-panel" data-dns-query-log>
   <div class="dns-query-log-controls">
     <label class="checkbox-row dns-live-toggle">
       <input type="checkbox" data-dns-live-toggle>
       <span><strong>Live query log</strong></span>
     </label>
+    {% if dns_query_filters.domain or dns_query_filters.client %}
+    <div class="dns-query-filter-summary">
+      <span>Filtered investigation:</span>
+      {% if dns_query_filters.client %}<span class="table-chip">Client {{ dns_query_filters.client }}</span>{% endif %}
+      {% if dns_query_filters.domain %}<span class="table-chip">Domain {{ dns_query_filters.domain }}</span>{% endif %}
+      <a class="button secondary small" href="/networking/dns-manager?tab=query-log">Clear filters</a>
+    </div>
+    {% endif %}
   </div>
   <table data-table-key="dns-query-log" data-dns-query-log-table>
     <thead><tr><th>Time</th><th>Client Name</th><th>Client IP</th><th>Domain</th><th>Query Type</th><th>Status</th><th>Reply Type</th><th>Reply Time</th><th>Upstream</th><th data-col="actions">Actions</th></tr></thead>
@@ -295,7 +522,7 @@
 {% set clients_data = clients.data if clients and clients.ok else {} %}
 {% set dhcp_data = dhcp.data if dhcp and dhcp.ok else {} %}
 {% set query_log_data = queries.data if queries and queries.ok else {} %}
-{% set rows = network_client_inventory(clients_data, dhcp_data, query_log_data) %}
+{% set rows = network_client_inventory(clients_data, dhcp_data, query_log_data, recognised_hostnames) %}
 <section class="panel">
   <table data-table-key="dns-clients">
     <thead><tr><th>Hostname</th><th>IP Address</th><th>MAC Address</th><th>Queries</th><th>Blocked Queries</th><th>Last Seen</th><th>Source</th><th>Flags</th></tr></thead>
@@ -312,7 +539,15 @@
         <td>
           {% if row.is_new %}<span class="table-chip danger-chip">New</span>{% endif %}
           {% if row.is_unknown %}<span class="table-chip">Unrecognised</span>{% endif %}
-          {% if not row.is_new and not row.is_unknown %}-{% endif %}
+          {% if row.is_known %}<span class="table-chip good">Known</span>{% endif %}
+          {% if row.is_unknown and row.hostname_key and user.role in ['admin', 'editor'] %}
+          <form method="post" action="/networking/dns-manager/known-hostnames" class="dns-known-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="hostname" value="{{ row.name }}">
+            <input type="hidden" name="return_tab" value="clients">
+            <button class="button secondary small" type="submit">Mark known</button>
+          </form>
+          {% endif %}
         </td>
       </tr>
       {% else %}
@@ -342,7 +577,7 @@
     <thead><tr><th>Hostname</th><th>IP Address</th><th>MAC Address</th><th>Lease Expiry</th><th>Static Reservation</th></tr></thead>
     <tbody>
       {% for row in rows %}
-      <tr><td><strong>{{ row.name if row.name is defined else row.hostname if row.hostname is defined else '-' }}</strong></td><td>{{ row.ip if row.ip is defined else '-' }}</td><td>{{ row.mac if row.mac is defined else '-' }}</td><td>{{ row.expires if row.expires is defined else row.expiry if row.expiry is defined else '-' }}</td><td>{{ row.static if row.static is defined else '-' }}</td></tr>
+      <tr><td><strong>{{ row.name if row.name is defined else row.hostname if row.hostname is defined else '-' }}</strong></td><td>{{ row.ip if row.ip is defined else '-' }}</td><td>{{ row.mac if row.mac is defined else '-' }}</td><td>{{ timestamp_display(row.expires if row.expires is defined else row.expiry if row.expiry is defined else none) }}</td><td>{{ row.static if row.static is defined else '-' }}</td></tr>
       {% else %}
       <tr><td colspan="5">No DHCP leases returned by this provider.</td></tr>
       {% endfor %}
@@ -352,11 +587,18 @@
 {% elif active_tab == 'blocklists' %}
 {% set rows = list_from_payload(blocklists.data if blocklists and blocklists.ok else {}, 'lists', 'blocklists', 'data') %}
 <section class="panel">
+  {% if user.role in ['admin', 'editor'] %}
+  <form method="post" action="/networking/dns-manager/blocklists/update" class="dns-blocklist-actions">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="button secondary" type="submit">Refresh blocklists from Pi-hole</button>
+    <span class="muted">Runs a Pi-hole gravity update without leaving Kaya.</span>
+  </form>
+  {% endif %}
   <table data-table-key="dns-blocklists">
     <thead><tr><th>Blocklist Name</th><th>Status</th><th>Last Updated</th></tr></thead>
     <tbody>
       {% for row in rows %}
-      <tr><td><strong>{{ row.address if row.address is defined else row.name if row.name is defined else '-' }}</strong></td><td>{{ row.enabled if row.enabled is defined else row.status if row.status is defined else '-' }}</td><td>{{ row.date_updated if row.date_updated is defined else row.updated_at if row.updated_at is defined else '-' }}</td></tr>
+      <tr><td><strong>{{ row.address if row.address is defined else row.name if row.name is defined else '-' }}</strong></td><td>{{ row.enabled if row.enabled is defined else row.status if row.status is defined else '-' }}</td><td>{{ timestamp_display(row.date_updated if row.date_updated is defined else row.updated_at if row.updated_at is defined else none) }}</td></tr>
       {% else %}
       <tr><td colspan="3">No blocklists returned by this provider.</td></tr>
       {% endfor %}
@@ -367,7 +609,7 @@
 <section class="panel">
   <h2>Open investigations</h2>
   <table data-table-key="dns-investigations">
-    <thead><tr><th>Flagged</th><th>Domain</th><th>Client</th><th>Query Type</th><th>Reply</th><th>Observed</th><th>Notes</th></tr></thead>
+    <thead><tr><th>Flagged</th><th>Domain</th><th>Client</th><th>Query Type</th><th>Reply</th><th>Observed</th><th>Notes</th><th>Actions</th></tr></thead>
     <tbody>
       {% for item in investigations %}
       <tr>
@@ -378,9 +620,10 @@
         <td>{{ item.reply_type or '-' }}{% if item.reply_time %}<br><span class="muted">{{ item.reply_time }}</span>{% endif %}</td>
         <td>{{ item.observed_at or '-' }}</td>
         <td>{{ item.notes or '-' }}</td>
+        <td>{% if user.role in ['admin','editor'] %}<form method="post" action="/networking/dns-manager/investigations/{{ item.id }}/delete" data-confirm-delete="Delete the investigation for {{ item.domain }}?"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button danger" type="submit">Delete</button></form>{% endif %}</td>
       </tr>
       {% else %}
-      <tr><td colspan="7">No DNS queries have been flagged for investigation.</td></tr>
+      <tr><td colspan="8">No DNS queries have been flagged for investigation.</td></tr>
       {% endfor %}
     </tbody>
   </table>

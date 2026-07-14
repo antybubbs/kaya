@@ -41,6 +41,7 @@
         <summary class="settings-side-link" data-settings-parent-tab="modules" data-default-child="module-backup-manager" aria-selected="false">Module Settings</summary>
         <div class="settings-side-children">
           <a href="/system/site-administration?tab=module-backup-manager" class="settings-side-child" data-settings-child-tab="module-backup-manager" data-settings-parent="modules" aria-selected="false">Backup Manager</a>
+          <a href="/system/site-administration?tab=module-dashboard" class="settings-side-child" data-settings-child-tab="module-dashboard" data-settings-parent="modules" aria-selected="false">Dashboard</a>
           <a href="/system/site-administration?tab=module-dns-manager" class="settings-side-child" data-settings-child-tab="module-dns-manager" data-settings-parent="modules" aria-selected="false">DNS Manager</a>
           <a href="/system/site-administration?tab=module-remote-manager" class="settings-side-child" data-settings-child-tab="module-remote-manager" data-settings-parent="modules" aria-selected="false">Remote Manager</a>
         </div>
@@ -48,6 +49,20 @@
     </aside>
 
     <main class="settings-content-panel">
+  <section class="settings-tab-panel" data-settings-panel="module-dashboard" data-settings-parent="modules" role="tabpanel" hidden>
+    <h2>Dashboard</h2>
+    <div class="remote-settings-card">
+      <header><span>Global dashboard defaults</span></header>
+      {{ switch('dashboard_customisation_enabled', 'Allow dashboard customisation', 'Users can arrange, resize, enable and disable their authorised widgets.') }}
+      {{ switch('dashboard_monitor_mode_enabled', 'Allow monitor mode', 'Users can maximise the dashboard and collapse navigation chrome.') }}
+      {{ switch('dashboard_show_source_age', 'Show source data age', 'Distinguish dashboard refresh time from the underlying collector timestamp.') }}
+      {{ switch('dashboard_attention_required', 'Require Attention Required', 'Keep the full-width attention widget enabled for every authorised user.') }}
+      <div class="remote-settings-grid two">
+        <label><strong>Recent activity entries</strong><small>Between 1 and 20.</small><input name="dashboard_recent_activity_limit" type="number" min="1" max="20" value="{{ settings.get('dashboard_recent_activity_limit','10') }}"></label>
+        <label><strong>Globally disabled widget keys</strong><small>Comma-separated registry keys. Existing user preferences are preserved.</small><input name="dashboard_globally_disabled_widgets" value="{{ settings.get('dashboard_globally_disabled_widgets','') }}" placeholder="team_users,recent_activity"></label>
+      </div>
+    </div>
+  </section>
   <section class="settings-tab-panel active" data-settings-panel="general" data-settings-parent="general" role="tabpanel">
     <h2>General</h2>
 
@@ -63,6 +78,17 @@
           <small>Used to display site timestamps. Dates remain stored safely in UTC.</small>
           <select name="timezone_region" data-timezone-select data-selected-timezone="{{ settings.get('timezone_region', 'UTC') }}">
             <option value="{{ settings.get('timezone_region', 'UTC') }}">{{ settings.get('timezone_region', 'UTC') }}</option>
+          </select>
+        </label>
+        <label>
+          <strong>Dashboard tile refresh</strong>
+          <small>Refresh dashboard tiles silently at this interval.</small>
+          {% set dashboard_refresh = settings.get('dashboard_poll_interval_seconds', '10') %}
+          <select name="dashboard_poll_interval_seconds">
+            <option value="10" {% if dashboard_refresh == '10' %}selected{% endif %}>10 seconds</option>
+            <option value="30" {% if dashboard_refresh == '30' %}selected{% endif %}>30 seconds</option>
+            <option value="60" {% if dashboard_refresh == '60' %}selected{% endif %}>1 minute</option>
+            <option value="300" {% if dashboard_refresh == '300' %}selected{% endif %}>5 minutes</option>
           </select>
         </label>
       </div>

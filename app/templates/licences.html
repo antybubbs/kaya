@@ -32,14 +32,14 @@
       </details>
     </div>
   </div>
-  <nav class="category-tabs module-filters" aria-label="License key types">
-    <a class="{% if not active_licence_type %}active{% endif %}" href="/security/license-keys{% if q %}?q={{ q|urlencode }}{% endif %}">All</a>
-    {% for licence_type in licence_types %}
-    <a class="{% if active_licence_type == licence_type %}active{% endif %}" href="/security/license-keys?licence_type={{ licence_type|urlencode }}{% if q %}&q={{ q|urlencode }}{% endif %}">{{ licence_type }}</a>
-    {% endfor %}
-  </nav>
 </section>
 <section class="panel">
+<nav class="category-tabs table-panel-filters" aria-label="License key types">
+  <a class="{% if not active_licence_type %}active{% endif %}" href="/security/license-keys{% if q %}?q={{ q|urlencode }}{% endif %}">All</a>
+  {% for licence_type in licence_types %}
+  <a class="{% if active_licence_type == licence_type %}active{% endif %}" href="/security/license-keys?licence_type={{ licence_type|urlencode }}{% if q %}&q={{ q|urlencode }}{% endif %}">{{ licence_type }}</a>
+  {% endfor %}
+</nav>
 <table data-table-key="license-keys"><thead><tr><th class="action-col" data-col="actions">View</th><th data-col="favourite" data-sort>Favourite</th><th data-col="product" data-sort>Product</th><th data-col="type" data-sort>Type</th><th data-col="product-key" data-sort>Product Key</th><th data-col="seats" data-sort>Seats</th></tr></thead><tbody>
 {% for row in rows %}<tr><td class="action-col"><a class="button secondary" href="/security/license-keys/{{ row.id }}">View</a></td><td>{% if row.is_favourite %}<span class="favourite-star" title="Favourite">&#9733;</span>{% else %}-{% endif %}</td><td>{{ row.product }}</td><td>{% if row.licence_type %}<span class="table-chip">{{ row.licence_type }}</span>{% else %}-{% endif %}</td><td class="mono">{{ mask_key(row.encrypted_product_key) }}</td><td>{{ row.seats or 0 }}</td></tr>{% endfor %}
 </tbody></table>

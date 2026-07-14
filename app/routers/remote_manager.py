@@ -721,6 +721,22 @@ async def save_remote_host_settings(request: Request, remote_id: int, csrf_token
     return RedirectResponse("/remote-manager", status_code=303)
 
 
+@router.post("/{remote_id}/delete")
+def delete_remote_host(request: Request, remote_id: int, csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_editor)):
+    validate_csrf_token(request, csrf_token)
+    row = db.get(RemoteAccess, remote_id)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Remote access entry not found")
+    label = remote_label(row)
+    db.query(RemoteSessionRecording).filter(RemoteSessionRecording.remote_access_id == row.id).update(
+        {RemoteSessionRecording.remote_access_id: None}, synchronize_session=False
+    )
+    db.delete(row)
+    db.commit()
+    write_audit(db, user, "delete", "remote_access", entity_id=str(remote_id), ip_address=request.client.host if request.client else None, detail=label)
+    return RedirectResponse("/remote-manager", status_code=303)
+
+
 @router.get("/{remote_id}/panel")
 def remote_session_panel(request: Request, remote_id: int, db: Session = Depends(get_db), user=Depends(require_user)):
     row = require_remote_session(db, remote_id)

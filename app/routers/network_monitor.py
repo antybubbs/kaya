@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session, selectinload
@@ -10,7 +10,8 @@ from starlette import status
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.db.session import get_db
 from app.models.models import NetworkMonitor, NetworkMonitorCheck
-from app.routers.auth import require_user
+from app.routers.auth import require_editor, require_user
+from app.services.audit import write_audit
 from app.services.network_monitor import monitor_label, run_monitor_check_by_id
 
 router = APIRouter(prefix="/networking/ip-wan-monitor")
@@ -105,3 +106,17 @@ def refresh_monitor(request: Request, monitor_id: int, csrf_token: str = Form(..
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Monitor not found")
     run_monitor_check_by_id(monitor.id)
     return JSONResponse({"ok": True})
+
+
+@router.post("/{monitor_id}/delete")
+def delete_monitor(request: Request, monitor_id: int, csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_editor)):
+    validate_csrf_token(request, csrf_token)
+    monitor = db.get(NetworkMonitor, monitor_id)
+    if not monitor:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Monitor not found")
+    label = monitor_label(monitor)
+    db.query(NetworkMonitorCheck).filter(NetworkMonitorCheck.monitor_id == monitor.id).delete(synchronize_session=False)
+    db.delete(monitor)
+    db.commit()
+    write_audit(db, user, "delete", "network_monitor", str(monitor_id), request.client.host if request.client else None, detail=label)
+    return RedirectResponse("/networking/ip-wan-monitor", status_code=303)

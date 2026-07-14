@@ -7,6 +7,10 @@
   const menus = Array.from(document.querySelectorAll("[data-sidebar-menu]"));
   const resetLinks = Array.from(document.querySelectorAll("[data-reset-sidebar]"));
   const collapseButton = document.querySelector("[data-sidebar-collapse]");
+  const mobileToggle = document.querySelector("[data-mobile-nav-toggle]");
+  const mobileOverlay = document.querySelector("[data-mobile-nav-overlay]");
+  const mobilePageTitle = document.querySelector("[data-mobile-page-title]");
+  const sidebar = document.querySelector("#app-navigation");
   const themeButtons = Array.from(document.querySelectorAll("[data-kaya-theme-choice]"));
   let flyout = null;
   let flyoutOwner = null;
@@ -54,6 +58,31 @@
     return document.body.classList.contains("sidebar-collapsed");
   }
 
+  function isMobileNav() {
+    return window.matchMedia("(max-width: 1023px)").matches;
+  }
+
+  function setMobileNav(open) {
+    const shouldOpen = Boolean(open && isMobileNav());
+    document.body.classList.toggle("mobile-nav-open", shouldOpen);
+    mobileToggle?.setAttribute("aria-expanded", shouldOpen ? "true" : "false");
+    mobileToggle?.setAttribute("aria-label", shouldOpen ? "Close navigation" : "Open navigation");
+    if (sidebar) {
+      if (isMobileNav()) {
+        sidebar.toggleAttribute("inert", !shouldOpen);
+        sidebar.setAttribute("aria-hidden", shouldOpen ? "false" : "true");
+      } else {
+        sidebar.removeAttribute("inert");
+        sidebar.removeAttribute("aria-hidden");
+      }
+    }
+    if (shouldOpen) {
+      const target = document.querySelector(".sidebar .nav-link.active") || document.querySelector(".sidebar a.nav-link");
+      target?.scrollIntoView({ block: "nearest" });
+      target?.focus({ preventScroll: true });
+    }
+  }
+
   function closeFlyout() {
     if (flyout) flyout.remove();
     flyout = null;
@@ -73,7 +102,7 @@
   }
 
   function openFlyout(menu) {
-    if (!isCollapsed()) return;
+    if (!isCollapsed() || isMobileNav()) return;
     const summary = menu.querySelector("summary");
     const children = menu.querySelector(":scope > .nav-children");
     if (!summary || !children) return;
@@ -140,6 +169,19 @@
 
   setCollapsed(localStorage.getItem(collapseStorageKey) === "1");
 
+  mobileToggle?.addEventListener("click", () => setMobileNav(!document.body.classList.contains("mobile-nav-open")));
+  mobileOverlay?.addEventListener("click", () => setMobileNav(false));
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && document.body.classList.contains("mobile-nav-open")) {
+      setMobileNav(false);
+      mobileToggle?.focus();
+    }
+  });
+  window.addEventListener("resize", () => {
+    if (!isMobileNav() || !document.body.classList.contains("mobile-nav-open")) setMobileNav(false);
+  });
+  setMobileNav(false);
+
   if (collapseButton) {
     collapseButton.addEventListener("click", () => {
       closeFlyout();
@@ -161,6 +203,7 @@
     });
     if (summary) {
       summary.addEventListener("click", (event) => {
+        if (isMobileNav()) return;
         if (!isCollapsed()) return;
         event.preventDefault();
         if (flyoutOwner === menu && flyout) {
@@ -195,6 +238,13 @@
     activeLink.closest("details")?.setAttribute("open", "");
     activeLink.closest(".nav-group")?.setAttribute("open", "");
   }
+
+  if (mobilePageTitle) {
+    const heading = document.querySelector("main h1");
+    if (heading?.textContent?.trim()) mobilePageTitle.textContent = heading.textContent.trim();
+  }
+
+  navLinks.forEach((link) => link.addEventListener("click", () => setMobileNav(false)));
 
   document.addEventListener("click", (event) => {
     if (flyout && !flyout.contains(event.target) && !event.target.closest("[data-sidebar-menu]")) {

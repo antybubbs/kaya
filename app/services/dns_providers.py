@@ -78,6 +78,10 @@ class DNSProvider(ABC):
     def get_blocklists(self) -> DNSProviderResult:
         raise NotImplementedError
 
+    @abstractmethod
+    def update_blocklists(self) -> DNSProviderResult:
+        raise NotImplementedError
+
 
 class PiHoleProvider(DNSProvider):
     def __init__(self, config: DNSProviderConfig):
@@ -106,6 +110,8 @@ class PiHoleProvider(DNSProvider):
         method: str = "GET",
         payload: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
+        timeout_seconds: int | None = None,
+        allow_non_json: bool = False,
     ) -> dict[str, Any]:
         body = None
         request_headers = {"Accept": "application/json", **(headers or {})}
@@ -117,7 +123,7 @@ class PiHoleProvider(DNSProvider):
         try:
             with urlopen(
                 request,
-                timeout=max(1, min(int(self.config.timeout_seconds or 10), 60)),
+                timeout=max(1, min(int(timeout_seconds or self.config.timeout_seconds or 10), 120)),
                 context=self._ssl_context(),
             ) as response:
                 raw = response.read().decode("utf-8")
@@ -152,6 +158,8 @@ class PiHoleProvider(DNSProvider):
         try:
             parsed = json.loads(raw or "{}")
         except json.JSONDecodeError as exc:
+            if allow_non_json:
+                return {"output": raw.strip()}
             raise DNSProviderError("Pi-hole returned an invalid JSON response.") from exc
         return parsed if isinstance(parsed, dict) else {"data": parsed}
 
@@ -317,6 +325,20 @@ class PiHoleProvider(DNSProvider):
             return DNSProviderResult(True, "Pi-hole blocklists loaded.", data)
 
         return self._safe("Blocklists", run)
+
+    def update_blocklists(self) -> DNSProviderResult:
+        def run():
+            data = self._request_json(
+                "/api/action/gravity",
+                method="POST",
+                payload={},
+                headers=self._v6_auth_headers(),
+                timeout_seconds=120,
+                allow_non_json=True,
+            )
+            return DNSProviderResult(True, "Pi-hole blocklists updated successfully.", data)
+
+        return self._safe("Blocklist update", run)
 
 
 def provider_for(config: DNSProviderConfig) -> DNSProvider:

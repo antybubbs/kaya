@@ -67,4 +67,13 @@
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 </form>
 {% endif %}
+{% if user.role in ['admin','editor'] %}
+<section class="panel section-gap danger-zone">
+  <div class="panel-heading"><div><h2>Danger Zone</h2><p class="muted">Permanently delete this licence and its custom field values. The stored product key cannot be recovered.</p></div></div>
+  <form method="post" action="/security/license-keys/{{ licence.id }}/delete" data-confirm-delete="Delete licence {{ licence.product }}? This cannot be undone.">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="button danger" type="submit">Delete licence</button>
+  </form>
+</section>
+{% endif %}
 {% endblock %}

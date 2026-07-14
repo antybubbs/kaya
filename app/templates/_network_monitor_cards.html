@@ -42,6 +42,12 @@
     {% if monitor.last_error %}
     <p class="monitor-error">{{ monitor.last_error }}</p>
     {% endif %}
+    {% if user.role in ['admin','editor'] %}
+    <form method="post" action="/networking/ip-wan-monitor/{{ monitor.id }}/delete" data-confirm-delete="Delete monitor {{ row.label }} and all its check history?">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="button danger" type="submit">Delete monitor</button>
+    </form>
+    {% endif %}
   </article>
 {% endfor %}
 </section>
