@@ -1,13 +1,14 @@
 from fnmatch import fnmatch
 import ipaddress
+import json
 import re
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
 from app.core.branding import APP_BRAND_NAME
-from app.models.models import RemoteManagerSetting
+from app.models.models import OIDCProvider, RemoteManagerSetting
 
 
 DEFAULT_SITE_SETTINGS = {
@@ -99,6 +100,39 @@ def get_site_setting(db: Session, key: str) -> str:
 
 def load_security_settings(db: Session) -> dict[str, str]:
     return {key: get_site_setting(db, key) for key in SECURITY_SETTING_KEYS}
+
+
+def oidc_form_action_source(db: Session) -> str | None:
+    """Return a CSP-safe origin for the enabled provider's authorization endpoint."""
+    provider = db.query(OIDCProvider).filter_by(is_enabled=True).order_by(OIDCProvider.id.asc()).first()
+    if not provider:
+        return None
+    candidates: list[str] = []
+    if provider.metadata_json:
+        try:
+            metadata = json.loads(provider.metadata_json)
+            if isinstance(metadata, dict) and metadata.get("authorization_endpoint"):
+                candidates.append(str(metadata["authorization_endpoint"]))
+        except (TypeError, ValueError):
+            pass
+    candidates.append(provider.issuer or "")
+    for candidate in candidates:
+        parsed = urlsplit(candidate.strip())
+        hostname = (parsed.hostname or "").lower()
+        localhost = hostname in {"localhost", "127.0.0.1", "::1"}
+        if not hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+            continue
+        if parsed.scheme != "https" and not (parsed.scheme == "http" and localhost):
+            continue
+        if not localhost and _invalid_host_reason(hostname):
+            continue
+        try:
+            port = parsed.port
+        except ValueError:
+            continue
+        host = f"[{hostname}]" if ":" in hostname else hostname
+        return f"{parsed.scheme}://{host}{f':{port}' if port else ''}"
+    return None
 
 
 def split_hosts(value: str) -> list[str]:

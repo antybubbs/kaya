@@ -12,6 +12,7 @@ from app.models.models import OIDCProvider, RemoteManagerSetting, User
 from app.services.oidc_client import OIDCFlowError, consume_transaction, create_transaction, provider_logout_redirect, safe_return_path, validate_id_token
 from app.services.oidc_discovery import OIDCDiscoveryError, normalise_issuer, validate_metadata
 from app.services.oidc_role_mapping import claim_groups, claim_value, email_is_allowed, mapped_role
+from app.services.site_settings import oidc_form_action_source
 from app.core.logging import SensitiveAuthenticationLogFilter
 import logging
 
@@ -166,3 +167,16 @@ def test_provider_logout_uses_id_token_hint_and_safe_local_return(monkeypatch):
         assert redirect.startswith("https://id.example.com/logout?")
         assert "id_token_hint=header.payload.signature" in redirect
         assert "post_logout_redirect_uri=https%3A%2F%2Fkaya.example.com%2Flogin" in redirect
+
+
+def test_csp_form_action_allows_only_enabled_provider_authorization_origin():
+    with database() as db:
+        row_provider = provider(db, is_enabled=True)
+        row_provider.metadata_json = '{"authorization_endpoint":"https://auth.example.com/application/o/authorize/"}'
+        db.commit()
+        assert oidc_form_action_source(db) == "https://auth.example.com"
+
+        row_provider.metadata_json = '{"authorization_endpoint":"https://auth.example.com/authorize/?unsafe=1"}'
+        row_provider.issuer = "https://issuer.example.com/application/o/kaya/"
+        db.commit()
+        assert oidc_form_action_source(db) == "https://issuer.example.com"

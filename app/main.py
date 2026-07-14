@@ -28,6 +28,7 @@ from app.services.site_settings import (
     host_is_allowed,
     hsts_header_value,
     load_security_settings,
+    oidc_form_action_source,
     get_site_setting,
 )
 from app.services.version import refresh_latest_release, version_check_loop
@@ -100,10 +101,12 @@ async def protect_public_demo(request: Request, call_next):
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
     security = {}
+    oidc_form_source = None
     if not request.url.path.startswith("/static/"):
         db = SessionLocal()
         try:
             security = load_security_settings(db)
+            oidc_form_source = oidc_form_action_source(db)
         finally:
             db.close()
         if security.get("trusted_hosts_enabled") == "1" or settings.allowed_hosts.strip():
@@ -126,6 +129,7 @@ async def security_headers(request: Request, call_next):
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     ws_scheme = "wss" if request.url.scheme == "https" else "ws"
+    form_action = f"'self' {oidc_form_source}" if oidc_form_source else "'self'"
     response.headers["Content-Security-Policy"] = (
     f"default-src 'self'; "
     f"connect-src 'self' {ws_scheme}://{request.url.netloc}; "
@@ -137,7 +141,7 @@ async def security_headers(request: Request, call_next):
     "object-src 'none'; "
     "base-uri 'self'; "
     f"frame-ancestors {frame_ancestors}; "
-    "form-action 'self'"
+    f"form-action {form_action}"
     )
     if is_static_asset:
         response.headers["Cache-Control"] = "public, max-age=604800, immutable"
