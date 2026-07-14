@@ -2,6 +2,7 @@
 
 import sqlite3
 import sys
+import re
 from pathlib import Path
 
 DB_PATH = Path("/app/data/kaya.db")
@@ -27,8 +28,53 @@ def main():
 
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
+    cur.execute("PRAGMA foreign_keys = OFF")
 
     migrations_applied = []
+
+    if table_exists(cur, "users"):
+        for column, definition in {
+            "authentication_type": "VARCHAR(30) DEFAULT 'local' NOT NULL",
+            "is_break_glass": "BOOLEAN DEFAULT 0 NOT NULL",
+            "role_source": "VARCHAR(30) DEFAULT 'local' NOT NULL",
+            "updated_at": "DATETIME",
+        }.items():
+            if not column_exists(cur, "users", column):
+                cur.execute(f"ALTER TABLE users ADD COLUMN {column} {definition}")
+                migrations_applied.append(f"users.{column}")
+        cur.execute("UPDATE users SET authentication_type = 'local' WHERE authentication_type IS NULL OR authentication_type = ''")
+        cur.execute("UPDATE users SET role_source = 'local' WHERE role_source IS NULL OR role_source = ''")
+        cur.execute("UPDATE users SET is_break_glass = 0 WHERE is_break_glass IS NULL")
+        cur.execute("UPDATE users SET updated_at = COALESCE(updated_at, created_at, CURRENT_TIMESTAMP)")
+
+        password_info = next((row for row in cur.execute("PRAGMA table_info(users)").fetchall() if row[1] == "password_hash"), None)
+        if password_info and password_info[3]:
+            create_sql = cur.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'").fetchone()[0]
+            nullable_sql = re.sub(
+                r"password_hash\s+VARCHAR\(255\)\s+NOT\s+NULL",
+                "password_hash VARCHAR(255)",
+                create_sql,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+            if nullable_sql == create_sql:
+                raise sqlite3.OperationalError("Could not safely make users.password_hash nullable")
+            nullable_sql = re.sub(r"CREATE\s+TABLE\s+users", "CREATE TABLE users_oidc_new", nullable_sql, count=1, flags=re.IGNORECASE)
+            columns = [row[1] for row in cur.execute("PRAGMA table_info(users)").fetchall()]
+            column_list = ", ".join(f'"{name}"' for name in columns)
+            cur.execute(nullable_sql)
+            cur.execute(f"INSERT INTO users_oidc_new ({column_list}) SELECT {column_list} FROM users")
+            cur.execute("DROP TABLE users")
+            cur.execute("ALTER TABLE users_oidc_new RENAME TO users")
+            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ix_users_email ON users (email)")
+            cur.execute("CREATE INDEX IF NOT EXISTS ix_users_authentication_type ON users (authentication_type)")
+            cur.execute("CREATE INDEX IF NOT EXISTS ix_users_is_break_glass ON users (is_break_glass)")
+            cur.execute("CREATE INDEX IF NOT EXISTS ix_users_role_source ON users (role_source)")
+            migrations_applied.append("users.password_hash nullable")
+
+    if table_exists(cur, "app_sessions") and not column_exists(cur, "app_sessions", "encrypted_oidc_id_token"):
+        cur.execute("ALTER TABLE app_sessions ADD COLUMN encrypted_oidc_id_token TEXT")
+        migrations_applied.append("app_sessions.encrypted_oidc_id_token")
 
     # Public releases before v0.18 do not have compute_hosts yet. In that case,
     # application startup creates the complete current table via SQLAlchemy.
@@ -137,6 +183,7 @@ def main():
         migrations_applied.append("runbook_images.data")
 
     conn.commit()
+    cur.execute("PRAGMA foreign_keys = ON")
     conn.close()
 
     if migrations_applied:

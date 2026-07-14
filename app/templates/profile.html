@@ -4,6 +4,20 @@
 {% if error %}<div class="alert">{{ error }}</div>{% endif %}
 {% if success %}<div class="success">{{ success }}</div>{% endif %}
 <div class="settings-grid">
+  <section class="panel stack wide">
+    <h2>Sign-in methods</h2>
+    <dl class="detail-grid">
+      <div><dt>Local password</dt><dd>{{ 'Available' if user.password_hash else 'Unavailable' }}</dd></div>
+      <div><dt>Local 2FA</dt><dd>{{ 'Enabled' if user.totp_enabled else 'Disabled' }}</dd></div>
+      <div><dt>OpenID Connect</dt><dd>{{ identity.provider.name if identity else 'Not linked' }}</dd></div>
+      {% if identity %}<div><dt>OIDC email</dt><dd>{{ identity.current_email }}</dd></div><div><dt>Last OIDC login</dt><dd>{{ identity.last_login_at or 'Never' }}</dd></div>{% endif %}
+    </dl>
+    {% if identity %}
+    <form method="post" action="/profile/identity/unlink" data-danger-zone-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="danger" type="submit">Unlink OIDC identity</button></form>
+    {% elif oidc_provider %}
+    <form method="post" action="/profile/identity/link"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit">Link OIDC account</button></form>
+    {% endif %}
+  </section>
   <section class="panel stack">
     <h2>Profile</h2>
     <form method="post" action="/profile/name" class="form-grid">
@@ -15,6 +29,7 @@
   </section>
   <section class="panel stack">
     <h2>Password</h2>
+    {% if user.password_hash %}
     <form method="post" action="/profile/password" class="form-grid">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <label>Current password<input name="current_password" type="password" autocomplete="current-password" required></label>
@@ -22,10 +37,12 @@
       <label>Confirm password<input name="confirm_password" type="password" autocomplete="new-password" required></label>
       <div class="form-actions wide"><button type="submit">Reset password</button></div>
     </form>
+    {% else %}<p class="muted">This OIDC-only account does not have a local password. Contact an administrator before unlinking your identity.</p>{% endif %}
   </section>
   <section class="panel stack wide">
     <h2>2FA</h2>
-    {% if user.totp_enabled %}
+    {% if not user.password_hash %}<p class="muted">Local 2FA is unavailable for OIDC-only accounts. Multi-factor authentication is managed by your identity provider.</p>
+    {% elif user.totp_enabled %}
     <div class="success">Two-factor authentication is enabled.</div>
     <form method="post" action="/profile/2fa/disable" class="form-grid">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

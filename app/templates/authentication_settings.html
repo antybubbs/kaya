@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="topbar"><div><p class="eyebrow">Site Administration</p><h1>Authentication</h1><p class="muted">Local access, OpenID Connect, claims, roles and account links.</p></div><a class="button secondary" href="/system/site-administration">All settings</a></div>
+
+<nav class="tabs" aria-label="Authentication settings">
+  <a class="tab-link {{ 'active' if tab == 'general' else '' }}" href="?tab=general">General</a>
+  <a class="tab-link {{ 'active' if tab == 'oidc' else '' }}" href="?tab=oidc">OpenID Connect</a>
+  <a class="tab-link {{ 'active' if tab == 'mapping' else '' }}" href="?tab=mapping">Claim &amp; Role Mapping</a>
+  <a class="tab-link {{ 'active' if tab == 'links' else '' }}" href="?tab=links">Account Links</a>
+</nav>
+
+{% if request.query_params.get('saved') %}<div class="success">Authentication settings saved.</div>{% endif %}
+{% if request.query_params.get('error') %}<div class="alert">The requested change was not saved because a required safety confirmation or prerequisite is missing.</div>{% endif %}
+
+{% if tab == 'general' %}
+<div class="metric-grid">
+  <article class="metric"><span>Authentication mode</span><strong>{{ auth_mode.replace('_', ' ')|title }}</strong></article>
+  <article class="metric"><span>OIDC provider</span><strong>{{ provider.discovery_status|default('Not configured', true)|title }}</strong></article>
+  <article class="metric"><span>Linked users</span><strong>{{ status.linked_users }}</strong></article>
+  <article class="metric"><span>Break-glass administrators</span><strong>{{ status.break_glass_admins }}</strong></article>
+</div>
+<form method="post" action="/system/site-administration/authentication/general" class="panel form-grid">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <label>Authentication mode<select name="authentication_mode">
+    {% for value, label in [('local_only','Local only'),('local_and_oidc','Local and OIDC'),('oidc_preferred','OIDC preferred'),('oidc_required','OIDC required')] %}<option value="{{ value }}" {{ 'selected' if auth_mode == value else '' }}>{{ label }}</option>{% endfor %}
+  </select></label>
+  <label>OIDC button label<input name="oidc_button_label" value="{{ button_label }}" maxlength="120"></label>
+  <label>Post-login path<input name="oidc_post_login_path" value="{{ post_login_path }}"></label>
+  <label>Post-logout path<input name="oidc_post_logout_path" value="{{ post_logout_path }}"></label>
+  <label class="checkbox-row"><input type="checkbox" name="oidc_auto_redirect_required" value="1" {{ 'checked' if auto_redirect else '' }}>Automatically redirect in OIDC-required mode</label>
+  <label class="checkbox-row"><input type="checkbox" name="oidc_show_local_preferred" value="1" {{ 'checked' if show_local_preferred else '' }}>Show the local-account option in preferred mode</label>
+  <label class="checkbox-row"><input type="checkbox" name="oidc_emergency_local_enabled" value="1" {{ 'checked' if emergency_enabled else '' }}>Enable emergency local administrator login at <code>/auth/local</code></label>
+  <label class="checkbox-row wide"><input type="checkbox" name="oidc_required_risk_acknowledged" value="1">I understand that provider failure can interrupt normal login and have tested break-glass access.</label>
+  <div class="alert wide">OIDC required cannot be enabled until discovery and a real test login have succeeded and an active administrator with a local password is marked break glass.</div>
+  <div class="form-actions wide"><button type="submit">Save authentication settings</button></div>
+</form>
+{% elif tab == 'oidc' %}
+{% if provider and not provider.verify_tls %}<div class="alert">TLS certificate verification is disabled for this provider.</div>{% endif %}
+{% if provider and not provider.require_verified_email %}<div class="alert">Verified email is not required. This weakens account matching safety.</div>{% endif %}
+<form method="post" action="/system/site-administration/authentication/provider" class="panel form-grid">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <label>Provider display name<input name="name" value="{{ provider.name if provider else 'OpenID Connect' }}" required></label>
+  <label>Issuer URL<input name="issuer" type="url" value="{{ provider.issuer if provider else '' }}" placeholder="https://auth.example.com/application/o/kaya/" required></label>
+  <label>Client ID<input name="client_id" value="{{ provider.client_id if provider else '' }}" autocomplete="off" required></label>
+  <label>Client secret<small>{{ 'A secret is saved. Leave blank to keep it.' if status.secret_configured else 'Stored encrypted and never redisplayed.' }}</small><input name="client_secret" type="password" autocomplete="new-password" placeholder="{{ 'Saved secret' if status.secret_configured else '' }}"></label>
+  <label>Requested scopes<input name="scopes" value="{{ provider.scopes if provider else 'openid profile email' }}"></label>
+  <label>Connection timeout<select name="timeout_seconds">{% for seconds in [5,10,15,30] %}<option value="{{ seconds }}" {{ 'selected' if provider and provider.timeout_seconds == seconds else '' }}>{{ seconds }} seconds</option>{% endfor %}</select></label>
+  <label class="wide">Callback URL<input value="{{ callback_url }}" readonly></label>
+  <label class="wide">Post-logout redirect URL<input value="{{ post_logout_url }}" readonly></label>
+  {% set checks = [('is_enabled','Enabled',provider and provider.is_enabled),('verify_tls','Verify TLS certificates',not provider or provider.verify_tls),('use_userinfo','Use UserInfo endpoint',not provider or provider.use_userinfo),('require_verified_email','Require verified email',not provider or provider.require_verified_email),('allow_jit_provisioning','Allow JIT provisioning',provider and provider.allow_jit_provisioning),('sync_roles_on_login','Synchronise mapped role at login',provider and provider.sync_roles_on_login),('update_names_on_login','Update names at login',not provider or provider.update_names_on_login),('update_email_on_login','Update email at login',provider and provider.update_email_on_login),('end_session_on_logout','End IdP session during logout',provider and provider.end_session_on_logout)] %}
+  {% for field, label, checked in checks %}<label class="checkbox-row"><input type="checkbox" name="{{ field }}" value="1" {{ 'checked' if checked else '' }}>{{ label }}</label>{% endfor %}
+  <label>Email-based first-time matching<select name="email_matching_mode">{% for value,label in [('disabled','Disabled'),('confirmation','Confirmation required'),('automatic','Automatic for verified emails')] %}<option value="{{ value }}" {{ 'selected' if provider and provider.email_matching_mode == value else '' }}>{{ label }}</option>{% endfor %}</select></label>
+  <label>Allowed email domains<textarea name="allowed_email_domains" rows="3" placeholder="example.com">{{ provider.allowed_email_domains or '' if provider else '' }}</textarea></label>
+  <label>Default JIT role<select name="default_role"><option value="viewer">Viewer</option><option value="editor" {{ 'selected' if provider and provider.default_role == 'editor' else '' }}>Editor</option></select></label>
+  <div class="wide stack compact-form"><strong>Risk acknowledgements</strong>
+    <label class="checkbox-row"><input type="checkbox" name="verify_tls_acknowledged" value="1">I explicitly accept disabled TLS verification, if selected.</label>
+    <label class="checkbox-row"><input type="checkbox" name="jit_acknowledged" value="1">I explicitly approve automatic account provisioning, if selected.</label>
+    <label class="checkbox-row"><input type="checkbox" name="email_matching_acknowledged" value="1">I explicitly approve email-based linking, if selected.</label>
+    <label class="checkbox-row"><input type="checkbox" name="role_sync_acknowledged" value="1">I explicitly approve external role management, if selected.</label>
+  </div>
+  <div class="form-actions wide"><button type="submit">Save provider</button></div>
+</form>
+{% if provider %}<div class="panel stack"><h2>Provider validation</h2><p>Status: <strong>{{ provider.discovery_status or 'Not tested' }}</strong>{% if provider.discovery_error %} — {{ provider.discovery_error }}{% endif %}</p>
+  <div class="form-actions"><form method="post" action="/system/site-administration/authentication/provider/test"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit">Test configuration</button></form>
+  {% if provider.discovery_status == 'ok' %}<form method="post" action="/system/site-administration/authentication/provider/test-login"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit" class="secondary">Test OIDC login</button></form>{% endif %}</div>
+  {% if test_preview %}<h3>Sanitised test-login claims</h3><pre>{{ test_preview|tojson(indent=2) }}</pre>{% endif %}
+</div>{% endif %}
+{% if provider %}<section class="panel danger-zone stack"><h2>Danger Zone</h2><p>Deleting this provider is only permitted after every linked identity has been safely unlinked. Authentication mode returns to Local only.</p><form method="post" action="/system/site-administration/authentication/provider/delete" data-danger-zone-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="danger" type="submit">Delete OIDC provider</button></form></section>{% endif %}
+{% elif tab == 'mapping' %}
+{% if not provider %}<div class="alert">Save an OIDC provider before configuring claims.</div>{% else %}
+<form method="post" action="/system/site-administration/authentication/mapping" class="panel form-grid">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  {% for field,label in [('email_claim','Email'),('email_verified_claim','Email verified'),('name_claim','Display name'),('first_name_claim','First name'),('last_name_claim','Last name'),('preferred_username_claim','Preferred username'),('group_claim','Groups')] %}<label>{{ label }} claim<input name="{{ field }}" value="{{ provider|attr(field) }}" required></label>{% endfor %}
+  <label class="wide">Ordered group-to-role mappings<small>One exact mapping per line using <code>Group Name=role</code>.</small><textarea name="role_mappings" rows="8">{% for row in role_mappings %}{{ row.group }}={{ row.role }}{% if not loop.last %}
+{% endif %}{% endfor %}</textarea></label>
+  <label class="checkbox-row wide"><input type="checkbox" name="group_matching_case_sensitive" value="1" {{ 'checked' if provider.group_matching_case_sensitive else '' }}>Use case-sensitive exact group matching</label>
+  <div class="form-actions wide"><button type="submit">Save claim and role mapping</button></div>
+</form>{% endif %}
+{% else %}
+<section class="panel stack"><h2>Account links</h2>
+  {% if invitation_url %}<div class="success"><strong>Single-use invitation (expires in 30 minutes)</strong><input value="{{ invitation_url }}" readonly></div>{% endif %}
+  <form method="post" action="/system/site-administration/authentication/links/invite" class="form-grid"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label>User<select name="user_id">{% for account in users %}<option value="{{ account.id }}">{{ account.email }}</option>{% endfor %}</select></label><div class="form-actions"><button type="submit">Create linking invitation</button></div></form>
+  <div class="table-wrap"><table><thead><tr><th>User</th><th>Provider</th><th>Linked email</th><th>Method</th><th>Last OIDC login</th><th>Action</th></tr></thead><tbody>{% for identity in identities %}<tr><td>{{ identity.user.email }}</td><td>{{ identity.provider.name }}</td><td>{{ identity.current_email }}</td><td>{{ identity.link_method.replace('_',' ')|title }}</td><td>{{ identity.last_login_at or 'Never' }}</td><td><form method="post" action="/system/site-administration/authentication/links/{{ identity.id }}/unlink" data-danger-zone-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="danger" type="submit">Unlink</button></form></td></tr>{% else %}<tr><td colspan="6">No OIDC identities are linked.</td></tr>{% endfor %}</tbody></table></div>
+</section>
+{% endif %}
+{% endblock %}

@@ -22,6 +22,8 @@ def request_event_written(context: dict) -> bool:
 
 
 def category_for(action: str, entity: str) -> str:
+    if action.startswith("oidc_") or action.startswith("break_glass_"):
+        return "authentication"
     if action in {"login", "logout", "login_failed", "login_blocked", "2fa_failed", "2fa_challenge", "create_initial_admin"}:
         return "authentication"
     if action in {"change_password", "password_reset_blocked", "password_reset_completed", "password_reset_email_failed", "password_reset_requested", "start_2fa", "enable_2fa", "disable_2fa", "reveal"}:
@@ -40,7 +42,7 @@ def severity_for(action: str, status_code: int | None = None) -> str:
         return "error"
     if status_code is not None and status_code >= 400:
         return "warning"
-    if action in {"login_failed", "login_blocked", "2fa_failed", "delete", "reveal", "disable_2fa"}:
+    if action in {"login_failed", "login_blocked", "2fa_failed", "delete", "reveal", "disable_2fa", "break_glass_login_succeeded", "break_glass_login_failed", "oidc_link_failed"}:
         return "warning"
     return "info"
 

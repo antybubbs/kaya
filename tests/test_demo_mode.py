@@ -57,6 +57,10 @@ class DemoModeSafetyTests(unittest.TestCase):
         self.assertTrue(self.blocked("POST", "/api/dashboard/preferences/reset"))
         self.assertFalse(self.blocked("GET", "/api/dashboard/snapshot"))
 
+    def test_blocks_oidc_provider_flows_in_public_demo(self):
+        self.assertTrue(self.blocked("GET", "/auth/oidc/login"))
+        self.assertTrue(self.blocked("GET", "/auth/oidc/callback"))
+
     def test_allows_read_only_module_pages(self):
         self.assertFalse(self.blocked("GET", "/networking/dns-manager"))
         self.assertFalse(self.blocked("GET", "/infrastructure/backup-manager"))

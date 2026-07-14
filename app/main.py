@@ -10,10 +10,11 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.demo import demo_request_is_blocked
+from app.core.logging import install_sensitive_authentication_log_filter
 from app.core.security import decrypt_secret, hash_password
 from app.db.session import Base, engine, SessionLocal
 from app.models.models import AuditLog, User, VLAN
-from app.routers import auth, dashboard, licences, admin, ip_addresses, hardware_assets, network_monitor, remote_manager, runbooks, domain_manager, compute_manager, rack_manager, backup_manager, dns_manager
+from app.routers import auth, oidc, dashboard, licences, admin, ip_addresses, hardware_assets, network_monitor, remote_manager, runbooks, domain_manager, compute_manager, rack_manager, backup_manager, dns_manager
 from app.services.guacamole_bridge import stop_guacamole_bridge
 from app.services.kaya_remote_service import start_kaya_remote_service, stop_kaya_remote_service
 from app.services.network_monitor import monitor_loop
@@ -32,6 +33,7 @@ from app.services.site_settings import (
 from app.services.version import refresh_latest_release, version_check_loop
 
 settings = get_settings()
+install_sensitive_authentication_log_filter()
 app = FastAPI(
     title=settings.app_name,
     docs_url=None if settings.app_env == "production" else "/docs",
@@ -48,7 +50,10 @@ app.add_middleware(
     SessionMiddleware,
     secret_key=settings.secret_key,
     https_only=settings.session_cookie_secure,
-    same_site="strict",
+    # OIDC authorization responses are cross-site top-level navigations. Lax
+    # preserves CSRF protection for mutations while allowing the callback to
+    # receive Kaya's signed transaction-binding cookie.
+    same_site="lax",
     max_age=60 * 60 * 8,
 )
 
@@ -281,7 +286,25 @@ def migrate_existing_database():
             conn.execute(text("ALTER TABLE users ADD COLUMN first_name VARCHAR(120)"))
         if "last_name" not in columns:
             conn.execute(text("ALTER TABLE users ADD COLUMN last_name VARCHAR(120)"))
+        if "authentication_type" not in columns:
+            conn.execute(text("ALTER TABLE users ADD COLUMN authentication_type VARCHAR(30) DEFAULT 'local' NOT NULL"))
+            conn.execute(text("CREATE INDEX ix_users_authentication_type ON users (authentication_type)"))
+        if "is_break_glass" not in columns:
+            conn.execute(text("ALTER TABLE users ADD COLUMN is_break_glass BOOLEAN DEFAULT 0 NOT NULL"))
+            conn.execute(text("CREATE INDEX ix_users_is_break_glass ON users (is_break_glass)"))
+        if "role_source" not in columns:
+            conn.execute(text("ALTER TABLE users ADD COLUMN role_source VARCHAR(30) DEFAULT 'local' NOT NULL"))
+            conn.execute(text("CREATE INDEX ix_users_role_source ON users (role_source)"))
+        if "updated_at" not in columns:
+            conn.execute(text("ALTER TABLE users ADD COLUMN updated_at DATETIME"))
+        conn.execute(text("UPDATE users SET authentication_type = 'local' WHERE authentication_type IS NULL OR authentication_type = ''"))
+        conn.execute(text("UPDATE users SET role_source = 'local' WHERE role_source IS NULL OR role_source = ''"))
+        conn.execute(text("UPDATE users SET is_break_glass = 0 WHERE is_break_glass IS NULL"))
+        conn.execute(text("UPDATE users SET updated_at = COALESCE(updated_at, created_at, CURRENT_TIMESTAMP)"))
         password_reset_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(password_reset_tokens)"))}
+        app_session_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(app_sessions)"))}
+        if app_session_columns and "encrypted_oidc_id_token" not in app_session_columns:
+            conn.execute(text("ALTER TABLE app_sessions ADD COLUMN encrypted_oidc_id_token TEXT"))
         if not password_reset_columns:
             conn.execute(text("CREATE TABLE password_reset_tokens (id INTEGER NOT NULL PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), token_hash VARCHAR(64) NOT NULL UNIQUE, expires_at DATETIME NOT NULL, used_at DATETIME, created_at DATETIME)"))
             conn.execute(text("CREATE INDEX ix_password_reset_tokens_user_id ON password_reset_tokens (user_id)"))
@@ -559,6 +582,7 @@ async def on_shutdown():
 
 
 app.include_router(auth.router)
+app.include_router(oidc.router)
 app.include_router(dashboard.router)
 app.include_router(licences.router)
 app.include_router(ip_addresses.router)

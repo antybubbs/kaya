@@ -8,14 +8,116 @@ class User(Base):
     __tablename__ = "users"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
-    password_hash: Mapped[str] = mapped_column(String(255))
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
     first_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     last_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     role: Mapped[str] = mapped_column(String(30), default="viewer")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     totp_secret: Mapped[str | None] = mapped_column(Text, nullable=True)
     totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    authentication_type: Mapped[str] = mapped_column(String(30), default="local", index=True)
+    is_break_glass: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    role_source: Mapped[str] = mapped_column(String(30), default="local", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    external_identities = relationship("ExternalIdentity", foreign_keys="ExternalIdentity.user_id", back_populates="user")
+
+
+class OIDCProvider(Base):
+    __tablename__ = "oidc_providers"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), default="OpenID Connect")
+    issuer: Mapped[str] = mapped_column(String(1000), default="")
+    client_id: Mapped[str] = mapped_column(String(500), default="")
+    encrypted_client_secret: Mapped[str | None] = mapped_column(Text, nullable=True)
+    scopes: Mapped[str] = mapped_column(String(500), default="openid profile email")
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    verify_tls: Mapped[bool] = mapped_column(Boolean, default=True)
+    timeout_seconds: Mapped[int] = mapped_column(Integer, default=10)
+    use_userinfo: Mapped[bool] = mapped_column(Boolean, default=True)
+    require_verified_email: Mapped[bool] = mapped_column(Boolean, default=True)
+    allow_jit_provisioning: Mapped[bool] = mapped_column(Boolean, default=False)
+    email_matching_mode: Mapped[str] = mapped_column(String(40), default="disabled")
+    allowed_email_domains: Mapped[str | None] = mapped_column(Text, nullable=True)
+    default_role: Mapped[str] = mapped_column(String(30), default="viewer")
+    sync_roles_on_login: Mapped[bool] = mapped_column(Boolean, default=False)
+    update_names_on_login: Mapped[bool] = mapped_column(Boolean, default=True)
+    update_email_on_login: Mapped[bool] = mapped_column(Boolean, default=False)
+    end_session_on_logout: Mapped[bool] = mapped_column(Boolean, default=False)
+    email_claim: Mapped[str] = mapped_column(String(255), default="email")
+    email_verified_claim: Mapped[str] = mapped_column(String(255), default="email_verified")
+    name_claim: Mapped[str] = mapped_column(String(255), default="name")
+    first_name_claim: Mapped[str] = mapped_column(String(255), default="given_name")
+    last_name_claim: Mapped[str] = mapped_column(String(255), default="family_name")
+    preferred_username_claim: Mapped[str] = mapped_column(String(255), default="preferred_username")
+    group_claim: Mapped[str] = mapped_column(String(255), default="groups")
+    role_mappings_json: Mapped[str] = mapped_column(Text, default="[]")
+    group_matching_case_sensitive: Mapped[bool] = mapped_column(Boolean, default=False)
+    discovery_status: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    discovery_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_fetched_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_tested_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    test_login_succeeded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    identities = relationship("ExternalIdentity", back_populates="provider")
+
+
+class ExternalIdentity(Base):
+    __tablename__ = "external_identities"
+    __table_args__ = (
+        UniqueConstraint("provider_id", "issuer", "subject", name="uq_external_identity_security_key"),
+        UniqueConstraint("provider_id", "user_id", name="uq_external_identity_provider_user"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    provider_id: Mapped[int] = mapped_column(ForeignKey("oidc_providers.id", ondelete="CASCADE"), index=True)
+    issuer: Mapped[str] = mapped_column(String(1000), index=True)
+    subject: Mapped[str] = mapped_column(String(500), index=True)
+    email_at_link_time: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    current_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    preferred_username: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    claims_summary_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    role_management: Mapped[str] = mapped_column(String(30), default="local")
+    linked_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    link_method: Mapped[str] = mapped_column(String(40))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    user = relationship("User", foreign_keys=[user_id], back_populates="external_identities")
+    linked_by = relationship("User", foreign_keys=[linked_by_user_id])
+    provider = relationship("OIDCProvider", back_populates="identities")
+
+
+class OIDCTransaction(Base):
+    __tablename__ = "oidc_transactions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    transaction_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    state_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    encrypted_nonce: Mapped[str] = mapped_column(Text)
+    encrypted_code_verifier: Mapped[str] = mapped_column(Text)
+    provider_id: Mapped[int] = mapped_column(ForeignKey("oidc_providers.id", ondelete="CASCADE"), index=True)
+    flow_type: Mapped[str] = mapped_column(String(40), default="login", index=True)
+    target_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    initiated_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    return_path: Mapped[str] = mapped_column(String(500), default="/dashboard")
+    validated_claims_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+
+
+class OIDCLinkInvitation(Base):
+    __tablename__ = "oidc_link_invitations"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    provider_id: Mapped[int] = mapped_column(ForeignKey("oidc_providers.id", ondelete="CASCADE"), index=True)
+    created_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
 
 
 class PasswordResetToken(Base):
@@ -36,6 +138,7 @@ class AppSession(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     ip_address: Mapped[str | None] = mapped_column(String(80), nullable=True)
     user_agent: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    encrypted_oidc_id_token: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)

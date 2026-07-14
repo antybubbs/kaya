@@ -11,9 +11,20 @@
   <label>Role<select name="role">{% for role in roles %}<option value="{{ role }}" {% if target and target.role == role %}selected{% endif %}>{{ role }}</option>{% endfor %}</select></label>
   <label>Password<input name="password" type="password" autocomplete="new-password" {% if not target %}required{% endif %}></label>
   <label>Active<select name="is_active"><option value="on" {% if not target or target.is_active %}selected{% endif %}>Active</option><option value="" {% if target and not target.is_active %}selected{% endif %}>Disabled</option></select></label>
+  {% if target %}<label>Role management<select name="role_source"><option value="local" {{ 'selected' if target.role_source == 'local' else '' }}>Local</option><option value="oidc" {{ 'selected' if target.role_source == 'oidc' else '' }}>OIDC managed</option></select></label>
+  <label class="checkbox-row"><input type="checkbox" name="is_break_glass" value="1" {{ 'checked' if target.is_break_glass else '' }}>Emergency local administrator</label>{% endif %}
   <button type="submit">Save user</button>
 </form>
 {% if target %}
+{% if target.external_identities %}{% set external = target.external_identities[0] %}
+<section class="stack section-gap"><h2>OpenID Connect identity</h2><dl class="detail-grid">
+  <div><dt>Provider</dt><dd>{{ external.provider.name }}</dd></div>
+  <div><dt>Issuer</dt><dd>{{ external.issuer }}</dd></div>
+  <div><dt>Subject</dt><dd>{{ external.subject[:6] }}...{{ external.subject[-4:] }}</dd></div>
+  <div><dt>Linked email</dt><dd>{{ external.current_email }}</dd></div>
+  <div><dt>Link method</dt><dd>{{ external.link_method.replace('_',' ')|title }}</dd></div>
+  <div><dt>Last login</dt><dd>{{ external.last_login_at or 'Never' }}</dd></div>
+</dl></section>{% endif %}
 <form method="post" action="/team/users/{{ target.id }}/reset-2fa" class="stack section-gap">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <button class="ghost" type="submit">Reset user 2FA</button>

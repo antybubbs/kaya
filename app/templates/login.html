@@ -43,6 +43,14 @@
       </div>
       {% endif %}
       {% if error %}<div class="alert">{{ error }}</div>{% endif %}
+      {% if oidc_provider and authentication_mode in ['local_and_oidc', 'oidc_preferred', 'oidc_required'] %}
+      <div class="stack">
+        <a class="button" href="/auth/oidc/login">{{ oidc_button_label or 'Sign in with SSO' }}</a>
+        {% if authentication_mode == 'oidc_preferred' and show_local_preferred %}<p class="muted">Use a local Kaya account below.</p>{% endif %}
+      </div>
+      {% if authentication_mode == 'local_and_oidc' %}<div class="login-divider"><span>or</span></div>{% endif %}
+      {% endif %}
+      {% if authentication_mode != 'oidc_required' %}
       <form method="post" action="/login" class="stack">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         {% if requires_2fa %}
@@ -57,6 +65,7 @@
         </div>
         {% endif %}
       </form>
+      {% else %}<p><a href="/auth/local">Emergency local administrator access</a></p>{% endif %}
     </section>
     </div>
 </div>

@@ -39,6 +39,7 @@ from app.models.models import (
     CustomField,
     CustomFieldValue,
     DNSProviderConfig,
+    ExternalIdentity,
     ManagedListItem,
     RemoteManagerSetting,
     User,
@@ -873,6 +874,8 @@ def update_user(
     password: str = Form("", max_length=255),
     role: str = Form("viewer"),
     is_active: str = Form(""),
+    is_break_glass: str = Form(""),
+    role_source: str = Form("local"),
     csrf_token: str = Form(...),
     db: Session = Depends(get_db),
     user=Depends(require_admin),
@@ -908,6 +911,18 @@ def update_user(
     target.last_name = last_name.strip() or None
     target.role = role
     target.is_active = bool(is_active)
+    requested_break_glass = is_break_glass == "1"
+    if requested_break_glass and (role != "admin" or not target.is_active or not (password or target.password_hash)):
+        return templates.TemplateResponse(
+            request, "user_form.html",
+            {"user": user, "target": target, "roles": sorted(ROLES), "error": "Break-glass access requires an active administrator with a local password.", **csrf_context(request)},
+            status_code=400,
+        )
+    target.is_break_glass = requested_break_glass
+    target.role_source = role_source if role_source in {"local", "oidc"} else "local"
+    identity = db.query(ExternalIdentity).filter_by(user_id=target.id).first()
+    if identity:
+        identity.role_management = target.role_source
 
     if password:
         if len(password) < 12:
@@ -925,6 +940,7 @@ def update_user(
             )
 
         target.password_hash = hash_password(password)
+        target.authentication_type = "local_and_oidc" if identity else "local"
 
     db.commit()
 
