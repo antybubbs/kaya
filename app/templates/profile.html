@@ -15,7 +15,7 @@
     {% if identity %}
     <form method="post" action="/profile/identity/unlink" data-danger-zone-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="danger" type="submit">Unlink OIDC identity</button></form>
     {% elif oidc_provider %}
-    <form method="post" action="/profile/identity/link"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit">Link OIDC account</button></form>
+    <form method="post" action="/profile/identity/link" data-oidc-link-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit">Link OIDC account</button><span class="muted" data-oidc-link-status role="status" aria-live="polite"></span></form>
     {% endif %}
   </section>
   <section class="panel stack">
@@ -76,4 +76,5 @@
     {% endif %}
   </section>
 </div>
+<script src="/static/js/profile.js?v={{ asset_version }}" defer></script>
 {% endblock %}

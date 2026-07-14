@@ -29,3 +29,12 @@ def test_oidc_temporary_secrets_are_server_side_and_not_browser_storage():
 def test_session_cookie_uses_oidc_compatible_lax_same_site():
     source = Path("app/main.py").read_text(encoding="utf-8")
     assert 'same_site="lax"' in source
+
+
+def test_profile_link_has_progressive_submit_feedback():
+    template = Path("app/templates/profile.html").read_text(encoding="utf-8")
+    script = Path("app/static/js/profile.js").read_text(encoding="utf-8")
+    assert "data-oidc-link-form" in template
+    assert "profile.js" in template
+    assert 'form.addEventListener("submit"' in script
+    assert "button.disabled = true" in script

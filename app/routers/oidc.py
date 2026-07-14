@@ -84,8 +84,9 @@ def _audit_oidc(db: Session, user: User | None, action: str, request: Request, p
 
 
 async def _begin(request: Request, db: Session, provider: OIDCProvider, *, flow_type="login", target_user_id=None, initiated_by_user_id=None, return_path="/dashboard"):
+    actor = db.get(User, initiated_by_user_id) if initiated_by_user_id else None
     if _rate_limited(f"oidc:{client_key(request)}"):
-        _audit_oidc(db, None, "oidc_login_rejected", request, provider, category="rate_limited", severity="warning")
+        _audit_oidc(db, actor, "oidc_login_rejected", request, provider, category="rate_limited", severity="warning")
         return templates.TemplateResponse(request, "oidc_error.html", {"message": "Too many sign-in attempts. Try again later.", **csrf_context(request, include_version=False)}, status_code=429)
     try:
         url, opaque = await authorization_redirect(
@@ -93,10 +94,10 @@ async def _begin(request: Request, db: Session, provider: OIDCProvider, *, flow_
             target_user_id=target_user_id, initiated_by_user_id=initiated_by_user_id, return_path=return_path,
         )
     except (OIDCDiscoveryError, OIDCFlowError):
-        _audit_oidc(db, None, "oidc_login_failed", request, provider, category="initiation_failed", severity="warning")
+        _audit_oidc(db, actor, "oidc_login_failed", request, provider, category="initiation_failed", severity="warning")
         return templates.TemplateResponse(request, "oidc_error.html", {"message": "Single sign-on is temporarily unavailable.", **csrf_context(request, include_version=False)}, status_code=503)
     request.session["oidc_transaction"] = opaque
-    _audit_oidc(db, None, "oidc_login_started", request, provider)
+    _audit_oidc(db, actor, "oidc_link_started" if flow_type in {"self_link", "admin_link"} else "oidc_login_started", request, provider)
     return RedirectResponse(url, status_code=302)
 
 
@@ -214,6 +215,10 @@ async def profile_identity_link(request: Request, csrf_token: str = Form(...), d
     provider = active_provider(db)
     if not provider:
         return RedirectResponse("/profile?identity_error=unavailable", status_code=303)
+    if provider.discovery_status != "ok":
+        return RedirectResponse("/profile?identity_error=configuration_not_ready", status_code=303)
+    if not provider.client_id or not provider.encrypted_client_secret:
+        return RedirectResponse("/profile?identity_error=incomplete_provider", status_code=303)
     return await _begin(request, db, provider, flow_type="self_link", target_user_id=user.id, initiated_by_user_id=user.id, return_path="/profile")
 
 

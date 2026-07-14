@@ -1,7 +1,7 @@
 /* Kaya responsive shell and shared component behavior.
    Desktop rules remain owned by app.css/kaya.css; this file only narrows layouts. */
 
-.mobile-menu-button,.mobile-page-title,.mobile-nav-overlay,.widget-mobile-move{display:none}
+.mobile-menu-button,.mobile-page-title,.mobile-nav-overlay,.widget-mobile-move{display:none!important}
 [hidden]{display:none!important}
 .content{min-width:0}
 .content>*{max-width:100%;min-width:0}
@@ -33,10 +33,10 @@
   .app-brand-link .brand-logo{height:32px;width:32px}
   .app-brand-name{display:none!important}
   .sidebar-collapse-button{display:none!important}
-  .mobile-menu-button{align-items:center;background:transparent;border:1px solid var(--line);border-radius:8px;display:grid;flex:0 0 44px;height:44px;justify-items:center;min-height:44px;padding:10px;width:44px}
+  .mobile-menu-button{align-items:center;background:transparent;border:1px solid var(--line);border-radius:8px;display:grid!important;flex:0 0 44px;height:44px;justify-items:center;min-height:44px;padding:10px;width:44px}
   .mobile-menu-button span{background:currentColor;border-radius:2px;display:block;height:2px;width:20px}
   .app-topbar-main{gap:8px;height:var(--mobile-header-height);padding:0 0 0 8px!important}
-  .mobile-page-title{color:var(--text);display:block;font-size:14px;font-weight:850;max-width:min(42vw,280px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .mobile-page-title{color:var(--text);display:block!important;font-size:14px;font-weight:850;max-width:min(42vw,280px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .topbar-session-tabs,.kaya-theme-switch{display:none}
   .topbar-actions{gap:6px}
   .account-menu .avatar{height:40px;width:40px}
@@ -48,7 +48,7 @@
   body.sidebar-collapsed .sidebar .nav-link,body.sidebar-collapsed .sidebar .nav-group>summary{justify-content:flex-start;padding:8px 10px}
   .sidebar>.nav-tree,body.sidebar-collapsed .sidebar>.nav-tree{flex:0 0 auto;min-height:auto;overflow:visible!important}
   .sidebar>.version-card,body.sidebar-collapsed .sidebar>.version-card{flex:0 0 auto;margin-top:12px;position:static;width:100%}
-  .mobile-nav-overlay{background:rgba(2,6,12,.72);border:0;border-radius:0;bottom:0;cursor:default;display:block;left:0;min-height:0;opacity:0;padding:0;pointer-events:none;position:fixed;right:0;top:0;transition:opacity .2s ease;width:100%;z-index:88}
+  .mobile-nav-overlay{background:rgba(2,6,12,.72);border:0;border-radius:0;bottom:0;cursor:default;display:block!important;left:0;min-height:0;opacity:0;padding:0;pointer-events:none;position:fixed;right:0;top:0;transition:opacity .2s ease;width:100%;z-index:88}
   body.mobile-nav-open .mobile-nav-overlay{opacity:1;pointer-events:auto}
 
   .content,body.sidebar-collapsed .content{margin:0!important;min-height:100dvh;padding:calc(var(--mobile-header-height) + env(safe-area-inset-top) + 12px) 14px calc(24px + env(safe-area-inset-bottom))!important;width:100%!important}
@@ -93,7 +93,7 @@
   .dashboard-actions{justify-content:flex-start;width:100%}
   .widget-options{grid-template-columns:1fr!important}
   .widget-mobile-move{display:none}
-  .is-editing .widget-mobile-move{display:flex;gap:6px}
+  .is-editing .widget-mobile-move{display:flex!important;gap:6px}
   .widget-mobile-move button{height:44px;min-height:44px;width:44px}
 
   .rack-workspace{display:grid!important}

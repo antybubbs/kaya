@@ -1,3 +1,5 @@
+import asyncio
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from starlette.requests import Request
@@ -6,8 +8,8 @@ from app.core.security import hash_password
 from app.db.session import Base
 from app.main import app
 from app.models.models import OIDCProvider, RemoteManagerSetting, User
-from app.routers.auth import login, login_page
-from app.routers.oidc import emergency_login_submit
+from app.routers.auth import login, login_page, profile
+from app.routers.oidc import emergency_login_submit, profile_identity_link
 
 
 def database():
@@ -17,9 +19,10 @@ def database():
 
 
 def request(path="/login", method="GET"):
+    route_path, _, query = path.partition("?")
     scope = {
-        "type": "http", "method": method, "scheme": "https", "path": path, "raw_path": path.encode(),
-        "query_string": b"", "headers": [], "client": ("198.51.100.2", 1234), "server": ("kaya.example.com", 443),
+        "type": "http", "method": method, "scheme": "https", "path": route_path, "raw_path": route_path.encode(),
+        "query_string": query.encode(), "headers": [], "client": ("198.51.100.2", 1234), "server": ("kaya.example.com", 443),
         "session": {"csrf_token": "csrf"},
         "app": app,
     }
@@ -85,3 +88,21 @@ def test_break_glass_allows_only_explicit_active_local_administrator():
         accepted = emergency_login_submit(incoming, email=break_glass.email, password="correct horse battery staple", totp_code="", csrf_token="csrf", db=db)
         assert accepted.status_code == 303
         assert incoming.session["user_id"] == break_glass.id
+
+
+def test_profile_surfaces_oidc_link_errors_instead_of_silently_reloading(monkeypatch):
+    monkeypatch.setattr("app.core.csrf.version_status", lambda: None)
+    with database() as db:
+        user = add_user(db)
+        response = profile(request("/profile?identity_error=configuration_not_ready"), db=db, user=user)
+        assert b"must pass its configuration test" in response.body
+
+
+def test_profile_link_rejects_incomplete_provider_with_visible_error_redirect():
+    with database() as db:
+        user = add_user(db)
+        db.add(OIDCProvider(name="Company SSO", issuer="https://id.example.com", client_id="", is_enabled=True, discovery_status="ok"))
+        db.commit()
+        response = asyncio.run(profile_identity_link(request("/profile/identity/link", "POST"), csrf_token="csrf", db=db, user=user))
+        assert response.status_code == 303
+        assert response.headers["location"] == "/profile?identity_error=incomplete_provider"

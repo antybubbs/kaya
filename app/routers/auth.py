@@ -603,7 +603,27 @@ def profile(request: Request, db: Session = Depends(get_db), user=Depends(requir
     qr_code = qr_code_data_uri(uri) if uri else None
     identity = db.query(ExternalIdentity).filter_by(user_id=user.id).first()
     provider = db.get(OIDCProvider, identity.provider_id) if identity else db.query(OIDCProvider).filter_by(is_enabled=True).first()
-    return templates.TemplateResponse(request, "profile.html", {"user": user, "identity": identity, "oidc_provider": provider, "setup_secret": secret, "setup_uri": uri, "setup_qr_code": qr_code, "error": None, "success": None, **csrf_context(request)})
+    identity_errors = {
+        "unavailable": "OpenID Connect is not currently enabled.",
+        "configuration_not_ready": "OpenID Connect must pass its configuration test before an account can be linked.",
+        "incomplete_provider": "The OpenID Connect provider is missing its client ID or client secret.",
+        "local_password_required": "A local password is required for this action.",
+        "no_remaining_login_method": "Set a local password before unlinking your OpenID Connect identity.",
+        "identity_conflict": "That OpenID Connect identity is already linked to another Kaya account.",
+        "user_identity_conflict": "This Kaya account is already linked to a different OpenID Connect identity.",
+    }
+    identity_error = request.query_params.get("identity_error", "")
+    success = None
+    if request.query_params.get("identity_linked") == "1":
+        success = "OpenID Connect account linked successfully."
+    elif request.query_params.get("identity_unlinked") == "1":
+        success = "OpenID Connect account unlinked successfully."
+    return templates.TemplateResponse(request, "profile.html", {
+        "user": user, "identity": identity, "oidc_provider": provider,
+        "setup_secret": secret, "setup_uri": uri, "setup_qr_code": qr_code,
+        "error": identity_errors.get(identity_error, "The sign-in method could not be updated." if identity_error else None),
+        "success": success, **csrf_context(request),
+    })
 
 
 @router.post("/profile/name")

@@ -33,6 +33,7 @@ def test_service_worker_only_caches_safe_get_assets():
 def test_mobile_shell_and_pwa_metadata_are_global():
     base = (ROOT / "app" / "templates" / "base.html").read_text(encoding="utf-8")
     responsive = (STATIC / "css" / "responsive.css").read_text(encoding="utf-8")
+    core_styles = (STATIC / "css" / "kaya.css").read_text(encoding="utf-8")
     assert 'viewport-fit=cover' in base
     assert 'rel="manifest"' in base
     assert "data-mobile-nav-toggle" in base
@@ -45,6 +46,10 @@ def test_mobile_shell_and_pwa_metadata_are_global():
     assert ".table-scroll" in responsive
     assert "white-space:nowrap" in responsive
     assert "font-size:16px!important" in responsive
+    assert ".mobile-menu-button," in core_styles
+    assert ".widget-mobile-move{" in core_styles
+    assert "display:none!important" in core_styles
+    assert ".is-editing .widget-mobile-move{display:flex!important}" in core_styles
 
 
 def test_offline_page_contains_no_infrastructure_data_or_inline_script():

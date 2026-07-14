@@ -924,3 +924,19 @@ html:not([data-theme="light"]):not([data-kaya-theme="light-ops"])
 .dns-domain-menu[open]{
   z-index:99999;
 }
+
+/* Critical responsive controls are hidden by default. Keep this contract in the
+   core stylesheet as well as responsive.css so a stale optional stylesheet can
+   never expose mobile-only controls on the desktop demo. */
+.mobile-menu-button,
+.mobile-page-title,
+.mobile-nav-overlay,
+.widget-mobile-move{
+  display:none!important;
+}
+
+@media (max-width:1023px){
+  .mobile-menu-button{display:grid!important}
+  .mobile-page-title,.mobile-nav-overlay{display:block!important}
+  .is-editing .widget-mobile-move{display:flex!important}
+}
