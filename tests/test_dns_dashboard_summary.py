@@ -7,7 +7,8 @@ from sqlalchemy.orm import Session
 
 from app.db.session import Base
 from app.models.models import DNSInsight, DNSProviderConfig, DNSStatisticsSnapshot, User
-from app.services.dns_dashboard_summary import _provider_status, get_dns_dashboard_summary, get_featured_dns_insight
+from app.services.dns_dashboard_summary import _provider_status, get_dns_dashboard_summary, get_featured_dns_insight, get_refreshed_dns_dashboard_summary
+import app.services.dns_dashboard_summary as dns_dashboard_service
 
 
 def database():
@@ -115,6 +116,23 @@ def test_provider_status_connected_degraded_disconnected_and_stale():
     assert _provider_status(connected, partial, now)[0] == "degraded"
     assert _provider_status(disconnected, current, now)[0] == "disconnected"
     assert _provider_status(connected, stale, now)[0] == "stale"
+
+
+def test_dashboard_dns_refresh_uses_last_attempt_to_throttle_offline_retries(monkeypatch):
+    with database() as db:
+        now = datetime.utcnow()
+        provider = add_provider(db, status="error")
+        provider.last_checked_at = now
+        add_snapshot(db, provider, period_end=now - timedelta(hours=39))
+        account = add_user(db)
+        calls = []
+        monkeypatch.setattr(dns_dashboard_service, "analyse_provider", lambda *args, **kwargs: calls.append((args, kwargs)))
+        get_refreshed_dns_dashboard_summary(db, account, max_age_seconds=60)
+        assert calls == []
+
+        provider.last_checked_at = now - timedelta(minutes=2)
+        get_refreshed_dns_dashboard_summary(db, account, max_age_seconds=60)
+        assert len(calls) == 1
 
 
 def test_attention_counts_exclude_info_resolved_acknowledged_and_dismissed():

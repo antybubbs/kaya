@@ -37,6 +37,7 @@ from app.models.models import (
     AppSession,
     AuditLog,
     CustomField,
+    CustomFieldValue,
     DNSProviderConfig,
     ManagedListItem,
     RemoteManagerSetting,
@@ -106,7 +107,7 @@ SITE_SETTING_KEYS = {
     "backup_default_target_name": "",
     "dashboard_customisation_enabled": "1",
     "dashboard_monitor_mode_enabled": "1",
-    "dashboard_poll_interval_seconds": "5",
+    "dashboard_poll_interval_seconds": "10",
     "dashboard_recent_activity_limit": "10",
     "dashboard_show_source_age": "1",
     "dashboard_attention_required": "1",
@@ -1312,6 +1313,21 @@ def toggle_custom_field(
     )
 
 
+@router.post("/data/custom-fields/{field_id}/delete")
+def delete_custom_field(request: Request, field_id: int, csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_admin)):
+    validate_csrf_token(request, csrf_token)
+    row = db.get(CustomField, field_id)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Custom field not found")
+    module = row.module
+    label = row.label
+    db.query(CustomFieldValue).filter(CustomFieldValue.field_id == row.id).delete(synchronize_session=False)
+    db.delete(row)
+    db.commit()
+    write_audit(db, user, "delete", "custom_field", str(field_id), request.client.host if request.client else None, detail=label)
+    return RedirectResponse(f"/data/custom-fields?module={module}", status_code=303)
+
+
 @router.get("/data/categories")
 def categories(
     request: Request,
@@ -1552,6 +1568,21 @@ def edit_category(
         f"/data/categories?module={row.module}&list_key={row.list_key}",
         status_code=303,
     )
+
+
+@router.post("/data/categories/{item_id}/delete")
+def delete_category(request: Request, item_id: int, csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_admin)):
+    validate_csrf_token(request, csrf_token)
+    row = db.get(ManagedListItem, item_id)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Category not found")
+    module = row.module
+    list_key = row.list_key
+    value = row.value
+    db.delete(row)
+    db.commit()
+    write_audit(db, user, "delete", "category", str(item_id), request.client.host if request.client else None, detail=value)
+    return RedirectResponse(f"/data/categories?module={module}&list_key={list_key}", status_code=303)
 
 
 @router.get("/admin/security")
@@ -1954,7 +1985,7 @@ async def save_settings(
     backup_default_target_name: str = Form(""),
     dashboard_customisation_enabled: str = Form(""),
     dashboard_monitor_mode_enabled: str = Form(""),
-    dashboard_poll_interval_seconds: str = Form("5"),
+    dashboard_poll_interval_seconds: str = Form("10"),
     dashboard_recent_activity_limit: str = Form("10"),
     dashboard_show_source_age: str = Form(""),
     dashboard_attention_required: str = Form(""),
@@ -2086,9 +2117,11 @@ async def save_settings(
     disabled_widget_keys = ",".join(sorted({key.strip() for key in dashboard_globally_disabled_widgets.split(",") if re.fullmatch(r"[a-z0-9_]+", key.strip())}))
     save_site_setting(db, "dashboard_globally_disabled_widgets", disabled_widget_keys)
     try:
-        dashboard_poll_interval_seconds = str(max(5, min(int(dashboard_poll_interval_seconds), 300)))
+        dashboard_poll_interval_seconds = str(int(dashboard_poll_interval_seconds))
     except ValueError:
-        dashboard_poll_interval_seconds = "5"
+        dashboard_poll_interval_seconds = "10"
+    if dashboard_poll_interval_seconds not in {"10", "30", "60", "300"}:
+        dashboard_poll_interval_seconds = "10"
     try:
         dashboard_recent_activity_limit = str(max(1, min(int(dashboard_recent_activity_limit), 20)))
     except ValueError:

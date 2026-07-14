@@ -280,10 +280,18 @@ def get_refreshed_dns_dashboard_summary(
 
     now = datetime.utcnow()
 
+    refresh_markers = [
+        value
+        for value in (
+            latest.period_end if latest else None,
+            provider.last_checked_at,
+        )
+        if value is not None
+    ]
+    last_refresh_attempt = max(refresh_markers) if refresh_markers else None
     needs_refresh = (
-        latest is None
-        or latest.period_end is None
-        or now - latest.period_end >= timedelta(seconds=max_age_seconds)
+        last_refresh_attempt is None
+        or now - last_refresh_attempt >= timedelta(seconds=max_age_seconds)
     )
 
     if needs_refresh:

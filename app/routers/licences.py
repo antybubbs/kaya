@@ -7,7 +7,7 @@ from starlette import status
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.core.security import decrypt_secret, encrypt_secret, mask_key
 from app.db.session import get_db
-from app.models.models import Licence
+from app.models.models import CustomFieldValue, Licence
 from app.routers.auth import require_editor, require_user
 from app.services.audit import write_audit
 from app.services.custom_fields import active_fields, field_values, option_list, save_custom_values, validate_custom_values
@@ -150,3 +150,20 @@ def reveal(request: Request, licence_id: int, csrf_token: str = Form(...), db: S
     lists = list_values(db, MODULE)
     product_key = decrypt_secret(row.encrypted_product_key)
     return templates.TemplateResponse(request, "licence_detail.html", {"user": user, "licence": row, "display_key": product_key, "product_key_edit": product_key, "revealed": True, "licence_types": lists.get("licence_type", []), "custom_fields": fields, "custom_values": values, "option_list": option_list, **csrf_context(request)})
+
+
+@router.post("/{licence_id}/delete")
+def delete_licence(request: Request, licence_id: int, csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_editor)):
+    validate_csrf_token(request, csrf_token)
+    row = db.get(Licence, licence_id)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Licence not found")
+    product = row.product
+    db.query(CustomFieldValue).filter(
+        CustomFieldValue.entity_type == ENTITY_TYPE,
+        CustomFieldValue.entity_id == row.id,
+    ).delete(synchronize_session=False)
+    db.delete(row)
+    db.commit()
+    write_audit(db, user, "delete", "licence", str(licence_id), request.client.host if request.client else None, detail=product)
+    return RedirectResponse("/security/license-keys", status_code=303)

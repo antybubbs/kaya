@@ -61,9 +61,10 @@ def test_module_disabled_is_available_with_reason_but_not_enabled(db):
     assert dns["available"] is False and dns["availability_reason"] == "Module disabled"
     assert next(item for item in preferences(db,account)["widgets"] if item["key"]=="dns_summary")["enabled"] is False
 
-def test_polling_minimum_is_five_seconds(db):
-    account=user(db); db.add(RemoteManagerSetting(key="dashboard_poll_interval_seconds",value="1")); db.commit()
-    assert config(db,account)["poll_interval_seconds"] == 5
+@pytest.mark.parametrize(("stored", "expected"), [("10", 10), ("30", 30), ("60", 60), ("300", 300), ("1", 10), ("broken", 10)])
+def test_polling_interval_is_one_of_the_supported_choices(db, stored, expected):
+    account=user(db); db.add(RemoteManagerSetting(key="dashboard_poll_interval_seconds",value=stored)); db.commit()
+    assert config(db,account)["poll_interval_seconds"] == expected
 
 def test_malformed_preferences_fall_back_safely(db):
     account=user(db); db.add(DashboardPreference(user_id=account.id,preference_version=99,layout_json="not json"));db.commit()
@@ -78,6 +79,13 @@ def test_widget_failure_does_not_fail_snapshot(db, monkeypatch):
     result=snapshot(db,account)
     assert result["widgets"]["infrastructure_summary"] == {"status":"error","reason":"Widget data is temporarily unavailable"}
     assert result["widgets"]["attention_required"]["status"] == "ok"
+
+def test_snapshot_refreshes_dns_before_rendering_dns_backed_widgets(db, monkeypatch):
+    account=user(db)
+    calls=[]
+    monkeypatch.setattr(dashboard_service, "get_refreshed_dns_dashboard_summary", lambda session, current_user, max_age_seconds: calls.append((session, current_user, max_age_seconds)))
+    snapshot(db,account)
+    assert calls == [(db, account, 60)]
 
 def test_recent_activity_filters_request_noise_and_groups_duplicates(db):
     account=user(db,role="admin")

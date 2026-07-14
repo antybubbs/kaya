@@ -11,7 +11,7 @@ from starlette import status
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.core.security import encrypt_secret
 from app.db.session import get_db
-from app.models.models import ComputeEvent, ComputeHost, ComputeInventoryItem, ComputeMetric, ComputeWorkload, IPAddress
+from app.models.models import BackupJob, ComputeEvent, ComputeHost, ComputeInventoryItem, ComputeMetric, ComputeWorkload, IPAddress
 from app.routers.auth import require_editor, require_user
 from app.services.audit import write_audit
 from app.services.compute_monitor import compute_summary, prune_missing_workloads, reconcile_workload, sync_host, workload_identity
@@ -215,6 +215,7 @@ def delete_host(request:Request,host_id:int,csrf_token:str=Form(...),db:Session=
     validate_csrf_token(request,csrf_token); host=db.get(ComputeHost,host_id)
     if not host: raise HTTPException(404,'Host not found')
     name=host.name; workload_ids=[x.id for x in db.query(ComputeWorkload.id).filter_by(host_id=host.id)]
+    db.query(BackupJob).filter(BackupJob.host_id==host.id).delete(synchronize_session=False)
     if workload_ids: db.query(ComputeMetric).filter(ComputeMetric.workload_id.in_(workload_ids)).delete(synchronize_session=False)
     for model in (ComputeMetric,ComputeEvent,ComputeInventoryItem,ComputeWorkload): db.query(model).filter(model.host_id==host.id).delete(synchronize_session=False)
     db.delete(host); db.commit(); write_audit(db,user,'delete','compute_host',None,request.client.host if request.client else None,detail=name)

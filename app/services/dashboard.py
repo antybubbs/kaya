@@ -14,7 +14,7 @@ from app.models.models import (AppSession, AuditLog, BackupJob, BackupRecord, Co
     ComputeHost, ComputeWorkload, DashboardPreference, DNSInsight, DomainRecord, HardwareAsset,
     IPAddress, Licence, NetworkMonitor, RemoteAccess, RunbookPage, User, VLAN)
 from app.services.compute_monitor import compute_summary
-from app.services.dns_dashboard_summary import get_dns_dashboard_summary
+from app.services.dns_dashboard_summary import get_dns_dashboard_summary, get_refreshed_dns_dashboard_summary
 from app.services.site_settings import get_site_setting
 
 logger = logging.getLogger(__name__)
@@ -168,6 +168,14 @@ def _build(db: Session, user: User, key: str) -> dict:
 
 def snapshot(db: Session, user: User) -> dict:
     started=perf_counter(); config=preferences(db,user); definitions={x["key"]:x for x in registry(db,user)}; output={}
+    enabled_keys = {row["key"] for row in config["widgets"] if row["enabled"]}
+    if enabled_keys.intersection({"dns_summary", "attention_required"}):
+        try:
+            # Refresh stale provider data before rendering either DNS metrics or
+            # DNS-backed attention items, so every widget uses one fresh view.
+            get_refreshed_dns_dashboard_summary(db, user, max_age_seconds=60)
+        except Exception:
+            logger.exception("Unable to refresh stale DNS dashboard data")
     for row in config["widgets"]:
         if not row["enabled"] or row["key"] not in definitions: continue
         definition=definitions[row["key"]]
@@ -178,4 +186,10 @@ def snapshot(db: Session, user: User) -> dict:
     return {"generated_at":_iso(generated),"widgets":output}
 
 def config(db: Session, user: User) -> dict:
-    return {"version":VERSION,"poll_interval_seconds":max(5,int(get_site_setting(db,"dashboard_poll_interval_seconds") or 5)),"customisation_enabled":get_site_setting(db,"dashboard_customisation_enabled")=="1","monitor_mode_enabled":get_site_setting(db,"dashboard_monitor_mode_enabled")=="1","show_source_age":get_site_setting(db,"dashboard_show_source_age")=="1","layout":preferences(db,user),"widgets":registry(db,user)}
+    try:
+        poll_interval = int(get_site_setting(db, "dashboard_poll_interval_seconds") or 10)
+    except (TypeError, ValueError):
+        poll_interval = 10
+    if poll_interval not in {10, 30, 60, 300}:
+        poll_interval = 10
+    return {"version":VERSION,"poll_interval_seconds":poll_interval,"customisation_enabled":get_site_setting(db,"dashboard_customisation_enabled")=="1","monitor_mode_enabled":get_site_setting(db,"dashboard_monitor_mode_enabled")=="1","show_source_age":get_site_setting(db,"dashboard_show_source_age")=="1","layout":preferences(db,user),"widgets":registry(db,user)}

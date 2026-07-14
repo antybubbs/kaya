@@ -37,7 +37,7 @@ DEFAULT_SITE_SETTINGS = {
     "backup_default_target_name": "",
     "dashboard_customisation_enabled": "1",
     "dashboard_monitor_mode_enabled": "1",
-    "dashboard_poll_interval_seconds": "5",
+    "dashboard_poll_interval_seconds": "10",
     "dashboard_recent_activity_limit": "10",
     "dashboard_show_source_age": "1",
     "dashboard_attention_required": "1",

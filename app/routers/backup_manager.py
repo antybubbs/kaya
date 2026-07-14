@@ -450,6 +450,19 @@ def create_manual_backup(
     return RedirectResponse("/infrastructure/backup-manager", status_code=303)
 
 
+@router.post("/manual/{record_id}/delete")
+def delete_manual_backup(request: Request, record_id: int, csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_editor)):
+    validate_csrf_token(request, csrf_token)
+    row = db.get(BackupRecord, record_id)
+    if not row or row.source_type != "manual":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Manual backup record not found")
+    name = row.name
+    db.delete(row)
+    db.commit()
+    write_audit(db, user, "delete", "backup_record", str(record_id), request.client.host if request.client else None, detail=name)
+    return RedirectResponse("/infrastructure/backup-manager", status_code=303)
+
+
 @router.post("/docker/{workload_id}")
 def update_docker_backup_policy(
     request: Request,

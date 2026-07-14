@@ -49,7 +49,7 @@
             {% if row.content_type and row.content_type.startswith('video/') %}
             <a class="button secondary" href="/remote-manager/recordings/{{ row.id }}/download.mp4">MP4</a>
             {% endif %}
-            <form method="post" action="/remote-manager/recordings/{{ row.id }}/delete">
+            <form method="post" action="/remote-manager/recordings/{{ row.id }}/delete" data-confirm-delete="Delete this recording permanently?">
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
               <button class="danger" type="submit">Delete</button>
             </form>

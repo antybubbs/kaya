@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from starlette import status
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.db.session import get_db
-from app.models.models import ComputeWorkload, IPAddress, NetworkMonitor, RemoteAccess, VLAN
+from app.models.models import CustomFieldValue, ComputeWorkload, IPAddress, NetworkMonitor, NetworkMonitorCheck, RemoteAccess, RemoteSessionRecording, VLAN
 from app.routers.auth import require_editor, require_user
 from app.routers.compute_manager import uptime_label, workload_addresses
 from app.routers.remote_manager import RDP_SETTING_KEYS, SETTINGS as REMOTE_MANAGER_DEFAULTS, TERMINAL_SETTING_KEYS, clean_global_setting, decode_settings_blob, encode_settings_blob
@@ -330,3 +330,30 @@ async def update_ip_address(request: Request, record_id: int, address: str = For
     db.commit()
     write_audit(db, user, "update", "ip_address", str(row.id), request.client.host if request.client else None, detail=clean_address)
     return RedirectResponse(f"/networking/vlan-ip-manager/{row.id}", status_code=303)
+
+
+@router.post("/{record_id}/delete")
+def delete_ip_address(request: Request, record_id: int, csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_editor)):
+    validate_csrf_token(request, csrf_token)
+    row = db.get(IPAddress, record_id)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="IP address not found")
+    address = row.address
+    monitor = monitor_for(db, row.id)
+    if monitor:
+        db.query(NetworkMonitorCheck).filter(NetworkMonitorCheck.monitor_id == monitor.id).delete(synchronize_session=False)
+        db.delete(monitor)
+    remote = remote_for(db, row.id)
+    if remote:
+        db.query(RemoteSessionRecording).filter(RemoteSessionRecording.remote_access_id == remote.id).update(
+            {RemoteSessionRecording.remote_access_id: None}, synchronize_session=False
+        )
+        db.delete(remote)
+    db.query(CustomFieldValue).filter(
+        CustomFieldValue.entity_type == ENTITY_TYPE,
+        CustomFieldValue.entity_id == row.id,
+    ).delete(synchronize_session=False)
+    db.delete(row)
+    db.commit()
+    write_audit(db, user, "delete", "ip_address", str(record_id), request.client.host if request.client else None, detail=address)
+    return RedirectResponse("/networking/vlan-ip-manager", status_code=303)

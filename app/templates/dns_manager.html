@@ -609,7 +609,7 @@
 <section class="panel">
   <h2>Open investigations</h2>
   <table data-table-key="dns-investigations">
-    <thead><tr><th>Flagged</th><th>Domain</th><th>Client</th><th>Query Type</th><th>Reply</th><th>Observed</th><th>Notes</th></tr></thead>
+    <thead><tr><th>Flagged</th><th>Domain</th><th>Client</th><th>Query Type</th><th>Reply</th><th>Observed</th><th>Notes</th><th>Actions</th></tr></thead>
     <tbody>
       {% for item in investigations %}
       <tr>
@@ -620,9 +620,10 @@
         <td>{{ item.reply_type or '-' }}{% if item.reply_time %}<br><span class="muted">{{ item.reply_time }}</span>{% endif %}</td>
         <td>{{ item.observed_at or '-' }}</td>
         <td>{{ item.notes or '-' }}</td>
+        <td>{% if user.role in ['admin','editor'] %}<form method="post" action="/networking/dns-manager/investigations/{{ item.id }}/delete" data-confirm-delete="Delete the investigation for {{ item.domain }}?"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button danger" type="submit">Delete</button></form>{% endif %}</td>
       </tr>
       {% else %}
-      <tr><td colspan="7">No DNS queries have been flagged for investigation.</td></tr>
+      <tr><td colspan="8">No DNS queries have been flagged for investigation.</td></tr>
       {% endfor %}
     </tbody>
   </table>

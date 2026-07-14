@@ -3,7 +3,7 @@
   <section class="dashboard-hero">
     <div><span class="eyebrow">{{ brand.name }} overview</span><h1>Operational dashboard</h1><p class="muted">Environment health and items needing attention.</p></div>
     <div class="dashboard-actions">
-      <span class="live-indicator" data-live-state="updating"><i></i><strong data-live-label>Updating</strong><small data-live-age>waiting for data</small></span>
+      <span class="live-indicator" data-live-state="live"><i></i><strong data-live-label>Live</strong></span>
       {% if dashboard_config.customisation_enabled %}<button class="button secondary" type="button" data-edit-dashboard aria-pressed="false">Edit dashboard</button><button class="button secondary" type="button" data-manage-widgets>Manage widgets</button>{% endif %}
       {% if dashboard_config.monitor_mode_enabled %}<button class="button secondary" type="button" data-monitor-mode>Monitor mode</button>{% endif %}
     </div>

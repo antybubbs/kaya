@@ -54,4 +54,11 @@
     <button type="submit">Save host remote settings</button>
   </div>
 </form>
+<section class="panel section-gap danger-zone">
+  <div class="panel-heading"><div><h2>Danger Zone</h2><p class="muted">Remove this connection from Remote Manager. The IP/WAN record and session recordings will be retained.</p></div></div>
+  <form method="post" action="/remote-manager/{{ remote.id }}/delete" data-confirm-delete="Delete the Remote Manager connection for {{ remote_label }}?">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="button danger" type="submit">Delete remote connection</button>
+  </form>
+</section>
 {% endblock %}

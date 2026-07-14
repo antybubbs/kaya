@@ -58,7 +58,6 @@
       {{ switch('dashboard_show_source_age', 'Show source data age', 'Distinguish dashboard refresh time from the underlying collector timestamp.') }}
       {{ switch('dashboard_attention_required', 'Require Attention Required', 'Keep the full-width attention widget enabled for every authorised user.') }}
       <div class="remote-settings-grid two">
-        <label><strong>Polling interval</strong><small>Minimum 5 seconds.</small><input name="dashboard_poll_interval_seconds" type="number" min="5" max="300" value="{{ settings.get('dashboard_poll_interval_seconds','5') }}"></label>
         <label><strong>Recent activity entries</strong><small>Between 1 and 20.</small><input name="dashboard_recent_activity_limit" type="number" min="1" max="20" value="{{ settings.get('dashboard_recent_activity_limit','10') }}"></label>
         <label><strong>Globally disabled widget keys</strong><small>Comma-separated registry keys. Existing user preferences are preserved.</small><input name="dashboard_globally_disabled_widgets" value="{{ settings.get('dashboard_globally_disabled_widgets','') }}" placeholder="team_users,recent_activity"></label>
       </div>
@@ -79,6 +78,17 @@
           <small>Used to display site timestamps. Dates remain stored safely in UTC.</small>
           <select name="timezone_region" data-timezone-select data-selected-timezone="{{ settings.get('timezone_region', 'UTC') }}">
             <option value="{{ settings.get('timezone_region', 'UTC') }}">{{ settings.get('timezone_region', 'UTC') }}</option>
+          </select>
+        </label>
+        <label>
+          <strong>Dashboard tile refresh</strong>
+          <small>Refresh dashboard tiles silently at this interval.</small>
+          {% set dashboard_refresh = settings.get('dashboard_poll_interval_seconds', '10') %}
+          <select name="dashboard_poll_interval_seconds">
+            <option value="10" {% if dashboard_refresh == '10' %}selected{% endif %}>10 seconds</option>
+            <option value="30" {% if dashboard_refresh == '30' %}selected{% endif %}>30 seconds</option>
+            <option value="60" {% if dashboard_refresh == '60' %}selected{% endif %}>1 minute</option>
+            <option value="300" {% if dashboard_refresh == '300' %}selected{% endif %}>5 minutes</option>
           </select>
         </label>
       </div>

@@ -122,5 +122,14 @@
   </section>
 </section>
 </form>
+{% if user.role in ['admin','editor'] %}
+<section class="panel section-gap danger-zone">
+  <div class="panel-heading"><div><h2>Danger Zone</h2><p class="muted">Permanently delete this IP address, its monitor history, and its Remote Manager connection. Session recordings are retained.</p></div></div>
+  <form method="post" action="/networking/vlan-ip-manager/{{ record.id }}/delete" data-confirm-delete="Delete IP address {{ record.address }}? This cannot be undone.">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="button danger" type="submit">Delete IP address</button>
+  </form>
+</section>
+{% endif %}
 <script src="/static/js/ip_addresses.js?v={{ asset_version }}" defer></script>
 {% endblock %}

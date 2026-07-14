@@ -75,7 +75,7 @@
     <thead><tr><th>File</th><th>Uploaded</th><th></th></tr></thead>
     <tbody>
     {% for attachment in attachments %}
-    <tr><td>{{ attachment.original_filename }}</td><td>{{ attachment.uploaded_at }}</td><td><a class="button secondary" href="/infrastructure/asset-manager/{{ record.id }}/attachments/{{ attachment.id }}">Download</a></td></tr>
+    <tr><td>{{ attachment.original_filename }}</td><td>{{ attachment.uploaded_at }}</td><td><div class="inline-actions"><a class="button secondary" href="/infrastructure/asset-manager/{{ record.id }}/attachments/{{ attachment.id }}">Download</a>{% if user.role in ['admin','editor'] %}<form method="post" action="/infrastructure/asset-manager/{{ record.id }}/attachments/{{ attachment.id }}/delete" data-confirm-delete="Delete attachment {{ attachment.original_filename }}?"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button danger" type="submit">Delete</button></form>{% endif %}</div></td></tr>
     {% endfor %}
     </tbody>
   </table>
@@ -90,4 +90,13 @@
   </form>
   {% endif %}
 </section>
+{% if user.role in ['admin','editor'] %}
+<section class="panel section-gap danger-zone">
+  <div class="panel-heading"><div><h2>Danger Zone</h2><p class="muted">Permanently delete this asset, its custom values, photo, and attachments. Rack placements and recognised DNS devices will remain but become unlinked.</p></div></div>
+  <form method="post" action="/infrastructure/asset-manager/{{ record.id }}/delete" data-confirm-delete="Delete hardware asset {{ record.name }} and all its uploaded files? This cannot be undone.">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="button danger" type="submit">Delete hardware asset</button>
+  </form>
+</section>
+{% endif %}
 {% endblock %}

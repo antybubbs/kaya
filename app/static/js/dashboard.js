@@ -5,11 +5,10 @@
   const config = JSON.parse(root.dataset.config || "{}");
   const grid = root.querySelector("[data-dashboard-grid]");
   const label = root.querySelector("[data-live-label]");
-  const age = root.querySelector("[data-live-age]");
   const saveState = root.querySelector("[data-save-state]");
   const csrf = root.dataset.csrfToken;
-  const INTERVAL = Math.max(5000, (config.poll_interval_seconds || 5) * 1000);
-  const DELAYED_MS = 15000, STALE_MS = 30000, LOST_FAILURES = 3;
+  const INTERVAL = Math.max(10000, (config.poll_interval_seconds || 10) * 1000);
+  const DELAYED_MS = INTERVAL + Math.max(5000, INTERVAL / 2), STALE_MS = INTERVAL * 2, LOST_FAILURES = 3;
   let layout = config.layout, inFlight = false, timer = null, failures = 0, lastSuccess = 0, editing = false, dragged = null, dragArmed = false, managerDirty = false;
   const definitions = new Map((config.widgets || []).map(item => [item.key, item]));
 
@@ -32,12 +31,12 @@
     body.dataset.hasData="1"; const source=card.querySelector("[data-source-age]"); source.textContent=config.show_source_age && result.data.source_updated_at ? `Source ${relative(result.data.source_updated_at)}` : ""; source.title=result.data.source_updated_at || "";
   }
   async function refresh() {
-    if(inFlight || document.hidden) return; if(!navigator.onLine){setLive("lost","Offline");return;} inFlight=true; setLive("updating","Updating");
-    try { const response=await fetch("/api/dashboard/snapshot",{headers:{Accept:"application/json"}}); if(response.status===401||response.status===403){stop();setLive("lost","Session expired");return;} if(!response.ok)throw new Error(); const data=await response.json(); Object.entries(data.widgets||{}).forEach(([key,value])=>{const card=grid.querySelector(`[data-widget-key="${CSS.escape(key)}"]`);if(card)renderWidget(card,value);}); lastSuccess=Date.now(); failures=0; setLive("live","Live"); age.textContent="updated just now"; age.title=data.generated_at || ""; }
+    if(inFlight || document.hidden) return; if(!navigator.onLine){setLive("lost","Offline");return;} inFlight=true;
+    try { const response=await fetch("/api/dashboard/snapshot",{headers:{Accept:"application/json"},cache:"no-store"}); if(response.status===401||response.status===403){stop();setLive("lost","Session expired");return;} if(!response.ok)throw new Error(); const data=await response.json(); Object.entries(data.widgets||{}).forEach(([key,value])=>{const card=grid.querySelector(`[data-widget-key="${CSS.escape(key)}"]`);if(card)renderWidget(card,value);}); lastSuccess=Date.now(); failures=0; setLive("live","Live"); }
     catch(_error){ failures++; setLive(failures>=LOST_FAILURES?"lost":"delayed",failures>=LOST_FAILURES?"Connection lost":"Delayed"); }
     finally{inFlight=false;}
   }
-  function tick(){ if(lastSuccess){const elapsed=Date.now()-lastSuccess;age.textContent=`updated ${Math.round(elapsed/1000)} seconds ago`;if(elapsed>=STALE_MS)setLive("stale","Stale");else if(elapsed>=DELAYED_MS)setLive("delayed","Delayed");} }
+  function tick(){ if(lastSuccess){const elapsed=Date.now()-lastSuccess;if(elapsed>=STALE_MS)setLive("stale","Stale");else if(elapsed>=DELAYED_MS)setLive("delayed","Delayed");} }
   function stop(){clearInterval(timer);timer=null;}
   async function save(){ try{const response=await fetch("/api/dashboard/preferences",{method:"PUT",headers:{"Content-Type":"application/json","X-CSRF-Token":csrf},body:JSON.stringify(layout)});if(!response.ok)throw new Error();layout=(await response.json()).layout;saveState.textContent="Dashboard layout saved";setTimeout(()=>saveState.textContent="",2500);}catch(_){saveState.textContent="Could not save dashboard layout";} }
   function syncOrder(){layout.widgets.forEach(row=>{const card=grid.querySelector(`[data-widget-key="${CSS.escape(row.key)}"]`);if(card){row.position=[...grid.children].indexOf(card)+1;row.width=card.dataset.width;}});save();}

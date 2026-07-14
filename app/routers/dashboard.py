@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Body, Depends, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
@@ -20,7 +20,8 @@ def dashboard_config(db: Session = Depends(get_db), user=Depends(require_user)):
     return config(db, user)
 
 @router.get("/api/dashboard/snapshot")
-def dashboard_snapshot(db: Session = Depends(get_db), user=Depends(require_user)):
+def dashboard_snapshot(response: Response, db: Session = Depends(get_db), user=Depends(require_user)):
+    response.headers["Cache-Control"] = "no-store"
     return snapshot(db, user)
 
 def _validate_request_csrf(request: Request):

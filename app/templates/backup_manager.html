@@ -131,7 +131,7 @@
 <section class="panel section-gap">
   <h2>Manual backups</h2>
   <table>
-    <thead><tr><th>Name</th><th>Status</th><th>Schedule</th><th>Target</th><th>Owner</th><th>Last run</th></tr></thead>
+    <thead><tr><th>Name</th><th>Status</th><th>Schedule</th><th>Target</th><th>Owner</th><th>Last run</th><th>Actions</th></tr></thead>
     <tbody>
       {% for row in manual_backups %}
       <tr>
@@ -141,9 +141,10 @@
         <td class="mono">{{ row.target or backup_target }}</td>
         <td>{{ row.owner or '-' }}</td>
         <td>{{ local_time(row.last_run_at, 'minute') }}</td>
+        <td>{% if user.role in ['admin','editor'] %}<form method="post" action="/infrastructure/backup-manager/manual/{{ row.id }}/delete" data-confirm-delete="Delete manual backup record {{ row.name }}?"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button danger" type="submit">Delete</button></form>{% endif %}</td>
       </tr>
       {% else %}
-      <tr><td colspan="6">No manual backups added yet.</td></tr>
+      <tr><td colspan="7">No manual backups added yet.</td></tr>
       {% endfor %}
     </tbody>
   </table>

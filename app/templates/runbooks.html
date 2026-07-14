@@ -33,6 +33,12 @@
       <a class="runbook-filter {% if not active_space %}active{% endif %}" href="/documentation/runbook-manager{% if q %}?q={{ q|urlencode }}{% endif %}">All Spaces</a>
       {% for space in spaces %}
       <a class="runbook-filter {% if active_space == space.id %}active{% endif %}" href="/documentation/runbook-manager?space={{ space.id }}{% if q %}&q={{ q|urlencode }}{% endif %}">{{ space.name }}</a>
+      {% if active_space == space.id and user.role in ['admin','editor'] %}
+      <form method="post" action="/documentation/runbook-manager/spaces/{{ space.id }}/delete" data-confirm-delete="Delete runbook space {{ space.name }}? Its pages will be moved to All Spaces.">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="button danger small" type="submit">Delete space</button>
+      </form>
+      {% endif %}
       {% endfor %}
     </div>
     {% if tags %}

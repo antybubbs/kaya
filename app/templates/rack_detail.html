@@ -92,7 +92,7 @@
           {% if item.hardware_asset %}<a href="/infrastructure/asset-manager/{{ item.hardware_asset.id }}">Open linked asset</a>{% endif %}
           {% if item.notes %}<p>{{ item.notes }}</p>{% endif %}
           {% if user.role in ['admin','editor'] %}
-          <form method="post" action="/infrastructure/rack-manager/{{ rack.id }}/items/{{ item.id }}/delete">
+          <form method="post" action="/infrastructure/rack-manager/{{ rack.id }}/items/{{ item.id }}/delete" data-confirm-delete="Delete rack placement {{ item.name }}?">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="button secondary" type="submit">Remove</button>
           </form>

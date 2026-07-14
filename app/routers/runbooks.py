@@ -351,6 +351,22 @@ def create_space(
     return RedirectResponse(f"/documentation/runbook-manager?space={row.id}", status_code=303)
 
 
+@router.post("/spaces/{space_id}/delete")
+def delete_space(request: Request, space_id: int, csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_editor)):
+    validate_csrf_token(request, csrf_token)
+    row = db.get(RunbookSpace, space_id)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Runbook space not found")
+    name = row.name
+    db.query(RunbookPage).filter(RunbookPage.space_id == row.id).update(
+        {RunbookPage.space_id: None}, synchronize_session=False
+    )
+    db.delete(row)
+    db.commit()
+    write_audit(db, user, "delete", "runbook_space", str(space_id), request.client.host if request.client else None, detail=name)
+    return RedirectResponse("/documentation/runbook-manager", status_code=303)
+
+
 @router.post("/images")
 async def upload_runbook_image(
     request: Request,

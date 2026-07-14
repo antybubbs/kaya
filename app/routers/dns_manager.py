@@ -14,7 +14,7 @@ from app.core.config import get_settings
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.db.session import get_db
 from app.models.models import DNSInsight, DNSInvestigation, DNSProviderConfig, DNSStatisticsSnapshot, RemoteManagerSetting
-from app.routers.auth import require_user
+from app.routers.auth import require_editor, require_user
 from app.services.dns_providers import DNSProvider, DNSProviderResult, provider_for
 from app.services.audit import write_audit
 from app.services.site_settings import get_site_setting
@@ -767,6 +767,19 @@ def flag_dns_investigation(
                 "upstream": upstream,
             },
         )
+    return RedirectResponse("/networking/dns-manager?tab=query-log", status_code=303)
+
+
+@router.post("/investigations/{investigation_id}/delete")
+def delete_dns_investigation(request: Request, investigation_id: int, csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_editor)):
+    validate_csrf_token(request, csrf_token)
+    row = db.get(DNSInvestigation, investigation_id)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="DNS investigation not found")
+    domain = row.domain
+    db.delete(row)
+    db.commit()
+    write_audit(db, user, "delete", "dns_investigation", str(investigation_id), request.client.host if request.client else None, detail=domain)
     return RedirectResponse("/networking/dns-manager?tab=query-log", status_code=303)
 
 

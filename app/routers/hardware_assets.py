@@ -1,5 +1,6 @@
 from datetime import datetime
 from pathlib import Path
+import shutil
 from uuid import uuid4
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse
@@ -10,7 +11,7 @@ from starlette import status
 from app.core.config import get_settings
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.db.session import get_db
-from app.models.models import HardwareAsset, HardwareAssetAttachment
+from app.models.models import CustomFieldValue, DNSRecognisedDevice, HardwareAsset, HardwareAssetAttachment, RackItem
 from app.routers.auth import require_editor, require_user
 from app.services.audit import write_audit
 from app.services.custom_fields import active_fields, field_values, option_list, save_custom_values, validate_custom_values
@@ -253,3 +254,43 @@ def download_attachment(asset_id: int, attachment_id: int, db: Session = Depends
     if not path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found")
     return FileResponse(path, media_type="application/octet-stream", filename=row.original_filename)
+
+
+@router.post("/{asset_id}/attachments/{attachment_id}/delete")
+def delete_attachment(request: Request, asset_id: int, attachment_id: int, csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_editor)):
+    validate_csrf_token(request, csrf_token)
+    row = db.get(HardwareAssetAttachment, attachment_id)
+    if not row or row.asset_id != asset_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found")
+    filename = row.original_filename
+    path = asset_upload_dir(asset_id) / row.stored_filename
+    db.delete(row)
+    db.commit()
+    path.unlink(missing_ok=True)
+    write_audit(db, user, "delete_attachment", "hardware_asset", str(asset_id), request.client.host if request.client else None, detail=filename)
+    return RedirectResponse(f"/infrastructure/asset-manager/{asset_id}", status_code=303)
+
+
+@router.post("/{asset_id}/delete")
+def delete_asset(request: Request, asset_id: int, csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_editor)):
+    validate_csrf_token(request, csrf_token)
+    row = db.get(HardwareAsset, asset_id)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Hardware asset not found")
+    name = row.name
+    db.query(RackItem).filter(RackItem.hardware_asset_id == row.id).update(
+        {RackItem.hardware_asset_id: None}, synchronize_session=False
+    )
+    db.query(DNSRecognisedDevice).filter(DNSRecognisedDevice.hardware_asset_id == row.id).update(
+        {DNSRecognisedDevice.hardware_asset_id: None}, synchronize_session=False
+    )
+    db.query(CustomFieldValue).filter(
+        CustomFieldValue.entity_type == ENTITY_TYPE,
+        CustomFieldValue.entity_id == row.id,
+    ).delete(synchronize_session=False)
+    db.query(HardwareAssetAttachment).filter(HardwareAssetAttachment.asset_id == row.id).delete(synchronize_session=False)
+    db.delete(row)
+    db.commit()
+    shutil.rmtree(Path(get_settings().upload_dir) / "hardware_assets" / str(asset_id), ignore_errors=True)
+    write_audit(db, user, "delete", "hardware_asset", str(asset_id), request.client.host if request.client else None, detail=name)
+    return RedirectResponse("/infrastructure/asset-manager", status_code=303)
