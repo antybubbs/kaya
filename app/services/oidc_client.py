@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.core.security import decrypt_secret, encrypt_secret
 from app.models.models import OIDCProvider, OIDCTransaction
-from app.services.oidc_discovery import MAX_METADATA_BYTES, OIDCDiscoveryError, provider_metadata, validate_outbound_url
+from app.services.oidc_discovery import MAX_METADATA_BYTES, OIDCDiscoveryError, provider_metadata, validate_outbound_url, validate_outbound_url_async
 
 
 ALLOWED_ID_TOKEN_ALGORITHMS = ("RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512")
@@ -105,7 +105,7 @@ async def authorization_redirect(
         "code_challenge": _pkce_challenge(verifier),
         "code_challenge_method": "S256",
     }
-    endpoint = validate_outbound_url(metadata["authorization_endpoint"])
+    endpoint = await validate_outbound_url_async(metadata["authorization_endpoint"], timeout=min(provider.timeout_seconds, 5))
     return f"{endpoint}{'&' if '?' in endpoint else '?'}{urlencode(params)}", opaque
 
 
@@ -127,7 +127,7 @@ async def _json_get(url: str, provider: OIDCProvider, *, bearer: str | None = No
         headers["Authorization"] = f"Bearer {bearer}"
     try:
         async with httpx.AsyncClient(verify=bool(provider.verify_tls), timeout=max(2, min(provider.timeout_seconds, 30)), follow_redirects=False) as client:
-            response = await client.get(validate_outbound_url(url), headers=headers)
+            response = await client.get(await validate_outbound_url_async(url, timeout=min(provider.timeout_seconds, 5)), headers=headers)
             response.raise_for_status()
     except (httpx.HTTPError, OIDCDiscoveryError) as exc:
         raise OIDCFlowError("provider_unavailable") from exc
@@ -183,7 +183,8 @@ async def exchange_and_validate(
         auth = httpx.BasicAuth(provider.client_id, secret)
     try:
         async with httpx.AsyncClient(verify=bool(provider.verify_tls), timeout=max(2, min(provider.timeout_seconds, 30)), follow_redirects=False) as client:
-            response = await client.post(validate_outbound_url(metadata["token_endpoint"]), data=data, auth=auth, headers={"Accept": "application/json"})
+            endpoint = await validate_outbound_url_async(metadata["token_endpoint"], timeout=min(provider.timeout_seconds, 5))
+            response = await client.post(endpoint, data=data, auth=auth, headers={"Accept": "application/json"})
             response.raise_for_status()
     except (httpx.HTTPError, OIDCDiscoveryError) as exc:
         raise OIDCFlowError("token_exchange_failed") from exc

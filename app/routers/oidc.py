@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta
 import hashlib
 import json
@@ -85,19 +86,23 @@ def _audit_oidc(db: Session, user: User | None, action: str, request: Request, p
 
 async def _begin(request: Request, db: Session, provider: OIDCProvider, *, flow_type="login", target_user_id=None, initiated_by_user_id=None, return_path="/dashboard"):
     actor = db.get(User, initiated_by_user_id) if initiated_by_user_id else None
+    start_action = "oidc_link_started" if flow_type in {"self_link", "admin_link"} else "oidc_login_started"
     if _rate_limited(f"oidc:{client_key(request)}"):
         _audit_oidc(db, actor, "oidc_login_rejected", request, provider, category="rate_limited", severity="warning")
         return templates.TemplateResponse(request, "oidc_error.html", {"message": "Too many sign-in attempts. Try again later.", **csrf_context(request, include_version=False)}, status_code=429)
+    _audit_oidc(db, actor, start_action, request, provider)
     try:
-        url, opaque = await authorization_redirect(
-            db, provider, callback_url=callback_url(db), flow_type=flow_type,
-            target_user_id=target_user_id, initiated_by_user_id=initiated_by_user_id, return_path=return_path,
+        url, opaque = await asyncio.wait_for(
+            authorization_redirect(
+                db, provider, callback_url=callback_url(db), flow_type=flow_type,
+                target_user_id=target_user_id, initiated_by_user_id=initiated_by_user_id, return_path=return_path,
+            ),
+            timeout=max(4, min(provider.timeout_seconds, 30) + 2),
         )
-    except (OIDCDiscoveryError, OIDCFlowError):
+    except (TimeoutError, OIDCDiscoveryError, OIDCFlowError):
         _audit_oidc(db, actor, "oidc_login_failed", request, provider, category="initiation_failed", severity="warning")
         return templates.TemplateResponse(request, "oidc_error.html", {"message": "Single sign-on is temporarily unavailable.", **csrf_context(request, include_version=False)}, status_code=503)
     request.session["oidc_transaction"] = opaque
-    _audit_oidc(db, actor, "oidc_link_started" if flow_type in {"self_link", "admin_link"} else "oidc_login_started", request, provider)
     return RedirectResponse(url, status_code=302)
 
 

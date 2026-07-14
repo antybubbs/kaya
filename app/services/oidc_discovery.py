@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 import ipaddress
@@ -66,6 +67,14 @@ def validate_outbound_url(value: str) -> str:
         raise OIDCDiscoveryError("Provider endpoints must use HTTPS outside localhost development.")
     _validate_resolved_host(parsed.hostname)
     return parsed.geturl()
+
+
+async def validate_outbound_url_async(value: str, *, timeout: float = 5.0) -> str:
+    """Validate provider DNS without blocking the application's event loop."""
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(validate_outbound_url, value), timeout=max(1.0, timeout))
+    except TimeoutError as exc:
+        raise OIDCDiscoveryError("The provider endpoint hostname lookup timed out.") from exc
 
 
 def validate_metadata(expected_issuer: str, metadata: dict) -> dict[str, str]:

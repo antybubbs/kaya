@@ -9,5 +9,12 @@ document.addEventListener("DOMContentLoaded", () => {
       button.textContent = "Redirecting…";
     }
     if (status) status.textContent = " Connecting to your identity provider.";
+    window.setTimeout(() => {
+      if (button) {
+        button.disabled = false;
+        button.textContent = "Try linking again";
+      }
+      if (status) status.textContent = " The provider is taking too long to respond. Check the Kaya audit log and provider connectivity.";
+    }, 35000);
   });
 });
