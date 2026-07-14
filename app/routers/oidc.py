@@ -31,6 +31,15 @@ router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
 settings = get_settings()
 ACTION_ATTEMPTS: dict[str, list[datetime]] = {}
+LINK_ERROR_MESSAGES = {
+    "unverified_email": "Your identity provider did not mark your email address as verified. Verify the address there or update its email scope mapping.",
+    "missing_or_invalid_email": "Your identity provider did not provide a usable email claim for this identity.",
+    "disallowed_email_domain": "Your identity-provider email domain is not permitted by this Kaya provider configuration.",
+    "identity_conflict": "This external identity is already linked to another Kaya account.",
+    "user_identity_conflict": "This Kaya account is already linked to a different external identity.",
+    "invalid_link_target": "The Kaya account selected for linking is no longer available.",
+    "inactive_user": "The Kaya account linked to this identity is disabled.",
+}
 
 
 def _rate_limited(key: str, limit: int = 10, minutes: int = 10) -> bool:
@@ -82,6 +91,21 @@ def _audit_oidc(db: Session, user: User | None, action: str, request: Request, p
         detail=detail, category=category or "authentication", severity=severity,
         metadata={"provider_id": provider.id if provider else None, "issuer_host": hostname, "failure_category": category if category and category != "authentication" else None},
     )
+
+
+def callback_error_context(db: Session, request: Request, transaction: OIDCTransaction | None, exc: Exception) -> tuple[User | None, str, str, str]:
+    actor = None
+    if transaction and transaction.initiated_by_user_id:
+        actor = db.get(User, transaction.initiated_by_user_id)
+    authorised_link_owner = bool(
+        transaction
+        and transaction.flow_type in {"self_link", "admin_link"}
+        and transaction.initiated_by_user_id
+        and request.session.get("user_id") == transaction.initiated_by_user_id
+    )
+    category = getattr(exc, "category", "callback_failed")
+    message = LINK_ERROR_MESSAGES.get(category, str(exc)) if authorised_link_owner else str(exc)
+    return actor, message, "/profile" if authorised_link_owner else "/login", "Return to profile" if authorised_link_owner else "Return to sign in"
 
 
 async def _begin(request: Request, db: Session, provider: OIDCProvider, *, flow_type="login", target_user_id=None, initiated_by_user_id=None, return_path="/dashboard"):
@@ -153,7 +177,8 @@ async def oidc_callback(request: Request, state: str = "", code: str = "", error
         return RedirectResponse(return_path, status_code=303)
     except (OIDCFlowError, OIDCIdentityError, OIDCDiscoveryError) as exc:
         category = getattr(exc, "category", "callback_failed")
-        _audit_oidc(db, None, "oidc_login_failed", request, provider, category=category, severity="warning")
+        actor, message, return_url, return_label = callback_error_context(db, request, transaction, exc)
+        _audit_oidc(db, actor, "oidc_link_failed" if transaction and transaction.flow_type in {"self_link", "admin_link"} else "oidc_login_failed", request, provider, category=category, severity="warning")
         if transaction is not None and transaction.validated_claims_json is None:
             try:
                 db.delete(transaction)
@@ -161,7 +186,7 @@ async def oidc_callback(request: Request, state: str = "", code: str = "", error
             except Exception:
                 db.rollback()
         request.session.pop("oidc_transaction", None)
-        return templates.TemplateResponse(request, "oidc_error.html", {"message": str(exc), **csrf_context(request, include_version=False)}, status_code=400)
+        return templates.TemplateResponse(request, "oidc_error.html", {"message": message, "return_url": return_url, "return_label": return_label, **csrf_context(request, include_version=False)}, status_code=400)
 
 
 def _pending_transaction(db: Session, request: Request) -> OIDCTransaction | None:

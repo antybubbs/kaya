@@ -7,9 +7,10 @@ from starlette.requests import Request
 from app.core.security import hash_password
 from app.db.session import Base
 from app.main import app
-from app.models.models import OIDCProvider, RemoteManagerSetting, User
+from app.models.models import OIDCProvider, OIDCTransaction, RemoteManagerSetting, User
 from app.routers.auth import login, login_page, profile
-from app.routers.oidc import emergency_login_submit, profile_identity_link
+from app.routers.oidc import callback_error_context, emergency_login_submit, profile_identity_link
+from app.services.oidc_identity import OIDCIdentityError
 
 
 def database():
@@ -106,3 +107,15 @@ def test_profile_link_rejects_incomplete_provider_with_visible_error_redirect():
         response = asyncio.run(profile_identity_link(request("/profile/identity/link", "POST"), csrf_token="csrf", db=db, user=user))
         assert response.status_code == 303
         assert response.headers["location"] == "/profile?identity_error=incomplete_provider"
+
+
+def test_authenticated_link_callback_shows_safe_actionable_failure_reason():
+    with database() as db:
+        user = add_user(db)
+        incoming = request("/auth/oidc/callback")
+        incoming.session["user_id"] = user.id
+        transaction = OIDCTransaction(flow_type="self_link", initiated_by_user_id=user.id, target_user_id=user.id)
+        actor, message, return_url, return_label = callback_error_context(db, incoming, transaction, OIDCIdentityError("unverified_email"))
+        assert actor.id == user.id
+        assert "did not mark your email address as verified" in message
+        assert (return_url, return_label) == ("/profile", "Return to profile")

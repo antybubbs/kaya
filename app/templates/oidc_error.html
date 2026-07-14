@@ -4,6 +4,6 @@
   <p class="login-kicker">Authentication</p>
   <h1>Single sign-on could not be completed</h1>
   <div class="alert">{{ message }}</div>
-  <div class="form-actions"><a class="button" href="/login">Return to sign in</a><a class="button secondary" href="/auth/local">Emergency administrator access</a></div>
+  <div class="form-actions"><a class="button" href="{{ return_url or '/login' }}">{{ return_label or 'Return to sign in' }}</a><a class="button secondary" href="/auth/local">Emergency administrator access</a></div>
 </section></div></div>
 {% endblock %}
