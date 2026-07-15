@@ -616,23 +616,39 @@ html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .setup-brand-panel
 /* DNS Manager query log interactions */
 .dns-query-log-panel{
   display:grid;
-  gap:12px;
+  gap:8px 12px;
+  grid-template-columns:minmax(0,1fr) auto;
 }
 
 .dns-query-log-controls{
   align-items:center;
   display:flex;
+  gap:8px;
   justify-content:flex-start;
+  min-width:0;
+}
+
+.dns-query-log-panel>.table-toolbar{
+  align-self:center;
+  margin:0;
+}
+
+.dns-query-log-panel>table{
+  grid-column:1 / -1;
 }
 
 .dns-live-toggle{
   align-items:center;
   background:#101319;
   border:1px solid #2a303a;
-  border-radius:8px;
+  border-radius:7px;
   display:inline-flex;
-  gap:10px;
-  padding:9px 12px;
+  flex:0 0 auto;
+  font-size:11px;
+  gap:6px;
+  line-height:1;
+  padding:5px 8px;
+  white-space:nowrap;
 }
 
 .dns-live-toggle input{
@@ -643,7 +659,7 @@ html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .setup-brand-panel
 
 .dns-live-toggle span{
   display:grid;
-  gap:2px;
+  gap:0;
 }
 
 .dns-live-toggle small{
