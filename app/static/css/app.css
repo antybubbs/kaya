@@ -18,6 +18,7 @@ label,.field-label,.detail-grid label{color:var(--text);font-size:13px;font-weig
 /* Network monitor */
 .checkbox-label{align-items:center;display:flex;flex-direction:row;gap:8px}.checkbox-label input{min-height:0;width:auto}.monitor-settings{border:1px solid var(--line);border-radius:10px;display:grid;gap:12px;padding:12px}.monitor-grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}.monitor-card{background:rgba(17,24,39,.82);border:1px solid var(--line);border-radius:12px;padding:16px}.monitor-card-header{align-items:flex-start;display:flex;gap:12px;justify-content:space-between}.monitor-card h2{font-size:16px;margin:0 0 4px}.status-pill{border:1px solid var(--line);border-radius:999px;color:var(--muted);font-size:12px;font-weight:800;padding:5px 9px}.status-pill.up{background:rgba(34,197,94,.12);border-color:rgba(34,197,94,.45);color:#86efac}.status-pill.down{background:rgba(248,113,113,.12);border-color:rgba(248,113,113,.45);color:#fca5a5}.monitor-meta{display:grid;gap:8px;grid-template-columns:repeat(3,1fr);margin:14px 0}.monitor-meta span{color:var(--muted);display:block;font-size:12px}.monitor-meta strong{font-size:13px}.uptime-strip{align-items:center;display:flex;gap:3px;min-height:26px}.uptime-block{background:rgba(148,163,184,.22);border-radius:3px;display:block;flex:1;height:22px;min-width:5px}.uptime-block.up{background:#22c55e}.uptime-block.down{background:#ef4444}.monitor-error{color:#fca5a5;font-size:12px;margin:10px 0 0;overflow-wrap:anywhere}
 .monitor-title-row{align-items:center;display:flex;gap:8px}.monitor-title-row h2{margin:0}.monitor-refresh-form{display:inline-flex}.monitor-refresh-button{background:transparent;border:1px solid var(--line);border-radius:8px;color:var(--muted);height:28px;min-height:28px;padding:0;width:28px}.monitor-refresh-button:hover{background:var(--panel2);color:var(--text)}.monitor-refresh-button svg{display:block;height:14px;width:14px;fill:none;stroke:currentColor;stroke-linecap:round;stroke-linejoin:round;stroke-width:2}.monitor-refresh-button.spinning svg{animation:monitor-spin .8s linear infinite}@keyframes monitor-spin{to{transform:rotate(360deg)}}
+.monitor-summary-cards{grid-template-columns:repeat(auto-fit,minmax(135px,1fr))}.monitor-card-header h2 a{color:var(--text);text-decoration:none}.monitor-card-header h2 a:hover{color:var(--accent)}.status-pill.warning,.status-pill.critical{background:rgba(245,158,11,.12);border-color:rgba(245,158,11,.45);color:#fbbf24}.latency-spark,.performance-chart{align-items:flex-end;background:rgba(2,6,23,.3);border:1px solid var(--line);border-radius:8px;display:flex;gap:2px;height:72px;margin:12px 0 8px;overflow:hidden;padding:6px}.latency-spark span,.performance-chart span{background:#22c55e;border-radius:2px 2px 0 0;display:block;flex:1;min-height:2px;min-width:2px}.latency-spark span.down,.performance-chart span.down{background:#ef4444;height:100%!important}.latency-spark em{align-self:center;color:var(--muted);font-size:12px}.monitor-card-actions,.range-links,.detail-tabs{align-items:center;display:flex;flex-wrap:wrap;gap:8px}.monitor-card-actions{margin-top:14px}.monitor-card-actions form{margin:0}.detail-tabs{background:var(--panel);border:1px solid var(--line);border-radius:10px;margin:0 0 14px;padding:8px;position:sticky;top:var(--header-height,64px);z-index:5}.detail-tabs a{border-radius:7px;color:var(--muted);font-weight:800;padding:8px 12px;text-decoration:none}.detail-tabs a:hover{background:var(--panel2);color:var(--text)}.performance-chart{height:220px}.event-feed{display:grid;gap:8px;margin-top:12px}.event-feed article{align-items:flex-start;border:1px solid var(--line);border-radius:9px;display:flex;gap:12px;padding:12px}.event-feed article p{margin:4px 0 0}.range-links .active{background:var(--accent);color:#111827}
 
 /* Fixed app top bar and account menu */
 .app-topbar{align-items:center;background:rgba(15,23,42,.96);border-bottom:1px solid var(--line);display:flex;height:56px;justify-content:space-between;left:260px;padding:0 18px;position:fixed;right:0;top:0;z-index:30}.app-topbar-spacer{flex:1}.topbar-actions{align-items:center;display:flex;gap:10px;margin-left:auto}.icon-button{background:transparent;border:1px solid var(--line);border-radius:50%;color:var(--text);font-size:12px;font-weight:800;height:34px;min-height:34px;padding:0;width:34px}.icon-button:hover{background:var(--panel2)}.account-menu{position:relative}.account-menu>summary{cursor:pointer;display:flex;list-style:none}.account-menu>summary::-webkit-details-marker{display:none}.account-menu .avatar{background:rgba(99,102,241,.18);height:36px;width:36px}.account-popover{background:#181c22;border:1px solid #30363d;border-radius:8px;box-shadow:0 18px 44px rgba(0,0,0,.35);display:grid;min-width:224px;position:absolute;right:0;top:44px;z-index:40}.account-heading{border-bottom:1px solid #30363d;display:grid;gap:3px;padding:14px 16px}.account-heading strong{font-size:13px}.account-heading span{color:#9ca3af;font-size:13px}.account-link{align-items:center;background:transparent;border:0;border-radius:0;color:#cbd5e1;display:flex;font-weight:600;justify-content:flex-start;min-height:0;padding:10px 16px;text-align:left;width:100%}.account-link:hover{background:#222831;color:#fff}.logout-link{font-family:inherit}.sidebar{bottom:0;top:0}.nav-tree{flex:1}.version-card{margin-top:auto}.content{padding-top:80px}html[data-theme=light] .app-topbar{background:rgba(255,255,255,.96)}html[data-theme=light] .account-popover{background:#fff;border-color:#d8dee8;box-shadow:0 18px 44px rgba(15,23,42,.16)}html[data-theme=light] .account-heading{border-bottom-color:#d8dee8}html[data-theme=light] .account-heading span{color:#64748b}html[data-theme=light] .account-link{color:#334155}html[data-theme=light] .account-link:hover{background:#f1f5f9;color:#0f172a}@media(max-width:850px){.app-topbar{left:0;position:sticky}.content{padding-top:18px}}
@@ -680,6 +681,121 @@ html[data-theme=light] .settings-content-panel {
   box-shadow: none;
 }
 
+/* VLAN/IP module administration */
+.vlan-ip-admin-panel {
+  gap: 16px;
+}
+
+.vlan-ip-admin-panel>p {
+  margin: -4px 0 2px;
+}
+
+.vlan-ip-admin-card>p {
+  line-height: 1.45;
+  margin: 10px 14px 0;
+}
+
+.vlan-ip-admin-card .table-scroll {
+  border-radius: 0;
+  max-height: none;
+}
+
+.vlan-ip-admin-table {
+  table-layout: fixed;
+  width: 100%;
+}
+
+.vlan-ip-admin-table th,
+.vlan-ip-admin-table td {
+  padding: 9px 12px;
+  vertical-align: middle;
+}
+
+.vlan-ip-admin-table input:not([type=checkbox]),
+.vlan-ip-admin-table select {
+  font-size: 12px;
+  min-height: 34px;
+  padding: 6px 10px;
+  width: 100%;
+}
+
+.vlan-ip-admin-table .mono {
+  font-size: 12px;
+}
+
+.vlan-ip-admin-table button {
+  font-size: 11px;
+  min-height: 30px;
+  padding: 6px 10px;
+  white-space: nowrap;
+}
+
+.vlan-ip-row-actions {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+}
+
+.vlan-ip-toggle {
+  align-items: center;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 800;
+  gap: 9px;
+  white-space: nowrap;
+}
+
+.vlan-ip-toggle .remote-switch,
+.vlan-ip-switch-only .remote-switch {
+  flex: 0 0 42px;
+  margin: 0;
+  min-height: 22px;
+  width: 42px;
+}
+
+.vlan-ip-switch-only {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+}
+
+.vlan-ip-add-row {
+  background: rgba(148, 163, 184, .035);
+}
+
+.vlan-ip-add-row td {
+  border-top: 1px solid rgba(148, 163, 184, .16);
+}
+
+.vlan-ip-add-row input,
+.vlan-ip-add-row select {
+  border-style: dashed;
+}
+
+.vlan-admin-table th:nth-child(1) { width: 29%; }
+.vlan-admin-table th:nth-child(2) { width: 28%; }
+.vlan-admin-table th:nth-child(3) { width: 31%; }
+.vlan-admin-table th:nth-child(4) { width: 12%; }
+.category-admin-table th:nth-child(1) { width: 55%; }
+.category-admin-table th:nth-child(2) { width: 24%; }
+.category-admin-table th:nth-child(3) { width: 21%; }
+.dhcp-admin-table { min-width: 1120px; }
+.dhcp-admin-table th:nth-child(1) { width: 18%; }
+.dhcp-admin-table th:nth-child(2) { width: 12%; }
+.dhcp-admin-table th:nth-child(3) { width: 18%; }
+.dhcp-admin-table th:nth-child(4) { width: 18%; }
+.dhcp-admin-table th:nth-child(5) { width: 18%; }
+.dhcp-admin-table th:nth-child(6) { width: 7%; text-align: center; }
+.dhcp-admin-table th:nth-child(7) { width: 9%; }
+
+.settings-content-panel:has(.vlan-ip-admin-panel.active)>.site-admin-actions {
+  display: none;
+}
+
+html[data-theme=light] .vlan-ip-add-row {
+  background: #f8fafc;
+}
+
 .site-admin-actions {
   align-items: center;
   border-top: 1px solid var(--line);
@@ -1175,4 +1291,153 @@ html[data-kaya-theme=light-ops] .dns-mini-table > div {
   margin: 0;
   min-width: 0;
   padding: 0;
+}
+
+/* Keep the DNS client search controls together on wider screens. */
+.table-toolbar .dns-client-filters {
+  align-items: center;
+  display: grid;
+  flex: 1 1 auto;
+  gap: 8px;
+  grid-template-columns: minmax(260px, 1fr) minmax(180px, 240px) auto;
+  width: 100%;
+}
+
+.dns-client-filters input[type="search"],
+.dns-client-filters select {
+  min-width: 0;
+  width: 100%;
+}
+
+.dns-client-filters button {
+  white-space: nowrap;
+}
+
+@media (max-width: 700px) {
+  .table-toolbar .dns-client-filters {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* The DNS client count must not make one VLAN/IP view tab taller than the other. */
+.vlan-ip-view-tabs a {
+  box-sizing: border-box;
+  height: 40px;
+}
+
+.dns-traffic-heading {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+#dns-traffic-history {
+  scroll-margin-top: 88px;
+}
+
+.dns-traffic-heading p {
+  margin: 0;
+}
+
+.dns-traffic-leaders {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 14px;
+}
+
+.dns-traffic-leaders > section {
+  background: rgba(11, 18, 32, .3);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 13px;
+}
+
+.dns-traffic-leaders h3 {
+  font-size: 13px;
+  margin: 0 0 9px;
+}
+
+.dns-traffic-leaders ol {
+  display: grid;
+  gap: 2px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.dns-traffic-leaders li a {
+  align-items: center;
+  border-radius: 7px;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 7px 8px;
+}
+
+.dns-traffic-leaders li a:hover {
+  background: rgba(255, 138, 0, .08);
+}
+
+.dns-traffic-leaders li span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dns-traffic-leaders li strong {
+  background: rgba(148, 163, 184, .12);
+  border-radius: 999px;
+  flex: 0 0 auto;
+  font-size: 11px;
+  padding: 4px 7px;
+}
+
+.dns-traffic-leaders li.muted {
+  padding: 8px;
+}
+
+.dns-traffic-filters {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(240px, 1fr) minmax(150px, 190px) minmax(150px, 190px) auto auto;
+  margin-bottom: 12px;
+}
+
+.dns-traffic-filters input,
+.dns-traffic-filters select {
+  min-width: 0;
+  width: 100%;
+}
+
+.dns-suggested-link {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.dns-suggested-link form {
+  flex: 0 0 auto;
+}
+
+@media (max-width: 800px) {
+  .dns-traffic-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .dns-suggested-link {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .dns-traffic-leaders,
+  .dns-traffic-filters {
+    grid-template-columns: 1fr;
+  }
 }

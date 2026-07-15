@@ -53,6 +53,7 @@
           <a href="/system/site-administration?tab=module-backup-manager" class="settings-side-child" data-settings-child-tab="module-backup-manager" data-settings-parent="modules" aria-selected="false">Backup Manager</a>
           <a href="/system/site-administration?tab=module-dashboard" class="settings-side-child" data-settings-child-tab="module-dashboard" data-settings-parent="modules" aria-selected="false">Dashboard</a>
           <a href="/system/site-administration?tab=module-dns-manager" class="settings-side-child" data-settings-child-tab="module-dns-manager" data-settings-parent="modules" aria-selected="false">DNS Manager</a>
+          <a href="/system/site-administration?tab=module-vlan-ip-manager" class="settings-side-child" data-settings-child-tab="module-vlan-ip-manager" data-settings-parent="modules" aria-selected="false">VLAN/IP Manager</a>
           <a href="/system/site-administration?tab=module-remote-manager" class="settings-side-child" data-settings-child-tab="module-remote-manager" data-settings-parent="modules" aria-selected="false">Remote Manager</a>
         </div>
       </details>
@@ -309,6 +310,54 @@
     </div>
   </section>
 
+  <section class="settings-tab-panel vlan-ip-admin-panel" data-settings-panel="module-vlan-ip-manager" data-settings-parent="modules" role="tabpanel" hidden>
+    <h2>VLAN/IP Manager</h2>
+    <p class="muted">Define the network hierarchy used throughout Kaya. VLAN identifies the network segment; Category classifies the allocation or device within it.</p>
+
+    <div class="remote-settings-card vlan-ip-admin-card">
+      <header><span>VLANs</span></header>
+      <div class="table-scroll"><table class="vlan-ip-admin-table vlan-admin-table"><thead><tr><th>Name</th><th>Subnet</th><th>Description</th><th>Actions</th></tr></thead><tbody>
+        {% for vlan in vlan_options or [] %}<tr>
+          <td><input name="vlan_name_{{ vlan.id }}" value="{{ vlan.name }}" required></td>
+          <td><input name="vlan_subnet_{{ vlan.id }}" value="{{ vlan.subnet_cidr or '' }}" placeholder="192.168.10.0/24"></td>
+          <td><input name="vlan_description_{{ vlan.id }}" value="{{ vlan.description or '' }}"></td>
+          <td><div class="vlan-ip-row-actions"><button type="submit" formaction="/system/site-administration/vlan-ip-manager" name="admin_action" value="update_vlan:{{ vlan.id }}">Save</button><button class="button secondary" type="submit" formaction="/system/site-administration/vlan-ip-manager" name="admin_action" value="delete_vlan:{{ vlan.id }}">Delete</button></div></td>
+        </tr>{% endfor %}
+        <tr class="vlan-ip-add-row"><td><input name="vlan_name" placeholder="New VLAN name"></td><td><input name="vlan_subnet" placeholder="192.168.20.0/24"></td><td><input name="vlan_description" placeholder="Optional description"></td><td><button type="submit" formaction="/system/site-administration/vlan-ip-manager" name="admin_action" value="create_vlan">Add VLAN</button></td></tr>
+      </tbody></table></div>
+    </div>
+
+    <div class="remote-settings-card vlan-ip-admin-card">
+      <header><span>Categories</span></header>
+      <p class="muted">Renaming a Category updates existing VLAN/IP records. Disable one to hide it from new selections while preserving history.</p>
+      <div class="table-scroll"><table class="vlan-ip-admin-table category-admin-table"><thead><tr><th>Name</th><th>Available</th><th>Actions</th></tr></thead><tbody>
+        {% for category in vlan_ip_categories or [] %}<tr>
+          <td><input name="category_value_{{ category.id }}" value="{{ category.value }}" required></td>
+          <td><label class="vlan-ip-toggle"><input class="remote-switch" name="category_enabled_{{ category.id }}" type="checkbox" value="1" {% if category.is_active %}checked{% endif %}><span>{{ 'Enabled' if category.is_active else 'Disabled' }}</span></label></td>
+          <td><div class="vlan-ip-row-actions"><button type="submit" formaction="/system/site-administration/vlan-ip-manager" name="admin_action" value="update_category:{{ category.id }}">Save</button><button class="button secondary" type="submit" formaction="/system/site-administration/vlan-ip-manager" name="admin_action" value="delete_category:{{ category.id }}">Delete</button></div></td>
+        </tr>{% endfor %}
+        <tr class="vlan-ip-add-row"><td><input name="category_value" placeholder="New Category name"></td><td><span class="muted">Available by default</span></td><td><button type="submit" formaction="/system/site-administration/vlan-ip-manager" name="admin_action" value="create_category">Add Category</button></td></tr>
+      </tbody></table></div>
+    </div>
+
+    <div class="remote-settings-card vlan-ip-admin-card">
+      <header><span>DHCP ranges</span></header>
+      <p class="muted">Addresses inside enabled ranges are treated as temporary lease evidence. Kaya will only identify a device there by a stable MAC or provider client ID, and will retain each lease interval separately.</p>
+      <div class="table-scroll"><table class="vlan-ip-admin-table dhcp-admin-table"><thead><tr><th>Name</th><th>VLAN</th><th>Start</th><th>End</th><th>Description</th><th>Enabled</th><th>Actions</th></tr></thead><tbody>
+        {% for scope in dhcp_ranges or [] %}<tr>
+          <td><input name="scope_name_{{ scope.id }}" value="{{ scope.name }}" required></td>
+          <td><select name="scope_vlan_id_{{ scope.id }}"><option value="">Unassigned</option>{% for vlan in vlan_options or [] %}<option value="{{ vlan.id }}" {% if scope.vlan_id == vlan.id %}selected{% endif %}>{{ vlan.name }}</option>{% endfor %}</select></td>
+          <td><input class="mono" name="scope_start_{{ scope.id }}" value="{{ scope.start_address }}" required></td>
+          <td><input class="mono" name="scope_end_{{ scope.id }}" value="{{ scope.end_address }}" required></td>
+          <td><input name="scope_description_{{ scope.id }}" value="{{ scope.description or '' }}"></td>
+          <td><label class="vlan-ip-switch-only" title="{{ 'Enabled' if scope.is_enabled else 'Disabled' }}"><input class="remote-switch" name="scope_enabled_{{ scope.id }}" type="checkbox" value="1" {% if scope.is_enabled %}checked{% endif %}><span class="sr-only">Enabled</span></label></td>
+          <td><div class="vlan-ip-row-actions"><button type="submit" formaction="/system/site-administration/vlan-ip-manager" name="admin_action" value="update_scope:{{ scope.id }}">Save</button><button class="button secondary" type="submit" formaction="/system/site-administration/vlan-ip-manager" name="admin_action" value="delete_scope:{{ scope.id }}">Delete</button></div></td>
+        </tr>{% endfor %}
+        <tr class="vlan-ip-add-row"><td><input name="scope_name" placeholder="New DHCP range"></td><td><select name="scope_vlan_id"><option value="">Unassigned</option>{% for vlan in vlan_options or [] %}<option value="{{ vlan.id }}">{{ vlan.name }}</option>{% endfor %}</select></td><td><input class="mono" name="scope_start" placeholder="192.168.1.100"></td><td><input class="mono" name="scope_end" placeholder="192.168.1.199"></td><td><input name="scope_description" placeholder="Optional"></td><td><label class="vlan-ip-switch-only" title="Enabled"><input class="remote-switch" name="scope_enabled" type="checkbox" value="1" checked><span class="sr-only">Enabled</span></label></td><td><button type="submit" formaction="/system/site-administration/vlan-ip-manager" name="admin_action" value="create_scope">Add range</button></td></tr>
+      </tbody></table></div>
+    </div>
+  </section>
+
   <section class="settings-tab-panel" data-settings-panel="module-dns-manager" data-settings-parent="modules" role="tabpanel" hidden>
     <h2>DNS Manager</h2>
     {% set dns_default_id = settings.get('dns_default_provider_id', '') %}
@@ -328,6 +377,10 @@
           <input class="remote-switch" name="dns_manager_enabled" type="checkbox" value="1" {% if settings.get('dns_manager_enabled') == '1' %}checked{% endif %}>
         </label>
         <label class="remote-setting-row">
+          <span><strong>Enable background collection</strong><small>Refresh stored DNS statistics and insights without waiting for a user to open DNS Manager.</small></span>
+          <input class="remote-switch" name="dns_collector_enabled" type="checkbox" value="1" {% if settings.get('dns_collector_enabled', '1') == '1' %}checked{% endif %}>
+        </label>
+        <label class="remote-setting-row">
           <span><strong>Enable caching</strong><small>Allow DNS Manager to reuse recent provider responses where supported.</small></span>
           <input class="remote-switch" name="dns_cache_enabled" type="checkbox" value="1" {% if settings.get('dns_cache_enabled', '1') == '1' %}checked{% endif %}>
         </label>
@@ -342,10 +395,26 @@
           </select>
         </label>
         <label>
-          <strong>Default refresh interval</strong>
-          <small>Minimum time between automatic refreshes.</small>
+          <strong>Background collection interval</strong>
+          <small>Seconds between completed collection passes. Changes apply without restarting Kaya.</small>
           <input name="dns_refresh_interval_seconds" type="number" min="30" max="86400" value="{{ settings.get('dns_refresh_interval_seconds', '300') }}">
         </label>
+      </div>
+    </div>
+
+    <div class="remote-settings-card">
+      <header><span>Client intelligence and VLAN/IP integration</span></header>
+      <div class="remote-settings-grid two">
+        <label class="remote-setting-row"><span><strong>Enable VLAN/IP Manager integration</strong><small>Allow observed DNS clients to link to managed IP records.</small></span><input class="remote-switch" name="dns_vlan_integration_enabled" type="checkbox" value="1" {% if settings.get('dns_vlan_integration_enabled', '1') == '1' %}checked{% endif %}></label>
+        <label class="remote-setting-row"><span><strong>Enable automatic match suggestions</strong><small>Suggest likely managed records without confirming uncertain links.</small></span><input class="remote-switch" name="dns_match_suggestions_enabled" type="checkbox" value="1" {% if settings.get('dns_match_suggestions_enabled', '1') == '1' %}checked{% endif %}></label>
+        <label class="remote-setting-row"><span><strong>Automatically link exact MAC matches</strong><small>Disabled by default. Only a single exact managed MAC match is eligible.</small></span><input class="remote-switch" name="dns_auto_link_exact_mac" type="checkbox" value="1" {% if settings.get('dns_auto_link_exact_mac') == '1' %}checked{% endif %}></label>
+        <label class="remote-setting-row"><span><strong>Automatically update dynamic IP records</strong><small>Disabled by default. Static records are never updated automatically.</small></span><input class="remote-switch" name="dns_auto_update_dynamic_ip" type="checkbox" value="1" {% if settings.get('dns_auto_update_dynamic_ip') == '1' %}checked{% endif %}></label>
+        <label><strong>Stale client threshold</strong><small>Days without an observation before a client is stale.</small><input name="dns_stale_client_days" type="number" min="1" max="3650" value="{{ settings.get('dns_stale_client_days', '30') }}"></label>
+        <label class="remote-setting-row"><span><strong>Retain client history</strong><small>Keep observed IP, hostname, event, and DNS traffic history.</small></span><input class="remote-switch" name="dns_retain_client_history" type="checkbox" value="1" {% if settings.get('dns_retain_client_history', '1') == '1' %}checked{% endif %}></label>
+        <label><strong>Client history retention</strong><small>Days to retain historical observations.</small><input name="dns_client_history_days" type="number" min="1" max="3650" value="{{ settings.get('dns_client_history_days', '365') }}"></label>
+        <label><strong>DNS traffic retention</strong><small>Days to retain per-client domain lookup history. Longer periods increase database size.</small><input name="dns_traffic_history_days" type="number" min="1" max="3650" value="{{ settings.get('dns_traffic_history_days', '30') }}"></label>
+        <label class="remote-setting-row"><span><strong>Show DNS enrichment in VLAN/IP Manager</strong><small>Uses retained data only and never requires a live Pi-hole call.</small></span><input class="remote-switch" name="dns_vlan_enrichment_enabled" type="checkbox" value="1" {% if settings.get('dns_vlan_enrichment_enabled', '1') == '1' %}checked{% endif %}></label>
+        <label class="remote-setting-row"><span><strong>Fill an empty managed hostname</strong><small>Allow observed hostnames to populate only blank managed names.</small></span><input class="remote-switch" name="dns_update_empty_managed_hostname" type="checkbox" value="1" {% if settings.get('dns_update_empty_managed_hostname') == '1' %}checked{% endif %}></label>
       </div>
     </div>
 

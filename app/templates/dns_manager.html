@@ -50,7 +50,7 @@
 {% if error %}<div class="alert">{{ error }}</div>{% endif %}
 {% if notice %}<div class="alert {% if notice_kind == 'success' %}success{% endif %}">{{ notice }}</div>{% endif %}
 
-<nav class="category-tabs dns-manager-tabs" aria-label="DNS Manager sections">
+<nav class="module-tabs dns-manager-tabs" aria-label="DNS Manager sections">
   <a href="/networking/dns-manager?tab=dashboard" class="{% if active_tab == 'dashboard' %}active{% endif %}">Dashboard</a>
   <a href="/networking/dns-manager?tab=insights" class="{% if active_tab == 'insights' %}active{% endif %}">Insights</a>
   <a href="/networking/dns-manager?tab=reports" class="{% if active_tab == 'reports' %}active{% endif %}">Reports</a>
@@ -519,42 +519,56 @@
   </table>
 </section>
 {% elif active_tab == 'clients' %}
-{% set clients_data = clients.data if clients and clients.ok else {} %}
-{% set dhcp_data = dhcp.data if dhcp and dhcp.ok else {} %}
-{% set query_log_data = queries.data if queries and queries.ok else {} %}
-{% set rows = network_client_inventory(clients_data, dhcp_data, query_log_data, recognised_hostnames) %}
 <section class="panel">
+  {% if not demo_mode %}
+  <form class="table-panel-filters dns-client-filters" method="get">
+    <input type="hidden" name="tab" value="clients">
+    <input name="client_q" type="search" value="{{ client_filters.q }}" placeholder="Search current or historical client data">
+    <select name="client_status">
+      <option value="">All statuses</option>
+      {% for value, label in [('linked','Linked'),('known','Known'),('unmanaged','Unrecognised'),('suggested-match','Suggested matches'),('conflict','Conflicts'),('ignored','Ignored'),('stale','Stale')] %}<option value="{{ value }}" {% if client_filters.status == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+    </select>
+    <button type="submit">Filter</button>
+  </form>
+  {% endif %}
   <table data-table-key="dns-clients">
-    <thead><tr><th>Hostname</th><th>IP Address</th><th>MAC Address</th><th>Queries</th><th>Blocked Queries</th><th>Last Seen</th><th>Source</th><th>Flags</th></tr></thead>
+      <thead><tr><th data-col="client">Client</th><th data-col="ip">Current IP</th><th data-col="mac">MAC Address</th><th data-col="vlan">VLAN</th><th data-col="category">Category</th><th data-col="queries">Queries</th><th data-col="blocked">Blocked Queries</th><th data-col="last-seen">Last Seen</th><th data-col="source">Source</th><th data-col="managed">Managed Record</th><th data-col="status">Status</th><th data-col="actions">Actions</th></tr></thead>
     <tbody>
+      {% if demo_mode %}{% set rows = network_client_inventory(clients.data if clients and clients.ok else {}, dhcp.data if dhcp and dhcp.ok else {}, queries.data if queries and queries.ok else {}, recognised_hostnames) %}{% else %}{% set rows = retained_client_rows %}{% endif %}
       {% for row in rows %}
+      {% if demo_mode %}
       <tr>
         <td><strong>{{ row.name }}</strong></td>
         <td>{{ row.ip }}</td>
         <td>{{ row.mac }}</td>
+        <td>-</td>
         <td>{{ display_number(row.queries) }}</td>
         <td>{{ display_number(row.blocked_queries) }}</td>
         <td>{{ row.last_seen_label }}</td>
         <td>{{ row.source_label }}</td>
-        <td>
-          {% if row.is_new %}<span class="table-chip danger-chip">New</span>{% endif %}
-          {% if row.is_unknown %}<span class="table-chip">Unrecognised</span>{% endif %}
-          {% if row.is_known %}<span class="table-chip good">Known</span>{% endif %}
-          {% if row.is_unknown and row.hostname_key and user.role in ['admin', 'editor'] %}
-          <form method="post" action="/networking/dns-manager/known-hostnames" class="dns-known-form">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <input type="hidden" name="hostname" value="{{ row.name }}">
-            <input type="hidden" name="return_tab" value="clients">
-            <button class="button secondary small" type="submit">Mark known</button>
-          </form>
-          {% endif %}
-        </td>
+        <td>Demo data</td><td>{% if row.is_known %}<span class="table-chip good">Known</span>{% else %}<span class="table-chip">Unrecognised</span>{% endif %}</td><td>-</td>
       </tr>
       {% else %}
-      <tr><td colspan="8">No clients returned by this provider.</td></tr>
+      {% set status_label = client_status(row) %}
+      <tr>
+        <td><a href="/networking/dns-manager/clients/{{ row.id }}"><strong>{{ client_display_name(row) }}</strong></a>{% if row.hostname and row.hostname != client_display_name(row) %}<br><span class="muted">{{ row.hostname }}</span>{% endif %}</td>
+        <td class="mono">{{ row.current_ip or '-' }}{% if row.previous_ip and row.previous_ip != row.current_ip %}<br><span class="muted">Previous: {{ row.previous_ip }}</span>{% endif %}</td>
+        <td class="mono">{{ row.normalised_mac or '-' }}</td>
+        <td>{% if row.linked_ip_record and row.linked_ip_record.vlan %}<a class="table-chip" href="/networking/vlan-ip-manager?vlan_id={{ row.linked_ip_record.vlan.id }}">{{ row.linked_ip_record.vlan.name }}</a>{% else %}-{% endif %}</td>
+        <td>{% if row.linked_ip_record and row.linked_ip_record.category %}<a class="table-chip" href="/networking/vlan-ip-manager?category={{ row.linked_ip_record.category|urlencode }}">{{ row.linked_ip_record.category }}</a>{% else %}-{% endif %}</td>
+        <td>{{ display_number(row.query_count) }}</td><td>{{ display_number(row.blocked_query_count) }}</td>
+        <td>{{ local_time(row.last_seen_at, 'minute') }}</td><td>{{ row.observation_source or row.provider_type }}</td>
+        <td>{% if row.linked_ip_record %}<a href="/networking/vlan-ip-manager/{{ row.linked_ip_record.id }}">{{ row.linked_ip_record.name or row.linked_ip_record.address }}</a>{% elif row.match_confidence %}Suggested match<br><span class="muted">{{ row.match_method|replace('_', ' ') }} · {{ row.match_confidence }}%</span>{% else %}Not managed{% endif %}</td>
+        <td><span class="table-chip {% if status_label == 'Conflict' %}danger-chip{% elif status_label in ['Linked','Known'] %}good{% elif status_label in ['Ignored','Stale'] %}muted-chip{% endif %}">{{ status_label }}</span></td>
+        <td class="action-col"><a class="button secondary small" href="/networking/dns-manager/clients/{{ row.id }}">View client</a></td>
+      </tr>
+      {% endif %}
+      {% else %}
+      <tr><td colspan="11">No retained clients match these filters. The background collector will populate this list after its next successful provider sync.</td></tr>
       {% endfor %}
     </tbody>
   </table>
+  {% if not demo_mode and retained_client_total > 100 %}<nav class="pagination"><span>{{ retained_client_total }} clients</span>{% if client_filters.page > 1 %}<a class="button secondary" href="?tab=clients&amp;client_page={{ client_filters.page - 1 }}&amp;client_q={{ client_filters.q|urlencode }}&amp;client_status={{ client_filters.status|urlencode }}">Previous</a>{% endif %}{% if client_filters.page * 100 < retained_client_total %}<a class="button secondary" href="?tab=clients&amp;client_page={{ client_filters.page + 1 }}&amp;client_q={{ client_filters.q|urlencode }}&amp;client_status={{ client_filters.status|urlencode }}">Next</a>{% endif %}</nav>{% endif %}
 </section>
 {% elif active_tab == 'local-dns' %}
 {% set rows = list_from_payload(local_dns.data if local_dns and local_dns.ok else {}, 'hosts', 'records', 'data') %}

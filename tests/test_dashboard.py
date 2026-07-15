@@ -94,12 +94,15 @@ def test_widget_failure_does_not_fail_snapshot(db, monkeypatch):
     assert result["widgets"]["infrastructure_summary"] == {"status":"error","reason":"Widget data is temporarily unavailable"}
     assert result["widgets"]["attention_required"]["status"] == "ok"
 
-def test_snapshot_refreshes_dns_before_rendering_dns_backed_widgets(db, monkeypatch):
+def test_snapshot_never_refreshes_external_dns_provider(db, monkeypatch):
     account=user(db)
-    calls=[]
-    monkeypatch.setattr(dashboard_service, "get_refreshed_dns_dashboard_summary", lambda session, current_user, max_age_seconds: calls.append((session, current_user, max_age_seconds)))
+    calls = []
+    monkeypatch.setattr(
+        "app.services.dns_dashboard_summary.analyse_provider",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
     snapshot(db,account)
-    assert calls == [(db, account, 60)]
+    assert calls == []
 
 def test_recent_activity_filters_request_noise_and_groups_duplicates(db):
     account=user(db,role="admin")

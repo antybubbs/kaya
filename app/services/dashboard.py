@@ -15,12 +15,22 @@ from app.models.models import (AppSession, AuditLog, BackupJob, BackupRecord, Co
     ComputeHost, ComputeWorkload, DashboardPreference, DNSInsight, DomainRecord, HardwareAsset,
     IPAddress, Licence, NetworkMonitor, RemoteAccess, RunbookPage, User, VLAN)
 from app.services.compute_monitor import compute_summary
-from app.services.dns_dashboard_summary import get_dns_dashboard_summary, get_refreshed_dns_dashboard_summary
-from app.services.site_settings import get_site_setting
+from app.services.dns_dashboard_summary import get_dns_dashboard_summary
+from app.services.site_settings import get_site_setting, get_site_settings
 
 logger = logging.getLogger(__name__)
 VALID_SIZES = {"small", "medium", "large", "full"}
 VERSION = 1
+DASHBOARD_SETTING_KEYS = {
+    "dashboard_attention_required", "dashboard_customisation_enabled",
+    "dashboard_globally_disabled_widgets", "dashboard_monitor_mode_enabled",
+    "dashboard_poll_interval_seconds", "dashboard_recent_activity_limit",
+    "dashboard_show_source_age", "dns_manager_enabled",
+}
+
+
+def _prime_settings(db: Session) -> None:
+    get_site_settings(db, DASHBOARD_SETTING_KEYS)
 
 @dataclass(frozen=True)
 class Widget:
@@ -168,15 +178,7 @@ def _build(db: Session, user: User, key: str) -> dict:
     raise KeyError(key)
 
 def snapshot(db: Session, user: User) -> dict:
-    started=perf_counter(); config=preferences(db,user); definitions={x["key"]:x for x in registry(db,user)}; output={}
-    enabled_keys = {row["key"] for row in config["widgets"] if row["enabled"]}
-    if enabled_keys.intersection({"dns_summary", "attention_required"}):
-        try:
-            # Refresh stale provider data before rendering either DNS metrics or
-            # DNS-backed attention items, so every widget uses one fresh view.
-            get_refreshed_dns_dashboard_summary(db, user, max_age_seconds=60)
-        except Exception:
-            logger.exception("Unable to refresh stale DNS dashboard data")
+    started=perf_counter(); _prime_settings(db); config=preferences(db,user); definitions={x["key"]:x for x in registry(db,user)}; output={}
     for row in config["widgets"]:
         if not row["enabled"] or row["key"] not in definitions: continue
         definition=definitions[row["key"]]
@@ -187,6 +189,7 @@ def snapshot(db: Session, user: User) -> dict:
     return {"generated_at":_iso(generated),"widgets":output}
 
 def config(db: Session, user: User) -> dict:
+    _prime_settings(db)
     try:
         poll_interval = int(get_site_setting(db, "dashboard_poll_interval_seconds") or 10)
     except (TypeError, ValueError):

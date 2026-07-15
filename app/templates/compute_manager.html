@@ -2,8 +2,9 @@
 {% block content %}
 <section class="module-header compute-hero">
   <div class="module-title-row"><div class="module-heading"><h1>VM / Docker Manager</h1><p class="muted">Live Proxmox and Docker infrastructure, workloads, storage and backup visibility.</p></div><span class="live-indicator"><i></i> Live <small data-live-age>waiting for data</small></span></div>
-  <div class="module-toolbar"><div class="module-primary-actions"><form class="search list-search" method="get"><input type="hidden" name="view" value="{{ view }}"><input name="q" placeholder="Search hosts and workloads..." value="{{ q }}"><button>Search</button></form>{% if user.role in ['admin','editor'] %}<a class="button" href="/infrastructure/vm-docker-manager/hosts/new">Add Host</a>{% endif %}</div><nav class="compute-tabs"><a class="{% if view=='overview' %}active{% endif %}" href="?view=overview">Overview</a><a class="{% if view=='docker' %}active{% endif %}" href="?view=docker">Docker</a><a class="{% if view=='proxmox' %}active{% endif %}" href="?view=proxmox">Proxmox</a></nav></div>
+  <div class="module-toolbar"><div class="module-primary-actions"><form class="search list-search" method="get"><input type="hidden" name="view" value="{{ view }}"><input name="q" placeholder="Search hosts and workloads..." value="{{ q }}"><button>Search</button></form>{% if user.role in ['admin','editor'] %}<a class="button" href="/infrastructure/vm-docker-manager/hosts/new">Add Host</a>{% endif %}</div></div>
 </section>
+<nav class="module-tabs compute-tabs"><a class="{% if view=='overview' %}active{% endif %}" href="?view=overview">Overview</a><a class="{% if view=='docker' %}active{% endif %}" href="?view=docker">Docker</a><a class="{% if view=='proxmox' %}active{% endif %}" href="?view=proxmox">Proxmox</a></nav>
 <section class="compute-summary-grid">
   <article><span>Hosts online</span><strong data-summary="online_hosts">{{ summary.online_hosts }}</strong><small>of {{ summary.hosts }}</small></article>
   <article><span>Workloads</span><strong data-summary="workloads">{{ summary.workloads }}</strong><small>tracked</small></article>

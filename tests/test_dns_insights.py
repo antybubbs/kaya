@@ -145,3 +145,25 @@ def test_insight_lifecycle_resolves_and_reactivates_without_duplicate():
         assert reactivated.status == "active"
         assert reactivated.first_detected_at == first_detected
         assert db.query(DNSInsight).count() == 1
+
+
+def test_duplicate_generated_keys_are_persisted_once():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        provider = DNSProviderConfig(name="Test", provider_type="pihole", base_url="http://example.invalid")
+        db.add(provider)
+        db.commit()
+        current = context(provider=provider)
+        duplicate = GeneratedInsight(
+            key="same-key", rule_key="test_rule", category=InsightCategory.SYSTEM,
+            severity=InsightSeverity.WARNING, title="Duplicate", summary="One logical insight",
+        )
+
+        created, updated, resolved = _persist_insights(
+            db, current, [duplicate, duplicate], {"test_rule"}
+        )
+        db.commit()
+
+        assert (created, updated, resolved) == (1, 0, 0)
+        assert db.query(DNSInsight).count() == 1

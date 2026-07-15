@@ -9,7 +9,7 @@
   const csrf = root.dataset.csrfToken;
   const INTERVAL = Math.max(10000, (config.poll_interval_seconds || 10) * 1000);
   const DELAYED_MS = INTERVAL + Math.max(5000, INTERVAL / 2), STALE_MS = INTERVAL * 2, LOST_FAILURES = 3;
-  let layout = config.layout, inFlight = false, timer = null, failures = 0, lastSuccess = 0, editing = false, dragged = null, dragArmed = false, managerDirty = false;
+  let layout = config.layout, inFlight = false, timer = null, tickTimer = null, failures = 0, lastSuccess = 0, editing = false, dragged = null, dragArmed = false, managerDirty = false;
   const definitions = new Map((config.widgets || []).map(item => [item.key, item]));
 
   const escapeHtml = value => String(value ?? "Unavailable").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -37,7 +37,8 @@
     finally{inFlight=false;}
   }
   function tick(){ if(lastSuccess){const elapsed=Date.now()-lastSuccess;if(elapsed>=STALE_MS)setLive("stale","Stale");else if(elapsed>=DELAYED_MS)setLive("delayed","Delayed");} }
-  function stop(){clearInterval(timer);timer=null;}
+  function stop(){clearInterval(timer);clearInterval(tickTimer);timer=null;tickTimer=null;}
+  function start(){stop();refresh();timer=setInterval(refresh,INTERVAL);tickTimer=setInterval(tick,1000);}
   async function save(){ try{const response=await fetch("/api/dashboard/preferences",{method:"PUT",headers:{"Content-Type":"application/json","X-CSRF-Token":csrf},body:JSON.stringify(layout)});if(!response.ok)throw new Error();layout=(await response.json()).layout;saveState.textContent="Dashboard layout saved";setTimeout(()=>saveState.textContent="",2500);}catch(_){saveState.textContent="Could not save dashboard layout";} }
   function syncOrder(){layout.widgets.forEach(row=>{const card=grid.querySelector(`[data-widget-key="${CSS.escape(row.key)}"]`);if(card){row.position=[...grid.children].indexOf(card)+1;row.width=card.dataset.width;}});save();}
   const coarsePointer=window.matchMedia("(pointer: coarse)");
@@ -57,5 +58,5 @@
   dialog?.querySelector("[data-reset-dashboard]")?.addEventListener("click",async()=>{if(!confirm("Reset your dashboard to the site defaults?"))return;const response=await fetch("/api/dashboard/preferences/reset",{method:"POST",headers:{"X-CSRF-Token":csrf}});if(response.ok)location.reload();});
   root.querySelector("[data-monitor-mode]")?.addEventListener("click",()=>{const active=root.classList.toggle("is-monitor-mode");document.documentElement.classList.toggle("dashboard-monitor-mode",active);layout.monitor_mode=active;save();});
   if(layout.monitor_mode){root.classList.add("is-monitor-mode");document.documentElement.classList.add("dashboard-monitor-mode");}
-  document.addEventListener("visibilitychange",()=>{if(!document.hidden)refresh();}); window.addEventListener("online",refresh); window.addEventListener("pagehide",stop); refresh(); timer=setInterval(refresh,INTERVAL); setInterval(tick,1000);
+  document.addEventListener("visibilitychange",()=>{if(!document.hidden)refresh();}); window.addEventListener("online",refresh); window.addEventListener("pagehide",stop); window.addEventListener("pageshow",event=>{if(event.persisted)start();}); start();
 })();

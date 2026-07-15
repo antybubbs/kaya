@@ -3,14 +3,19 @@
 {% block content %}
 <div class="topbar"><div><h1>{% if record %}Edit VLAN/IP Record{% else %}Add VLAN/IP Record{% endif %}</h1></div></div>
 {% if error %}<div class="alert">{{ error }}</div>{% endif %}
+{% if dns_client %}<div class="alert success"><strong>Creating from DNS observation:</strong> Review the discovered values below. Saving will create the managed record and link it to {{ dns_client.friendly_name or dns_client.hostname or dns_client.current_ip or dns_client.mac_address }}.</div>{% endif %}
+{% if dhcp_range %}<div class="alert"><strong>DHCP address:</strong> {{ dns_client.current_ip }} is inside {{ dhcp_range.name }}. The record has been set to Dynamic and will be identified by its MAC/provider identity as its lease changes.</div>{% endif %}
 <section class="panel">
 <form method="post" class="form-grid">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <label>IP Address<input name="address" placeholder="192.168.1.1" value="{{ record.address if record else '' }}" required></label>
+  {% if dns_client %}<input type="hidden" name="dns_client_id" value="{{ dns_client.id }}">{% endif %}
+  <label>IP Address<input name="address" placeholder="192.168.1.1" value="{{ record.address if record else dns_client.current_ip if dns_client else '' }}" required></label>
+  <label>VLAN<select name="vlan_id" required>{% for vlan in vlans %}<option value="{{ vlan.id }}" {% if (record and record.vlan_id == vlan.id) or (not record and selected_vlan_id == vlan.id) %}selected{% endif %}>{{ vlan.name }}{% if vlan.subnet_cidr %} — {{ vlan.subnet_cidr }}{% endif %}</option>{% endfor %}</select></label>
   <label>Category<select name="category"><option value=""></option>{% for category in categories %}<option value="{{ category }}" {% if record and record.category == category %}selected{% endif %}>{{ category }}</option>{% endfor %}</select></label>
-  <label>Name<input name="name" placeholder="Kaya Core" value="{{ record.name if record and record.name else '' }}"></label>
-  <label>Description<textarea name="description">{{ record.description if record and record.description else '' }}</textarea></label>
-  <label>Static/Dynamic<select name="assignment_type">{% for option in assignment_types %}<option value="{{ option }}" {% if record and record.assignment_type == option %}selected{% endif %}>{{ option }}</option>{% endfor %}</select></label>
+  <label>Name<input name="name" placeholder="Kaya Core" value="{{ record.name if record and record.name else dns_client.friendly_name or dns_client.hostname if dns_client else '' }}"></label>
+  <label>MAC Address<input name="mac_address" placeholder="e8:db:84:68:4c:b8" value="{{ record.mac_address if record and record.mac_address else dns_client.normalised_mac if dns_client else '' }}"></label>
+  <label>Description<textarea name="description">{{ record.description if record and record.description else 'Created from DNS observation' if dns_client else '' }}</textarea></label>
+  <label>Static/Dynamic<select name="assignment_type">{% for option in assignment_types %}<option value="{{ option }}" {% if (record and record.assignment_type == option) or (not record and selected_assignment_type|default('Static') == option) %}selected{% endif %}>{{ option }}</option>{% endfor %}</select></label>
   <div class="wide monitor-settings">
     <label class="checkbox-label"><input name="monitor_enabled" type="checkbox" value="1" {% if monitor and monitor.is_enabled %}checked{% endif %}> Show in IP/WAN Monitor</label>
     <div class="form-grid">

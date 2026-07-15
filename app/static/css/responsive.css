@@ -177,3 +177,25 @@
 @media (prefers-reduced-motion:reduce){
   *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.01ms!important}
 }
+
+/* Active controls use colour and border only; avoid the heavy orange underline. */
+.category-tabs a.active,
+.compute-tabs a.active,
+.runbook-view-toggle .button.active,
+.rack-side-switch a.active,
+.site-admin-tabs button.active,
+.site-admin-tabs button[aria-selected=true],
+.remote-host-toolbar .button.active,
+.remote-host-toolbar button.active,
+.remote-host-toolbar a.active,
+.remote-host-toolbar button:hover,
+.remote-host-toolbar a:hover,
+.remote-layout-button.active,
+.remote-layout-button:hover:not(:disabled),
+.remote-settings-tabs a.active,
+.remote-settings-tabs a:hover,
+.remote-session-tab.split-visible,
+[role="tab"].active,
+[role="tab"][aria-selected="true"] {
+  box-shadow: none;
+}

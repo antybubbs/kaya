@@ -11,46 +11,83 @@
   <div class="module-toolbar">
     <div class="module-primary-actions">
       <form class="search list-search" method="get">
-        {% if active_category %}<input type="hidden" name="category" value="{{ active_category }}">{% endif %}
-        <input name="q" placeholder="Search VLAN/IP records..." value="{{ q }}">
+        <input type="hidden" name="view" value="{{ active_view }}">
+        {% if active_category and active_view == 'managed' %}<input type="hidden" name="category" value="{{ active_category }}">{% endif %}
+        <select name="vlan_id" aria-label="Filter by VLAN" onchange="this.form.submit()"><option value="">All VLANs</option>{% for vlan in vlans %}<option value="{{ vlan.id }}" {% if active_vlan_id == vlan.id %}selected{% endif %}>{{ vlan.name }}</option>{% endfor %}</select>
+        <input name="q" placeholder="{% if active_view == 'observed' %}Search observed DNS clients...{% else %}Search VLAN/IP records...{% endif %}" value="{{ q }}">
         <button>Search</button>
       </form>
       {% if user.role in ['admin','editor'] %}<a class="button" href="/networking/vlan-ip-manager/new">Add IP</a>{% endif %}
     </div>
   </div>
 </section>
+
+<nav class="module-tabs section-gap vlan-ip-view-tabs" aria-label="VLAN/IP views">
+  <a class="{% if active_view == 'managed' %}active{% endif %}" href="/networking/vlan-ip-manager">Managed records</a>
+  <a class="{% if active_view == 'observed' %}active{% endif %}" href="/networking/vlan-ip-manager?view=observed">Observed DNS clients <span class="table-chip">{{ observed_total }}</span></a>
+  <a class="{% if active_view == 'leases' %}active{% endif %}" href="/networking/vlan-ip-manager?view=leases">DHCP leases</a>
+</nav>
+
+{% if active_view == 'observed' %}
 <section class="panel">
-<form method="post" action="/networking/vlan-ip-manager/bulk-update" data-ip-bulk-form>
-  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <nav class="category-tabs table-panel-filters" aria-label="VLAN/IP categories">
-    <a class="{% if not active_category %}active{% endif %}" href="/networking/vlan-ip-manager{% if q %}?q={{ q|urlencode }}{% endif %}">All</a>
-    {% for category in categories %}
-    <a class="{% if active_category == category %}active{% endif %}" href="/networking/vlan-ip-manager?category={{ category|urlencode }}{% if q %}&q={{ q|urlencode }}{% endif %}">{{ category }}</a>
-    {% endfor %}
-  </nav>
-  <div class="bulk-action-bar" data-bulk-bar hidden>
-    <strong><span data-selected-count>0</span> selected</strong>
-    <label>Category
-      <select name="category">
-        <option value="__no_change__">No change</option>
-        <option value="__clear__">Clear category</option>
-        {% for category in categories %}<option value="{{ category }}">{{ category }}</option>{% endfor %}
-      </select>
-    </label>
-    <label>Static/Dynamic
-      <select name="assignment_type">
-        <option value="__no_change__">No change</option>
-        <option value="Static">Static</option>
-        <option value="Dynamic">Dynamic</option>
-      </select>
-    </label>
-    <button type="submit">Apply</button>
-    <button class="button secondary" type="button" data-clear-selection>Clear</button>
+  <div class="panel-heading">
+    <div><h2>Observed clients awaiting management</h2><p class="muted">These clients are retained by DNS Manager but are not linked to a VLAN/IP record. Review each one before creating a managed record.</p></div>
   </div>
-  <table data-table-key="ip-addresses"><thead><tr><th class="select-col" data-col="select" data-label="Select"><label class="table-check"><input type="checkbox" aria-label="Select all IP addresses" data-select-all></label></th><th class="action-col" data-col="actions">View</th><th data-col="ip" data-sort>IP</th><th data-col="category" data-sort>Category</th><th data-col="name" data-sort>Name</th><th data-col="description" data-sort>Description</th><th data-col="assignment" data-sort>Static/Dynamic</th><th data-col="notes" data-sort>Notes</th></tr></thead><tbody>
-  {% for row in rows %}<tr><td class="select-col"><input class="row-select" type="checkbox" name="selected_ids" value="{{ row.id }}"></td><td class="action-col"><a class="button secondary" href="/networking/vlan-ip-manager/{{ row.id }}">View</a></td><td class="mono">{{ row.address }}</td><td>{% if row.category %}<span class="table-chip">{{ row.category }}</span>{% else %}-{% endif %}</td><td>{{ row.name or '-' }}</td><td>{{ row.description or '-' }}</td><td>{{ row.assignment_type }}</td><td>{{ row.notes or '-' }}</td></tr>{% endfor %}
-  </tbody></table>
-</form>
+  <table data-table-key="observed-dns-clients">
+    <thead><tr><th>Client</th><th>Observed IP</th><th>MAC</th><th>Provider</th><th>Last seen</th><th>Possible managed match</th><th data-col="actions">Action</th></tr></thead>
+    <tbody>
+      {% for client in observed_clients %}
+      {% set existing = client.suggested_ip_record or existing_by_address.get(client.current_ip) %}
+      <tr>
+        <td><a href="/networking/dns-manager/clients/{{ client.id }}"><strong>{{ dns_client_display_name(client) }}</strong></a>{% if client.hostname and client.hostname != dns_client_display_name(client) %}<br><span class="muted">{{ client.hostname }}</span>{% endif %}</td>
+        <td class="mono">{{ client.current_ip or '-' }}</td>
+        <td class="mono">{{ client.normalised_mac or '-' }}</td>
+        <td>{{ client.provider.name if client.provider else client.provider_type }}</td>
+        <td>{{ local_time(client.last_seen_at, 'minute') }}</td>
+        <td>{% if existing %}<a href="/networking/vlan-ip-manager/{{ existing.id }}">{{ existing.name or existing.address }}</a><br><span class="muted">Review and link the existing record</span>{% else %}<span class="muted">No current IP/MAC match</span>{% endif %}</td>
+        <td>{% if existing %}<a class="button secondary small" href="/networking/dns-manager/clients/{{ client.id }}">Review link</a>{% elif user.role in ['admin','editor'] %}<a class="button small" href="/networking/vlan-ip-manager/new?dns_client_id={{ client.id }}">Create record</a>{% else %}<a class="button secondary small" href="/networking/dns-manager/clients/{{ client.id }}">View</a>{% endif %}</td>
+      </tr>
+      {% else %}<tr><td colspan="7">Every retained DNS client is linked, ignored, or no clients have been collected yet.</td></tr>{% endfor %}
+    </tbody>
+  </table>
 </section>
+{% elif active_view == 'leases' %}
+<section class="panel">
+  <div class="panel-heading"><div><h2>Retained DHCP lease history</h2><p class="muted">Each row is a time-bounded address assignment. Reuse of the same IP creates a new lease interval, keeping the previous device, hostname and DNS history attributable to the correct period.</p></div></div>
+  <table data-table-key="dhcp-lease-history">
+    <thead><tr><th>Status</th><th>IP</th><th>VLAN</th><th>Range</th><th>Hostname</th><th>MAC</th><th>Client</th><th>First seen</th><th>Last seen</th><th>Ended/expires</th></tr></thead>
+    <tbody>{% for lease in leases %}<tr>
+      <td><span class="table-chip {% if lease.is_active %}good{% else %}muted-chip{% endif %}">{{ 'Active' if lease.is_active else 'Ended' }}</span></td>
+      <td class="mono">{{ lease.ip_address }}</td>
+      <td>{{ lease.dhcp_range.vlan.name if lease.dhcp_range and lease.dhcp_range.vlan else '-' }}</td>
+      <td>{{ lease.dhcp_range.name if lease.dhcp_range else 'Outside configured ranges' }}</td>
+      <td>{{ lease.hostname or '-' }}</td><td class="mono">{{ lease.mac_address or '-' }}</td>
+      <td>{% if lease.client %}<a href="/networking/dns-manager/clients/{{ lease.client.id }}">{{ dns_client_display_name(lease.client) }}</a>{% else %}-{% endif %}</td>
+      <td>{{ local_time(lease.first_seen_at, 'minute') }}</td><td>{{ local_time(lease.last_seen_at, 'minute') }}</td><td>{{ local_time(lease.ended_at or lease.expires_at, 'minute') if lease.ended_at or lease.expires_at else '-' }}</td>
+    </tr>{% else %}<tr><td colspan="10">No DHCP leases have been retained yet. Configure a DHCP range and allow the DNS collector to complete a provider pass.</td></tr>{% endfor %}</tbody>
+  </table>
+</section>
+{% else %}
+<section class="panel">
+  <form method="post" action="/networking/vlan-ip-manager/bulk-update" data-ip-bulk-form>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <nav class="category-tabs table-panel-filters" aria-label="VLAN/IP categories">
+      <a class="{% if not active_category %}active{% endif %}" href="/networking/vlan-ip-manager{% if active_vlan_id or q %}?{% if active_vlan_id %}vlan_id={{ active_vlan_id }}{% endif %}{% if active_vlan_id and q %}&amp;{% endif %}{% if q %}q={{ q|urlencode }}{% endif %}{% endif %}">All</a>
+      {% for category in categories %}<a class="{% if active_category == category %}active{% endif %}" href="/networking/vlan-ip-manager?category={{ category|urlencode }}{% if active_vlan_id %}&amp;vlan_id={{ active_vlan_id }}{% endif %}{% if q %}&amp;q={{ q|urlencode }}{% endif %}">{{ category }}</a>{% endfor %}
+    </nav>
+    <div class="bulk-action-bar" data-bulk-bar hidden>
+      <strong><span data-selected-count>0</span> selected</strong>
+      <label>VLAN<select name="vlan_id"><option value="__no_change__">No change</option>{% for vlan in vlans %}<option value="{{ vlan.id }}">{{ vlan.name }}</option>{% endfor %}</select></label>
+      <label>Category<select name="category"><option value="__no_change__">No change</option><option value="__clear__">Clear category</option>{% for category in categories %}<option value="{{ category }}">{{ category }}</option>{% endfor %}</select></label>
+      <label>Static/Dynamic<select name="assignment_type"><option value="__no_change__">No change</option><option value="Static">Static</option><option value="Dynamic">Dynamic</option></select></label>
+      <button type="submit">Apply</button><button class="button secondary" type="button" data-clear-selection>Clear</button>
+    </div>
+    <table data-table-key="ip-addresses">
+      <thead><tr><th class="select-col" data-col="select" data-label="Select"><label class="table-check"><input type="checkbox" aria-label="Select all IP addresses" data-select-all></label></th><th class="action-col" data-col="actions">View</th><th data-col="ip" data-sort>IP</th><th data-col="vlan" data-sort>VLAN</th><th data-col="category" data-sort>Category</th><th data-col="name" data-sort>Name</th><th data-col="mac" data-sort>MAC</th><th data-col="description" data-sort>Description</th><th data-col="assignment" data-sort>Static/Dynamic</th><th data-col="notes" data-sort>Notes</th>{% if dns_enrichment_enabled %}<th data-col="dns-status" data-sort>DNS status</th><th data-col="dns-seen" data-sort>Last DNS seen</th><th data-col="dns-hostname" data-sort>Observed hostname</th>{% endif %}</tr></thead>
+      <tbody>{% for row in rows %}{% set dns = dns_by_ip.get(row.id) %}<tr><td class="select-col"><input class="row-select" type="checkbox" name="selected_ids" value="{{ row.id }}"></td><td class="action-col"><a class="button secondary" href="/networking/vlan-ip-manager/{{ row.id }}">View</a></td><td class="mono">{{ row.address }}</td><td>{% if row.vlan %}<a class="table-chip" href="/networking/vlan-ip-manager?vlan_id={{ row.vlan.id }}">{{ row.vlan.name }}</a>{% else %}-{% endif %}</td><td>{% if row.category %}<span class="table-chip">{{ row.category }}</span>{% else %}-{% endif %}</td><td>{{ row.name or '-' }}</td><td class="mono">{{ row.mac_address or '-' }}</td><td>{{ row.description or '-' }}</td><td>{{ row.assignment_type }}</td><td>{{ row.notes or '-' }}</td>{% if dns_enrichment_enabled %}<td>{% if dns %}<a href="/networking/dns-manager/clients/{{ dns.id }}"><span class="table-chip">{{ dns_client_status(dns) }}</span></a>{% else %}<span class="muted">Not observed</span>{% endif %}</td><td>{{ local_time(dns.last_seen_at, 'minute') if dns else '-' }}</td><td>{{ dns.hostname if dns and dns.hostname else '-' }}</td>{% endif %}</tr>{% endfor %}</tbody>
+    </table>
+  </form>
+</section>
+{% endif %}
 <script src="/static/js/ip_addresses.js?v={{ asset_version }}" defer></script>
 {% endblock %}

@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.demo import demo_request_is_blocked
 from app.core.logging import install_sensitive_authentication_log_filter
+from app.core.performance import begin_request_metrics, end_request_metrics, install_template_timing, log_request_metrics
 from app.core.security import decrypt_secret, hash_password
 from app.db.session import Base, engine, SessionLocal
 from app.models.models import AuditLog, User, VLAN
@@ -20,6 +21,7 @@ from app.services.kaya_remote_service import start_kaya_remote_service, stop_kay
 from app.services.network_monitor import monitor_loop
 from app.services.domain_polling import domain_poll_loop
 from app.services.compute_monitor import compute_monitor_loop
+from app.services.dns_collector import dns_collector_loop
 from app.services.audit import begin_request_context, end_request_context, request_event_written, write_audit
 from app.services.client_ip import TrustedProxyMiddleware, client_ip
 from app.services.site_settings import (
@@ -35,6 +37,7 @@ from app.services.version import refresh_latest_release, version_check_loop
 
 settings = get_settings()
 install_sensitive_authentication_log_filter()
+install_template_timing()
 app = FastAPI(
     title=settings.app_name,
     docs_url=None if settings.app_env == "production" else "/docs",
@@ -43,6 +46,7 @@ app = FastAPI(
 monitor_task = None
 domain_poll_task = None
 compute_monitor_task = None
+dns_collector_task = None
 version_check_task = None
 app.state.demo_mode = settings.demo_mode
 app.state.demo_reset_schedule = settings.demo_reset_schedule
@@ -237,6 +241,25 @@ async def audit_requests(request: Request, call_next):
     finally:
         end_request_context(token)
 
+
+@app.middleware("http")
+async def performance_diagnostics(request: Request, call_next):
+    if not settings.performance_diagnostics or request.url.path.startswith("/static/"):
+        return await call_next(request)
+    token, metrics = begin_request_metrics()
+    started = perf_counter()
+    try:
+        response = await call_next(request)
+        log_request_metrics(
+            request=request,
+            response=response,
+            metrics=metrics,
+            total_duration_ms=(perf_counter() - started) * 1000,
+        )
+        return response
+    finally:
+        end_request_metrics(token)
+
 app.add_middleware(TrustedProxyMiddleware, trusted_proxies=settings.forwarded_allow_ips)
 
 Path("/app/uploads").mkdir(parents=True, exist_ok=True)
@@ -322,8 +345,11 @@ def migrate_existing_database():
             conn.execute(text("CREATE INDEX ix_licences_is_favourite ON licences (is_favourite)"))
         vlan_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(vlans)"))}
         if not vlan_columns:
-            conn.execute(text("CREATE TABLE vlans (id INTEGER NOT NULL PRIMARY KEY, name VARCHAR(120) NOT NULL UNIQUE, description TEXT, created_at DATETIME, updated_at DATETIME)"))
+            conn.execute(text("CREATE TABLE vlans (id INTEGER NOT NULL PRIMARY KEY, name VARCHAR(120) NOT NULL UNIQUE, description TEXT, subnet_cidr VARCHAR(80), created_at DATETIME, updated_at DATETIME)"))
             conn.execute(text("CREATE INDEX ix_vlans_name ON vlans (name)"))
+        elif "subnet_cidr" not in vlan_columns:
+            conn.execute(text("ALTER TABLE vlans ADD COLUMN subnet_cidr VARCHAR(80)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_vlans_subnet_cidr ON vlans (subnet_cidr)"))
         ip_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(ip_addresses)"))}
         if ip_columns and "vlan_id" not in ip_columns:
             conn.execute(text("ALTER TABLE ip_addresses ADD COLUMN vlan_id INTEGER REFERENCES vlans(id)"))
@@ -331,8 +357,16 @@ def migrate_existing_database():
         if ip_columns and "category" not in ip_columns:
             conn.execute(text("ALTER TABLE ip_addresses ADD COLUMN category VARCHAR(120)"))
             conn.execute(text("CREATE INDEX ix_ip_addresses_category ON ip_addresses (category)"))
-        conn.execute(text("INSERT OR IGNORE INTO vlans (name, created_at, updated_at) VALUES ('VLAN 1', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"))
-        conn.execute(text("UPDATE ip_addresses SET vlan_id = (SELECT id FROM vlans WHERE name = 'VLAN 1') WHERE vlan_id IS NULL"))
+        if ip_columns and "mac_address" not in ip_columns:
+            conn.execute(text("ALTER TABLE ip_addresses ADD COLUMN mac_address VARCHAR(17)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_ip_addresses_mac_address ON ip_addresses (mac_address)"))
+        conn.execute(text("INSERT INTO vlans (name, created_at, updated_at) SELECT 'VLAN 1', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP WHERE NOT EXISTS (SELECT 1 FROM vlans)"))
+        conn.execute(text("UPDATE ip_addresses SET vlan_id = (SELECT id FROM vlans ORDER BY id LIMIT 1) WHERE vlan_id IS NULL"))
+        dhcp_range_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(dhcp_ranges)"))}
+        if not dhcp_range_columns:
+            conn.execute(text("CREATE TABLE dhcp_ranges (id INTEGER NOT NULL PRIMARY KEY, name VARCHAR(120) NOT NULL UNIQUE, vlan_id INTEGER REFERENCES vlans(id) ON DELETE SET NULL, start_address VARCHAR(80) NOT NULL, end_address VARCHAR(80) NOT NULL, description TEXT, is_enabled BOOLEAN DEFAULT 1 NOT NULL, created_at DATETIME, updated_at DATETIME)"))
+            for column in ["name", "vlan_id", "start_address", "end_address", "is_enabled"]:
+                conn.execute(text(f"CREATE INDEX ix_dhcp_ranges_{column} ON dhcp_ranges ({column})"))
         custom_field_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(custom_fields)"))}
         if not custom_field_columns:
             conn.execute(text("CREATE TABLE custom_fields (id INTEGER NOT NULL PRIMARY KEY, module VARCHAR(80) NOT NULL, label VARCHAR(120) NOT NULL, field_key VARCHAR(120) NOT NULL, field_type VARCHAR(30) NOT NULL DEFAULT 'text', options TEXT, is_required BOOLEAN DEFAULT 0 NOT NULL, is_active BOOLEAN DEFAULT 1 NOT NULL, sort_order INTEGER DEFAULT 0 NOT NULL, created_at DATETIME, updated_at DATETIME)"))
@@ -382,12 +416,40 @@ def migrate_existing_database():
             conn.execute(text("CREATE INDEX ix_network_monitors_is_enabled ON network_monitors (is_enabled)"))
             conn.execute(text("CREATE INDEX ix_network_monitors_last_status ON network_monitors (last_status)"))
             conn.execute(text("CREATE INDEX ix_network_monitors_last_checked_at ON network_monitors (last_checked_at)"))
+            monitor_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(network_monitors)"))}
+        for column, definition in {
+            "failure_threshold": "INTEGER DEFAULT 3 NOT NULL",
+            "latency_warning_ms": "INTEGER DEFAULT 150 NOT NULL",
+            "latency_critical_ms": "INTEGER DEFAULT 500 NOT NULL",
+            "packet_loss_warning_percent": "INTEGER DEFAULT 20 NOT NULL",
+            "packet_loss_critical_percent": "INTEGER DEFAULT 60 NOT NULL",
+            "consecutive_failures": "INTEGER DEFAULT 0 NOT NULL",
+            "last_packet_loss_percent": "INTEGER",
+        }.items():
+            if column not in monitor_columns:
+                conn.execute(text(f"ALTER TABLE network_monitors ADD COLUMN {column} {definition}"))
         monitor_check_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(network_monitor_checks)"))}
         if not monitor_check_columns:
             conn.execute(text("CREATE TABLE network_monitor_checks (id INTEGER NOT NULL PRIMARY KEY, monitor_id INTEGER NOT NULL REFERENCES network_monitors(id), status VARCHAR(30) NOT NULL, latency_ms INTEGER, error VARCHAR(500), checked_at DATETIME)"))
             conn.execute(text("CREATE INDEX ix_network_monitor_checks_monitor_id ON network_monitor_checks (monitor_id)"))
             conn.execute(text("CREATE INDEX ix_network_monitor_checks_status ON network_monitor_checks (status)"))
             conn.execute(text("CREATE INDEX ix_network_monitor_checks_checked_at ON network_monitor_checks (checked_at)"))
+            monitor_check_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(network_monitor_checks)"))}
+        for column in ("packet_loss_percent", "response_time_ms"):
+            if column not in monitor_check_columns:
+                conn.execute(text(f"ALTER TABLE network_monitor_checks ADD COLUMN {column} INTEGER"))
+        if not conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='network_monitor_events'" )).first():
+            conn.execute(text("CREATE TABLE network_monitor_events (id INTEGER NOT NULL PRIMARY KEY, monitor_id INTEGER NOT NULL REFERENCES network_monitors(id), event_type VARCHAR(40) NOT NULL, severity VARCHAR(20) DEFAULT 'info' NOT NULL, message VARCHAR(500) NOT NULL, occurred_at DATETIME)"))
+            conn.execute(text("CREATE INDEX ix_network_monitor_events_monitor_id ON network_monitor_events (monitor_id)"))
+            conn.execute(text("CREATE INDEX ix_network_monitor_events_occurred_at ON network_monitor_events (occurred_at)"))
+        if not conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='network_monitor_outages'" )).first():
+            conn.execute(text("CREATE TABLE network_monitor_outages (id INTEGER NOT NULL PRIMARY KEY, monitor_id INTEGER NOT NULL REFERENCES network_monitors(id), started_at DATETIME NOT NULL, ended_at DATETIME, failure_reason VARCHAR(500))"))
+            conn.execute(text("CREATE INDEX ix_network_monitor_outages_monitor_id ON network_monitor_outages (monitor_id)"))
+            conn.execute(text("CREATE INDEX ix_network_monitor_outages_started_at ON network_monitor_outages (started_at)"))
+        if not conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='network_monitor_statistics'" )).first():
+            conn.execute(text("CREATE TABLE network_monitor_statistics (id INTEGER NOT NULL PRIMARY KEY, monitor_id INTEGER NOT NULL REFERENCES network_monitors(id), bucket_start DATETIME NOT NULL, bucket_seconds INTEGER NOT NULL, sample_count INTEGER DEFAULT 0 NOT NULL, up_count INTEGER DEFAULT 0 NOT NULL, avg_latency_ms INTEGER, max_latency_ms INTEGER, avg_packet_loss_percent INTEGER)"))
+            conn.execute(text("CREATE INDEX ix_network_monitor_statistics_monitor_id ON network_monitor_statistics (monitor_id)"))
+            conn.execute(text("CREATE INDEX ix_network_monitor_statistics_bucket_start ON network_monitor_statistics (bucket_start)"))
         remote_access_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(remote_access)"))}
         if not remote_access_columns:
             conn.execute(text("CREATE TABLE remote_access (id INTEGER NOT NULL PRIMARY KEY, ip_address_id INTEGER NOT NULL UNIQUE REFERENCES ip_addresses(id), display_name VARCHAR(255), is_enabled BOOLEAN DEFAULT 1 NOT NULL, protocol VARCHAR(20) DEFAULT 'ssh' NOT NULL, port INTEGER DEFAULT 22 NOT NULL, username VARCHAR(120), host_key_fingerprint VARCHAR(120), terminal_settings TEXT, rdp_settings TEXT, notes TEXT, created_at DATETIME, updated_at DATETIME)"))
@@ -493,10 +555,57 @@ def migrate_existing_database():
 
         dns_device_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(dns_recognised_devices)"))}
         if not dns_device_columns:
-            conn.execute(text("CREATE TABLE dns_recognised_devices (id INTEGER NOT NULL PRIMARY KEY, provider_id INTEGER NOT NULL REFERENCES dns_providers(id) ON DELETE CASCADE, identity_type VARCHAR(30) NOT NULL, identity_value VARCHAR(500) NOT NULL, hostname VARCHAR(255), previous_hostname VARCHAR(255), current_ip VARCHAR(80), previous_ip VARCHAR(80), mac_address VARCHAR(120), provider_client_id VARCHAR(255), hardware_asset_id INTEGER REFERENCES hardware_assets(id) ON DELETE SET NULL, first_seen_at DATETIME, last_seen_at DATETIME, is_suppressed BOOLEAN DEFAULT 0 NOT NULL, created_at DATETIME, updated_at DATETIME)"))
+            conn.execute(text("CREATE TABLE dns_recognised_devices (id INTEGER NOT NULL PRIMARY KEY, provider_id INTEGER NOT NULL REFERENCES dns_providers(id) ON DELETE CASCADE, identity_type VARCHAR(30) NOT NULL, identity_value VARCHAR(500) NOT NULL, hostname VARCHAR(255), previous_hostname VARCHAR(255), current_ip VARCHAR(80), previous_ip VARCHAR(80), mac_address VARCHAR(120), provider_client_id VARCHAR(255), provider_type VARCHAR(40) DEFAULT 'pihole' NOT NULL, friendly_name VARCHAR(255), normalised_hostname VARCHAR(255), normalised_mac VARCHAR(17), is_known BOOLEAN DEFAULT 0 NOT NULL, is_ignored BOOLEAN DEFAULT 0 NOT NULL, last_synced_at DATETIME, linked_ip_record_id INTEGER REFERENCES ip_addresses(id) ON DELETE SET NULL, match_confidence INTEGER, match_method VARCHAR(80), observation_source VARCHAR(255), query_count INTEGER DEFAULT 0 NOT NULL, blocked_query_count INTEGER DEFAULT 0 NOT NULL, notes TEXT, hardware_asset_id INTEGER REFERENCES hardware_assets(id) ON DELETE SET NULL, first_seen_at DATETIME, last_seen_at DATETIME, is_suppressed BOOLEAN DEFAULT 0 NOT NULL, created_at DATETIME, updated_at DATETIME)"))
             conn.execute(text("CREATE UNIQUE INDEX uq_dns_devices_provider_identity ON dns_recognised_devices (provider_id, identity_type, identity_value)"))
             for column in ["provider_id", "identity_type", "identity_value", "hostname", "current_ip", "mac_address", "provider_client_id", "hardware_asset_id", "first_seen_at", "last_seen_at", "is_suppressed"]:
                 conn.execute(text(f"CREATE INDEX ix_dns_recognised_devices_{column} ON dns_recognised_devices ({column})"))
+        else:
+            dns_client_columns = {
+                "provider_type": "VARCHAR(40) DEFAULT 'pihole' NOT NULL",
+                "friendly_name": "VARCHAR(255)",
+                "normalised_hostname": "VARCHAR(255)",
+                "normalised_mac": "VARCHAR(17)",
+                "is_known": "BOOLEAN DEFAULT 0 NOT NULL",
+                "is_ignored": "BOOLEAN DEFAULT 0 NOT NULL",
+                "last_synced_at": "DATETIME",
+                "linked_ip_record_id": "INTEGER REFERENCES ip_addresses(id) ON DELETE SET NULL",
+                "suggested_ip_record_id": "INTEGER REFERENCES ip_addresses(id) ON DELETE SET NULL",
+                "match_confidence": "INTEGER",
+                "match_method": "VARCHAR(80)",
+                "observation_source": "VARCHAR(255)",
+                "query_count": "INTEGER DEFAULT 0 NOT NULL",
+                "blocked_query_count": "INTEGER DEFAULT 0 NOT NULL",
+                "notes": "TEXT",
+            }
+            for column, definition in dns_client_columns.items():
+                if column not in dns_device_columns:
+                    conn.execute(text(f"ALTER TABLE dns_recognised_devices ADD COLUMN {column} {definition}"))
+                conn.execute(text(f"CREATE INDEX IF NOT EXISTS ix_dns_recognised_devices_{column} ON dns_recognised_devices ({column})"))
+            conn.execute(text("UPDATE dns_recognised_devices SET is_known = 1, is_ignored = COALESCE(is_suppressed, 0), normalised_hostname = LOWER(RTRIM(hostname, '.')), normalised_mac = LOWER(REPLACE(mac_address, '-', ':')), last_synced_at = COALESCE(last_synced_at, last_seen_at), provider_type = COALESCE(provider_type, 'pihole')"))
+        refreshed_dns_device_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(dns_recognised_devices)"))}
+        if "suggested_ip_record_id" not in refreshed_dns_device_columns:
+            conn.execute(text("ALTER TABLE dns_recognised_devices ADD COLUMN suggested_ip_record_id INTEGER REFERENCES ip_addresses(id) ON DELETE SET NULL"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_dns_recognised_devices_suggested_ip_record_id ON dns_recognised_devices (suggested_ip_record_id)"))
+        dns_traffic_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(dns_client_traffic_events)"))}
+        if not dns_traffic_columns:
+            conn.execute(text("CREATE TABLE dns_client_traffic_events (id INTEGER NOT NULL PRIMARY KEY, dns_client_id INTEGER NOT NULL REFERENCES dns_recognised_devices(id) ON DELETE CASCADE, provider_id INTEGER NOT NULL REFERENCES dns_providers(id) ON DELETE CASCADE, dhcp_lease_id INTEGER REFERENCES dhcp_lease_history(id) ON DELETE SET NULL, event_key VARCHAR(64) NOT NULL, client_ip VARCHAR(80), domain VARCHAR(500) NOT NULL, query_type VARCHAR(40), status VARCHAR(80), reply_type VARCHAR(120), reply_time_ms FLOAT, upstream VARCHAR(255), is_blocked BOOLEAN DEFAULT 0 NOT NULL, observed_at DATETIME NOT NULL, created_at DATETIME NOT NULL)"))
+            conn.execute(text("CREATE UNIQUE INDEX uq_dns_client_traffic_provider_event ON dns_client_traffic_events (provider_id, event_key)"))
+            for column in ["dns_client_id", "provider_id", "event_key", "domain", "query_type", "status", "reply_type", "is_blocked", "observed_at", "created_at"]:
+                conn.execute(text(f"CREATE INDEX ix_dns_client_traffic_events_{column} ON dns_client_traffic_events ({column})"))
+        dhcp_lease_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(dhcp_lease_history)"))}
+        if not dhcp_lease_columns:
+            conn.execute(text("CREATE TABLE dhcp_lease_history (id INTEGER NOT NULL PRIMARY KEY, provider_id INTEGER REFERENCES dns_providers(id) ON DELETE SET NULL, dns_client_id INTEGER REFERENCES dns_recognised_devices(id) ON DELETE SET NULL, dhcp_range_id INTEGER REFERENCES dhcp_ranges(id) ON DELETE SET NULL, ip_address VARCHAR(80) NOT NULL, mac_address VARCHAR(17), hostname VARCHAR(255), provider_lease_id VARCHAR(255), lease_started_at DATETIME NOT NULL, first_seen_at DATETIME NOT NULL, last_seen_at DATETIME NOT NULL, expires_at DATETIME, ended_at DATETIME, is_active BOOLEAN DEFAULT 1 NOT NULL, source VARCHAR(255), created_at DATETIME, updated_at DATETIME)"))
+            for column in ["provider_id", "dns_client_id", "dhcp_range_id", "ip_address", "mac_address", "hostname", "provider_lease_id", "lease_started_at", "first_seen_at", "last_seen_at", "expires_at", "ended_at", "is_active"]:
+                conn.execute(text(f"CREATE INDEX ix_dhcp_lease_history_{column} ON dhcp_lease_history ({column})"))
+        refreshed_traffic_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(dns_client_traffic_events)"))}
+        if "client_ip" not in refreshed_traffic_columns:
+            conn.execute(text("ALTER TABLE dns_client_traffic_events ADD COLUMN client_ip VARCHAR(80)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_dns_client_traffic_events_client_ip ON dns_client_traffic_events (client_ip)"))
+        if "dhcp_lease_id" not in refreshed_traffic_columns:
+            conn.execute(text("ALTER TABLE dns_client_traffic_events ADD COLUMN dhcp_lease_id INTEGER REFERENCES dhcp_lease_history(id) ON DELETE SET NULL"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_dns_client_traffic_events_dhcp_lease_id ON dns_client_traffic_events (dhcp_lease_id)"))
+        conn.execute(text("INSERT OR IGNORE INTO dns_client_ip_history (dns_client_id, ip_address, first_seen_at, last_seen_at, observation_count, provider_id, source, created_at, updated_at) SELECT id, current_ip, first_seen_at, last_seen_at, 1, provider_id, 'migration', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP FROM dns_recognised_devices WHERE current_ip IS NOT NULL AND current_ip != ''"))
+        conn.execute(text("INSERT OR IGNORE INTO dns_client_hostname_history (dns_client_id, hostname, normalised_hostname, first_seen_at, last_seen_at, observation_count, provider_id, source, created_at, updated_at) SELECT id, hostname, LOWER(RTRIM(hostname, '.')), first_seen_at, last_seen_at, 1, provider_id, 'migration', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP FROM dns_recognised_devices WHERE hostname IS NOT NULL AND hostname != ''"))
 
         audit_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(audit_logs)"))}
         if audit_columns:
@@ -565,10 +674,11 @@ async def on_startup():
     if settings.demo_mode:
         return
     start_kaya_remote_service()
-    global monitor_task, domain_poll_task, compute_monitor_task
+    global monitor_task, domain_poll_task, compute_monitor_task, dns_collector_task
     monitor_task = asyncio.create_task(monitor_loop())
     domain_poll_task = asyncio.create_task(domain_poll_loop())
     compute_monitor_task = asyncio.create_task(compute_monitor_loop())
+    dns_collector_task = asyncio.create_task(dns_collector_loop())
 
 
 @app.on_event("shutdown")
@@ -581,6 +691,8 @@ async def on_shutdown():
         domain_poll_task.cancel()
     if compute_monitor_task:
         compute_monitor_task.cancel()
+    if dns_collector_task:
+        dns_collector_task.cancel()
     stop_kaya_remote_service()
     stop_guacamole_bridge()
 

@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     demo_mode: bool = False
     demo_reset_schedule: str = "03:00 UTC"
     demo_generation_file: str = "/app/data/.demo-generation"
+    performance_diagnostics: bool = False
 
     model_config = {
     "extra": "ignore"

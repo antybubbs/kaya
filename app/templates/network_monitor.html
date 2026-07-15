@@ -4,9 +4,21 @@
   <div class="module-title-row">
     <div class="module-heading">
       <h1>IP/WAN Monitor</h1>
-      <p class="muted">Ping checks for IP addresses enabled from the VLAN/IP Manager form.</p>
+      <p class="muted">Background availability, latency, packet-loss, event and outage history for managed IP addresses.</p>
     </div>
-    <span class="module-stat">Monitors <strong>{{ total }}</strong></span>
+    <div class="module-actions">
+      <label class="monitor-refresh-control">Collection rate
+        <select data-monitor-refresh-rate data-monitor-csrf="{{ csrf_token }}">
+          <option value="default">Record schedules</option>
+          <option value="live">Live</option>
+          <option value="5000">5 seconds</option>
+          <option value="10000">10 seconds</option>
+          <option value="60000">1 minute</option>
+          <option value="300000">5 minutes</option>
+        </select>
+      </label>
+      <span class="module-stat">Monitors <strong>{{ total }}</strong></span>
+    </div>
   </div>
 </section>
 <div data-monitor-content>

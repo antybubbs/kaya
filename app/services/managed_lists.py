@@ -1,7 +1,7 @@
 from sqlalchemy.orm import Session
 from app.models.models import ManagedListItem
 
-MANAGED_LIST_MODULES = {"hardware_assets": "Hardware Assets", "ip_addresses": "IP Addresses", "licences": "License Keys"}
+MANAGED_LIST_MODULES = {"hardware_assets": "Hardware Assets", "licences": "License Keys"}
 MANAGED_LISTS = {
     "hardware_assets": {
         "category": "Category",

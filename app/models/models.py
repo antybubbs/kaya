@@ -173,6 +173,7 @@ class IPAddress(Base):
     address: Mapped[str] = mapped_column(String(80), index=True)
     category: Mapped[str | None] = mapped_column(String(120), index=True, nullable=True)
     name: Mapped[str | None] = mapped_column(String(255), index=True, nullable=True)
+    mac_address: Mapped[str | None] = mapped_column(String(17), index=True, nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     assignment_type: Mapped[str] = mapped_column(String(20), default="Static")
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -186,6 +187,7 @@ class VLAN(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(120), unique=True, index=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    subnet_cidr: Mapped[str | None] = mapped_column(String(80), index=True, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -200,8 +202,15 @@ class NetworkMonitor(Base):
     interval_seconds: Mapped[int] = mapped_column(Integer, default=300)
     timeout_ms: Mapped[int] = mapped_column(Integer, default=2000)
     notify_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    failure_threshold: Mapped[int] = mapped_column(Integer, default=3)
+    latency_warning_ms: Mapped[int] = mapped_column(Integer, default=150)
+    latency_critical_ms: Mapped[int] = mapped_column(Integer, default=500)
+    packet_loss_warning_percent: Mapped[int] = mapped_column(Integer, default=20)
+    packet_loss_critical_percent: Mapped[int] = mapped_column(Integer, default=60)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
     last_status: Mapped[str | None] = mapped_column(String(30), nullable=True, index=True)
     last_latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_packet_loss_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -215,8 +224,45 @@ class NetworkMonitorCheck(Base):
     monitor_id: Mapped[int] = mapped_column(ForeignKey("network_monitors.id"), index=True)
     status: Mapped[str] = mapped_column(String(30), index=True)
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    packet_loss_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    response_time_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error: Mapped[str | None] = mapped_column(String(500), nullable=True)
     checked_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    monitor = relationship("NetworkMonitor")
+
+
+class NetworkMonitorEvent(Base):
+    __tablename__ = "network_monitor_events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    monitor_id: Mapped[int] = mapped_column(ForeignKey("network_monitors.id"), index=True)
+    event_type: Mapped[str] = mapped_column(String(40), index=True)
+    severity: Mapped[str] = mapped_column(String(20), default="info", index=True)
+    message: Mapped[str] = mapped_column(String(500))
+    occurred_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    monitor = relationship("NetworkMonitor")
+
+
+class NetworkMonitorOutage(Base):
+    __tablename__ = "network_monitor_outages"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    monitor_id: Mapped[int] = mapped_column(ForeignKey("network_monitors.id"), index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    failure_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    monitor = relationship("NetworkMonitor")
+
+
+class NetworkMonitorStatistic(Base):
+    __tablename__ = "network_monitor_statistics"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    monitor_id: Mapped[int] = mapped_column(ForeignKey("network_monitors.id"), index=True)
+    bucket_start: Mapped[datetime] = mapped_column(DateTime, index=True)
+    bucket_seconds: Mapped[int] = mapped_column(Integer, index=True)
+    sample_count: Mapped[int] = mapped_column(Integer, default=0)
+    up_count: Mapped[int] = mapped_column(Integer, default=0)
+    avg_latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    avg_packet_loss_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
     monitor = relationship("NetworkMonitor")
 
 
@@ -375,6 +421,20 @@ class DNSInsight(Base):
     acknowledged_by = relationship("User")
 
 
+class DHCPRange(Base):
+    __tablename__ = "dhcp_ranges"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    vlan_id: Mapped[int | None] = mapped_column(ForeignKey("vlans.id", ondelete="SET NULL"), nullable=True, index=True)
+    start_address: Mapped[str] = mapped_column(String(80), index=True)
+    end_address: Mapped[str] = mapped_column(String(80), index=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    vlan = relationship("VLAN")
+
+
 class DNSStatisticsSnapshot(Base):
     __tablename__ = "dns_statistics_snapshots"
     __table_args__ = (UniqueConstraint("provider_id", "period_start", name="uq_dns_snapshots_provider_period"),)
@@ -412,6 +472,21 @@ class DNSRecognisedDevice(Base):
     previous_ip: Mapped[str | None] = mapped_column(String(80), nullable=True)
     mac_address: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
     provider_client_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    provider_type: Mapped[str] = mapped_column(String(40), default="pihole", index=True)
+    friendly_name: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    normalised_hostname: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    normalised_mac: Mapped[str | None] = mapped_column(String(17), nullable=True, index=True)
+    is_known: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    is_ignored: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    linked_ip_record_id: Mapped[int | None] = mapped_column(ForeignKey("ip_addresses.id", ondelete="SET NULL"), nullable=True, index=True)
+    suggested_ip_record_id: Mapped[int | None] = mapped_column(ForeignKey("ip_addresses.id", ondelete="SET NULL"), nullable=True, index=True)
+    match_confidence: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    match_method: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    observation_source: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    query_count: Mapped[int] = mapped_column(Integer, default=0)
+    blocked_query_count: Mapped[int] = mapped_column(Integer, default=0)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     hardware_asset_id: Mapped[int | None] = mapped_column(ForeignKey("hardware_assets.id", ondelete="SET NULL"), nullable=True, index=True)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
@@ -420,6 +495,107 @@ class DNSRecognisedDevice(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     provider = relationship("DNSProviderConfig")
     hardware_asset = relationship("HardwareAsset")
+    linked_ip_record = relationship("IPAddress", foreign_keys=[linked_ip_record_id])
+    suggested_ip_record = relationship("IPAddress", foreign_keys=[suggested_ip_record_id])
+    ip_history = relationship("DNSClientIPHistory", cascade="all, delete-orphan", back_populates="client")
+    hostname_history = relationship("DNSClientHostnameHistory", cascade="all, delete-orphan", back_populates="client")
+    events = relationship("DNSClientEvent", cascade="all, delete-orphan", back_populates="client")
+    traffic_history = relationship("DNSClientTrafficEvent", cascade="all, delete-orphan", back_populates="client")
+
+
+class DNSClientIPHistory(Base):
+    __tablename__ = "dns_client_ip_history"
+    __table_args__ = (UniqueConstraint("dns_client_id", "ip_address", name="uq_dns_client_ip_history"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    dns_client_id: Mapped[int] = mapped_column(ForeignKey("dns_recognised_devices.id", ondelete="CASCADE"), index=True)
+    ip_address: Mapped[str] = mapped_column(String(80), index=True)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    observation_count: Mapped[int] = mapped_column(Integer, default=1)
+    provider_id: Mapped[int | None] = mapped_column(ForeignKey("dns_providers.id", ondelete="SET NULL"), nullable=True, index=True)
+    source: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    client = relationship("DNSRecognisedDevice", back_populates="ip_history")
+
+
+class DNSClientHostnameHistory(Base):
+    __tablename__ = "dns_client_hostname_history"
+    __table_args__ = (UniqueConstraint("dns_client_id", "normalised_hostname", name="uq_dns_client_hostname_history"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    dns_client_id: Mapped[int] = mapped_column(ForeignKey("dns_recognised_devices.id", ondelete="CASCADE"), index=True)
+    hostname: Mapped[str] = mapped_column(String(255), index=True)
+    normalised_hostname: Mapped[str] = mapped_column(String(255), index=True)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    observation_count: Mapped[int] = mapped_column(Integer, default=1)
+    provider_id: Mapped[int | None] = mapped_column(ForeignKey("dns_providers.id", ondelete="SET NULL"), nullable=True, index=True)
+    source: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    client = relationship("DNSRecognisedDevice", back_populates="hostname_history")
+
+
+class DNSClientEvent(Base):
+    __tablename__ = "dns_client_events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    dns_client_id: Mapped[int] = mapped_column(ForeignKey("dns_recognised_devices.id", ondelete="CASCADE"), index=True)
+    event_type: Mapped[str] = mapped_column(String(60), index=True)
+    event_summary: Mapped[str] = mapped_column(String(500))
+    old_value: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    new_value: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    source: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    provider_id: Mapped[int | None] = mapped_column(ForeignKey("dns_providers.id", ondelete="SET NULL"), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    client = relationship("DNSRecognisedDevice", back_populates="events")
+
+
+class DNSClientTrafficEvent(Base):
+    __tablename__ = "dns_client_traffic_events"
+    __table_args__ = (UniqueConstraint("provider_id", "event_key", name="uq_dns_client_traffic_provider_event"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    dns_client_id: Mapped[int] = mapped_column(ForeignKey("dns_recognised_devices.id", ondelete="CASCADE"), index=True)
+    provider_id: Mapped[int] = mapped_column(ForeignKey("dns_providers.id", ondelete="CASCADE"), index=True)
+    dhcp_lease_id: Mapped[int | None] = mapped_column(ForeignKey("dhcp_lease_history.id", ondelete="SET NULL"), nullable=True, index=True)
+    event_key: Mapped[str] = mapped_column(String(64), index=True)
+    client_ip: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    domain: Mapped[str] = mapped_column(String(500), index=True)
+    query_type: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    status: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    reply_type: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    reply_time_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    upstream: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    is_blocked: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    client = relationship("DNSRecognisedDevice", back_populates="traffic_history")
+    provider = relationship("DNSProviderConfig")
+
+
+class DHCPLeaseHistory(Base):
+    """A time-bounded DHCP address assignment retained independently of the provider."""
+
+    __tablename__ = "dhcp_lease_history"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    provider_id: Mapped[int | None] = mapped_column(ForeignKey("dns_providers.id", ondelete="SET NULL"), nullable=True, index=True)
+    dns_client_id: Mapped[int | None] = mapped_column(ForeignKey("dns_recognised_devices.id", ondelete="SET NULL"), nullable=True, index=True)
+    dhcp_range_id: Mapped[int | None] = mapped_column(ForeignKey("dhcp_ranges.id", ondelete="SET NULL"), nullable=True, index=True)
+    ip_address: Mapped[str] = mapped_column(String(80), index=True)
+    mac_address: Mapped[str | None] = mapped_column(String(17), nullable=True, index=True)
+    hostname: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    provider_lease_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    lease_started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    source: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    provider = relationship("DNSProviderConfig")
+    client = relationship("DNSRecognisedDevice")
+    dhcp_range = relationship("DHCPRange")
 
 
 class DashboardPreference(Base):

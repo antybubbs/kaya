@@ -5,11 +5,13 @@
 
 ## Running Locally
 
-Run with Docker Compose:
+Run a local source build with Docker Compose:
 
 ```bash
-docker compose up -d --build
+docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
 ```
+
+The local override deliberately tags the build as `kaya:local`, matching the image name Compose starts. The base Compose file remains suitable for registry-based deployments.
 
 Then open:
 

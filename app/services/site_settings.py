@@ -43,6 +43,20 @@ DEFAULT_SITE_SETTINGS = {
     "dashboard_show_source_age": "1",
     "dashboard_attention_required": "1",
     "dashboard_globally_disabled_widgets": "",
+    "dns_manager_enabled": "",
+    "dns_collector_enabled": "1",
+    "dns_refresh_interval_seconds": "300",
+    "dns_known_hostnames": "[]",
+    "dns_vlan_integration_enabled": "1",
+    "dns_match_suggestions_enabled": "1",
+    "dns_auto_link_exact_mac": "",
+    "dns_auto_update_dynamic_ip": "",
+    "dns_stale_client_days": "30",
+    "dns_retain_client_history": "1",
+    "dns_client_history_days": "365",
+    "dns_traffic_history_days": "30",
+    "dns_vlan_enrichment_enabled": "1",
+    "dns_update_empty_managed_hostname": "",
     "authentication_mode": "local_only",
     "oidc_button_label": "Sign in with SSO",
     "oidc_auto_redirect_required": "1",
@@ -82,24 +96,36 @@ SECURITY_SETTING_KEYS = {
 }
 
 
+def get_site_settings(db: Session, keys) -> dict[str, str]:
+    """Bulk-load settings and retain them only for this request-scoped Session."""
+    requested = set(keys)
+    current_transaction = db.get_transaction()
+    if db.info.get("site_settings_transaction") is not current_transaction:
+        db.info.pop("site_settings", None)
+    cache = db.info.setdefault("site_settings", {})
+    missing = requested.difference(cache)
+    if missing:
+        rows = db.query(RemoteManagerSetting).filter(RemoteManagerSetting.key.in_(missing)).all()
+        stored = {row.key: row.value for row in rows}
+        app_settings = get_settings()
+        for key in missing:
+            value = stored.get(key)
+            if value is not None:
+                cache[key] = value
+            elif key in DEFAULT_SITE_SETTINGS:
+                cache[key] = DEFAULT_SITE_SETTINGS[key]
+            else:
+                cache[key] = str(getattr(app_settings, key, ""))
+        db.info["site_settings_transaction"] = db.get_transaction()
+    return {key: cache[key] for key in requested}
+
+
 def get_site_setting(db: Session, key: str) -> str:
-    row = (
-        db.query(RemoteManagerSetting)
-        .filter(RemoteManagerSetting.key == key)
-        .first()
-    )
-
-    if row and row.value is not None:
-        return row.value
-
-    if key in DEFAULT_SITE_SETTINGS:
-        return DEFAULT_SITE_SETTINGS[key]
-
-    return str(getattr(get_settings(), key, ""))
+    return get_site_settings(db, {key})[key]
 
 
 def load_security_settings(db: Session) -> dict[str, str]:
-    return {key: get_site_setting(db, key) for key in SECURITY_SETTING_KEYS}
+    return get_site_settings(db, SECURITY_SETTING_KEYS)
 
 
 def oidc_form_action_source(db: Session) -> str | None:

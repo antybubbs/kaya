@@ -3,7 +3,7 @@
 <div class="topbar"><div><h1>Imports and exports</h1><p class="muted">Export first to get the correct CSV structure, then import using the same columns. Imports overwrite matching records.</p></div></div>
 {% if message %}<div class="success">{{ message }}</div>{% endif %}
 {% if error %}<div class="alert">{{ error }}</div>{% endif %}
-<div class="tabs">
+<div class="module-tabs">
   <a class="{% if active_module == 'licences' %}active{% endif %}" href="/data/import-export?module=licences">License Keys</a>
   <a class="{% if active_module == 'ip-addresses' %}active{% endif %}" href="/data/import-export?module=ip-addresses">VLAN/IP Manager</a>
   <span>Asset Manager</span>

@@ -1,7 +1,11 @@
-<section class="cards">
-  <div class="card"><span>Monitors</span><strong>{{ total }}</strong></div>
-  <div class="card"><span>Up</span><strong>{{ up_count }}</strong></div>
-  <div class="card"><span>Down</span><strong>{{ down_count }}</strong></div>
+<section class="cards monitor-summary-cards">
+  <div class="card"><span>Total monitors</span><strong>{{ total }}</strong></div>
+  <div class="card"><span>Healthy</span><strong>{{ up_count }}</strong></div>
+  <div class="card"><span>Warning</span><strong>{{ warning_count }}</strong></div>
+  <div class="card"><span>Offline</span><strong>{{ down_count }}</strong></div>
+  <div class="card"><span>Average latency</span><strong>{{ average_latency ~ ' ms' if average_latency is not none else '-' }}</strong></div>
+  <div class="card"><span>24h availability</span><strong>{{ availability_24h ~ '%' if availability_24h is not none else '-' }}</strong></div>
+  <div class="card"><span>Checks/minute</span><strong>{{ checks_per_minute }}</strong></div>
 </section>
 {% if not rows %}
 <section class="panel"><p class="muted">No IP addresses are enabled for IP/WAN Monitor yet.</p></section>
@@ -11,43 +15,24 @@
   {% set monitor = row.monitor %}
   <article class="monitor-card" data-monitor-card="{{ monitor.id }}">
     <div class="monitor-card-header">
-      <div>
-        <div class="monitor-title-row">
-          <h2>{{ row.label }}</h2>
-          <form class="monitor-refresh-form" method="post" action="/networking/ip-wan-monitor/{{ monitor.id }}/refresh">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <button class="monitor-refresh-button" type="submit" title="Refresh monitor" aria-label="Refresh {{ row.label }}">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6v5h-5"></path><path d="M4 18v-5h5"></path><path d="M18.5 9A7 7 0 0 0 6.6 6.6L4 9"></path><path d="M5.5 15a7 7 0 0 0 11.9 2.4L20 15"></path></svg>
-            </button>
-          </form>
-        </div>
-        <p class="muted mono">{{ monitor.ip_address.address }}</p>
-      </div>
-      <span class="status-pill {{ monitor.last_status or 'pending' }}">{{ monitor.last_status|capitalize if monitor.last_status else 'Pending' }}</span>
+      <div><h2><a href="/networking/ip-wan-monitor/{{ monitor.id }}">{{ row.label }}</a></h2><p class="muted mono">{{ monitor.ip_address.address }}</p></div>
+      <span class="status-pill {{ monitor.last_status or 'pending' }}">{% if not monitor.is_enabled %}Paused{% else %}{{ monitor.last_status|capitalize if monitor.last_status else 'Pending' }}{% endif %}</span>
     </div>
     <div class="monitor-meta">
-      <div><span>Latency</span><strong>{% if monitor.last_latency_ms is not none %}{{ monitor.last_latency_ms }} ms{% else %}-{% endif %}</strong></div>
-      <div><span>Uptime 24h</span><strong>{% if row.uptime is not none %}{{ row.uptime }}%{% else %}-{% endif %}</strong></div>
-      <div><span>Interval</span><strong>{{ monitor.interval_seconds }}s</strong></div>
+      <div><span>Current latency</span><strong>{{ monitor.last_latency_ms ~ ' ms' if monitor.last_latency_ms is not none else '-' }}</strong></div>
+      <div><span>Average 24h</span><strong>{{ row.average_latency ~ ' ms' if row.average_latency is not none else '-' }}</strong></div>
+      <div><span>Availability 24h</span><strong>{{ row.uptime ~ '%' if row.uptime is not none else '-' }}</strong></div>
     </div>
-    <div class="uptime-strip" aria-label="Recent uptime history">
-      {% if row.history %}
-        {% for check in row.history %}
-        <span class="uptime-block {{ check.status }}" title="{{ check.checked_at }} - {{ check.status }}{% if check.latency_ms is not none %} - {{ check.latency_ms }} ms{% endif %}"></span>
-        {% endfor %}
-      {% else %}
-        <span class="muted">Waiting for first check</span>
-      {% endif %}
+    <div class="latency-spark" aria-label="Recent latency">
+      {% for check in row.history %}<span class="{{ check.status }}" style="height:{{ ([check.latency_ms or 2, 100]|min) }}%" title="{{ check.checked_at }} · {{ check.status }}{% if check.latency_ms is not none %} · {{ check.latency_ms }} ms{% endif %}"></span>{% else %}<em>Waiting for first check</em>{% endfor %}
     </div>
-    {% if monitor.last_error %}
-    <p class="monitor-error">{{ monitor.last_error }}</p>
-    {% endif %}
-    {% if user.role in ['admin','editor'] %}
-    <form method="post" action="/networking/ip-wan-monitor/{{ monitor.id }}/delete" data-confirm-delete="Delete monitor {{ row.label }} and all its check history?">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <button class="button danger" type="submit">Delete monitor</button>
-    </form>
-    {% endif %}
+    <div class="uptime-strip" aria-label="Recent availability">{% for check in row.history %}<span class="uptime-block {{ check.status }}" title="{{ check.checked_at }} · {{ check.status }}"></span>{% endfor %}</div>
+    {% if monitor.last_error %}<p class="monitor-error">{{ monitor.last_error }}</p>{% endif %}
+    <div class="monitor-card-actions">
+      <a class="button secondary" href="/networking/ip-wan-monitor/{{ monitor.id }}">View details</a>
+      <form class="monitor-refresh-form" method="post" action="/networking/ip-wan-monitor/{{ monitor.id }}/refresh"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit">Check now</button></form>
+      {% if user.role in ['admin','editor'] %}<form method="post" action="/networking/ip-wan-monitor/{{ monitor.id }}/toggle"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit">{{ 'Pause' if monitor.is_enabled else 'Resume' }}</button></form>{% endif %}
+    </div>
   </article>
 {% endfor %}
 </section>
