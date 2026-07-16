@@ -1,13 +1,13 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="module-header">
+<section class="module-header network-monitor-header">
   <div class="module-title-row">
     <div class="module-heading">
       <h1>IP/WAN Monitor</h1>
-      <p class="muted">Background availability, latency, packet-loss, event and outage history for managed IP addresses.</p>
+      <p class="muted module-description">Background availability, latency, packet-loss, event and outage history for managed IP addresses.</p>
     </div>
     <div class="module-actions">
-      <label class="monitor-refresh-control">Collection rate
+      <label class="monitor-refresh-control"><span class="monitor-refresh-label">Collection rate</span>
         <select data-monitor-refresh-rate data-monitor-csrf="{{ csrf_token }}">
           <option value="default">Record schedules</option>
           <option value="live">Live</option>
