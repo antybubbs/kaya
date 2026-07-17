@@ -310,6 +310,7 @@ Want to kick the tyres? Go ahead. https://demo.kaya-app.uk
 
 However, a few caveats.
 - The demo does not have a functional Remote Manager module.
+- It does not have everything active - this is for security reasons.
 - The data resets every night.
 - Its probably (highly likley to be) rough around the edges, this is because its the main app with a few restrictions in place - I probably have not picked up everything and most likley broke things trying to "make it safe"
 
