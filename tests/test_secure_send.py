@@ -121,6 +121,17 @@ def test_wizard_and_copy_script_use_the_base_template_script_block():
     assert "{% block extra_scripts %}" in created and "secure_send.js" in created
 
 
+def test_gateway_package_makes_complete_and_individual_downloads_distinct():
+    root = send_service.Path(__file__).parents[1]
+    template = (root / "app" / "templates" / "secure_send_gateway_package.html").read_text(encoding="utf-8")
+    stylesheet = (root / "app" / "static" / "css" / "secure-send-gateway.css").read_text(encoding="utf-8")
+    assert "Download complete package" in template
+    assert "Or download individual files" in template
+    assert "Download file" in template and "Download ZIP" in template
+    assert ".gateway-download-all" in stylesheet
+    assert ".gateway-card .gateway-files button" in stylesheet
+
+
 def test_gateway_health_reports_running_and_caches(monkeypatch):
     calls = []
 
