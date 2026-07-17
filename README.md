@@ -236,18 +236,6 @@ But who am I kidding, the roadmap is like a pub crawl, we hopping all through th
 
 ------------------------------------------------------------------------
 
-# AI Disclosure
-
-Kaya is developed by me with AI acting as my assisstant.
-
-I have over 20 years in the IT field as 1st/2nd/3rd, Dev Ops and now senior management.
-
-I have developed small tools in the past within my roles without AI which took me ages.
-
-I am not looking to sell Kaya or make any money from it, I thought what I created would be cool to share. 
-
-------------------------------------------------------------------------
-
 # Contributing
 
 Feel free
