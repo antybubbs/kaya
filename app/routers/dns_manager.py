@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 import json
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -771,8 +771,15 @@ def flag_dns_investigation(
             },
         )
     redirect_target = "/networking/dns-manager?tab=query-log"
-    if return_to.startswith("/networking/dns-manager/clients/") and "//" not in return_to and "\\" not in return_to:
-        redirect_target = return_to
+    candidate_return_to = return_to.strip()
+    parsed_return_to = urlparse(candidate_return_to)
+    if (
+        candidate_return_to.startswith("/networking/dns-manager/clients/")
+        and "\\" not in candidate_return_to
+        and not parsed_return_to.scheme
+        and not parsed_return_to.netloc
+    ):
+        redirect_target = candidate_return_to
     return RedirectResponse(redirect_target, status_code=303)
 
 
