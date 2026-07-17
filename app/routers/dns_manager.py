@@ -5,6 +5,8 @@ import json
 from typing import Any
 from urllib.parse import urlencode, urlparse
 
+from starlette.datastructures import URL
+
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -772,12 +774,10 @@ def flag_dns_investigation(
         )
     redirect_target = "/networking/dns-manager?tab=query-log"
     candidate_return_to = return_to.strip()
-    parsed_return_to = urlparse(candidate_return_to)
     if (
         candidate_return_to.startswith("/networking/dns-manager/clients/")
         and "\\" not in candidate_return_to
-        and not parsed_return_to.scheme
-        and not parsed_return_to.netloc
+        and URL(candidate_return_to).is_relative_url
     ):
         redirect_target = candidate_return_to
     return RedirectResponse(redirect_target, status_code=303)
