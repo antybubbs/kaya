@@ -486,14 +486,17 @@ html body .login-page .login-card .login-form-panel .login-form-inner .login-pas
 }
 
 .demo-login-option {
-  align-items: center;
+  align-content: space-between;
+  align-items: stretch;
   background: rgba(8, 13, 21, 0.48);
   border: 1px solid var(--login-border);
   border-radius: 10px;
   display: grid;
   gap: 12px;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: 1fr auto;
+  min-width: 0;
   padding: 12px;
+  text-align: center;
 }
 
 .demo-login-option strong,
@@ -509,7 +512,10 @@ html body .login-page .login-card .login-form-panel .login-form-inner .login-pas
 .login-page .demo-login-option button {
   font-size: 13px;
   min-height: 40px;
-  width: auto;
+  padding-left: 6px;
+  padding-right: 6px;
+  white-space: nowrap;
+  width: 100%;
 }
 
 .login-security-footer {
