@@ -729,20 +729,22 @@
           <small>Name shown beside the sender address.</small>
           <input name="smtp_from_name" value="{{ settings.get('smtp_from_name', brand.name) }}">
         </label>
-        <label>
-          <strong>Test Recipient</strong>
-          <small>Used only when sending a test email.</small>
-          <input name="test_email_to" type="email" value="{{ test_email_to or user.email }}" placeholder="{{ user.email }}">
-        </label>
+        <div class="email-test-field">
+          <label for="test-email-to">
+            <strong>Test Recipient</strong>
+            <small>Used only when sending a test email.</small>
+          </label>
+          <div class="email-test-controls">
+            <input id="test-email-to" name="test_email_to" type="email" value="{{ test_email_to or user.email }}" placeholder="{{ user.email }}">
+            <button class="button secondary" type="submit" formaction="/system/site-administration/test-email" formmethod="post">Send test email</button>
+          </div>
+          <small class="muted email-test-note">Saves these email settings first, then sends one test message. Delivery still depends on SPF, DKIM, DMARC and sender reputation.</small>
+        </div>
       </div>
       <div class="remote-settings-grid">
         {{ switch('smtp_use_tls', 'Use STARTTLS', 'Upgrade the SMTP connection with STARTTLS after connecting.') }}
         {{ switch('smtp_use_ssl', 'Use SSL', 'Connect with SMTP over SSL from the start, usually on port 465.') }}
         {{ switch('email_include_branding', 'Include Kaya branding', 'Add a compact embedded Kaya logo and header to HTML email. A plain-text version is always included.') }}
-      </div>
-      <div class="form-actions">
-        <button class="button secondary" type="submit" formaction="/system/site-administration/test-email" formmethod="post">Send test email</button>
-        <span class="muted">Saves the email settings above, then sends one test message. Inbox placement still depends on SPF, DKIM, DMARC and sender reputation.</span>
       </div>
     </div>
   </section>

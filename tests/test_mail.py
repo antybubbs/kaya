@@ -96,6 +96,8 @@ def test_secure_send_template_and_branding_settings_are_available():
     assert "email_include_branding" in settings_template
     assert 'formaction="/system/site-administration/test-email"' in settings_template
     assert "Send test email" in settings_template
+    assert 'class="email-test-controls"' in settings_template
+    assert 'for="test-email-to"' in settings_template
     assert "action_url=url" in secure_send_router
     assert "{pin}" not in DEFAULT_SITE_SETTINGS["email_template_secure_send_body"].lower()
     assert "{passphrase}" not in DEFAULT_SITE_SETTINGS["email_template_secure_send_body"].lower()

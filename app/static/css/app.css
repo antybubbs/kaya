@@ -681,6 +681,45 @@ html[data-theme=light] .settings-content-panel {
   box-shadow: none;
 }
 
+.email-test-field {
+  display: grid;
+  gap: 8px;
+}
+
+.email-test-field>label {
+  gap: 4px;
+}
+
+.email-test-controls {
+  align-items: stretch;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.email-test-controls input {
+  min-width: 0;
+}
+
+.email-test-controls button {
+  min-height: 40px;
+  white-space: nowrap;
+}
+
+.email-test-note {
+  line-height: 1.4;
+}
+
+@media (max-width: 640px) {
+  .email-test-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .email-test-controls button {
+    width: 100%;
+  }
+}
+
 /* VLAN/IP module administration */
 .vlan-ip-admin-panel {
   gap: 16px;
