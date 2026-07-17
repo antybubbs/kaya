@@ -207,6 +207,17 @@ def package_or_error(db: Session, token: str) -> SecureSendPackage:
     return row
 
 
+def recipient_redirect(access_token: str) -> RedirectResponse:
+    """Redirect only to a canonical recipient path on this gateway."""
+    if not ACCESS_TOKEN_RE.fullmatch(access_token):
+        raise HTTPException(403, "Forbidden")
+    target = f"/{access_token}"
+    parsed = urlparse(target.replace("\\", ""))
+    if parsed.scheme or parsed.netloc:
+        raise HTTPException(403, "Forbidden")
+    return RedirectResponse(target, status_code=303)
+
+
 @app.exception_handler(HTTPException)
 async def public_error(request: Request, exc: HTTPException):
     if exc.status_code == 429:
@@ -289,7 +300,7 @@ def unlock(access_token: str, request: Request, pin: str = Form(""), passphrase:
     row.failed_attempts = 0; row.locked_until = None; row.authenticated_at = datetime.utcnow(); db.commit()
     token, csrf, _ = start_recipient_session(db, row); request.session["recipient_csrf"] = csrf
     record_activity(db, row, "authenticated"); write_audit(db, row.sender, "secure_send_authenticated", "secure_send_package", str(row.id), client_ip(request), category="security")
-    response = RedirectResponse(f"/{quote(access_token, safe='')}", status_code=303)
+    response = recipient_redirect(access_token)
     response.set_cookie(SESSION_COOKIE, token, max_age=900, httponly=True, secure=request_is_https(request), samesite="strict", path="/")
     return response
 
@@ -333,4 +344,4 @@ def logout(access_token: str, request: Request, csrf_token: str = Form(...), db:
     session = active_recipient_session(db, row, request.cookies.get(SESSION_COOKIE))
     if not session or not verify_session_csrf(session, csrf_token): raise HTTPException(403, "Forbidden")
     session.revoked_at = datetime.utcnow(); db.commit()
-    request.session.clear(); response = RedirectResponse(f"/{quote(access_token, safe='')}", status_code=303); response.delete_cookie(SESSION_COOKIE, path="/"); response.headers["Clear-Site-Data"] = '"cache", "cookies", "storage"'; return response
+    request.session.clear(); response = recipient_redirect(access_token); response.delete_cookie(SESSION_COOKIE, path="/"); response.headers["Clear-Site-Data"] = '"cache", "cookies", "storage"'; return response

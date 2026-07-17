@@ -204,6 +204,17 @@ def test_gateway_denies_malformed_unknown_and_unrecognised_paths_without_brandin
         gateway.app.dependency_overrides.clear()
 
 
+def test_gateway_recipient_redirect_is_strictly_local():
+    access_token = "a" * 64
+    response = gateway.recipient_redirect(access_token)
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/{access_token}"
+    for unsafe in ("//attacker.example", "https://attacker.example", r"\\attacker.example", "a" * 63):
+        with pytest.raises(gateway.HTTPException) as exc_info:
+            gateway.recipient_redirect(unsafe)
+        assert exc_info.value.status_code == 403
+
+
 def test_gateway_health_requires_internal_proof():
     gateway.PUBLIC_REQUESTS.clear()
     with TestClient(gateway.app) as client:
