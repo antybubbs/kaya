@@ -68,7 +68,7 @@
       <header><span>Temporary encrypted delivery</span></header>
       {{ switch('secure_send_enabled', 'Enable Secure Send', 'Show the sender module and allow recipient access through the Security Gateway.') }}
       <div class="remote-settings-grid two">
-        <label><strong>Gateway hostname</strong><small>Public origin for recipient links. Keep the main Kaya interface private.</small><input name="secure_send_gateway_hostname" type="url" value="{{ settings.get('secure_send_gateway_hostname','http://localhost:8081') }}"></label>
+        <label><strong>Gateway hostname</strong><small>Public origin for recipient links. Keep the main Kaya interface private.</small><input name="secure_send_gateway_hostname" type="url" value="{{ settings.get('secure_send_gateway_hostname','http://localhost:8999') }}"></label>
         <label><strong>Default expiry</strong><small>Preselected when a user creates a package.</small><select name="secure_send_default_expiry">{% for key,label in [('15m','15 minutes'),('1h','1 hour'),('4h','4 hours'),('24h','24 hours'),('3d','3 days'),('7d','7 days')] %}<option value="{{ key }}" {% if settings.get('secure_send_default_expiry','24h') == key %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
         <label><strong>Maximum expiry (days)</strong><small>Between 1 and 30 days.</small><input name="secure_send_max_expiry_days" type="number" min="1" max="30" value="{{ settings.get('secure_send_max_expiry_days','7') }}"></label>
         <label><strong>Maximum package size (MB)</strong><small>Combined encrypted note and file delivery limit.</small><input name="secure_send_max_upload_mb" type="number" min="1" max="250" value="{{ settings.get('secure_send_max_upload_mb','25') }}"></label>
@@ -738,6 +738,7 @@
       <div class="remote-settings-grid">
         {{ switch('smtp_use_tls', 'Use STARTTLS', 'Upgrade the SMTP connection with STARTTLS after connecting.') }}
         {{ switch('smtp_use_ssl', 'Use SSL', 'Connect with SMTP over SSL from the start, usually on port 465.') }}
+        {{ switch('email_include_branding', 'Include Kaya branding', 'Add a compact embedded Kaya logo and header to HTML email. A plain-text version is always included.') }}
       </div>
     </div>
   </section>
@@ -757,6 +758,22 @@
           <strong>Body</strong>
           <small>Plain-text email body. Use {reset_link} where the reset URL should appear.</small>
           <textarea name="email_template_password_reset_body" rows="9">{{ settings.get('email_template_password_reset_body', '') }}</textarea>
+        </label>
+      </div>
+    </div>
+
+    <div class="remote-settings-card">
+      <header><span>Secure Send recipient</span></header>
+      <div class="remote-settings-grid">
+        <label>
+          <strong>Subject</strong>
+          <small>Available placeholders: {app_name}, {sender_name}, {sender_email}, {recipient_name}, {package_title}, {secure_link}, {expiry_utc}</small>
+          <input name="email_template_secure_send_subject" value="{{ settings.get('email_template_secure_send_subject', '{sender_name} sent you a secure package') }}">
+        </label>
+        <label>
+          <strong>Body</strong>
+          <small>Use {secure_link} where the protected recipient URL should appear. PINs and passphrases are never included.</small>
+          <textarea name="email_template_secure_send_body" rows="11">{{ settings.get('email_template_secure_send_body', '') }}</textarea>
         </label>
       </div>
     </div>

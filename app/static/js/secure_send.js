@@ -17,4 +17,38 @@
     updateRecipient(); show(0);
   }
   document.querySelectorAll('[data-copy]').forEach(button => button.addEventListener('click', async () => { const input = button.parentElement.querySelector('[data-copy-value]'); await navigator.clipboard.writeText(input.value); button.textContent = 'Copied'; setTimeout(() => { button.textContent = 'Copy'; }, 1500); }));
+  const gatewayStatus = document.querySelector('[data-gateway-status]');
+  if (gatewayStatus) {
+    const root = (document.body.dataset.appRoot || '').replace(/\/$/, '');
+    const label = gatewayStatus.querySelector('[data-gateway-label]');
+    const detail = gatewayStatus.querySelector('[data-gateway-detail]');
+    let checking = false;
+    const renderGateway = data => {
+      const state = data.state === 'running' ? 'running' : 'unavailable';
+      gatewayStatus.classList.remove('gateway-running', 'gateway-unavailable', 'gateway-checking');
+      gatewayStatus.classList.add(`gateway-${state}`);
+      label.textContent = data.label || (state === 'running' ? 'Gateway running' : 'Gateway unavailable');
+      detail.textContent = data.detail || 'Live status check failed.';
+      gatewayStatus.title = data.checked_at ? `Last checked ${data.checked_at}` : 'Live gateway status';
+    };
+    const checkGateway = async () => {
+      if (checking || document.hidden) return;
+      checking = true;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 2500);
+      try {
+        const response = await fetch(`${root}/security/secure-send/gateway-status`, {cache: 'no-store', credentials: 'same-origin', headers: {'Accept': 'application/json'}, signal: controller.signal});
+        if (!response.ok) throw new Error('status unavailable');
+        renderGateway(await response.json());
+      } catch (_error) {
+        renderGateway({state: 'unavailable', label: 'Gateway unavailable', detail: 'Live status check failed. Check the secure-send-gateway container.'});
+      } finally {
+        clearTimeout(timeout);
+        checking = false;
+      }
+    };
+    checkGateway();
+    setInterval(checkGateway, 3000);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) checkGateway(); });
+  }
 })();

@@ -50,7 +50,7 @@ Browser form flows include CSRF tokens. Several JSON/form endpoints explicitly v
 
 ## Secure Send
 
-Secure Send uses per-package AES-256-GCM content keys, Argon2 credential verification and opaque recipient sessions. Recipient access requires the high-entropy URL token, a sender-selected PIN and a generated passphrase. The gateway applies a restrictive content security policy, generic public errors, throttled authentication, no-store responses and session-bound CSRF protection for downloads. Expiry, revocation, deletion and one-download completion revoke access; a background cleanup worker destroys expired file and note ciphertext. See [Secure Send](modules/secure-send.md) for deployment and recovery details.
+Secure Send uses per-package AES-256-GCM content keys, Argon2 credential verification and opaque recipient sessions. Recipient access requires the high-entropy URL token, a sender-selected PIN and a generated passphrase. The gateway fail-closes unknown routes and hosts with an unbranded `403`, restricts methods, origins, body sizes and static assets, protects its health endpoint, suppresses bearer-path access logs, and applies a restrictive content security policy, HSTS over HTTPS, no-store responses, throttling and session-bound CSRF protection. Expiry, revocation, deletion and one-download completion revoke access; a background cleanup worker destroys expired file and note ciphertext. See [Secure Send](modules/secure-send.md) for deployment, reverse-proxy logging and recovery details.
 
 ## Security Headers
 

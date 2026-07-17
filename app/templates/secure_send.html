@@ -3,7 +3,12 @@
 {% block content %}
 <section class="module-header secure-send-header">
   <div><span class="eyebrow">Security</span><h1>Secure Send</h1><p class="muted">Temporary encrypted delivery for files and secure notes.</p></div>
-  {% if can_create %}<a class="button" href="/security/secure-send/new">Create secure package</a>{% endif %}
+  <div class="secure-send-header-actions">
+    <div class="secure-send-gateway-state gateway-{{ gateway_status.state }}" role="status" aria-live="polite" data-gateway-status title="Last checked {{ gateway_status.checked_at }}">
+      <i aria-hidden="true"></i><span><strong data-gateway-label>{{ gateway_status.label }}</strong><small data-gateway-detail>{{ gateway_status.detail }}</small></span>
+    </div>
+    {% if can_create %}<a class="button" href="/security/secure-send/new">Create secure package</a>{% endif %}
+  </div>
 </section>
 <nav class="detail-tabs" aria-label="Secure Send views">
   <a class="{% if view == 'dashboard' %}active{% endif %}" href="/security/secure-send">Dashboard</a>
@@ -29,3 +34,4 @@
 <section class="panel"><header class="panel-heading"><div><h2>Manage all packages</h2><p class="muted">Lifecycle controls only. Package content and encrypted recipient details remain private.</p></div></header><div class="secure-send-table-wrap"><table class="secure-send-table"><thead><tr><th>ID</th><th>Sender</th><th>Status</th><th>Expires</th><th></th></tr></thead><tbody>{% for row in managed %}<tr><td>#{{ row.id }}</td><td>{{ row.sender.email }}</td><td><span class="secure-send-status status-{{ row.status }}">{{ row.status|title }}</span></td><td>{{ local_time(row.expires_at, 'friendly') }}</td><td class="action-col"><a class="button secondary" href="/security/secure-send/packages/{{ row.id }}">Manage</a></td></tr>{% else %}<tr><td colspan="5"><div class="empty-state"><strong>No packages</strong><span>There are no Secure Send packages to manage.</span></div></td></tr>{% endfor %}</tbody></table></div></section>
 {% endif %}
 {% endblock %}
+{% block extra_scripts %}<script src="/static/js/secure_send.js?v={{ asset_version }}" defer></script>{% endblock %}

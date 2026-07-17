@@ -145,7 +145,7 @@ SITE_SETTING_KEYS = {
     "secure_send_max_upload_mb": "25",
     "secure_send_allow_one_download": "1",
     "secure_send_vault_integration": "1",
-    "secure_send_gateway_hostname": "http://localhost:8081",
+    "secure_send_gateway_hostname": "http://localhost:8999",
     "secure_send_email_notifications": "1",
     "smtp_enabled": "",
     "smtp_host": "",
@@ -156,12 +156,23 @@ SITE_SETTING_KEYS = {
     "smtp_password": "",
     "smtp_from_email": "",
     "smtp_from_name": APP_BRAND_NAME,
+    "email_include_branding": "1",
     "email_template_password_reset_subject": "Reset your {app_name} password",
     "email_template_password_reset_body": (
         "A password reset was requested for your {app_name} account.\n\n"
         "Use this link within {expiry_hours} hour to set a new password:\n"
         "{reset_link}\n\n"
         "If you did not request this, you can ignore this email."
+    ),
+    "email_template_secure_send_subject": "{sender_name} sent you a secure package",
+    "email_template_secure_send_body": (
+        "Hello {recipient_name},\n\n"
+        "{sender_name} has sent you a secure package using {app_name}.\n\n"
+        "Open secure package:\n"
+        "{secure_link}\n\n"
+        "Package: {package_title}\n"
+        "Expires: {expiry_utc}\n\n"
+        "For your security, obtain the PIN and passphrase from the sender separately."
     ),
 }
 SITE_SETTING_KEYS.update(REMOTE_MANAGER_SETTINGS)
@@ -667,8 +678,11 @@ def save_email_settings(
     smtp_password: str,
     smtp_from_email: str,
     smtp_from_name: str,
+    email_include_branding: str,
     email_template_password_reset_subject: str,
     email_template_password_reset_body: str,
+    email_template_secure_send_subject: str,
+    email_template_secure_send_body: str,
 ) -> None:
     settings_to_save = {
         "app_name": app_name,
@@ -686,8 +700,11 @@ def save_email_settings(
         "smtp_username": smtp_username,
         "smtp_from_email": smtp_from_email,
         "smtp_from_name": smtp_from_name,
+        "email_include_branding": "1" if email_include_branding else "",
         "email_template_password_reset_subject": email_template_password_reset_subject,
         "email_template_password_reset_body": email_template_password_reset_body,
+        "email_template_secure_send_subject": email_template_secure_send_subject,
+        "email_template_secure_send_body": email_template_secure_send_body,
     }
 
     for key, value in settings_to_save.items():
@@ -2242,7 +2259,7 @@ async def save_settings(
     secure_send_max_upload_mb: str = Form("25"),
     secure_send_allow_one_download: str = Form(""),
     secure_send_vault_integration: str = Form(""),
-    secure_send_gateway_hostname: str = Form("http://localhost:8081"),
+    secure_send_gateway_hostname: str = Form("http://localhost:8999"),
     secure_send_email_notifications: str = Form(""),
     dns_manager_enabled: str = Form(""),
     dns_collector_enabled: str = Form(""),
@@ -2278,8 +2295,11 @@ async def save_settings(
     smtp_password: str = Form(""),
     smtp_from_email: str = Form(""),
     smtp_from_name: str = Form(APP_BRAND_NAME),
+    email_include_branding: str = Form(""),
     email_template_password_reset_subject: str = Form(""),
     email_template_password_reset_body: str = Form(""),
+    email_template_secure_send_subject: str = Form(""),
+    email_template_secure_send_body: str = Form(""),
     csrf_token: str = Form(...),
     db: Session = Depends(get_db),
     user=Depends(require_admin),
@@ -2346,8 +2366,11 @@ async def save_settings(
         smtp_password=smtp_password,
         smtp_from_email=smtp_from_email,
         smtp_from_name=smtp_from_name,
+        email_include_branding=email_include_branding,
         email_template_password_reset_subject=email_template_password_reset_subject,
         email_template_password_reset_body=email_template_password_reset_body,
+        email_template_secure_send_subject=email_template_secure_send_subject,
+        email_template_secure_send_body=email_template_secure_send_body,
     )
     save_security_settings(
         db,
@@ -2424,7 +2447,7 @@ async def save_settings(
     save_site_setting(db, "secure_send_email_notifications", "1" if secure_send_email_notifications else "")
     gateway_hostname = secure_send_gateway_hostname.strip().rstrip("/")[:500]
     if not re.fullmatch(r"https?://[^\s/]+(?::\d+)?", gateway_hostname):
-        gateway_hostname = "http://localhost:8081"
+        gateway_hostname = "http://localhost:8999"
     save_site_setting(db, "secure_send_gateway_hostname", gateway_hostname)
     save_dns_manager_settings(
         db,
@@ -2689,8 +2712,11 @@ def send_test_email(
     smtp_password: str = Form(""),
     smtp_from_email: str = Form(""),
     smtp_from_name: str = Form(APP_BRAND_NAME),
+    email_include_branding: str = Form(""),
     email_template_password_reset_subject: str = Form(""),
     email_template_password_reset_body: str = Form(""),
+    email_template_secure_send_subject: str = Form(""),
+    email_template_secure_send_body: str = Form(""),
     test_email_to: str = Form(""),
     csrf_token: str = Form(...),
     db: Session = Depends(get_db),
@@ -2716,8 +2742,11 @@ def send_test_email(
         smtp_password=smtp_password,
         smtp_from_email=smtp_from_email,
         smtp_from_name=smtp_from_name,
+        email_include_branding=email_include_branding,
         email_template_password_reset_subject=email_template_password_reset_subject,
         email_template_password_reset_body=email_template_password_reset_body,
+        email_template_secure_send_subject=email_template_secure_send_subject,
+        email_template_secure_send_body=email_template_secure_send_body,
     )
     if trusted_hosts_enabled:
         allowed_hosts = include_current_host(allowed_hosts, request)

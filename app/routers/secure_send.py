@@ -8,7 +8,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
@@ -20,11 +20,11 @@ from app.models.models import (
 )
 from app.routers.auth import require_user
 from app.services.audit import write_audit
-from app.services.mail import MailConfigurationError, send_mail
+from app.services.mail import MailConfigurationError, render_email_template, send_mail
 from app.services.secure_send import (
     SecureSendError, authenticate_package, clean_package_content, create_package, decode_note, decode_summary,
-    decoded_files, decrypted_access_token, ensure_storage as ensure_send_storage, expire_and_cleanup,
-    package_accessible, package_for_token, package_key_from_application, read_file, record_activity,
+    decoded_files, decrypted_access_token, expire_and_cleanup, gateway_health,
+    package_accessible, package_key_from_application, read_file, record_activity,
     revoke_recipient_sessions, validate_pin,
 )
 from app.services.site_settings import get_site_setting
@@ -51,7 +51,7 @@ def can_create(user: User) -> bool:
 
 
 def gateway_base(db: Session) -> str:
-    return (get_site_setting(db, "secure_send_gateway_hostname") or "http://localhost:8081").strip().rstrip("/")
+    return (get_site_setting(db, "secure_send_gateway_hostname") or "http://localhost:8999").strip().rstrip("/")
 
 
 def secure_url(db: Session, row: SecureSendPackage) -> str:
@@ -74,6 +74,12 @@ def current_status(row: SecureSendPackage) -> str:
 
 def page_context(request: Request, user: User, **values):
     return {"user": user, "expiry_choices": EXPIRY_CHOICES, **csrf_context(request), **values}
+
+
+@router.get("/gateway-status", include_in_schema=False)
+def gateway_status(db: Session = Depends(get_db), user: User = Depends(require_user)):
+    require_module(db)
+    return JSONResponse(gateway_health(), headers={"Cache-Control": "no-store"})
 
 
 @router.get("")
@@ -99,7 +105,8 @@ def home(request: Request, view: str = Query("dashboard"), db: Session = Depends
     }
     return templates.TemplateResponse(request, "secure_send.html", page_context(
         request, user, view=view if view in {"dashboard", "sent", "received", "manage"} and (view != "manage" or user.role == "admin") else "dashboard",
-        sent=sent_rows, received=received_rows, managed=managed, activity=activity, metrics=metrics, can_create=can_create(user),
+        sent=sent_rows, received=received_rows, managed=managed, activity=activity, metrics=metrics,
+        can_create=can_create(user), gateway_status=gateway_health(),
     ))
 
 
@@ -206,7 +213,23 @@ async def create(
     url = f"{gateway_base(db)}/{quote(token, safe='')}"
     if get_site_setting(db, "secure_send_email_notifications") == "1":
         try:
-            send_mail(db, recipient_email, "A Kaya secure package is available", f"A secure package has been shared with you.\n\nOpen: {url}\n\nThe PIN and passphrase must be obtained separately. This package expires {expires_at:%Y-%m-%d %H:%M} UTC.")
+            sender_name = f"{user.first_name or ''} {user.last_name or ''}".strip() or user.email
+            template_values = {
+                "app_name": get_site_setting(db, "app_name") or "Kaya",
+                "sender_name": sender_name,
+                "sender_email": user.email,
+                "recipient_name": recipient_name.strip(),
+                "package_title": title.strip() or "Secure package",
+                "secure_link": url,
+                "expiry_utc": f"{expires_at:%Y-%m-%d %H:%M} UTC",
+            }
+            subject = render_email_template(
+                get_site_setting(db, "email_template_secure_send_subject"), **template_values
+            )
+            body = render_email_template(
+                get_site_setting(db, "email_template_secure_send_body"), **template_values
+            )
+            send_mail(db, recipient_email, subject, body, action_url=url, action_label="Open secure package")
             record_activity(db, row, "shared", actor_user_id=user.id)
         except (MailConfigurationError, OSError, ValueError, smtplib.SMTPException):
             record_activity(db, row, "email_failed", actor_user_id=user.id)
@@ -257,24 +280,24 @@ def delete(package_id: int, request: Request, csrf_token: str = Form(...), db: S
     return RedirectResponse("/security/secure-send?view=sent", status_code=303)
 
 
-@router.get("/receive/{access_token}")
-def receive_page(access_token: str, request: Request, db: Session = Depends(get_db), user: User = Depends(require_user)):
-    require_module(db); row = package_for_token(db, access_token)
+@router.get("/receive/{package_id}")
+def receive_page(package_id: int, request: Request, db: Session = Depends(get_db), user: User = Depends(require_user)):
+    require_module(db); row = db.get(SecureSendPackage, package_id)
     if not row or row.internal_recipient_id != user.id or not row.allow_vault_save or not package_accessible(row): raise HTTPException(404, "Secure package not found")
-    return templates.TemplateResponse(request, "secure_send_save_to_vault.html", page_context(request, user, access_token=access_token, error=None))
+    return templates.TemplateResponse(request, "secure_send_save_to_vault.html", page_context(request, user, package_id=package_id, error=None))
 
 
-@router.post("/receive/{access_token}/save")
-def save_to_vault(access_token: str, request: Request, pin: str = Form(""), passphrase: str = Form(""), csrf_token: str = Form(...), db: Session = Depends(get_db), user: User = Depends(require_user)):
-    validate_csrf_token(request, csrf_token); require_module(db); row = package_for_token(db, access_token)
+@router.post("/receive/{package_id}/save")
+def save_to_vault(package_id: int, request: Request, pin: str = Form(""), passphrase: str = Form(""), csrf_token: str = Form(...), db: Session = Depends(get_db), user: User = Depends(require_user)):
+    validate_csrf_token(request, csrf_token); require_module(db); row = db.get(SecureSendPackage, package_id)
     if not row or row.internal_recipient_id != user.id or not row.allow_vault_save or not package_accessible(row): raise HTTPException(404, "Secure package not found")
-    try: key = authenticate_package(row, access_token, pin, passphrase)
+    try: key = authenticate_package(row, decrypted_access_token(row), pin, passphrase)
     except SecureSendError:
-        return templates.TemplateResponse(request, "secure_send_save_to_vault.html", page_context(request, user, access_token=access_token, error="The information entered is incorrect."), status_code=400)
+        return templates.TemplateResponse(request, "secure_send_save_to_vault.html", page_context(request, user, package_id=package_id, error="The information entered is incorrect."), status_code=400)
     from app.services.secret_vault import encrypt_file as encrypt_vault_file, encrypt_payload, ensure_storage as ensure_vault_storage, require_unlocked
     try: vault, vault_key = require_unlocked(db, request, user)
     except HTTPException:
-        return templates.TemplateResponse(request, "secure_send_save_to_vault.html", page_context(request, user, access_token=access_token, error="Unlock your Secret Vault first, then return here to save the package."), status_code=403)
+        return templates.TemplateResponse(request, "secure_send_save_to_vault.html", page_context(request, user, package_id=package_id, error="Unlock your Secret Vault first, then return here to save the package."), status_code=403)
     summary = decode_summary(row, key); note = decode_note(row, key)
     item = VaultItem(vault_id=vault.id, item_type="secure_document" if db.query(SecureSendFile.id).filter_by(package_id=row.id).first() else "secure_note", encrypted_payload="pending", created_by_id=user.id, updated_by_id=user.id)
     db.add(item); db.flush(); payload = {"title": summary.get("title") or "Received secure package", "body": note, "fields": [], "tags": ["secure-send"], "classification": "confidential", "expiry_date": "", "review_date": ""}

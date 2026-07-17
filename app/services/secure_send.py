@@ -4,14 +4,19 @@ from __future__ import annotations
 import base64
 import asyncio
 import hashlib
+import hmac
 import io
 import json
 import os
 import secrets
+import threading
 import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
+from time import monotonic
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -23,6 +28,8 @@ from app.core.security import decrypt_secret, encrypt_secret, hash_password, ver
 from app.models.models import (
     SecureSendActivity, SecureSendFile, SecureSendPackage, SecureSendRecipientSession, User,
 )
+from app.core.performance import external_call
+from app.core.config import get_settings
 from app.services.secret_vault import application_kek, derive_wrapping_key, unwrap_key, wrap_key
 
 STORAGE = Path(os.getenv("KAYA_SECURE_SEND_STORAGE_DIR", "/app/data/secure-send"))
@@ -33,10 +40,53 @@ SESSION_MINUTES = 15
 PASSPHRASE_WORDS = tuple((
     "amber anchor apple atlas autumn bamboo beacon birch blue breeze brook canyon cedar circle cloud coral copper creek crystal dawn delta dune eagle ember fern field flame forest frost garden globe granite harbor hazel hill island ivory jade juniper lake lantern leaf lemon maple meadow mist moon moss mountain night north ocean olive orchid pebble pine planet quartz rain raven reef river robin silver sky slate snow solar south spring star stone storm summit sun tide timber trail valley violet wave west willow wind winter wood"
 ).split())
+GATEWAY_HEALTH_URL = "http://secure-send-gateway:8999/healthz"
+_GATEWAY_HEALTH_CACHE: dict[str, Any] = {"expires": 0.0, "result": None}
+_GATEWAY_HEALTH_LOCK = threading.Lock()
 
 
 class SecureSendError(ValueError):
     pass
+
+
+def gateway_health(*, force: bool = False) -> dict[str, str]:
+    """Return a short-lived health result without contacting the public URL."""
+    now = monotonic()
+    with _GATEWAY_HEALTH_LOCK:
+        cached = _GATEWAY_HEALTH_CACHE.get("result")
+        if not force and cached and float(_GATEWAY_HEALTH_CACHE.get("expires") or 0) > now:
+            return dict(cached)
+        result = {
+            "state": "unavailable",
+            "label": "Gateway unavailable",
+            "detail": "Recipient service is not responding. Check the secure-send-gateway container.",
+        }
+        try:
+            request = Request(GATEWAY_HEALTH_URL, headers={
+                "User-Agent": "Kaya-Secure-Send-Health/1",
+                "X-Kaya-Health": gateway_health_token(),
+            })
+            with external_call():
+                with urlopen(request, timeout=0.8) as response:
+                    payload = json.loads(response.read(256))
+                    if response.status == 200 and payload == {"status": "ok"}:
+                        result = {
+                            "state": "running",
+                            "label": "Gateway running",
+                            "detail": "Recipient service is healthy and listening on port 8999.",
+                        }
+        except (HTTPError, URLError, OSError, TimeoutError, ValueError, json.JSONDecodeError):
+            pass
+        result["checked_at"] = datetime.utcnow().strftime("%H:%M:%S UTC")
+        # Keep checks genuinely live while coalescing simultaneous browser tabs.
+        _GATEWAY_HEALTH_CACHE.update({"expires": monotonic() + 2.0, "result": result})
+        return dict(result)
+
+
+def gateway_health_token() -> str:
+    return hmac.new(
+        get_settings().secret_key.encode("utf-8"), b"kaya-secure-send-health-v1", hashlib.sha256
+    ).hexdigest()
 
 
 def _b64(value: bytes) -> str:

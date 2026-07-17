@@ -1,7 +1,9 @@
 import base64
+import json
 from datetime import datetime, timedelta
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -10,6 +12,8 @@ from app.db.session import Base
 from app.models.models import SecureSendFile, SecureSendRecipientSession, User
 import app.services.secret_vault as vault_service
 import app.services.secure_send as send_service
+import app.routers.secure_send as send_router
+import app.security_gateway as gateway
 
 
 @pytest.fixture()
@@ -114,3 +118,118 @@ def test_wizard_and_copy_script_use_the_base_template_script_block():
     assert "{% block extra_scripts %}" in base
     assert "{% block extra_scripts %}" in wizard and "secure_send.js" in wizard
     assert "{% block extra_scripts %}" in created and "secure_send.js" in created
+
+
+def test_gateway_health_reports_running_and_caches(monkeypatch):
+    calls = []
+
+    class Response:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *_): return False
+        def read(self, _limit): return b'{"status":"ok"}'
+
+    monkeypatch.setattr(send_service, "urlopen", lambda request, timeout: calls.append((request.full_url, timeout)) or Response())
+    send_service._GATEWAY_HEALTH_CACHE.update({"expires": 0.0, "result": None})
+    assert send_service.gateway_health(force=True)["state"] == "running"
+    assert send_service.gateway_health()["state"] == "running"
+    assert calls == [("http://secure-send-gateway:8999/healthz", 0.8)]
+
+
+def test_gateway_health_failure_is_safe_and_visible(monkeypatch):
+    monkeypatch.setattr(send_service, "urlopen", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("offline")))
+    send_service._GATEWAY_HEALTH_CACHE.update({"expires": 0.0, "result": None})
+    result = send_service.gateway_health(force=True)
+    assert result["state"] == "unavailable"
+    assert "secure-send-gateway" in result["detail"]
+
+
+def test_authenticated_gateway_status_endpoint_is_live_and_not_cached(db, monkeypatch):
+    user = sender(db)
+    checks = []
+    monkeypatch.setattr(send_router, "gateway_health", lambda: checks.append(True) or {
+        "state": "running", "label": "Gateway running", "detail": "Healthy", "checked_at": "12:00:00 UTC",
+    })
+    response = send_router.gateway_status(db=db, user=user)
+    assert response.headers["cache-control"] == "no-store"
+    assert json.loads(response.body) == {
+        "state": "running", "label": "Gateway running", "detail": "Healthy", "checked_at": "12:00:00 UTC",
+    }
+    assert checks == [True]
+
+
+def test_secure_send_dashboard_polls_gateway_status_live():
+    root = send_service.Path(__file__).parents[1]
+    template = (root / "app" / "templates" / "secure_send.html").read_text(encoding="utf-8")
+    script = (root / "app" / "static" / "js" / "secure_send.js").read_text(encoding="utf-8")
+    assert "data-gateway-status" in template and "aria-live=\"polite\"" in template
+    assert "/security/secure-send/gateway-status" in script
+    assert "setInterval(checkGateway, 3000)" in script
+    assert "cache: 'no-store'" in script
+
+
+def test_gateway_denies_malformed_unknown_and_unrecognised_paths_without_branding(db):
+    gateway.app.dependency_overrides[gateway.get_db] = lambda: db
+    gateway.PUBLIC_REQUESTS.clear()
+    try:
+        with TestClient(gateway.app) as client:
+            gateway.GATEWAY_HOST_CACHE.update({"expires": float("inf"), "hostname": "localhost"})
+            for path in ["/dededsfsfa", "/", "/anything/else", "/static/css/app.css", "/bad?token=value", f"/{'a' * 64}"]:
+                response = client.get(path, headers={"Host": "localhost"})
+                assert response.status_code == 403
+                assert response.text == "Forbidden"
+                assert "Kaya" not in response.text and "package" not in response.text.lower()
+                assert response.headers["cache-control"] == "no-store, max-age=0"
+                assert response.headers["x-frame-options"] == "DENY"
+            assert client.put(f"/{'a' * 64}", headers={"Host": "localhost"}).status_code == 403
+    finally:
+        gateway.app.dependency_overrides.clear()
+
+
+def test_gateway_health_requires_internal_proof():
+    gateway.PUBLIC_REQUESTS.clear()
+    with TestClient(gateway.app) as client:
+        denied = client.get("/healthz")
+        allowed = client.get("/healthz", headers={"X-Kaya-Health": send_service.gateway_health_token()})
+    assert denied.status_code == 403 and denied.text == "Forbidden"
+    assert allowed.status_code == 200 and allowed.json() == {"status": "ok"}
+
+
+def test_gateway_exposes_only_dedicated_static_assets():
+    gateway.PUBLIC_REQUESTS.clear()
+    gateway.GATEWAY_HOST_CACHE.update({"expires": float("inf"), "hostname": "localhost"})
+    with TestClient(gateway.app) as client:
+        headers = {"Host": "localhost"}
+        assert client.get("/assets/gateway.css", headers=headers).status_code == 200
+        assert client.get("/assets/logo.png", headers=headers).status_code == 200
+        assert client.get("/favicon.svg", headers=headers).status_code == 200
+        assert client.get("/static/js/login.js", headers=headers).status_code == 403
+        assert client.get("/assets/gateway.css", headers={"Host": "attacker.example"}).status_code == 403
+
+
+def test_valid_package_flow_survives_host_origin_and_method_enforcement(db, monkeypatch):
+    row, access_token, passphrase = package(db)
+    gateway.app.dependency_overrides[gateway.get_db] = lambda: db
+    gateway.PUBLIC_REQUESTS.clear()
+    gateway.GATEWAY_HOST_CACHE.update({"expires": float("inf"), "hostname": "localhost"})
+    monkeypatch.setattr(gateway, "notify_sender", lambda *_args, **_kwargs: None)
+    headers = {"Host": "localhost"}
+    try:
+        with TestClient(gateway.app) as client:
+            landing = client.get(f"/{access_token}", headers=headers)
+            assert landing.status_code == 200 and "Open secure package" in landing.text
+            unlocked = client.post(
+                f"/{access_token}/unlock", headers={**headers, "Origin": "http://localhost", "Sec-Fetch-Site": "same-origin"},
+                data={"pin": "740196", "passphrase": passphrase}, follow_redirects=False,
+            )
+            assert unlocked.status_code == 303
+            content = client.get(unlocked.headers["location"], headers=headers)
+            assert content.status_code == 200 and "highly confidential note" in content.text
+    finally:
+        gateway.app.dependency_overrides.clear()
+
+
+def test_gateway_runtime_disables_bearer_url_access_logging():
+    compose = (send_service.Path(__file__).parents[1] / "docker-compose.yml").read_text(encoding="utf-8")
+    assert "--no-access-log" in compose
+    assert "--no-server-header" in compose

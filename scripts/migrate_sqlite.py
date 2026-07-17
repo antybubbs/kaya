@@ -291,6 +291,14 @@ def main():
     if not secure_send_existed:
         migrations_applied.append("secure_send_schema_v1")
 
+    if table_exists(cur, "remote_manager_settings"):
+        cur.execute(
+            "UPDATE remote_manager_settings SET value = 'http://localhost:8999', updated_at = CURRENT_TIMESTAMP "
+            "WHERE key = 'secure_send_gateway_hostname' AND value = 'http://localhost:8081'"
+        )
+        if cur.rowcount:
+            migrations_applied.append("secure_send_gateway_default_port_8999")
+
     conn.commit()
     cur.execute("PRAGMA foreign_keys = ON")
     conn.close()

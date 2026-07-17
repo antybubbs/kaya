@@ -2,22 +2,25 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
+import re
 import secrets
 import smtplib
 import time
 from datetime import datetime, timedelta
-from urllib.parse import quote
+from pathlib import Path
+from urllib.parse import quote, urlparse
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
-from fastapi.responses import RedirectResponse, Response
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.core.branding import BRAND_CONTEXT
 from app.core.config import get_settings
-from app.db.session import get_db
+from app.db.session import SessionLocal, get_db
 from app.models.models import SecureSendFile, SecureSendPackage
 from app.services.audit import write_audit
 from app.services.client_ip import client_ip
@@ -25,7 +28,7 @@ from app.services.mail import MailConfigurationError, send_mail
 from app.services.secure_send import (
     SESSION_COOKIE, SecureSendError, active_recipient_session, authenticate_package, build_zip, decode_note,
     decode_summary, decoded_files, package_accessible, package_for_token, package_key_from_application, read_file,
-    record_activity, revoke_recipient_sessions, start_recipient_session, verify_session_csrf,
+    gateway_health_token, record_activity, revoke_recipient_sessions, start_recipient_session, verify_session_csrf,
 )
 from app.services.site_settings import get_site_setting
 
@@ -33,20 +36,133 @@ settings = get_settings()
 app = FastAPI(title="Kaya Secure Send", docs_url=None, redoc_url=None, openapi_url=None)
 templates = Jinja2Templates(directory="app/templates")
 app.add_middleware(SessionMiddleware, secret_key=settings.secret_key, session_cookie="secure_send_state", same_site="strict", https_only=settings.session_cookie_secure, max_age=1800)
-app.mount("/static", StaticFiles(directory="app/static"), name="static")
 ATTEMPTS: dict[str, list[float]] = {}
+PUBLIC_REQUESTS: dict[str, list[float]] = {}
+GATEWAY_HOST_CACHE: dict[str, object] = {"expires": 0.0, "hostname": ""}
+ACCESS_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{64}$")
+RECIPIENT_PATH_RE = re.compile(r"^/[A-Za-z0-9_-]{64}(?:/unlock|/download-package|/logout|/files/[1-9][0-9]*)?$")
+STATIC_FILES = {
+    "/assets/gateway.css": (Path("app/static/css/secure-send-gateway.css"), "text/css; charset=utf-8"),
+    "/assets/logo.png": (Path("app/static/brand/kaya-favicon-192-transparent.png"), "image/png"),
+    "/favicon.svg": (Path("app/static/brand/kaya-favicon.svg"), "image/svg+xml"),
+}
+
+
+def security_headers(response: Response, *, https: bool) -> Response:
+    response.headers.update({
+        "Content-Security-Policy": "default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+        "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY",
+        "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()", "Cache-Control": "no-store, max-age=0",
+        "Pragma": "no-cache", "Expires": "0", "Cross-Origin-Opener-Policy": "same-origin",
+        "Cross-Origin-Resource-Policy": "same-origin", "X-Permitted-Cross-Domain-Policies": "none",
+    })
+    if https:
+        response.headers["Strict-Transport-Security"] = "max-age=31536000"
+    return response
+
+
+def forbidden(*, https: bool = False) -> Response:
+    return security_headers(PlainTextResponse("Forbidden", status_code=403), https=https)
+
+
+def request_is_https(request: Request) -> bool:
+    # Uvicorn updates ASGI scope.scheme only for forwarding proxies explicitly
+    # trusted by --forwarded-allow-ips; never trust the raw browser header here.
+    return request.url.scheme == "https"
+
+
+def health_authorised(request: Request) -> bool:
+    supplied = request.headers.get("x-kaya-health", "")
+    return bool(supplied and hmac.compare_digest(supplied, gateway_health_token()))
+
+
+def configured_gateway_hostname() -> str:
+    now = time.monotonic()
+    if float(GATEWAY_HOST_CACHE.get("expires") or 0) > now:
+        return str(GATEWAY_HOST_CACHE.get("hostname") or "")
+    hostname = ""
+    db = SessionLocal()
+    try:
+        hostname = (urlparse(get_site_setting(db, "secure_send_gateway_hostname") or "").hostname or "").lower()
+    except (SQLAlchemyError, OSError, ValueError):
+        hostname = ""
+    finally:
+        db.close()
+    GATEWAY_HOST_CACHE.update({"expires": now + 15.0, "hostname": hostname})
+    return hostname
+
+
+def host_allowed(request: Request) -> bool:
+    if request.url.path == "/healthz" and health_authorised(request):
+        return True
+    supplied = (urlparse(f"//{request.headers.get('host', '')}").hostname or "").lower()
+    expected = configured_gateway_hostname()
+    return bool(supplied and expected and hmac.compare_digest(supplied, expected))
+
+
+def origin_allowed(request: Request) -> bool:
+    origin = request.headers.get("origin", "")
+    parsed = urlparse(origin)
+    expected = configured_gateway_hostname()
+    if not origin or not parsed.scheme or not parsed.hostname or not expected:
+        return False
+    if request.headers.get("sec-fetch-site", "same-origin") not in {"same-origin", "none"}:
+        return False
+    if request_is_https(request) and parsed.scheme.lower() != "https":
+        return False
+    return hmac.compare_digest(parsed.hostname.lower(), expected)
+
+
+def route_shape_allowed(request: Request) -> bool:
+    path, method = request.url.path, request.method.upper()
+    if request.url.query or len(path) > 240:
+        return False
+    if path == "/healthz":
+        return method == "GET" and health_authorised(request)
+    if path in STATIC_FILES:
+        return method in {"GET", "HEAD"}
+    if not RECIPIENT_PATH_RE.fullmatch(path):
+        return False
+    suffix = path.split("/", 2)[2] if path.count("/") > 1 else ""
+    if not suffix:
+        return method == "GET"
+    return method == "POST"
+
+
+def public_rate_limited(request: Request) -> bool:
+    now = time.monotonic(); key = client_ip(request) or "unknown"
+    recent = [value for value in PUBLIC_REQUESTS.get(key, []) if now - value < 60]
+    recent.append(now); PUBLIC_REQUESTS[key] = recent
+    if len(PUBLIC_REQUESTS) > 10000:
+        for stale_key in list(PUBLIC_REQUESTS)[:1000]:
+            if not PUBLIC_REQUESTS[stale_key] or now - PUBLIC_REQUESTS[stale_key][-1] >= 60:
+                PUBLIC_REQUESTS.pop(stale_key, None)
+    return len(recent) > 120
 
 
 @app.middleware("http")
 async def gateway_headers(request: Request, call_next):
+    https = request_is_https(request)
+    if not route_shape_allowed(request):
+        return forbidden(https=https)
+    if not host_allowed(request):
+        return forbidden(https=https)
+    if request.url.path != "/healthz" and public_rate_limited(request):
+        return security_headers(PlainTextResponse("Too Many Requests", status_code=429), https=https)
+    if request.method == "POST":
+        if not origin_allowed(request):
+            return forbidden(https=https)
+        try: content_length = int(request.headers.get("content-length", "0"))
+        except ValueError: return forbidden(https=https)
+        if content_length < 1 or content_length > 8192:
+            return forbidden(https=https)
+        if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/x-www-form-urlencoded":
+            return forbidden(https=https)
     response = await call_next(request)
-    response.headers.update({
-        "Content-Security-Policy": "default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
-        "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY",
-        "Permissions-Policy": "camera=(), microphone=(), geolocation=()", "Cache-Control": "no-store",
-    })
-    request_is_https = request.url.scheme == "https" or request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip() == "https"
-    if request_is_https:
+    if response.status_code == 404:
+        return forbidden(https=https)
+    security_headers(response, https=https)
+    if https:
         for index, (name, value) in enumerate(response.raw_headers):
             if name.lower() == b"set-cookie" and b" secure" not in value.lower():
                 response.raw_headers[index] = (name, value + b"; Secure")
@@ -67,25 +183,40 @@ def safe_state(row: SecureSendPackage | None) -> str:
 
 
 def package_or_error(db: Session, token: str) -> SecureSendPackage:
+    if not ACCESS_TOKEN_RE.fullmatch(token): raise HTTPException(403, "Forbidden")
     row = package_for_token(db, token); state = safe_state(row)
-    if state == "missing": raise HTTPException(404, "This secure package could not be found.")
-    if state == "expired": raise HTTPException(410, "This secure package has expired and is no longer available.")
-    if state == "revoked": raise HTTPException(410, "This secure package has been withdrawn by the sender.")
+    if state != "active": raise HTTPException(403, "Forbidden")
     return row
 
 
 @app.exception_handler(HTTPException)
 async def public_error(request: Request, exc: HTTPException):
-    message = str(exc.detail) if exc.status_code in {404, 410, 429} else "Secure Send is temporarily unavailable. Please try again later."
-    return templates.TemplateResponse(request, "secure_send_gateway_error.html", public_context(request, message=message), status_code=exc.status_code)
+    if exc.status_code == 429:
+        return security_headers(PlainTextResponse("Too Many Requests", status_code=429), https=request_is_https(request))
+    return forbidden(https=request_is_https(request))
 
 
 @app.get("/healthz", include_in_schema=False)
 def healthz(): return {"status": "ok"}
 
 
+@app.get("/assets/gateway.css", include_in_schema=False)
+@app.head("/assets/gateway.css", include_in_schema=False)
+def gateway_css(): return FileResponse(STATIC_FILES["/assets/gateway.css"][0], media_type="text/css")
+
+
+@app.get("/assets/logo.png", include_in_schema=False)
+@app.head("/assets/logo.png", include_in_schema=False)
+def gateway_logo(): return FileResponse(STATIC_FILES["/assets/logo.png"][0], media_type="image/png")
+
+
+@app.get("/favicon.svg", include_in_schema=False)
+@app.head("/favicon.svg", include_in_schema=False)
+def gateway_favicon(): return FileResponse(STATIC_FILES["/favicon.svg"][0], media_type="image/svg+xml")
+
+
 def demo_or_disabled(db: Session) -> None:
-    if settings.demo_mode or get_site_setting(db, "secure_send_enabled") != "1": raise HTTPException(404, "This secure package could not be found.")
+    if settings.demo_mode or get_site_setting(db, "secure_send_enabled") != "1": raise HTTPException(403, "Forbidden")
 
 
 def attempt_limited(request: Request, row: SecureSendPackage) -> bool:
@@ -114,7 +245,7 @@ def recipient(access_token: str, request: Request, db: Session = Depends(get_db)
     return templates.TemplateResponse(request, "secure_send_gateway_package.html", public_context(
         request, package=row, files=files, note=note, access_token=access_token,
         expires_at=row.expires_at, allow_vault_save=row.allow_vault_save and row.internal_recipient_id,
-        save_url=f"{(get_site_setting(db, 'base_url') or '').rstrip('/')}/security/secure-send/receive/{quote(access_token, safe='')}",
+        save_url=f"{(get_site_setting(db, 'base_url') or '').rstrip('/')}/security/secure-send/receive/{row.id}",
     ))
 
 
@@ -134,7 +265,7 @@ def unlock(access_token: str, request: Request, pin: str = Form(""), passphrase:
     token, csrf, _ = start_recipient_session(db, row); request.session["recipient_csrf"] = csrf
     record_activity(db, row, "authenticated"); write_audit(db, row.sender, "secure_send_authenticated", "secure_send_package", str(row.id), client_ip(request), category="security")
     response = RedirectResponse(f"/{quote(access_token, safe='')}", status_code=303)
-    response.set_cookie(SESSION_COOKIE, token, max_age=900, httponly=True, secure=request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https", samesite="strict", path="/")
+    response.set_cookie(SESSION_COOKIE, token, max_age=900, httponly=True, secure=request_is_https(request), samesite="strict", path="/")
     return response
 
 
@@ -173,6 +304,8 @@ def download_package(access_token: str, request: Request, csrf_token: str = Form
 
 @app.post("/{access_token}/logout")
 def logout(access_token: str, request: Request, csrf_token: str = Form(...), db: Session = Depends(get_db)):
-    row = package_for_token(db, access_token); session = active_recipient_session(db, row, request.cookies.get(SESSION_COOKIE)) if row else None
-    if session and verify_session_csrf(session, csrf_token): session.revoked_at = datetime.utcnow(); db.commit()
-    request.session.clear(); response = RedirectResponse(f"/{quote(access_token, safe='')}", status_code=303); response.delete_cookie(SESSION_COOKIE, path="/"); return response
+    demo_or_disabled(db); row = package_or_error(db, access_token)
+    session = active_recipient_session(db, row, request.cookies.get(SESSION_COOKIE))
+    if not session or not verify_session_csrf(session, csrf_token): raise HTTPException(403, "Forbidden")
+    session.revoked_at = datetime.utcnow(); db.commit()
+    request.session.clear(); response = RedirectResponse(f"/{quote(access_token, safe='')}", status_code=303); response.delete_cookie(SESSION_COOKIE, path="/"); response.headers["Clear-Site-Data"] = '"cache", "cookies", "storage"'; return response
