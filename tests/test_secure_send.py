@@ -258,6 +258,7 @@ def test_valid_package_flow_survives_host_origin_and_method_enforcement(db, monk
         with TestClient(gateway.app) as client:
             landing = client.get(f"/{access_token}", headers=headers)
             assert landing.status_code == 200 and "Open secure package" in landing.text
+            assert landing.headers["referrer-policy"] == "strict-origin"
             unlocked = client.post(
                 f"/{access_token}/unlock", headers={**headers, "Origin": "http://localhost", "Sec-Fetch-Site": "same-origin"},
                 data={"pin": "740196", "passphrase": passphrase}, follow_redirects=False,

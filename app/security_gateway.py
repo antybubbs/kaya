@@ -53,7 +53,10 @@ STATIC_FILES = {
 def security_headers(response: Response, *, https: bool) -> Response:
     response.headers.update({
         "Content-Security-Policy": "default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
-        "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY",
+        # Edge can serialize the Origin header as "null" for a form POST when
+        # the document policy is no-referrer. Keep the bearer-token path out of
+        # referrers while preserving a usable same-origin CSRF signal.
+        "Referrer-Policy": "strict-origin", "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY",
         "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()", "Cache-Control": "no-store, max-age=0",
         "Pragma": "no-cache", "Expires": "0", "Cross-Origin-Opener-Policy": "same-origin",
         "Cross-Origin-Resource-Policy": "same-origin", "X-Permitted-Cross-Domain-Policies": "none",
