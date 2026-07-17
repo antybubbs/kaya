@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 from datetime import datetime, timedelta
 
 import pytest
@@ -205,6 +206,23 @@ def test_gateway_exposes_only_dedicated_static_assets():
         assert client.get("/favicon.svg", headers=headers).status_code == 200
         assert client.get("/static/js/login.js", headers=headers).status_code == 403
         assert client.get("/assets/gateway.css", headers={"Host": "attacker.example"}).status_code == 403
+
+
+def test_gateway_rejection_logging_explains_guard_without_sensitive_request_data(caplog):
+    gateway.PUBLIC_REQUESTS.clear()
+    gateway.GATEWAY_HOST_CACHE.update({"expires": float("inf"), "hostname": "localhost"})
+    access_token = "a" * 64
+    with caplog.at_level(logging.WARNING, logger="kaya.secure_send.gateway"):
+        with TestClient(gateway.app) as client:
+            response = client.post(
+                f"/{access_token}/unlock",
+                headers={"Host": "localhost", "Origin": "https://attacker.example", "Sec-Fetch-Site": "cross-site"},
+                data={"pin": "740196", "passphrase": "secret-passphrase"},
+            )
+    assert response.status_code == 403
+    assert "method=POST reason=origin" in caplog.text
+    for sensitive in (access_token, "740196", "secret-passphrase", "attacker.example"):
+        assert sensitive not in caplog.text
 
 
 def test_valid_package_flow_survives_host_origin_and_method_enforcement(db, monkeypatch):

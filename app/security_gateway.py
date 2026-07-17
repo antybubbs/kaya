@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import re
 import secrets
 import smtplib
@@ -33,6 +34,7 @@ from app.services.secure_send import (
 from app.services.site_settings import get_site_setting
 
 settings = get_settings()
+logger = logging.getLogger("kaya.secure_send.gateway")
 app = FastAPI(title="Kaya Secure Send", docs_url=None, redoc_url=None, openapi_url=None)
 templates = Jinja2Templates(directory="app/templates")
 app.add_middleware(SessionMiddleware, secret_key=settings.secret_key, session_cookie="secure_send_state", same_site="strict", https_only=settings.session_cookie_secure, max_age=1800)
@@ -63,6 +65,14 @@ def security_headers(response: Response, *, https: bool) -> Response:
 
 def forbidden(*, https: bool = False) -> Response:
     return security_headers(PlainTextResponse("Forbidden", status_code=403), https=https)
+
+
+def rejected(request: Request, reason: str, *, https: bool = False) -> Response:
+    # Never log the request path: it contains the bearer access token. Reasons
+    # are fixed internal labels and deliberately exclude headers, form values,
+    # client addresses, and other recipient data.
+    logger.warning("Secure Send request rejected method=%s reason=%s", request.method.upper(), reason)
+    return forbidden(https=https)
 
 
 def request_is_https(request: Request) -> bool:
@@ -144,20 +154,21 @@ def public_rate_limited(request: Request) -> bool:
 async def gateway_headers(request: Request, call_next):
     https = request_is_https(request)
     if not route_shape_allowed(request):
-        return forbidden(https=https)
+        return rejected(request, "route_shape", https=https)
     if not host_allowed(request):
-        return forbidden(https=https)
+        return rejected(request, "host", https=https)
     if request.url.path != "/healthz" and public_rate_limited(request):
+        logger.warning("Secure Send request rejected method=%s reason=public_rate_limit", request.method.upper())
         return security_headers(PlainTextResponse("Too Many Requests", status_code=429), https=https)
     if request.method == "POST":
         if not origin_allowed(request):
-            return forbidden(https=https)
+            return rejected(request, "origin", https=https)
         try: content_length = int(request.headers.get("content-length", "0"))
-        except ValueError: return forbidden(https=https)
+        except ValueError: return rejected(request, "content_length_invalid", https=https)
         if content_length < 1 or content_length > 8192:
-            return forbidden(https=https)
+            return rejected(request, "content_length_bounds", https=https)
         if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/x-www-form-urlencoded":
-            return forbidden(https=https)
+            return rejected(request, "content_type", https=https)
     response = await call_next(request)
     if response.status_code == 404:
         return forbidden(https=https)
