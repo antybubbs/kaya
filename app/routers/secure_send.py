@@ -30,6 +30,17 @@ from app.services.secure_send import (
 from app.services.site_settings import get_site_setting
 
 router = APIRouter(prefix="/security/secure-send")
+
+
+def person_name(first_name: str | None, last_name: str | None, fallback: str) -> str:
+    """Return a clean display name when a full name was stored as first name."""
+    first = " ".join((first_name or "").split())
+    last = " ".join((last_name or "").split())
+    if first and last:
+        folded_first, folded_last = first.casefold(), last.casefold()
+        if folded_first == folded_last or folded_first.endswith(f" {folded_last}"):
+            return first
+    return " ".join(value for value in (first, last) if value) or fallback
 templates = Jinja2Templates(directory="app/templates")
 settings = get_settings()
 EXPIRY_CHOICES = {"15m": 15, "1h": 60, "4h": 240, "24h": 1440, "3d": 4320, "7d": 10080}
@@ -181,7 +192,7 @@ async def create(
     if recipient_type == "internal":
         if not internal or not internal.is_active or internal.id == user.id: error = "Choose a valid Kaya recipient."
         else:
-            recipient_email = internal.email; recipient_name = f"{internal.first_name or ''} {internal.last_name or ''}".strip() or internal.email
+            recipient_email = internal.email; recipient_name = person_name(internal.first_name, internal.last_name, internal.email)
     elif not recipient_name.strip() or "@" not in recipient_email:
         error = "Enter the external recipient's name and email address."
     try: upload_mb = max(1, min(int(get_site_setting(db, "secure_send_max_upload_mb") or 25), 250))
@@ -213,7 +224,7 @@ async def create(
     url = f"{gateway_base(db)}/{quote(token, safe='')}"
     if get_site_setting(db, "secure_send_email_notifications") == "1":
         try:
-            sender_name = f"{user.first_name or ''} {user.last_name or ''}".strip() or user.email
+            sender_name = person_name(user.first_name, user.last_name, user.email)
             template_values = {
                 "app_name": get_site_setting(db, "app_name") or "Kaya",
                 "sender_name": sender_name,

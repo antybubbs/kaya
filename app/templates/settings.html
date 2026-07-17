@@ -740,6 +740,10 @@
         {{ switch('smtp_use_ssl', 'Use SSL', 'Connect with SMTP over SSL from the start, usually on port 465.') }}
         {{ switch('email_include_branding', 'Include Kaya branding', 'Add a compact embedded Kaya logo and header to HTML email. A plain-text version is always included.') }}
       </div>
+      <div class="form-actions">
+        <button class="button secondary" type="submit" formaction="/system/site-administration/test-email" formmethod="post">Send test email</button>
+        <span class="muted">Saves the email settings above, then sends one test message. Inbox placement still depends on SPF, DKIM, DMARC and sender reputation.</span>
+      </div>
     </div>
   </section>
 

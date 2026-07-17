@@ -1,6 +1,7 @@
 import smtplib
 from html import escape
 from email.message import EmailMessage
+from email.utils import formatdate, make_msgid, parseaddr
 from pathlib import Path
 
 from sqlalchemy.orm import Session
@@ -102,11 +103,17 @@ def send_mail(
     use_ssl = setting_enabled(get_site_setting(db, "smtp_use_ssl"))
     from_name = get_site_setting(db, "smtp_from_name").strip()
     from_header = f"{from_name} <{from_email}>" if from_name else from_email
+    _, parsed_from = parseaddr(from_email)
+    if parsed_from.casefold() != from_email.casefold() or "@" not in parsed_from:
+        raise MailConfigurationError("SMTP from email is not a valid mailbox address.")
+    message_id_domain = parsed_from.rsplit("@", 1)[1].lower()
 
     message = EmailMessage()
     message["To"] = to_email
     message["From"] = from_header
     message["Subject"] = subject
+    message["Date"] = formatdate(localtime=False)
+    message["Message-ID"] = make_msgid(domain=message_id_domain)
     message.set_content(body)
     if setting_enabled(get_site_setting(db, "email_include_branding")):
         include_logo = EMAIL_LOGO_PATH.is_file()
@@ -126,7 +133,6 @@ def send_mail(
                 maintype="image",
                 subtype="png",
                 cid=f"<{EMAIL_LOGO_CID}>",
-                filename="kaya-logo.png",
                 disposition="inline",
             )
 
@@ -137,4 +143,4 @@ def send_mail(
                 smtp.starttls()
             if username:
                 smtp.login(username, password)
-            smtp.send_message(message)
+            smtp.send_message(message, from_addr=from_email, to_addrs=[to_email])

@@ -70,6 +70,12 @@ def test_all_three_credentials_are_required(db):
             send_service.authenticate_package(row, *candidate)
 
 
+def test_secure_send_person_name_avoids_duplicate_surname():
+    assert send_router.person_name("Anthony Hales", "Hales", "sender@example.test") == "Anthony Hales"
+    assert send_router.person_name("Anthony", "Hales", "sender@example.test") == "Anthony Hales"
+    assert send_router.person_name(None, None, "sender@example.test") == "sender@example.test"
+
+
 def test_ciphertext_tampering_is_rejected(db):
     row, token, passphrase = package(db)
     key = send_service.authenticate_package(row, token, "740196", passphrase)

@@ -6,6 +6,7 @@ from app.services.site_settings import DEFAULT_SITE_SETTINGS
 
 class FakeSMTP:
     sent = []
+    envelopes = []
 
     def __init__(self, *_args, **_kwargs):
         pass
@@ -22,8 +23,9 @@ class FakeSMTP:
     def login(self, *_args):
         pass
 
-    def send_message(self, message):
+    def send_message(self, message, *, from_addr=None, to_addrs=None):
         self.sent.append(message)
+        self.envelopes.append((from_addr, to_addrs))
 
 
 def configure_mail(monkeypatch, *, branding: str):
@@ -41,6 +43,7 @@ def configure_mail(monkeypatch, *, branding: str):
         "app_name": "Kaya",
     }
     FakeSMTP.sent.clear()
+    FakeSMTP.envelopes.clear()
     monkeypatch.setattr(mail_service, "get_site_settings", lambda *_args, **_kwargs: values)
     monkeypatch.setattr(mail_service, "get_site_setting", lambda _db, key: values.get(key, ""))
     monkeypatch.setattr(mail_service, "decrypt_secret", lambda value: value)
@@ -66,6 +69,12 @@ def test_branded_email_embeds_compact_logo_and_keeps_plain_text(monkeypatch):
     assert 'cid:kaya-email-logo' in html
     assert 'width="36" height="36"' in html
     assert "Open secure package" in html and url in html
+    logo = next(part for part in message.walk() if part.get_content_type() == "image/png")
+    assert logo.get_content_disposition() == "inline"
+    assert logo["Content-ID"] == "<kaya-email-logo>"
+    assert logo.get_filename() is None
+    assert message["Date"] and message["Message-ID"].endswith("@example.test>")
+    assert FakeSMTP.envelopes == [("kaya@example.test", ["recipient@example.test"])]
 
 
 def test_email_branding_can_be_disabled(monkeypatch):
@@ -85,6 +94,8 @@ def test_secure_send_template_and_branding_settings_are_available():
     assert "email_template_secure_send_subject" in settings_template
     assert "email_template_secure_send_body" in settings_template
     assert "email_include_branding" in settings_template
+    assert 'formaction="/system/site-administration/test-email"' in settings_template
+    assert "Send test email" in settings_template
     assert "action_url=url" in secure_send_router
     assert "{pin}" not in DEFAULT_SITE_SETTINGS["email_template_secure_send_body"].lower()
     assert "{passphrase}" not in DEFAULT_SITE_SETTINGS["email_template_secure_send_body"].lower()
