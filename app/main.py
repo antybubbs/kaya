@@ -16,7 +16,8 @@ from app.core.performance import begin_request_metrics, end_request_metrics, ins
 from app.core.security import decrypt_secret, hash_password
 from app.db.session import Base, engine, SessionLocal
 from app.models.models import AuditLog, User, VLAN, VaultSession
-from app.routers import auth, oidc, dashboard, licences, admin, ip_addresses, hardware_assets, network_monitor, remote_manager, runbooks, domain_manager, compute_manager, rack_manager, backup_manager, dns_manager, secret_vault
+from app.routers import auth, oidc, dashboard, licences, admin, ip_addresses, hardware_assets, network_monitor, remote_manager, runbooks, domain_manager, compute_manager, rack_manager, backup_manager, dns_manager, secret_vault, secure_send
+from app.services.secure_send import cleanup_loop as secure_send_cleanup_loop
 from app.services.guacamole_bridge import stop_guacamole_bridge
 from app.services.kaya_remote_service import start_kaya_remote_service, stop_kaya_remote_service
 from app.services.network_monitor import monitor_loop
@@ -49,6 +50,7 @@ domain_poll_task = None
 compute_monitor_task = None
 dns_collector_task = None
 version_check_task = None
+secure_send_cleanup_task = None
 app.state.demo_mode = settings.demo_mode
 app.state.demo_reset_schedule = settings.demo_reset_schedule
 
@@ -682,11 +684,12 @@ async def on_startup():
     if settings.demo_mode:
         return
     start_kaya_remote_service()
-    global monitor_task, domain_poll_task, compute_monitor_task, dns_collector_task
+    global monitor_task, domain_poll_task, compute_monitor_task, dns_collector_task, secure_send_cleanup_task
     monitor_task = asyncio.create_task(monitor_loop())
     domain_poll_task = asyncio.create_task(domain_poll_loop())
     compute_monitor_task = asyncio.create_task(compute_monitor_loop())
     dns_collector_task = asyncio.create_task(dns_collector_loop())
+    secure_send_cleanup_task = asyncio.create_task(secure_send_cleanup_loop())
 
 
 @app.on_event("shutdown")
@@ -701,6 +704,8 @@ async def on_shutdown():
         compute_monitor_task.cancel()
     if dns_collector_task:
         dns_collector_task.cancel()
+    if secure_send_cleanup_task:
+        secure_send_cleanup_task.cancel()
     stop_kaya_remote_service()
     stop_guacamole_bridge()
 
@@ -720,6 +725,7 @@ app.include_router(rack_manager.router)
 app.include_router(backup_manager.router)
 app.include_router(dns_manager.router)
 app.include_router(secret_vault.router)
+app.include_router(secure_send.router)
 app.include_router(admin.router)
 
 @app.get("/healthz", include_in_schema=False)

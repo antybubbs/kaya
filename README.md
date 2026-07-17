@@ -52,6 +52,7 @@ Use it, dont use it. Its up to you really (but it is quite cool if I do say so m
  | Documentation       | Built-in runbooks and operational notes         |
  | Licence Management  | Organise software licences and keys             |
  | Secret Vault        | Encrypt recovery records, sensitive notes and documents with portable offline recovery |
+ | Secure Send         | Deliver temporary encrypted files and secure notes through a minimal recipient gateway |
  | Multi-user          | Role-based access control                       |
  | Audit Logs          | Track important actions                         |
  | File Storage        | Secure document uploads                         |

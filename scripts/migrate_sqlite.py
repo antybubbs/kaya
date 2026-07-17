@@ -268,6 +268,29 @@ def main():
     if not vault_tables_existed:
         migrations_applied.append("secret_vault_schema_v1")
 
+    # Secure Send content metadata is encrypted. Recipient URLs and sessions
+    # are represented by hashes, and payload files live encrypted under data/.
+    secure_send_schema = [
+        "CREATE TABLE IF NOT EXISTS secure_send_packages (id INTEGER NOT NULL PRIMARY KEY, sender_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, internal_recipient_id INTEGER REFERENCES users(id) ON DELETE SET NULL, recipient_type VARCHAR(20) DEFAULT 'external' NOT NULL, access_token_hash VARCHAR(64) NOT NULL UNIQUE, encrypted_access_token TEXT NOT NULL, credential_hash VARCHAR(255) NOT NULL, credential_salt VARCHAR(120) NOT NULL, credential_wrapped_key TEXT NOT NULL, app_wrapped_key TEXT NOT NULL, encrypted_summary TEXT NOT NULL, encrypted_note TEXT, status VARCHAR(30) DEFAULT 'active' NOT NULL, expires_at DATETIME NOT NULL, one_download_only BOOLEAN DEFAULT 0 NOT NULL, allow_vault_save BOOLEAN DEFAULT 0 NOT NULL, notify_when_opened BOOLEAN DEFAULT 1 NOT NULL, download_count INTEGER DEFAULT 0 NOT NULL, failed_attempts INTEGER DEFAULT 0 NOT NULL, locked_until DATETIME, opened_at DATETIME, authenticated_at DATETIME, downloaded_at DATETIME, revoked_at DATETIME, expired_at DATETIME, deleted_at DATETIME, cleaned_at DATETIME, created_at DATETIME, updated_at DATETIME)",
+        "CREATE TABLE IF NOT EXISTS secure_send_files (id INTEGER NOT NULL PRIMARY KEY, package_id INTEGER NOT NULL REFERENCES secure_send_packages(id) ON DELETE CASCADE, storage_id VARCHAR(80) NOT NULL UNIQUE, encrypted_metadata TEXT NOT NULL, size_bytes INTEGER DEFAULT 0 NOT NULL, ciphertext_size INTEGER DEFAULT 0 NOT NULL, integrity_hash VARCHAR(64) NOT NULL, downloaded_at DATETIME, created_at DATETIME)",
+        "CREATE TABLE IF NOT EXISTS secure_send_recipient_sessions (id INTEGER NOT NULL PRIMARY KEY, package_id INTEGER NOT NULL REFERENCES secure_send_packages(id) ON DELETE CASCADE, token_hash VARCHAR(64) NOT NULL UNIQUE, csrf_hash VARCHAR(64) NOT NULL, created_at DATETIME, last_activity_at DATETIME, expires_at DATETIME NOT NULL, revoked_at DATETIME)",
+        "CREATE TABLE IF NOT EXISTS secure_send_activities (id INTEGER NOT NULL PRIMARY KEY, package_id INTEGER NOT NULL REFERENCES secure_send_packages(id) ON DELETE CASCADE, event_type VARCHAR(40) NOT NULL, actor_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, encrypted_detail TEXT, created_at DATETIME)",
+    ]
+    secure_send_existed = table_exists(cur, "secure_send_packages")
+    for statement in secure_send_schema:
+        cur.execute(statement)
+    secure_send_indexes = {
+        "secure_send_packages": ["sender_id", "internal_recipient_id", "recipient_type", "access_token_hash", "status", "expires_at", "one_download_only", "locked_until", "opened_at", "authenticated_at", "downloaded_at", "revoked_at", "expired_at", "deleted_at", "cleaned_at", "created_at"],
+        "secure_send_files": ["package_id", "storage_id", "downloaded_at", "created_at"],
+        "secure_send_recipient_sessions": ["package_id", "token_hash", "created_at", "last_activity_at", "expires_at", "revoked_at"],
+        "secure_send_activities": ["package_id", "event_type", "actor_user_id", "created_at"],
+    }
+    for table, columns in secure_send_indexes.items():
+        for column in columns:
+            cur.execute(f"CREATE INDEX IF NOT EXISTS ix_{table}_{column} ON {table} ({column})")
+    if not secure_send_existed:
+        migrations_applied.append("secure_send_schema_v1")
+
     conn.commit()
     cur.execute("PRAGMA foreign_keys = ON")
     conn.close()

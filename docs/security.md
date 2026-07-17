@@ -48,6 +48,10 @@ Session cookies use `same_site=strict`. The secure flag can be configured and is
 
 Browser form flows include CSRF tokens. Several JSON/form endpoints explicitly validate CSRF. Bearer-token agent APIs do not use CSRF because they are non-browser API clients; their safety depends on token secrecy.
 
+## Secure Send
+
+Secure Send uses per-package AES-256-GCM content keys, Argon2 credential verification and opaque recipient sessions. Recipient access requires the high-entropy URL token, a sender-selected PIN and a generated passphrase. The gateway applies a restrictive content security policy, generic public errors, throttled authentication, no-store responses and session-bound CSRF protection for downloads. Expiry, revocation, deletion and one-download completion revoke access; a background cleanup worker destroys expired file and note ciphertext. See [Secure Send](modules/secure-send.md) for deployment and recovery details.
+
 ## Security Headers
 
 Security headers are applied by middleware and include content security policy, frame controls, referrer policy, permissions policy, content type protection, cache control, and optional HSTS.

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 import hashlib
 import io
 import json
@@ -15,6 +16,8 @@ from typing import Any
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from sqlalchemy.orm import Session
+
+from app.db.session import SessionLocal
 
 from app.core.security import decrypt_secret, encrypt_secret, hash_password, verify_password
 from app.models.models import (
@@ -272,3 +275,14 @@ def expire_and_cleanup(db: Session) -> int:
 def decrypted_access_token(row: SecureSendPackage) -> str:
     value = decrypt_secret(row.encrypted_access_token)
     return "" if value == "[decryption failed]" else value
+
+
+async def cleanup_loop(interval_seconds: int = 60) -> None:
+    """Destroy expired payloads even when nobody visits the module."""
+    while True:
+        db = SessionLocal()
+        try:
+            expire_and_cleanup(db)
+        finally:
+            db.close()
+        await asyncio.sleep(interval_seconds)

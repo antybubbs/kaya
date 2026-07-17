@@ -139,6 +139,14 @@ SITE_SETTING_KEYS = {
     "secret_vault_sharing_enabled": "1",
     "secret_vault_oidc_mfa_policy": "either",
     "secret_vault_oidc_accepted_acr": "",
+    "secure_send_enabled": "1",
+    "secure_send_default_expiry": "24h",
+    "secure_send_max_expiry_days": "7",
+    "secure_send_max_upload_mb": "25",
+    "secure_send_allow_one_download": "1",
+    "secure_send_vault_integration": "1",
+    "secure_send_gateway_hostname": "http://localhost:8081",
+    "secure_send_email_notifications": "1",
     "smtp_enabled": "",
     "smtp_host": "",
     "smtp_port": "587",
@@ -2228,6 +2236,14 @@ async def save_settings(
     secret_vault_sharing_enabled: str = Form(""),
     secret_vault_oidc_mfa_policy: str = Form("either"),
     secret_vault_oidc_accepted_acr: str = Form(""),
+    secure_send_enabled: str = Form(""),
+    secure_send_default_expiry: str = Form("24h"),
+    secure_send_max_expiry_days: str = Form("7"),
+    secure_send_max_upload_mb: str = Form("25"),
+    secure_send_allow_one_download: str = Form(""),
+    secure_send_vault_integration: str = Form(""),
+    secure_send_gateway_hostname: str = Form("http://localhost:8081"),
+    secure_send_email_notifications: str = Form(""),
     dns_manager_enabled: str = Form(""),
     dns_collector_enabled: str = Form(""),
     dns_default_provider_id: str = Form(""),
@@ -2391,6 +2407,25 @@ async def save_settings(
         secret_vault_oidc_mfa_policy = "either"
     save_site_setting(db, "secret_vault_oidc_mfa_policy", secret_vault_oidc_mfa_policy)
     save_site_setting(db, "secret_vault_oidc_accepted_acr", secret_vault_oidc_accepted_acr.strip()[:500])
+    save_site_setting(db, "secure_send_enabled", "1" if secure_send_enabled else "")
+    save_site_setting(db, "secure_send_default_expiry", secure_send_default_expiry if secure_send_default_expiry in {"15m", "1h", "4h", "24h", "3d", "7d"} else "24h")
+    try:
+        secure_send_max_expiry_days = str(max(1, min(int(secure_send_max_expiry_days), 30)))
+    except ValueError:
+        secure_send_max_expiry_days = "7"
+    try:
+        secure_send_max_upload_mb = str(max(1, min(int(secure_send_max_upload_mb), 250)))
+    except ValueError:
+        secure_send_max_upload_mb = "25"
+    save_site_setting(db, "secure_send_max_expiry_days", secure_send_max_expiry_days)
+    save_site_setting(db, "secure_send_max_upload_mb", secure_send_max_upload_mb)
+    save_site_setting(db, "secure_send_allow_one_download", "1" if secure_send_allow_one_download else "")
+    save_site_setting(db, "secure_send_vault_integration", "1" if secure_send_vault_integration else "")
+    save_site_setting(db, "secure_send_email_notifications", "1" if secure_send_email_notifications else "")
+    gateway_hostname = secure_send_gateway_hostname.strip().rstrip("/")[:500]
+    if not re.fullmatch(r"https?://[^\s/]+(?::\d+)?", gateway_hostname):
+        gateway_hostname = "http://localhost:8081"
+    save_site_setting(db, "secure_send_gateway_hostname", gateway_hostname)
     save_dns_manager_settings(
         db,
         dns_manager_enabled=dns_manager_enabled,

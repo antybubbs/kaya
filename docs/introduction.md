@@ -37,4 +37,4 @@ The application combines lightweight CMDB-style documentation with practical ope
 
 Kaya currently focuses on small single-instance deployments. It can track and operate against real infrastructure, but it is not yet a distributed control plane. Background polling, monitoring, compute sync, and domain polling run in the web application process.
 
-Planned or disabled features shown in the UI, such as SSL Certificate Manager, Groups, Duplication Check, System Backups, and IDP Integration, should be treated as future/planned until implemented. Secret Vault is available as an encrypted user module.
+Planned or disabled features shown in the UI, such as SSL Certificate Manager, Groups, Duplication Check, System Backups, and IDP Integration, should be treated as future/planned until implemented. Secret Vault provides permanent encrypted user storage; Secure Send provides temporary encrypted delivery through a separate minimal recipient gateway.

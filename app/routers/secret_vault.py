@@ -15,6 +15,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from app.core.csrf import csrf_context, validate_csrf_token
+from app.core.config import get_settings
 from app.core.security import verify_password
 from app.db.session import get_db
 from app.models.models import (
@@ -36,6 +37,7 @@ from app.services.site_settings import get_site_setting
 
 router = APIRouter(prefix="/security/secret-vault")
 templates = Jinja2Templates(directory="app/templates")
+settings = get_settings()
 ITEM_TYPES = {
     "secure_note": "Secure Note", "secure_document": "Secure Document",
     "recovery_record": "Recovery Record", "sensitive_data": "Sensitive Data Record",
@@ -339,7 +341,7 @@ def item_detail(item_id: int, request: Request, db: Session = Depends(get_db), u
     for row in db.query(VaultAttachment).filter_by(item_id=item.id).all():
         attachments.append({"row": row, "metadata": decrypt_payload(key, item.vault_id, f"attachment-meta:{row.storage_id}", row.encrypted_metadata)})
     versions = db.query(VaultItemVersion).filter_by(item_id=item.id).order_by(VaultItemVersion.version.desc()).all()
-    return templates.TemplateResponse(request, "secret_vault_item.html", base_context(request, user, item=item, payload=payload, attachments=attachments, versions=versions, permission=permission, **oidc_vault_context(db, request, user, "sensitive")))
+    return templates.TemplateResponse(request, "secret_vault_item.html", base_context(request, user, item=item, payload=payload, attachments=attachments, versions=versions, permission=permission, secure_send_enabled=get_site_setting(db, "secure_send_enabled") == "1" and not settings.demo_mode, **oidc_vault_context(db, request, user, "sensitive")))
 
 
 @router.get("/items/{item_id}/edit")

@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block extra_head %}<link rel="stylesheet" href="/static/css/secure-send.css?v={{ asset_version }}">{% endblock %}
+{% block content %}
+<section class="module-header secure-send-header">
+  <div><span class="eyebrow">Security</span><h1>Secure Send</h1><p class="muted">Temporary encrypted delivery for files and secure notes.</p></div>
+  {% if can_create %}<a class="button" href="/security/secure-send/new">Create secure package</a>{% endif %}
+</section>
+<nav class="detail-tabs" aria-label="Secure Send views">
+  <a class="{% if view == 'dashboard' %}active{% endif %}" href="/security/secure-send">Dashboard</a>
+  <a class="{% if view == 'sent' %}active{% endif %}" href="/security/secure-send?view=sent">Sent</a>
+  <a class="{% if view == 'received' %}active{% endif %}" href="/security/secure-send?view=received">Received</a>
+  {% if user.role == 'admin' %}<a class="{% if view == 'manage' %}active{% endif %}" href="/security/secure-send?view=manage">Manage all</a>{% endif %}
+</nav>
+{% if view == 'dashboard' %}
+<div class="secure-send-metrics">
+  {% for label, value in [('Active',metrics.active),('Opened today',metrics.opened_today),('Expiring today',metrics.expiring_today),('Expired',metrics.expired)] %}<article><span>{{ label }}</span><strong>{{ value }}</strong></article>{% endfor %}
+</div>
+<div class="secure-send-dashboard">
+  <section class="panel"><header class="panel-heading"><div><h2>Recent packages</h2><p class="muted">Your latest temporary deliveries.</p></div><a href="/security/secure-send?view=sent">View all</a></header>{% set rows=sent[:6] %}{% include "secure_send_package_table.html" %}</section>
+  <section class="panel"><h2>Recent activity</h2><div class="secure-send-activity">{% for event in activity %}<article><i class="event-{{ event.event_type }}"></i><span><strong>{{ event.event_type|replace('_',' ')|title }}</strong><small>{{ local_time(event.created_at, 'friendly') }}</small></span></article>{% else %}<p class="muted">No package activity yet.</p>{% endfor %}</div></section>
+</div>
+{% elif view == 'sent' %}
+<section class="panel"><header class="panel-heading"><div><h2>Sent packages</h2><p class="muted">Revoke, extend or review your secure deliveries.</p></div></header>{% set rows=sent %}{% include "secure_send_package_table.html" %}</section>
+{% elif view == 'received' %}
+<section class="panel"><header class="panel-heading"><div><h2>Received packages</h2><p class="muted">Packages shared directly with your Kaya account.</p></div></header>
+  <div class="secure-send-received">{% for item in received %}<article><div><strong>{{ item.summary.title }}</strong><span>Expires {{ local_time(item.row.expires_at, 'friendly') }}</span></div><a class="button secondary" href="{{ item.url }}" target="_blank" rel="noopener noreferrer">Open securely</a></article>{% else %}<div class="empty-state"><strong>No active packages</strong><span>Internal packages shared with you will appear here.</span></div>{% endfor %}</div>
+</section>
+{% else %}
+<section class="panel"><header class="panel-heading"><div><h2>Manage all packages</h2><p class="muted">Lifecycle controls only. Package content and encrypted recipient details remain private.</p></div></header><div class="secure-send-table-wrap"><table class="secure-send-table"><thead><tr><th>ID</th><th>Sender</th><th>Status</th><th>Expires</th><th></th></tr></thead><tbody>{% for row in managed %}<tr><td>#{{ row.id }}</td><td>{{ row.sender.email }}</td><td><span class="secure-send-status status-{{ row.status }}">{{ row.status|title }}</span></td><td>{{ local_time(row.expires_at, 'friendly') }}</td><td class="action-col"><a class="button secondary" href="/security/secure-send/packages/{{ row.id }}">Manage</a></td></tr>{% else %}<tr><td colspan="5"><div class="empty-state"><strong>No packages</strong><span>There are no Secure Send packages to manage.</span></div></td></tr>{% endfor %}</tbody></table></div></section>
+{% endif %}
+{% endblock %}

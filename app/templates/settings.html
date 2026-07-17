@@ -56,11 +56,29 @@
           <a href="/system/site-administration?tab=module-vlan-ip-manager" class="settings-side-child" data-settings-child-tab="module-vlan-ip-manager" data-settings-parent="modules" aria-selected="false">VLAN/IP Manager</a>
           <a href="/system/site-administration?tab=module-remote-manager" class="settings-side-child" data-settings-child-tab="module-remote-manager" data-settings-parent="modules" aria-selected="false">Remote Manager</a>
           <a href="/system/site-administration?tab=module-secret-vault" class="settings-side-child" data-settings-child-tab="module-secret-vault" data-settings-parent="modules" aria-selected="false">Secret Vault</a>
+          <a href="/system/site-administration?tab=module-secure-send" class="settings-side-child" data-settings-child-tab="module-secure-send" data-settings-parent="modules" aria-selected="false">Secure Send</a>
         </div>
       </details>
     </aside>
 
     <main class="settings-content-panel">
+  <section class="settings-tab-panel" data-settings-panel="module-secure-send" data-settings-parent="modules" role="tabpanel" hidden>
+    <h2>Secure Send</h2>
+    <div class="remote-settings-card">
+      <header><span>Temporary encrypted delivery</span></header>
+      {{ switch('secure_send_enabled', 'Enable Secure Send', 'Show the sender module and allow recipient access through the Security Gateway.') }}
+      <div class="remote-settings-grid two">
+        <label><strong>Gateway hostname</strong><small>Public origin for recipient links. Keep the main Kaya interface private.</small><input name="secure_send_gateway_hostname" type="url" value="{{ settings.get('secure_send_gateway_hostname','http://localhost:8081') }}"></label>
+        <label><strong>Default expiry</strong><small>Preselected when a user creates a package.</small><select name="secure_send_default_expiry">{% for key,label in [('15m','15 minutes'),('1h','1 hour'),('4h','4 hours'),('24h','24 hours'),('3d','3 days'),('7d','7 days')] %}<option value="{{ key }}" {% if settings.get('secure_send_default_expiry','24h') == key %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+        <label><strong>Maximum expiry (days)</strong><small>Between 1 and 30 days.</small><input name="secure_send_max_expiry_days" type="number" min="1" max="30" value="{{ settings.get('secure_send_max_expiry_days','7') }}"></label>
+        <label><strong>Maximum package size (MB)</strong><small>Combined encrypted note and file delivery limit.</small><input name="secure_send_max_upload_mb" type="number" min="1" max="250" value="{{ settings.get('secure_send_max_upload_mb','25') }}"></label>
+      </div>
+      {{ switch('secure_send_allow_one_download', 'Allow one-download packages', 'Senders may revoke recipient access immediately after the first download.') }}
+      {{ switch('secure_send_vault_integration', 'Enable Secret Vault handoff', 'Allow independent encrypted copies between Secret Vault and Secure Send.') }}
+      {{ switch('secure_send_email_notifications', 'Enable email notifications', 'Send recipient links and lifecycle notices through Kaya SMTP. Credentials are never emailed.') }}
+      <div class="vault-admin-note"><strong>Public exposure</strong><span>Publish only the Security Gateway port. The main Kaya application remains the authenticated management interface.</span></div>
+    </div>
+  </section>
   <section class="settings-tab-panel vault-admin-panel" data-settings-panel="module-secret-vault" data-settings-parent="modules" role="tabpanel" hidden>
     <h2>Secret Vault</h2>
     <div class="remote-settings-card vault-admin-card">
