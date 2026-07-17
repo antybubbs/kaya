@@ -43,20 +43,264 @@ Use it, dont use it. Its up to you really (but it is quite cool if I do say so m
 ------------------------------------------------------------------------
 
 # Features
- | Feature                | Description                                     |
- |------------------------|-------------------------------------------------|
- | Infrastructure      | Manage servers, VMs, devices and assets         |
- | Docker              | Monitor Docker hosts and containers             |
- | Remote Access       | Browser-based SSH and RDP with session recording|
- | Networking          | IP addresses, VLANs, DNS, domains and WAN links |
- | Documentation       | Built-in runbooks and operational notes         |
- | Licence Management  | Organise software licences and keys             |
- | Secret Vault        | Encrypt recovery records, sensitive notes and documents with portable offline recovery |
- | Secure Send         | Deliver temporary encrypted files and secure notes through a minimal recipient gateway |
- | Multi-user          | Role-based access control                       |
- | Audit Logs          | Track important actions                         |
- | File Storage        | Secure document uploads                         |
- | Lightweight         | Fast, simple and self-hosted                    |
+
+Kaya is more than a homelab inventory. It is a self-hosted operations hub for the infrastructure, access, documentation, monitoring and recovery information that usually ends up scattered across spreadsheets, bookmarks, terminals and password-protected files.
+
+| Area | What Kaya gives you |
+|------|---------------------|
+| **One live operations dashboard** | Customisable widgets, health summaries, warnings, recent activity and monitor mode |
+| **Infrastructure visibility** | Proxmox hosts, Docker hosts, workloads, physical assets, racks and backups |
+| **Network intelligence** | VLANs, IPAM, DHCP history, DNS analytics, domains and WAN monitoring |
+| **Remote workspace** | Browser-based SSH and RDP, split-screen sessions and session recordings |
+| **Security workspace** | Private encrypted vaults, secure temporary delivery and encrypted licence keys |
+| **Operational knowledge** | Searchable Markdown runbooks, images, tags, spaces and page history |
+| **Team-ready access** | Local login, TOTP, OpenID Connect, roles, account linking and audit logs |
+| **Self-hosted by design** | Docker Compose, SQLite, persistent volumes, PWA support and no mandatory cloud service |
+
+## Live, customisable dashboard
+
+- A modular dashboard that brings infrastructure, compute, DNS, backups, networking, remote access, licences, documentation, users, audit activity and Secret Vault health into one view.
+- Silent live refreshes without full-page reloads, plus clear **Live**, **Delayed**, **Stale**, **Offline** and **Connection lost** states.
+- A central **Attention Required** feed that surfaces offline hosts, unhealthy workloads, DNS warnings, failed backups and other actionable events.
+- Per-user widget preferences with show/hide controls, multiple widget sizes and automatic saving.
+- Drag-and-drop ordering on desktop, keyboard reordering and touch-friendly move controls on mobile.
+- Optional full-screen **Monitor mode** for a wallboard-style operational view.
+- Role-aware widgets: users only see data and modules they are authorised to access.
+- Widget failure isolation, so one unavailable integration does not take down the rest of the dashboard.
+
+## VM and Docker Manager
+
+- Monitor **Proxmox** hosts and **Docker Agent** hosts from the same interface.
+- Track host state, CPU, memory, storage, version, last-seen time and configurable polling intervals.
+- Inventory VMs and containers with running, stopped, unhealthy and restarting states.
+- Retain workload metrics, inventory items and operational events.
+- View workload CPU, memory, storage, uptime, ownership, tags and platform metadata.
+- Link discovered workload addresses back to managed Kaya IP records.
+- Assign workload owners and backup policies.
+- Generate one-time Docker Agent enrolment tokens; only token hashes are retained by Kaya.
+- Encrypt stored Proxmox API tokens and support manual host synchronisation.
+
+## Hardware Asset Manager
+
+- Track servers, switches, storage, laptops, appliances, power equipment and any other physical asset.
+- Search and filter by category, status, location and other managed values.
+- Store asset tags, manufacturer, model, serial number, assignment, purchase details, warranty, supplier and notes.
+- Add asset photos and downloadable supporting attachments.
+- Extend asset records with administrator-defined custom fields.
+- Use configurable category, location and status lists instead of hard-coded choices.
+- Associate physical assets directly with rack equipment.
+
+## Rack Manager
+
+- Model multiple racks with real rack-unit positions.
+- Add, edit, move and remove mounted equipment through a visual rack layout.
+- Drag equipment into position and persist the layout.
+- Track item height, category, colour and front, rear or both-side mounting.
+- Validate rack height and prevent overlapping equipment on the same mount side.
+- Link rack items to Hardware Asset Manager records for a joined physical inventory.
+
+## Backup Manager
+
+- Keep manual backup records alongside automated Docker workload jobs.
+- See backup-capable workloads and configure a policy and target per workload.
+- Queue encrypted backup jobs and restore the latest successful backup through the Kaya Docker Agent.
+- Track queued, dispatched, running, successful and failed jobs with logs, artifact paths and sizes.
+- Configure multiple backup targets, including local, SMB, FTP and SFTP-style storage.
+- Encrypt remote target passwords and per-job backup encryption keys at rest.
+- Test backup storage from Site Administration before relying on it.
+
+## VLAN and IP Manager
+
+- Maintain a searchable IP address inventory organised by **VLAN → Category → device/allocation**.
+- Create multiple VLANs and DHCP ranges with subnet-aware validation.
+- Track hostname, MAC address, assignment type, owner/category context, notes and custom fields.
+- Bulk-update VLAN, category and assignment type across multiple records.
+- Ping managed addresses directly from Kaya.
+- Enable monitoring and Remote Manager access while editing an IP record.
+- Link IP records to compute workloads and retained DNS clients.
+- Review current and historical DHCP leases even when the DNS provider is unavailable.
+- Preserve lease intervals so historical DNS traffic remains attributed to the correct device after an address is reused.
+- Surface observed DNS clients that have not yet been promoted into managed IP records.
+
+## IP and WAN Monitor
+
+- Background ICMP monitoring for LAN devices, services, gateways and external WAN targets.
+- Retain availability, latency and packet-loss evidence without probing targets just because somebody opened a page.
+- Set warning and critical latency/packet-loss thresholds and a consecutive-failure threshold per monitor.
+- Open and close outage records automatically and retain warning, critical, outage and recovery events.
+- View status cards, last latency, recent uptime, outage counts and availability timelines.
+- Switch a browser dashboard temporarily to Live, 5-second, 10-second, 1-minute or 5-minute collection.
+- Pause rapid collection when the dashboard tab is hidden and automatically return to the saved schedule afterward.
+- Detail views combine raw and summarised observations across 24-hour, 7-day, 30-day and 1-year ranges.
+- Tiered retention keeps raw checks for 24 hours, five-minute summaries for 30 days, hourly summaries for a year and completed outages/events for a year.
+
+## DNS Manager
+
+- First-class **Pi-hole** integration with Pi-hole v6 session authentication and a legacy API fallback.
+- Provider status, blocking state, query totals, blocked-query rates, active clients, DHCP leases, local DNS records and blocklists.
+- Searchable query logs and factual analysis of top requested domains, blocked domains and client-domain relationships.
+- A deterministic DNS health score with **Excellent**, **Healthy**, **Attention Required**, **Poor** and **Critical** bands.
+- Provider-neutral Insights covering connectivity, stale data, disabled blocking, blocklist age, new devices, client IP changes, query growth, high block rates, NXDOMAIN rates and repeated blocked-domain requests.
+- Critical, warning and informational findings with active, acknowledged, resolved and automatically reactivated lifecycles.
+- Bounded hourly snapshots and configurable traffic retention for explainable trend comparisons.
+- Preserve the last successful provider data when a new collection fails or Pi-hole is temporarily unavailable.
+- Create and manage DNS investigations from interesting query activity.
+- Recognised-device inventory with conservative MAC/provider-ID identity matching.
+- Detailed client profiles with current observations, IP history, hostname history, event history, top requested/blocked domains, notes and a searchable DNS activity timeline.
+- Confirm, unlink, create or update managed VLAN/IP records from DNS observations.
+- Optional exact-MAC linking and safe automatic updates for dynamic records; static records are never silently changed.
+- DHCP-aware identity handling that avoids treating a temporary lease address as a permanent device identity.
+- Background collection with configurable intervals and no provider calls during ordinary page rendering.
+
+## Domain Manager
+
+- Track domain registrations, registrars, DNS providers, status, expiry and auto-renew state.
+- Retain nameservers, DNS records, notes and lookup errors.
+- Run manual RDAP, WHOIS and DNS lookups.
+- Poll domains automatically on a configurable cadence.
+- Store lookup changes in history so registration and DNS drift can be reviewed later.
+
+## Remote Manager
+
+- Launch **SSH** and **RDP** sessions directly in the browser.
+- SSH is delivered through Kaya's local WebSocket helper; RDP is bridged through Apache Guacamole and `guacd`.
+- Optional split-screen workspace for working with multiple remote systems together.
+- Configure each host's display name, protocol, terminal behaviour and RDP display/performance preferences.
+- Global idle timeouts, recording controls, Guacamole settings and short-lived RDP connection tokens.
+- Remote targets are linked to VLAN/IP Manager rather than maintained as a disconnected address book.
+- Kaya does not persist remote login credentials; they are supplied when the connection is started.
+- Record remote sessions, review them in an admin library and stream or download retained recordings.
+- Convert supported WebM session recordings to MP4 for download.
+- Fine-grained roles: users may connect, editors may manage host settings and administrators control global settings and recordings.
+
+## Secret Vault
+
+- A private encrypted workspace for recovery keys, certificates, sensitive operational notes, documents and break-glass information.
+- Every user receives an independent vault; administrators do not get a route that opens somebody else's vault.
+- A normal Kaya login is not enough: vault access requires a separate PIN/passphrase and fresh TOTP or verified OIDC MFA.
+- Random per-vault 256-bit master keys and **AES-256-GCM** encryption with unique nonces and record-specific authenticated data.
+- Encrypt titles, notes, tags, dates, descriptions, field values, original filenames and attachment contents at rest.
+- Purpose-built Secure Note, Secure Document, Recovery Record, Sensitive Data, Certificate and Recovery Kit item types.
+- Collections, favourites, tags, classifications, expiry/review dates and custom protected fields.
+- Optional MFA-gated collection sharing with named Kaya users at Viewer, Viewer + Downloader, Contributor, Manager or Owner permission levels.
+- Masked fields stay out of the HTML until revealed.
+- Highly Sensitive fields require another PIN/passphrase check and a one-use fresh MFA approval.
+- Automatic inactivity locking, an absolute session lifetime, manual locking and revocation on logout or recovery.
+- One-time recovery kits and recovery-key-based PIN reset without disabling account-wide MFA.
+- Portable encrypted `.kayavault` exports protected by a separate passphrase.
+- Built-in restore plus an offline recovery utility for listing and safely extracting a vault when Kaya itself is unavailable.
+- Authenticated package verification, attachment hash checking, safe extraction paths and overwrite protection.
+- Security audit events for setup, unlock, reveal, download, backup, restore and recovery without logging vault content.
+- Share a temporary independent copy through Secure Send without weakening or exposing the original vault item.
+
+## Secure Send
+
+- Deliver temporary encrypted files and secure notes to people inside or outside Kaya.
+- Send multiple files, a secure note and recipient context in one package.
+- Set expiry, permit or prevent saving into Secret Vault and optionally destroy access after one download.
+- Per-package **AES-256-GCM** encryption for file content and sensitive metadata.
+- Three-factor recipient access using a high-entropy URL token, sender-selected PIN and generated ten-word passphrase.
+- A separate, minimal recipient gateway with no Kaya login, admin pages or access to the main application.
+- Opaque recipient sessions, dedicated CSRF protection, throttling, lockouts, strict route/host validation and hardened no-store responses.
+- Send recipient links through Kaya's SMTP integration; PINs and passphrases are never placed in the email.
+- Optional sender notifications when a recipient first opens or downloads the package.
+- Download the complete package as a ZIP or download individual files.
+- Track access and downloads, extend expiry, revoke access or delete a package immediately.
+- Expiry, revocation, deletion and one-download completion revoke active recipient sessions.
+- Expired/deleted payload ciphertext is removed while minimal lifecycle history remains available for audit correlation.
+- Internal recipients can see received packages and save an independent encrypted copy into an unlocked Secret Vault when allowed.
+- Live gateway health reporting in the authenticated Kaya interface.
+
+## Licence Manager
+
+- Store software licences, subscriptions and product keys in one searchable register.
+- Search, filter and mark important licences as favourites.
+- Encrypt product keys at rest and reveal them only to authorised editors.
+- Audit product-key reveal actions.
+- Add custom fields and administrator-managed licence types.
+- Import and export licence data by CSV.
+
+## Runbook Manager
+
+- Create documentation spaces for teams, platforms, customers or operational areas.
+- Write maintenance procedures, recovery steps, build notes and checklists in Markdown-style pages.
+- Live preview with formatting controls, fenced code blocks and syntax highlighting.
+- Paste or upload PNG, JPEG, GIF and WebP images directly into a runbook.
+- Convert useful rich-text clipboard content into Markdown while pasting.
+- Organise pages with summaries, tags and spaces.
+- Search and filter by text, space and tag.
+- Switch between visual tile and dense table views.
+- Retain recent page history before edits for accountability and reference.
+- Role-aware editing: every signed-in user can read, while editors manage content.
+
+## Users, roles and authentication
+
+- Multi-user access with **Administrator**, **Editor** and **Viewer** roles.
+- Local email/password authentication with Argon2 password hashing.
+- Optional TOTP two-factor authentication with encrypted authenticator secrets.
+- Self-service profile name, password, MFA and linked-identity management.
+- Rate-limited login and password-reset flows with one-hour, hashed reset tokens.
+- SMTP-powered password reset email.
+- Full **OpenID Connect** support using Authorization Code flow, mandatory PKCE `S256`, discovery, JWKS validation, state and nonce checks.
+- Local only, Local + OIDC, OIDC preferred and guarded OIDC required modes.
+- Compatible with standards-based providers such as authentik, Keycloak and Microsoft Entra ID.
+- Configurable nested claim mappings, verified-email requirements and exact allowed-email domains.
+- Group-to-role mapping, safe role precedence, optional role synchronisation and protection for the last active administrator.
+- Controlled just-in-time user provisioning with a Viewer default.
+- Self-service identity linking, administrator-generated single-use linking invitations and optional first-login email matching.
+- A designated emergency local administrator and break-glass `/auth/local` route for identity-provider outages.
+- Provider configuration tests and a real OIDC test-login flow before OIDC-required mode can be enabled.
+- Fresh OIDC MFA step-up support for Secret Vault when the provider supplies acceptable assurance claims.
+
+## Auditing and security controls
+
+- Searchable audit logs for authentication, administration and important module actions.
+- Role-based route protection and permission-aware navigation throughout the application.
+- CSRF protection for browser mutations and dedicated bearer-token authentication for agents.
+- Encrypted storage for TOTP secrets, licence keys, SMTP passwords, DNS secrets, backup passwords and API tokens.
+- Configurable trusted hosts, trusted reverse-proxy networks and secure session cookies.
+- Content Security Policy, frame controls, referrer policy, permissions policy, content-type protection, cache controls and optional HSTS.
+- Security diagnostics for the current host allow-list, inbound DNS, outbound public IP, frame policy, HTTPS/HSTS state and RDP token lifetime.
+- Explicit Danger Zone confirmations and related-record cleanup for destructive operations.
+- A privacy-conscious public-demo mode with synthetic role accounts, scheduled resets, blocked sensitive operations and visitor network-identifier redaction.
+
+## Site Administration and customisation
+
+- Central settings for application identity, public base URL, version checking and upload limits.
+- Configure Remote Manager, Guacamole, DNS Manager, Secret Vault, Secure Send, dashboard behaviour and backup targets from the UI.
+- SMTP server configuration, custom email templates and built-in test email delivery.
+- Built-in tests for DNS providers and backup storage.
+- Create, edit, disable and reset MFA for team accounts.
+- Define custom text, textarea, radio and select fields for IP addresses, hardware assets and licences.
+- Manage reusable categories and lists for assets, IP addresses and licence types.
+- Administrator-only CSV import/export for licences and IP addresses.
+- About/system views with installed version, release channel and update availability.
+
+## Mobile, PWA and interface
+
+- Purpose-built **Command** dark mode and **Light Ops** light mode.
+- Fully responsive navigation, forms, dashboards, detail views and operational tables.
+- Mobile drawer navigation, touch-friendly controls and safe-area support.
+- Horizontally scrollable, keyboard-focusable tables retain important operational columns on small screens.
+- Install Kaya as a **Progressive Web App** on supported desktop and mobile browsers.
+- Built-in iPhone Home Screen guidance, offline fallback and user-controlled update notifications.
+- Security-conscious service worker: authenticated pages, API data, uploads, remote sessions, WebSockets and mutations are never cached for offline replay.
+- Browser-local timezone presentation for server-generated timestamps.
+- Collapsible, role-aware navigation and a version/update panel.
+
+## Deployment and integration
+
+- Fast, lightweight FastAPI application with SQLite storage and a Docker-first deployment.
+- Start with `docker compose up -d`; no environment file is mandatory for a basic installation.
+- Automatic generation and persistence of runtime secrets when they are not supplied.
+- Read-only application container, `no-new-privileges`, restricted temporary storage and dedicated persistent volumes.
+- Bundled `guacd` service in the standard Compose stack.
+- Works behind Nginx, Nginx Proxy Manager, Caddy, Traefik, NetBird and Cloudflare Tunnel.
+- Configurable base paths, trusted hosts, proxy networks, secure cookies and public URLs.
+- Startup schema migration support and optional pre-migration SQLite backups.
+- Health-check endpoint for container and reverse-proxy monitoring.
+- Docker Agent check-in API, Backup Agent job API, Remote Manager WebSockets and JSON helper endpoints for live module updates.
+- All core data stays on infrastructure you control: the database, uploads, encrypted vault data and recordings live in your mounted volumes.
 
 ------------------------------------------------------------------------
 
