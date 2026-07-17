@@ -194,9 +194,13 @@ def safe_state(row: SecureSendPackage | None) -> str:
 
 
 def package_or_error(db: Session, token: str) -> SecureSendPackage:
-    if not ACCESS_TOKEN_RE.fullmatch(token): raise HTTPException(403, "Forbidden")
+    if not ACCESS_TOKEN_RE.fullmatch(token):
+        logger.warning("Secure Send request rejected reason=access_token_shape")
+        raise HTTPException(403, "Forbidden")
     row = package_for_token(db, token); state = safe_state(row)
-    if state != "active": raise HTTPException(403, "Forbidden")
+    if state != "active":
+        logger.warning("Secure Send request rejected reason=package_state state=%s", state)
+        raise HTTPException(403, "Forbidden")
     return row
 
 
@@ -204,6 +208,11 @@ def package_or_error(db: Session, token: str) -> SecureSendPackage:
 async def public_error(request: Request, exc: HTTPException):
     if exc.status_code == 429:
         return security_headers(PlainTextResponse("Too Many Requests", status_code=429), https=request_is_https(request))
+    endpoint = getattr(request.scope.get("endpoint"), "__name__", "unmatched")
+    logger.warning(
+        "Secure Send endpoint rejected method=%s endpoint=%s status=%s",
+        request.method.upper(), endpoint, exc.status_code,
+    )
     return forbidden(https=request_is_https(request))
 
 
@@ -227,7 +236,9 @@ def gateway_favicon(): return FileResponse(STATIC_FILES["/favicon.svg"][0], medi
 
 
 def demo_or_disabled(db: Session) -> None:
-    if settings.demo_mode or get_site_setting(db, "secure_send_enabled") != "1": raise HTTPException(403, "Forbidden")
+    if settings.demo_mode or get_site_setting(db, "secure_send_enabled") != "1":
+        logger.warning("Secure Send request rejected reason=demo_or_disabled")
+        raise HTTPException(403, "Forbidden")
 
 
 def attempt_limited(request: Request, row: SecureSendPackage) -> bool:

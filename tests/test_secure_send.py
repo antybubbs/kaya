@@ -225,6 +225,28 @@ def test_gateway_rejection_logging_explains_guard_without_sensitive_request_data
         assert sensitive not in caplog.text
 
 
+def test_gateway_endpoint_rejection_logging_reports_safe_package_state(db, caplog):
+    gateway.app.dependency_overrides[gateway.get_db] = lambda: db
+    gateway.PUBLIC_REQUESTS.clear()
+    gateway.GATEWAY_HOST_CACHE.update({"expires": float("inf"), "hostname": "localhost"})
+    access_token = "z" * 64
+    try:
+        with caplog.at_level(logging.WARNING, logger="kaya.secure_send.gateway"):
+            with TestClient(gateway.app) as client:
+                response = client.post(
+                    f"/{access_token}/unlock",
+                    headers={"Host": "localhost", "Origin": "http://localhost", "Sec-Fetch-Site": "same-origin"},
+                    data={"pin": "740196", "passphrase": "secret-passphrase"},
+                )
+        assert response.status_code == 403
+        assert "reason=package_state state=missing" in caplog.text
+        assert "method=POST endpoint=unlock status=403" in caplog.text
+        for sensitive in (access_token, "740196", "secret-passphrase"):
+            assert sensitive not in caplog.text
+    finally:
+        gateway.app.dependency_overrides.clear()
+
+
 def test_valid_package_flow_survives_host_origin_and_method_enforcement(db, monkeypatch):
     row, access_token, passphrase = package(db)
     gateway.app.dependency_overrides[gateway.get_db] = lambda: db
