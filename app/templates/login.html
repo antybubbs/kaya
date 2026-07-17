@@ -59,7 +59,7 @@
               <input type="hidden" name="email" value="{{ name|title }}">
               <input type="hidden" name="password" value="{{ account.password }}">
               <span><strong>{{ name|title }}</strong><small>{{ account.role|title }} access</small></span>
-              <button type="submit" data-submit-button data-loading-label="Signing in…">Sign in as {{ name|title }}</button>
+              <button type="submit" aria-label="Sign in as {{ name|title }}" data-submit-button data-loading-label="Signing in…">Use {{ name|title }}</button>
             </form>
             {% endfor %}
           </div>
