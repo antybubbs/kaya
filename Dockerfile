@@ -25,8 +25,9 @@ COPY app ./app
 COPY scripts ./scripts
 COPY docker-entrypoint.sh /usr/local/bin/kaya-entrypoint
 
-RUN mkdir -p /app/data /app/uploads \
+RUN mkdir -p /app/data /app/uploads /app/data/secret-vault \
     && chown -R kaya:kaya /app \
+    && chmod 700 /app/data/secret-vault \
     && sed -i 's/\r$//' /usr/local/bin/kaya-entrypoint \
     && chmod +x /usr/local/bin/kaya-entrypoint
 

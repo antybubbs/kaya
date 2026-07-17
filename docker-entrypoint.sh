@@ -1,8 +1,9 @@
 #!/bin/sh
 set -eu
 
-mkdir -p /app/data /app/uploads /app/data/remote-recordings
+mkdir -p /app/data /app/uploads /app/data/remote-recordings /app/data/secret-vault
 chown -R kaya:kaya /app/data /app/uploads
+chmod 700 /app/data/secret-vault
 
 SECRETS_FILE="/app/data/.runtime.env"
 

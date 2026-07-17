@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import secrets
@@ -104,11 +104,17 @@ def callback_error_context(db: Session, request: Request, transaction: OIDCTrans
         and request.session.get("user_id") == transaction.initiated_by_user_id
     )
     category = getattr(exc, "category", "callback_failed")
+    authorised_vault_owner = bool(
+        transaction and transaction.flow_type in {"vault_setup", "vault_unlock", "vault_recovery", "vault_sensitive"}
+        and transaction.initiated_by_user_id and request.session.get("user_id") == transaction.initiated_by_user_id
+    )
     message = LINK_ERROR_MESSAGES.get(category, str(exc)) if authorised_link_owner else str(exc)
+    if authorised_vault_owner:
+        return actor, message, transaction.return_path, "Return to Secret Vault"
     return actor, message, "/profile" if authorised_link_owner else "/login", "Return to profile" if authorised_link_owner else "Return to sign in"
 
 
-async def _begin(request: Request, db: Session, provider: OIDCProvider, *, flow_type="login", target_user_id=None, initiated_by_user_id=None, return_path="/dashboard"):
+async def _begin(request: Request, db: Session, provider: OIDCProvider, *, flow_type="login", target_user_id=None, initiated_by_user_id=None, return_path="/dashboard", authorization_params=None):
     actor = db.get(User, initiated_by_user_id) if initiated_by_user_id else None
     start_action = "oidc_link_started" if flow_type in {"self_link", "admin_link"} else "oidc_login_started"
     if _rate_limited(f"oidc:{client_key(request)}"):
@@ -120,6 +126,7 @@ async def _begin(request: Request, db: Session, provider: OIDCProvider, *, flow_
             authorization_redirect(
                 db, provider, callback_url=callback_url(db), flow_type=flow_type,
                 target_user_id=target_user_id, initiated_by_user_id=initiated_by_user_id, return_path=return_path,
+                authorization_params=authorization_params,
             ),
             timeout=max(4, min(provider.timeout_seconds, 30) + 2),
         )
@@ -128,6 +135,45 @@ async def _begin(request: Request, db: Session, provider: OIDCProvider, *, flow_
         return templates.TemplateResponse(request, "oidc_error.html", {"message": "Single sign-on is temporarily unavailable.", **csrf_context(request, include_version=False)}, status_code=503)
     request.session["oidc_transaction"] = opaque
     return RedirectResponse(url, status_code=302)
+
+
+def _complete_vault_assurance(request: Request, db: Session, provider: OIDCProvider, transaction: OIDCTransaction, claims: dict):
+    """Turn a fresh, matching IdP MFA event into a one-use vault approval."""
+    purpose = transaction.flow_type.removeprefix("vault_")
+    user_id = request.session.get("user_id")
+    if purpose not in {"setup", "unlock", "recovery", "sensitive"} or not user_id:
+        raise OIDCFlowError("invalid_vault_assurance")
+    if transaction.initiated_by_user_id != user_id or transaction.target_user_id != user_id:
+        raise OIDCFlowError("invalid_vault_assurance")
+    if get_site_setting(db, "secret_vault_oidc_mfa_policy") not in {"idp_mfa", "either"}:
+        raise OIDCFlowError("oidc_vault_assurance_disabled", "Identity-provider MFA is not enabled for Secret Vault.")
+    identity = db.query(ExternalIdentity).filter_by(user_id=user_id, provider_id=provider.id).first()
+    if not identity or identity.issuer != str(claims.get("iss") or "") or identity.subject != str(claims.get("sub") or ""):
+        raise OIDCFlowError("identity_mismatch", "The identity provider returned a different linked account.")
+    try:
+        auth_time = int(claims.get("auth_time"))
+    except (TypeError, ValueError):
+        raise OIDCFlowError("fresh_authentication_required", "The identity provider did not confirm when authentication occurred.")
+    now = int(datetime.now(timezone.utc).timestamp())
+    if auth_time > now + 60 or now - auth_time > 300:
+        raise OIDCFlowError("fresh_authentication_required", "A fresh identity-provider authentication is required.")
+    accepted_acr = {
+        value.strip() for value in get_site_setting(db, "secret_vault_oidc_accepted_acr").replace(",", " ").split() if value.strip()
+    }
+    acr = str(claims.get("acr") or "")
+    amr_claim = claims.get("amr")
+    amr = {str(value).lower() for value in amr_claim} if isinstance(amr_claim, list) else set()
+    if not ((accepted_acr and acr in accepted_acr) or "mfa" in amr):
+        raise OIDCFlowError("mfa_assurance_required", "The identity provider did not confirm the required multi-factor authentication assurance.")
+    request.session["vault_oidc_approval"] = {
+        "user_id": user_id, "purpose": purpose, "issued_at": now,
+        "provider_id": provider.id, "method": "oidc_mfa",
+    }
+    return_path = transaction.return_path
+    db.delete(transaction)
+    db.commit()
+    _audit_oidc(db, db.get(User, user_id), "vault_oidc_assurance_succeeded", request, provider, detail=f"purpose={purpose}")
+    return RedirectResponse(return_path, status_code=303)
 
 
 @router.get("/auth/oidc/login")
@@ -161,6 +207,8 @@ async def oidc_callback(request: Request, state: str = "", code: str = "", error
             request.session["oidc_test_preview"] = preview
             _audit_oidc(db, db.get(User, transaction.initiated_by_user_id), "oidc_test_login_succeeded", request, provider)
             return RedirectResponse("/system/site-administration/authentication?tab=oidc&test_login=success", status_code=303)
+        if transaction.flow_type in {"vault_setup", "vault_unlock", "vault_recovery", "vault_sensitive"}:
+            return _complete_vault_assurance(request, db, provider, transaction, claims)
         resolution = resolve_login(db, provider, transaction, claims)
         if resolution.confirmation_required:
             request.session["oidc_transaction"] = opaque

@@ -65,6 +65,8 @@ DEFAULT_SITE_SETTINGS = {
     "oidc_post_logout_path": "/login",
     "oidc_emergency_local_enabled": "1",
     "oidc_required_risk_acknowledged": "",
+    "secret_vault_oidc_mfa_policy": "either",
+    "secret_vault_oidc_accepted_acr": "",
     "smtp_enabled": "",
     "smtp_host": "",
     "smtp_port": "587",

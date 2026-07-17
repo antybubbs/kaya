@@ -1,5 +1,7 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from starlette.requests import Request
@@ -7,9 +9,10 @@ from starlette.requests import Request
 from app.core.security import hash_password
 from app.db.session import Base
 from app.main import app
-from app.models.models import OIDCProvider, OIDCTransaction, RemoteManagerSetting, User
+from app.models.models import ExternalIdentity, OIDCProvider, OIDCTransaction, RemoteManagerSetting, User
 from app.routers.auth import login, login_page, profile
-from app.routers.oidc import callback_error_context, emergency_login_submit, profile_identity_link
+from app.routers.oidc import _complete_vault_assurance, callback_error_context, emergency_login_submit, profile_identity_link
+from app.services.oidc_client import OIDCFlowError
 from app.services.oidc_identity import OIDCIdentityError
 
 
@@ -119,3 +122,45 @@ def test_authenticated_link_callback_shows_safe_actionable_failure_reason():
         assert actor.id == user.id
         assert "did not mark your email address as verified" in message
         assert (return_url, return_label) == ("/profile", "Return to profile")
+
+
+def vault_assurance_rows(db):
+    user = add_user(db, "oidc@example.com", password=None, role="viewer", authentication_type="oidc")
+    provider = OIDCProvider(name="Company SSO", issuer="https://id.example.com", client_id="kaya", is_enabled=True)
+    db.add(provider); db.flush()
+    db.add(ExternalIdentity(user_id=user.id, provider_id=provider.id, issuer=provider.issuer, subject="subject-1", link_method="jit"))
+    setting(db, "secret_vault_oidc_mfa_policy", "either")
+    transaction = OIDCTransaction(
+        transaction_hash="a" * 64, state_hash="b" * 64, encrypted_nonce="nonce", encrypted_code_verifier="verifier",
+        provider_id=provider.id, flow_type="vault_setup", target_user_id=user.id, initiated_by_user_id=user.id,
+        return_path="/security/secret-vault", expires_at=datetime.utcnow() + timedelta(minutes=5), used_at=datetime.utcnow(),
+    )
+    db.add(transaction); db.commit()
+    return user, provider, transaction
+
+
+def test_vault_oidc_assurance_is_bound_fresh_mfa_and_one_purpose():
+    with database() as db:
+        user, provider, transaction = vault_assurance_rows(db)
+        incoming = request("/auth/oidc/callback")
+        incoming.session["user_id"] = user.id
+        transaction_id = transaction.id
+        response = _complete_vault_assurance(incoming, db, provider, transaction, {
+            "iss": provider.issuer, "sub": "subject-1", "auth_time": int(datetime.now(timezone.utc).timestamp()), "amr": ["pwd", "mfa"],
+        })
+        assert response.status_code == 303
+        assert incoming.session["vault_oidc_approval"]["purpose"] == "setup"
+        assert db.get(OIDCTransaction, transaction_id) is None
+
+
+def test_vault_oidc_assurance_rejects_login_without_mfa_evidence():
+    with database() as db:
+        user, provider, transaction = vault_assurance_rows(db)
+        incoming = request("/auth/oidc/callback")
+        incoming.session["user_id"] = user.id
+        with pytest.raises(OIDCFlowError) as exc:
+            _complete_vault_assurance(incoming, db, provider, transaction, {
+                "iss": provider.issuer, "sub": "subject-1", "auth_time": int(datetime.now(timezone.utc).timestamp()), "amr": ["pwd"],
+            })
+        assert exc.value.category == "mfa_assurance_required"
+        assert "vault_oidc_approval" not in incoming.session

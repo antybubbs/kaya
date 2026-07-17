@@ -25,6 +25,7 @@
   {% block extra_head %}{% endblock %}
   <link rel="stylesheet" href="{{ request.url_for('static', path='css/responsive.css') }}?v={{ asset_version }}">
   <link rel="stylesheet" href="{{ request.url_for('static', path='css/sidebar.css') }}?v={{ asset_version }}">
+  <link rel="stylesheet" href="{{ request.url_for('static', path='css/secret_vault.css') }}?v={{ asset_version }}">
   <script src="/static/js/sidebar.js?v={{ asset_version }}" defer></script>
   <script src="/static/js/tables.js?v={{ asset_version }}" defer></script>
   <script src="/static/js/inline_edit.js?v={{ asset_version }}" defer></script>
@@ -121,7 +122,7 @@
       <summary><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 20 7v5c0 5-3.4 8.4-8 9-4.6-.6-8-4-8-9V7l8-4Z"></path><path d="M9.5 12.5 11 14l3.5-4"></path></svg></span><span class="nav-label">Security</span></summary>
       <div class="nav-children">
         <span class="nav-link disabled" title="Coming soon"><span class="nav-label">SSL Certificate Manager</span></span>
-        <span class="nav-link disabled" title="Coming soon"><span class="nav-label">Secret Vault</span></span>
+        <a class="nav-link" href="/security/secret-vault"><span class="nav-label">Secret Vault</span></a>
         <a class="nav-link" href="/security/license-keys"><span class="nav-label">License Keys</span></a>
       </div>
     </details>

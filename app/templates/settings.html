@@ -55,11 +55,26 @@
           <a href="/system/site-administration?tab=module-dns-manager" class="settings-side-child" data-settings-child-tab="module-dns-manager" data-settings-parent="modules" aria-selected="false">DNS Manager</a>
           <a href="/system/site-administration?tab=module-vlan-ip-manager" class="settings-side-child" data-settings-child-tab="module-vlan-ip-manager" data-settings-parent="modules" aria-selected="false">VLAN/IP Manager</a>
           <a href="/system/site-administration?tab=module-remote-manager" class="settings-side-child" data-settings-child-tab="module-remote-manager" data-settings-parent="modules" aria-selected="false">Remote Manager</a>
+          <a href="/system/site-administration?tab=module-secret-vault" class="settings-side-child" data-settings-child-tab="module-secret-vault" data-settings-parent="modules" aria-selected="false">Secret Vault</a>
         </div>
       </details>
     </aside>
 
     <main class="settings-content-panel">
+  <section class="settings-tab-panel vault-admin-panel" data-settings-panel="module-secret-vault" data-settings-parent="modules" role="tabpanel" hidden>
+    <h2>Secret Vault</h2>
+    <div class="remote-settings-card vault-admin-card">
+      <header><span>Security policy</span></header>
+      <div class="remote-settings-grid two">
+        <label><strong>Minimum PIN length</strong><small>At least 6; default 8. Passphrases always require 12 characters.</small><input name="secret_vault_min_pin_length" type="number" min="6" max="20" value="{{ settings.get('secret_vault_min_pin_length','8') }}"></label>
+        <label><strong>Maximum auto-lock interval</strong><small>Users may choose a shorter interval.</small><select name="secret_vault_max_auto_lock_minutes">{% for n in [5,10,15,30,60] %}<option value="{{ n }}" {% if settings.get('secret_vault_max_auto_lock_minutes','60') == n|string %}selected{% endif %}>{{ n }} minutes</option>{% endfor %}</select></label>
+        <label><strong>OIDC MFA policy</strong><small>Controls whether linked users may use fresh identity-provider MFA for vault setup, unlock and recovery.</small><select name="secret_vault_oidc_mfa_policy"><option value="kaya_totp" {% if settings.get('secret_vault_oidc_mfa_policy','either') == 'kaya_totp' %}selected{% endif %}>Require Kaya authenticator</option><option value="idp_mfa" {% if settings.get('secret_vault_oidc_mfa_policy','either') == 'idp_mfa' %}selected{% endif %}>Use verified IdP MFA</option><option value="either" {% if settings.get('secret_vault_oidc_mfa_policy','either') == 'either' %}selected{% endif %}>Allow either method</option></select></label>
+        <label><strong>Accepted OIDC ACR values</strong><small>Optional comma- or space-separated assurance values. Kaya also accepts an explicit <code>amr=mfa</code> claim.</small><input name="secret_vault_oidc_accepted_acr" maxlength="500" value="{{ settings.get('secret_vault_oidc_accepted_acr','') }}" placeholder="urn:example:loa:2"></label>
+      </div>
+      {{ switch('secret_vault_sharing_enabled', 'Allow secure collection sharing', 'Users may explicitly share collections with named Kaya users. Private vaults remain private by default.') }}
+      <div class="vault-admin-note"><strong>Protect the application key</strong><span>Kaya's ENCRYPTION_KEY must be backed up separately. Database and attachment backups cannot be restored without it; portable .kayavault exports use their own passphrase.</span></div>
+    </div>
+  </section>
   <section class="settings-tab-panel" data-settings-panel="module-dashboard" data-settings-parent="modules" role="tabpanel" hidden>
     <h2>Dashboard</h2>
     <div class="remote-settings-card">

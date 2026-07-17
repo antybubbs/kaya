@@ -14,7 +14,7 @@ from app.core.demo import DEMO_ACCOUNTS, demo_generation, demo_login_email
 from app.core.security import decrypt_secret, hash_password, verify_password
 from app.core.totp import decrypted_totp_secret, encrypted_totp_secret, generate_totp_secret, provisioning_uri, qr_code_data_uri, verify_totp
 from app.db.session import get_db
-from app.models.models import AppSession, AuditLog, ExternalIdentity, OIDCProvider, PasswordResetToken, User
+from app.models.models import AppSession, AuditLog, ExternalIdentity, OIDCProvider, PasswordResetToken, User, VaultSession
 from app.services.audit import write_audit
 from app.services.mail import MailConfigurationError, render_email_template, send_mail
 from app.services.sessions import end_user_session, start_user_session, touch_user_session
@@ -397,6 +397,7 @@ def reset_password_submit(
 
     user = row.user
     user.password_hash = hash_password(password)
+    db.query(VaultSession).filter(VaultSession.user_id == user.id, VaultSession.revoked_at.is_(None)).update({VaultSession.revoked_at: datetime.utcnow()}, synchronize_session=False)
     row.used_at = datetime.utcnow()
     db.commit()
     write_audit(
@@ -609,6 +610,11 @@ def logout(request: Request, csrf_token: str = Form(...), db: Session = Depends(
     session_id = request.session.get("session_id")
     app_session = db.query(AppSession).filter_by(session_id=session_id).first() if session_id else None
     id_token_hint = decrypt_secret(app_session.encrypted_oidc_id_token) if app_session and app_session.encrypted_oidc_id_token else None
+    if user:
+        from app.models.models import Vault
+        from app.services.secret_vault import lock_vault
+        if db.query(Vault.id).filter_by(owner_id=user.id).first():
+            lock_vault(db, request, user)
     end_user_session(db, request)
     write_audit(
         db,
@@ -678,6 +684,7 @@ def update_profile_password(request: Request, current_password: str = Form("", m
     if new_password != confirm_password:
         return templates.TemplateResponse(request, "profile.html", {"user": user, "setup_secret": None, "setup_uri": None, "setup_qr_code": None, "error": "New passwords do not match.", "success": None, **csrf_context(request)}, status_code=400)
     user.password_hash = hash_password(new_password)
+    db.query(VaultSession).filter(VaultSession.user_id == user.id, VaultSession.revoked_at.is_(None)).update({VaultSession.revoked_at: datetime.utcnow()}, synchronize_session=False)
     db.commit()
     write_audit(db, user, "change_password", "user", str(user.id), request.client.host if request.client else None)
     return templates.TemplateResponse(request, "profile.html", {"user": user, "setup_secret": None, "setup_uri": None, "setup_qr_code": None, "error": None, "success": "Password updated.", **csrf_context(request)})
@@ -719,6 +726,7 @@ def disable_profile_2fa(request: Request, current_password: str = Form("", max_l
         return templates.TemplateResponse(request, "profile.html", {"user": user, "setup_secret": None, "setup_uri": None, "setup_qr_code": None, "error": "Current password is required to disable 2FA.", "success": None, **csrf_context(request)}, status_code=400)
     user.totp_secret = None
     user.totp_enabled = False
+    db.query(VaultSession).filter(VaultSession.user_id == user.id, VaultSession.revoked_at.is_(None)).update({VaultSession.revoked_at: datetime.utcnow()}, synchronize_session=False)
     db.commit()
     write_audit(db, user, "disable_2fa", "user", str(user.id), request.client.host if request.client else None)
     return RedirectResponse("/profile", status_code=303)

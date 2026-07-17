@@ -928,3 +928,202 @@ class AuditLog(Base):
     metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     user = relationship("User")
+
+
+# Secret Vault stores only encrypted user-facing values.  The small amount of
+# plaintext metadata below is deliberately limited to identifiers, versions,
+# sizes and access-control state needed before a vault is unlocked.
+class Vault(Base):
+    __tablename__ = "vaults"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), unique=True, index=True)
+    pin_hash: Mapped[str] = mapped_column(String(255))
+    pin_salt: Mapped[str] = mapped_column(String(120))
+    pin_wrapped_key: Mapped[str] = mapped_column(Text)
+    recovery_hash: Mapped[str] = mapped_column(String(255))
+    recovery_salt: Mapped[str] = mapped_column(String(120))
+    recovery_wrapped_key: Mapped[str] = mapped_column(Text)
+    app_wrapped_key: Mapped[str] = mapped_column(Text)
+    key_version: Mapped[int] = mapped_column(Integer, default=1)
+    schema_version: Mapped[int] = mapped_column(Integer, default=1)
+    auto_lock_minutes: Mapped[int] = mapped_column(Integer, default=10)
+    failed_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    recovery_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    owner = relationship("User")
+
+
+class VaultSession(Base):
+    __tablename__ = "vault_sessions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    vault_id: Mapped[int] = mapped_column(ForeignKey("vaults.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    app_session_id: Mapped[str] = mapped_column(String(120), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    nonce: Mapped[str] = mapped_column(String(120))
+    authentication_method: Mapped[str] = mapped_column(String(40), default="pin_totp")
+    unlocked_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    last_activity_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    absolute_expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+
+
+class VaultTotpUse(Base):
+    __tablename__ = "vault_totp_uses"
+    __table_args__ = (UniqueConstraint("user_id", "counter", name="uq_vault_totp_user_counter"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    counter: Mapped[int] = mapped_column(Integer, index=True)
+    used_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class VaultCollection(Base):
+    __tablename__ = "vault_collections"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    vault_id: Mapped[int] = mapped_column(ForeignKey("vaults.id", ondelete="CASCADE"), index=True)
+    encrypted_payload: Mapped[str] = mapped_column(Text)
+    key_version: Mapped[int] = mapped_column(Integer, default=1)
+    is_private: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class VaultCollectionMember(Base):
+    __tablename__ = "vault_collection_members"
+    __table_args__ = (UniqueConstraint("collection_id", "user_id", name="uq_vault_collection_member"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    collection_id: Mapped[int] = mapped_column(ForeignKey("vault_collections.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    permission: Mapped[str] = mapped_column(String(40), default="viewer")
+    encrypted_collection_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class VaultItem(Base):
+    __tablename__ = "vault_items"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    vault_id: Mapped[int] = mapped_column(ForeignKey("vaults.id", ondelete="CASCADE"), index=True)
+    collection_id: Mapped[int | None] = mapped_column(ForeignKey("vault_collections.id", ondelete="SET NULL"), nullable=True, index=True)
+    item_type: Mapped[str] = mapped_column(String(40), index=True)
+    encrypted_payload: Mapped[str] = mapped_column(Text)
+    key_version: Mapped[int] = mapped_column(Integer, default=1)
+    is_favourite: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    updated_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class VaultItemVersion(Base):
+    __tablename__ = "vault_item_versions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey("vault_items.id", ondelete="CASCADE"), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    encrypted_payload: Mapped[str] = mapped_column(Text)
+    key_version: Mapped[int] = mapped_column(Integer, default=1)
+    saved_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class VaultAttachment(Base):
+    __tablename__ = "vault_attachments"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey("vault_items.id", ondelete="CASCADE"), index=True)
+    storage_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    encrypted_metadata: Mapped[str] = mapped_column(Text)
+    size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    ciphertext_size: Mapped[int] = mapped_column(Integer, default=0)
+    integrity_hash: Mapped[str] = mapped_column(String(64))
+    key_version: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class VaultBackupRecord(Base):
+    __tablename__ = "vault_backup_records"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    vault_id: Mapped[int] = mapped_column(ForeignKey("vaults.id", ondelete="CASCADE"), index=True)
+    operation: Mapped[str] = mapped_column(String(40), index=True)
+    status: Mapped[str] = mapped_column(String(40), index=True)
+    format_version: Mapped[int] = mapped_column(Integer, default=1)
+    size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+# Secure Send retains only encrypted recipient/content metadata. Public URLs,
+# PINs and passphrases are represented by hashes or encrypted recovery copies;
+# sequential database identifiers are never exposed by recipient routes.
+class SecureSendPackage(Base):
+    __tablename__ = "secure_send_packages"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sender_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    internal_recipient_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    recipient_type: Mapped[str] = mapped_column(String(20), default="external", index=True)
+    access_token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    encrypted_access_token: Mapped[str] = mapped_column(Text)
+    credential_hash: Mapped[str] = mapped_column(String(255))
+    credential_salt: Mapped[str] = mapped_column(String(120))
+    credential_wrapped_key: Mapped[str] = mapped_column(Text)
+    app_wrapped_key: Mapped[str] = mapped_column(Text)
+    encrypted_summary: Mapped[str] = mapped_column(Text)
+    encrypted_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default="active", index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    one_download_only: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    allow_vault_save: Mapped[bool] = mapped_column(Boolean, default=False)
+    notify_when_opened: Mapped[bool] = mapped_column(Boolean, default=True)
+    download_count: Mapped[int] = mapped_column(Integer, default=0)
+    failed_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    opened_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    authenticated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    downloaded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    expired_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    cleaned_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    sender = relationship("User", foreign_keys=[sender_id])
+    internal_recipient = relationship("User", foreign_keys=[internal_recipient_id])
+
+
+class SecureSendFile(Base):
+    __tablename__ = "secure_send_files"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    package_id: Mapped[int] = mapped_column(ForeignKey("secure_send_packages.id", ondelete="CASCADE"), index=True)
+    storage_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    encrypted_metadata: Mapped[str] = mapped_column(Text)
+    size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    ciphertext_size: Mapped[int] = mapped_column(Integer, default=0)
+    integrity_hash: Mapped[str] = mapped_column(String(64))
+    downloaded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class SecureSendRecipientSession(Base):
+    __tablename__ = "secure_send_recipient_sessions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    package_id: Mapped[int] = mapped_column(ForeignKey("secure_send_packages.id", ondelete="CASCADE"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    csrf_hash: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    last_activity_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+
+
+class SecureSendActivity(Base):
+    __tablename__ = "secure_send_activities"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    package_id: Mapped[int] = mapped_column(ForeignKey("secure_send_packages.id", ondelete="CASCADE"), index=True)
+    event_type: Mapped[str] = mapped_column(String(40), index=True)
+    actor_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    encrypted_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)

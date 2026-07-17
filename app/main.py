@@ -1,5 +1,6 @@
 from pathlib import Path
 import asyncio
+from datetime import datetime
 from time import perf_counter
 from uuid import uuid4
 from fastapi import FastAPI, Request
@@ -14,8 +15,8 @@ from app.core.logging import install_sensitive_authentication_log_filter
 from app.core.performance import begin_request_metrics, end_request_metrics, install_template_timing, log_request_metrics
 from app.core.security import decrypt_secret, hash_password
 from app.db.session import Base, engine, SessionLocal
-from app.models.models import AuditLog, User, VLAN
-from app.routers import auth, oidc, dashboard, licences, admin, ip_addresses, hardware_assets, network_monitor, remote_manager, runbooks, domain_manager, compute_manager, rack_manager, backup_manager, dns_manager
+from app.models.models import AuditLog, User, VLAN, VaultSession
+from app.routers import auth, oidc, dashboard, licences, admin, ip_addresses, hardware_assets, network_monitor, remote_manager, runbooks, domain_manager, compute_manager, rack_manager, backup_manager, dns_manager, secret_vault
 from app.services.guacamole_bridge import stop_guacamole_bridge
 from app.services.kaya_remote_service import start_kaya_remote_service, stop_kaya_remote_service
 from app.services.network_monitor import monitor_loop
@@ -285,6 +286,13 @@ def pwa_service_worker():
 def bootstrap():
     Base.metadata.create_all(bind=engine)
     migrate_existing_database()
+    # Vault unlocks are process-bound by policy. A restart never resurrects an
+    # authenticated vault session from the database.
+    with SessionLocal() as db:
+        db.query(VaultSession).filter(VaultSession.revoked_at.is_(None)).update(
+            {VaultSession.revoked_at: datetime.utcnow()}, synchronize_session=False
+        )
+        db.commit()
 
     db: Session = SessionLocal()
     try:
@@ -711,6 +719,7 @@ app.include_router(compute_manager.router)
 app.include_router(rack_manager.router)
 app.include_router(backup_manager.router)
 app.include_router(dns_manager.router)
+app.include_router(secret_vault.router)
 app.include_router(admin.router)
 
 @app.get("/healthz", include_in_schema=False)

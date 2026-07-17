@@ -51,6 +51,7 @@ Use it, dont use it. Its up to you really (but it is quite cool if I do say so m
  | Networking          | IP addresses, VLANs, DNS, domains and WAN links |
  | Documentation       | Built-in runbooks and operational notes         |
  | Licence Management  | Organise software licences and keys             |
+ | Secret Vault        | Encrypt recovery records, sensitive notes and documents with portable offline recovery |
  | Multi-user          | Role-based access control                       |
  | Audit Logs          | Track important actions                         |
  | File Storage        | Secure document uploads                         |

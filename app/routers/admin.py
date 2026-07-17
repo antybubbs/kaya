@@ -48,6 +48,7 @@ from app.models.models import (
     RemoteManagerSetting,
     User,
     VLAN,
+    VaultSession,
 )
 from app.routers.auth import require_admin
 from app.services.about import collect_about
@@ -133,6 +134,11 @@ SITE_SETTING_KEYS = {
     "dns_traffic_history_days": "30",
     "dns_vlan_enrichment_enabled": "1",
     "dns_update_empty_managed_hostname": "",
+    "secret_vault_min_pin_length": "8",
+    "secret_vault_max_auto_lock_minutes": "60",
+    "secret_vault_sharing_enabled": "1",
+    "secret_vault_oidc_mfa_policy": "either",
+    "secret_vault_oidc_accepted_acr": "",
     "smtp_enabled": "",
     "smtp_host": "",
     "smtp_port": "587",
@@ -1006,6 +1012,7 @@ def update_user(
         target.password_hash = hash_password(password)
         target.authentication_type = "local_and_oidc" if identity else "local"
 
+    db.query(VaultSession).filter(VaultSession.user_id == target.id, VaultSession.revoked_at.is_(None)).update({VaultSession.revoked_at: datetime.utcnow()}, synchronize_session=False)
     db.commit()
 
     write_audit(
@@ -1041,7 +1048,7 @@ def reset_user_2fa(
 
     target.totp_secret = None
     target.totp_enabled = False
-
+    db.query(VaultSession).filter(VaultSession.user_id == target.id, VaultSession.revoked_at.is_(None)).update({VaultSession.revoked_at: datetime.utcnow()}, synchronize_session=False)
     db.commit()
 
     write_audit(
@@ -2216,6 +2223,11 @@ async def save_settings(
     dashboard_show_source_age: str = Form(""),
     dashboard_attention_required: str = Form(""),
     dashboard_globally_disabled_widgets: str = Form(""),
+    secret_vault_min_pin_length: str = Form("8"),
+    secret_vault_max_auto_lock_minutes: str = Form("60"),
+    secret_vault_sharing_enabled: str = Form(""),
+    secret_vault_oidc_mfa_policy: str = Form("either"),
+    secret_vault_oidc_accepted_acr: str = Form(""),
     dns_manager_enabled: str = Form(""),
     dns_collector_enabled: str = Form(""),
     dns_default_provider_id: str = Form(""),
@@ -2366,6 +2378,19 @@ async def save_settings(
         dashboard_recent_activity_limit = "10"
     save_site_setting(db, "dashboard_poll_interval_seconds", dashboard_poll_interval_seconds)
     save_site_setting(db, "dashboard_recent_activity_limit", dashboard_recent_activity_limit)
+    try:
+        vault_min_pin = str(max(6, min(int(secret_vault_min_pin_length), 20)))
+    except ValueError:
+        vault_min_pin = "8"
+    if secret_vault_max_auto_lock_minutes not in {"5", "10", "15", "30", "60"}:
+        secret_vault_max_auto_lock_minutes = "60"
+    save_site_setting(db, "secret_vault_min_pin_length", vault_min_pin)
+    save_site_setting(db, "secret_vault_max_auto_lock_minutes", secret_vault_max_auto_lock_minutes)
+    save_site_setting(db, "secret_vault_sharing_enabled", "1" if secret_vault_sharing_enabled else "")
+    if secret_vault_oidc_mfa_policy not in {"kaya_totp", "idp_mfa", "either"}:
+        secret_vault_oidc_mfa_policy = "either"
+    save_site_setting(db, "secret_vault_oidc_mfa_policy", secret_vault_oidc_mfa_policy)
+    save_site_setting(db, "secret_vault_oidc_accepted_acr", secret_vault_oidc_accepted_acr.strip()[:500])
     save_dns_manager_settings(
         db,
         dns_manager_enabled=dns_manager_enabled,

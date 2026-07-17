@@ -239,6 +239,35 @@ def main():
         cur.execute("ALTER TABLE runbook_images ADD COLUMN data BLOB")
         migrations_applied.append("runbook_images.data")
 
+    # Secret Vault tables contain only ciphertext and security/control metadata.
+    # CREATE IF NOT EXISTS keeps this migration safe for both existing and fresh installs.
+    vault_schema = [
+        "CREATE TABLE IF NOT EXISTS vaults (id INTEGER NOT NULL PRIMARY KEY, owner_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE, pin_hash VARCHAR(255) NOT NULL, pin_salt VARCHAR(120) NOT NULL, pin_wrapped_key TEXT NOT NULL, recovery_hash VARCHAR(255) NOT NULL, recovery_salt VARCHAR(120) NOT NULL, recovery_wrapped_key TEXT NOT NULL, app_wrapped_key TEXT NOT NULL, key_version INTEGER DEFAULT 1 NOT NULL, schema_version INTEGER DEFAULT 1 NOT NULL, auto_lock_minutes INTEGER DEFAULT 10 NOT NULL, failed_attempts INTEGER DEFAULT 0 NOT NULL, locked_until DATETIME, recovery_confirmed_at DATETIME, created_at DATETIME, updated_at DATETIME)",
+        "CREATE TABLE IF NOT EXISTS vault_sessions (id INTEGER NOT NULL PRIMARY KEY, vault_id INTEGER NOT NULL REFERENCES vaults(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, app_session_id VARCHAR(120) NOT NULL, token_hash VARCHAR(64) NOT NULL UNIQUE, nonce VARCHAR(120) NOT NULL, authentication_method VARCHAR(40) DEFAULT 'pin_totp' NOT NULL, unlocked_at DATETIME, last_activity_at DATETIME, expires_at DATETIME NOT NULL, absolute_expires_at DATETIME NOT NULL, revoked_at DATETIME)",
+        "CREATE TABLE IF NOT EXISTS vault_totp_uses (id INTEGER NOT NULL PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, counter INTEGER NOT NULL, used_at DATETIME, UNIQUE(user_id, counter))",
+        "CREATE TABLE IF NOT EXISTS vault_collections (id INTEGER NOT NULL PRIMARY KEY, vault_id INTEGER NOT NULL REFERENCES vaults(id) ON DELETE CASCADE, encrypted_payload TEXT NOT NULL, key_version INTEGER DEFAULT 1 NOT NULL, is_private BOOLEAN DEFAULT 1 NOT NULL, created_at DATETIME, updated_at DATETIME)",
+        "CREATE TABLE IF NOT EXISTS vault_collection_members (id INTEGER NOT NULL PRIMARY KEY, collection_id INTEGER NOT NULL REFERENCES vault_collections(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, permission VARCHAR(40) DEFAULT 'viewer' NOT NULL, encrypted_collection_key TEXT, created_at DATETIME, UNIQUE(collection_id, user_id))",
+        "CREATE TABLE IF NOT EXISTS vault_items (id INTEGER NOT NULL PRIMARY KEY, vault_id INTEGER NOT NULL REFERENCES vaults(id) ON DELETE CASCADE, collection_id INTEGER REFERENCES vault_collections(id) ON DELETE SET NULL, item_type VARCHAR(40) NOT NULL, encrypted_payload TEXT NOT NULL, key_version INTEGER DEFAULT 1 NOT NULL, is_favourite BOOLEAN DEFAULT 0 NOT NULL, deleted_at DATETIME, created_by_id INTEGER NOT NULL REFERENCES users(id), updated_by_id INTEGER NOT NULL REFERENCES users(id), created_at DATETIME, updated_at DATETIME)",
+        "CREATE TABLE IF NOT EXISTS vault_item_versions (id INTEGER NOT NULL PRIMARY KEY, item_id INTEGER NOT NULL REFERENCES vault_items(id) ON DELETE CASCADE, version INTEGER NOT NULL, encrypted_payload TEXT NOT NULL, key_version INTEGER DEFAULT 1 NOT NULL, saved_by_id INTEGER NOT NULL REFERENCES users(id), created_at DATETIME)",
+        "CREATE TABLE IF NOT EXISTS vault_attachments (id INTEGER NOT NULL PRIMARY KEY, item_id INTEGER NOT NULL REFERENCES vault_items(id) ON DELETE CASCADE, storage_id VARCHAR(80) NOT NULL UNIQUE, encrypted_metadata TEXT NOT NULL, size_bytes INTEGER DEFAULT 0 NOT NULL, ciphertext_size INTEGER DEFAULT 0 NOT NULL, integrity_hash VARCHAR(64) NOT NULL, key_version INTEGER DEFAULT 1 NOT NULL, created_at DATETIME)",
+        "CREATE TABLE IF NOT EXISTS vault_backup_records (id INTEGER NOT NULL PRIMARY KEY, vault_id INTEGER NOT NULL REFERENCES vaults(id) ON DELETE CASCADE, operation VARCHAR(40) NOT NULL, status VARCHAR(40) NOT NULL, format_version INTEGER DEFAULT 1 NOT NULL, size_bytes INTEGER, verified_at DATETIME, error_code VARCHAR(80), created_by_id INTEGER NOT NULL REFERENCES users(id), created_at DATETIME)",
+    ]
+    vault_tables_existed = table_exists(cur, "vaults")
+    for statement in vault_schema:
+        cur.execute(statement)
+    vault_indexes = {
+        "vaults": ["owner_id", "locked_until"], "vault_sessions": ["vault_id", "user_id", "app_session_id", "token_hash", "expires_at", "revoked_at"],
+        "vault_totp_uses": ["user_id", "counter", "used_at"], "vault_collections": ["vault_id", "is_private"],
+        "vault_collection_members": ["collection_id", "user_id"], "vault_items": ["vault_id", "collection_id", "item_type", "is_favourite", "deleted_at"],
+        "vault_item_versions": ["item_id", "created_at"], "vault_attachments": ["item_id", "storage_id", "created_at"],
+        "vault_backup_records": ["vault_id", "operation", "status", "created_by_id", "created_at"],
+    }
+    for table, columns in vault_indexes.items():
+        for column in columns:
+            cur.execute(f"CREATE INDEX IF NOT EXISTS ix_{table}_{column} ON {table} ({column})")
+    if not vault_tables_existed:
+        migrations_applied.append("secret_vault_schema_v1")
+
     conn.commit()
     cur.execute("PRAGMA foreign_keys = ON")
     conn.close()

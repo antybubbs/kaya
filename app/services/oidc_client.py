@@ -85,6 +85,7 @@ async def authorization_redirect(
     target_user_id: int | None = None,
     initiated_by_user_id: int | None = None,
     return_path: str = "/dashboard",
+    authorization_params: dict[str, str] | None = None,
 ) -> tuple[str, str]:
     metadata = await provider_metadata(db, provider)
     _, opaque, state, nonce, verifier = create_transaction(
@@ -105,6 +106,13 @@ async def authorization_redirect(
         "code_challenge": _pkce_challenge(verifier),
         "code_challenge_method": "S256",
     }
+    if authorization_params:
+        # Callers may request provider re-authentication or a configured ACR,
+        # but protocol/security parameters remain owned by this client.
+        for key in ("prompt", "max_age", "acr_values"):
+            value = str(authorization_params.get(key) or "").strip()
+            if value:
+                params[key] = value
     endpoint = await validate_outbound_url_async(metadata["authorization_endpoint"], timeout=min(provider.timeout_seconds, 5))
     return f"{endpoint}{'&' if '?' in endpoint else '?'}{urlencode(params)}", opaque
 
