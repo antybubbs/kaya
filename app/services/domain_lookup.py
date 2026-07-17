@@ -4,6 +4,7 @@ import socket
 from datetime import datetime
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from app.core.performance import external_call
 
 try:
     import dns.exception
@@ -109,8 +110,9 @@ def infer_dns_provider(nameservers: list[str]) -> str | None:
 
 def fetch_json(url: str) -> dict:
     request = Request(url, headers={"Accept": "application/rdap+json, application/json"})
-    with urlopen(request, timeout=8) as response:
-        return json.loads(response.read().decode("utf-8"))
+    with external_call():
+        with urlopen(request, timeout=8) as response:
+            return json.loads(response.read().decode("utf-8"))
 
 
 def rdap_bootstrap() -> dict:
@@ -153,14 +155,15 @@ def lookup_rdap(domain: str) -> dict:
 
 
 def query_whois(server: str, query: str) -> str:
-    with socket.create_connection((server, 43), timeout=8) as sock:
-        sock.sendall((query + "\r\n").encode("utf-8"))
-        chunks = []
-        while True:
-            chunk = sock.recv(4096)
-            if not chunk:
-                break
-            chunks.append(chunk)
+    with external_call():
+        with socket.create_connection((server, 43), timeout=8) as sock:
+            sock.sendall((query + "\r\n").encode("utf-8"))
+            chunks = []
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                chunks.append(chunk)
     return b"".join(chunks).decode("utf-8", errors="replace")
 
 
@@ -215,7 +218,8 @@ def lookup_dns(domain: str) -> dict[str, list[str]]:
     records: dict[str, list[str]] = {}
     for record_type in DNS_TYPES:
         try:
-            answers = resolver.resolve(domain, record_type)
+            with external_call():
+                answers = resolver.resolve(domain, record_type)
         except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
             records[record_type] = []
             continue

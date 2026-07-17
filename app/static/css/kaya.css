@@ -616,23 +616,39 @@ html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .setup-brand-panel
 /* DNS Manager query log interactions */
 .dns-query-log-panel{
   display:grid;
-  gap:12px;
+  gap:8px 12px;
+  grid-template-columns:minmax(0,1fr) auto;
 }
 
 .dns-query-log-controls{
   align-items:center;
   display:flex;
+  gap:8px;
   justify-content:flex-start;
+  min-width:0;
+}
+
+.dns-query-log-panel>.table-toolbar{
+  align-self:center;
+  margin:0;
+}
+
+.dns-query-log-panel>table{
+  grid-column:1 / -1;
 }
 
 .dns-live-toggle{
   align-items:center;
   background:#101319;
   border:1px solid #2a303a;
-  border-radius:8px;
+  border-radius:7px;
   display:inline-flex;
-  gap:10px;
-  padding:9px 12px;
+  flex:0 0 auto;
+  font-size:11px;
+  gap:6px;
+  line-height:1;
+  padding:5px 8px;
+  white-space:nowrap;
 }
 
 .dns-live-toggle input{
@@ -643,7 +659,7 @@ html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .setup-brand-panel
 
 .dns-live-toggle span{
   display:grid;
-  gap:2px;
+  gap:0;
 }
 
 .dns-live-toggle small{
@@ -923,4 +939,163 @@ html:not([data-theme="light"]):not([data-kaya-theme="light-ops"])
 
 .dns-domain-menu[open]{
   z-index:99999;
+}
+
+/* Critical responsive controls are hidden by default. Keep this contract in the
+   core stylesheet as well as responsive.css so a stale optional stylesheet can
+   never expose mobile-only controls on the desktop demo. */
+.mobile-menu-button,
+.mobile-page-title,
+.mobile-nav-overlay,
+.widget-mobile-move{
+  display:none!important;
+}
+
+@media (max-width:1023px){
+  .mobile-menu-button{display:grid!important}
+  .mobile-page-title,.mobile-nav-overlay{display:block!important}
+  .is-editing .widget-mobile-move{display:flex!important}
+}
+
+/* Shared module navigation. Keep real module tabs visually consistent while
+   category filters and live-session workspace tabs retain their own controls. */
+.module-tabs{
+  align-items:center;
+  background:#14171d!important;
+  border:1px solid #2a303a!important;
+  border-radius:9px!important;
+  box-shadow:none!important;
+  box-sizing:border-box;
+  display:flex;
+  flex-wrap:nowrap;
+  gap:4px!important;
+  margin:0 0 14px!important;
+  max-width:100%;
+  min-height:48px;
+  overflow-x:auto;
+  padding:6px 8px!important;
+  width:100%;
+}
+
+.module-tabs>a,
+.module-tabs>button,
+.module-tabs>span{
+  align-items:center;
+  background:transparent!important;
+  border:0!important;
+  border-radius:6px!important;
+  box-shadow:none!important;
+  color:#aab2bf!important;
+  display:inline-flex;
+  flex:0 0 auto;
+  font-size:12px!important;
+  font-weight:850!important;
+  justify-content:center;
+  line-height:1.2;
+  min-height:34px!important;
+  padding:8px 13px!important;
+  text-decoration:none;
+  white-space:nowrap;
+}
+
+.module-tabs>a:hover,
+.module-tabs>button:hover,
+.module-tabs>a.active,
+.module-tabs>button.active,
+.module-tabs>button[aria-selected=true]{
+  background:#1d222b!important;
+  border:0!important;
+  box-shadow:none!important;
+  color:#f8fafc!important;
+}
+
+.module-tabs>span{opacity:.5}
+.module-tabs .table-chip{margin-left:6px}
+
+html[data-theme=light] .module-tabs,
+html[data-kaya-theme=light-ops] .module-tabs{
+  background:#fff!important;
+  border-color:#d8dee8!important;
+}
+
+html[data-theme=light] .module-tabs>a,
+html[data-theme=light] .module-tabs>button,
+html[data-theme=light] .module-tabs>span,
+html[data-kaya-theme=light-ops] .module-tabs>a,
+html[data-kaya-theme=light-ops] .module-tabs>button,
+html[data-kaya-theme=light-ops] .module-tabs>span{color:#64748b!important}
+
+html[data-theme=light] .module-tabs>a:hover,
+html[data-theme=light] .module-tabs>button:hover,
+html[data-theme=light] .module-tabs>a.active,
+html[data-theme=light] .module-tabs>button.active,
+html[data-kaya-theme=light-ops] .module-tabs>a:hover,
+html[data-kaya-theme=light-ops] .module-tabs>button:hover,
+html[data-kaya-theme=light-ops] .module-tabs>a.active,
+html[data-kaya-theme=light-ops] .module-tabs>button.active{
+  background:#eef2f7!important;
+  color:#111827!important;
+}
+
+@media(max-width:700px){
+  .module-tabs{scrollbar-width:thin}
+  .module-tabs>a,.module-tabs>button,.module-tabs>span{min-height:40px!important;padding:9px 12px!important}
+}
+
+.monitor-refresh-control{
+  align-items:center;
+  color:var(--muted);
+  display:flex;
+  font-size:12px;
+  font-weight:800;
+  gap:8px;
+}
+
+.monitor-refresh-control select{min-width:145px}
+.monitor-refresh-control select.is-live{border-color:#22c55e;box-shadow:0 0 0 2px rgba(34,197,94,.12)}
+
+/* Compact, lossless table treatment shared by every module. Tables retain
+   horizontal scrolling and natural wrapping; density never relies on clipping. */
+.content .table-toolbar{
+  align-items:center;
+  display:flex;
+  flex-wrap:nowrap;
+  gap:8px;
+  min-width:0;
+}
+
+.content .table-toolbar>:not(.table-settings){min-width:0}
+.content .table-toolbar .dns-client-filters{flex:1 1 0;width:auto}
+.content .table-settings{flex:0 0 auto;margin-left:auto}
+.content .table-settings>summary{
+  align-items:center;
+  display:inline-flex;
+  justify-content:center;
+  line-height:1;
+  white-space:nowrap;
+  width:auto;
+}
+
+.content table th{
+  line-height:1.25;
+  padding:8px 11px!important;
+}
+
+.content table td{
+  height:auto;
+  line-height:1.35;
+  max-height:none;
+  overflow:visible;
+  padding:7px 11px!important;
+  text-overflow:clip;
+}
+
+.content table td>*{max-width:100%}
+.content .table-scroll{overflow-x:auto;overflow-y:visible}
+
+@media(max-width:700px){
+  .content .table-toolbar{align-items:flex-start}
+  .content .table-settings>summary{min-height:40px}
+  .content table th{padding:8px 9px!important}
+  .content table td{padding:7px 9px!important}
 }

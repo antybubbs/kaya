@@ -1,0 +1,224 @@
+.authentication-settings .settings-content-panel {
+  gap: 18px;
+}
+
+.authentication-page-heading {
+  align-items: flex-start;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+  display: flex;
+  justify-content: space-between;
+  padding-bottom: 16px;
+}
+
+.authentication-page-heading .eyebrow {
+  color: var(--kaya-orange, #ff8a00);
+  margin: 0 0 4px;
+}
+
+.authentication-page-heading h2 {
+  font-size: 21px;
+  margin: 0 0 5px;
+}
+
+.authentication-page-heading .muted {
+  line-height: 1.45;
+  margin: 0;
+}
+
+.authentication-status-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.authentication-status-grid article {
+  background: #10141a;
+  border: 1px solid #2a303a;
+  border-radius: 8px;
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 13px 14px;
+}
+
+.authentication-status-grid span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: 0.045em;
+  text-transform: uppercase;
+}
+
+.authentication-status-grid strong {
+  color: var(--text);
+  font-size: 16px;
+  overflow-wrap: anywhere;
+}
+
+.authentication-card {
+  background: #10141a;
+  border: 1px solid #2a303a;
+  border-radius: 9px;
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  overflow: hidden;
+  padding: 14px;
+}
+
+.authentication-card > header {
+  border-bottom: 1px solid #2a303a;
+  font-size: 13px;
+  font-weight: 900;
+  margin: -14px -14px 0;
+  padding: 11px 14px;
+}
+
+.authentication-form-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.authentication-form-grid > header,
+.authentication-form-grid > input[type="hidden"] {
+  grid-column: 1 / -1;
+}
+
+.authentication-form-grid label {
+  align-content: start;
+  min-width: 0;
+}
+
+.authentication-form-grid label small {
+  display: block;
+  line-height: 1.35;
+}
+
+.authentication-form-grid .wide {
+  grid-column: 1 / -1;
+}
+
+.authentication-switches {
+  background: rgba(255, 255, 255, 0.018);
+  border: 1px solid rgba(148, 163, 184, 0.15);
+  border-radius: 8px;
+  display: grid;
+  gap: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding: 3px 12px;
+}
+
+.authentication-switches .checkbox-row {
+  align-items: start;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+  display: grid;
+  gap: 9px;
+  grid-template-columns: 18px minmax(0, 1fr);
+  line-height: 1.35;
+  min-height: 42px;
+  padding: 9px 4px;
+}
+
+.authentication-switches .checkbox-row input,
+.authentication-risk .checkbox-row input {
+  margin-top: 1px;
+}
+
+.authentication-switches .checkbox-row:nth-last-child(-n + 2) {
+  border-bottom: 0;
+}
+
+.authentication-risk {
+  border: 1px solid rgba(245, 158, 11, 0.28);
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 12px;
+}
+
+.authentication-risk legend {
+  color: #ffbd69;
+  font-size: 12px;
+  font-weight: 900;
+  padding: 0 6px;
+}
+
+.authentication-actions {
+  align-items: center;
+  border-top: 1px solid rgba(148, 163, 184, 0.14);
+  display: flex;
+  justify-content: flex-start;
+  margin: 0 -14px -14px;
+  padding: 12px 14px;
+}
+
+.authentication-validation p,
+.authentication-card.danger-zone p {
+  margin: 0;
+}
+
+.authentication-card.danger-zone {
+  border-color: rgba(248, 113, 113, 0.44);
+}
+
+.authentication-card.danger-zone > header {
+  background: rgba(127, 29, 29, 0.12);
+  border-bottom-color: rgba(248, 113, 113, 0.28);
+  color: #fca5a5;
+}
+
+.authentication-invite {
+  align-items: end;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(240px, 420px) auto;
+  justify-content: start;
+}
+
+.authentication-links .table-wrap {
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 8px;
+  overflow-x: auto;
+}
+
+.authentication-links table {
+  min-width: 760px;
+}
+
+html[data-kaya-theme="light-ops"] .authentication-status-grid article,
+html[data-kaya-theme="light-ops"] .authentication-card {
+  background: #fff;
+  border-color: #d8dee8;
+}
+
+html[data-kaya-theme="light-ops"] .authentication-card > header,
+html[data-kaya-theme="light-ops"] .authentication-actions {
+  border-color: #d8dee8;
+}
+
+@media (max-width: 1100px) {
+  .authentication-status-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .authentication-form-grid,
+  .authentication-switches,
+  .authentication-status-grid,
+  .authentication-invite {
+    grid-template-columns: 1fr;
+  }
+
+  .authentication-switches .checkbox-row {
+    border-bottom: 1px solid rgba(148, 163, 184, 0.1) !important;
+  }
+
+  .authentication-switches .checkbox-row:last-child {
+    border-bottom: 0 !important;
+  }
+
+  .authentication-invite button {
+    width: 100%;
+  }
+}

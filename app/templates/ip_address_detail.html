@@ -9,6 +9,7 @@
     <p class="record-identifier mono"><span data-view>{{ record.address }}</span><input data-edit name="address" value="{{ record.address }}" required></p>
     <div class="record-chips">
       <span class="table-chip muted-chip">{{ record.assignment_type }}</span>
+      {% if record.vlan %}<span class="table-chip">VLAN: {{ record.vlan.name }}</span>{% endif %}
       {% if record.category %}<span class="table-chip">Category: {{ record.category }}</span>{% endif %}
       <span class="table-chip muted-chip">IP/WAN Monitor {% if monitor and monitor.is_enabled %}On{% else %}Off{% endif %}</span>
       <span class="table-chip muted-chip">Remote Manager {% if remote and remote.is_enabled %}On{% else %}Off{% endif %}</span>
@@ -28,7 +29,9 @@
     <dl class="record-kv-list">
       <div><dt>IP Address</dt><dd class="mono"><span data-view>{{ record.address }}</span><input data-edit data-display-copy name="address_display" value="{{ record.address }}" disabled></dd></div>
       <div><dt>Name</dt><dd><span data-view>{{ record.name or '-' }}</span><input data-edit data-display-copy name="name_display" value="{{ record.name or '' }}" disabled></dd></div>
+      <div><dt>MAC Address</dt><dd class="mono"><span data-view>{{ record.mac_address or '-' }}</span><input data-edit name="mac_address" value="{{ record.mac_address or '' }}"></dd></div>
       <div><dt>Description</dt><dd><span data-view>{{ record.description or '-' }}</span><textarea data-edit name="description">{{ record.description or '' }}</textarea></dd></div>
+      <div><dt>VLAN</dt><dd><span data-view>{{ record.vlan.name if record.vlan else '-' }}</span><select data-edit name="vlan_id">{% for vlan in vlans %}<option value="{{ vlan.id }}" {% if record.vlan_id == vlan.id %}selected{% endif %}>{{ vlan.name }}{% if vlan.subnet_cidr %} — {{ vlan.subnet_cidr }}{% endif %}</option>{% endfor %}</select></dd></div>
       <div><dt>Category</dt><dd><span data-view>{% if record.category %}<span class="table-chip">{{ record.category }}</span>{% else %}-{% endif %}</span><select data-edit name="category"><option value=""></option>{% if record.category and record.category not in categories %}<option value="{{ record.category }}" selected>{{ record.category }}</option>{% endif %}{% for category in categories %}<option value="{{ category }}" {% if record.category == category %}selected{% endif %}>{{ category }}</option>{% endfor %}</select></dd></div>
       <div><dt>Static/Dynamic</dt><dd><span data-view>{{ record.assignment_type }}</span><select data-edit name="assignment_type">{% for option in assignment_types %}<option value="{{ option }}" {% if record.assignment_type == option %}selected{% endif %}>{{ option }}</option>{% endfor %}</select></dd></div>
     </dl>
@@ -73,6 +76,30 @@
       {% endif %}
     </div>
   </section>
+  {% if monitor %}
+  <section class="panel record-panel wide">
+    <div class="panel-heading"><div><h2>IP/WAN monitor observations</h2><p class="muted">Retained availability and latency evidence collected in the background for this managed IP.</p></div><a class="button" href="/networking/ip-wan-monitor/{{ monitor.id }}">Open monitor details</a></div>
+    <div class="cards monitor-summary-cards"><div class="card"><span>Current state</span><strong>{{ monitor.last_status|capitalize if monitor.last_status else 'Pending' }}</strong></div><div class="card"><span>Last latency</span><strong>{{ monitor.last_latency_ms ~ ' ms' if monitor.last_latency_ms is not none else '-' }}</strong></div><div class="card"><span>Availability 24h</span><strong>{{ monitor_observations.availability ~ '%' if monitor_observations.availability is not none else '-' }}</strong></div><div class="card"><span>Average latency 24h</span><strong>{{ monitor_observations.average_latency ~ ' ms' if monitor_observations.average_latency is not none else '-' }}</strong></div><div class="card"><span>Outages 24h</span><strong>{{ monitor_observations.outages }}</strong></div></div>
+    <div class="uptime-strip">{% for check in monitor_observations.checks|reverse %}<span class="uptime-block {{ check.status }}" title="{{ check.checked_at }} · {{ check.status }} · {{ check.latency_ms if check.latency_ms is not none else '-' }} ms"></span>{% endfor %}</div>
+  </section>
+  {% endif %}
+  <section class="panel record-panel wide compute-link-panel">
+    <h2>DNS observations</h2>
+    {% if dns_clients %}<div class="service-card-list">{% for dns in dns_clients %}<div class="service-card"><div><strong>{{ dns.friendly_name or dns.hostname or dns.current_ip or dns.mac_address }}</strong><span>Last seen {{ local_time(dns.last_seen_at, 'minute') }} · Reported IP {{ dns.current_ip or '-' }} · {{ dns_client_status(dns) }}</span></div><a class="button secondary" href="/networking/dns-manager/clients/{{ dns.id }}">Open DNS client</a></div>{% endfor %}</div>{% endif %}
+    {% if dns_link_candidates %}<h3>Exact matches awaiting confirmation</h3><div class="service-card-list">{% for match in dns_link_candidates %}{% set dns = match.client %}<div class="service-card"><div><strong>{{ dns.friendly_name or dns.hostname or dns.current_ip or dns.mac_address }}</strong><span>Exact {% if match.ip_match and match.mac_match %}IP and MAC{% elif match.mac_match %}MAC{% else %}IP{% endif %} match · Last seen {{ local_time(dns.last_seen_at, 'minute') }}</span></div><div class="inline-actions"><a class="button secondary" href="/networking/dns-manager/clients/{{ dns.id }}">Review DNS client</a>{% if user.role in ['admin','editor'] %}<button type="submit" form="dns-link-{{ record.id }}-{{ dns.id }}">Confirm link</button>{% endif %}</div></div>{% endfor %}</div>{% elif not dns_clients %}<p class="muted">No retained DNS client is linked to this managed record and no exact IP or MAC match is awaiting confirmation.</p>{% endif %}
+  </section>
+  {% if lease_history %}
+  <section class="panel record-panel wide">
+    <div class="panel-heading"><div><h2>DHCP lease history</h2><p class="muted">Retained lease intervals associated with this IP or its linked DNS client. This remains available when the DHCP/DNS provider is offline.</p></div></div>
+    <table data-table-key="ip-record-dhcp-history"><thead><tr><th>Status</th><th>IP</th><th>Range</th><th>Hostname</th><th>MAC</th><th>First seen</th><th>Last seen</th><th>Ended/expires</th></tr></thead><tbody>{% for lease in lease_history %}<tr><td><span class="table-chip {% if lease.is_active %}good{% else %}muted-chip{% endif %}">{{ 'Active' if lease.is_active else 'Ended' }}</span></td><td class="mono">{{ lease.ip_address }}</td><td>{{ lease.dhcp_range.name if lease.dhcp_range else '-' }}</td><td>{{ lease.hostname or '-' }}</td><td class="mono">{{ lease.mac_address or '-' }}</td><td>{{ local_time(lease.first_seen_at, 'minute') }}</td><td>{{ local_time(lease.last_seen_at, 'minute') }}</td><td>{{ local_time(lease.ended_at or lease.expires_at, 'minute') if lease.ended_at or lease.expires_at else '-' }}</td></tr>{% endfor %}</tbody></table>
+  </section>
+  {% endif %}
+  {% if ip_traffic_history %}
+  <section class="panel record-panel wide">
+    <div class="panel-heading"><div><h2>Recent retained DNS traffic</h2><p class="muted">Latest DNS lookups attributed to this address or one of its retained lease intervals. Open the linked DNS client for the full searchable history.</p></div></div>
+    <table data-table-key="ip-record-dns-traffic"><thead><tr><th>When</th><th>Client IP</th><th>Domain</th><th>Query type</th><th>Outcome</th></tr></thead><tbody>{% for event in ip_traffic_history %}<tr><td>{{ local_time(event.observed_at, 'second') }}</td><td class="mono">{{ event.client_ip or '-' }}</td><td>{{ event.domain }}</td><td>{{ event.query_type or '-' }}</td><td><span class="table-chip {% if event.is_blocked %}danger-chip{% else %}good{% endif %}">{{ event.status or ('Blocked' if event.is_blocked else 'Allowed') }}</span></td></tr>{% endfor %}</tbody></table>
+  </section>
+  {% endif %}
   <section class="panel record-panel wide compute-link-panel">
     <h2>VM / Docker Manager</h2>
     {% if compute_matches %}
@@ -122,6 +149,14 @@
   </section>
 </section>
 </form>
+{% if user.role in ['admin','editor'] %}
+  {% for match in dns_link_candidates %}
+  <form id="dns-link-{{ record.id }}-{{ match.client.id }}" method="post" action="/networking/vlan-ip-manager/{{ record.id }}/link-dns-client" hidden>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="dns_client_id" value="{{ match.client.id }}">
+  </form>
+  {% endfor %}
+{% endif %}
 {% if user.role in ['admin','editor'] %}
 <section class="panel section-gap danger-zone">
   <div class="panel-heading"><div><h2>Danger Zone</h2><p class="muted">Permanently delete this IP address, its monitor history, and its Remote Manager connection. Session recordings are retained.</p></div></div>

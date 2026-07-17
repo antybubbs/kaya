@@ -2,10 +2,10 @@
 {% block content %}
 <div class="topbar"><div><h1>Categories</h1><p class="muted">Manage drop-down list values for module records.</p></div></div>
 {% if error %}<div class="alert">{{ error }}</div>{% endif %}
-<div class="tabs">
+<div class="module-tabs">
   {% for module_key, module_label in modules.items() %}<a class="{% if active_module == module_key %}active{% endif %}" href="/data/categories?module={{ module_key }}">{{ module_label }}</a>{% endfor %}
 </div>
-<div class="tabs">
+<div class="module-tabs">
   {% for key, label in lists.items() %}<a class="{% if active_list == key %}active{% endif %}" href="/data/categories?module={{ active_module }}&list_key={{ key }}">{{ label }}</a>{% endfor %}
 </div>
 <section class="panel stack">

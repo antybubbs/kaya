@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="topbar"><div><p class="eyebrow">Sign-in methods</p><h1>Confirm OIDC account link</h1></div></div>
+<section class="panel stack">
+  <p>You are linking <strong>{{ provider.name }}</strong> to the Kaya account <strong>{{ target.email }}</strong>.</p>
+  <dl class="detail-grid">
+    <div><dt>OIDC email</dt><dd>{{ claims.email }}</dd></div>
+    <div><dt>Email verified</dt><dd>{{ 'Yes' if claims.email_verified else 'No' }}</dd></div>
+    <div><dt>Provider</dt><dd>{{ provider.name }}</dd></div>
+  </dl>
+  {% if claims.email != target.email %}<div class="alert">The provider email differs from the current Kaya email. Confirm carefully before linking.</div>{% endif %}
+  <form method="post" action="/auth/oidc/link/confirm" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    {% if require_password %}<label>Current Kaya password<input type="password" name="password" autocomplete="current-password" required></label>{% endif %}
+    <div class="form-actions"><button type="submit">Confirm account link</button><a class="button secondary" href="/login">Cancel</a></div>
+  </form>
+</section>
+{% endblock %}

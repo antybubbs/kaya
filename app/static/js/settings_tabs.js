@@ -9,6 +9,15 @@
   const panels = Array.from(root.querySelectorAll("[data-settings-panel]"));
   const storageKey = root.dataset.settingsStorageKey || "kaya.siteAdministration.activeTab";
 
+  root.querySelectorAll(".vlan-ip-toggle .remote-switch").forEach((toggle) => {
+    const label = toggle.closest(".vlan-ip-toggle")?.querySelector("span");
+    const update = () => {
+      if (label) label.textContent = toggle.checked ? "Enabled" : "Disabled";
+    };
+    toggle.addEventListener("change", update);
+    update();
+  });
+
   const panelKeys = new Set(panels.map((panel) => panel.dataset.settingsPanel || "").filter(Boolean));
   const childrenByParent = new Map();
   childTabs.forEach((tab) => {

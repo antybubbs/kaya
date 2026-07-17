@@ -11,10 +11,10 @@ from sqlalchemy import or_
 from app.core.config import get_settings
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.core.demo import DEMO_ACCOUNTS, demo_generation, demo_login_email
-from app.core.security import hash_password, verify_password
+from app.core.security import decrypt_secret, hash_password, verify_password
 from app.core.totp import decrypted_totp_secret, encrypted_totp_secret, generate_totp_secret, provisioning_uri, qr_code_data_uri, verify_totp
 from app.db.session import get_db
-from app.models.models import AuditLog, PasswordResetToken, User
+from app.models.models import AppSession, AuditLog, ExternalIdentity, OIDCProvider, PasswordResetToken, User, VaultSession
 from app.services.audit import write_audit
 from app.services.mail import MailConfigurationError, render_email_template, send_mail
 from app.services.sessions import end_user_session, start_user_session, touch_user_session
@@ -121,6 +121,26 @@ def find_valid_reset_token(db: Session, token: str) -> PasswordResetToken | None
     )
 
 
+def login_template_context(request: Request, db: Session, **overrides) -> dict:
+    """Build one consistent login context for initial, error and 2FA renders."""
+    authentication_mode = get_site_setting(db, "authentication_mode")
+    oidc_provider = db.query(OIDCProvider).filter_by(is_enabled=True).order_by(OIDCProvider.id.asc()).first()
+    context = {
+        "error": None,
+        "success": None,
+        "setup_complete": False,
+        "requires_2fa": False,
+        "demo_accounts": DEMO_ACCOUNTS if settings.demo_mode else None,
+        "authentication_mode": authentication_mode,
+        "oidc_provider": oidc_provider,
+        "oidc_button_label": get_site_setting(db, "oidc_button_label"),
+        "show_local_preferred": get_site_setting(db, "oidc_show_local_preferred") == "1",
+        **csrf_context(request, include_version=False),
+    }
+    context.update(overrides)
+    return context
+
+
 def current_user(request: Request, db: Session = Depends(get_db)) -> User | None:
     user_id = request.session.get("user_id")
     if not user_id:
@@ -168,16 +188,18 @@ def login_page(
 
     request.session.pop("pending_2fa_user_id", None)
 
+    authentication_mode = get_site_setting(db, "authentication_mode")
+    oidc_provider = db.query(OIDCProvider).filter_by(is_enabled=True).order_by(OIDCProvider.id.asc()).first()
+    if authentication_mode == "oidc_required" and oidc_provider and get_site_setting(db, "oidc_auto_redirect_required") == "1" and not settings.demo_mode:
+        return RedirectResponse("/auth/oidc/login", status_code=303)
+
     return templates.TemplateResponse(
         request,
         "login.html",
-        {
-            "error": None,
-            "setup_complete": setup_complete == "1",
-            "demo_accounts": DEMO_ACCOUNTS if settings.demo_mode else None,
-            **csrf_context(request, include_version=False),
-        }
+        login_template_context(request, db, setup_complete=setup_complete == "1"),
     )
+
+
 @router.get("/setup")
 def setup_page(
     request: Request,
@@ -229,7 +251,7 @@ def forgot_password_submit(
     key = client_key(request)
     limited = password_reset_is_limited(db, user, clean_email, key)
     record_password_reset_attempt(clean_email, key)
-    if user and not limited:
+    if user and user.password_hash and user.authentication_type != "oidc" and not limited:
         raw_token = secrets.token_urlsafe(32)
         now = datetime.utcnow()
         db.query(PasswordResetToken).filter(
@@ -309,6 +331,8 @@ def reset_password_page(request: Request, token: str = "", db: Session = Depends
     if settings.demo_mode:
         return RedirectResponse("/login", status_code=303)
     row = find_valid_reset_token(db, token)
+    if row and (not row.user.password_hash or row.user.authentication_type == "oidc"):
+        row = None
     return templates.TemplateResponse(
         request,
         "reset_password.html",
@@ -335,6 +359,8 @@ def reset_password_submit(
         return RedirectResponse("/login", status_code=303)
 
     row = find_valid_reset_token(db, token)
+    if row and (not row.user.password_hash or row.user.authentication_type == "oidc"):
+        row = None
     if not row:
         return templates.TemplateResponse(
             request,
@@ -371,6 +397,7 @@ def reset_password_submit(
 
     user = row.user
     user.password_hash = hash_password(password)
+    db.query(VaultSession).filter(VaultSession.user_id == user.id, VaultSession.revoked_at.is_(None)).update({VaultSession.revoked_at: datetime.utcnow()}, synchronize_session=False)
     row.used_at = datetime.utcnow()
     db.commit()
     write_audit(
@@ -473,6 +500,8 @@ def setup_submit(
 @router.post("/login")
 def login(request: Request, email: str = Form(""), password: str = Form(""), totp_code: str = Form(""), csrf_token: str = Form(...), db: Session = Depends(get_db)):
     validate_csrf_token(request, csrf_token)
+    if get_site_setting(db, "authentication_mode") == "oidc_required" and not settings.demo_mode:
+        return RedirectResponse("/auth/oidc/login", status_code=303)
     key = client_key(request)
     attempted_email = email.strip().lower()
     if login_is_limited(db, key, attempted_email):
@@ -487,7 +516,12 @@ def login(request: Request, email: str = Form(""), password: str = Form(""), tot
             status_code=429,
             metadata={"attempted_email": attempted_email[:255]},
         )
-        return templates.TemplateResponse(request, "login.html", {"error": "Too many failed sign-in attempts. Try again later.", "demo_accounts": DEMO_ACCOUNTS if settings.demo_mode else None, **csrf_context(request, include_version=False)}, status_code=429)
+        return templates.TemplateResponse(
+            request,
+            "login.html",
+            login_template_context(request, db, error="Too many failed sign-in attempts. Try again later."),
+            status_code=429,
+        )
 
     pending_user_id = request.session.get("pending_2fa_user_id")
     if pending_user_id:
@@ -505,7 +539,12 @@ def login(request: Request, email: str = Form(""), password: str = Form(""), tot
                 severity="warning",
                 status_code=401,
             )
-            return templates.TemplateResponse(request, "login.html", {"error": "Invalid authentication code", "requires_2fa": True, **csrf_context(request, include_version=False)}, status_code=401)
+            return templates.TemplateResponse(
+                request,
+                "login.html",
+                login_template_context(request, db, error="Invalid authentication code", requires_2fa=True),
+                status_code=401,
+            )
         request.session.clear()
         request.session["user_id"] = user.id
         start_user_session(db, request, user)
@@ -515,8 +554,8 @@ def login(request: Request, email: str = Form(""), password: str = Form(""), tot
 
     login_email = demo_login_email(email) if settings.demo_mode else email.strip().lower()
     user = db.query(User).filter(User.email == login_email, User.is_active == True).first()
-    password_hash = user.password_hash if user else DUMMY_PASSWORD_HASH
-    if not verify_password(password, password_hash) or not user:
+    password_hash = user.password_hash if user and user.authentication_type != "oidc" else DUMMY_PASSWORD_HASH
+    if not verify_password(password, password_hash) or not user or not user.password_hash or user.authentication_type == "oidc":
         record_login_failure(key)
         write_audit(
             db,
@@ -529,7 +568,12 @@ def login(request: Request, email: str = Form(""), password: str = Form(""), tot
             status_code=401,
             metadata={"attempted_email": email.strip().lower()[:255]},
         )
-        return templates.TemplateResponse(request, "login.html", {"error": "Invalid email or password", "demo_accounts": DEMO_ACCOUNTS if settings.demo_mode else None, **csrf_context(request, include_version=False)}, status_code=401)
+        return templates.TemplateResponse(
+            request,
+            "login.html",
+            login_template_context(request, db, error="Invalid email or password"),
+            status_code=401,
+        )
     if user.totp_enabled:
         request.session.clear()
         request.session["pending_2fa_user_id"] = user.id
@@ -542,7 +586,11 @@ def login(request: Request, email: str = Form(""), password: str = Form(""), tot
             request.client.host if request.client else None,
             detail="Password verified; awaiting authentication code",
         )
-        return templates.TemplateResponse(request, "login.html", {"error": None, "requires_2fa": True, **csrf_context(request, include_version=False)})
+        return templates.TemplateResponse(
+            request,
+            "login.html",
+            login_template_context(request, db, requires_2fa=True),
+        )
     request.session.clear()
     request.session["user_id"] = user.id
     if settings.demo_mode:
@@ -558,6 +606,15 @@ def logout(request: Request, csrf_token: str = Form(...), db: Session = Depends(
     validate_csrf_token(request, csrf_token)
     user_id = request.session.get("user_id")
     user = db.get(User, user_id) if user_id else None
+    authentication_method = request.session.get("authentication_method")
+    session_id = request.session.get("session_id")
+    app_session = db.query(AppSession).filter_by(session_id=session_id).first() if session_id else None
+    id_token_hint = decrypt_secret(app_session.encrypted_oidc_id_token) if app_session and app_session.encrypted_oidc_id_token else None
+    if user:
+        from app.models.models import Vault
+        from app.services.secret_vault import lock_vault
+        if db.query(Vault.id).filter_by(owner_id=user.id).first():
+            lock_vault(db, request, user)
     end_user_session(db, request)
     write_audit(
         db,
@@ -568,15 +625,43 @@ def logout(request: Request, csrf_token: str = Form(...), db: Session = Depends(
         request.client.host if request.client else None,
     )
     request.session.clear()
+    if authentication_method == "oidc":
+        from app.services.oidc_client import provider_logout_redirect
+        redirect = provider_logout_redirect(db, id_token_hint=id_token_hint)
+        if redirect:
+            write_audit(db, user, "oidc_logout_started", "oidc", ip_address=request.client.host if request.client else None)
+            return RedirectResponse(redirect, status_code=303)
     return RedirectResponse("/login", status_code=303)
 
 
 @router.get("/profile")
-def profile(request: Request, user=Depends(require_user)):
+def profile(request: Request, db: Session = Depends(get_db), user=Depends(require_user)):
     secret = decrypted_totp_secret(user.totp_secret) if user.totp_secret and not user.totp_enabled else None
     uri = provisioning_uri(user.email, secret) if secret else None
     qr_code = qr_code_data_uri(uri) if uri else None
-    return templates.TemplateResponse(request, "profile.html", {"user": user, "setup_secret": secret, "setup_uri": uri, "setup_qr_code": qr_code, "error": None, "success": None, **csrf_context(request)})
+    identity = db.query(ExternalIdentity).filter_by(user_id=user.id).first()
+    provider = db.get(OIDCProvider, identity.provider_id) if identity else db.query(OIDCProvider).filter_by(is_enabled=True).first()
+    identity_errors = {
+        "unavailable": "OpenID Connect is not currently enabled.",
+        "configuration_not_ready": "OpenID Connect must pass its configuration test before an account can be linked.",
+        "incomplete_provider": "The OpenID Connect provider is missing its client ID or client secret.",
+        "local_password_required": "A local password is required for this action.",
+        "no_remaining_login_method": "Set a local password before unlinking your OpenID Connect identity.",
+        "identity_conflict": "That OpenID Connect identity is already linked to another Kaya account.",
+        "user_identity_conflict": "This Kaya account is already linked to a different OpenID Connect identity.",
+    }
+    identity_error = request.query_params.get("identity_error", "")
+    success = None
+    if request.query_params.get("identity_linked") == "1":
+        success = "OpenID Connect account linked successfully."
+    elif request.query_params.get("identity_unlinked") == "1":
+        success = "OpenID Connect account unlinked successfully."
+    return templates.TemplateResponse(request, "profile.html", {
+        "user": user, "identity": identity, "oidc_provider": provider,
+        "setup_secret": secret, "setup_uri": uri, "setup_qr_code": qr_code,
+        "error": identity_errors.get(identity_error, "The sign-in method could not be updated." if identity_error else None),
+        "success": success, **csrf_context(request),
+    })
 
 
 @router.post("/profile/name")
@@ -599,6 +684,7 @@ def update_profile_password(request: Request, current_password: str = Form("", m
     if new_password != confirm_password:
         return templates.TemplateResponse(request, "profile.html", {"user": user, "setup_secret": None, "setup_uri": None, "setup_qr_code": None, "error": "New passwords do not match.", "success": None, **csrf_context(request)}, status_code=400)
     user.password_hash = hash_password(new_password)
+    db.query(VaultSession).filter(VaultSession.user_id == user.id, VaultSession.revoked_at.is_(None)).update({VaultSession.revoked_at: datetime.utcnow()}, synchronize_session=False)
     db.commit()
     write_audit(db, user, "change_password", "user", str(user.id), request.client.host if request.client else None)
     return templates.TemplateResponse(request, "profile.html", {"user": user, "setup_secret": None, "setup_uri": None, "setup_qr_code": None, "error": None, "success": "Password updated.", **csrf_context(request)})
@@ -607,6 +693,8 @@ def update_profile_password(request: Request, current_password: str = Form("", m
 @router.post("/profile/2fa/start")
 def start_profile_2fa(request: Request, csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_user)):
     validate_csrf_token(request, csrf_token)
+    if not user.password_hash or user.authentication_type == "oidc":
+        return RedirectResponse("/profile?identity_error=local_password_required", status_code=303)
     secret = generate_totp_secret()
     user.totp_secret = encrypted_totp_secret(secret)
     user.totp_enabled = False
@@ -618,6 +706,8 @@ def start_profile_2fa(request: Request, csrf_token: str = Form(...), db: Session
 @router.post("/profile/2fa/enable")
 def enable_profile_2fa(request: Request, code: str = Form(...), csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_user)):
     validate_csrf_token(request, csrf_token)
+    if not user.password_hash or user.authentication_type == "oidc":
+        return RedirectResponse("/profile?identity_error=local_password_required", status_code=303)
     secret = decrypted_totp_secret(user.totp_secret)
     if not secret or not verify_totp(secret, code):
         uri = provisioning_uri(user.email, secret) if secret else None
@@ -636,6 +726,7 @@ def disable_profile_2fa(request: Request, current_password: str = Form("", max_l
         return templates.TemplateResponse(request, "profile.html", {"user": user, "setup_secret": None, "setup_uri": None, "setup_qr_code": None, "error": "Current password is required to disable 2FA.", "success": None, **csrf_context(request)}, status_code=400)
     user.totp_secret = None
     user.totp_enabled = False
+    db.query(VaultSession).filter(VaultSession.user_id == user.id, VaultSession.revoked_at.is_(None)).update({VaultSession.revoked_at: datetime.utcnow()}, synchronize_session=False)
     db.commit()
     write_audit(db, user, "disable_2fa", "user", str(user.id), request.client.host if request.client else None)
     return RedirectResponse("/profile", status_code=303)

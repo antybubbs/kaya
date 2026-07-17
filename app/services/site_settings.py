@@ -1,13 +1,14 @@
 from fnmatch import fnmatch
 import ipaddress
+import json
 import re
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
 from app.core.branding import APP_BRAND_NAME
-from app.models.models import RemoteManagerSetting
+from app.models.models import OIDCProvider, RemoteManagerSetting
 
 
 DEFAULT_SITE_SETTINGS = {
@@ -42,6 +43,38 @@ DEFAULT_SITE_SETTINGS = {
     "dashboard_show_source_age": "1",
     "dashboard_attention_required": "1",
     "dashboard_globally_disabled_widgets": "",
+    "dns_manager_enabled": "",
+    "dns_collector_enabled": "1",
+    "dns_refresh_interval_seconds": "300",
+    "dns_known_hostnames": "[]",
+    "dns_vlan_integration_enabled": "1",
+    "dns_match_suggestions_enabled": "1",
+    "dns_auto_link_exact_mac": "",
+    "dns_auto_update_dynamic_ip": "",
+    "dns_stale_client_days": "30",
+    "dns_retain_client_history": "1",
+    "dns_client_history_days": "365",
+    "dns_traffic_history_days": "30",
+    "dns_vlan_enrichment_enabled": "1",
+    "dns_update_empty_managed_hostname": "",
+    "authentication_mode": "local_only",
+    "oidc_button_label": "Sign in with SSO",
+    "oidc_auto_redirect_required": "1",
+    "oidc_show_local_preferred": "1",
+    "oidc_post_login_path": "/dashboard",
+    "oidc_post_logout_path": "/login",
+    "oidc_emergency_local_enabled": "1",
+    "oidc_required_risk_acknowledged": "",
+    "secret_vault_oidc_mfa_policy": "either",
+    "secret_vault_oidc_accepted_acr": "",
+    "secure_send_enabled": "1",
+    "secure_send_default_expiry": "24h",
+    "secure_send_max_expiry_days": "7",
+    "secure_send_max_upload_mb": "25",
+    "secure_send_allow_one_download": "1",
+    "secure_send_vault_integration": "1",
+    "secure_send_gateway_hostname": "http://localhost:8999",
+    "secure_send_email_notifications": "1",
     "smtp_enabled": "",
     "smtp_host": "",
     "smtp_port": "587",
@@ -51,12 +84,23 @@ DEFAULT_SITE_SETTINGS = {
     "smtp_password": "",
     "smtp_from_email": "",
     "smtp_from_name": APP_BRAND_NAME,
+    "email_include_branding": "1",
     "email_template_password_reset_subject": "Reset your {app_name} password",
     "email_template_password_reset_body": (
         "A password reset was requested for your {app_name} account.\n\n"
         "Use this link within {expiry_hours} hour to set a new password:\n"
         "{reset_link}\n\n"
         "If you did not request this, you can ignore this email."
+    ),
+    "email_template_secure_send_subject": "{sender_name} sent you a secure package",
+    "email_template_secure_send_body": (
+        "Hello {recipient_name},\n\n"
+        "{sender_name} has sent you a secure package using {app_name}.\n\n"
+        "Open secure package:\n"
+        "{secure_link}\n\n"
+        "Package: {package_title}\n"
+        "Expires: {expiry_utc}\n\n"
+        "For your security, obtain the PIN and passphrase from the sender separately."
     ),
 }
 
@@ -73,24 +117,69 @@ SECURITY_SETTING_KEYS = {
 }
 
 
+def get_site_settings(db: Session, keys) -> dict[str, str]:
+    """Bulk-load settings and retain them only for this request-scoped Session."""
+    requested = set(keys)
+    current_transaction = db.get_transaction()
+    if db.info.get("site_settings_transaction") is not current_transaction:
+        db.info.pop("site_settings", None)
+    cache = db.info.setdefault("site_settings", {})
+    missing = requested.difference(cache)
+    if missing:
+        rows = db.query(RemoteManagerSetting).filter(RemoteManagerSetting.key.in_(missing)).all()
+        stored = {row.key: row.value for row in rows}
+        app_settings = get_settings()
+        for key in missing:
+            value = stored.get(key)
+            if value is not None:
+                cache[key] = value
+            elif key in DEFAULT_SITE_SETTINGS:
+                cache[key] = DEFAULT_SITE_SETTINGS[key]
+            else:
+                cache[key] = str(getattr(app_settings, key, ""))
+        db.info["site_settings_transaction"] = db.get_transaction()
+    return {key: cache[key] for key in requested}
+
+
 def get_site_setting(db: Session, key: str) -> str:
-    row = (
-        db.query(RemoteManagerSetting)
-        .filter(RemoteManagerSetting.key == key)
-        .first()
-    )
-
-    if row and row.value is not None:
-        return row.value
-
-    if key in DEFAULT_SITE_SETTINGS:
-        return DEFAULT_SITE_SETTINGS[key]
-
-    return str(getattr(get_settings(), key, ""))
+    return get_site_settings(db, {key})[key]
 
 
 def load_security_settings(db: Session) -> dict[str, str]:
-    return {key: get_site_setting(db, key) for key in SECURITY_SETTING_KEYS}
+    return get_site_settings(db, SECURITY_SETTING_KEYS)
+
+
+def oidc_form_action_source(db: Session) -> str | None:
+    """Return a CSP-safe origin for the enabled provider's authorization endpoint."""
+    provider = db.query(OIDCProvider).filter_by(is_enabled=True).order_by(OIDCProvider.id.asc()).first()
+    if not provider:
+        return None
+    candidates: list[str] = []
+    if provider.metadata_json:
+        try:
+            metadata = json.loads(provider.metadata_json)
+            if isinstance(metadata, dict) and metadata.get("authorization_endpoint"):
+                candidates.append(str(metadata["authorization_endpoint"]))
+        except (TypeError, ValueError):
+            pass
+    candidates.append(provider.issuer or "")
+    for candidate in candidates:
+        parsed = urlsplit(candidate.strip())
+        hostname = (parsed.hostname or "").lower()
+        localhost = hostname in {"localhost", "127.0.0.1", "::1"}
+        if not hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+            continue
+        if parsed.scheme != "https" and not (parsed.scheme == "http" and localhost):
+            continue
+        if not localhost and _invalid_host_reason(hostname):
+            continue
+        try:
+            port = parsed.port
+        except ValueError:
+            continue
+        host = f"[{hostname}]" if ":" in hostname else hostname
+        return f"{parsed.scheme}://{host}{f':{port}' if port else ''}"
+    return None
 
 
 def split_hosts(value: str) -> list[str]:

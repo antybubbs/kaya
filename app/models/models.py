@@ -8,14 +8,116 @@ class User(Base):
     __tablename__ = "users"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
-    password_hash: Mapped[str] = mapped_column(String(255))
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
     first_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     last_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     role: Mapped[str] = mapped_column(String(30), default="viewer")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     totp_secret: Mapped[str | None] = mapped_column(Text, nullable=True)
     totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    authentication_type: Mapped[str] = mapped_column(String(30), default="local", index=True)
+    is_break_glass: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    role_source: Mapped[str] = mapped_column(String(30), default="local", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    external_identities = relationship("ExternalIdentity", foreign_keys="ExternalIdentity.user_id", back_populates="user")
+
+
+class OIDCProvider(Base):
+    __tablename__ = "oidc_providers"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), default="OpenID Connect")
+    issuer: Mapped[str] = mapped_column(String(1000), default="")
+    client_id: Mapped[str] = mapped_column(String(500), default="")
+    encrypted_client_secret: Mapped[str | None] = mapped_column(Text, nullable=True)
+    scopes: Mapped[str] = mapped_column(String(500), default="openid profile email")
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    verify_tls: Mapped[bool] = mapped_column(Boolean, default=True)
+    timeout_seconds: Mapped[int] = mapped_column(Integer, default=10)
+    use_userinfo: Mapped[bool] = mapped_column(Boolean, default=True)
+    require_verified_email: Mapped[bool] = mapped_column(Boolean, default=True)
+    allow_jit_provisioning: Mapped[bool] = mapped_column(Boolean, default=False)
+    email_matching_mode: Mapped[str] = mapped_column(String(40), default="disabled")
+    allowed_email_domains: Mapped[str | None] = mapped_column(Text, nullable=True)
+    default_role: Mapped[str] = mapped_column(String(30), default="viewer")
+    sync_roles_on_login: Mapped[bool] = mapped_column(Boolean, default=False)
+    update_names_on_login: Mapped[bool] = mapped_column(Boolean, default=True)
+    update_email_on_login: Mapped[bool] = mapped_column(Boolean, default=False)
+    end_session_on_logout: Mapped[bool] = mapped_column(Boolean, default=False)
+    email_claim: Mapped[str] = mapped_column(String(255), default="email")
+    email_verified_claim: Mapped[str] = mapped_column(String(255), default="email_verified")
+    name_claim: Mapped[str] = mapped_column(String(255), default="name")
+    first_name_claim: Mapped[str] = mapped_column(String(255), default="given_name")
+    last_name_claim: Mapped[str] = mapped_column(String(255), default="family_name")
+    preferred_username_claim: Mapped[str] = mapped_column(String(255), default="preferred_username")
+    group_claim: Mapped[str] = mapped_column(String(255), default="groups")
+    role_mappings_json: Mapped[str] = mapped_column(Text, default="[]")
+    group_matching_case_sensitive: Mapped[bool] = mapped_column(Boolean, default=False)
+    discovery_status: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    discovery_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_fetched_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_tested_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    test_login_succeeded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    identities = relationship("ExternalIdentity", back_populates="provider")
+
+
+class ExternalIdentity(Base):
+    __tablename__ = "external_identities"
+    __table_args__ = (
+        UniqueConstraint("provider_id", "issuer", "subject", name="uq_external_identity_security_key"),
+        UniqueConstraint("provider_id", "user_id", name="uq_external_identity_provider_user"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    provider_id: Mapped[int] = mapped_column(ForeignKey("oidc_providers.id", ondelete="CASCADE"), index=True)
+    issuer: Mapped[str] = mapped_column(String(1000), index=True)
+    subject: Mapped[str] = mapped_column(String(500), index=True)
+    email_at_link_time: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    current_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    preferred_username: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    claims_summary_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    role_management: Mapped[str] = mapped_column(String(30), default="local")
+    linked_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    link_method: Mapped[str] = mapped_column(String(40))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    user = relationship("User", foreign_keys=[user_id], back_populates="external_identities")
+    linked_by = relationship("User", foreign_keys=[linked_by_user_id])
+    provider = relationship("OIDCProvider", back_populates="identities")
+
+
+class OIDCTransaction(Base):
+    __tablename__ = "oidc_transactions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    transaction_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    state_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    encrypted_nonce: Mapped[str] = mapped_column(Text)
+    encrypted_code_verifier: Mapped[str] = mapped_column(Text)
+    provider_id: Mapped[int] = mapped_column(ForeignKey("oidc_providers.id", ondelete="CASCADE"), index=True)
+    flow_type: Mapped[str] = mapped_column(String(40), default="login", index=True)
+    target_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    initiated_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    return_path: Mapped[str] = mapped_column(String(500), default="/dashboard")
+    validated_claims_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+
+
+class OIDCLinkInvitation(Base):
+    __tablename__ = "oidc_link_invitations"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    provider_id: Mapped[int] = mapped_column(ForeignKey("oidc_providers.id", ondelete="CASCADE"), index=True)
+    created_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
 
 
 class PasswordResetToken(Base):
@@ -36,6 +138,7 @@ class AppSession(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     ip_address: Mapped[str | None] = mapped_column(String(80), nullable=True)
     user_agent: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    encrypted_oidc_id_token: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
@@ -70,6 +173,7 @@ class IPAddress(Base):
     address: Mapped[str] = mapped_column(String(80), index=True)
     category: Mapped[str | None] = mapped_column(String(120), index=True, nullable=True)
     name: Mapped[str | None] = mapped_column(String(255), index=True, nullable=True)
+    mac_address: Mapped[str | None] = mapped_column(String(17), index=True, nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     assignment_type: Mapped[str] = mapped_column(String(20), default="Static")
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -83,6 +187,7 @@ class VLAN(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(120), unique=True, index=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    subnet_cidr: Mapped[str | None] = mapped_column(String(80), index=True, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -97,8 +202,15 @@ class NetworkMonitor(Base):
     interval_seconds: Mapped[int] = mapped_column(Integer, default=300)
     timeout_ms: Mapped[int] = mapped_column(Integer, default=2000)
     notify_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    failure_threshold: Mapped[int] = mapped_column(Integer, default=3)
+    latency_warning_ms: Mapped[int] = mapped_column(Integer, default=150)
+    latency_critical_ms: Mapped[int] = mapped_column(Integer, default=500)
+    packet_loss_warning_percent: Mapped[int] = mapped_column(Integer, default=20)
+    packet_loss_critical_percent: Mapped[int] = mapped_column(Integer, default=60)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
     last_status: Mapped[str | None] = mapped_column(String(30), nullable=True, index=True)
     last_latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_packet_loss_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -112,8 +224,45 @@ class NetworkMonitorCheck(Base):
     monitor_id: Mapped[int] = mapped_column(ForeignKey("network_monitors.id"), index=True)
     status: Mapped[str] = mapped_column(String(30), index=True)
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    packet_loss_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    response_time_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error: Mapped[str | None] = mapped_column(String(500), nullable=True)
     checked_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    monitor = relationship("NetworkMonitor")
+
+
+class NetworkMonitorEvent(Base):
+    __tablename__ = "network_monitor_events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    monitor_id: Mapped[int] = mapped_column(ForeignKey("network_monitors.id"), index=True)
+    event_type: Mapped[str] = mapped_column(String(40), index=True)
+    severity: Mapped[str] = mapped_column(String(20), default="info", index=True)
+    message: Mapped[str] = mapped_column(String(500))
+    occurred_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    monitor = relationship("NetworkMonitor")
+
+
+class NetworkMonitorOutage(Base):
+    __tablename__ = "network_monitor_outages"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    monitor_id: Mapped[int] = mapped_column(ForeignKey("network_monitors.id"), index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    failure_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    monitor = relationship("NetworkMonitor")
+
+
+class NetworkMonitorStatistic(Base):
+    __tablename__ = "network_monitor_statistics"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    monitor_id: Mapped[int] = mapped_column(ForeignKey("network_monitors.id"), index=True)
+    bucket_start: Mapped[datetime] = mapped_column(DateTime, index=True)
+    bucket_seconds: Mapped[int] = mapped_column(Integer, index=True)
+    sample_count: Mapped[int] = mapped_column(Integer, default=0)
+    up_count: Mapped[int] = mapped_column(Integer, default=0)
+    avg_latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    avg_packet_loss_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
     monitor = relationship("NetworkMonitor")
 
 
@@ -272,6 +421,20 @@ class DNSInsight(Base):
     acknowledged_by = relationship("User")
 
 
+class DHCPRange(Base):
+    __tablename__ = "dhcp_ranges"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    vlan_id: Mapped[int | None] = mapped_column(ForeignKey("vlans.id", ondelete="SET NULL"), nullable=True, index=True)
+    start_address: Mapped[str] = mapped_column(String(80), index=True)
+    end_address: Mapped[str] = mapped_column(String(80), index=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    vlan = relationship("VLAN")
+
+
 class DNSStatisticsSnapshot(Base):
     __tablename__ = "dns_statistics_snapshots"
     __table_args__ = (UniqueConstraint("provider_id", "period_start", name="uq_dns_snapshots_provider_period"),)
@@ -309,6 +472,21 @@ class DNSRecognisedDevice(Base):
     previous_ip: Mapped[str | None] = mapped_column(String(80), nullable=True)
     mac_address: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
     provider_client_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    provider_type: Mapped[str] = mapped_column(String(40), default="pihole", index=True)
+    friendly_name: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    normalised_hostname: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    normalised_mac: Mapped[str | None] = mapped_column(String(17), nullable=True, index=True)
+    is_known: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    is_ignored: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    linked_ip_record_id: Mapped[int | None] = mapped_column(ForeignKey("ip_addresses.id", ondelete="SET NULL"), nullable=True, index=True)
+    suggested_ip_record_id: Mapped[int | None] = mapped_column(ForeignKey("ip_addresses.id", ondelete="SET NULL"), nullable=True, index=True)
+    match_confidence: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    match_method: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    observation_source: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    query_count: Mapped[int] = mapped_column(Integer, default=0)
+    blocked_query_count: Mapped[int] = mapped_column(Integer, default=0)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     hardware_asset_id: Mapped[int | None] = mapped_column(ForeignKey("hardware_assets.id", ondelete="SET NULL"), nullable=True, index=True)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
@@ -317,6 +495,107 @@ class DNSRecognisedDevice(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     provider = relationship("DNSProviderConfig")
     hardware_asset = relationship("HardwareAsset")
+    linked_ip_record = relationship("IPAddress", foreign_keys=[linked_ip_record_id])
+    suggested_ip_record = relationship("IPAddress", foreign_keys=[suggested_ip_record_id])
+    ip_history = relationship("DNSClientIPHistory", cascade="all, delete-orphan", back_populates="client")
+    hostname_history = relationship("DNSClientHostnameHistory", cascade="all, delete-orphan", back_populates="client")
+    events = relationship("DNSClientEvent", cascade="all, delete-orphan", back_populates="client")
+    traffic_history = relationship("DNSClientTrafficEvent", cascade="all, delete-orphan", back_populates="client")
+
+
+class DNSClientIPHistory(Base):
+    __tablename__ = "dns_client_ip_history"
+    __table_args__ = (UniqueConstraint("dns_client_id", "ip_address", name="uq_dns_client_ip_history"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    dns_client_id: Mapped[int] = mapped_column(ForeignKey("dns_recognised_devices.id", ondelete="CASCADE"), index=True)
+    ip_address: Mapped[str] = mapped_column(String(80), index=True)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    observation_count: Mapped[int] = mapped_column(Integer, default=1)
+    provider_id: Mapped[int | None] = mapped_column(ForeignKey("dns_providers.id", ondelete="SET NULL"), nullable=True, index=True)
+    source: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    client = relationship("DNSRecognisedDevice", back_populates="ip_history")
+
+
+class DNSClientHostnameHistory(Base):
+    __tablename__ = "dns_client_hostname_history"
+    __table_args__ = (UniqueConstraint("dns_client_id", "normalised_hostname", name="uq_dns_client_hostname_history"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    dns_client_id: Mapped[int] = mapped_column(ForeignKey("dns_recognised_devices.id", ondelete="CASCADE"), index=True)
+    hostname: Mapped[str] = mapped_column(String(255), index=True)
+    normalised_hostname: Mapped[str] = mapped_column(String(255), index=True)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    observation_count: Mapped[int] = mapped_column(Integer, default=1)
+    provider_id: Mapped[int | None] = mapped_column(ForeignKey("dns_providers.id", ondelete="SET NULL"), nullable=True, index=True)
+    source: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    client = relationship("DNSRecognisedDevice", back_populates="hostname_history")
+
+
+class DNSClientEvent(Base):
+    __tablename__ = "dns_client_events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    dns_client_id: Mapped[int] = mapped_column(ForeignKey("dns_recognised_devices.id", ondelete="CASCADE"), index=True)
+    event_type: Mapped[str] = mapped_column(String(60), index=True)
+    event_summary: Mapped[str] = mapped_column(String(500))
+    old_value: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    new_value: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    source: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    provider_id: Mapped[int | None] = mapped_column(ForeignKey("dns_providers.id", ondelete="SET NULL"), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    client = relationship("DNSRecognisedDevice", back_populates="events")
+
+
+class DNSClientTrafficEvent(Base):
+    __tablename__ = "dns_client_traffic_events"
+    __table_args__ = (UniqueConstraint("provider_id", "event_key", name="uq_dns_client_traffic_provider_event"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    dns_client_id: Mapped[int] = mapped_column(ForeignKey("dns_recognised_devices.id", ondelete="CASCADE"), index=True)
+    provider_id: Mapped[int] = mapped_column(ForeignKey("dns_providers.id", ondelete="CASCADE"), index=True)
+    dhcp_lease_id: Mapped[int | None] = mapped_column(ForeignKey("dhcp_lease_history.id", ondelete="SET NULL"), nullable=True, index=True)
+    event_key: Mapped[str] = mapped_column(String(64), index=True)
+    client_ip: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    domain: Mapped[str] = mapped_column(String(500), index=True)
+    query_type: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    status: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    reply_type: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    reply_time_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    upstream: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    is_blocked: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    client = relationship("DNSRecognisedDevice", back_populates="traffic_history")
+    provider = relationship("DNSProviderConfig")
+
+
+class DHCPLeaseHistory(Base):
+    """A time-bounded DHCP address assignment retained independently of the provider."""
+
+    __tablename__ = "dhcp_lease_history"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    provider_id: Mapped[int | None] = mapped_column(ForeignKey("dns_providers.id", ondelete="SET NULL"), nullable=True, index=True)
+    dns_client_id: Mapped[int | None] = mapped_column(ForeignKey("dns_recognised_devices.id", ondelete="SET NULL"), nullable=True, index=True)
+    dhcp_range_id: Mapped[int | None] = mapped_column(ForeignKey("dhcp_ranges.id", ondelete="SET NULL"), nullable=True, index=True)
+    ip_address: Mapped[str] = mapped_column(String(80), index=True)
+    mac_address: Mapped[str | None] = mapped_column(String(17), nullable=True, index=True)
+    hostname: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    provider_lease_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    lease_started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    source: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    provider = relationship("DNSProviderConfig")
+    client = relationship("DNSRecognisedDevice")
+    dhcp_range = relationship("DHCPRange")
 
 
 class DashboardPreference(Base):
@@ -649,3 +928,202 @@ class AuditLog(Base):
     metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     user = relationship("User")
+
+
+# Secret Vault stores only encrypted user-facing values.  The small amount of
+# plaintext metadata below is deliberately limited to identifiers, versions,
+# sizes and access-control state needed before a vault is unlocked.
+class Vault(Base):
+    __tablename__ = "vaults"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), unique=True, index=True)
+    pin_hash: Mapped[str] = mapped_column(String(255))
+    pin_salt: Mapped[str] = mapped_column(String(120))
+    pin_wrapped_key: Mapped[str] = mapped_column(Text)
+    recovery_hash: Mapped[str] = mapped_column(String(255))
+    recovery_salt: Mapped[str] = mapped_column(String(120))
+    recovery_wrapped_key: Mapped[str] = mapped_column(Text)
+    app_wrapped_key: Mapped[str] = mapped_column(Text)
+    key_version: Mapped[int] = mapped_column(Integer, default=1)
+    schema_version: Mapped[int] = mapped_column(Integer, default=1)
+    auto_lock_minutes: Mapped[int] = mapped_column(Integer, default=10)
+    failed_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    recovery_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    owner = relationship("User")
+
+
+class VaultSession(Base):
+    __tablename__ = "vault_sessions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    vault_id: Mapped[int] = mapped_column(ForeignKey("vaults.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    app_session_id: Mapped[str] = mapped_column(String(120), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    nonce: Mapped[str] = mapped_column(String(120))
+    authentication_method: Mapped[str] = mapped_column(String(40), default="pin_totp")
+    unlocked_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    last_activity_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    absolute_expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+
+
+class VaultTotpUse(Base):
+    __tablename__ = "vault_totp_uses"
+    __table_args__ = (UniqueConstraint("user_id", "counter", name="uq_vault_totp_user_counter"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    counter: Mapped[int] = mapped_column(Integer, index=True)
+    used_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class VaultCollection(Base):
+    __tablename__ = "vault_collections"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    vault_id: Mapped[int] = mapped_column(ForeignKey("vaults.id", ondelete="CASCADE"), index=True)
+    encrypted_payload: Mapped[str] = mapped_column(Text)
+    key_version: Mapped[int] = mapped_column(Integer, default=1)
+    is_private: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class VaultCollectionMember(Base):
+    __tablename__ = "vault_collection_members"
+    __table_args__ = (UniqueConstraint("collection_id", "user_id", name="uq_vault_collection_member"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    collection_id: Mapped[int] = mapped_column(ForeignKey("vault_collections.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    permission: Mapped[str] = mapped_column(String(40), default="viewer")
+    encrypted_collection_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class VaultItem(Base):
+    __tablename__ = "vault_items"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    vault_id: Mapped[int] = mapped_column(ForeignKey("vaults.id", ondelete="CASCADE"), index=True)
+    collection_id: Mapped[int | None] = mapped_column(ForeignKey("vault_collections.id", ondelete="SET NULL"), nullable=True, index=True)
+    item_type: Mapped[str] = mapped_column(String(40), index=True)
+    encrypted_payload: Mapped[str] = mapped_column(Text)
+    key_version: Mapped[int] = mapped_column(Integer, default=1)
+    is_favourite: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    updated_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class VaultItemVersion(Base):
+    __tablename__ = "vault_item_versions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey("vault_items.id", ondelete="CASCADE"), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    encrypted_payload: Mapped[str] = mapped_column(Text)
+    key_version: Mapped[int] = mapped_column(Integer, default=1)
+    saved_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class VaultAttachment(Base):
+    __tablename__ = "vault_attachments"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey("vault_items.id", ondelete="CASCADE"), index=True)
+    storage_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    encrypted_metadata: Mapped[str] = mapped_column(Text)
+    size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    ciphertext_size: Mapped[int] = mapped_column(Integer, default=0)
+    integrity_hash: Mapped[str] = mapped_column(String(64))
+    key_version: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class VaultBackupRecord(Base):
+    __tablename__ = "vault_backup_records"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    vault_id: Mapped[int] = mapped_column(ForeignKey("vaults.id", ondelete="CASCADE"), index=True)
+    operation: Mapped[str] = mapped_column(String(40), index=True)
+    status: Mapped[str] = mapped_column(String(40), index=True)
+    format_version: Mapped[int] = mapped_column(Integer, default=1)
+    size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+# Secure Send retains only encrypted recipient/content metadata. Public URLs,
+# PINs and passphrases are represented by hashes or encrypted recovery copies;
+# sequential database identifiers are never exposed by recipient routes.
+class SecureSendPackage(Base):
+    __tablename__ = "secure_send_packages"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sender_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    internal_recipient_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    recipient_type: Mapped[str] = mapped_column(String(20), default="external", index=True)
+    access_token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    encrypted_access_token: Mapped[str] = mapped_column(Text)
+    credential_hash: Mapped[str] = mapped_column(String(255))
+    credential_salt: Mapped[str] = mapped_column(String(120))
+    credential_wrapped_key: Mapped[str] = mapped_column(Text)
+    app_wrapped_key: Mapped[str] = mapped_column(Text)
+    encrypted_summary: Mapped[str] = mapped_column(Text)
+    encrypted_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default="active", index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    one_download_only: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    allow_vault_save: Mapped[bool] = mapped_column(Boolean, default=False)
+    notify_when_opened: Mapped[bool] = mapped_column(Boolean, default=True)
+    download_count: Mapped[int] = mapped_column(Integer, default=0)
+    failed_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    opened_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    authenticated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    downloaded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    expired_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    cleaned_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    sender = relationship("User", foreign_keys=[sender_id])
+    internal_recipient = relationship("User", foreign_keys=[internal_recipient_id])
+
+
+class SecureSendFile(Base):
+    __tablename__ = "secure_send_files"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    package_id: Mapped[int] = mapped_column(ForeignKey("secure_send_packages.id", ondelete="CASCADE"), index=True)
+    storage_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    encrypted_metadata: Mapped[str] = mapped_column(Text)
+    size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    ciphertext_size: Mapped[int] = mapped_column(Integer, default=0)
+    integrity_hash: Mapped[str] = mapped_column(String(64))
+    downloaded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class SecureSendRecipientSession(Base):
+    __tablename__ = "secure_send_recipient_sessions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    package_id: Mapped[int] = mapped_column(ForeignKey("secure_send_packages.id", ondelete="CASCADE"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    csrf_hash: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    last_activity_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+
+
+class SecureSendActivity(Base):
+    __tablename__ = "secure_send_activities"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    package_id: Mapped[int] = mapped_column(ForeignKey("secure_send_packages.id", ondelete="CASCADE"), index=True)
+    event_type: Mapped[str] = mapped_column(String(40), index=True)
+    actor_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    encrypted_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)

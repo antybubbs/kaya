@@ -2,7 +2,7 @@
 {% block content %}
 <div class="topbar"><div><h1>Custom Fields</h1><p class="muted">Create extra fields for module records. List options use one value per line.</p></div></div>
 {% if error %}<div class="alert">{{ error }}</div>{% endif %}
-<div class="tabs">
+<div class="module-tabs">
   {% for module_key, module_label in modules.items() %}<a class="{% if active_module == module_key %}active{% endif %}" href="/data/custom-fields?module={{ module_key }}">{{ module_label }}</a>{% endfor %}
 </div>
 <section class="panel stack">

@@ -27,17 +27,19 @@ def request_user_agent(request: Request) -> str | None:
     return user_agent[:500] or None
 
 
-def start_user_session(db: Session, request: Request, user: User) -> None:
+def start_user_session(db: Session, request: Request, user: User) -> AppSession:
     session_id = secrets.token_urlsafe(32)
     request.session["session_id"] = session_id
     request.session["session_last_seen_sync"] = int(time.time())
-    db.add(AppSession(
+    row = AppSession(
         session_id=session_id,
         user_id=user.id,
         ip_address=request_ip(request),
         user_agent=request_user_agent(request),
-    ))
+    )
+    db.add(row)
     db.commit()
+    return row
 
 
 def touch_user_session(db: Session, request: Request, user: User) -> None:
@@ -70,6 +72,7 @@ def end_user_session(db: Session, request: Request) -> None:
     if row:
         row.last_seen_at = datetime.utcnow()
         row.ended_at = datetime.utcnow()
+        row.encrypted_oidc_id_token = None
         db.commit()
 
 

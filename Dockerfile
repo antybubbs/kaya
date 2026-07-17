@@ -25,12 +25,13 @@ COPY app ./app
 COPY scripts ./scripts
 COPY docker-entrypoint.sh /usr/local/bin/kaya-entrypoint
 
-RUN mkdir -p /app/data /app/uploads \
+RUN mkdir -p /app/data /app/uploads /app/data/secret-vault /app/data/secure-send \
     && chown -R kaya:kaya /app \
+    && chmod 700 /app/data/secret-vault /app/data/secure-send \
     && sed -i 's/\r$//' /usr/local/bin/kaya-entrypoint \
     && chmod +x /usr/local/bin/kaya-entrypoint
 
-EXPOSE 8080
+EXPOSE 8080 8999
 
 ENTRYPOINT ["/usr/local/bin/kaya-entrypoint"]
 CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port 8080 --no-proxy-headers"]

@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="record-hero">
+  <div>
+    <p class="muted"><a href="/networking/dns-manager?tab=clients">DNS Manager / Clients</a></p>
+    <h1>{{ display_name }}</h1>
+    <div class="record-chips"><span class="table-chip {% if status == 'Conflict' %}danger-chip{% elif status in ['Linked','Known'] %}good{% endif %}">{{ status }}</span><span class="table-chip muted-chip">{{ client.provider.name }}</span></div>
+  </div>
+  {% if user.role in ['admin','editor'] %}<div class="inline-actions">
+    <form method="post" action="/networking/dns-manager/clients/{{ client.id }}/state"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="action" value="{{ 'unknown' if client.is_known else 'known' }}"><button class="button secondary" type="submit">Mark {{ 'unknown' if client.is_known else 'known' }}</button></form>
+    <form method="post" action="/networking/dns-manager/clients/{{ client.id }}/state"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="action" value="{{ 'unignore' if client.is_ignored else 'ignore' }}"><button class="button secondary" type="submit">{{ 'Unignore' if client.is_ignored else 'Ignore' }}</button></form>
+  </div>{% endif %}
+</div>
+
+<section class="record-layout">
+  <section class="panel record-panel">
+    <h2>Observed identity</h2>
+    <dl class="record-kv-list">
+      <div><dt>Friendly name</dt><dd>{{ client.friendly_name or '-' }}</dd></div><div><dt>Reported hostname</dt><dd>{{ client.hostname or '-' }}</dd></div>
+      <div><dt>Current IP</dt><dd class="mono">{{ client.current_ip or '-' }}</dd></div><div><dt>MAC</dt><dd class="mono">{{ client.normalised_mac or '-' }}</dd></div>
+      <div><dt>First seen</dt><dd>{{ local_time(client.first_seen_at) }}</dd></div><div><dt>Last seen</dt><dd>{{ local_time(client.last_seen_at) }}</dd></div>
+      <div><dt>Last sync</dt><dd>{{ local_time(client.last_synced_at) }}</dd></div><div><dt>Source</dt><dd>{{ client.observation_source or client.provider_type }}</dd></div>
+      <div><dt>Queries</dt><dd>{{ client.query_count }}</dd></div><div><dt>Blocked queries</dt><dd>{{ client.blocked_query_count }}</dd></div>
+    </dl>
+  </section>
+
+  <section class="panel record-panel">
+    <h2>Managed record</h2>
+    {% if client.linked_ip_record %}
+    <dl class="record-kv-list"><div><dt>Name</dt><dd>{{ client.linked_ip_record.name or '-' }}</dd></div><div><dt>Managed IP</dt><dd class="mono">{{ client.linked_ip_record.address }}</dd></div><div><dt>VLAN</dt><dd>{% if client.linked_ip_record.vlan %}<a class="table-chip" href="/networking/vlan-ip-manager?vlan_id={{ client.linked_ip_record.vlan.id }}">{{ client.linked_ip_record.vlan.name }}</a>{% else %}-{% endif %}</dd></div><div><dt>Category</dt><dd>{% if client.linked_ip_record.category %}<a class="table-chip" href="/networking/vlan-ip-manager?category={{ client.linked_ip_record.category|urlencode }}">{{ client.linked_ip_record.category }}</a>{% else %}-{% endif %}</dd></div><div><dt>Assignment</dt><dd>{{ client.linked_ip_record.assignment_type }}</dd></div></dl>
+    <div class="inline-actions"><a class="button" href="/networking/vlan-ip-manager/{{ client.linked_ip_record.id }}">Open VLAN/IP record</a>{% if user.role in ['admin','editor'] %}{% if client.current_ip and client.current_ip != client.linked_ip_record.address %}<form method="post" action="/networking/dns-manager/clients/{{ client.id }}/update-managed-ip"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit">Update managed IP</button></form>{% endif %}<form method="post" action="/networking/dns-manager/clients/{{ client.id }}/unlink"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit">Unlink</button></form>{% endif %}</div>
+    {% else %}<p class="muted">This observed client is not linked to a managed VLAN/IP record.</p>{% endif %}
+  </section>
+
+  {% if user.role in ['admin','editor'] %}<section class="panel record-panel wide">
+    <h2>Friendly name and notes</h2>
+    <form method="post" action="/networking/dns-manager/clients/{{ client.id }}/update" class="form-grid"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label>Friendly name<input name="friendly_name" value="{{ client.friendly_name or '' }}"></label><label class="wide">Notes<textarea name="notes">{{ client.notes or '' }}</textarea></label><button type="submit">Save client details</button></form>
+  </section>{% endif %}
+
+  <section class="panel record-panel wide dns-client-traffic-panel" id="dns-traffic-history">
+    <h2>DNS traffic history</h2>
+    <div class="dns-traffic-heading">
+      <p class="muted">Retained DNS lookups observed by {{ client.provider.name }}. This records domains and DNS outcomes, not complete browser URLs or page paths.</p>
+      <div class="record-chips"><span class="table-chip muted-chip">{{ traffic_total }} matching lookups</span><span class="table-chip muted-chip">{{ traffic_history_days }}-day retention</span></div>
+    </div>
+    <div class="dns-traffic-leaders">
+      <section>
+        <h3>Top requested domains</h3>
+        <ol>{% for item in top_requested %}<li><a href="?traffic_q={{ item.domain|urlencode }}&amp;traffic_period={{ traffic_filters.period }}#dns-traffic-history"><span>{{ item.domain }}</span><strong>{{ item.count }}</strong></a></li>{% else %}<li class="muted">No retained traffic in this period.</li>{% endfor %}</ol>
+      </section>
+      <section>
+        <h3>Top blocked domains</h3>
+        <ol>{% for item in top_blocked %}<li><a href="?traffic_q={{ item.domain|urlencode }}&amp;traffic_status=blocked&amp;traffic_period={{ traffic_filters.period }}#dns-traffic-history"><span>{{ item.domain }}</span><strong>{{ item.count }}</strong></a></li>{% else %}<li class="muted">No blocked lookups in this period.</li>{% endfor %}</ol>
+      </section>
+    </div>
+    <form method="get" action="/networking/dns-manager/clients/{{ client.id }}#dns-traffic-history" class="dns-traffic-filters">
+      <input name="traffic_q" type="search" value="{{ traffic_filters.q }}" placeholder="Search retained domains">
+      <select name="traffic_status"><option value="all" {% if traffic_filters.status == 'all' %}selected{% endif %}>All outcomes</option><option value="allowed" {% if traffic_filters.status == 'allowed' %}selected{% endif %}>Allowed only</option><option value="blocked" {% if traffic_filters.status == 'blocked' %}selected{% endif %}>Blocked only</option></select>
+      <select name="traffic_period"><option value="24h" {% if traffic_filters.period == '24h' %}selected{% endif %}>Last 24 hours</option><option value="7d" {% if traffic_filters.period == '7d' %}selected{% endif %}>Last 7 days</option><option value="30d" {% if traffic_filters.period == '30d' %}selected{% endif %}>Last 30 days</option><option value="all" {% if traffic_filters.period == 'all' %}selected{% endif %}>All retained history</option></select>
+      <button type="submit">Filter</button>
+      {% if traffic_filters.q or traffic_filters.status != 'all' or traffic_filters.period != '7d' %}<a class="button secondary" href="/networking/dns-manager/clients/{{ client.id }}#dns-traffic-history">Reset</a>{% endif %}
+    </form>
+    <table data-table-key="dns-client-traffic-history">
+      <thead><tr><th>When</th><th>Domain</th><th>Query type</th><th>Outcome</th><th>Reply</th><th>Response</th><th>Upstream</th><th data-col="actions">Actions</th></tr></thead>
+      <tbody>{% for item in traffic_rows %}<tr>
+        <td>{{ local_time(item.observed_at) }}</td>
+        <td><details class="dns-domain-menu"><summary>{{ item.domain }}</summary><div class="dns-domain-menu-panel"><dl><div><dt>Root domain</dt><dd>{{ domain_root(item.domain) }}</dd></div><div><dt>Classification</dt><dd>{{ domain_kind(item.domain) }}</dd></div><div><dt>Client</dt><dd>{{ display_name }}{% if client.current_ip %} / {{ client.current_ip }}{% endif %}</dd></div><div><dt>Result</dt><dd>{{ 'Blocked' if item.is_blocked else (item.status or 'Allowed') }}{% if item.reply_type %} / {{ item.reply_type }}{% endif %}</dd></div><div><dt>Response</dt><dd>{% if item.reply_time_ms is not none %}{{ '%.2f'|format(item.reply_time_ms) }} ms{% else %}-{% endif %}{% if item.upstream %} via {{ item.upstream }}{% endif %}</dd></div></dl><div class="dns-domain-web-links"><a href="https://lookup.icann.org/en/lookup?name={{ domain_root(item.domain) }}" target="_blank" rel="noopener noreferrer">WHOIS</a><a href="https://mxtoolbox.com/SuperTool.aspx?action=a%3a{{ item.domain }}" target="_blank" rel="noopener noreferrer">DNS lookup</a><a href="https://www.virustotal.com/gui/domain/{{ item.domain }}/details" target="_blank" rel="noopener noreferrer">Reputation</a><a href="/networking/dns-manager?tab=query-log&amp;dns_domain={{ item.domain|urlencode }}&amp;dns_client={{ (client.current_ip or client.hostname or '')|urlencode }}">Live query log</a></div></div></details>{% if item.domain in flagged_traffic_domains %} <span class="table-chip danger-chip">Flagged</span>{% endif %}</td>
+        <td>{{ item.query_type or '-' }}</td><td><span class="table-chip {% if item.is_blocked %}danger-chip{% else %}good{% endif %}">{{ 'Blocked' if item.is_blocked else (item.status or 'Allowed') }}</span></td><td>{{ item.reply_type or '-' }}</td><td>{% if item.reply_time_ms is not none %}{{ '%.2f'|format(item.reply_time_ms) }} ms{% else %}-{% endif %}</td><td>{{ item.upstream or '-' }}</td>
+        <td><form method="post" action="/networking/dns-manager/investigations" class="dns-flag-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="domain" value="{{ item.domain }}"><input type="hidden" name="client_name" value="{{ display_name }}"><input type="hidden" name="client_ip" value="{{ client.current_ip or '' }}"><input type="hidden" name="query_type" value="{{ item.query_type or '' }}"><input type="hidden" name="reply_status" value="{{ item.status or '' }}"><input type="hidden" name="reply_type" value="{{ item.reply_type or '' }}"><input type="hidden" name="reply_time" value="{% if item.reply_time_ms is not none %}{{ '%.2f'|format(item.reply_time_ms) }} ms{% endif %}"><input type="hidden" name="upstream" value="{{ item.upstream or '' }}"><input type="hidden" name="observed_at" value="{{ item.observed_at.isoformat() }}"><input type="hidden" name="notes" value="Flagged from retained DNS client traffic history."><input type="hidden" name="return_to" value="/networking/dns-manager/clients/{{ client.id }}?traffic_q={{ traffic_filters.q|urlencode }}&amp;traffic_status={{ traffic_filters.status }}&amp;traffic_period={{ traffic_filters.period }}&amp;traffic_page={{ traffic_page }}#dns-traffic-history"><button class="button secondary small" type="submit" {% if item.domain in flagged_traffic_domains %}disabled title="Already flagged"{% endif %}>Flag</button></form></td>
+      </tr>{% else %}<tr><td colspan="8">No retained DNS lookups match these filters. History starts with the next successful background collection pass.</td></tr>{% endfor %}</tbody>
+    </table>
+    {% if traffic_pages > 1 %}<nav class="pagination"><span>Page {{ traffic_page }} of {{ traffic_pages }}</span>{% if traffic_page > 1 %}<a class="button secondary" href="?traffic_q={{ traffic_filters.q|urlencode }}&amp;traffic_status={{ traffic_filters.status }}&amp;traffic_period={{ traffic_filters.period }}&amp;traffic_page={{ traffic_page - 1 }}#dns-traffic-history">Back</a>{% endif %}{% if traffic_page < traffic_pages %}<a class="button secondary" href="?traffic_q={{ traffic_filters.q|urlencode }}&amp;traffic_status={{ traffic_filters.status }}&amp;traffic_period={{ traffic_filters.period }}&amp;traffic_page={{ traffic_page + 1 }}#dns-traffic-history">Next</a>{% endif %}</nav>{% endif %}
+  </section>
+
+  {% if not client.linked_ip_record %}<section class="panel record-panel wide">
+    <h2>Manage this client in VLAN/IP Manager</h2>
+    {% if client.suggested_ip_record %}<div class="alert success dns-suggested-link"><div><strong>Suggested existing record:</strong> {{ client.suggested_ip_record.name or client.suggested_ip_record.address }}. Reason: {{ client.match_method|replace('_',' ') }}; confidence {{ client.match_confidence }}%.</div>{% if user.role in ['admin','editor'] %}<form method="post" action="/networking/dns-manager/clients/{{ client.id }}/link"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="ip_record_id" value="{{ client.suggested_ip_record.id }}"><button type="submit">Confirm suggested link</button></form>{% endif %}</div>{% endif %}
+    {% if user.role in ['admin','editor'] %}
+    <div class="inline-actions"><a class="button" href="/networking/vlan-ip-manager/new?dns_client_id={{ client.id }}">Create new VLAN/IP record</a><a class="button secondary" href="/networking/vlan-ip-manager?view=observed">View all observed clients</a></div>
+    <h3>Or link an existing record</h3>
+    <form method="get" class="search"><input name="q" value="{{ q }}" placeholder="Search IP, MAC, name, VLAN or category"><button>Search</button></form>
+    <form method="post" action="/networking/dns-manager/clients/{{ client.id }}/link" class="form-grid"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label class="wide">Managed record<select name="ip_record_id" required><option value="">Choose a record</option>{% for record in ip_records %}<option value="{{ record.id }}" {% if preferred_ip_record_id == record.id %}selected{% endif %}>{{ record.name or 'Unnamed' }} - {{ record.address }}{% if record.vlan %} - {{ record.vlan.name }}{% endif %}{% if record.mac_address %} - {{ record.mac_address }}{% endif %}{% if record.category %} - {{ record.category }}{% endif %}{% if record.id in priority_ip_record_ids %} - Exact match{% endif %}</option>{% endfor %}</select></label><button type="submit">Confirm link</button></form>
+    {% else %}<p class="muted">An editor can create or link the managed record.</p>{% endif %}
+  </section>{% endif %}
+
+  <section class="panel record-panel wide"><h2>IP history</h2><p class="muted">Retained independently of the provider for {{ client_history_days }} days after the last observation.</p><table data-table-key="dns-client-ip-history"><thead><tr><th>IP address</th><th>First seen</th><th>Last seen</th><th>Observations</th><th>Source</th></tr></thead><tbody>{% for item in ip_history %}<tr><td class="mono">{{ item.ip_address }}{% if item.ip_address == client.current_ip %} <span class="table-chip good">Current</span>{% endif %}</td><td>{{ local_time(item.first_seen_at) }}</td><td>{{ local_time(item.last_seen_at) }}</td><td>{{ item.observation_count }}</td><td>{{ item.source or '-' }}</td></tr>{% else %}<tr><td colspan="5">No IP observations retained.</td></tr>{% endfor %}</tbody></table></section>
+  <section class="panel record-panel wide"><h2>Hostname history</h2><table data-table-key="dns-client-hostname-history"><thead><tr><th>Hostname</th><th>First seen</th><th>Last seen</th><th>Observations</th><th>Source</th></tr></thead><tbody>{% for item in hostname_history %}<tr><td>{{ item.hostname }}{% if item.normalised_hostname == client.normalised_hostname %} <span class="table-chip good">Current</span>{% endif %}</td><td>{{ local_time(item.first_seen_at) }}</td><td>{{ local_time(item.last_seen_at) }}</td><td>{{ item.observation_count }}</td><td>{{ item.source or '-' }}</td></tr>{% else %}<tr><td colspan="5">No hostname observations retained.</td></tr>{% endfor %}</tbody></table></section>
+  <section class="panel record-panel wide"><h2>Timeline</h2><table data-table-key="dns-client-events"><thead><tr><th>When</th><th>Event</th><th>Change</th><th>Source</th></tr></thead><tbody>{% for item in events %}<tr><td>{{ local_time(item.created_at) }}</td><td><strong>{{ item.event_summary }}</strong><br><span class="muted">{{ item.event_type|replace('_',' ') }}</span></td><td>{{ item.old_value or '-' }} to {{ item.new_value or '-' }}</td><td>{{ item.source or '-' }}</td></tr>{% else %}<tr><td colspan="4">No client events retained.</td></tr>{% endfor %}</tbody></table></section>
+
+  {% if user.role == 'admin' %}<section class="panel record-panel wide"><h2>Administrative actions</h2><form method="post" action="/networking/dns-manager/clients/{{ client.id }}/merge" class="inline-actions"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label>Duplicate client ID<input name="duplicate_id" type="number" min="1" required></label><button class="button secondary" type="submit">Merge into this client</button></form><form method="post" action="/networking/dns-manager/clients/{{ client.id }}/delete" data-confirm="Delete this retained DNS client and its observation history? The VLAN/IP record will not be deleted."><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button danger" type="submit">Delete retained client</button></form></section>{% endif %}
+</section>
+{% endblock %}
+{% block extra_scripts %}<script src="/static/js/dns_client_detail.js?v={{ asset_version }}" defer></script>{% endblock %}

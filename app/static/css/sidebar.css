@@ -1,0 +1,198 @@
+/* Illustrated application navigation. Behaviour and layout remain in app.css/responsive.css. */
+.sidebar {
+  background:
+    radial-gradient(circle at -15% 78%, rgba(255, 117, 16, .19), transparent 42%),
+    linear-gradient(180deg, #0b111b 0%, #090d14 58%, #0c1017 100%);
+  border-right-color: rgba(103, 116, 136, .24);
+  box-shadow: inset -1px 0 0 rgba(255, 255, 255, .025), 12px 0 36px rgba(0, 0, 0, .15);
+  isolation: isolate;
+}
+
+.sidebar::before,
+.sidebar::after {
+  content: "";
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+}
+
+.sidebar::before {
+  background-image: url("../images/sidebar/sidebar-infrastructure-bg.webp");
+  background-position: 77% 100%;
+  background-repeat: no-repeat;
+  background-size: auto 78%;
+  opacity: .46;
+  z-index: -2;
+}
+
+.sidebar::after {
+  background:
+    linear-gradient(180deg, rgba(8, 13, 22, .9) 0%, rgba(8, 13, 22, .74) 34%, rgba(8, 13, 22, .42) 73%, rgba(8, 13, 22, .72) 100%),
+    linear-gradient(90deg, rgba(8, 13, 22, .62), rgba(8, 13, 22, .18));
+  z-index: -1;
+}
+
+.sidebar > * {
+  position: relative;
+  z-index: 1;
+}
+
+.sidebar .nav-tree {
+  gap: 5px;
+}
+
+.sidebar .nav-link,
+.sidebar .nav-group > summary,
+.sidebar .nav-subgroup > summary {
+  color: #aeb8c7;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .55);
+}
+
+.sidebar .nav-icon {
+  color: #7f8b9d;
+}
+
+.sidebar .nav-link:hover,
+.sidebar .nav-group > summary:hover,
+.sidebar .nav-subgroup > summary:hover {
+  background: rgba(28, 37, 51, .84);
+  border-color: rgba(127, 143, 165, .24);
+  color: #fff;
+}
+
+.sidebar .nav-link.active,
+.sidebar .nav-group:has(.nav-link.active) > summary,
+.sidebar .nav-subgroup:has(.nav-link.active) > summary {
+  background: linear-gradient(90deg, rgba(255, 138, 0, .22), rgba(255, 138, 0, .08));
+  border-color: rgba(255, 154, 41, .48);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .13);
+  color: #fff;
+}
+
+.sidebar .nav-link.active::before,
+.sidebar .nav-group:has(.nav-link.active) > summary::before {
+  display: none;
+}
+
+.sidebar .nav-link:hover .nav-icon,
+.sidebar .nav-link.active .nav-icon,
+.sidebar .nav-group:has(.nav-link.active) > summary .nav-icon {
+  color: #ffad4f;
+}
+
+.sidebar .nav-children {
+  border-left: 1px solid rgba(255, 154, 41, .18);
+}
+
+.sidebar .version-card {
+  background: rgba(11, 17, 27, .72);
+  border-color: rgba(134, 149, 169, .22);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, .18), inset 0 1px 0 rgba(255, 255, 255, .025);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
+
+.sidebar .version-card div,
+.sidebar .version-card a {
+  color: #929daf;
+}
+
+.sidebar .version-card strong {
+  color: #f4f7fb;
+}
+
+html[data-kaya-theme="light-ops"] .sidebar {
+  background:
+    radial-gradient(circle at -15% 78%, rgba(255, 117, 16, .19), transparent 42%),
+    linear-gradient(180deg, #0b111b 0%, #090d14 58%, #0c1017 100%);
+  border-right-color: rgba(103, 116, 136, .24);
+  color: #f4f7fb;
+}
+
+html[data-kaya-theme="light-ops"] .sidebar .nav-link,
+html[data-kaya-theme="light-ops"] .sidebar .nav-group > summary,
+html[data-kaya-theme="light-ops"] .sidebar .nav-subgroup > summary {
+  color: #aeb8c7;
+}
+
+html[data-kaya-theme="light-ops"] .sidebar .nav-link:hover,
+html[data-kaya-theme="light-ops"] .sidebar .nav-group > summary:hover,
+html[data-kaya-theme="light-ops"] .sidebar .nav-subgroup > summary:hover {
+  background: rgba(28, 37, 51, .84);
+  border-color: rgba(127, 143, 165, .24);
+  color: #fff;
+}
+
+html[data-kaya-theme="light-ops"] .sidebar .nav-link.active,
+html[data-kaya-theme="light-ops"] .sidebar .nav-group:has(.nav-link.active) > summary,
+html[data-kaya-theme="light-ops"] .sidebar .nav-subgroup:has(.nav-link.active) > summary {
+  background: linear-gradient(90deg, rgba(255, 138, 0, .22), rgba(255, 138, 0, .08));
+  border-color: rgba(255, 154, 41, .48);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .13);
+  color: #fff;
+}
+
+html[data-kaya-theme="light-ops"] .sidebar .nav-icon {
+  color: #7f8b9d;
+}
+
+html[data-kaya-theme="light-ops"] .sidebar .nav-link:hover .nav-icon,
+html[data-kaya-theme="light-ops"] .sidebar .nav-link.active .nav-icon,
+html[data-kaya-theme="light-ops"] .sidebar .nav-group:has(.nav-link.active) > summary .nav-icon {
+  color: #ffad4f;
+}
+
+html[data-kaya-theme="light-ops"] .sidebar .version-card {
+  background: rgba(11, 17, 27, .72);
+  border-color: rgba(134, 149, 169, .22);
+}
+
+html[data-kaya-theme="light-ops"] .sidebar .version-card div,
+html[data-kaya-theme="light-ops"] .sidebar .version-card a {
+  color: #929daf;
+}
+
+html[data-kaya-theme="light-ops"] .sidebar .version-card strong {
+  color: #f4f7fb;
+}
+
+body.sidebar-collapsed .sidebar::before {
+  background-position: 69% 100%;
+  background-size: auto 54%;
+  opacity: .16;
+}
+
+body.sidebar-collapsed .sidebar::after {
+  background: linear-gradient(180deg, rgba(8, 13, 22, .94), rgba(8, 13, 22, .78));
+}
+
+@media (max-width:1023px) {
+  .sidebar::before,
+  body.sidebar-collapsed .sidebar::before {
+    background-position: 75% 100%;
+    background-size: auto 64%;
+    opacity: .3;
+  }
+
+  .sidebar::after,
+  body.sidebar-collapsed .sidebar::after {
+    background:
+      linear-gradient(180deg, rgba(8, 13, 22, .94) 0%, rgba(8, 13, 22, .8) 52%, rgba(8, 13, 22, .58) 100%),
+      linear-gradient(90deg, rgba(8, 13, 22, .65), rgba(8, 13, 22, .22));
+  }
+}
+
+@media (max-height:760px) and (min-width:1024px) {
+  .sidebar::before {
+    background-size: auto 68%;
+    opacity: .36;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .sidebar .version-card {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    background: #0b111b;
+  }
+}

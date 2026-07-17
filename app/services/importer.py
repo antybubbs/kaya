@@ -73,7 +73,7 @@ def get_or_create_vlan(db: Session, name: str | None) -> VLAN:
 
 
 def default_vlan(db: Session) -> VLAN:
-    return get_or_create_vlan(db, "VLAN 1")
+    return db.query(VLAN).order_by(VLAN.id.asc()).first() or get_or_create_vlan(db, "VLAN 1")
 
 
 def import_csv(db: Session, user: User, path: str, ip_address: str | None = None) -> int:
@@ -152,14 +152,16 @@ def import_ip_addresses_csv(db: Session, user: User, path: str, ip_address: str 
             address = clean_ip_address(row.get("IP Address"))
             if not address:
                 continue
-            vlan = default_vlan(db)
-            record = db.query(IPAddress).filter(IPAddress.address == address).first()
+            vlan_name = clean(row.get("VLAN")) if "Category" in df.columns else None
+            vlan = get_or_create_vlan(db, vlan_name) if vlan_name else default_vlan(db)
+            record = db.query(IPAddress).filter(IPAddress.vlan_id == vlan.id, IPAddress.address == address).first()
             if not record:
                 record = IPAddress(address=address, vlan_id=vlan.id)
                 db.add(record)
             record.vlan_id = vlan.id
             assignment_type = clean(row.get("Static/Dynamic")) or clean(row.get("Assignment Type")) or "Static"
-            record.category = clean(row.get("Category")) or clean(row.get("VLAN"))
+            record.category = clean(row.get("Category")) if "Category" in df.columns else clean(row.get("VLAN"))
+            record.mac_address = clean(row.get("MAC Address"))
             record.name = clean(row.get("Name"))
             record.description = clean(row.get("Description"))
             record.assignment_type = assignment_type if assignment_type in {"Static", "Dynamic"} else "Static"

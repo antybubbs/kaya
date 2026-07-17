@@ -11,6 +11,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
+from app.core.performance import external_call
 
 from app.core.security import decrypt_secret
 from app.models.models import DNSProviderConfig
@@ -121,12 +122,13 @@ class PiHoleProvider(DNSProvider):
         url = f"{self._base_url()}{path}"
         request = Request(url, data=body, method=method, headers=request_headers)
         try:
-            with urlopen(
-                request,
-                timeout=max(1, min(int(timeout_seconds or self.config.timeout_seconds or 10), 120)),
-                context=self._ssl_context(),
-            ) as response:
-                raw = response.read().decode("utf-8")
+            with external_call():
+                with urlopen(
+                    request,
+                    timeout=max(1, min(int(timeout_seconds or self.config.timeout_seconds or 10), 120)),
+                    context=self._ssl_context(),
+                ) as response:
+                    raw = response.read().decode("utf-8")
         except HTTPError as exc:
             detail = ""
             try:

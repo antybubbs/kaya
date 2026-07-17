@@ -13,14 +13,24 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.models.models import (AppSession, AuditLog, BackupJob, BackupRecord, ComputeEvent,
     ComputeHost, ComputeWorkload, DashboardPreference, DNSInsight, DomainRecord, HardwareAsset,
-    IPAddress, Licence, NetworkMonitor, RemoteAccess, RunbookPage, User, VLAN)
+    IPAddress, Licence, NetworkMonitor, RemoteAccess, RunbookPage, User, VLAN, Vault, VaultBackupRecord)
 from app.services.compute_monitor import compute_summary
-from app.services.dns_dashboard_summary import get_dns_dashboard_summary, get_refreshed_dns_dashboard_summary
-from app.services.site_settings import get_site_setting
+from app.services.dns_dashboard_summary import get_dns_dashboard_summary
+from app.services.site_settings import get_site_setting, get_site_settings
 
 logger = logging.getLogger(__name__)
 VALID_SIZES = {"small", "medium", "large", "full"}
 VERSION = 1
+DASHBOARD_SETTING_KEYS = {
+    "dashboard_attention_required", "dashboard_customisation_enabled",
+    "dashboard_globally_disabled_widgets", "dashboard_monitor_mode_enabled",
+    "dashboard_poll_interval_seconds", "dashboard_recent_activity_limit",
+    "dashboard_show_source_age", "dns_manager_enabled",
+}
+
+
+def _prime_settings(db: Session) -> None:
+    get_site_settings(db, DASHBOARD_SETTING_KEYS)
 
 @dataclass(frozen=True)
 class Widget:
@@ -39,6 +49,7 @@ WIDGETS = (
     Widget("documentation", "Documentation and Runbooks", "Runbooks", "Runbook totals and recent changes.", True, 8, "medium", "small", "authenticated", "/api/dashboard/snapshot", "/documentation/runbook-manager"),
     Widget("team_users", "Team and users", "Team", "Account health and recent access.", True, 9, "small", "small", "admin", "/api/dashboard/snapshot", "/team/users"),
     Widget("recent_activity", "Recent activity", "Audit Log", "Latest authorised operational activity.", True, 10, "large", "medium", "admin", "/api/dashboard/snapshot", "/system/audit-logs"),
+    Widget("secret_vault", "Secret Vault", "Secret Vault", "Protected session and portable backup health without revealing vault content.", True, 11, "medium", "small", "authenticated", "/api/dashboard/snapshot", "/security/secret-vault"),
 )
 
 def permitted(widget: Widget, user: User) -> bool:
@@ -116,6 +127,10 @@ def _build(db: Session, user: User, key: str) -> dict:
     if key == "backup_health":
         jobs = db.query(BackupJob); success = jobs.filter(BackupJob.status.in_(["success","completed"])).count(); failed = jobs.filter(BackupJob.status.in_(["failed","error"])).count(); latest = jobs.order_by(BackupJob.finished_at.desc()).first()
         return {"metrics": [_metric("Protected records", db.query(BackupRecord).filter_by(is_enabled=True).count()), _metric("Successful jobs", success), _metric("Failed jobs", failed), _metric("Last result", latest.status if latest else "Unavailable")], "source_updated_at": _iso(latest.finished_at if latest else None), "severity": "critical" if failed else "current"}
+    if key == "secret_vault":
+        vault = db.query(Vault).filter_by(owner_id=user.id).first()
+        latest = db.query(VaultBackupRecord).filter_by(vault_id=vault.id, status="verified").order_by(VaultBackupRecord.verified_at.desc()).first() if vault else None
+        return {"metrics": [_metric("Status", "Locked"), _metric("Enrolment", "Complete" if vault and vault.recovery_confirmed_at else "Required"), _metric("Portable backup", "Verified" if latest else "Not verified"), _metric("Last verified", latest.verified_at.date().isoformat() if latest and latest.verified_at else "Unavailable")], "source_updated_at": _iso(latest.verified_at if latest else None), "severity": "current" if latest else "warning"}
     if key == "networking":
         total = db.query(IPAddress).count(); assigned = db.query(IPAddress).filter(IPAddress.name.isnot(None)).count(); monitors = db.query(NetworkMonitor)
         return {"metrics": [_metric("IP addresses", total), _metric("Assigned", assigned), _metric("Available", max(0,total-assigned)), _metric("VLANs", db.query(VLAN).count()), _metric("Domains", db.query(DomainRecord).count()), _metric("Offline targets", monitors.filter(NetworkMonitor.last_status.in_(["offline","down","failed"])).count())], "source_updated_at": _iso(monitors.with_entities(func.max(NetworkMonitor.last_checked_at)).scalar())}
@@ -168,15 +183,7 @@ def _build(db: Session, user: User, key: str) -> dict:
     raise KeyError(key)
 
 def snapshot(db: Session, user: User) -> dict:
-    started=perf_counter(); config=preferences(db,user); definitions={x["key"]:x for x in registry(db,user)}; output={}
-    enabled_keys = {row["key"] for row in config["widgets"] if row["enabled"]}
-    if enabled_keys.intersection({"dns_summary", "attention_required"}):
-        try:
-            # Refresh stale provider data before rendering either DNS metrics or
-            # DNS-backed attention items, so every widget uses one fresh view.
-            get_refreshed_dns_dashboard_summary(db, user, max_age_seconds=60)
-        except Exception:
-            logger.exception("Unable to refresh stale DNS dashboard data")
+    started=perf_counter(); _prime_settings(db); config=preferences(db,user); definitions={x["key"]:x for x in registry(db,user)}; output={}
     for row in config["widgets"]:
         if not row["enabled"] or row["key"] not in definitions: continue
         definition=definitions[row["key"]]
@@ -187,6 +194,7 @@ def snapshot(db: Session, user: User) -> dict:
     return {"generated_at":_iso(generated),"widgets":output}
 
 def config(db: Session, user: User) -> dict:
+    _prime_settings(db)
     try:
         poll_interval = int(get_site_setting(db, "dashboard_poll_interval_seconds") or 10)
     except (TypeError, ValueError):

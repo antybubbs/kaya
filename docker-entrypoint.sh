@@ -1,8 +1,14 @@
 #!/bin/sh
 set -eu
 
-mkdir -p /app/data /app/uploads /app/data/remote-recordings
-chown -R kaya:kaya /app/data /app/uploads
+mkdir -p /app/data /app/data/secure-send
+if [ "${KAYA_GATEWAY_MODE:-false}" != "true" ]; then
+    mkdir -p /app/uploads /app/data/remote-recordings /app/data/secret-vault
+    chown -R kaya:kaya /app/uploads
+    chmod 700 /app/data/secret-vault
+fi
+chown -R kaya:kaya /app/data
+chmod 700 /app/data/secure-send
 
 SECRETS_FILE="/app/data/.runtime.env"
 
@@ -50,7 +56,7 @@ set +a
 export SECRET_KEY
 export ENCRYPTION_KEY
 
-if [ "${DEMO_MODE:-false}" = "true" ]; then
+if [ "${DEMO_MODE:-false}" = "true" ] && [ "${KAYA_GATEWAY_MODE:-false}" != "true" ]; then
     DEMO_SEED_DIR="${DEMO_SEED_DIR:-/app/demo-seed}"
     DEMO_SEED_DATABASE="$DEMO_SEED_DIR/kaya.db"
     DEMO_DATABASE="/app/data/kaya.db"
@@ -82,11 +88,13 @@ fi
 
 echo "Starting Kaya with ENCRYPTION_KEY length: ${#ENCRYPTION_KEY}"
 
-echo "Running database migrations..."
-if [ "${SQLITE_PRE_MIGRATION_BACKUP:-true}" = "true" ] && [ -f /app/data/kaya.db ]; then
-    cp /app/data/kaya.db /app/data/kaya.db.pre-migration
-    chown kaya:kaya /app/data/kaya.db.pre-migration
+if [ "${SKIP_DATABASE_MIGRATIONS:-false}" != "true" ]; then
+    echo "Running database migrations..."
+    if [ "${SQLITE_PRE_MIGRATION_BACKUP:-true}" = "true" ] && [ -f /app/data/kaya.db ]; then
+        cp /app/data/kaya.db /app/data/kaya.db.pre-migration
+        chown kaya:kaya /app/data/kaya.db.pre-migration
+    fi
+    gosu kaya python /app/scripts/migrate_sqlite.py
 fi
-gosu kaya python /app/scripts/migrate_sqlite.py
 
 exec gosu kaya "$@"

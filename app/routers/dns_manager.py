@@ -3,18 +3,21 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 import json
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
+
+from starlette.datastructures import URL
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy.orm import Session
+from sqlalchemy import func, or_
+from sqlalchemy.orm import Session, joinedload
 
 from app.core.config import get_settings
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.db.session import get_db
-from app.models.models import DNSInsight, DNSInvestigation, DNSProviderConfig, DNSStatisticsSnapshot, RemoteManagerSetting
-from app.routers.auth import require_editor, require_user
+from app.models.models import DNSClientEvent, DNSClientHostnameHistory, DNSClientIPHistory, DNSClientTrafficEvent, DNSInsight, DNSInvestigation, DNSProviderConfig, DNSRecognisedDevice, DNSStatisticsSnapshot, IPAddress, RemoteManagerSetting, VLAN
+from app.routers.auth import require_admin, require_editor, require_user
 from app.services.dns_providers import DNSProvider, DNSProviderResult, provider_for
 from app.services.audit import write_audit
 from app.services.site_settings import get_site_setting
@@ -27,6 +30,7 @@ from app.services.dns_insights import (
     calculate_health_score,
     insight_action_target,
 )
+from app.services.dns_clients import add_event, client_display_name, client_status, dhcp_range_for_ip, list_clients, normalise_mac
 
 router = APIRouter(prefix="/networking/dns-manager")
 templates = Jinja2Templates(directory="app/templates")
@@ -725,6 +729,7 @@ def flag_dns_investigation(
     upstream: str = Form("", max_length=255),
     observed_at: str = Form("", max_length=80),
     notes: str = Form("", max_length=2000),
+    return_to: str = Form("", max_length=1000),
     csrf_token: str = Form(...),
     db: Session = Depends(get_db),
     user=Depends(require_user),
@@ -767,7 +772,15 @@ def flag_dns_investigation(
                 "upstream": upstream,
             },
         )
-    return RedirectResponse("/networking/dns-manager?tab=query-log", status_code=303)
+    redirect_target = "/networking/dns-manager?tab=query-log"
+    candidate_return_to = return_to.strip()
+    if (
+        candidate_return_to.startswith("/networking/dns-manager/clients/")
+        and "\\" not in candidate_return_to
+        and URL(candidate_return_to).is_relative_url
+    ):
+        redirect_target = candidate_return_to
+    return RedirectResponse(redirect_target, status_code=303)
 
 
 @router.post("/investigations/{investigation_id}/delete")
@@ -807,6 +820,277 @@ def mark_known_hostname(
         detail="Marked DNS hostname as known", metadata={"hostname": clean},
     )
     return RedirectResponse(f"/networking/dns-manager?tab={return_tab if return_tab in DNS_TABS else 'clients'}", status_code=303)
+
+
+def _dns_client(db: Session, client_id: int) -> DNSRecognisedDevice:
+    row = db.query(DNSRecognisedDevice).options(joinedload(DNSRecognisedDevice.linked_ip_record), joinedload(DNSRecognisedDevice.suggested_ip_record)).filter(DNSRecognisedDevice.id == client_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="DNS client not found.")
+    return row
+
+
+def _client_audit(request: Request, db: Session, user, client: DNSRecognisedDevice, action: str, detail: str, **metadata) -> None:
+    write_audit(db, user, action, "dns_client", str(client.id), request.client.host if request.client else None, detail=detail, metadata={"provider_id": client.provider_id, "linked_ip_record_id": client.linked_ip_record_id, **metadata})
+
+
+@router.get("/clients")
+def dns_clients_legacy_redirect(
+    q: str = Query("", max_length=200),
+    client_q: str = Query("", max_length=200),
+    user=Depends(require_user),
+):
+    """Keep old/generated client-list URLs working and route them to the tab."""
+    search = client_q or q
+    params = {"tab": "clients"}
+    if search:
+        params["client_q"] = search
+    return RedirectResponse(f"/networking/dns-manager?{urlencode(params)}", status_code=307)
+
+
+@router.get("/clients/{client_id}")
+def dns_client_detail(
+    request: Request,
+    client_id: int,
+    q: str = Query("", max_length=200),
+    traffic_q: str = Query("", max_length=500),
+    traffic_status: str = Query("all", max_length=20),
+    traffic_period: str = Query("7d", max_length=20),
+    traffic_page: int = Query(1, ge=1),
+    db: Session = Depends(get_db),
+    user=Depends(require_user),
+):
+    client = _dns_client(db, client_id)
+    like = f"%{q.strip()}%"
+    records_query = db.query(IPAddress).options(joinedload(IPAddress.vlan))
+    if q.strip():
+        records_query = records_query.outerjoin(VLAN).filter(or_(IPAddress.address.ilike(like), IPAddress.mac_address.ilike(like), IPAddress.name.ilike(like), IPAddress.category.ilike(like), VLAN.name.ilike(like)))
+    records = records_query.order_by(IPAddress.name.asc(), IPAddress.address.asc()).limit(100).all()
+    priority_conditions = []
+    if client.current_ip:
+        priority_conditions.append(IPAddress.address == client.current_ip)
+    priority_ids = {client.suggested_ip_record_id} if client.suggested_ip_record_id else set()
+    priority_records = db.query(IPAddress).filter(or_(*priority_conditions)).all() if priority_conditions else []
+    if client.normalised_mac:
+        priority_records.extend(record for record in db.query(IPAddress).filter(IPAddress.mac_address.is_not(None)).all() if normalise_mac(record.mac_address) == client.normalised_mac)
+    if priority_ids:
+        priority_records.extend(db.query(IPAddress).filter(IPAddress.id.in_(priority_ids)).all())
+    priority_record_ids = {record.id for record in priority_records}
+    preferred_ip_record_id = client.suggested_ip_record_id or (next(iter(priority_record_ids)) if len(priority_record_ids) == 1 else None)
+    records_by_id = {record.id: record for record in [*priority_records, *records]}
+    records = list(records_by_id.values())
+    records.sort(key=lambda row: (0 if row.id in priority_ids else 1, 0 if normalise_mac(row.mac_address) and normalise_mac(row.mac_address) == client.normalised_mac else 1, 0 if row.address == client.current_ip else 1, row.name or row.address))
+    stale_raw = get_site_setting(db, "dns_stale_client_days")
+    try:
+        stale_days = int(stale_raw or "30")
+    except ValueError:
+        stale_days = 30
+    try:
+        client_history_days = int(get_site_setting(db, "dns_client_history_days") or "365")
+    except ValueError:
+        client_history_days = 365
+    try:
+        traffic_history_days = int(get_site_setting(db, "dns_traffic_history_days") or "30")
+    except ValueError:
+        traffic_history_days = 30
+    period_days = {"24h": 1, "7d": 7, "30d": 30, "all": None}
+    if traffic_period not in period_days:
+        traffic_period = "7d"
+    if traffic_status not in {"all", "allowed", "blocked"}:
+        traffic_status = "all"
+    traffic_base = db.query(DNSClientTrafficEvent).filter(DNSClientTrafficEvent.dns_client_id == client.id)
+    cutoff_days = period_days[traffic_period]
+    if cutoff_days:
+        traffic_base = traffic_base.filter(DNSClientTrafficEvent.observed_at >= datetime.utcnow() - timedelta(days=cutoff_days))
+    top_requested = traffic_base.with_entities(DNSClientTrafficEvent.domain.label("domain"), func.count(DNSClientTrafficEvent.id).label("count")).group_by(DNSClientTrafficEvent.domain).order_by(func.count(DNSClientTrafficEvent.id).desc(), DNSClientTrafficEvent.domain.asc()).limit(10).all()
+    top_blocked = traffic_base.filter(DNSClientTrafficEvent.is_blocked == True).with_entities(DNSClientTrafficEvent.domain.label("domain"), func.count(DNSClientTrafficEvent.id).label("count")).group_by(DNSClientTrafficEvent.domain).order_by(func.count(DNSClientTrafficEvent.id).desc(), DNSClientTrafficEvent.domain.asc()).limit(10).all()  # noqa: E712
+    traffic_query = traffic_base
+    clean_traffic_q = traffic_q.strip().rstrip(".").lower()
+    if clean_traffic_q:
+        traffic_query = traffic_query.filter(DNSClientTrafficEvent.domain.ilike(f"%{clean_traffic_q}%"))
+    if traffic_status == "blocked":
+        traffic_query = traffic_query.filter(DNSClientTrafficEvent.is_blocked == True)  # noqa: E712
+    elif traffic_status == "allowed":
+        traffic_query = traffic_query.filter(DNSClientTrafficEvent.is_blocked == False)  # noqa: E712
+    traffic_total = traffic_query.count()
+    traffic_page_size = 8
+    traffic_pages = max(1, (traffic_total + traffic_page_size - 1) // traffic_page_size)
+    traffic_page = min(traffic_page, traffic_pages)
+    traffic_rows = traffic_query.order_by(DNSClientTrafficEvent.observed_at.desc(), DNSClientTrafficEvent.id.desc()).offset((traffic_page - 1) * traffic_page_size).limit(traffic_page_size).all()
+    return templates.TemplateResponse(request, "dns_client_detail.html", {
+        "user": user, "client": client, "display_name": client_display_name(client), "status": client_status(client, stale_days),
+        "ip_history": db.query(DNSClientIPHistory).filter_by(dns_client_id=client.id).order_by(DNSClientIPHistory.last_seen_at.desc()).all(),
+        "hostname_history": db.query(DNSClientHostnameHistory).filter_by(dns_client_id=client.id).order_by(DNSClientHostnameHistory.last_seen_at.desc()).all(),
+        "events": db.query(DNSClientEvent).filter_by(dns_client_id=client.id).order_by(DNSClientEvent.created_at.desc()).limit(250).all(),
+        "traffic_rows": traffic_rows, "traffic_total": traffic_total, "traffic_page": traffic_page, "traffic_pages": traffic_pages,
+        "traffic_filters": {"q": clean_traffic_q, "status": traffic_status, "period": traffic_period},
+        "client_history_days": client_history_days, "traffic_history_days": traffic_history_days,
+        "top_requested": top_requested, "top_blocked": top_blocked,
+        "flagged_traffic_domains": open_investigation_domains(db, client.provider), "domain_root": domain_root, "domain_kind": domain_kind,
+        "ip_records": records, "preferred_ip_record_id": preferred_ip_record_id, "priority_ip_record_ids": priority_record_ids, "q": q.strip(), **csrf_context(request),
+    })
+
+
+@router.post("/clients/{client_id}/update")
+def update_dns_client(request: Request, client_id: int, friendly_name: str = Form("", max_length=255), notes: str = Form("", max_length=10000), csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_editor)):
+    validate_csrf_token(request, csrf_token)
+    client = _dns_client(db, client_id)
+    old = f"friendly_name={client.friendly_name or ''}; notes={client.notes or ''}"
+    client.friendly_name = friendly_name.strip() or None
+    client.notes = notes.strip() or None
+    add_event(db, client, "client_updated", "Friendly name or notes updated", old=old, new=f"friendly_name={client.friendly_name or ''}; notes={client.notes or ''}")
+    db.commit()
+    _client_audit(request, db, user, client, "update", "Updated DNS client friendly name or notes", old=old)
+    return RedirectResponse(f"/networking/dns-manager/clients/{client.id}", status_code=303)
+
+
+@router.post("/clients/{client_id}/state")
+def set_dns_client_state(request: Request, client_id: int, action: str = Form(...), csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_editor)):
+    validate_csrf_token(request, csrf_token)
+    client = _dns_client(db, client_id)
+    allowed = {"known", "unknown", "ignore", "unignore"}
+    if action not in allowed:
+        raise HTTPException(status_code=400, detail="Unsupported client action.")
+    old = {"is_known": client.is_known, "is_ignored": client.is_ignored, "linked_ip_record_id": client.linked_ip_record_id}
+    event_type = ""
+    if action == "known":
+        client.is_known, event_type = True, "client_marked_known"
+    elif action == "unknown":
+        client.is_known, event_type = False, "client_marked_unknown"
+    elif action == "ignore":
+        client.is_ignored, event_type = True, "ignored"
+    else:
+        client.is_ignored, event_type = False, "restored"
+    add_event(db, client, event_type, event_type.replace("_", " ").capitalize(), old=str(old), new=action)
+    db.commit()
+    _client_audit(request, db, user, client, event_type, f"DNS client {action}", old=old, new=action)
+    return RedirectResponse(f"/networking/dns-manager/clients/{client.id}", status_code=303)
+
+
+@router.post("/clients/{client_id}/link")
+def link_dns_client(request: Request, client_id: int, ip_record_id: int = Form(...), csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_editor)):
+    validate_csrf_token(request, csrf_token)
+    client = _dns_client(db, client_id)
+    record = db.get(IPAddress, ip_record_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="VLAN/IP record not found.")
+    ip_match = bool(client.current_ip and client.current_ip == record.address)
+    mac_match = bool(client.normalised_mac and normalise_mac(record.mac_address) == client.normalised_mac)
+    if not ip_match and not mac_match:
+        raise HTTPException(status_code=400, detail="Confirm links require an exact current IP or MAC match.")
+    if ip_match and not mac_match and dhcp_range_for_ip(db, client.current_ip):
+        raise HTTPException(status_code=409, detail="An IP-only link cannot be confirmed inside a DHCP range. Add or observe the device MAC address first.")
+    old = client.linked_ip_record_id
+    client.linked_ip_record_id, client.is_known = record.id, True
+    client.suggested_ip_record_id = None
+    client.match_method, client.match_confidence = "manual", 100
+    add_event(db, client, "linked_to_ip_record", f"Linked to managed record {record.name or record.address}", old=str(old or ""), new=str(record.id))
+    db.commit()
+    _client_audit(request, db, user, client, "link", f"Linked DNS client to {record.name or record.address}", old=old, new=record.id)
+    return RedirectResponse(f"/networking/dns-manager/clients/{client.id}", status_code=303)
+
+
+@router.post("/clients/{client_id}/unlink")
+def unlink_dns_client(request: Request, client_id: int, csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_editor)):
+    validate_csrf_token(request, csrf_token)
+    client = _dns_client(db, client_id)
+    old = client.linked_ip_record_id
+    client.linked_ip_record_id = None
+    client.suggested_ip_record_id = None
+    client.match_confidence = None
+    client.match_method = None
+    add_event(db, client, "unlinked_from_ip_record", "Unlinked from managed IP record", old=str(old or ""))
+    db.commit()
+    _client_audit(request, db, user, client, "unlink", "Unlinked DNS client from managed IP record", old=old)
+    return RedirectResponse(f"/networking/dns-manager/clients/{client.id}", status_code=303)
+
+
+@router.post("/clients/{client_id}/create-ip-record")
+def create_ip_record_from_dns(request: Request, client_id: int, address: str = Form(..., max_length=80), name: str = Form("", max_length=255), assignment_type: str = Form("Dynamic"), vlan_id: int | None = Form(None), csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_editor)):
+    validate_csrf_token(request, csrf_token)
+    client = _dns_client(db, client_id)
+    try:
+        from ipaddress import ip_address
+        address = str(ip_address(address.strip()))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Enter a valid IP address.") from exc
+    scope = dhcp_range_for_ip(db, address)
+    vlan = db.get(VLAN, vlan_id) if vlan_id else db.get(VLAN, scope.vlan_id) if scope and scope.vlan_id else db.query(VLAN).order_by(VLAN.id.asc()).first()
+    if db.query(IPAddress).filter_by(vlan_id=vlan.id if vlan else None, address=address).first():
+        raise HTTPException(status_code=409, detail="That IP address already has a managed record in this VLAN. Link it instead.")
+    record = IPAddress(vlan_id=vlan.id if vlan else None, address=address, name=name.strip() or client.hostname or None, mac_address=client.normalised_mac, assignment_type="Static" if assignment_type == "Static" else "Dynamic", description=f"Created from DNS observation for {client_display_name(client)}")
+    db.add(record)
+    db.flush()
+    client.linked_ip_record_id, client.is_known = record.id, True
+    client.match_method, client.match_confidence = "created_from_dns", 100
+    add_event(db, client, "linked_to_ip_record", "Created and linked VLAN/IP record", new=str(record.id))
+    db.commit()
+    _client_audit(request, db, user, client, "create", f"Created VLAN/IP record {record.address} from DNS client", new=record.id)
+    return RedirectResponse(f"/networking/vlan-ip-manager/{record.id}", status_code=303)
+
+
+@router.post("/clients/{client_id}/delete")
+def delete_dns_client(request: Request, client_id: int, csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_admin)):
+    validate_csrf_token(request, csrf_token)
+    client = _dns_client(db, client_id)
+    label, linked = client_display_name(client), client.linked_ip_record_id
+    db.delete(client)
+    db.commit()
+    write_audit(db, user, "delete", "dns_client", str(client_id), request.client.host if request.client else None, detail=f"Deleted retained DNS client {label}; managed record was not deleted", metadata={"linked_ip_record_id": linked})
+    return RedirectResponse("/networking/dns-manager?tab=clients", status_code=303)
+
+
+@router.post("/clients/{client_id}/update-managed-ip")
+def update_managed_ip_from_dns(request: Request, client_id: int, csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_editor)):
+    validate_csrf_token(request, csrf_token)
+    client = _dns_client(db, client_id)
+    record = client.linked_ip_record
+    if not record or not client.current_ip:
+        raise HTTPException(status_code=400, detail="This client has no linked record or observed IP address.")
+    if dhcp_range_for_ip(db, client.current_ip) and not (client.normalised_mac or client.provider_client_id):
+        raise HTTPException(status_code=409, detail="A managed address inside a DHCP range can only move with a stable MAC or provider client ID.")
+    collision = db.query(IPAddress).filter(IPAddress.vlan_id == record.vlan_id, IPAddress.address == client.current_ip, IPAddress.id != record.id).first()
+    if collision:
+        raise HTTPException(status_code=409, detail="That address is already allocated to another record in this VLAN.")
+    old = record.address
+    record.address = client.current_ip
+    add_event(db, client, "managed_record_updated", "Managed IP explicitly updated", old=old, new=record.address)
+    db.commit()
+    _client_audit(request, db, user, client, "update", "Updated linked managed IP from DNS observation", old=old, new=record.address)
+    return RedirectResponse(f"/networking/dns-manager/clients/{client.id}", status_code=303)
+
+
+@router.post("/clients/{client_id}/merge")
+def merge_dns_clients(request: Request, client_id: int, duplicate_id: int = Form(...), csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_admin)):
+    validate_csrf_token(request, csrf_token)
+    primary, duplicate = _dns_client(db, client_id), _dns_client(db, duplicate_id)
+    if primary.id == duplicate.id:
+        raise HTTPException(status_code=400, detail="Choose a different duplicate client.")
+    if primary.linked_ip_record_id and duplicate.linked_ip_record_id and primary.linked_ip_record_id != duplicate.linked_ip_record_id:
+        raise HTTPException(status_code=409, detail="Both clients have different managed links. Unlink one before merging.")
+    for history_model, value_field in [(DNSClientIPHistory, "ip_address"), (DNSClientHostnameHistory, "normalised_hostname")]:
+        for item in db.query(history_model).filter_by(dns_client_id=duplicate.id).all():
+            existing = db.query(history_model).filter(getattr(history_model, "dns_client_id") == primary.id, getattr(history_model, value_field) == getattr(item, value_field)).first()
+            if existing:
+                existing.first_seen_at = min(existing.first_seen_at, item.first_seen_at)
+                existing.last_seen_at = max(existing.last_seen_at, item.last_seen_at)
+                existing.observation_count += item.observation_count
+                db.delete(item)
+            else:
+                item.dns_client_id = primary.id
+    db.query(DNSClientEvent).filter_by(dns_client_id=duplicate.id).update({DNSClientEvent.dns_client_id: primary.id}, synchronize_session=False)
+    primary.is_known = primary.is_known or duplicate.is_known
+    primary.is_ignored = primary.is_ignored or duplicate.is_ignored
+    primary.linked_ip_record_id = primary.linked_ip_record_id or duplicate.linked_ip_record_id
+    primary.friendly_name = primary.friendly_name or duplicate.friendly_name
+    if duplicate.notes and duplicate.notes not in (primary.notes or ""):
+        primary.notes = "\n\n".join(value for value in [primary.notes, duplicate.notes] if value)
+    primary.first_seen_at = min(primary.first_seen_at, duplicate.first_seen_at)
+    primary.last_seen_at = max(primary.last_seen_at, duplicate.last_seen_at)
+    add_event(db, primary, "clients_merged", f"Merged retained DNS client {duplicate.id}", old=str(duplicate.id), new=str(primary.id))
+    db.delete(duplicate)
+    db.commit()
+    _client_audit(request, db, user, primary, "merge", f"Merged DNS client {duplicate_id} into {primary.id}", old=duplicate_id, new=primary.id)
+    return RedirectResponse(f"/networking/dns-manager/clients/{primary.id}", status_code=303)
 
 
 @router.get("/connection-status")
@@ -929,6 +1213,9 @@ def dns_manager(
     insight_period: str = Query("30d", max_length=20),
     dns_domain: str = Query("", max_length=500),
     dns_client: str = Query("", max_length=255),
+    client_q: str = Query("", max_length=200),
+    client_status_filter: str = Query("", alias="client_status", max_length=40),
+    client_page: int = Query(1, ge=1),
     db: Session = Depends(get_db),
     user=Depends(require_user),
 ):
@@ -947,6 +1234,8 @@ def dns_manager(
     error = None
     flagged_domains: set[str] = set()
     investigations: list[DNSInvestigation] = []
+    retained_client_rows: list[DNSRecognisedDevice] = []
+    retained_client_total = 0
 
     if enabled and provider:
         if get_settings().demo_mode:
@@ -984,9 +1273,9 @@ def dns_manager(
             elif active_tab == "query-log":
                 queries = provider_client.get_query_log(limit=200)
             elif active_tab == "clients":
-                clients = call_provider(provider, "get_clients", provider_client)
-                dhcp = call_provider(provider, "get_dhcp_leases", provider_client)
-                queries = provider_client.get_query_log(limit=500)
+                # Client inventory is populated by the background collector.
+                # Normal page rendering never waits for Pi-hole.
+                pass
             elif active_tab == "local-dns":
                 local_dns = call_provider(provider, "get_local_dns_records", provider_client)
             elif active_tab == "dhcp":
@@ -1007,6 +1296,11 @@ def dns_manager(
         )
 
     recognised_hostnames = known_hostnames(db)
+    if active_tab == "clients" and not get_settings().demo_mode:
+        retained_client_rows, retained_client_total = list_clients(
+            db, provider_id=provider.id if provider else None, search=client_q,
+            status=client_status_filter, offset=(client_page - 1) * 100, limit=100,
+        )
     insight_rows: list[DNSInsight] = []
     last_analysis_at = None
     health_score = None
@@ -1081,6 +1375,7 @@ def dns_manager(
         "dns_manager.html",
         {
             "user": user,
+            "demo_mode": get_settings().demo_mode,
             "enabled": enabled,
             "provider": provider,
             "providers": configured_providers(db) if enabled else [],
@@ -1098,6 +1393,11 @@ def dns_manager(
             "notice": notice,
             "notice_kind": notice_kind,
             "recognised_hostnames": recognised_hostnames,
+            "retained_client_rows": retained_client_rows,
+            "retained_client_total": retained_client_total,
+            "client_filters": {"q": client_q, "status": client_status_filter, "page": client_page},
+            "client_display_name": client_display_name,
+            "client_status": client_status,
             "flagged_domains": flagged_domains,
             "investigations": investigations,
             "insight_rows": insight_rows,

@@ -1,0 +1,77 @@
+:root {
+  color-scheme: dark;
+  --bg: #080d16;
+  --panel: #111827;
+  --panel2: #172033;
+  --line: #2a3548;
+  --text: #f1f5f9;
+  --muted: #94a3b8;
+  --accent: #ff8a00;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  background: radial-gradient(circle at 50% -10%, #1c2940, transparent 44%), var(--bg);
+  color: var(--text);
+  font: 14px/1.5 Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif;
+  margin: 0;
+  min-height: 100vh;
+}
+
+.gateway-shell { display: grid; min-height: 100vh; padding: 24px; place-items: center; }
+.gateway-shell.wide .gateway-card { max-width: 780px; }
+.gateway-card { background: rgba(17,24,39,.96); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 80px rgba(0,0,0,.48); max-width: 500px; padding: 24px; width: 100%; }
+.gateway-card > header { align-items: center; border-bottom: 1px solid var(--line); display: flex; gap: 10px; margin-bottom: 22px; padding-bottom: 16px; }
+.gateway-card > header img { border-radius: 10px; }
+.gateway-card > header span, .gateway-card > header strong { display: block; }
+.gateway-card > header span { color: var(--muted); font-size: 11px; }
+.gateway-lock { background: rgba(255,138,0,.12); border: 1px solid rgba(255,138,0,.35); border-radius: 50%; color: #fdba74; display: grid; font-size: 27px; height: 52px; place-items: center; width: 52px; }
+.gateway-card h1 { font-size: 25px; margin: 12px 0 4px; }
+.gateway-card h2 { font-size: 16px; margin: 0 0 12px; }
+.gateway-card p { color: var(--muted); margin: 0 0 18px; }
+.gateway-card label { display: grid; font-weight: 750; gap: 6px; margin: 12px 0; }
+.gateway-card input { background: #0a111e; border: 1px solid var(--line); border-radius: 9px; color: var(--text); font: inherit; min-height: 42px; padding: 9px 11px; width: 100%; }
+.gateway-card button { background: linear-gradient(135deg,var(--accent),#fbbf24); border: 0; border-radius: 9px; color: #16100a; cursor: pointer; font: inherit; font-weight: 900; min-height: 40px; padding: 9px 14px; }
+.gateway-card form > button { width: 100%; }
+.gateway-card button.secondary { background: transparent; border: 1px solid var(--line); color: var(--text); width: auto; }
+.gateway-card > footer { border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; margin-top: 22px; padding-top: 15px; text-align: center; }
+.gateway-alert { background: rgba(248,113,113,.1); border: 1px solid rgba(248,113,113,.4); border-radius: 9px; color: #fecaca; padding: 10px 12px; }
+.gateway-error { text-align: center; }
+.gateway-error header { text-align: left; }
+.gateway-error .gateway-lock { margin: auto; }
+.gateway-package-heading { align-items: flex-start; display: flex; gap: 12px; justify-content: space-between; }
+.gateway-package-heading h1 { margin-top: 5px; }
+.gateway-card .gateway-package-heading button.secondary { font-size: 12px; min-height: 34px; padding: 6px 12px; }
+.gateway-status { color: #86efac; font-size: 10px; font-weight: 900; text-transform: uppercase; }
+.gateway-content { background: rgba(8,13,22,.4); border: 1px solid var(--line); border-radius: 11px; margin-top: 14px; padding: 15px; }
+.gateway-content pre { font: 13px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.gateway-section-copy { font-size: 13px; margin: -7px 0 14px !important; }
+.gateway-downloads .gateway-alert { margin-bottom: 12px; }
+
+.gateway-download-all { align-items: center; background: rgba(255,138,0,.07); border: 1px solid rgba(255,138,0,.38); border-radius: 10px; display: flex; gap: 16px; justify-content: space-between; padding: 12px; }
+.gateway-download-all > div { min-width: 0; }
+.gateway-download-all span, .gateway-download-all strong, .gateway-download-all small { display: block; }
+.gateway-download-all strong { font-size: 14px; }
+.gateway-download-all small { color: var(--muted); font-size: 11px; margin-top: 2px; }
+.gateway-download-label { color: #fdba74; font-size: 10px; font-weight: 900; letter-spacing: .04em; margin-bottom: 2px; text-transform: uppercase; }
+.gateway-card .gateway-download-all form > button, .gateway-card .gateway-files button { font-size: 12px; min-height: 34px; padding: 6px 12px; white-space: nowrap; width: auto; }
+
+.gateway-choice-label { align-items: center; color: var(--muted); display: flex; font-size: 10px; font-weight: 800; gap: 10px; letter-spacing: .04em; margin: 14px 0 9px; text-transform: uppercase; }
+.gateway-choice-label::before, .gateway-choice-label::after { background: var(--line); content: ""; height: 1px; }
+.gateway-choice-label::before { width: 14px; }
+.gateway-choice-label::after { flex: 1; }
+.gateway-files { display: grid; gap: 7px; }
+.gateway-files form { align-items: center; border: 1px solid var(--line); border-radius: 9px; display: flex; gap: 12px; justify-content: space-between; padding: 9px 10px; }
+.gateway-files span, .gateway-files strong, .gateway-files small { display: block; }
+.gateway-files span { min-width: 0; }
+.gateway-files strong { overflow-wrap: anywhere; }
+.gateway-files small { color: var(--muted); font-size: 10px; }
+.gateway-vault-link { border: 1px solid var(--line); border-radius: 9px; color: #7dd3fc; display: block; font-weight: 800; margin-top: 14px; padding: 11px; text-align: center; text-decoration: none; }
+
+@media (max-width: 560px) {
+  .gateway-shell { padding: 12px; }
+  .gateway-card { padding: 18px; }
+  .gateway-package-heading, .gateway-download-all, .gateway-files form { align-items: stretch; flex-direction: column; }
+  .gateway-card button.secondary, .gateway-card .gateway-download-all form > button, .gateway-card .gateway-files button { width: 100%; }
+}

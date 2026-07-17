@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>Secure package · {{ brand.name }}</title>
+  <link rel="icon" href="/favicon.svg">
+  <link rel="stylesheet" href="/assets/gateway.css">
+</head>
+<body>
+<main class="gateway-shell wide">
+  <section class="gateway-card">
+    <header>
+      <img src="/assets/logo.png" alt="" width="44" height="44">
+      <div><span>{{ brand.name }}</span><strong>Secure Send</strong></div>
+    </header>
+
+    <div class="gateway-package-heading">
+      <div>
+        <span class="gateway-status">Unlocked</span>
+        <h1>Secure package</h1>
+        <p>Available until {{ expires_at.strftime('%d %b %Y, %H:%M') }} UTC.</p>
+      </div>
+      <form method="post" action="/{{ access_token }}/logout">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="secondary" type="submit">Lock now</button>
+      </form>
+    </div>
+
+    {% if note %}
+    <section class="gateway-content">
+      <h2>Secure note</h2>
+      <pre>{{ note }}</pre>
+    </section>
+    {% endif %}
+
+    {% if files %}
+    <section class="gateway-content gateway-downloads">
+      <h2>Download files</h2>
+      <p class="gateway-section-copy">Download everything together, or choose individual files below.</p>
+
+      {% if package.one_download_only %}
+      <div class="gateway-alert">This package can be downloaded once. Download the complete package to receive every file.</div>
+      {% endif %}
+
+      <div class="gateway-download-all">
+        <div>
+          <span class="gateway-download-label">Complete package</span>
+          <strong>Download complete package</strong>
+          <small>All files in one ZIP{% if note %}, including a copy of the secure note{% endif %}.</small>
+        </div>
+        <form method="post" action="/{{ access_token }}/download-package">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit">Download ZIP</button>
+        </form>
+      </div>
+
+      {% if not package.one_download_only %}
+      <div class="gateway-choice-label"><span>Or download individual files</span></div>
+      <div class="gateway-files">
+        {% for item in files %}
+        <form method="post" action="/{{ access_token }}/files/{{ item.row.id }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <span><strong>{{ item.name }}</strong><small>{{ item.row.size_bytes }} bytes</small></span>
+          <button type="submit" aria-label="Download {{ item.name }}">Download file</button>
+        </form>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </section>
+    {% endif %}
+
+    {% if allow_vault_save %}
+    <a class="gateway-vault-link" href="{{ save_url }}">Save an independent copy to Secret Vault in Kaya</a>
+    {% endif %}
+    <footer>Close this window when finished. Downloaded files are your responsibility.</footer>
+  </section>
+</main>
+</body>
+</html>

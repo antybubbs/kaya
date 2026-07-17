@@ -24,6 +24,8 @@
   <link rel="stylesheet" href="/static/css/kaya.css?v={{ asset_version }}">
   {% block extra_head %}{% endblock %}
   <link rel="stylesheet" href="{{ request.url_for('static', path='css/responsive.css') }}?v={{ asset_version }}">
+  <link rel="stylesheet" href="{{ request.url_for('static', path='css/sidebar.css') }}?v={{ asset_version }}">
+  <link rel="stylesheet" href="{{ request.url_for('static', path='css/secret_vault.css') }}?v={{ asset_version }}">
   <script src="/static/js/sidebar.js?v={{ asset_version }}" defer></script>
   <script src="/static/js/tables.js?v={{ asset_version }}" defer></script>
   <script src="/static/js/inline_edit.js?v={{ asset_version }}" defer></script>
@@ -112,7 +114,6 @@
       <summary><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 12.5a10 10 0 0 1 14 0"></path><path d="M8.5 16a5 5 0 0 1 7 0"></path><path d="M12 20h.01"></path></svg></span><span class="nav-label">Networking</span></summary>
       <div class="nav-children">
         <a class="nav-link" href="/networking/vlan-ip-manager"><span class="nav-label">VLAN/IP Manager</span></a>
-        <a class="nav-link" href="/networking/ip-wan-monitor"><span class="nav-label">IP/WAN Monitor</span></a>
         <a class="nav-link" href="/networking/dns-manager"><span class="nav-label">DNS Manager</span></a>
         <a class="nav-link" href="/networking/domain-manager"><span class="nav-label">Domain Manager</span></a>
       </div>
@@ -120,15 +121,15 @@
     <details class="nav-group" data-sidebar-menu="security">
       <summary><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 20 7v5c0 5-3.4 8.4-8 9-4.6-.6-8-4-8-9V7l8-4Z"></path><path d="M9.5 12.5 11 14l3.5-4"></path></svg></span><span class="nav-label">Security</span></summary>
       <div class="nav-children">
-        <span class="nav-link disabled" title="Coming soon"><span class="nav-label">SSL Certificate Manager</span></span>
-        <span class="nav-link disabled" title="Coming soon"><span class="nav-label">Secret Vault</span></span>
+        <a class="nav-link" href="/security/secret-vault"><span class="nav-label">Secret Vault</span></a>
+        <a class="nav-link" href="/security/secure-send"><span class="nav-label">Secure Send</span></a>
         <a class="nav-link" href="/security/license-keys"><span class="nav-label">License Keys</span></a>
       </div>
     </details>
     <details class="nav-group" data-sidebar-menu="monitoring">
       <summary><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="5" rx="1.5"></rect><rect x="4" y="10" width="16" height="5" rx="1.5"></rect><rect x="4" y="16" width="16" height="4" rx="1.5"></rect><path d="M10 7h4M10 13h4M10 18h4"></path></svg></span><span class="nav-label">Monitoring</span></summary>
       <div class="nav-children">
-        <span class="nav-link disabled" title="Coming soon"><span class="nav-label">Service Catalogue</span></span>
+        <a class="nav-link" href="/networking/ip-wan-monitor"><span class="nav-label">IP/WAN Monitor</span></a>
       </div>
     </details>
     <details class="nav-group" data-sidebar-menu="documentation">
@@ -142,7 +143,6 @@
       <summary><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2"></path><circle cx="9.5" cy="7" r="4"></circle><path d="M22 21v-2a4 4 0 0 0-3-3.8M16 3.2a4 4 0 0 1 0 7.6"></path></svg></span><span class="nav-label">Team</span></summary>
       <div class="nav-children">
         <a class="nav-link" href="/team/users"><span class="nav-label">Users</span></a>
-        <span class="nav-link disabled" title="Coming soon"><span class="nav-label">Groups</span></span>
       </div>
     </details>
     <details class="nav-group" data-sidebar-menu="data-management">
@@ -151,8 +151,6 @@
         <a class="nav-link" href="/data/import-export"><span class="nav-label">Import/Export</span></a>
         <a class="nav-link" href="/data/custom-fields"><span class="nav-label">Custom Fields</span></a>
         <a class="nav-link" href="/data/categories"><span class="nav-label">Categories</span></a>
-        <span class="nav-link disabled" title="Coming soon"><span class="nav-label">Duplication Check</span></span>
-        <span class="nav-link disabled" title="Coming soon"><span class="nav-label">System Backups</span></span>
       </div>
     </details>
     <details class="nav-group" data-sidebar-menu="system-settings">
@@ -160,7 +158,6 @@
       <div class="nav-children">
         <a class="nav-link" href="/system/site-administration"><span class="nav-label">Site Administration</span></a>
         <a class="nav-link" href="/system/audit-logs"><span class="nav-label">Audit Logs</span></a>
-        <span class="nav-link disabled" title="Coming soon"><span class="nav-label">IDP Integration</span></span>
         <a class="nav-link" href="/system/about"><span class="nav-label">About {{ brand.name }}</span></a>
       </div>
     </details>

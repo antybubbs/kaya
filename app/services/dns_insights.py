@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+import hashlib
+from ipaddress import ip_address
 import json
 import logging
 import threading
@@ -12,8 +14,10 @@ from urllib.parse import urlencode
 
 from sqlalchemy.orm import Session
 
-from app.models.models import DNSInsight, DNSProviderConfig, DNSRecognisedDevice, DNSStatisticsSnapshot
+from app.models.models import DHCPLeaseHistory, DHCPRange, DNSClientTrafficEvent, DNSInsight, DNSProviderConfig, DNSRecognisedDevice, DNSStatisticsSnapshot
 from app.services.dns_providers import DNSProvider, DNSProviderResult, provider_for
+from app.services.dns_clients import normalise_mac, observe_client
+from app.services.site_settings import get_site_settings
 
 
 logger = logging.getLogger(__name__)
@@ -92,6 +96,8 @@ class NormalisedClient:
     recognised: bool = False
     device_id: int | None = None
     previous_ip: str | None = None
+    provider_client_id: str | None = None
+    source: str = "Pi-hole sync"
 
 
 @dataclass
@@ -236,7 +242,7 @@ def _normalise_hostname(value: Any) -> str:
 
 
 def _normalise_mac(value: Any) -> str:
-    return str(value or "").strip().lower().replace("-", ":")
+    return normalise_mac(value) or ""
 
 
 def _query_client(row: dict[str, Any]) -> tuple[str, str]:
@@ -261,10 +267,10 @@ def _client_label(client: NormalisedClient) -> str:
 
 
 def _identity(hostname: str, ip: str, mac: str, provider_client_id: str = "") -> tuple[str, str]:
-    if mac and mac != "-":
-        return "mac", mac
     if provider_client_id:
         return "provider_client", provider_client_id
+    if mac and mac != "-":
+        return "mac", mac
     if hostname and hostname not in {"-", ip}:
         return "hostname", _normalise_hostname(hostname)
     return "ip", ip
@@ -307,7 +313,7 @@ def _normalise_clients(
 ) -> list[NormalisedClient]:
     inventory: dict[tuple[str, str], NormalisedClient] = {}
 
-    def merge(hostname: Any, ip: Any, mac: Any, *, queries: Any = 0, blocked: Any = 0, nxdomain: Any = 0, first_seen: Any = None, last_seen: Any = None, provider_client_id: Any = "") -> None:
+    def merge(hostname: Any, ip: Any, mac: Any, *, queries: Any = 0, blocked: Any = 0, nxdomain: Any = 0, first_seen: Any = None, last_seen: Any = None, provider_client_id: Any = "", source: str = "Pi-hole sync") -> None:
         name = str(hostname or "-").strip()
         address = str(ip or "-").strip()
         mac_value = _normalise_mac(mac) or "-"
@@ -316,6 +322,10 @@ def _normalise_clients(
         if not identity_value or identity_value == "-":
             return
         key = (identity_type, identity_value)
+        if address != "-":
+            existing_key = next((candidate for candidate, value in inventory.items() if value.ip == address and (mac_value == "-" or value.mac in {"-", mac_value})), None)
+            if existing_key:
+                key = existing_key
         row = inventory.get(key)
         if not row:
             row = NormalisedClient(identity_type, identity_value, name, address, mac_value)
@@ -331,6 +341,9 @@ def _normalise_clients(
         row.nxdomain_queries += _int(nxdomain) or 0
         row.first_seen = _timestamp(first_seen) or row.first_seen
         row.last_seen = _timestamp(last_seen) or row.last_seen
+        row.provider_client_id = provider_id_value or row.provider_client_id
+        if source not in row.source:
+            row.source = f"{row.source}, {source}"
 
     client_data = payloads["clients"].data if payloads["clients"].ok else {}
     for item in _rows(client_data, "devices", "clients", "data"):
@@ -345,12 +358,13 @@ def _normalise_clients(
             first_seen=item.get("first_seen") or item.get("firstSeen"),
             last_seen=item.get("last_seen") or item.get("lastSeen"),
             provider_client_id=item.get("id") or item.get("client_id"),
+            source="Pi-hole network",
         )
 
     dhcp_data = payloads["dhcp"].data if payloads["dhcp"].ok else {}
     for item in _rows(dhcp_data, "leases", "data"):
         if isinstance(item, dict):
-            merge(item.get("name") or item.get("hostname"), item.get("ip") or item.get("address"), item.get("mac") or item.get("hwaddr"), last_seen=item.get("last_seen"))
+            merge(item.get("name") or item.get("hostname"), item.get("ip") or item.get("address"), item.get("mac") or item.get("hwaddr"), last_seen=item.get("last_seen"), source="DHCP lease")
 
     query_data = payloads["queries"].data if payloads["queries"].ok else {}
     for item in _rows(query_data, "queries", "data"):
@@ -366,46 +380,200 @@ def _normalise_clients(
             blocked=1 if any(term in status for term in ("block", "gravity", "deny", "regex")) else 0,
             nxdomain=1 if "nxdomain" in status else 0,
             last_seen=item.get("time") or item.get("timestamp") or item.get("date"),
+            source="Recent query",
         )
 
     known_hostnames = _known_hostname_set(known_hostnames_raw)
-    existing = db.query(DNSRecognisedDevice).filter(DNSRecognisedDevice.provider_id == provider.id).all()
-    by_identity = {(row.identity_type, row.identity_value): row for row in existing}
-    by_hostname = {_normalise_hostname(row.hostname): row for row in existing if row.hostname}
     for row in inventory.values():
-        device = by_identity.get((row.identity_type, row.identity_value))
         hostname_key = _normalise_hostname(row.hostname)
-        if not device and hostname_key in known_hostnames:
-            device = by_hostname.get(hostname_key)
-            if not device:
-                device = DNSRecognisedDevice(
-                    provider_id=provider.id,
-                    identity_type=row.identity_type,
-                    identity_value=row.identity_value,
-                    hostname=row.hostname,
-                    current_ip=row.ip if row.ip != "-" else None,
-                    mac_address=row.mac if row.mac != "-" else None,
-                    first_seen_at=row.first_seen or generated_at,
-                    last_seen_at=row.last_seen or generated_at,
-                )
-                db.add(device)
-                db.flush()
-                by_identity[(row.identity_type, row.identity_value)] = device
-                by_hostname[hostname_key] = device
-        if device:
-            row.recognised = True
-            row.device_id = device.id
-            if row.ip != "-" and device.current_ip and device.current_ip != row.ip:
-                row.previous_ip = device.current_ip
-                device.previous_ip = device.current_ip
-                device.current_ip = row.ip
-            elif row.ip != "-" and not device.current_ip:
-                device.current_ip = row.ip
-            if row.hostname not in {"", "-"} and device.hostname and _normalise_hostname(device.hostname) != hostname_key and device.identity_type in {"mac", "provider_client"}:
-                device.previous_hostname = device.hostname
-                device.hostname = row.hostname
-            device.last_seen_at = row.last_seen or generated_at
+        device = observe_client(db, provider, row, generated_at)
+        if hostname_key in known_hostnames:
+            device.is_known = True
+        row.recognised = device.is_known or bool(device.linked_ip_record_id)
+        row.device_id = device.id
+        row.previous_ip = device.previous_ip
     return list(inventory.values())
+
+
+def _dhcp_range_for(ranges: list[tuple[DHCPRange, Any, Any]], value: str) -> DHCPRange | None:
+    try:
+        parsed = ip_address(value)
+    except ValueError:
+        return None
+    return next((row for row, start, end in ranges if start.version == parsed.version and start <= parsed <= end), None)
+
+
+def _persist_dhcp_leases(
+    db: Session,
+    provider: DNSProviderConfig,
+    dhcp_data: Any,
+    clients: list[NormalisedClient],
+    generated_at: datetime,
+) -> None:
+    """Retain lease intervals so an address reused later does not inherit another client's history."""
+    lease_rows = [row for row in _rows(dhcp_data, "leases", "data") if isinstance(row, dict)]
+    by_ip = {row.ip: row.device_id for row in clients if row.device_id and row.ip not in {"", "-"}}
+    by_mac = {normalise_mac(row.mac): row.device_id for row in clients if row.device_id and normalise_mac(row.mac)}
+    configured_ranges = []
+    for scope in db.query(DHCPRange).filter(DHCPRange.is_enabled == True).all():  # noqa: E712
+        try:
+            configured_ranges.append((scope, ip_address(scope.start_address), ip_address(scope.end_address)))
+        except ValueError:
+            continue
+    seen_ids: set[int] = set()
+    for item in lease_rows:
+        address = str(item.get("ip") or item.get("address") or item.get("ip_address") or "").strip()
+        if not address:
+            continue
+        mac = normalise_mac(item.get("mac") or item.get("hwaddr") or item.get("mac_address"))
+        hostname = str(item.get("name") or item.get("hostname") or "").strip() or None
+        client_id = by_mac.get(mac) if mac else None
+        client_id = client_id or by_ip.get(address)
+        provider_lease_id = str(item.get("id") or item.get("lease_id") or "").strip() or None
+        expires_at = _timestamp(item.get("expires_at") or item.get("expires") or item.get("expiry") or item.get("valid_until"))
+        started_at = _timestamp(item.get("starts_at") or item.get("start") or item.get("leased_at")) or generated_at
+        active = (
+            db.query(DHCPLeaseHistory)
+            .filter_by(provider_id=provider.id, ip_address=address, is_active=True)
+            .order_by(DHCPLeaseHistory.last_seen_at.desc())
+            .first()
+        )
+        same_identity = bool(active and ((mac and active.mac_address == mac) or (client_id and active.dns_client_id == client_id)))
+        if active and not same_identity:
+            active.is_active = False
+            active.ended_at = generated_at
+            active = None
+        scope = _dhcp_range_for(configured_ranges, address)
+        if not active:
+            active = DHCPLeaseHistory(
+                provider_id=provider.id,
+                dns_client_id=client_id,
+                dhcp_range_id=scope.id if scope else None,
+                ip_address=address,
+                mac_address=mac,
+                hostname=hostname,
+                provider_lease_id=provider_lease_id,
+                lease_started_at=started_at,
+                first_seen_at=generated_at,
+                last_seen_at=generated_at,
+                expires_at=expires_at,
+                is_active=True,
+                source="Pi-hole DHCP lease",
+            )
+            db.add(active)
+            db.flush()
+        else:
+            active.dns_client_id = active.dns_client_id or client_id
+            active.mac_address = mac or active.mac_address
+            active.hostname = hostname or active.hostname
+            active.provider_lease_id = provider_lease_id or active.provider_lease_id
+            active.dhcp_range_id = active.dhcp_range_id or (scope.id if scope else None)
+            active.last_seen_at = generated_at
+            active.expires_at = expires_at or active.expires_at
+        seen_ids.add(active.id)
+    stale = db.query(DHCPLeaseHistory).filter_by(provider_id=provider.id, is_active=True)
+    if seen_ids:
+        stale = stale.filter(~DHCPLeaseHistory.id.in_(seen_ids))
+    for row in stale.all():
+        row.is_active = False
+        row.ended_at = generated_at
+
+
+def _persist_client_traffic(
+    db: Session,
+    provider: DNSProviderConfig,
+    query_rows: list[dict[str, Any]],
+    clients: list[NormalisedClient],
+    generated_at: datetime,
+) -> int:
+    """Persist the bounded provider query sample without duplicating overlapping polls."""
+    values = get_site_settings(db, {"dns_retain_client_history", "dns_traffic_history_days"})
+    if values["dns_retain_client_history"] != "1":
+        return 0
+    by_ip = {row.ip: row.device_id for row in clients if row.device_id and row.ip not in {"", "-"}}
+    by_hostname = {
+        _normalise_hostname(row.hostname): row.device_id
+        for row in clients
+        if row.device_id and _normalise_hostname(row.hostname)
+    }
+    pending: list[tuple[str, int, str | None, dict[str, Any], datetime, str, bool]] = []
+    for row in query_rows:
+        client_name, client_ip = _query_client(row)
+        client_id = by_ip.get(client_ip) or by_hostname.get(_normalise_hostname(client_name))
+        domain = _query_domain(row)
+        if not client_id or domain in {"", "-"}:
+            continue
+        observed_at = _timestamp(row.get("time") or row.get("timestamp") or row.get("date")) or generated_at
+        status_text = _query_status(row)
+        blocked = any(term in status_text for term in ("block", "gravity", "deny", "regex"))
+        provider_event_id = row.get("id") or row.get("query_id")
+        signature = {
+            "provider_event_id": str(provider_event_id or ""),
+            "client": client_ip if client_ip != "-" else _normalise_hostname(client_name),
+            "domain": domain,
+            "query_type": str(row.get("type") or row.get("query_type") or ""),
+            "status": status_text,
+            "observed_at": observed_at.isoformat(timespec="microseconds"),
+        }
+        event_key = hashlib.sha256(json.dumps(signature, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        pending.append((event_key, client_id, client_ip if client_ip != "-" else None, row, observed_at, domain, blocked))
+    if not pending:
+        return 0
+    keys = list({item[0] for item in pending})
+    existing = {
+        key for (key,) in db.query(DNSClientTrafficEvent.event_key)
+        .filter(DNSClientTrafficEvent.provider_id == provider.id, DNSClientTrafficEvent.event_key.in_(keys))
+        .all()
+    }
+    added = 0
+    for event_key, client_id, client_ip, row, observed_at, domain, blocked in pending:
+        if event_key in existing:
+            continue
+        existing.add(event_key)
+        reply = row.get("reply") if isinstance(row.get("reply"), dict) else {}
+        reply_time = reply.get("time") or reply.get("duration") or row.get("reply_time") or row.get("response_time")
+        try:
+            reply_time_ms = float(reply_time) * 1000 if reply_time not in (None, "", "-") else None
+        except (TypeError, ValueError):
+            reply_time_ms = None
+        upstream = row.get("upstream") or row.get("forwarded_to") or row.get("server")
+        if isinstance(upstream, dict):
+            upstream = upstream.get("name") or upstream.get("ip") or upstream.get("address")
+        lease = None
+        if client_ip:
+            lease = (
+                db.query(DHCPLeaseHistory)
+                .filter(
+                    DHCPLeaseHistory.provider_id == provider.id,
+                    DHCPLeaseHistory.ip_address == client_ip,
+                    DHCPLeaseHistory.dns_client_id == client_id,
+                    DHCPLeaseHistory.is_active == True,  # noqa: E712
+                )
+                .order_by(DHCPLeaseHistory.first_seen_at.desc())
+                .first()
+            )
+        db.add(DNSClientTrafficEvent(
+            dns_client_id=client_id,
+            provider_id=provider.id,
+            dhcp_lease_id=lease.id if lease else None,
+            event_key=event_key,
+            client_ip=client_ip,
+            domain=domain,
+            query_type=str(row.get("type") or row.get("query_type") or "") or None,
+            status=str(row.get("status") or "") or None,
+            reply_type=str(reply.get("type") or row.get("reply_type") or "") or None,
+            reply_time_ms=reply_time_ms,
+            upstream=str(upstream) if upstream not in (None, "", "-") else None,
+            is_blocked=blocked,
+            observed_at=observed_at,
+        ))
+        added += 1
+    try:
+        retention_days = max(1, min(int(values["dns_traffic_history_days"] or "30"), 3650))
+    except (TypeError, ValueError):
+        retention_days = 30
+    db.query(DNSClientTrafficEvent).filter(DNSClientTrafficEvent.observed_at < generated_at - timedelta(days=retention_days)).delete(synchronize_session=False)
+    return added
 
 
 def _blocklist_updated_at(payload: Any) -> datetime | None:
@@ -419,9 +587,16 @@ def _blocklist_updated_at(payload: Any) -> datetime | None:
     return max(stamps) if stamps else None
 
 
-def build_context(db: Session, provider: DNSProviderConfig, known_hostnames_raw: str = "[]") -> DNSInsightContext:
+def build_context(
+    db: Session,
+    provider: DNSProviderConfig,
+    known_hostnames_raw: str = "[]",
+    *,
+    payloads: dict[str, DNSProviderResult] | None = None,
+) -> DNSInsightContext:
     generated_at = datetime.utcnow()
-    payloads = _collect_provider_data(provider_for(provider))
+    if payloads is None:
+        payloads = _collect_provider_data(provider_for(provider))
     connected = payloads["stats"].ok or payloads["status"].ok
     provider.last_status = "online" if connected else "error"
     provider.last_checked_at = generated_at
@@ -439,6 +614,9 @@ def build_context(db: Session, provider: DNSProviderConfig, known_hostnames_raw:
     query_data = payloads["queries"].data if payloads["queries"].ok else {}
     query_rows = [row for row in _rows(query_data, "queries", "data") if isinstance(row, dict)]
     clients = _normalise_clients(db, provider, payloads, known_hostnames_raw, generated_at)
+    if payloads["dhcp"].ok:
+        _persist_dhcp_leases(db, provider, payloads["dhcp"].data, clients, generated_at)
+    _persist_client_traffic(db, provider, query_rows, clients, generated_at)
     previous_snapshot = (
         db.query(DNSStatisticsSnapshot)
         .filter(DNSStatisticsSnapshot.provider_id == provider.id)
@@ -908,9 +1086,10 @@ def _snapshot(
 def _persist_insights(db: Session, context: DNSInsightContext, generated: list[GeneratedInsight], evaluated_rules: set[str]) -> tuple[int, int, int]:
     existing = db.query(DNSInsight).filter(DNSInsight.provider_id == context.provider.id).all()
     by_key = {row.insight_key: row for row in existing}
-    generated_keys = {item.key for item in generated}
+    unique_generated = {item.key: item for item in generated}
+    generated_keys = set(unique_generated)
     created = updated = resolved = 0
-    for item in generated:
+    for item in unique_generated.values():
         row = by_key.get(item.key)
         if not row:
             row = DNSInsight(
@@ -926,6 +1105,7 @@ def _persist_insights(db: Session, context: DNSInsightContext, generated: list[G
                 last_detected_at=context.generated_at,
             )
             db.add(row)
+            by_key[item.key] = row
             created += 1
         else:
             updated += 1
@@ -960,13 +1140,32 @@ def analyse_provider(
     known_hostnames_raw: str = "[]",
     thresholds: DNSInsightThresholds = DEFAULT_THRESHOLDS,
 ) -> AnalysisResult:
-    lock = _provider_lock(provider.id)
+    provider_id = provider.id
+    lock = _provider_lock(provider_id)
     if not lock.acquire(blocking=False):
         raise AnalysisAlreadyRunning("An insight analysis is already running for this provider.")
     started = time.monotonic()
     try:
         logger.info("DNS insight analysis started", extra={"provider_id": provider.id})
-        context = build_context(db, provider, known_hostnames_raw)
+        network_config = DNSProviderConfig(
+            id=provider.id,
+            name=provider.name,
+            provider_type=provider.provider_type,
+            base_url=provider.base_url,
+            auth_method=provider.auth_method,
+            encrypted_secret=provider.encrypted_secret,
+            ssl_verify=provider.ssl_verify,
+            timeout_seconds=provider.timeout_seconds,
+            is_enabled=provider.is_enabled,
+        )
+        # End the read transaction before bounded provider I/O so an offline
+        # integration cannot retain an SQLite reader for its timeout duration.
+        db.rollback()
+        payloads = _collect_provider_data(provider_for(network_config))
+        provider = db.get(DNSProviderConfig, provider_id)
+        if not provider or not provider.is_enabled:
+            raise LookupError("DNS provider is no longer enabled.")
+        context = build_context(db, provider, known_hostnames_raw, payloads=payloads)
         generated: list[GeneratedInsight] = []
         evaluated_rules: set[str] = set()
         skipped = 0
@@ -1005,7 +1204,7 @@ def analyse_provider(
         return AnalysisResult(provider.id, context.generated_at, created, updated, resolved, active, len(evaluated_rules), skipped)
     except Exception:
         db.rollback()
-        logger.exception("DNS insight analysis failed", extra={"provider_id": provider.id})
+        logger.exception("DNS insight analysis failed", extra={"provider_id": provider_id})
         raise
     finally:
         lock.release()

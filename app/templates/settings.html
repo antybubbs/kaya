@@ -29,6 +29,16 @@
         <a href="/system/site-administration?tab=uploads" class="settings-side-link" data-settings-parent-tab="uploads" data-default-child="uploads" aria-selected="false">Uploads</a>
       </div>
 
+      <details class="settings-side-group" open>
+        <summary class="settings-side-link">Authentication</summary>
+        <div class="settings-side-children">
+          <a href="/system/site-administration/authentication?tab=general" class="settings-side-child">General</a>
+          <a href="/system/site-administration/authentication?tab=oidc" class="settings-side-child">OpenID Connect</a>
+          <a href="/system/site-administration/authentication?tab=mapping" class="settings-side-child">Claim &amp; Role Mapping</a>
+          <a href="/system/site-administration/authentication?tab=links" class="settings-side-child">Account Links</a>
+        </div>
+      </details>
+
       <details class="settings-side-group" data-settings-details="email" open>
         <summary class="settings-side-link" data-settings-parent-tab="email" data-default-child="email-general" aria-selected="false">Email</summary>
         <div class="settings-side-children">
@@ -43,12 +53,46 @@
           <a href="/system/site-administration?tab=module-backup-manager" class="settings-side-child" data-settings-child-tab="module-backup-manager" data-settings-parent="modules" aria-selected="false">Backup Manager</a>
           <a href="/system/site-administration?tab=module-dashboard" class="settings-side-child" data-settings-child-tab="module-dashboard" data-settings-parent="modules" aria-selected="false">Dashboard</a>
           <a href="/system/site-administration?tab=module-dns-manager" class="settings-side-child" data-settings-child-tab="module-dns-manager" data-settings-parent="modules" aria-selected="false">DNS Manager</a>
+          <a href="/system/site-administration?tab=module-vlan-ip-manager" class="settings-side-child" data-settings-child-tab="module-vlan-ip-manager" data-settings-parent="modules" aria-selected="false">VLAN/IP Manager</a>
           <a href="/system/site-administration?tab=module-remote-manager" class="settings-side-child" data-settings-child-tab="module-remote-manager" data-settings-parent="modules" aria-selected="false">Remote Manager</a>
+          <a href="/system/site-administration?tab=module-secret-vault" class="settings-side-child" data-settings-child-tab="module-secret-vault" data-settings-parent="modules" aria-selected="false">Secret Vault</a>
+          <a href="/system/site-administration?tab=module-secure-send" class="settings-side-child" data-settings-child-tab="module-secure-send" data-settings-parent="modules" aria-selected="false">Secure Send</a>
         </div>
       </details>
     </aside>
 
     <main class="settings-content-panel">
+  <section class="settings-tab-panel" data-settings-panel="module-secure-send" data-settings-parent="modules" role="tabpanel" hidden>
+    <h2>Secure Send</h2>
+    <div class="remote-settings-card">
+      <header><span>Temporary encrypted delivery</span></header>
+      {{ switch('secure_send_enabled', 'Enable Secure Send', 'Show the sender module and allow recipient access through the Security Gateway.') }}
+      <div class="remote-settings-grid two">
+        <label><strong>Gateway hostname</strong><small>Public origin for recipient links. Keep the main Kaya interface private.</small><input name="secure_send_gateway_hostname" type="url" value="{{ settings.get('secure_send_gateway_hostname','http://localhost:8999') }}"></label>
+        <label><strong>Default expiry</strong><small>Preselected when a user creates a package.</small><select name="secure_send_default_expiry">{% for key,label in [('15m','15 minutes'),('1h','1 hour'),('4h','4 hours'),('24h','24 hours'),('3d','3 days'),('7d','7 days')] %}<option value="{{ key }}" {% if settings.get('secure_send_default_expiry','24h') == key %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+        <label><strong>Maximum expiry (days)</strong><small>Between 1 and 30 days.</small><input name="secure_send_max_expiry_days" type="number" min="1" max="30" value="{{ settings.get('secure_send_max_expiry_days','7') }}"></label>
+        <label><strong>Maximum package size (MB)</strong><small>Combined encrypted note and file delivery limit.</small><input name="secure_send_max_upload_mb" type="number" min="1" max="250" value="{{ settings.get('secure_send_max_upload_mb','25') }}"></label>
+      </div>
+      {{ switch('secure_send_allow_one_download', 'Allow one-download packages', 'Senders may revoke recipient access immediately after the first download.') }}
+      {{ switch('secure_send_vault_integration', 'Enable Secret Vault handoff', 'Allow independent encrypted copies between Secret Vault and Secure Send.') }}
+      {{ switch('secure_send_email_notifications', 'Enable email notifications', 'Send recipient links and lifecycle notices through Kaya SMTP. Credentials are never emailed.') }}
+      <div class="vault-admin-note"><strong>Public exposure</strong><span>Publish only the Security Gateway port. The main Kaya application remains the authenticated management interface.</span></div>
+    </div>
+  </section>
+  <section class="settings-tab-panel vault-admin-panel" data-settings-panel="module-secret-vault" data-settings-parent="modules" role="tabpanel" hidden>
+    <h2>Secret Vault</h2>
+    <div class="remote-settings-card vault-admin-card">
+      <header><span>Security policy</span></header>
+      <div class="remote-settings-grid two">
+        <label><strong>Minimum PIN length</strong><small>At least 6; default 8. Passphrases always require 12 characters.</small><input name="secret_vault_min_pin_length" type="number" min="6" max="20" value="{{ settings.get('secret_vault_min_pin_length','8') }}"></label>
+        <label><strong>Maximum auto-lock interval</strong><small>Users may choose a shorter interval.</small><select name="secret_vault_max_auto_lock_minutes">{% for n in [5,10,15,30,60] %}<option value="{{ n }}" {% if settings.get('secret_vault_max_auto_lock_minutes','60') == n|string %}selected{% endif %}>{{ n }} minutes</option>{% endfor %}</select></label>
+        <label><strong>OIDC MFA policy</strong><small>Controls whether linked users may use fresh identity-provider MFA for vault setup, unlock and recovery.</small><select name="secret_vault_oidc_mfa_policy"><option value="kaya_totp" {% if settings.get('secret_vault_oidc_mfa_policy','either') == 'kaya_totp' %}selected{% endif %}>Require Kaya authenticator</option><option value="idp_mfa" {% if settings.get('secret_vault_oidc_mfa_policy','either') == 'idp_mfa' %}selected{% endif %}>Use verified IdP MFA</option><option value="either" {% if settings.get('secret_vault_oidc_mfa_policy','either') == 'either' %}selected{% endif %}>Allow either method</option></select></label>
+        <label><strong>Accepted OIDC ACR values</strong><small>Optional comma- or space-separated assurance values. Kaya also accepts an explicit <code>amr=mfa</code> claim.</small><input name="secret_vault_oidc_accepted_acr" maxlength="500" value="{{ settings.get('secret_vault_oidc_accepted_acr','') }}" placeholder="urn:example:loa:2"></label>
+      </div>
+      {{ switch('secret_vault_sharing_enabled', 'Allow secure collection sharing', 'Users may explicitly share collections with named Kaya users. Private vaults remain private by default.') }}
+      <div class="vault-admin-note"><strong>Protect the application key</strong><span>Kaya's ENCRYPTION_KEY must be backed up separately. Database and attachment backups cannot be restored without it; portable .kayavault exports use their own passphrase.</span></div>
+    </div>
+  </section>
   <section class="settings-tab-panel" data-settings-panel="module-dashboard" data-settings-parent="modules" role="tabpanel" hidden>
     <h2>Dashboard</h2>
     <div class="remote-settings-card">
@@ -299,6 +343,54 @@
     </div>
   </section>
 
+  <section class="settings-tab-panel vlan-ip-admin-panel" data-settings-panel="module-vlan-ip-manager" data-settings-parent="modules" role="tabpanel" hidden>
+    <h2>VLAN/IP Manager</h2>
+    <p class="muted">Define the network hierarchy used throughout Kaya. VLAN identifies the network segment; Category classifies the allocation or device within it.</p>
+
+    <div class="remote-settings-card vlan-ip-admin-card">
+      <header><span>VLANs</span></header>
+      <div class="table-scroll"><table class="vlan-ip-admin-table vlan-admin-table"><thead><tr><th>Name</th><th>Subnet</th><th>Description</th><th>Actions</th></tr></thead><tbody>
+        {% for vlan in vlan_options or [] %}<tr>
+          <td><input name="vlan_name_{{ vlan.id }}" value="{{ vlan.name }}" required></td>
+          <td><input name="vlan_subnet_{{ vlan.id }}" value="{{ vlan.subnet_cidr or '' }}" placeholder="192.168.10.0/24"></td>
+          <td><input name="vlan_description_{{ vlan.id }}" value="{{ vlan.description or '' }}"></td>
+          <td><div class="vlan-ip-row-actions"><button type="submit" formaction="/system/site-administration/vlan-ip-manager" name="admin_action" value="update_vlan:{{ vlan.id }}">Save</button><button class="button secondary" type="submit" formaction="/system/site-administration/vlan-ip-manager" name="admin_action" value="delete_vlan:{{ vlan.id }}">Delete</button></div></td>
+        </tr>{% endfor %}
+        <tr class="vlan-ip-add-row"><td><input name="vlan_name" placeholder="New VLAN name"></td><td><input name="vlan_subnet" placeholder="192.168.20.0/24"></td><td><input name="vlan_description" placeholder="Optional description"></td><td><button type="submit" formaction="/system/site-administration/vlan-ip-manager" name="admin_action" value="create_vlan">Add VLAN</button></td></tr>
+      </tbody></table></div>
+    </div>
+
+    <div class="remote-settings-card vlan-ip-admin-card">
+      <header><span>Categories</span></header>
+      <p class="muted">Renaming a Category updates existing VLAN/IP records. Disable one to hide it from new selections while preserving history.</p>
+      <div class="table-scroll"><table class="vlan-ip-admin-table category-admin-table"><thead><tr><th>Name</th><th>Available</th><th>Actions</th></tr></thead><tbody>
+        {% for category in vlan_ip_categories or [] %}<tr>
+          <td><input name="category_value_{{ category.id }}" value="{{ category.value }}" required></td>
+          <td><label class="vlan-ip-toggle"><input class="remote-switch" name="category_enabled_{{ category.id }}" type="checkbox" value="1" {% if category.is_active %}checked{% endif %}><span>{{ 'Enabled' if category.is_active else 'Disabled' }}</span></label></td>
+          <td><div class="vlan-ip-row-actions"><button type="submit" formaction="/system/site-administration/vlan-ip-manager" name="admin_action" value="update_category:{{ category.id }}">Save</button><button class="button secondary" type="submit" formaction="/system/site-administration/vlan-ip-manager" name="admin_action" value="delete_category:{{ category.id }}">Delete</button></div></td>
+        </tr>{% endfor %}
+        <tr class="vlan-ip-add-row"><td><input name="category_value" placeholder="New Category name"></td><td><span class="muted">Available by default</span></td><td><button type="submit" formaction="/system/site-administration/vlan-ip-manager" name="admin_action" value="create_category">Add Category</button></td></tr>
+      </tbody></table></div>
+    </div>
+
+    <div class="remote-settings-card vlan-ip-admin-card">
+      <header><span>DHCP ranges</span></header>
+      <p class="muted">Addresses inside enabled ranges are treated as temporary lease evidence. Kaya will only identify a device there by a stable MAC or provider client ID, and will retain each lease interval separately.</p>
+      <div class="table-scroll"><table class="vlan-ip-admin-table dhcp-admin-table"><thead><tr><th>Name</th><th>VLAN</th><th>Start</th><th>End</th><th>Description</th><th>Enabled</th><th>Actions</th></tr></thead><tbody>
+        {% for scope in dhcp_ranges or [] %}<tr>
+          <td><input name="scope_name_{{ scope.id }}" value="{{ scope.name }}" required></td>
+          <td><select name="scope_vlan_id_{{ scope.id }}"><option value="">Unassigned</option>{% for vlan in vlan_options or [] %}<option value="{{ vlan.id }}" {% if scope.vlan_id == vlan.id %}selected{% endif %}>{{ vlan.name }}</option>{% endfor %}</select></td>
+          <td><input class="mono" name="scope_start_{{ scope.id }}" value="{{ scope.start_address }}" required></td>
+          <td><input class="mono" name="scope_end_{{ scope.id }}" value="{{ scope.end_address }}" required></td>
+          <td><input name="scope_description_{{ scope.id }}" value="{{ scope.description or '' }}"></td>
+          <td><label class="vlan-ip-switch-only" title="{{ 'Enabled' if scope.is_enabled else 'Disabled' }}"><input class="remote-switch" name="scope_enabled_{{ scope.id }}" type="checkbox" value="1" {% if scope.is_enabled %}checked{% endif %}><span class="sr-only">Enabled</span></label></td>
+          <td><div class="vlan-ip-row-actions"><button type="submit" formaction="/system/site-administration/vlan-ip-manager" name="admin_action" value="update_scope:{{ scope.id }}">Save</button><button class="button secondary" type="submit" formaction="/system/site-administration/vlan-ip-manager" name="admin_action" value="delete_scope:{{ scope.id }}">Delete</button></div></td>
+        </tr>{% endfor %}
+        <tr class="vlan-ip-add-row"><td><input name="scope_name" placeholder="New DHCP range"></td><td><select name="scope_vlan_id"><option value="">Unassigned</option>{% for vlan in vlan_options or [] %}<option value="{{ vlan.id }}">{{ vlan.name }}</option>{% endfor %}</select></td><td><input class="mono" name="scope_start" placeholder="192.168.1.100"></td><td><input class="mono" name="scope_end" placeholder="192.168.1.199"></td><td><input name="scope_description" placeholder="Optional"></td><td><label class="vlan-ip-switch-only" title="Enabled"><input class="remote-switch" name="scope_enabled" type="checkbox" value="1" checked><span class="sr-only">Enabled</span></label></td><td><button type="submit" formaction="/system/site-administration/vlan-ip-manager" name="admin_action" value="create_scope">Add range</button></td></tr>
+      </tbody></table></div>
+    </div>
+  </section>
+
   <section class="settings-tab-panel" data-settings-panel="module-dns-manager" data-settings-parent="modules" role="tabpanel" hidden>
     <h2>DNS Manager</h2>
     {% set dns_default_id = settings.get('dns_default_provider_id', '') %}
@@ -318,6 +410,10 @@
           <input class="remote-switch" name="dns_manager_enabled" type="checkbox" value="1" {% if settings.get('dns_manager_enabled') == '1' %}checked{% endif %}>
         </label>
         <label class="remote-setting-row">
+          <span><strong>Enable background collection</strong><small>Refresh stored DNS statistics and insights without waiting for a user to open DNS Manager.</small></span>
+          <input class="remote-switch" name="dns_collector_enabled" type="checkbox" value="1" {% if settings.get('dns_collector_enabled', '1') == '1' %}checked{% endif %}>
+        </label>
+        <label class="remote-setting-row">
           <span><strong>Enable caching</strong><small>Allow DNS Manager to reuse recent provider responses where supported.</small></span>
           <input class="remote-switch" name="dns_cache_enabled" type="checkbox" value="1" {% if settings.get('dns_cache_enabled', '1') == '1' %}checked{% endif %}>
         </label>
@@ -332,10 +428,26 @@
           </select>
         </label>
         <label>
-          <strong>Default refresh interval</strong>
-          <small>Minimum time between automatic refreshes.</small>
+          <strong>Background collection interval</strong>
+          <small>Seconds between completed collection passes. Changes apply without restarting Kaya.</small>
           <input name="dns_refresh_interval_seconds" type="number" min="30" max="86400" value="{{ settings.get('dns_refresh_interval_seconds', '300') }}">
         </label>
+      </div>
+    </div>
+
+    <div class="remote-settings-card">
+      <header><span>Client intelligence and VLAN/IP integration</span></header>
+      <div class="remote-settings-grid two">
+        <label class="remote-setting-row"><span><strong>Enable VLAN/IP Manager integration</strong><small>Allow observed DNS clients to link to managed IP records.</small></span><input class="remote-switch" name="dns_vlan_integration_enabled" type="checkbox" value="1" {% if settings.get('dns_vlan_integration_enabled', '1') == '1' %}checked{% endif %}></label>
+        <label class="remote-setting-row"><span><strong>Enable automatic match suggestions</strong><small>Suggest likely managed records without confirming uncertain links.</small></span><input class="remote-switch" name="dns_match_suggestions_enabled" type="checkbox" value="1" {% if settings.get('dns_match_suggestions_enabled', '1') == '1' %}checked{% endif %}></label>
+        <label class="remote-setting-row"><span><strong>Automatically link exact MAC matches</strong><small>Disabled by default. Only a single exact managed MAC match is eligible.</small></span><input class="remote-switch" name="dns_auto_link_exact_mac" type="checkbox" value="1" {% if settings.get('dns_auto_link_exact_mac') == '1' %}checked{% endif %}></label>
+        <label class="remote-setting-row"><span><strong>Automatically update dynamic IP records</strong><small>Disabled by default. Static records are never updated automatically.</small></span><input class="remote-switch" name="dns_auto_update_dynamic_ip" type="checkbox" value="1" {% if settings.get('dns_auto_update_dynamic_ip') == '1' %}checked{% endif %}></label>
+        <label><strong>Stale client threshold</strong><small>Days without an observation before a client is stale.</small><input name="dns_stale_client_days" type="number" min="1" max="3650" value="{{ settings.get('dns_stale_client_days', '30') }}"></label>
+        <label class="remote-setting-row"><span><strong>Retain client history</strong><small>Keep observed IP, hostname, event, and DNS traffic history.</small></span><input class="remote-switch" name="dns_retain_client_history" type="checkbox" value="1" {% if settings.get('dns_retain_client_history', '1') == '1' %}checked{% endif %}></label>
+        <label><strong>Client history retention</strong><small>Days to retain historical observations.</small><input name="dns_client_history_days" type="number" min="1" max="3650" value="{{ settings.get('dns_client_history_days', '365') }}"></label>
+        <label><strong>DNS traffic retention</strong><small>Days to retain per-client domain lookup history. Longer periods increase database size.</small><input name="dns_traffic_history_days" type="number" min="1" max="3650" value="{{ settings.get('dns_traffic_history_days', '30') }}"></label>
+        <label class="remote-setting-row"><span><strong>Show DNS enrichment in VLAN/IP Manager</strong><small>Uses retained data only and never requires a live Pi-hole call.</small></span><input class="remote-switch" name="dns_vlan_enrichment_enabled" type="checkbox" value="1" {% if settings.get('dns_vlan_enrichment_enabled', '1') == '1' %}checked{% endif %}></label>
+        <label class="remote-setting-row"><span><strong>Fill an empty managed hostname</strong><small>Allow observed hostnames to populate only blank managed names.</small></span><input class="remote-switch" name="dns_update_empty_managed_hostname" type="checkbox" value="1" {% if settings.get('dns_update_empty_managed_hostname') == '1' %}checked{% endif %}></label>
       </div>
     </div>
 
@@ -617,15 +729,22 @@
           <small>Name shown beside the sender address.</small>
           <input name="smtp_from_name" value="{{ settings.get('smtp_from_name', brand.name) }}">
         </label>
-        <label>
-          <strong>Test Recipient</strong>
-          <small>Used only when sending a test email.</small>
-          <input name="test_email_to" type="email" value="{{ test_email_to or user.email }}" placeholder="{{ user.email }}">
-        </label>
+        <div class="email-test-field">
+          <label for="test-email-to">
+            <strong>Test Recipient</strong>
+            <small>Used only when sending a test email.</small>
+          </label>
+          <div class="email-test-controls">
+            <input id="test-email-to" name="test_email_to" type="email" value="{{ test_email_to or user.email }}" placeholder="{{ user.email }}">
+            <button class="button secondary" type="submit" formaction="/system/site-administration/test-email" formmethod="post">Send test email</button>
+          </div>
+          <small class="muted email-test-note">Saves these email settings first, then sends one test message. Delivery still depends on SPF, DKIM, DMARC and sender reputation.</small>
+        </div>
       </div>
       <div class="remote-settings-grid">
         {{ switch('smtp_use_tls', 'Use STARTTLS', 'Upgrade the SMTP connection with STARTTLS after connecting.') }}
         {{ switch('smtp_use_ssl', 'Use SSL', 'Connect with SMTP over SSL from the start, usually on port 465.') }}
+        {{ switch('email_include_branding', 'Include Kaya branding', 'Add a compact embedded Kaya logo and header to HTML email. A plain-text version is always included.') }}
       </div>
     </div>
   </section>
@@ -645,6 +764,22 @@
           <strong>Body</strong>
           <small>Plain-text email body. Use {reset_link} where the reset URL should appear.</small>
           <textarea name="email_template_password_reset_body" rows="9">{{ settings.get('email_template_password_reset_body', '') }}</textarea>
+        </label>
+      </div>
+    </div>
+
+    <div class="remote-settings-card">
+      <header><span>Secure Send recipient</span></header>
+      <div class="remote-settings-grid">
+        <label>
+          <strong>Subject</strong>
+          <small>Available placeholders: {app_name}, {sender_name}, {sender_email}, {recipient_name}, {package_title}, {secure_link}, {expiry_utc}</small>
+          <input name="email_template_secure_send_subject" value="{{ settings.get('email_template_secure_send_subject', '{sender_name} sent you a secure package') }}">
+        </label>
+        <label>
+          <strong>Body</strong>
+          <small>Use {secure_link} where the protected recipient URL should appear. PINs and passphrases are never included.</small>
+          <textarea name="email_template_secure_send_body" rows="11">{{ settings.get('email_template_secure_send_body', '') }}</textarea>
         </label>
       </div>
     </div>

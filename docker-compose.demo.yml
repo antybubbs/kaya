@@ -1,6 +1,9 @@
 name: kaya-demo
 
 services:
+  secure-send-gateway:
+    # Secure Send must not start in the shared public demo.
+    profiles: ["secure-send-disabled-in-demo"]
   kaya:
     image: ${KAYA_IMAGE:-ghcr.io/antybubbs/kaya:latest}
     restart: unless-stopped

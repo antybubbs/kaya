@@ -1,63 +1,123 @@
 {% extends "base.html" %}
 {% block extra_head %}<link rel="stylesheet" href="/static/css/login.css?v={{ asset_version }}">{% endblock %}
 {% block public %}
-<div class="login-wrap">
-  <div class="login-card">
-    <section class="login-brand-panel">
-      <img class="login-logo" src="/static/brand/kaya-logo.svg" alt="{{ brand.name }}" width="220" height="220">
-      <div>
-        <p class="login-kicker">{{ 'Demo access' if demo_accounts else 'Welcome back' }}</p>
-        <h1>{{ 'Explore ' ~ brand.name if demo_accounts else brand.name }}</h1>
-        <p>{{ brand.tagline }}</p>
-      </div>
-      <div class="login-status-list" aria-label="Platform highlights">
-        <span>Infrastructure dashboard</span>
-        <span>Remote access workspace</span>
-        <span>Operational documentation</span>
-      </div>
-    </section>
-
-    <section class="login-form-panel">
-      <div class="login-form-heading">
-        <h2>{{ 'Sign in to the demo' if demo_accounts else 'Sign in' }}</h2>
-        <p>{{ 'Choose a role or use the form below.' if demo_accounts else 'Use your account to access Kaya.' }}</p>
-      </div>
-      {% if demo_accounts %}
-      <p class="muted">Changes to sample inventory are welcome and reset daily.</p>
-      <div class="demo-login-grid">
-        {% for name, account in demo_accounts.items() %}
-        <form method="post" action="/login" class="demo-login-option">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <input type="hidden" name="email" value="{{ name|title }}">
-          <input type="hidden" name="password" value="{{ account.password }}">
-          <strong>{{ name|title }}</strong><span>{{ account.role|title }} access</span>
-          <button type="submit">Sign in as {{ name|title }}</button>
-        </form>
-        {% endfor %}
-      </div>
-      {% endif %}
-      {% if success %}<div class="success">{{ success }}</div>{% endif %}
-      {% if setup_complete %}
-      <div class="success">
-        Administrator created. Before exposing Kaya outside your private network, go to Site Administration &gt; Security and review the public URL, trusted hosts, HTTPS, and remote access settings.
-      </div>
-      {% endif %}
-      {% if error %}<div class="alert">{{ error }}</div>{% endif %}
-      <form method="post" action="/login" class="stack">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        {% if requires_2fa %}
-        <label>Authentication code<input name="totp_code" inputmode="numeric" pattern="[0-9]{6}" autocomplete="one-time-code" required autofocus></label>
-        <button type="submit">Verify code</button>
-        {% else %}
-        <label>{{ 'Username or email' if demo_accounts else 'Email' }}<input name="email" type="{{ 'text' if demo_accounts else 'email' }}" required autofocus></label>
-        <label>Password<input name="password" type="password" required></label>
-        <div class="login-actions">
-          <button type="submit">Sign in</button>
-          {% if not demo_accounts %}<a href="/forgot-password">Forgot password?</a>{% endif %}
+<main class="login-wrap login-page">
+  <div class="login-shell">
+    <div class="login-card">
+      <section class="login-brand-panel" aria-labelledby="login-brand-heading">
+        <div class="login-brand-lockup">
+          <img class="login-logo" src="{{ brand.icon }}" alt="" width="68" height="68">
+          <span>{{ brand.name }}</span>
         </div>
-        {% endif %}
-      </form>
-    </section>
+
+        <div class="login-brand-copy">
+          <h1 id="login-brand-heading">Your Infrastructure.<br>Your <span>Home.</span></h1>
+          <p>Kaya brings all your infrastructure, tools and documentation together in one secure place.</p>
+        </div>
+
+        <div class="login-features" aria-label="Kaya platform features">
+          <div class="login-feature">
+            <span class="login-feature-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="7" rx="2"></rect><rect x="4" y="14" width="16" height="7" rx="2"></rect><path d="M8 6.5h.01M8 17.5h.01M12 6.5h4M12 17.5h4"></path></svg>
+            </span>
+            <span><strong>Infrastructure dashboard</strong><small>Monitor and manage your entire environment.</small></span>
+          </div>
+          <div class="login-feature">
+            <span class="login-feature-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="m5 7 5 5-5 5M12 17h7"></path></svg>
+            </span>
+            <span><strong>Remote access workspace</strong><small>Secure SSH, RDP and browser-based access.</small></span>
+          </div>
+          <div class="login-feature">
+            <span class="login-feature-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6zM14 3v5h5M9 13h6M9 17h6"></path></svg>
+            </span>
+            <span><strong>Operational documentation</strong><small>Runbooks, notes and procedures at hand.</small></span>
+          </div>
+        </div>
+      </section>
+
+      <section class="login-form-panel" aria-labelledby="login-heading">
+        <div class="login-form-inner">
+          <div class="login-form-heading">
+            <p class="login-kicker">{{ 'Demo access' if demo_accounts else ('Secure verification' if requires_2fa else 'Welcome back') }}</p>
+            <h2 id="login-heading">{{ 'Enter your authentication code' if requires_2fa else ('Sign in to the demo' if demo_accounts else 'Sign in to ' ~ brand.name) }}</h2>
+            <p>{{ 'Complete the second sign-in step to continue.' if requires_2fa else ('Choose a role or use your account below.' if demo_accounts else 'Use your account to continue') }}</p>
+          </div>
+
+          {% if success %}<div class="success" role="status">{{ success }}</div>{% endif %}
+          {% if setup_complete %}
+          <div class="success" role="status">Administrator created. Before exposing Kaya outside your private network, review the public URL, trusted hosts, HTTPS and remote access settings in Site Administration &gt; Security.</div>
+          {% endif %}
+          {% if error %}<div class="alert" role="alert" aria-live="assertive">{{ error }}</div>{% endif %}
+
+          {% if demo_accounts and not requires_2fa %}
+          <div class="demo-login-grid" aria-label="Demo accounts">
+            {% for name, account in demo_accounts.items() %}
+            <form method="post" action="/login" class="demo-login-option" data-login-form>
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="email" value="{{ name|title }}">
+              <input type="hidden" name="password" value="{{ account.password }}">
+              <span><strong>{{ name|title }}</strong><small>{{ account.role|title }} access</small></span>
+              <button type="submit" data-submit-button data-loading-label="Signing in…">Sign in as {{ name|title }}</button>
+            </form>
+            {% endfor %}
+          </div>
+          {% endif %}
+
+          {% if oidc_provider and authentication_mode in ['local_and_oidc', 'oidc_preferred', 'oidc_required'] and not requires_2fa %}
+          <a class="button login-oidc-button" id="login-oidc" href="/auth/oidc/login">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2"></rect><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v2"></path></svg>
+            {{ oidc_button_label or 'Sign in with Authentik' }}
+          </a>
+          {% if authentication_mode != 'oidc_required' %}<div class="login-divider"><span>OR</span></div>{% endif %}
+          {% endif %}
+
+          {% if authentication_mode != 'oidc_required' or requires_2fa %}
+          <form method="post" action="/login" class="login-form" data-login-form>
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            {% if requires_2fa %}
+            <label for="login-totp">Authentication code</label>
+            <div class="login-input-shell">
+              <input id="login-totp" name="totp_code" inputmode="numeric" pattern="[0-9]{6}" autocomplete="one-time-code" placeholder="Enter the 6-digit code" required autofocus>
+              <svg class="login-field-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a6 6 0 0 0-6 6v3M18 11V8a6 6 0 0 0-6-6M5 11h14v10H5zM12 15v2"></path></svg>
+            </div>
+            <button class="login-submit" type="submit" data-submit-button data-loading-label="Verifying…">Verify code</button>
+            {% else %}
+            <label for="login-email">{{ 'Username or email' if demo_accounts else 'Email' }}</label>
+            <div class="login-input-shell">
+              <input id="login-email" name="email" type="{{ 'text' if demo_accounts else 'email' }}" placeholder="{{ 'Username or email' if demo_accounts else 'you@example.com' }}" autocomplete="username" required autofocus>
+              <svg class="login-field-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"></rect><path d="m4 7 8 6 8-6"></path></svg>
+            </div>
+
+            <label for="login-password">Password</label>
+            <div class="login-input-shell">
+              <input id="login-password" name="password" type="password" placeholder="Enter your password" autocomplete="current-password" required>
+              <button class="login-password-toggle" type="button" data-password-toggle aria-controls="login-password" aria-label="Show password" aria-pressed="false">
+                <svg class="password-visible-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"></path><circle cx="12" cy="12" r="2.5"></circle></svg>
+                <svg class="password-hidden-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m3 3 18 18M10.6 6.2A11.8 11.8 0 0 1 12 6c6.5 0 10 6 10 6a16 16 0 0 1-2.1 2.8M6.2 6.2C3.4 8 2 12 2 12s3.5 6 10 6a10.7 10.7 0 0 0 4.1-.8M9.9 9.9a3 3 0 0 0 4.2 4.2"></path></svg>
+              </button>
+            </div>
+
+            {% if not demo_accounts %}<div class="login-options"><span></span><a href="/forgot-password">Forgot password?</a></div>{% endif %}
+            <button class="login-submit" type="submit" data-submit-button data-loading-label="Signing in…">Sign in</button>
+            {% endif %}
+          </form>
+          {% else %}
+          <a class="login-emergency-link" href="/auth/local">Emergency local administrator access</a>
+          {% endif %}
+
+          {% if not requires_2fa %}<p class="login-account-note">Don’t have an account? <span>Contact your administrator.</span></p>{% endif %}
+        </div>
+      </section>
     </div>
-</div>
+
+    <footer class="login-security-footer" aria-label="Kaya security assurances">
+      <span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 20 7v5c0 5-3.4 8.4-8 9-4.6-.6-8-4-8-9V7zM9 12l2 2 4-5"></path></svg>Secure by design</span>
+      <span><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2"></rect><path d="M8 10V7a4 4 0 0 1 8 0v3"></path></svg>Your data stays private</span>
+      <span><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="m8 12 2.5 2.5L16 9"></path></svg>Audit logged</span>
+    </footer>
+  </div>
+</main>
 {% endblock %}
+{% block extra_scripts %}<script src="/static/js/login.js?v={{ asset_version }}" defer></script>{% endblock %}

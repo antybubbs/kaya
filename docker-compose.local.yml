@@ -1,0 +1,5 @@
+services:
+  kaya:
+    build:
+      context: .
+    image: kaya:local

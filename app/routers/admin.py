@@ -7,6 +7,7 @@ import socket
 import smtplib
 from ftplib import FTP
 from datetime import datetime, timedelta
+from ipaddress import ip_address, ip_network
 from urllib.request import urlopen
 from uuid import uuid4
 
@@ -21,6 +22,7 @@ from urllib.parse import urlencode
 import smbclient
 
 from app.core.config import get_settings
+from app.core.performance import external_call
 from app.core.branding import APP_BRAND_NAME
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.core.security import decrypt_secret, encrypt_secret, hash_password, verify_password
@@ -39,9 +41,14 @@ from app.models.models import (
     CustomField,
     CustomFieldValue,
     DNSProviderConfig,
+    DHCPRange,
+    ExternalIdentity,
     ManagedListItem,
+    IPAddress,
     RemoteManagerSetting,
     User,
+    VLAN,
+    VaultSession,
 )
 from app.routers.auth import require_admin
 from app.services.about import collect_about
@@ -113,9 +120,33 @@ SITE_SETTING_KEYS = {
     "dashboard_attention_required": "1",
     "dashboard_globally_disabled_widgets": "",
     "dns_manager_enabled": "",
+    "dns_collector_enabled": "1",
     "dns_default_provider_id": "",
     "dns_refresh_interval_seconds": "300",
     "dns_cache_enabled": "1",
+    "dns_vlan_integration_enabled": "1",
+    "dns_match_suggestions_enabled": "1",
+    "dns_auto_link_exact_mac": "",
+    "dns_auto_update_dynamic_ip": "",
+    "dns_stale_client_days": "30",
+    "dns_retain_client_history": "1",
+    "dns_client_history_days": "365",
+    "dns_traffic_history_days": "30",
+    "dns_vlan_enrichment_enabled": "1",
+    "dns_update_empty_managed_hostname": "",
+    "secret_vault_min_pin_length": "8",
+    "secret_vault_max_auto_lock_minutes": "60",
+    "secret_vault_sharing_enabled": "1",
+    "secret_vault_oidc_mfa_policy": "either",
+    "secret_vault_oidc_accepted_acr": "",
+    "secure_send_enabled": "1",
+    "secure_send_default_expiry": "24h",
+    "secure_send_max_expiry_days": "7",
+    "secure_send_max_upload_mb": "25",
+    "secure_send_allow_one_download": "1",
+    "secure_send_vault_integration": "1",
+    "secure_send_gateway_hostname": "http://localhost:8999",
+    "secure_send_email_notifications": "1",
     "smtp_enabled": "",
     "smtp_host": "",
     "smtp_port": "587",
@@ -125,12 +156,23 @@ SITE_SETTING_KEYS = {
     "smtp_password": "",
     "smtp_from_email": "",
     "smtp_from_name": APP_BRAND_NAME,
+    "email_include_branding": "1",
     "email_template_password_reset_subject": "Reset your {app_name} password",
     "email_template_password_reset_body": (
         "A password reset was requested for your {app_name} account.\n\n"
         "Use this link within {expiry_hours} hour to set a new password:\n"
         "{reset_link}\n\n"
         "If you did not request this, you can ignore this email."
+    ),
+    "email_template_secure_send_subject": "{sender_name} sent you a secure package",
+    "email_template_secure_send_body": (
+        "Hello {recipient_name},\n\n"
+        "{sender_name} has sent you a secure package using {app_name}.\n\n"
+        "Open secure package:\n"
+        "{secure_link}\n\n"
+        "Package: {package_title}\n"
+        "Expires: {expiry_utc}\n\n"
+        "For your security, obtain the PIN and passphrase from the sender separately."
     ),
 }
 SITE_SETTING_KEYS.update(REMOTE_MANAGER_SETTINGS)
@@ -198,13 +240,32 @@ def dns_providers_for_admin(db: Session) -> list[DNSProviderConfig]:
     return db.query(DNSProviderConfig).order_by(DNSProviderConfig.name.asc()).all()
 
 
+def vlan_ip_admin_context(db: Session) -> dict:
+    return {
+        "vlan_options": db.query(VLAN).order_by(VLAN.name.asc()).all(),
+        "vlan_ip_categories": db.query(ManagedListItem).filter_by(module="ip_addresses", list_key="category").order_by(ManagedListItem.sort_order.asc(), ManagedListItem.value.asc()).all(),
+        "dhcp_ranges": db.query(DHCPRange).order_by(DHCPRange.name.asc()).all(),
+    }
+
+
 def save_dns_manager_settings(
     db: Session,
     *,
     dns_manager_enabled: str,
+    dns_collector_enabled: str,
     dns_default_provider_id: str,
     dns_refresh_interval_seconds: str,
     dns_cache_enabled: str,
+    dns_vlan_integration_enabled: str,
+    dns_match_suggestions_enabled: str,
+    dns_auto_link_exact_mac: str,
+    dns_auto_update_dynamic_ip: str,
+    dns_stale_client_days: str,
+    dns_retain_client_history: str,
+    dns_client_history_days: str,
+    dns_traffic_history_days: str,
+    dns_vlan_enrichment_enabled: str,
+    dns_update_empty_managed_hostname: str,
     dns_provider_id: str,
     dns_provider_name: str,
     dns_provider_type: str,
@@ -217,7 +278,33 @@ def save_dns_manager_settings(
     dns_provider_description: str,
 ) -> None:
     save_site_setting(db, "dns_manager_enabled", "1" if dns_manager_enabled else "")
+    save_site_setting(db, "dns_collector_enabled", "1" if dns_collector_enabled else "")
     save_site_setting(db, "dns_cache_enabled", "1" if dns_cache_enabled else "")
+    for key, value in {
+        "dns_vlan_integration_enabled": dns_vlan_integration_enabled,
+        "dns_match_suggestions_enabled": dns_match_suggestions_enabled,
+        "dns_auto_link_exact_mac": dns_auto_link_exact_mac,
+        "dns_auto_update_dynamic_ip": dns_auto_update_dynamic_ip,
+        "dns_retain_client_history": dns_retain_client_history,
+        "dns_vlan_enrichment_enabled": dns_vlan_enrichment_enabled,
+        "dns_update_empty_managed_hostname": dns_update_empty_managed_hostname,
+    }.items():
+        save_site_setting(db, key, "1" if value else "")
+    try:
+        stale_days = max(1, min(int(dns_stale_client_days or "30"), 3650))
+    except ValueError:
+        stale_days = 30
+    try:
+        history_days = max(1, min(int(dns_client_history_days or "365"), 3650))
+    except ValueError:
+        history_days = 365
+    save_site_setting(db, "dns_stale_client_days", str(stale_days))
+    save_site_setting(db, "dns_client_history_days", str(history_days))
+    try:
+        traffic_history_days = max(1, min(int(dns_traffic_history_days or "30"), 3650))
+    except ValueError:
+        traffic_history_days = 30
+    save_site_setting(db, "dns_traffic_history_days", str(traffic_history_days))
     try:
         refresh = max(30, min(int(dns_refresh_interval_seconds or "300"), 86400))
     except ValueError:
@@ -427,8 +514,9 @@ def test_tcp_connection(host: str, port: int) -> tuple[bool, str]:
     if not host.strip():
         return False, "Remote host is required for this storage type."
     try:
-        with socket.create_connection((host.strip(), port), timeout=8):
-            return True, f"Kaya can reach {host.strip()} on port {port}."
+        with external_call():
+            with socket.create_connection((host.strip(), port), timeout=8):
+                return True, f"Kaya can reach {host.strip()} on port {port}."
     except OSError as exc:
         return False, f"Kaya cannot reach {host.strip()} on port {port}: {exc}"
 
@@ -590,8 +678,11 @@ def save_email_settings(
     smtp_password: str,
     smtp_from_email: str,
     smtp_from_name: str,
+    email_include_branding: str,
     email_template_password_reset_subject: str,
     email_template_password_reset_body: str,
+    email_template_secure_send_subject: str,
+    email_template_secure_send_body: str,
 ) -> None:
     settings_to_save = {
         "app_name": app_name,
@@ -609,8 +700,11 @@ def save_email_settings(
         "smtp_username": smtp_username,
         "smtp_from_email": smtp_from_email,
         "smtp_from_name": smtp_from_name,
+        "email_include_branding": "1" if email_include_branding else "",
         "email_template_password_reset_subject": email_template_password_reset_subject,
         "email_template_password_reset_body": email_template_password_reset_body,
+        "email_template_secure_send_subject": email_template_secure_send_subject,
+        "email_template_secure_send_body": email_template_secure_send_body,
     }
 
     for key, value in settings_to_save.items():
@@ -696,8 +790,9 @@ def lookup_public_ip() -> tuple[str, str]:
     last_error = "Public IP check failed"
     for name, url in services:
         try:
-            with urlopen(url, timeout=5) as response:
-                body = response.read(512).decode("utf-8", errors="replace").strip()
+            with external_call():
+                with urlopen(url, timeout=5) as response:
+                    body = response.read(512).decode("utf-8", errors="replace").strip()
             if name == "ipify":
                 payload = json.loads(body)
                 ip_address = str(payload.get("ip", "")).strip()
@@ -711,11 +806,12 @@ def lookup_public_ip() -> tuple[str, str]:
 
 
 def lookup_inbound_addresses(host: str) -> list[str]:
-    addresses = {
-        result[4][0]
-        for result in socket.getaddrinfo(host, None)
-        if result[4] and result[4][0]
-    }
+    with external_call():
+        addresses = {
+            result[4][0]
+            for result in socket.getaddrinfo(host, None)
+            if result[4] and result[4][0]
+        }
     return sorted(addresses)
 
 
@@ -873,6 +969,8 @@ def update_user(
     password: str = Form("", max_length=255),
     role: str = Form("viewer"),
     is_active: str = Form(""),
+    is_break_glass: str = Form(""),
+    role_source: str = Form("local"),
     csrf_token: str = Form(...),
     db: Session = Depends(get_db),
     user=Depends(require_admin),
@@ -908,6 +1006,18 @@ def update_user(
     target.last_name = last_name.strip() or None
     target.role = role
     target.is_active = bool(is_active)
+    requested_break_glass = is_break_glass == "1"
+    if requested_break_glass and (role != "admin" or not target.is_active or not (password or target.password_hash)):
+        return templates.TemplateResponse(
+            request, "user_form.html",
+            {"user": user, "target": target, "roles": sorted(ROLES), "error": "Break-glass access requires an active administrator with a local password.", **csrf_context(request)},
+            status_code=400,
+        )
+    target.is_break_glass = requested_break_glass
+    target.role_source = role_source if role_source in {"local", "oidc"} else "local"
+    identity = db.query(ExternalIdentity).filter_by(user_id=target.id).first()
+    if identity:
+        identity.role_management = target.role_source
 
     if password:
         if len(password) < 12:
@@ -925,7 +1035,9 @@ def update_user(
             )
 
         target.password_hash = hash_password(password)
+        target.authentication_type = "local_and_oidc" if identity else "local"
 
+    db.query(VaultSession).filter(VaultSession.user_id == target.id, VaultSession.revoked_at.is_(None)).update({VaultSession.revoked_at: datetime.utcnow()}, synchronize_session=False)
     db.commit()
 
     write_audit(
@@ -961,7 +1073,7 @@ def reset_user_2fa(
 
     target.totp_secret = None
     target.totp_enabled = False
-
+    db.query(VaultSession).filter(VaultSession.user_id == target.id, VaultSession.revoked_at.is_(None)).update({VaultSession.revoked_at: datetime.utcnow()}, synchronize_session=False)
     db.commit()
 
     write_audit(
@@ -1910,12 +2022,158 @@ def settings_page(
             "user": user,
             "settings": load_site_settings(db),
             "dns_providers": dns_providers_for_admin(db),
+            **vlan_ip_admin_context(db),
             "security_check": security_check_context(request, db),
             "message": None,
             "error": None,
             **csrf_context(request),
         },
     )
+
+
+@router.post("/system/site-administration/vlan-ip-manager")
+async def manage_vlan_ip_options(request: Request, db: Session = Depends(get_db), user=Depends(require_admin)):
+    form = await request.form()
+    validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    action = str(form.get("admin_action") or "")
+
+    def clean_vlan_fields(suffix: str = "") -> tuple[str, str, str | None]:
+        name = str(form.get(f"vlan_name{suffix}") or "").strip()
+        description = str(form.get(f"vlan_description{suffix}") or "").strip()
+        subnet = str(form.get(f"vlan_subnet{suffix}") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="VLAN name is required.")
+        if subnet:
+            try:
+                subnet = str(ip_network(subnet, strict=False))
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail="Enter a valid VLAN subnet in CIDR notation.") from exc
+        return name, description, subnet or None
+
+    def clean_scope_fields(suffix: str = "") -> tuple[str, str, str, int | None, str, bool]:
+        name = str(form.get(f"scope_name{suffix}") or "").strip()
+        start_raw = str(form.get(f"scope_start{suffix}") or "").strip()
+        end_raw = str(form.get(f"scope_end{suffix}") or "").strip()
+        description = str(form.get(f"scope_description{suffix}") or "").strip()
+        vlan_raw = str(form.get(f"scope_vlan_id{suffix}") or "").strip()
+        if not name or not start_raw or not end_raw:
+            raise HTTPException(status_code=400, detail="DHCP range name, start address, and end address are required.")
+        try:
+            start, end = ip_address(start_raw), ip_address(end_raw)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Enter valid DHCP start and end addresses.") from exc
+        if start.version != end.version or int(start) > int(end):
+            raise HTTPException(status_code=400, detail="The DHCP range end must be after its start and use the same IP version.")
+        vlan_id = int(vlan_raw) if vlan_raw.isdigit() else None
+        if vlan_id and not db.get(VLAN, vlan_id):
+            raise HTTPException(status_code=400, detail="Choose a valid VLAN for this DHCP range.")
+        enabled = str(form.get(f"scope_enabled{suffix}") or "") == "1"
+        return name, str(start), str(end), vlan_id, description, enabled
+
+    def validate_scope_bounds(start_raw: str, end_raw: str, vlan_id: int | None, enabled: bool, exclude_id: int | None = None) -> None:
+        start, end = ip_address(start_raw), ip_address(end_raw)
+        vlan = db.get(VLAN, vlan_id) if vlan_id else None
+        if vlan and vlan.subnet_cidr:
+            network = ip_network(vlan.subnet_cidr, strict=False)
+            if start not in network or end not in network:
+                raise HTTPException(status_code=400, detail=f"The DHCP range must fit inside {vlan.name} ({network}).")
+        if not enabled:
+            return
+        for existing in db.query(DHCPRange).filter(DHCPRange.is_enabled == True).all():  # noqa: E712
+            if exclude_id and existing.id == exclude_id:
+                continue
+            try:
+                existing_start, existing_end = ip_address(existing.start_address), ip_address(existing.end_address)
+            except ValueError:
+                continue
+            if existing_start.version == start.version and start <= existing_end and existing_start <= end:
+                raise HTTPException(status_code=409, detail=f"This range overlaps the enabled DHCP range {existing.name}.")
+
+    detail = action
+    if action == "create_vlan":
+        name, description, subnet = clean_vlan_fields()
+        if db.query(VLAN).filter(func.lower(VLAN.name) == name.lower()).first():
+            raise HTTPException(status_code=409, detail="That VLAN already exists.")
+        db.add(VLAN(name=name, description=description or None, subnet_cidr=subnet))
+    elif action.startswith("update_vlan:"):
+        row_id = int(action.split(":", 1)[1])
+        row = db.get(VLAN, row_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="VLAN not found.")
+        name, description, subnet = clean_vlan_fields(f"_{row_id}")
+        duplicate = db.query(VLAN).filter(func.lower(VLAN.name) == name.lower(), VLAN.id != row.id).first()
+        if duplicate:
+            raise HTTPException(status_code=409, detail="That VLAN already exists.")
+        row.name, row.description, row.subnet_cidr = name, description or None, subnet
+    elif action.startswith("delete_vlan:"):
+        row_id = int(action.split(":", 1)[1])
+        row = db.get(VLAN, row_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="VLAN not found.")
+        if db.query(IPAddress).filter_by(vlan_id=row.id).first() or db.query(DHCPRange).filter_by(vlan_id=row.id).first():
+            raise HTTPException(status_code=409, detail="Move its IP records and DHCP ranges before deleting this VLAN.")
+        db.delete(row)
+    elif action == "create_category":
+        value = str(form.get("category_value") or "").strip()
+        if not value:
+            raise HTTPException(status_code=400, detail="Category name is required.")
+        if db.query(ManagedListItem).filter(ManagedListItem.module == "ip_addresses", ManagedListItem.list_key == "category", func.lower(ManagedListItem.value) == value.lower()).first():
+            raise HTTPException(status_code=409, detail="That Category already exists.")
+        order = db.query(func.max(ManagedListItem.sort_order)).filter_by(module="ip_addresses", list_key="category").scalar() or 0
+        db.add(ManagedListItem(module="ip_addresses", list_key="category", value=value, sort_order=order + 10, is_active=True))
+    elif action.startswith("update_category:"):
+        row_id = int(action.split(":", 1)[1])
+        row = db.get(ManagedListItem, row_id)
+        if not row or row.module != "ip_addresses" or row.list_key != "category":
+            raise HTTPException(status_code=404, detail="Category not found.")
+        value = str(form.get(f"category_value_{row_id}") or "").strip()
+        if not value:
+            raise HTTPException(status_code=400, detail="Category name is required.")
+        duplicate = db.query(ManagedListItem).filter(ManagedListItem.module == "ip_addresses", ManagedListItem.list_key == "category", func.lower(ManagedListItem.value) == value.lower(), ManagedListItem.id != row.id).first()
+        if duplicate:
+            raise HTTPException(status_code=409, detail="That Category already exists.")
+        old = row.value
+        row.value = value
+        row.is_active = str(form.get(f"category_enabled_{row_id}") or "") == "1"
+        if old != value:
+            db.query(IPAddress).filter(IPAddress.category == old).update({IPAddress.category: value}, synchronize_session=False)
+    elif action.startswith("delete_category:"):
+        row_id = int(action.split(":", 1)[1])
+        row = db.get(ManagedListItem, row_id)
+        if not row or row.module != "ip_addresses" or row.list_key != "category":
+            raise HTTPException(status_code=404, detail="Category not found.")
+        if db.query(IPAddress).filter_by(category=row.value).first():
+            raise HTTPException(status_code=409, detail="Reassign records before deleting this Category. You can disable it instead.")
+        db.delete(row)
+    elif action == "create_scope":
+        name, start, end, vlan_id, description, enabled = clean_scope_fields()
+        validate_scope_bounds(start, end, vlan_id, enabled)
+        if db.query(DHCPRange).filter(func.lower(DHCPRange.name) == name.lower()).first():
+            raise HTTPException(status_code=409, detail="That DHCP range already exists.")
+        db.add(DHCPRange(name=name, start_address=start, end_address=end, vlan_id=vlan_id, description=description or None, is_enabled=enabled))
+    elif action.startswith("update_scope:"):
+        row_id = int(action.split(":", 1)[1])
+        row = db.get(DHCPRange, row_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="DHCP range not found.")
+        name, start, end, vlan_id, description, enabled = clean_scope_fields(f"_{row_id}")
+        validate_scope_bounds(start, end, vlan_id, enabled, row_id)
+        duplicate = db.query(DHCPRange).filter(func.lower(DHCPRange.name) == name.lower(), DHCPRange.id != row.id).first()
+        if duplicate:
+            raise HTTPException(status_code=409, detail="That DHCP range already exists.")
+        row.name, row.start_address, row.end_address = name, start, end
+        row.vlan_id, row.description, row.is_enabled = vlan_id, description or None, enabled
+    elif action.startswith("delete_scope:"):
+        row = db.get(DHCPRange, int(action.split(":", 1)[1]))
+        if not row:
+            raise HTTPException(status_code=404, detail="DHCP range not found.")
+        db.delete(row)
+    else:
+        raise HTTPException(status_code=400, detail="Choose a VLAN/IP Manager action.")
+
+    db.commit()
+    write_audit(db, user, "update", "vlan_ip_settings", None, request.client.host if request.client else None, detail=detail)
+    return RedirectResponse("/system/site-administration?tab=module-vlan-ip-manager", status_code=303)
 
 
 @router.get("/system/site-administration/security/public-ip")
@@ -1990,10 +2248,34 @@ async def save_settings(
     dashboard_show_source_age: str = Form(""),
     dashboard_attention_required: str = Form(""),
     dashboard_globally_disabled_widgets: str = Form(""),
+    secret_vault_min_pin_length: str = Form("8"),
+    secret_vault_max_auto_lock_minutes: str = Form("60"),
+    secret_vault_sharing_enabled: str = Form(""),
+    secret_vault_oidc_mfa_policy: str = Form("either"),
+    secret_vault_oidc_accepted_acr: str = Form(""),
+    secure_send_enabled: str = Form(""),
+    secure_send_default_expiry: str = Form("24h"),
+    secure_send_max_expiry_days: str = Form("7"),
+    secure_send_max_upload_mb: str = Form("25"),
+    secure_send_allow_one_download: str = Form(""),
+    secure_send_vault_integration: str = Form(""),
+    secure_send_gateway_hostname: str = Form("http://localhost:8999"),
+    secure_send_email_notifications: str = Form(""),
     dns_manager_enabled: str = Form(""),
+    dns_collector_enabled: str = Form(""),
     dns_default_provider_id: str = Form(""),
     dns_refresh_interval_seconds: str = Form("300"),
     dns_cache_enabled: str = Form(""),
+    dns_vlan_integration_enabled: str = Form(""),
+    dns_match_suggestions_enabled: str = Form(""),
+    dns_auto_link_exact_mac: str = Form(""),
+    dns_auto_update_dynamic_ip: str = Form(""),
+    dns_stale_client_days: str = Form("30"),
+    dns_retain_client_history: str = Form(""),
+    dns_client_history_days: str = Form("365"),
+    dns_traffic_history_days: str = Form("30"),
+    dns_vlan_enrichment_enabled: str = Form(""),
+    dns_update_empty_managed_hostname: str = Form(""),
     dns_provider_id: str = Form(""),
     dns_provider_name: str = Form(""),
     dns_provider_type: str = Form("pihole"),
@@ -2013,8 +2295,11 @@ async def save_settings(
     smtp_password: str = Form(""),
     smtp_from_email: str = Form(""),
     smtp_from_name: str = Form(APP_BRAND_NAME),
+    email_include_branding: str = Form(""),
     email_template_password_reset_subject: str = Form(""),
     email_template_password_reset_body: str = Form(""),
+    email_template_secure_send_subject: str = Form(""),
+    email_template_secure_send_body: str = Form(""),
     csrf_token: str = Form(...),
     db: Session = Depends(get_db),
     user=Depends(require_admin),
@@ -2053,6 +2338,7 @@ async def save_settings(
                 "user": user,
                 "settings": submitted_settings,
                 "dns_providers": dns_providers_for_admin(db),
+                **vlan_ip_admin_context(db),
                 "security_check": security_check_context(request, db),
                 "allowed_host_errors": allowed_host_errors,
                 "message": None,
@@ -2080,8 +2366,11 @@ async def save_settings(
         smtp_password=smtp_password,
         smtp_from_email=smtp_from_email,
         smtp_from_name=smtp_from_name,
+        email_include_branding=email_include_branding,
         email_template_password_reset_subject=email_template_password_reset_subject,
         email_template_password_reset_body=email_template_password_reset_body,
+        email_template_secure_send_subject=email_template_secure_send_subject,
+        email_template_secure_send_body=email_template_secure_send_body,
     )
     save_security_settings(
         db,
@@ -2128,12 +2417,55 @@ async def save_settings(
         dashboard_recent_activity_limit = "10"
     save_site_setting(db, "dashboard_poll_interval_seconds", dashboard_poll_interval_seconds)
     save_site_setting(db, "dashboard_recent_activity_limit", dashboard_recent_activity_limit)
+    try:
+        vault_min_pin = str(max(6, min(int(secret_vault_min_pin_length), 20)))
+    except ValueError:
+        vault_min_pin = "8"
+    if secret_vault_max_auto_lock_minutes not in {"5", "10", "15", "30", "60"}:
+        secret_vault_max_auto_lock_minutes = "60"
+    save_site_setting(db, "secret_vault_min_pin_length", vault_min_pin)
+    save_site_setting(db, "secret_vault_max_auto_lock_minutes", secret_vault_max_auto_lock_minutes)
+    save_site_setting(db, "secret_vault_sharing_enabled", "1" if secret_vault_sharing_enabled else "")
+    if secret_vault_oidc_mfa_policy not in {"kaya_totp", "idp_mfa", "either"}:
+        secret_vault_oidc_mfa_policy = "either"
+    save_site_setting(db, "secret_vault_oidc_mfa_policy", secret_vault_oidc_mfa_policy)
+    save_site_setting(db, "secret_vault_oidc_accepted_acr", secret_vault_oidc_accepted_acr.strip()[:500])
+    save_site_setting(db, "secure_send_enabled", "1" if secure_send_enabled else "")
+    save_site_setting(db, "secure_send_default_expiry", secure_send_default_expiry if secure_send_default_expiry in {"15m", "1h", "4h", "24h", "3d", "7d"} else "24h")
+    try:
+        secure_send_max_expiry_days = str(max(1, min(int(secure_send_max_expiry_days), 30)))
+    except ValueError:
+        secure_send_max_expiry_days = "7"
+    try:
+        secure_send_max_upload_mb = str(max(1, min(int(secure_send_max_upload_mb), 250)))
+    except ValueError:
+        secure_send_max_upload_mb = "25"
+    save_site_setting(db, "secure_send_max_expiry_days", secure_send_max_expiry_days)
+    save_site_setting(db, "secure_send_max_upload_mb", secure_send_max_upload_mb)
+    save_site_setting(db, "secure_send_allow_one_download", "1" if secure_send_allow_one_download else "")
+    save_site_setting(db, "secure_send_vault_integration", "1" if secure_send_vault_integration else "")
+    save_site_setting(db, "secure_send_email_notifications", "1" if secure_send_email_notifications else "")
+    gateway_hostname = secure_send_gateway_hostname.strip().rstrip("/")[:500]
+    if not re.fullmatch(r"https?://[^\s/]+(?::\d+)?", gateway_hostname):
+        gateway_hostname = "http://localhost:8999"
+    save_site_setting(db, "secure_send_gateway_hostname", gateway_hostname)
     save_dns_manager_settings(
         db,
         dns_manager_enabled=dns_manager_enabled,
+        dns_collector_enabled=dns_collector_enabled,
         dns_default_provider_id=dns_default_provider_id,
         dns_refresh_interval_seconds=dns_refresh_interval_seconds,
         dns_cache_enabled=dns_cache_enabled,
+        dns_vlan_integration_enabled=dns_vlan_integration_enabled,
+        dns_match_suggestions_enabled=dns_match_suggestions_enabled,
+        dns_auto_link_exact_mac=dns_auto_link_exact_mac,
+        dns_auto_update_dynamic_ip=dns_auto_update_dynamic_ip,
+        dns_stale_client_days=dns_stale_client_days,
+        dns_retain_client_history=dns_retain_client_history,
+        dns_client_history_days=dns_client_history_days,
+        dns_traffic_history_days=dns_traffic_history_days,
+        dns_vlan_enrichment_enabled=dns_vlan_enrichment_enabled,
+        dns_update_empty_managed_hostname=dns_update_empty_managed_hostname,
         dns_provider_id=dns_provider_id,
         dns_provider_name=dns_provider_name,
         dns_provider_type=dns_provider_type,
@@ -2168,6 +2500,7 @@ async def save_settings(
             "user": user,
             "settings": load_site_settings(db),
             "dns_providers": dns_providers_for_admin(db),
+            **vlan_ip_admin_context(db),
             "security_check": security_check_context(request, db),
             "message": "Settings saved successfully.",
             "error": None,
@@ -2239,6 +2572,7 @@ def test_backup_storage(
             "user": user,
             "settings": load_site_settings(db),
             "dns_providers": dns_providers_for_admin(db),
+            **vlan_ip_admin_context(db),
             "security_check": security_check_context(request, db),
             "message": f"Backup storage test passed: {detail}" if passed else None,
             "error": None if passed else f"Backup storage test failed: {detail}",
@@ -2251,9 +2585,20 @@ def test_backup_storage(
 def test_dns_provider(
     request: Request,
     dns_manager_enabled: str = Form(""),
+    dns_collector_enabled: str = Form(""),
     dns_default_provider_id: str = Form(""),
     dns_refresh_interval_seconds: str = Form("300"),
     dns_cache_enabled: str = Form(""),
+    dns_vlan_integration_enabled: str = Form(""),
+    dns_match_suggestions_enabled: str = Form(""),
+    dns_auto_link_exact_mac: str = Form(""),
+    dns_auto_update_dynamic_ip: str = Form(""),
+    dns_stale_client_days: str = Form("30"),
+    dns_retain_client_history: str = Form(""),
+    dns_client_history_days: str = Form("365"),
+    dns_traffic_history_days: str = Form("30"),
+    dns_vlan_enrichment_enabled: str = Form(""),
+    dns_update_empty_managed_hostname: str = Form(""),
     dns_provider_id: str = Form(""),
     dns_provider_name: str = Form(""),
     dns_provider_type: str = Form("pihole"),
@@ -2272,9 +2617,20 @@ def test_dns_provider(
     save_dns_manager_settings(
         db,
         dns_manager_enabled=dns_manager_enabled,
+        dns_collector_enabled=dns_collector_enabled,
         dns_default_provider_id=dns_default_provider_id,
         dns_refresh_interval_seconds=dns_refresh_interval_seconds,
         dns_cache_enabled=dns_cache_enabled,
+        dns_vlan_integration_enabled=dns_vlan_integration_enabled,
+        dns_match_suggestions_enabled=dns_match_suggestions_enabled,
+        dns_auto_link_exact_mac=dns_auto_link_exact_mac,
+        dns_auto_update_dynamic_ip=dns_auto_update_dynamic_ip,
+        dns_stale_client_days=dns_stale_client_days,
+        dns_retain_client_history=dns_retain_client_history,
+        dns_client_history_days=dns_client_history_days,
+        dns_traffic_history_days=dns_traffic_history_days,
+        dns_vlan_enrichment_enabled=dns_vlan_enrichment_enabled,
+        dns_update_empty_managed_hostname=dns_update_empty_managed_hostname,
         dns_provider_id=dns_provider_id,
         dns_provider_name=dns_provider_name,
         dns_provider_type=dns_provider_type,
@@ -2320,6 +2676,7 @@ def test_dns_provider(
             "user": user,
             "settings": load_site_settings(db),
             "dns_providers": dns_providers_for_admin(db),
+            **vlan_ip_admin_context(db),
             "security_check": security_check_context(request, db),
             "message": detail if passed else None,
             "error": None if passed else detail,
@@ -2355,8 +2712,11 @@ def send_test_email(
     smtp_password: str = Form(""),
     smtp_from_email: str = Form(""),
     smtp_from_name: str = Form(APP_BRAND_NAME),
+    email_include_branding: str = Form(""),
     email_template_password_reset_subject: str = Form(""),
     email_template_password_reset_body: str = Form(""),
+    email_template_secure_send_subject: str = Form(""),
+    email_template_secure_send_body: str = Form(""),
     test_email_to: str = Form(""),
     csrf_token: str = Form(...),
     db: Session = Depends(get_db),
@@ -2382,8 +2742,11 @@ def send_test_email(
         smtp_password=smtp_password,
         smtp_from_email=smtp_from_email,
         smtp_from_name=smtp_from_name,
+        email_include_branding=email_include_branding,
         email_template_password_reset_subject=email_template_password_reset_subject,
         email_template_password_reset_body=email_template_password_reset_body,
+        email_template_secure_send_subject=email_template_secure_send_subject,
+        email_template_secure_send_body=email_template_secure_send_body,
     )
     if trusted_hosts_enabled:
         allowed_hosts = include_current_host(allowed_hosts, request)
@@ -2444,6 +2807,7 @@ def send_test_email(
             "user": user,
             "settings": load_site_settings(db),
             "dns_providers": dns_providers_for_admin(db),
+            **vlan_ip_admin_context(db),
             "security_check": security_check_context(request, db),
             "message": message,
             "error": error,

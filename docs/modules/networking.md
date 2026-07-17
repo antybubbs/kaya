@@ -17,6 +17,8 @@ Models:
 
 - `VLAN`
 - `IPAddress`
+- `DHCPRange`
+- `DHCPLeaseHistory`
 - `NetworkMonitor`
 - `RemoteAccess`
 - `CustomField`
@@ -26,9 +28,12 @@ Models:
 
 Workflows:
 
-- List/search/filter IP records.
+- List/search/filter IP records by VLAN, then Category.
 - Create/edit IP address records.
-- Bulk update category/assignment type.
+- Bulk update VLAN, Category, and assignment type.
+- Configure VLANs, Categories, and multiple DHCP ranges under Site Administration → Module Settings → VLAN/IP Manager.
+- Review current and historical DHCP leases independently of provider availability.
+- Attribute retained DNS traffic to the client IP and lease interval observed at query time.
 - Ping an address.
 - Configure monitoring from the IP form.
 - Configure remote access from the IP form.
@@ -42,7 +47,8 @@ Permissions:
 
 Risks:
 
-- Database uniqueness is per VLAN/address, but parts of form logic treat address uniqueness more globally.
+- Database uniqueness and form validation are per VLAN/address.
+- Legacy placeholder rows created for every DHCP-pool address are not deleted automatically; administrators should review and retire them after configuring ranges.
 - Ping depends on OS/container network capability.
 
 ## IP/WAN Monitor
