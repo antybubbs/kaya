@@ -24,7 +24,13 @@
   <div class="settings-layout">
     <aside class="panel settings-internal-sidebar" aria-label="Site administration sections">
       <div class="settings-side-section">
-        <a href="/system/site-administration?tab=general" class="settings-side-link active" data-settings-parent-tab="general" data-default-child="general" aria-selected="true">General</a>
+        <details class="settings-side-group" data-settings-details="general" open>
+          <summary class="settings-side-link active" data-settings-parent-tab="general" data-default-child="general" aria-selected="true">General</summary>
+          <div class="settings-side-children">
+            <a href="/system/site-administration?tab=general" class="settings-side-child active" data-settings-child-tab="general" data-settings-parent="general" aria-selected="true">General</a>
+            <a href="/system/site-administration?tab=experimental-features" class="settings-side-child" data-settings-child-tab="experimental-features" data-settings-parent="general" aria-selected="false">Experimental Features</a>
+          </div>
+        </details>
         <a href="/system/site-administration?tab=security" class="settings-side-link" data-settings-parent-tab="security" data-default-child="security" aria-selected="false">Security</a>
         <a href="/system/site-administration?tab=uploads" class="settings-side-link" data-settings-parent-tab="uploads" data-default-child="uploads" aria-selected="false">Uploads</a>
       </div>
@@ -62,6 +68,29 @@
     </aside>
 
     <main class="settings-content-panel">
+  <section class="settings-tab-panel" data-settings-panel="experimental-features" data-settings-parent="general" role="tabpanel" hidden>
+    <div class="ha-title-line"><h2>Experimental Features</h2>{% set maturity_label='Preview' %}{% set maturity_tooltip='Experimental controls can expose unfinished modules.' %}{% include 'components/maturity_badge.html' %}</div>
+    <p class="muted">Control modules that are still being hardened. New experimental modules are disabled by default; existing modules retain their previous availability.</p>
+    {% if request.query_params.get('feature_status') %}<div class="success" role="status">{{ 'Backup Manager' if request.query_params.get('feature') == 'backup-manager' else 'High Availability' }} has been {{ request.query_params.get('feature_status') }}.</div>{% endif %}
+    {% if request.query_params.get('feature_error') == 'acknowledgement-required' %}<div class="alert" role="alert">Acknowledge that existing clusters will remain configured locally and preserved in Kaya before disabling the management interface.</div>{% endif %}
+    {% if request.query_params.get('feature_error') == 'backup-acknowledgement-required' %}<div class="alert" role="alert">Acknowledge that backup targets, records, job history, and artifacts will be preserved before disabling Backup Manager.</div>{% endif %}
+    <div class="remote-settings-card experimental-feature-card">
+      <header><span>High Availability</span>{% set maturity_label='Beta' %}{% include 'components/maturity_badge.html' %}</header>
+      <div class="experimental-feature-body"><div><strong>High Availability framework</strong><small>Shows the read-only HA overview and Pi-hole provider registry. This milestone does not run jobs, sync configuration, fail over services, or modify DNS data.</small></div><span class="feature-state {% if settings.get('high_availability_enabled') == '1' %}is-enabled{% endif %}">{{ 'Enabled' if settings.get('high_availability_enabled') == '1' else 'Disabled' }}</span></div>
+      <div class="form-actions experimental-feature-actions">
+        {% if settings.get('high_availability_enabled') == '1' %}{% if ha_active_cluster_count %}<label class="ha-disable-ack"><input type="checkbox" name="acknowledge_ha_disable" value="1" required><span><strong>Preserve and stop managing {{ ha_active_cluster_count }} cluster{{ '' if ha_active_cluster_count == 1 else 's' }}</strong><small>Cluster records remain in Kaya. Existing local services continue operating, but Kaya management is hidden and HA jobs are stopped.</small></span></label>{% endif %}<button class="button secondary" name="enabled" value="0" formaction="/system/site-administration/experimental-features/high-availability" formmethod="post">Disable High Availability</button>
+        {% else %}<button class="button" name="enabled" value="1" formaction="/system/site-administration/experimental-features/high-availability" formmethod="post">Enable High Availability</button>{% endif %}
+      </div>
+    </div>
+    <div class="remote-settings-card experimental-feature-card">
+      <header><span>Backup Manager</span>{% set maturity_label='Beta' %}{% set maturity_tooltip='Backup Manager is a beta feature.' %}{% include 'components/maturity_badge.html' %}</header>
+      <div class="experimental-feature-body"><div><strong>Backup Manager</strong><small>Tracks Proxmox jobs and manages encrypted Docker Agent backups and restores. Disabling hides the module and pauses new job dispatch without deleting targets, records, history, or artifacts.</small></div><span class="feature-state {% if settings.get('backup_manager_enabled', '1') == '1' %}is-enabled{% endif %}">{{ 'Enabled' if settings.get('backup_manager_enabled', '1') == '1' else 'Disabled' }}</span></div>
+      <div class="form-actions experimental-feature-actions">
+        {% if settings.get('backup_manager_enabled', '1') == '1' %}{% if backup_preserved_item_count %}<label class="ha-disable-ack"><input type="checkbox" name="acknowledge_backup_disable" value="1" required><span><strong>Preserve {{ backup_preserved_item_count }} backup record{{ '' if backup_preserved_item_count == 1 else 's' }}</strong><small>All targets, records, job history and artifacts remain. New agent jobs stop dispatching; {{ backup_inflight_job_count }} queued or in-flight job{{ '' if backup_inflight_job_count == 1 else 's' }} may still report final status.</small></span></label>{% endif %}<button class="button secondary" name="enabled" value="0" formaction="/system/site-administration/experimental-features/backup-manager" formmethod="post">Disable Backup Manager</button>
+        {% else %}<button class="button" name="enabled" value="1" formaction="/system/site-administration/experimental-features/backup-manager" formmethod="post">Enable Backup Manager</button>{% endif %}
+      </div>
+    </div>
+  </section>
   <section class="settings-tab-panel" data-settings-panel="module-secure-send" data-settings-parent="modules" role="tabpanel" hidden>
     <h2>Secure Send</h2>
     <div class="remote-settings-card">

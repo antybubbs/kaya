@@ -25,9 +25,16 @@ def test_existing_user_migration_preserves_local_account_and_makes_password_null
     row = connection.execute("SELECT email, password_hash, authentication_type, role_source, is_break_glass FROM users").fetchone()
     session_user = connection.execute("SELECT user_id FROM app_sessions WHERE session_id = 'existing-session'").fetchone()[0]
     foreign_key_errors = connection.execute("PRAGMA foreign_key_check").fetchall()
+    ha_tables = {
+        row[0]
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('ha_clusters', 'ha_nodes', 'ha_health_checks')"
+        )
+    }
     connection.close()
     assert columns["password_hash"][3] == 0
     assert "encrypted_oidc_id_token" in session_columns
     assert row == ("admin@example.com", "existing-hash", "local", "local", 0)
     assert session_user == 1
     assert foreign_key_errors == []
+    assert ha_tables == {"ha_clusters", "ha_nodes", "ha_health_checks"}

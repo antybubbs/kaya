@@ -20,6 +20,18 @@ router = APIRouter(prefix="/infrastructure/backup-manager")
 templates = Jinja2Templates(directory="app/templates")
 
 
+def require_backup_user(request: Request, db: Session = Depends(get_db), user=Depends(require_user)):
+    if get_site_setting(db, "backup_manager_enabled") != "1":
+        raise HTTPException(status_code=404, detail="Not found")
+    return user
+
+
+def require_backup_editor(request: Request, db: Session = Depends(get_db), user=Depends(require_editor)):
+    if get_site_setting(db, "backup_manager_enabled") != "1":
+        raise HTTPException(status_code=404, detail="Not found")
+    return user
+
+
 def metadata(value: str | None) -> dict:
     try:
         data = json.loads(value or "{}")
@@ -362,7 +374,7 @@ def proxmox_backup_jobs(db: Session) -> list[dict]:
 def backup_home(
     request: Request,
     db: Session = Depends(get_db),
-    user=Depends(require_user),
+    user=Depends(require_backup_user),
 ):
     manual_backups = db.query(BackupRecord).order_by(BackupRecord.name.asc()).all()
     docker_workloads = (
@@ -421,7 +433,7 @@ def create_manual_backup(
     is_enabled: str = Form(""),
     csrf_token: str = Form(...),
     db: Session = Depends(get_db),
-    user=Depends(require_editor),
+    user=Depends(require_backup_editor),
 ):
     validate_csrf_token(request, csrf_token)
     clean_name = name.strip()
@@ -451,7 +463,7 @@ def create_manual_backup(
 
 
 @router.post("/manual/{record_id}/delete")
-def delete_manual_backup(request: Request, record_id: int, csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_editor)):
+def delete_manual_backup(request: Request, record_id: int, csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_backup_editor)):
     validate_csrf_token(request, csrf_token)
     row = db.get(BackupRecord, record_id)
     if not row or row.source_type != "manual":
@@ -474,7 +486,7 @@ def update_docker_backup_policy(
     owner: str = Form("", max_length=255),
     csrf_token: str = Form(...),
     db: Session = Depends(get_db),
-    user=Depends(require_editor),
+    user=Depends(require_backup_editor),
 ):
     validate_csrf_token(request, csrf_token)
     row = db.get(ComputeWorkload, workload_id)
@@ -504,7 +516,7 @@ def queue_docker_backup(
     workload_id: int,
     csrf_token: str = Form(...),
     db: Session = Depends(get_db),
-    user=Depends(require_editor),
+    user=Depends(require_backup_editor),
 ):
     validate_csrf_token(request, csrf_token)
     row = db.get(ComputeWorkload, workload_id)
@@ -524,7 +536,7 @@ def queue_docker_restore(
     workload_id: int,
     csrf_token: str = Form(...),
     db: Session = Depends(get_db),
-    user=Depends(require_editor),
+    user=Depends(require_backup_editor),
 ):
     validate_csrf_token(request, csrf_token)
     row = db.get(ComputeWorkload, workload_id)
@@ -549,6 +561,9 @@ def queue_docker_restore(
 @router.get("/api/agent/jobs")
 def agent_jobs(request: Request, db: Session = Depends(get_db)):
     host = require_agent_host(request, db)
+    if get_site_setting(db, "backup_manager_enabled") != "1":
+        db.commit()
+        return {"ok": True, "jobs": []}
     jobs = (
         db.query(BackupJob)
         .filter(BackupJob.host_id == host.id, BackupJob.status == "queued")

@@ -16,7 +16,7 @@ from app.core.performance import begin_request_metrics, end_request_metrics, ins
 from app.core.security import decrypt_secret, hash_password
 from app.db.session import Base, engine, SessionLocal
 from app.models.models import AuditLog, User, VLAN, VaultSession
-from app.routers import auth, oidc, dashboard, licences, admin, ip_addresses, hardware_assets, network_monitor, remote_manager, runbooks, domain_manager, compute_manager, rack_manager, backup_manager, dns_manager, secret_vault, secure_send
+from app.routers import auth, oidc, dashboard, licences, admin, ip_addresses, hardware_assets, network_monitor, remote_manager, runbooks, domain_manager, compute_manager, rack_manager, backup_manager, dns_manager, secret_vault, secure_send, high_availability
 from app.services.secure_send import cleanup_loop as secure_send_cleanup_loop
 from app.services.guacamole_bridge import stop_guacamole_bridge
 from app.services.kaya_remote_service import start_kaya_remote_service, stop_kaya_remote_service
@@ -109,11 +109,15 @@ async def protect_public_demo(request: Request, call_next):
 async def security_headers(request: Request, call_next):
     security = {}
     oidc_form_source = None
+    request.state.high_availability_enabled = False
+    request.state.backup_manager_enabled = True
     if not request.url.path.startswith("/static/"):
         db = SessionLocal()
         try:
             security = load_security_settings(db)
             oidc_form_source = oidc_form_action_source(db)
+            request.state.high_availability_enabled = get_site_setting(db, "high_availability_enabled") == "1"
+            request.state.backup_manager_enabled = get_site_setting(db, "backup_manager_enabled") == "1"
         finally:
             db.close()
         if security.get("trusted_hosts_enabled") == "1" or settings.allowed_hosts.strip():
@@ -681,6 +685,18 @@ def migrate_existing_database():
             for column in ["host_id", "workload_id", "operation", "status", "encryption_enabled", "requested_by_id", "created_at", "dispatched_at", "started_at", "finished_at"]:
                 conn.execute(text(f"CREATE INDEX ix_backup_jobs_{column} ON backup_jobs ({column})"))
 
+        conn.execute(text("CREATE TABLE IF NOT EXISTS ha_clusters (id INTEGER NOT NULL PRIMARY KEY, public_id VARCHAR(36) NOT NULL UNIQUE, name VARCHAR(120) NOT NULL, description TEXT, provider_key VARCHAR(40) DEFAULT 'pihole' NOT NULL, status VARCHAR(40) DEFAULT 'DRAFT' NOT NULL, virtual_ip VARCHAR(80), prefix_length INTEGER, authoritative_node_id INTEGER REFERENCES ha_nodes(id) ON DELETE SET NULL, current_active_node_id INTEGER REFERENCES ha_nodes(id) ON DELETE SET NULL, automatic_failover_enabled BOOLEAN DEFAULT 0 NOT NULL, automatic_failback_enabled BOOLEAN DEFAULT 0 NOT NULL, sync_mode VARCHAR(40) DEFAULT 'active_authoritative' NOT NULL, sync_interval_seconds INTEGER DEFAULT 300 NOT NULL, drift_check_interval_seconds INTEGER DEFAULT 300 NOT NULL, maintenance_mode BOOLEAN DEFAULT 0 NOT NULL, last_healthy_at DATETIME, last_failover_at DATETIME, created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)"))
+        conn.execute(text("CREATE TABLE IF NOT EXISTS ha_nodes (id INTEGER NOT NULL PRIMARY KEY, cluster_id INTEGER NOT NULL REFERENCES ha_clusters(id) ON DELETE CASCADE, public_id VARCHAR(36) NOT NULL UNIQUE, display_name VARCHAR(255) NOT NULL, management_host VARCHAR(255), api_base_url VARCHAR(500) NOT NULL, integration_reference_id INTEGER REFERENCES dns_providers(id) ON DELETE SET NULL, role VARCHAR(30) NOT NULL, desired_role VARCHAR(30) NOT NULL, status VARCHAR(40) DEFAULT 'UNVALIDATED' NOT NULL, network_interface VARCHAR(80), vrrp_priority INTEGER, agent_id VARCHAR(120), agent_version VARCHAR(80), provider_version VARCHAR(80), last_heartbeat_at DATETIME, last_health_at DATETIME, last_sync_at DATETIME, created_at DATETIME, updated_at DATETIME, CONSTRAINT uq_ha_nodes_cluster_integration UNIQUE (cluster_id, integration_reference_id))"))
+        conn.execute(text("CREATE TABLE IF NOT EXISTS ha_health_checks (id INTEGER NOT NULL PRIMARY KEY, cluster_id INTEGER NOT NULL REFERENCES ha_clusters(id) ON DELETE CASCADE, node_id INTEGER REFERENCES ha_nodes(id) ON DELETE CASCADE, check_key VARCHAR(120) NOT NULL, status VARCHAR(30) NOT NULL, severity VARCHAR(20) NOT NULL, latency_ms INTEGER, summary VARCHAR(1000) NOT NULL, technical_detail_redacted TEXT, observed_at DATETIME)"))
+        for table, columns in {
+            "ha_clusters": ["public_id", "name", "provider_key", "status", "created_by_user_id", "created_at", "deleted_at"],
+            "ha_nodes": ["cluster_id", "public_id", "integration_reference_id", "role", "desired_role", "status", "agent_id"],
+            "ha_health_checks": ["cluster_id", "node_id", "check_key", "status", "severity", "observed_at"],
+        }.items():
+            for column in columns:
+                conn.execute(text(f"CREATE INDEX IF NOT EXISTS ix_{table}_{column} ON {table} ({column})"))
+        conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_ha_clusters_active_virtual_ip ON ha_clusters (virtual_ip) WHERE virtual_ip IS NOT NULL AND deleted_at IS NULL"))
+
 
 @app.on_event("startup")
 async def on_startup():
@@ -733,6 +749,7 @@ app.include_router(backup_manager.router)
 app.include_router(dns_manager.router)
 app.include_router(secret_vault.router)
 app.include_router(secure_send.router)
+app.include_router(high_availability.router)
 app.include_router(admin.router)
 
 @app.get("/healthz", include_in_schema=False)

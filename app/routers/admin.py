@@ -38,9 +38,12 @@ from app.db.session import get_db
 from app.models.models import (
     AppSession,
     AuditLog,
+    BackupJob,
+    BackupRecord,
     CustomField,
     CustomFieldValue,
     DNSProviderConfig,
+    HACluster,
     DHCPRange,
     ExternalIdentity,
     ManagedListItem,
@@ -120,6 +123,8 @@ SITE_SETTING_KEYS = {
     "dashboard_show_source_age": "1",
     "dashboard_attention_required": "1",
     "dashboard_globally_disabled_widgets": "",
+    "high_availability_enabled": "",
+    "backup_manager_enabled": "1",
     "dns_manager_enabled": "",
     "dns_collector_enabled": "1",
     "dns_default_provider_id": "",
@@ -2058,6 +2063,9 @@ def settings_page(
         {
             "user": user,
             "settings": load_site_settings(db),
+            "ha_active_cluster_count": db.query(HACluster).filter(HACluster.deleted_at.is_(None)).count(),
+            "backup_preserved_item_count": db.query(BackupRecord).count() + db.query(BackupJob).count(),
+            "backup_inflight_job_count": db.query(BackupJob).filter(BackupJob.status.in_(["queued", "dispatched", "running"])).count(),
             "dns_providers": dns_providers_for_admin(db),
             **vlan_ip_admin_context(db),
             "security_check": security_check_context(request, db),
@@ -2065,6 +2073,77 @@ def settings_page(
             "error": None,
             **csrf_context(request),
         },
+    )
+
+
+@router.post("/system/site-administration/experimental-features/high-availability")
+async def set_high_availability_feature(
+    request: Request,
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    form = await request.form()
+    validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    enabled = str(form.get("enabled") or "") == "1"
+    previous = get_site_setting(db, "high_availability_enabled") == "1"
+    active_clusters = db.query(HACluster).filter(HACluster.deleted_at.is_(None)).count()
+    acknowledged = str(form.get("acknowledge_ha_disable") or "") == "1"
+    if not enabled and active_clusters and not acknowledged:
+        return RedirectResponse(
+            "/system/site-administration?tab=experimental-features&feature_error=acknowledgement-required",
+            status_code=303,
+        )
+    save_site_setting(db, "high_availability_enabled", "1" if enabled else "")
+    db.commit()
+    write_audit(
+        db,
+        user,
+        "feature_enabled" if enabled else "feature_disabled",
+        "experimental_feature",
+        entity_id="high_availability",
+        detail=f"High Availability {'enabled' if enabled else 'disabled'}.",
+        metadata={"feature": "high_availability", "previous_enabled": previous, "enabled": enabled, "preserved_cluster_count": active_clusters},
+    )
+    state = "enabled" if enabled else "disabled"
+    return RedirectResponse(
+        f"/system/site-administration?tab=experimental-features&feature_status={state}",
+        status_code=303,
+    )
+
+
+@router.post("/system/site-administration/experimental-features/backup-manager")
+async def set_backup_manager_feature(
+    request: Request,
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    form = await request.form()
+    validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    enabled = str(form.get("enabled") or "") == "1"
+    previous = get_site_setting(db, "backup_manager_enabled") == "1"
+    preserved_items = db.query(BackupRecord).count() + db.query(BackupJob).count()
+    inflight_jobs = db.query(BackupJob).filter(BackupJob.status.in_(["queued", "dispatched", "running"])).count()
+    acknowledged = str(form.get("acknowledge_backup_disable") or "") == "1"
+    if not enabled and preserved_items and not acknowledged:
+        return RedirectResponse(
+            "/system/site-administration?tab=experimental-features&feature_error=backup-acknowledgement-required",
+            status_code=303,
+        )
+    save_site_setting(db, "backup_manager_enabled", "1" if enabled else "")
+    db.commit()
+    write_audit(
+        db,
+        user,
+        "feature_enabled" if enabled else "feature_disabled",
+        "experimental_feature",
+        entity_id="backup_manager",
+        detail=f"Backup Manager {'enabled' if enabled else 'disabled'}.",
+        metadata={"feature": "backup_manager", "previous_enabled": previous, "enabled": enabled, "preserved_item_count": preserved_items, "inflight_job_count": inflight_jobs},
+    )
+    state = "enabled" if enabled else "disabled"
+    return RedirectResponse(
+        f"/system/site-administration?tab=experimental-features&feature=backup-manager&feature_status={state}",
+        status_code=303,
     )
 
 

@@ -1,5 +1,6 @@
 from datetime import datetime
-from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint
+from uuid import uuid4
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, LargeBinary, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.session import Base
 from app.services.user_names import user_display_name
@@ -575,6 +576,86 @@ class DNSClientTrafficEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     client = relationship("DNSRecognisedDevice", back_populates="traffic_history")
     provider = relationship("DNSProviderConfig")
+
+
+class HACluster(Base):
+    __tablename__ = "ha_clusters"
+    __table_args__ = (
+        Index(
+            "uq_ha_clusters_active_virtual_ip",
+            "virtual_ip",
+            unique=True,
+            sqlite_where=text("virtual_ip IS NOT NULL AND deleted_at IS NULL"),
+        ),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(36), default=lambda: str(uuid4()), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(120), index=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provider_key: Mapped[str] = mapped_column(String(40), default="pihole", index=True)
+    status: Mapped[str] = mapped_column(String(40), default="DRAFT", index=True)
+    virtual_ip: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    prefix_length: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    authoritative_node_id: Mapped[int | None] = mapped_column(ForeignKey("ha_nodes.id", ondelete="SET NULL"), nullable=True)
+    current_active_node_id: Mapped[int | None] = mapped_column(ForeignKey("ha_nodes.id", ondelete="SET NULL"), nullable=True)
+    automatic_failover_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    automatic_failback_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    sync_mode: Mapped[str] = mapped_column(String(40), default="active_authoritative")
+    sync_interval_seconds: Mapped[int] = mapped_column(Integer, default=300)
+    drift_check_interval_seconds: Mapped[int] = mapped_column(Integer, default=300)
+    maintenance_mode: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_healthy_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_failover_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    nodes = relationship("HANode", foreign_keys="HANode.cluster_id", cascade="all, delete-orphan", back_populates="cluster")
+    health_checks = relationship("HAHealthCheck", cascade="all, delete-orphan", back_populates="cluster")
+    created_by = relationship("User", foreign_keys=[created_by_user_id])
+
+
+class HANode(Base):
+    __tablename__ = "ha_nodes"
+    __table_args__ = (UniqueConstraint("cluster_id", "integration_reference_id", name="uq_ha_nodes_cluster_integration"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    cluster_id: Mapped[int] = mapped_column(ForeignKey("ha_clusters.id", ondelete="CASCADE"), index=True)
+    public_id: Mapped[str] = mapped_column(String(36), default=lambda: str(uuid4()), unique=True, index=True)
+    display_name: Mapped[str] = mapped_column(String(255))
+    management_host: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    api_base_url: Mapped[str] = mapped_column(String(500))
+    integration_reference_id: Mapped[int | None] = mapped_column(ForeignKey("dns_providers.id", ondelete="SET NULL"), nullable=True, index=True)
+    role: Mapped[str] = mapped_column(String(30), index=True)
+    desired_role: Mapped[str] = mapped_column(String(30), index=True)
+    status: Mapped[str] = mapped_column(String(40), default="UNVALIDATED", index=True)
+    network_interface: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    vrrp_priority: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    agent_id: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    agent_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    provider_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_health_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    cluster = relationship("HACluster", foreign_keys=[cluster_id], back_populates="nodes")
+    integration = relationship("DNSProviderConfig")
+
+
+class HAHealthCheck(Base):
+    __tablename__ = "ha_health_checks"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    cluster_id: Mapped[int] = mapped_column(ForeignKey("ha_clusters.id", ondelete="CASCADE"), index=True)
+    node_id: Mapped[int | None] = mapped_column(ForeignKey("ha_nodes.id", ondelete="CASCADE"), nullable=True, index=True)
+    check_key: Mapped[str] = mapped_column(String(120), index=True)
+    status: Mapped[str] = mapped_column(String(30), index=True)
+    severity: Mapped[str] = mapped_column(String(20), index=True)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    summary: Mapped[str] = mapped_column(String(1000))
+    technical_detail_redacted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    cluster = relationship("HACluster", back_populates="health_checks")
+    node = relationship("HANode")
 
 
 class DHCPLeaseHistory(Base):

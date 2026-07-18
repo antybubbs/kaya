@@ -96,7 +96,7 @@
       <summary><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="11" rx="2"></rect><path d="M8 20h8M12 16v4"></path></svg></span><span class="nav-label">Infrastructure</span></summary>
       <div class="nav-children">
         <a class="nav-link" href="/infrastructure/rack-manager"><span class="nav-label">Rack Manager</span></a>
-        <a class="nav-link" href="/infrastructure/backup-manager"><span class="nav-label">Backup Manager</span></a>
+        {% if request.state.backup_manager_enabled|default(true) %}<a class="nav-link" href="/infrastructure/backup-manager"><span class="nav-label">Backup Manager</span>{% set maturity_label='Beta' %}{% set maturity_tooltip='Backup Manager is a beta feature.' %}{% include 'components/maturity_badge.html' %}</a>{% endif %}
         <a class="nav-link" href="/infrastructure/asset-manager"><span class="nav-label">Asset Manager</span></a>
         <a class="nav-link" href="/infrastructure/vm-docker-manager"><span class="nav-label">VM/Docker Manager</span></a>
       </div>
@@ -118,6 +118,16 @@
         <a class="nav-link" href="/networking/domain-manager"><span class="nav-label">Domain Manager</span></a>
       </div>
     </details>
+    {% if request.state.high_availability_enabled|default(false) %}
+    <details class="nav-group" data-sidebar-menu="high-availability">
+      <summary><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 12h5l2-6 3 12 2-6h4"></path><circle cx="12" cy="12" r="9"></circle></svg></span><span class="nav-label">High Availability</span>{% set maturity_label='Beta' %}{% set maturity_tooltip='High Availability is a beta feature.' %}{% include 'components/maturity_badge.html' %}</summary>
+      <div class="nav-children">
+        <a class="nav-link" href="/high-availability"><span class="nav-label">Overview</span></a>
+        <a class="nav-link" href="/high-availability/clusters"><span class="nav-label">Clusters</span></a>
+        <a class="nav-link" href="/high-availability/supported-services"><span class="nav-label">Providers/Apps</span></a>
+      </div>
+    </details>
+    {% endif %}
     <details class="nav-group" data-sidebar-menu="security">
       <summary><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 20 7v5c0 5-3.4 8.4-8 9-4.6-.6-8-4-8-9V7l8-4Z"></path><path d="M9.5 12.5 11 14l3.5-4"></path></svg></span><span class="nav-label">Security</span></summary>
       <div class="nav-children">

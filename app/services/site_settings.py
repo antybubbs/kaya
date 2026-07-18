@@ -43,6 +43,8 @@ DEFAULT_SITE_SETTINGS = {
     "dashboard_show_source_age": "1",
     "dashboard_attention_required": "1",
     "dashboard_globally_disabled_widgets": "",
+    "high_availability_enabled": "",
+    "backup_manager_enabled": "1",
     "dns_manager_enabled": "",
     "dns_collector_enabled": "1",
     "dns_refresh_interval_seconds": "300",
