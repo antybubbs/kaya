@@ -1,34 +1,100 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="topbar"><div><h1>{{ 'Edit user' if target else 'Add user' }}</h1><p class="muted">Use strong unique passwords and assign the lowest role needed.</p></div></div>
-<section class="panel">
-{% if error %}<div class="alert">{{ error }}</div>{% endif %}
-<form method="post" class="form-grid">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <label>First name<input name="first_name" value="{{ target.first_name if target and target.first_name else '' }}"></label>
-  <label>Last name<input name="last_name" value="{{ target.last_name if target and target.last_name else '' }}"></label>
-  <label>Email<input name="email" type="email" value="{{ target.email if target else '' }}" required></label>
-  <label>Role<select name="role">{% for role in roles %}<option value="{{ role }}" {% if target and target.role == role %}selected{% endif %}>{{ role }}</option>{% endfor %}</select></label>
-  <label>Password<input name="password" type="password" autocomplete="new-password" {% if not target %}required{% endif %}></label>
-  <label>Active<select name="is_active"><option value="on" {% if not target or target.is_active %}selected{% endif %}>Active</option><option value="" {% if target and not target.is_active %}selected{% endif %}>Disabled</option></select></label>
-  {% if target %}<label>Role management<select name="role_source"><option value="local" {{ 'selected' if target.role_source == 'local' else '' }}>Local</option><option value="oidc" {{ 'selected' if target.role_source == 'oidc' else '' }}>OIDC managed</option></select></label>
-  <label class="checkbox-row"><input type="checkbox" name="is_break_glass" value="1" {{ 'checked' if target.is_break_glass else '' }}>Emergency local administrator</label>{% endif %}
-  <button type="submit">Save user</button>
-</form>
-{% if target %}
-{% if target.external_identities %}{% set external = target.external_identities[0] %}
-<section class="stack section-gap"><h2>OpenID Connect identity</h2><dl class="detail-grid">
-  <div><dt>Provider</dt><dd>{{ external.provider.name }}</dd></div>
-  <div><dt>Issuer</dt><dd>{{ external.issuer }}</dd></div>
-  <div><dt>Subject</dt><dd>{{ external.subject[:6] }}...{{ external.subject[-4:] }}</dd></div>
-  <div><dt>Linked email</dt><dd>{{ external.current_email }}</dd></div>
-  <div><dt>Link method</dt><dd>{{ external.link_method.replace('_',' ')|title }}</dd></div>
-  <div><dt>Last login</dt><dd>{{ external.last_login_at or 'Never' }}</dd></div>
-</dl></section>{% endif %}
-<form method="post" action="/team/users/{{ target.id }}/reset-2fa" class="stack section-gap">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <button class="ghost" type="submit">Reset user 2FA</button>
-</form>
-{% endif %}
-</section>
+{% set values = form_values|default({}, true) %}
+{% set errors = field_errors|default({}, true) %}
+<div class="user-editor-shell">
+  <div class="topbar user-editor-heading">
+    <div>
+      <p class="breadcrumb"><a href="/team/users">Users</a> / {{ 'Edit' if target else 'Add' }}</p>
+      <h1>{{ 'Edit user' if target else 'Add user' }}</h1>
+      <p class="muted">Use strong unique passwords and assign the lowest role needed.</p>
+    </div>
+    <a class="button secondary" href="/team/users">Back to users</a>
+  </div>
+
+  {% if error %}<div class="alert" role="alert">{{ error }}</div>{% endif %}
+
+  <form id="user-editor-form" method="post" class="user-editor-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+    <section class="panel user-editor-card" aria-labelledby="account-details-heading">
+      <header>
+        <h2 id="account-details-heading">Account details</h2>
+        <p>Identity, status and the role used inside Kaya.</p>
+      </header>
+      <div class="user-editor-fields">
+        <label for="user-first-name">First name
+          <input id="user-first-name" name="first_name" autocomplete="given-name" value="{{ values.get('first_name', target.first_name if target and target.first_name else '') }}" {% if errors.get('first_name') %}aria-invalid="true" aria-describedby="user-first-name-error"{% endif %}>
+          {% if errors.get('first_name') %}<small class="field-error" id="user-first-name-error">{{ errors.first_name }}</small>{% else %}<small>Enter given names only; keep the surname in the last name field.</small>{% endif %}
+        </label>
+        <label for="user-last-name">Last name
+          <input id="user-last-name" name="last_name" autocomplete="family-name" value="{{ values.get('last_name', target.last_name if target and target.last_name else '') }}">
+        </label>
+        <label for="user-email">Email address
+          <input id="user-email" name="email" type="email" autocomplete="email" value="{{ values.get('email', target.email if target else '') }}" required {% if errors.get('email') %}aria-invalid="true" aria-describedby="user-email-error"{% endif %}>
+          {% if errors.get('email') %}<small class="field-error" id="user-email-error">{{ errors.email }}</small>{% endif %}
+        </label>
+        <label for="user-password">{{ 'New password' if target else 'Password' }}
+          <input id="user-password" name="password" type="password" autocomplete="new-password" {% if not target %}required minlength="12"{% endif %}>
+          <small>{{ 'Leave blank to keep the current password.' if target else 'Use at least 12 characters.' }}</small>
+        </label>
+        <label for="user-role">Role
+          <select id="user-role" name="role">{% for role in roles %}{% set selected_role = values.get('role', target.role if target else 'viewer') %}<option value="{{ role }}" {% if selected_role == role %}selected{% endif %}>{{ role|title }}</option>{% endfor %}</select>
+        </label>
+        {% if target %}<label for="user-active">Active status
+          {% set selected_active = values.get('is_active', target.is_active if target else true) %}
+          <select id="user-active" name="is_active"><option value="on" {% if selected_active %}selected{% endif %}>Active</option><option value="" {% if not selected_active %}selected{% endif %}>Disabled</option></select>
+        </label>{% endif %}
+      </div>
+    </section>
+
+    {% if target %}
+    <section class="panel user-editor-card" aria-labelledby="access-authentication-heading">
+      <header>
+        <h2 id="access-authentication-heading">Access and authentication</h2>
+        <p>Control where roles come from and retain a tested emergency sign-in path.</p>
+      </header>
+      <div class="user-editor-fields">
+        <label for="user-role-source">Role management
+          {% set selected_source = values.get('role_source', target.role_source) %}
+          <select id="user-role-source" name="role_source"><option value="local" {{ 'selected' if selected_source == 'local' else '' }}>Local</option><option value="oidc" {{ 'selected' if selected_source == 'oidc' else '' }}>OIDC managed</option></select>
+          <small>OIDC-managed roles may be updated from mapped provider groups at sign-in.</small>
+        </label>
+        <div class="user-security-option">
+          {% set selected_break_glass = values.get('is_break_glass', target.is_break_glass) %}
+          <label class="checkbox-row" for="user-break-glass"><input id="user-break-glass" type="checkbox" name="is_break_glass" value="1" {{ 'checked' if selected_break_glass else '' }}><span><strong>Emergency local administrator</strong><small>Allows this account to sign in locally if the configured identity provider is unavailable. Requires an active administrator with a local password.</small></span></label>
+        </div>
+      </div>
+    </section>
+
+    {% if target.external_identities %}{% set external = target.external_identities[0] %}
+    <section class="panel user-editor-card" aria-labelledby="oidc-identity-heading">
+      <header>
+        <h2 id="oidc-identity-heading">OpenID Connect identity</h2>
+        <p>The external identity currently linked to this Kaya account.</p>
+      </header>
+      <dl class="user-identity-list">
+        <div><dt>Provider</dt><dd>{{ external.provider.name }}</dd></div>
+        <div><dt>Issuer</dt><dd class="mono">{{ external.issuer }}</dd></div>
+        <div><dt>Subject</dt><dd class="mono">{{ external.subject }}</dd></div>
+        <div><dt>Linked email</dt><dd>{{ external.current_email or 'Not supplied' }}</dd></div>
+        <div><dt>Link method</dt><dd>{{ external.link_method.replace('_',' ')|title }}</dd></div>
+        <div><dt>Last login</dt><dd>{{ local_time(external.last_login_at, 'friendly', 'Never') }}</dd></div>
+      </dl>
+    </section>
+    {% endif %}
+    {% endif %}
+  </form>
+
+  <div class="user-editor-actions">
+    <button type="submit" form="user-editor-form">Save user</button>
+    <a class="button secondary" href="/team/users">Cancel</a>
+    {% if target %}
+    <form method="post" action="/team/users/{{ target.id }}/reset-2fa" data-confirm-action="Reset two-factor authentication for this user? They will need to set it up again.">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="button secondary user-security-action" type="submit">Reset user 2FA</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
 {% endblock %}

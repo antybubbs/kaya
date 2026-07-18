@@ -75,14 +75,14 @@
         </summary>
         <div class="account-popover">
           <div class="account-heading">
-            <strong>{{ ((user.first_name or '') ~ ' ' ~ (user.last_name or ''))|trim or user.email }}</strong>
+            <strong>{{ user.display_name }}</strong>
             <span>{{ user.email }}</span>
           </div>
           <a class="account-link" href="/profile">Profile Settings</a>
-          <button class="account-link" type="button" data-install-kaya hidden>Install Kaya</button>
+          <button class="account-link ghost" type="button" data-install-kaya hidden>Install Kaya</button>
           <form method="post" action="/logout">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <button class="account-link logout-link" type="submit">Log out</button>
+            <button class="account-link ghost logout-link" type="submit">Log out</button>
           </form>
         </div>
       </details>

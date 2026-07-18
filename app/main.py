@@ -487,15 +487,22 @@ def migrate_existing_database():
             conn.execute(text("CREATE INDEX ix_runbook_spaces_name ON runbook_spaces (name)"))
         runbook_page_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(runbook_pages)"))}
         if not runbook_page_columns:
-            conn.execute(text("CREATE TABLE runbook_pages (id INTEGER NOT NULL PRIMARY KEY, space_id INTEGER REFERENCES runbook_spaces(id), parent_id INTEGER REFERENCES runbook_pages(id), title VARCHAR(255) NOT NULL, slug VARCHAR(255) NOT NULL UNIQUE, summary VARCHAR(500), body TEXT, tags VARCHAR(500), is_pinned BOOLEAN DEFAULT 0 NOT NULL, created_by_id INTEGER REFERENCES users(id), updated_by_id INTEGER REFERENCES users(id), created_at DATETIME, updated_at DATETIME)"))
+            conn.execute(text("CREATE TABLE runbook_pages (id INTEGER NOT NULL PRIMARY KEY, space_id INTEGER REFERENCES runbook_spaces(id), parent_id INTEGER REFERENCES runbook_pages(id), title VARCHAR(255) NOT NULL, slug VARCHAR(255) NOT NULL UNIQUE, summary VARCHAR(500), body TEXT, tags VARCHAR(500), is_pinned BOOLEAN DEFAULT 0 NOT NULL, view_count INTEGER DEFAULT 0 NOT NULL, last_viewed_at DATETIME, created_by_id INTEGER REFERENCES users(id), updated_by_id INTEGER REFERENCES users(id), created_at DATETIME, updated_at DATETIME)"))
             conn.execute(text("CREATE INDEX ix_runbook_pages_space_id ON runbook_pages (space_id)"))
             conn.execute(text("CREATE INDEX ix_runbook_pages_parent_id ON runbook_pages (parent_id)"))
             conn.execute(text("CREATE INDEX ix_runbook_pages_title ON runbook_pages (title)"))
             conn.execute(text("CREATE INDEX ix_runbook_pages_slug ON runbook_pages (slug)"))
             conn.execute(text("CREATE INDEX ix_runbook_pages_tags ON runbook_pages (tags)"))
             conn.execute(text("CREATE INDEX ix_runbook_pages_is_pinned ON runbook_pages (is_pinned)"))
+            conn.execute(text("CREATE INDEX ix_runbook_pages_view_count ON runbook_pages (view_count)"))
             conn.execute(text("CREATE INDEX ix_runbook_pages_created_by_id ON runbook_pages (created_by_id)"))
             conn.execute(text("CREATE INDEX ix_runbook_pages_updated_by_id ON runbook_pages (updated_by_id)"))
+        else:
+            if "view_count" not in runbook_page_columns:
+                conn.execute(text("ALTER TABLE runbook_pages ADD COLUMN view_count INTEGER DEFAULT 0 NOT NULL"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_runbook_pages_view_count ON runbook_pages (view_count)"))
+            if "last_viewed_at" not in runbook_page_columns:
+                conn.execute(text("ALTER TABLE runbook_pages ADD COLUMN last_viewed_at DATETIME"))
         runbook_history_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(runbook_page_history)"))}
         if not runbook_history_columns:
             conn.execute(text("CREATE TABLE runbook_page_history (id INTEGER NOT NULL PRIMARY KEY, page_id INTEGER NOT NULL REFERENCES runbook_pages(id), title VARCHAR(255) NOT NULL, summary VARCHAR(500), body TEXT, tags VARCHAR(500), saved_by_id INTEGER REFERENCES users(id), saved_at DATETIME)"))

@@ -20,6 +20,7 @@ from app.services.mail import MailConfigurationError, render_email_template, sen
 from app.services.sessions import end_user_session, start_user_session, touch_user_session
 from app.services.site_settings import get_site_setting
 from app.services.oidc_client import safe_return_path
+from app.services.user_names import clean_name_part, first_name_contains_last_name
 from app.services.authentication_policy import get_authentication_policy, normal_local_login_allowed
 
 router = APIRouter()
@@ -677,6 +678,9 @@ def profile(request: Request, db: Session = Depends(get_db), user=Depends(requir
         "user_identity_conflict": "This Kaya account is already linked to a different OpenID Connect identity.",
     }
     identity_error = request.query_params.get("identity_error", "")
+    profile_field_errors = {}
+    if request.query_params.get("name_error") == "duplicate_last_name":
+        profile_field_errors["first_name"] = "Enter only the given name here; the surname is already in the last name field."
     success = None
     if request.query_params.get("identity_linked") == "1":
         success = "OpenID Connect account linked successfully."
@@ -686,15 +690,19 @@ def profile(request: Request, db: Session = Depends(get_db), user=Depends(requir
         "user": user, "identity": identity, "oidc_provider": provider,
         "setup_secret": secret, "setup_uri": uri, "setup_qr_code": qr_code,
         "error": identity_errors.get(identity_error, "The sign-in method could not be updated." if identity_error else None),
-        "success": success, **csrf_context(request),
+        "success": success, "profile_field_errors": profile_field_errors, **csrf_context(request),
     })
 
 
 @router.post("/profile/name")
 def update_profile_name(request: Request, first_name: str = Form("", max_length=120), last_name: str = Form("", max_length=120), csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_user)):
     validate_csrf_token(request, csrf_token)
-    user.first_name = first_name.strip() or None
-    user.last_name = last_name.strip() or None
+    first_name = clean_name_part(first_name)
+    last_name = clean_name_part(last_name)
+    if first_name_contains_last_name(first_name, last_name):
+        return RedirectResponse("/profile?name_error=duplicate_last_name", status_code=303)
+    user.first_name = first_name
+    user.last_name = last_name
     db.commit()
     write_audit(db, user, "update_profile", "user", str(user.id), request.client.host if request.client else None, detail="Updated profile name")
     return RedirectResponse("/profile", status_code=303)

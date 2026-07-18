@@ -2,6 +2,7 @@ from datetime import datetime
 from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.session import Base
+from app.services.user_names import user_display_name
 
 
 class User(Base):
@@ -21,6 +22,10 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     external_identities = relationship("ExternalIdentity", foreign_keys="ExternalIdentity.user_id", back_populates="user")
+
+    @property
+    def display_name(self) -> str:
+        return user_display_name(self.first_name, self.last_name, self.email)
 
 
 class OIDCProvider(Base):
@@ -734,6 +739,8 @@ class RunbookPage(Base):
     body: Mapped[str | None] = mapped_column(Text, nullable=True)
     tags: Mapped[str | None] = mapped_column(String(500), nullable=True, index=True)
     is_pinned: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    view_count: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    last_viewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     updated_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

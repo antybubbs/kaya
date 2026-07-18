@@ -5,7 +5,7 @@
 <table><thead><tr><th>Name</th><th>Email</th><th>Login method</th><th>OIDC provider</th><th>Last OIDC login</th><th>Role</th><th>Role source</th><th>Status</th><th>Break glass</th><th>2FA</th><th>Created</th><th></th></tr></thead><tbody>
 {% for row in rows %}
 <tr>
-  <td>{{ ((row.first_name or '') ~ ' ' ~ (row.last_name or ''))|trim or '-' }}</td>
+  <td>{{ row.display_name }}</td>
   <td>{{ row.email }}</td>
   <td>{{ row.authentication_type.replace('_', ' ')|title }}</td>
   <td>{{ row.external_identities[0].provider.name if row.external_identities else '-' }}</td>

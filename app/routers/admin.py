@@ -53,6 +53,7 @@ from app.models.models import (
 from app.routers.auth import require_admin
 from app.services.about import collect_about
 from app.services.audit import write_audit
+from app.services.user_names import clean_name_part, first_name_contains_last_name
 from app.services.client_ip import client_ip_details, validate_trusted_proxies
 from app.services.custom_fields import FIELD_TYPES, make_field_key
 from app.services.exporter import export_ip_addresses_csv, export_licences_csv
@@ -870,6 +871,8 @@ def new_user(
             "target": None,
             "roles": sorted(ROLES),
             "error": None,
+            "field_errors": {},
+            "form_values": {},
             **csrf_context(request),
         },
     )
@@ -891,6 +894,20 @@ def create_user(
 
     role = role if role in ROLES else "viewer"
     email = email.strip().lower()
+    first_name = clean_name_part(first_name)
+    last_name = clean_name_part(last_name)
+
+    if first_name_contains_last_name(first_name, last_name):
+        return templates.TemplateResponse(
+            request, "user_form.html",
+            {
+                "user": user, "target": None, "roles": sorted(ROLES), "error": None,
+                "field_errors": {"first_name": "Enter only the given name here; the surname is already in the last name field."},
+                "form_values": {"email": email, "first_name": first_name, "last_name": last_name, "role": role},
+                **csrf_context(request),
+            },
+            status_code=400,
+        )
 
     if db.query(User).filter(User.email == email).first():
         return templates.TemplateResponse(
@@ -901,6 +918,8 @@ def create_user(
                 "target": None,
                 "roles": sorted(ROLES),
                 "error": "A user with that email already exists.",
+                "field_errors": {"email": "This email address is already in use."},
+                "form_values": {"email": email, "first_name": first_name, "last_name": last_name, "role": role},
                 **csrf_context(request),
             },
             status_code=400,
@@ -908,8 +927,8 @@ def create_user(
 
     row = User(
         email=email,
-        first_name=first_name.strip() or None,
-        last_name=last_name.strip() or None,
+        first_name=first_name,
+        last_name=last_name,
         password_hash=hash_password(password),
         role=role,
         is_active=True,
@@ -954,6 +973,8 @@ def edit_user(
             "target": target,
             "roles": sorted(ROLES),
             "error": None,
+            "field_errors": {},
+            "form_values": {},
             **csrf_context(request),
         },
     )
@@ -1000,10 +1021,26 @@ def update_user(
         )
 
     role = role if role in ROLES else "viewer"
+    clean_first_name = clean_name_part(first_name)
+    clean_last_name = clean_name_part(last_name)
+    if first_name_contains_last_name(clean_first_name, clean_last_name):
+        return templates.TemplateResponse(
+            request, "user_form.html",
+            {
+                "user": user, "target": target, "roles": sorted(ROLES), "error": None,
+                "field_errors": {"first_name": "Enter only the given name here; the surname is already in the last name field."},
+                "form_values": {
+                    "email": email.strip().lower(), "first_name": clean_first_name, "last_name": clean_last_name,
+                    "role": role, "is_active": bool(is_active), "is_break_glass": is_break_glass == "1", "role_source": role_source,
+                },
+                **csrf_context(request),
+            },
+            status_code=400,
+        )
 
     target.email = email.strip().lower()
-    target.first_name = first_name.strip() or None
-    target.last_name = last_name.strip() or None
+    target.first_name = clean_first_name
+    target.last_name = clean_last_name
     target.role = role
     target.is_active = bool(is_active)
     requested_break_glass = is_break_glass == "1"
