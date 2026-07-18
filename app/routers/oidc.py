@@ -20,6 +20,7 @@ from app.db.session import get_db
 from app.models.models import ExternalIdentity, OIDCLinkInvitation, OIDCProvider, OIDCTransaction, RemoteManagerSetting, User
 from app.routers.auth import client_key, login_is_limited, record_login_failure, require_admin, require_user
 from app.services.audit import write_audit
+from app.services.authentication_policy import AUTHENTICATION_MODES, get_authentication_policy, oidc_only_readiness
 from app.services.oidc_client import OIDCFlowError, authorization_redirect, claims_preview, consume_transaction, exchange_and_validate, safe_return_path
 from app.services.oidc_discovery import OIDCDiscoveryError, test_and_store_discovery
 from app.services.oidc_identity import OIDCIdentityError, confirm_transaction_link, resolve_login, unlink_identity
@@ -93,6 +94,16 @@ def _audit_oidc(db: Session, user: User | None, action: str, request: Request, p
     )
 
 
+def _oidc_error_context(request: Request, db: Session, message: str, **values) -> dict:
+    policy = get_authentication_policy(db)
+    return {
+        "message": message,
+        "authentication_mode": policy.authentication_mode,
+        **values,
+        **csrf_context(request, include_version=False),
+    }
+
+
 def callback_error_context(db: Session, request: Request, transaction: OIDCTransaction | None, exc: Exception) -> tuple[User | None, str, str, str]:
     actor = None
     if transaction and transaction.initiated_by_user_id:
@@ -119,7 +130,7 @@ async def _begin(request: Request, db: Session, provider: OIDCProvider, *, flow_
     start_action = "oidc_link_started" if flow_type in {"self_link", "admin_link"} else "oidc_login_started"
     if _rate_limited(f"oidc:{client_key(request)}"):
         _audit_oidc(db, actor, "oidc_login_rejected", request, provider, category="rate_limited", severity="warning")
-        return templates.TemplateResponse(request, "oidc_error.html", {"message": "Too many sign-in attempts. Try again later.", **csrf_context(request, include_version=False)}, status_code=429)
+        return templates.TemplateResponse(request, "oidc_error.html", _oidc_error_context(request, db, "Too many sign-in attempts. Try again later."), status_code=429)
     _audit_oidc(db, actor, start_action, request, provider)
     try:
         url, opaque = await asyncio.wait_for(
@@ -132,7 +143,7 @@ async def _begin(request: Request, db: Session, provider: OIDCProvider, *, flow_
         )
     except (TimeoutError, OIDCDiscoveryError, OIDCFlowError):
         _audit_oidc(db, actor, "oidc_login_failed", request, provider, category="initiation_failed", severity="warning")
-        return templates.TemplateResponse(request, "oidc_error.html", {"message": "Single sign-on is temporarily unavailable.", **csrf_context(request, include_version=False)}, status_code=503)
+        return templates.TemplateResponse(request, "oidc_error.html", _oidc_error_context(request, db, "Single sign-on is currently unavailable."), status_code=503)
     request.session["oidc_transaction"] = opaque
     return RedirectResponse(url, status_code=302)
 
@@ -178,9 +189,10 @@ def _complete_vault_assurance(request: Request, db: Session, provider: OIDCProvi
 
 @router.get("/auth/oidc/login")
 async def oidc_login(request: Request, return_to: str = Query("/dashboard"), db: Session = Depends(get_db)):
-    provider = active_provider(db)
-    if settings.demo_mode or not provider or get_site_setting(db, "authentication_mode") == "local_only":
-        return templates.TemplateResponse(request, "oidc_error.html", {"message": "Single sign-on is not enabled.", **csrf_context(request, include_version=False)}, status_code=404)
+    policy = get_authentication_policy(db)
+    provider = policy.provider
+    if settings.demo_mode or not policy.show_oidc_login:
+        return templates.TemplateResponse(request, "oidc_error.html", _oidc_error_context(request, db, "Single sign-on is not enabled."), status_code=404)
     return await _begin(request, db, provider, return_path=safe_return_path(return_to, get_site_setting(db, "oidc_post_login_path")))
 
 
@@ -234,7 +246,7 @@ async def oidc_callback(request: Request, state: str = "", code: str = "", error
             except Exception:
                 db.rollback()
         request.session.pop("oidc_transaction", None)
-        return templates.TemplateResponse(request, "oidc_error.html", {"message": message, "return_url": return_url, "return_label": return_label, **csrf_context(request, include_version=False)}, status_code=400)
+        return templates.TemplateResponse(request, "oidc_error.html", _oidc_error_context(request, db, message, return_url=return_url, return_label=return_label), status_code=400)
 
 
 def _pending_transaction(db: Session, request: Request) -> OIDCTransaction | None:
@@ -263,7 +275,7 @@ def link_confirm_page(request: Request, db: Session = Depends(get_db)):
 def link_confirm_submit(request: Request, password: str = Form("", max_length=255), csrf_token: str = Form(...), db: Session = Depends(get_db)):
     validate_csrf_token(request, csrf_token)
     if _rate_limited(f"oidc-link-confirm:{client_key(request)}", limit=10):
-        return templates.TemplateResponse(request, "oidc_error.html", {"message": "Too many account-link attempts. Try again later.", **csrf_context(request, include_version=False)}, status_code=429)
+        return templates.TemplateResponse(request, "oidc_error.html", _oidc_error_context(request, db, "Too many account-link attempts. Try again later."), status_code=429)
     transaction = _pending_transaction(db, request)
     if not transaction:
         return RedirectResponse("/login", status_code=303)
@@ -275,7 +287,7 @@ def link_confirm_submit(request: Request, password: str = Form("", max_length=25
     except OIDCIdentityError as exc:
         provider = db.get(OIDCProvider, transaction.provider_id)
         _audit_oidc(db, current, "oidc_link_failed", request, provider, category=exc.category, severity="warning")
-        return templates.TemplateResponse(request, "oidc_error.html", {"message": str(exc), **csrf_context(request, include_version=False)}, status_code=400)
+        return templates.TemplateResponse(request, "oidc_error.html", _oidc_error_context(request, db, str(exc)), status_code=400)
     user = db.get(User, identity.user_id)
     provider = db.get(OIDCProvider, identity.provider_id)
     request.session.pop("oidc_transaction", None)
@@ -327,10 +339,18 @@ def emergency_login_page(request: Request, db: Session = Depends(get_db)):
 def emergency_login_submit(request: Request, email: str = Form(""), password: str = Form(""), totp_code: str = Form(""), csrf_token: str = Form(...), db: Session = Depends(get_db)):
     validate_csrf_token(request, csrf_token)
     key = client_key(request)
-    if get_site_setting(db, "oidc_emergency_local_enabled") != "1" or login_is_limited(db, key, email.strip().lower()):
+    if get_site_setting(db, "oidc_emergency_local_enabled") != "1":
+        write_audit(db, None, "break_glass_login_failed", "user", ip_address=request.client.host if request.client else None, detail="Emergency local login is disabled", severity="error", status_code=403)
+        return RedirectResponse("/login", status_code=303)
+    if login_is_limited(db, key, email.strip().lower()):
+        write_audit(db, None, "break_glass_login_failed", "user", ip_address=request.client.host if request.client else None, detail="Emergency local login blocked by rate limit", severity="error", status_code=429)
         return templates.TemplateResponse(request, "emergency_login.html", {"error": "Invalid email, password, or authentication code.", "requires_2fa": False, **csrf_context(request, include_version=False)}, status_code=401)
     pending = request.session.get("pending_break_glass_user_id")
-    user = db.get(User, pending) if pending else db.query(User).filter_by(email=email.strip().lower(), is_active=True, role="admin", is_break_glass=True).first()
+    user = (
+        db.query(User).filter_by(id=pending, is_active=True, role="admin", is_break_glass=True).first()
+        if pending
+        else db.query(User).filter_by(email=email.strip().lower(), is_active=True, role="admin", is_break_glass=True).first()
+    )
     valid = bool(user and user.password_hash and (pending or verify_password(password, user.password_hash)))
     if valid and user.totp_enabled and not pending:
         request.session["pending_break_glass_user_id"] = user.id
@@ -361,6 +381,8 @@ def authentication_admin(request: Request, tab: str = Query("general"), db: Sess
     preview = request.session.pop("oidc_test_preview", None)
     invitation = request.session.pop("oidc_invitation_url", None)
     identities = db.query(ExternalIdentity).order_by(ExternalIdentity.created_at.desc()).all()
+    readiness = oidc_only_readiness(db, user)
+    emergency_url = f"{get_site_setting(db, 'base_url').rstrip('/')}/auth/local"
     return templates.TemplateResponse(request, "authentication_settings.html", {
         "user": user, "tab": tab if tab in {"general", "oidc", "mapping", "links"} else "general",
         "provider": provider, "auth_mode": get_site_setting(db, "authentication_mode"),
@@ -372,6 +394,7 @@ def authentication_admin(request: Request, tab: str = Query("general"), db: Sess
         "callback_url": callback_url(db), "post_logout_url": post_logout_url(db), "status": _provider_status(db, provider),
         "identities": identities, "users": db.query(User).order_by(User.email).all(), "test_preview": preview,
         "invitation_url": invitation, "role_mappings": json.loads(provider.role_mappings_json or "[]") if provider else [],
+        "oidc_readiness": readiness, "emergency_url": emergency_url,
         **csrf_context(request),
     })
 
@@ -384,23 +407,35 @@ def save_authentication_general(
     oidc_required_risk_acknowledged: str = Form(""), csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_admin),
 ):
     validate_csrf_token(request, csrf_token)
-    mode = authentication_mode if authentication_mode in {"local_only", "local_and_oidc", "oidc_preferred", "oidc_required"} else "local_only"
+    mode = authentication_mode if authentication_mode in AUTHENTICATION_MODES else "local_only"
     provider = active_provider(db)
+    if mode == "oidc_preferred" and oidc_show_local_preferred != "1" and not provider:
+        write_audit(db, user, "oidc_readiness_validation_failed", "oidc", detail="OIDC preferred without local sign-in requires an enabled provider", severity="warning")
+        return RedirectResponse("/system/site-administration/authentication?tab=general&error=provider_required", status_code=303)
     if mode == "oidc_required":
-        break_glass = db.query(User).filter(User.role == "admin", User.is_active == True, User.is_break_glass == True, User.password_hash.isnot(None)).first()  # noqa: E712
-        if not provider or provider.discovery_status != "ok" or not provider.test_login_succeeded_at or not break_glass or oidc_emergency_local_enabled != "1" or oidc_required_risk_acknowledged != "1":
+        readiness = oidc_only_readiness(db, user, emergency_enabled=oidc_emergency_local_enabled == "1")
+        if not readiness["ready"] or oidc_required_risk_acknowledged != "1":
+            write_audit(db, user, "oidc_readiness_validation_failed", "oidc", str(provider.id) if provider else None, detail="OIDC-only activation prerequisites were not met", severity="warning")
             return RedirectResponse("/system/site-administration/authentication?tab=general&error=required_safety", status_code=303)
+    old_mode = get_site_setting(db, "authentication_mode")
     for key, value in {
         "authentication_mode": mode, "oidc_button_label": oidc_button_label.strip() or "Sign in with SSO",
         "oidc_post_login_path": safe_return_path(oidc_post_login_path), "oidc_post_logout_path": safe_return_path(oidc_post_logout_path, "/login"),
         "oidc_auto_redirect_required": "1" if oidc_auto_redirect_required == "1" else "",
-        "oidc_show_local_preferred": "1" if oidc_show_local_preferred == "1" else "",
+        "oidc_show_local_preferred": (
+            "1" if oidc_show_local_preferred == "1" else ""
+        ) if mode == "oidc_preferred" else get_site_setting(db, "oidc_show_local_preferred"),
         "oidc_emergency_local_enabled": "1" if oidc_emergency_local_enabled == "1" else "",
         "oidc_required_risk_acknowledged": "1" if oidc_required_risk_acknowledged == "1" else "",
     }.items():
         _save_setting(db, key, value)
     db.commit()
-    write_audit(db, user, "oidc_configuration_updated", "oidc", detail=f"Authentication mode set to {mode}", severity="error" if mode == "oidc_required" else "info")
+    if old_mode != mode:
+        write_audit(db, user, "authentication_mode_changed", "oidc", detail=f"Authentication mode changed from {old_mode} to {mode}", severity="warning" if mode == "oidc_required" else "info")
+        if mode == "oidc_required":
+            write_audit(db, user, "oidc_only_enabled", "oidc", detail="OIDC-only authentication enabled", severity="error")
+        elif old_mode == "oidc_required":
+            write_audit(db, user, "oidc_only_disabled", "oidc", detail=f"OIDC-only authentication changed to {mode}", severity="warning")
     return RedirectResponse("/system/site-administration/authentication?tab=general&saved=1", status_code=303)
 
 
@@ -427,6 +462,11 @@ def save_oidc_provider(
     if not provider:
         provider = OIDCProvider()
         db.add(provider)
+    previous_security = None if created else (
+        provider.issuer, provider.client_id, provider.encrypted_client_secret, provider.scopes,
+        provider.is_enabled, provider.verify_tls, provider.use_userinfo, provider.require_verified_email,
+        provider.email_matching_mode, provider.allowed_email_domains,
+    )
     provider.name = name.strip() or "OpenID Connect"
     provider.issuer = issuer.strip()
     provider.client_id = client_id.strip()
@@ -451,11 +491,26 @@ def save_oidc_provider(
     provider.update_names_on_login = update_names_on_login == "1"
     provider.update_email_on_login = update_email_on_login == "1"
     provider.end_session_on_logout = end_session_on_logout == "1"
-    provider.discovery_status = None
-    provider.discovery_error = None
+    current_security = (
+        provider.issuer, provider.client_id, provider.encrypted_client_secret, provider.scopes,
+        provider.is_enabled, provider.verify_tls, provider.use_userinfo, provider.require_verified_email,
+        provider.email_matching_mode, provider.allowed_email_domains,
+    )
+    security_changed = created or previous_security != current_security
+    if security_changed and get_site_setting(db, "authentication_mode") == "oidc_required":
+        db.rollback()
+        return RedirectResponse("/system/site-administration/authentication?tab=oidc&error=disable_oidc_only_first", status_code=303)
+    if security_changed:
+        provider.discovery_status = None
+        provider.discovery_error = None
+        provider.metadata_json = None
+        provider.metadata_fetched_at = None
+        provider.test_login_succeeded_at = None
     db.commit()
     action = "oidc_configuration_created" if created else "oidc_configuration_updated"
     write_audit(db, user, action, "oidc", str(provider.id), detail=f"OIDC provider {provider.name} saved", severity="error" if not provider.verify_tls else "info")
+    if security_changed and not created:
+        write_audit(db, user, "oidc_provider_retest_required", "oidc", str(provider.id), detail="Security-sensitive provider configuration changed; discovery and real login must be retested", severity="warning")
     return RedirectResponse("/system/site-administration/authentication?tab=oidc&saved=1", status_code=303)
 
 
@@ -511,11 +566,16 @@ def save_oidc_mapping(
     provider = db.query(OIDCProvider).order_by(OIDCProvider.id.asc()).first()
     if not provider:
         return RedirectResponse("/system/site-administration/authentication?tab=mapping&error=no_provider", status_code=303)
-    for field, value in {"email_claim": email_claim, "email_verified_claim": email_verified_claim, "name_claim": name_claim, "first_name_claim": first_name_claim, "last_name_claim": last_name_claim, "preferred_username_claim": preferred_username_claim, "group_claim": group_claim}.items():
+    identity_fields = {"email_claim": email_claim, "email_verified_claim": email_verified_claim, "name_claim": name_claim, "first_name_claim": first_name_claim, "last_name_claim": last_name_claim, "preferred_username_claim": preferred_username_claim, "group_claim": group_claim}
+    identity_resolution_changed = False
+    for field, value in identity_fields.items():
         clean = value.strip()
         if not clean or any(part in {"iss", "sub"} for part in clean.split(".")):
             return RedirectResponse("/system/site-administration/authentication?tab=mapping&error=invalid_claim", status_code=303)
-        setattr(provider, field, clean[:255])
+        clean = clean[:255]
+        if field in {"email_claim", "email_verified_claim"} and getattr(provider, field) != clean:
+            identity_resolution_changed = True
+        setattr(provider, field, clean)
     mappings = []
     for line in role_mappings.splitlines():
         if not line.strip():
@@ -526,8 +586,17 @@ def save_oidc_mapping(
         mappings.append({"group": group.strip(), "role": role.strip()})
     provider.role_mappings_json = json.dumps(mappings, separators=(",", ":"))
     provider.group_matching_case_sensitive = group_matching_case_sensitive == "1"
+    if identity_resolution_changed and get_site_setting(db, "authentication_mode") == "oidc_required":
+        db.rollback()
+        return RedirectResponse("/system/site-administration/authentication?tab=mapping&error=disable_oidc_only_first", status_code=303)
+    if identity_resolution_changed:
+        provider.discovery_status = None
+        provider.discovery_error = None
+        provider.test_login_succeeded_at = None
     db.commit()
     write_audit(db, user, "oidc_configuration_updated", "oidc", str(provider.id), detail="OIDC claim and role mappings updated")
+    if identity_resolution_changed:
+        write_audit(db, user, "oidc_provider_retest_required", "oidc", str(provider.id), detail="Identity-resolution claim mapping changed; discovery and real login must be retested", severity="warning")
     return RedirectResponse("/system/site-administration/authentication?tab=mapping&saved=1", status_code=303)
 
 
@@ -550,7 +619,7 @@ def create_link_invitation(request: Request, user_id: int = Form(...), csrf_toke
 async def accept_link_invitation(request: Request, token: str = Query(""), db: Session = Depends(get_db)):
     row = db.query(OIDCLinkInvitation).filter_by(token_hash=hashlib.sha256(token.encode()).hexdigest(), used_at=None).first()
     if not row or row.expires_at < datetime.utcnow():
-        return templates.TemplateResponse(request, "oidc_error.html", {"message": "This account-link invitation is invalid or expired.", **csrf_context(request, include_version=False)}, status_code=400)
+        return templates.TemplateResponse(request, "oidc_error.html", _oidc_error_context(request, db, "This account-link invitation is invalid or expired."), status_code=400)
     provider = db.get(OIDCProvider, row.provider_id)
     row.used_at = datetime.utcnow()
     db.commit()

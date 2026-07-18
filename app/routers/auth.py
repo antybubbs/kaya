@@ -19,6 +19,8 @@ from app.services.audit import write_audit
 from app.services.mail import MailConfigurationError, render_email_template, send_mail
 from app.services.sessions import end_user_session, start_user_session, touch_user_session
 from app.services.site_settings import get_site_setting
+from app.services.oidc_client import safe_return_path
+from app.services.authentication_policy import get_authentication_policy, normal_local_login_allowed
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
@@ -123,18 +125,21 @@ def find_valid_reset_token(db: Session, token: str) -> PasswordResetToken | None
 
 def login_template_context(request: Request, db: Session, **overrides) -> dict:
     """Build one consistent login context for initial, error and 2FA renders."""
-    authentication_mode = get_site_setting(db, "authentication_mode")
-    oidc_provider = db.query(OIDCProvider).filter_by(is_enabled=True).order_by(OIDCProvider.id.asc()).first()
+    policy = get_authentication_policy(db)
     context = {
         "error": None,
         "success": None,
         "setup_complete": False,
         "requires_2fa": False,
         "demo_accounts": DEMO_ACCOUNTS if settings.demo_mode else None,
-        "authentication_mode": authentication_mode,
-        "oidc_provider": oidc_provider,
-        "oidc_button_label": get_site_setting(db, "oidc_button_label"),
-        "show_local_preferred": get_site_setting(db, "oidc_show_local_preferred") == "1",
+        "authentication_mode": policy.authentication_mode,
+        "oidc_available": policy.oidc_available,
+        "oidc_button_label": policy.oidc_button_label,
+        "show_local_login": policy.show_local_login,
+        "auto_redirect_oidc": policy.auto_redirect_oidc,
+        "provider_display_name": policy.provider_display_name,
+        "local_login_disabled": policy.local_login_disabled,
+        "oidc_provider": policy.provider,
         **csrf_context(request, include_version=False),
     }
     context.update(overrides)
@@ -179,6 +184,7 @@ def require_editor(request: Request, db: Session = Depends(get_db)) -> User:
 def login_page(
     request: Request,
     setup_complete: str = "",
+    logged_out: str = "",
     db: Session = Depends(get_db)
 ):
     admin = db.query(User).filter(User.role == "admin").first()
@@ -188,9 +194,20 @@ def login_page(
 
     request.session.pop("pending_2fa_user_id", None)
 
-    authentication_mode = get_site_setting(db, "authentication_mode")
-    oidc_provider = db.query(OIDCProvider).filter_by(is_enabled=True).order_by(OIDCProvider.id.asc()).first()
-    if authentication_mode == "oidc_required" and oidc_provider and get_site_setting(db, "oidc_auto_redirect_required") == "1" and not settings.demo_mode:
+    policy = get_authentication_policy(db)
+    if policy.authentication_mode == "oidc_required" and not policy.oidc_available:
+        return templates.TemplateResponse(
+            request,
+            "oidc_error.html",
+            {
+                "message": "Single sign-on is currently unavailable. Please contact your Kaya administrator.",
+                "authentication_mode": policy.authentication_mode,
+                **csrf_context(request, include_version=False),
+            },
+            status_code=503,
+        )
+    if policy.auto_redirect_oidc and logged_out != "1" and not settings.demo_mode:
+        write_audit(db, None, "oidc_automatic_redirect_initiated", "oidc", ip_address=request.client.host if request.client else None)
         return RedirectResponse("/auth/oidc/login", status_code=303)
 
     return templates.TemplateResponse(
@@ -412,12 +429,7 @@ def reset_password_submit(
     return templates.TemplateResponse(
         request,
         "login.html",
-        {
-            "error": None,
-            "success": "Password updated. You can sign in now.",
-            "demo_accounts": None,
-            **csrf_context(request, include_version=False),
-        },
+        login_template_context(request, db, success="Password updated. You can sign in now.", demo_accounts=None),
     )
 
 
@@ -500,8 +512,18 @@ def setup_submit(
 @router.post("/login")
 def login(request: Request, email: str = Form(""), password: str = Form(""), totp_code: str = Form(""), csrf_token: str = Form(...), db: Session = Depends(get_db)):
     validate_csrf_token(request, csrf_token)
-    if get_site_setting(db, "authentication_mode") == "oidc_required" and not settings.demo_mode:
-        return RedirectResponse("/auth/oidc/login", status_code=303)
+    if not normal_local_login_allowed(db) and not settings.demo_mode:
+        write_audit(
+            db, None, "local_login_rejected_disabled", "user",
+            ip_address=request.client.host if request.client else None,
+            detail="Normal email/password sign-in is disabled by authentication policy",
+            severity="warning", status_code=403,
+        )
+        return templates.TemplateResponse(
+            request, "login.html",
+            login_template_context(request, db, error="Email and password sign-in is disabled. Please use single sign-on."),
+            status_code=403,
+        )
     key = client_key(request)
     attempted_email = email.strip().lower()
     if login_is_limited(db, key, attempted_email):
@@ -631,6 +653,10 @@ def logout(request: Request, csrf_token: str = Form(...), db: Session = Depends(
         if redirect:
             write_audit(db, user, "oidc_logout_started", "oidc", ip_address=request.client.host if request.client else None)
             return RedirectResponse(redirect, status_code=303)
+        post_logout_path = safe_return_path(get_site_setting(db, "oidc_post_logout_path"), "/login")
+        if post_logout_path == "/login":
+            post_logout_path = "/login?logged_out=1"
+        return RedirectResponse(post_logout_path, status_code=303)
     return RedirectResponse("/login", status_code=303)
 
 

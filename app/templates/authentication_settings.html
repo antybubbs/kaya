@@ -69,22 +69,31 @@
           <article><span>Linked users</span><strong>{{ status.linked_users }}</strong></article>
           <article><span>Break-glass administrators</span><strong>{{ status.break_glass_admins }}</strong></article>
         </div>
-        <form method="post" action="/system/site-administration/authentication/general" class="authentication-card authentication-form-grid">
+        <form method="post" action="/system/site-administration/authentication/general" class="authentication-card authentication-form-grid" data-authentication-policy-form>
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <header><span>Sign-in behaviour</span></header>
-          <label>Authentication mode<select name="authentication_mode">
-            {% for value, label in [('local_only','Local only'),('local_and_oidc','Local and OIDC'),('oidc_preferred','OIDC preferred'),('oidc_required','OIDC required')] %}<option value="{{ value }}" {{ 'selected' if auth_mode == value else '' }}>{{ label }}</option>{% endfor %}
-          </select></label>
+          <label>Authentication mode<select name="authentication_mode" data-authentication-mode>
+            {% for value, label in [('local_only','Local only'),('local_and_oidc','Local and OIDC'),('oidc_preferred','OIDC preferred'),('oidc_required','OIDC only')] %}<option value="{{ value }}" {{ 'selected' if auth_mode == value else '' }}>{{ label }}</option>{% endfor %}
+          </select><small data-authentication-mode-description></small></label>
           <label>OIDC button label<input name="oidc_button_label" value="{{ button_label }}" maxlength="120"></label>
           <label>Post-login path<input name="oidc_post_login_path" value="{{ post_login_path }}"></label>
           <label>Post-logout path<input name="oidc_post_logout_path" value="{{ post_logout_path }}"></label>
           <div class="authentication-switches wide">
-            <label class="checkbox-row"><input type="checkbox" name="oidc_auto_redirect_required" value="1" {{ 'checked' if auto_redirect else '' }}>Automatically redirect in OIDC-required mode</label>
-            <label class="checkbox-row"><input type="checkbox" name="oidc_show_local_preferred" value="1" {{ 'checked' if show_local_preferred else '' }}>Show the local-account option in preferred mode</label>
+            <label class="checkbox-row" data-oidc-only-option><input type="checkbox" name="oidc_auto_redirect_required" value="1" {{ 'checked' if auto_redirect else '' }}>Automatically redirect to the identity provider in OIDC-only mode</label>
+            <label class="checkbox-row" data-preferred-local-option><input type="checkbox" name="oidc_show_local_preferred" value="1" {{ 'checked' if show_local_preferred else '' }}><span>Show the email/password sign-in option on the main login page<small>When disabled, users will only see the configured OIDC provider on the normal Kaya login page. Emergency break-glass access remains available separately at <code>/auth/local</code> when enabled.</small></span></label>
             <label class="checkbox-row"><input type="checkbox" name="oidc_emergency_local_enabled" value="1" {{ 'checked' if emergency_enabled else '' }}>Enable emergency local administrator login at <code>/auth/local</code></label>
-            <label class="checkbox-row"><input type="checkbox" name="oidc_required_risk_acknowledged" value="1">I understand that provider failure can interrupt normal login and have tested break-glass access.</label>
+            <label class="checkbox-row" data-oidc-only-option><input type="checkbox" name="oidc_required_risk_acknowledged" value="1">I understand that provider failure can interrupt normal login and have tested break-glass access.</label>
           </div>
-          <div class="alert wide">OIDC required cannot be enabled until discovery and a real test login have succeeded and an active administrator with a local password is marked break glass.</div>
+          <section class="authentication-readiness wide {{ 'is-ready' if oidc_readiness.ready else 'has-blockers' }}" data-oidc-only-option>
+            <h3>OIDC-only readiness</h3>
+            <ul>{% for check in oidc_readiness.checks %}<li class="{{ 'passed' if check.passed else 'failed' }}"><strong>{{ check.label }}: {{ 'Passed' if check.passed else 'Action required' }}</strong>{% if not check.passed %}<small>{{ check.help }}</small>{% endif %}</li>{% endfor %}</ul>
+            <p>{{ 'Kaya is ready for OIDC-only authentication.' if oidc_readiness.ready else 'Complete the outstanding checks before enabling OIDC-only authentication.' }}</p>
+          </section>
+          <section class="authentication-emergency-url wide">
+            <h3>Emergency access URL</h3>
+            <p>Save the emergency login URL in a secure location. It will not be displayed on the normal OIDC-only login page.</p>
+            <div class="copy-field"><input value="{{ emergency_url }}" readonly data-emergency-url><button type="button" class="secondary" data-copy-emergency-url>Copy URL</button></div>
+          </section>
           <div class="authentication-actions wide"><button type="submit">Save authentication settings</button></div>
         </form>
 
@@ -146,3 +155,4 @@
   </div>
 </div>
 {% endblock %}
+{% block extra_scripts %}<script src="/static/js/authentication.js?v={{ asset_version }}" defer></script>{% endblock %}
