@@ -80,6 +80,14 @@ class DNSProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def get_version(self) -> DNSProviderResult:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_ha_configuration(self) -> DNSProviderResult:
+        raise NotImplementedError
+
+    @abstractmethod
     def update_blocklists(self) -> DNSProviderResult:
         raise NotImplementedError
 
@@ -327,6 +335,43 @@ class PiHoleProvider(DNSProvider):
             return DNSProviderResult(True, "Pi-hole blocklists loaded.", data)
 
         return self._safe("Blocklists", run)
+
+    def get_version(self) -> DNSProviderResult:
+        def run():
+            data = self._v6_or_legacy("/api/info/version", {"versions": ""})
+            return DNSProviderResult(True, "Pi-hole version loaded.", data)
+
+        return self._safe("Version", run)
+
+    def get_ha_configuration(self) -> DNSProviderResult:
+        """Load only read-only configuration surfaces used by HA comparison."""
+        endpoints = {
+            "filtering": "/api/lists",
+            "groups": "/api/groups",
+            "clients": "/api/clients",
+            "local_dns": "/api/config/dns/hosts",
+            "cname": "/api/config/dns/cnameRecords",
+            "upstream_dns": "/api/config/dns",
+            "dhcp": "/api/config/dhcp",
+        }
+
+        def run():
+            configuration: dict[str, Any] = {}
+            unavailable: dict[str, str] = {}
+            for group, path in endpoints.items():
+                try:
+                    configuration[group] = self._v6_request_json(path)
+                except DNSProviderError as exc:
+                    unavailable[group] = str(exc)
+            if not configuration:
+                raise DNSProviderError("Pi-hole configuration endpoints are unavailable or authentication failed.")
+            return DNSProviderResult(
+                True,
+                "Pi-hole configuration loaded for read-only comparison.",
+                {"configuration": configuration, "unavailable": unavailable},
+            )
+
+        return self._safe("Configuration", run)
 
     def update_blocklists(self) -> DNSProviderResult:
         def run():

@@ -1,0 +1,5 @@
+{% extends "base.html" %}
+{% block content %}
+{% include '_high_availability_cluster_header.html' %}
+<section class="panel"><div class="ha-section-heading"><div><h2>Agent events</h2><p class="muted">Agents retain events locally while Kaya is unavailable and replay them using stable event IDs. Duplicate events are ignored.</p></div></div>{% if cluster.events %}<div class="ha-event-list">{% for event in cluster.events|sort(attribute='occurred_at', reverse=true) %}<article><span class="ha-check-state ha-check-state--{{ 'fail' if event.severity in ['error', 'critical'] else ('unknown' if event.severity == 'warning' else 'pass') }}">{{ event.severity|title }}</span><div><strong>{{ event.event_type|replace('_', ' ')|title }}</strong><p>{{ event.message }}</p><small>{{ event.node.display_name if event.node else 'Cluster' }} · {{ local_time(event.occurred_at, 'friendly') }}</small></div></article>{% endfor %}</div>{% else %}<div class="ha-inline-empty"><p>No agent events have been received.</p></div>{% endif %}</section>
+{% endblock %}

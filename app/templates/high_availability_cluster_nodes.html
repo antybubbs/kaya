@@ -1,0 +1,6 @@
+{% extends "base.html" %}
+{% block content %}
+{% include '_high_availability_cluster_header.html' %}
+{% if request.query_params.get('node_updated') %}<div class="success" role="status">Node updated. Previous validation results were cleared; run validation again.</div>{% endif %}
+<section class="panel"><div class="ha-section-heading"><div><h2>Nodes</h2><p class="muted">Connections are managed by High Availability. Matching secure integration credentials are not duplicated, and secrets are never displayed.</p></div></div><div class="ha-node-grid">{% for node in cluster.nodes %}<article class="ha-node-card"><div class="ha-node-card-heading"><span class="table-chip">{{ node.role|title }}</span>{% if user.role == 'admin' %}<a class="button secondary" href="/high-availability/clusters/{{ cluster.public_id }}/nodes/{{ node.public_id }}/edit">Edit Node</a>{% endif %}</div><h3>{{ node.display_name }}</h3><p class="mono">{{ node.api_base_url }}</p><dl class="ha-node-facts"><div><dt>Status</dt><dd>{{ node.status|replace('_', ' ')|title }}</dd></div><div><dt>Pi-hole version</dt><dd>{{ node.provider_version or 'Not detected' }}</dd></div><div><dt>Snapshot</dt><dd class="mono">{{ node.configuration_checksum[:12] if node.configuration_checksum else 'Not captured' }}</dd></div></dl></article>{% endfor %}</div></section>
+{% endblock %}

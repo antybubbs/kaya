@@ -28,13 +28,19 @@ def test_existing_user_migration_preserves_local_account_and_makes_password_null
     ha_tables = {
         row[0]
         for row in connection.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('ha_clusters', 'ha_nodes', 'ha_health_checks')"
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('ha_provider_connections', 'ha_clusters', 'ha_nodes', 'ha_health_checks', 'ha_agent_credentials', 'ha_agent_requests', 'ha_events')"
         )
     }
+    ha_node_columns = {row[1] for row in connection.execute("PRAGMA table_info(ha_nodes)")}
+    ha_check_columns = {row[1] for row in connection.execute("PRAGMA table_info(ha_health_checks)")}
     connection.close()
     assert columns["password_hash"][3] == 0
     assert "encrypted_oidc_id_token" in session_columns
     assert row == ("admin@example.com", "existing-hash", "local", "local", 0)
     assert session_user == 1
     assert foreign_key_errors == []
-    assert ha_tables == {"ha_clusters", "ha_nodes", "ha_health_checks"}
+    assert ha_tables == {"ha_provider_connections", "ha_clusters", "ha_nodes", "ha_health_checks", "ha_agent_credentials", "ha_agent_requests", "ha_events"}
+    assert "ha_connection_id" in ha_node_columns
+    assert {"capabilities_json", "configuration_snapshot_json", "configuration_checksum"} <= ha_node_columns
+    assert {"observed_role", "observed_generation", "vip_owned", "dhcp_running", "dns_healthy", "peer_reachable", "lease_generation", "config_generation"} <= ha_node_columns
+    assert "remediation" in ha_check_columns

@@ -578,6 +578,26 @@ class DNSClientTrafficEvent(Base):
     provider = relationship("DNSProviderConfig")
 
 
+class HAProviderConnection(Base):
+    """A provider connection created and managed from the HA module."""
+
+    __tablename__ = "ha_provider_connections"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(36), default=lambda: str(uuid4()), unique=True, index=True)
+    provider_key: Mapped[str] = mapped_column(String(40), index=True)
+    name: Mapped[str] = mapped_column(String(255), index=True)
+    api_base_url: Mapped[str] = mapped_column(String(500))
+    auth_method: Mapped[str] = mapped_column(String(40), default="password")
+    encrypted_secret: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ssl_verify: Mapped[bool] = mapped_column(Boolean, default=True)
+    timeout_seconds: Mapped[int] = mapped_column(Integer, default=10)
+    created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    created_by = relationship("User", foreign_keys=[created_by_user_id])
+
+
 class HACluster(Base):
     __tablename__ = "ha_clusters"
     __table_args__ = (
@@ -604,6 +624,9 @@ class HACluster(Base):
     sync_interval_seconds: Mapped[int] = mapped_column(Integer, default=300)
     drift_check_interval_seconds: Mapped[int] = mapped_column(Integer, default=300)
     maintenance_mode: Mapped[bool] = mapped_column(Boolean, default=False)
+    cluster_generation: Mapped[int] = mapped_column(Integer, default=1)
+    role_generation: Mapped[int] = mapped_column(Integer, default=1)
+    desired_sync_generation: Mapped[int] = mapped_column(Integer, default=0)
     last_healthy_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_failover_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
@@ -612,12 +635,16 @@ class HACluster(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     nodes = relationship("HANode", foreign_keys="HANode.cluster_id", cascade="all, delete-orphan", back_populates="cluster")
     health_checks = relationship("HAHealthCheck", cascade="all, delete-orphan", back_populates="cluster")
+    events = relationship("HAEvent", cascade="all, delete-orphan", back_populates="cluster")
     created_by = relationship("User", foreign_keys=[created_by_user_id])
 
 
 class HANode(Base):
     __tablename__ = "ha_nodes"
-    __table_args__ = (UniqueConstraint("cluster_id", "integration_reference_id", name="uq_ha_nodes_cluster_integration"),)
+    __table_args__ = (
+        UniqueConstraint("cluster_id", "integration_reference_id", name="uq_ha_nodes_cluster_integration"),
+        UniqueConstraint("cluster_id", "ha_connection_id", name="uq_ha_nodes_cluster_connection"),
+    )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     cluster_id: Mapped[int] = mapped_column(ForeignKey("ha_clusters.id", ondelete="CASCADE"), index=True)
     public_id: Mapped[str] = mapped_column(String(36), default=lambda: str(uuid4()), unique=True, index=True)
@@ -625,6 +652,7 @@ class HANode(Base):
     management_host: Mapped[str | None] = mapped_column(String(255), nullable=True)
     api_base_url: Mapped[str] = mapped_column(String(500))
     integration_reference_id: Mapped[int | None] = mapped_column(ForeignKey("dns_providers.id", ondelete="SET NULL"), nullable=True, index=True)
+    ha_connection_id: Mapped[int | None] = mapped_column(ForeignKey("ha_provider_connections.id", ondelete="SET NULL"), nullable=True, index=True)
     role: Mapped[str] = mapped_column(String(30), index=True)
     desired_role: Mapped[str] = mapped_column(String(30), index=True)
     status: Mapped[str] = mapped_column(String(40), default="UNVALIDATED", index=True)
@@ -633,13 +661,74 @@ class HANode(Base):
     agent_id: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
     agent_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
     provider_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    capabilities_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    configuration_snapshot_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    configuration_checksum: Mapped[str | None] = mapped_column(String(64), nullable=True)
     last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_health_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    observed_role: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    observed_generation: Mapped[int] = mapped_column(Integer, default=0)
+    vip_owned: Mapped[bool] = mapped_column(Boolean, default=False)
+    dhcp_running: Mapped[bool] = mapped_column(Boolean, default=False)
+    dns_healthy: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    peer_reachable: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    lease_generation: Mapped[int] = mapped_column(Integer, default=0)
+    config_generation: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     cluster = relationship("HACluster", foreign_keys=[cluster_id], back_populates="nodes")
     integration = relationship("DNSProviderConfig")
+    ha_connection = relationship("HAProviderConnection")
+    agent_credential = relationship("HAAgentCredential", uselist=False, cascade="all, delete-orphan", back_populates="node")
+
+
+class HAAgentCredential(Base):
+    __tablename__ = "ha_agent_credentials"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    node_id: Mapped[int] = mapped_column(ForeignKey("ha_nodes.id", ondelete="CASCADE"), unique=True, index=True)
+    agent_id: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    public_key: Mapped[str | None] = mapped_column(Text, nullable=True, unique=True)
+    bootstrap_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True, index=True)
+    bootstrap_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    registered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    last_rotated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    node = relationship("HANode", back_populates="agent_credential")
+    requests = relationship("HAAgentRequest", cascade="all, delete-orphan", back_populates="credential")
+
+
+class HAAgentRequest(Base):
+    __tablename__ = "ha_agent_requests"
+    __table_args__ = (UniqueConstraint("credential_id", "request_id", name="uq_ha_agent_request_replay"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    credential_id: Mapped[int] = mapped_column(ForeignKey("ha_agent_credentials.id", ondelete="CASCADE"), index=True)
+    request_id: Mapped[str] = mapped_column(String(80), index=True)
+    request_timestamp: Mapped[datetime] = mapped_column(DateTime, index=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    credential = relationship("HAAgentCredential", back_populates="requests")
+
+
+class HAEvent(Base):
+    __tablename__ = "ha_events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    cluster_id: Mapped[int] = mapped_column(ForeignKey("ha_clusters.id", ondelete="CASCADE"), index=True)
+    node_id: Mapped[int | None] = mapped_column(ForeignKey("ha_nodes.id", ondelete="CASCADE"), nullable=True, index=True)
+    event_type: Mapped[str] = mapped_column(String(80), index=True)
+    severity: Mapped[str] = mapped_column(String(20), index=True)
+    source: Mapped[str] = mapped_column(String(40), index=True)
+    message: Mapped[str] = mapped_column(String(1000))
+    details_json_redacted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    agent_event_id: Mapped[str | None] = mapped_column(String(80), nullable=True, unique=True, index=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    acknowledged_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    cluster = relationship("HACluster", back_populates="events")
+    node = relationship("HANode")
+    acknowledged_by = relationship("User")
 
 
 class HAHealthCheck(Base):
@@ -653,6 +742,7 @@ class HAHealthCheck(Base):
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     summary: Mapped[str] = mapped_column(String(1000))
     technical_detail_redacted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    remediation: Mapped[str | None] = mapped_column(Text, nullable=True)
     observed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     cluster = relationship("HACluster", back_populates="health_checks")
     node = relationship("HANode")

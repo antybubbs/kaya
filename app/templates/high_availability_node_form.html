@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="module-header ha-header"><div><div class="ha-title-line"><h1>Edit {{ node.display_name }}</h1>{% set maturity_label='Beta' %}{% include 'components/maturity_badge.html' %}</div><p class="muted">{{ cluster.name }} · {{ node.role|title }} node</p></div><a class="button secondary" href="/high-availability/clusters/{{ cluster.public_id }}/nodes">Cancel</a></section>
+{% include '_high_availability_nav.html' %}
+<div class="ha-beta-notice" role="note"><strong>HA-owned settings</strong><span>Changes made here do not modify DNS Manager. Updating a reused connection with a new credential creates an HA-owned connection instead.</span></div>
+{% if error %}<div class="alert" role="alert">{{ error }}</div>{% endif %}
+<form class="panel ha-node-edit" method="post" action="/high-availability/clusters/{{ cluster.public_id }}/nodes/{{ node.public_id }}/edit">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <header><h2>Node connection</h2><p class="muted">Saving changes invalidates the previous validation report. Run read-only validation again afterwards.</p></header>
+  <div class="form-grid">
+    <label><strong>Display name</strong><input name="name" maxlength="255" required value="{{ form_values.get('name', '') }}"></label>
+    <label><strong>Network interface</strong><input name="network_interface" maxlength="80" value="{{ form_values.get('network_interface', '') }}" placeholder="ens18"></label>
+    <label class="ha-form-span"><strong>Pi-hole API URL</strong><input name="api_base_url" type="url" maxlength="500" required value="{{ form_values.get('api_base_url', '') }}" placeholder="https://pihole.example.net"></label>
+    <label><strong>Application password</strong><input name="secret" type="password" maxlength="2000" autocomplete="new-password" aria-describedby="node-secret-help"><small id="node-secret-help" class="muted">Leave blank to retain the current credential. Enter a value to rotate it.</small></label>
+    <label><strong>Request timeout</strong><input name="timeout_seconds" type="number" min="1" max="120" required value="{{ form_values.get('timeout_seconds', '10') }}"><small class="muted">Seconds per Pi-hole API request.</small></label>
+    <label class="ha-checkbox"><input name="ssl_verify" type="checkbox" value="1" {% if form_values.get('ssl_verify', '1') == '1' %}checked{% endif %}><span><strong>Verify TLS certificate</strong><small class="muted">Recommended. Disable only for a private certificate you explicitly trust.</small></span></label>
+  </div>
+  <footer class="ha-wizard-actions"><a class="button secondary" href="/high-availability/clusters/{{ cluster.public_id }}/nodes">Cancel</a><button class="button" type="submit">Save Node</button></footer>
+</form>
+{% endblock %}

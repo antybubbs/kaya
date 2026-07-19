@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
-from app.core.security import hash_password
+from app.core.security import decrypt_secret, hash_password
 from app.db.session import Base
 from app.main import app
 from app.models.models import (
@@ -20,15 +20,17 @@ from app.models.models import (
     HACluster,
     HAHealthCheck,
     HANode,
+    HAProviderConnection,
     IPAddress,
     RemoteManagerSetting,
     User,
 )
 from app.routers.admin import set_high_availability_feature
-from app.routers.high_availability import require_ha_admin, require_high_availability
+from app.routers.high_availability import active_clusters, cluster_or_404, require_ha_admin, require_high_availability, test_cluster_connection as connection_route
 from app.schemas.high_availability import HAClusterDraftCreate, HAClusterRead
-from app.services.ha_clusters import HADraftError, create_cluster_draft, validate_cluster_draft
+from app.services.ha_clusters import HADraftError, create_cluster_draft, soft_delete_cluster, validate_cluster_draft
 from app.services.ha_registry import SUPPORTED_HA_PROVIDERS
+from app.services.dns_providers import DNSProviderResult
 from app.services.site_settings import get_site_setting
 
 
@@ -139,7 +141,7 @@ def test_feature_ui_is_gated_read_only_and_uses_reusable_maturity_badges():
     assert "Experimental Features" in settings
     assert "feature_status" in settings
     assert "read-only" in overview
-    assert "Provider connections and writes are not available" in services
+    assert "managed within High Availability" in services
     assert "maturity-badge--" in badge
     assert "tabindex=\"0\"" in badge
 
@@ -155,8 +157,8 @@ def test_draft_reuses_two_unique_pihole_integrations_without_copying_secrets(mon
             HAClusterDraftCreate(
                 name="Home DNS",
                 description="Draft only",
-                primary_integration_id=first.id,
-                secondary_integration_id=second.id,
+                primary={"name": "Primary", "api_base_url": "https://pi-one.invalid"},
+                secondary={"name": "Standby", "api_base_url": "https://pi-two.invalid"},
                 virtual_ip="192.0.2.53",
                 prefix_length=24,
             ),
@@ -166,6 +168,8 @@ def test_draft_reuses_two_unique_pihole_integrations_without_copying_secrets(mon
         assert cluster.virtual_ip == "192.0.2.53"
         assert len(cluster.nodes) == 2
         assert {node.integration_reference_id for node in cluster.nodes} == {first.id, second.id}
+        assert {node.ha_connection_id for node in cluster.nodes} == {None}
+        assert db.query(HAProviderConnection).count() == 0
         assert {node.role for node in cluster.nodes} == {"ACTIVE", "STANDBY"}
         assert not any(hasattr(node, "encrypted_secret") for node in cluster.nodes)
         assert db.get(DNSProviderConfig, first.id).encrypted_secret == "encrypted-one"
@@ -180,16 +184,53 @@ def test_draft_reuses_two_unique_pihole_integrations_without_copying_secrets(mon
         assert HAClusterRead.model_validate(cluster).nodes[0].integration_reference_id in {first.id, second.id}
 
 
-def test_draft_requires_two_different_nodes_and_admin_creation_permission():
+def test_new_ha_connections_are_encrypted_and_do_not_create_dns_manager_providers():
     with database() as db:
         admin = User(email="admin-two@example.com", password_hash="x", role="admin", is_active=True)
+        db.add(admin); db.commit()
+        cluster = create_cluster_draft(
+            db,
+            HAClusterDraftCreate(
+                name="HA owned",
+                primary={"name": "Primary", "api_base_url": "https://new-one.invalid", "secret": "secret-one"},
+                secondary={"name": "Standby", "api_base_url": "https://new-two.invalid", "secret": "secret-two"},
+            ),
+            admin,
+        )
+        connections = db.query(HAProviderConnection).order_by(HAProviderConnection.name).all()
+        assert len(connections) == 2
+        assert db.query(DNSProviderConfig).count() == 0
+        assert {node.integration_reference_id for node in cluster.nodes} == {None}
+        assert all(node.ha_connection_id for node in cluster.nodes)
+        assert {decrypt_secret(connection.encrypted_secret) for connection in connections} == {"secret-one", "secret-two"}
+        assert all(connection.encrypted_secret not in {"secret-one", "secret-two"} for connection in connections)
+
+
+def test_draft_requires_two_different_nodes_and_admin_creation_permission():
+    with database() as db:
+        admin = User(email="admin-three@example.com", password_hash="x", role="admin", is_active=True)
         viewer = User(email="viewer@example.com", password_hash="x", role="viewer", is_active=True)
         provider = DNSProviderConfig(name="Only Pi-hole", provider_type="pihole", base_url="https://only.invalid")
         db.add_all([admin, viewer, provider]); db.commit()
         with pytest.raises(HADraftError, match="two different"):
             create_cluster_draft(
                 db,
-                HAClusterDraftCreate(name="Invalid", primary_integration_id=provider.id, secondary_integration_id=provider.id),
+                HAClusterDraftCreate(
+                    name="Invalid",
+                    primary={"name": "Primary", "api_base_url": provider.base_url},
+                    secondary={"name": "Standby", "api_base_url": provider.base_url},
+                ),
+                admin,
+            )
+        with pytest.raises(HADraftError, match="supported provider"):
+            create_cluster_draft(
+                db,
+                HAClusterDraftCreate(
+                    name="Unsupported",
+                    provider_key="future-app",
+                    primary={"name": "First", "api_base_url": "https://first.invalid", "secret": "one"},
+                    secondary={"name": "Second", "api_base_url": "https://second.invalid", "secret": "two"},
+                ),
                 admin,
             )
         with pytest.raises(PermissionError):
@@ -200,12 +241,41 @@ def test_draft_requires_two_different_nodes_and_admin_creation_permission():
 
 def test_milestone_two_templates_explain_draft_safety_boundary():
     wizard = Path("app/templates/high_availability_cluster_form.html").read_text(encoding="utf-8")
-    detail = Path("app/templates/high_availability_cluster_detail.html").read_text(encoding="utf-8")
+    picker = Path("app/templates/high_availability_provider_picker.html").read_text(encoding="utf-8")
+    nodes_page = Path("app/templates/high_availability_cluster_nodes.html").read_text(encoding="utf-8")
     routes = Path("app/routers/high_availability.py").read_text(encoding="utf-8")
     assert "does not connect to, configure, restart, synchronise, or fail over" in wizard
-    assert "credentials are not duplicated" in detail
+    assert "Choose the provider or application" in picker
+    assert "/high-availability/clusters/new/{{ provider.key }}" in picker
+    assert "managed from High Availability" in wizard
+    assert 'type="password"' in wizard
+    assert "primary_secret\", \"secondary_secret" in routes
+    assert "credentials are not duplicated" in nodes_page
     assert "Depends(require_ha_admin)" in routes
     assert "response_model=list[HAClusterRead]" in routes
+
+
+def test_draft_connection_route_returns_inline_result_and_audits_without_secret(monkeypatch):
+    with database() as db:
+        admin = User(email="connection-test-admin@example.com", password_hash="x", role="admin", is_active=True)
+        db.add(admin); db.commit()
+        monkeypatch.setattr("app.routers.high_availability.test_draft_node_connection", lambda *args, **kwargs: DNSProviderResult(True, "Pi-hole connection test passed."))
+        response = asyncio.run(
+            connection_route(
+                form_request(
+                    "/high-availability/clusters/test-connection",
+                    {"csrf_token": "csrf", "provider_key": "pihole", "node": "primary", "primary_name": "Primary", "primary_api_base_url": "https://primary.invalid", "primary_secret": "never-log-this", "primary_ssl_verify": "1"},
+                ),
+                db=db,
+                user=admin,
+            )
+        )
+        assert response.status_code == 200
+        assert b'"ok":true' in response.body
+        assert b"Pi-hole connection test passed" in response.body
+        audit = db.query(AuditLog).filter_by(entity="ha_draft_node", action="connection_tested").one()
+        assert "never-log-this" not in (audit.detail or "")
+        assert "never-log-this" not in (audit.metadata_json or "")
 
 
 def test_high_availability_uses_expandable_sidebar_hierarchy():
@@ -260,3 +330,55 @@ def test_disabling_with_a_cluster_requires_acknowledgement_and_preserves_draft()
         assert "feature_status=disabled" in accepted.headers["location"]
         assert get_site_setting(db, "high_availability_enabled") == ""
         assert db.get(HACluster, cluster_id).name == "Preserve me"
+
+
+def test_cluster_danger_zone_requires_exact_confirmation_and_soft_deletes_without_data_loss():
+    with database() as db:
+        admin = User(email="delete-admin@example.com", password_hash="x", role="admin", is_active=True)
+        provider = DNSProviderConfig(name="Preserved DNS", provider_type="pihole", base_url="https://preserved.invalid", encrypted_secret="encrypted")
+        linked_ip = IPAddress(address="192.0.2.88", assignment_type="Static")
+        cluster = HACluster(name="Critical DNS Pair", provider_key="pihole", status="VALIDATED", created_by=admin)
+        db.add_all([admin, provider, linked_ip, cluster]); db.flush()
+        client = DNSRecognisedDevice(provider_id=provider.id, identity_type="mac", identity_value="00:aa:bb:cc:dd:ee", current_ip=linked_ip.address, linked_ip_record_id=linked_ip.id)
+        db.add(client); db.flush()
+        history = DNSClientIPHistory(dns_client_id=client.id, ip_address=linked_ip.address, provider_id=provider.id)
+        node = HANode(cluster_id=cluster.id, display_name="Primary", management_host="preserved.invalid", api_base_url=provider.base_url, integration_reference_id=provider.id, role="ACTIVE", desired_role="ACTIVE", status="VALIDATED")
+        db.add_all([history, node]); db.flush()
+        check = HAHealthCheck(cluster_id=cluster.id, node_id=node.id, check_key="api_authentication", status="PASS", severity="info", summary="Preserve this result")
+        db.add(check); db.commit()
+        ids = {"cluster": cluster.id, "provider": provider.id, "ip": linked_ip.id, "client": client.id, "history": history.id, "node": node.id, "check": check.id}
+
+        with pytest.raises(HADraftError, match="exact cluster name"):
+            soft_delete_cluster(db, cluster, "wrong name", True)
+        with pytest.raises(HADraftError, match="acknowledge"):
+            soft_delete_cluster(db, cluster, cluster.name, False)
+        assert db.get(HACluster, cluster.id).deleted_at is None
+
+        deleted = soft_delete_cluster(db, cluster, cluster.name, True)
+        assert deleted.status == "DELETED"
+        assert deleted.deleted_at is not None
+        assert deleted.maintenance_mode is True
+        assert active_clusters(db) == []
+        with pytest.raises(HTTPException) as missing:
+            cluster_or_404(db, deleted.public_id)
+        assert missing.value.status_code == 404
+        assert db.get(HANode, ids["node"]).display_name == "Primary"
+        assert db.get(HAHealthCheck, ids["check"]).summary == "Preserve this result"
+        assert db.get(DNSProviderConfig, ids["provider"]).encrypted_secret == "encrypted"
+        assert db.get(IPAddress, ids["ip"]).address == "192.0.2.88"
+        assert db.get(DNSRecognisedDevice, ids["client"]).linked_ip_record_id == ids["ip"]
+        assert db.get(DNSClientIPHistory, ids["history"]).dns_client_id == ids["client"]
+
+
+def test_cluster_danger_zone_is_admin_only_audited_and_explains_preservation():
+    detail = Path("app/templates/high_availability_cluster_detail.html").read_text(encoding="utf-8")
+    clusters = Path("app/templates/high_availability_clusters.html").read_text(encoding="utf-8")
+    routes = Path("app/routers/high_availability.py").read_text(encoding="utf-8")
+    assert "Danger zone" in detail
+    assert "Type <span class=\"mono\">{{ cluster.name }}</span> to confirm" in detail
+    assert 'name="acknowledge_preservation"' in detail
+    assert "stored nodes, connections, validation records, DNS links, and history remain preserved" in detail
+    assert "Depends(require_ha_admin)" in routes
+    assert '"soft_delete": True' in routes
+    assert '"provider_contacted": False' in routes
+    assert "connections, validation records, DNS links, and history were preserved" in clusters
