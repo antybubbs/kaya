@@ -748,6 +748,15 @@ def save_security_settings(
     for key, value in settings_to_save.items():
         save_site_setting(db, key, value)
 
+def include_current_host(allowed_hosts: str, request: Request) -> str:
+    host = host_without_port(request.headers.get("host", ""))
+
+    hosts = split_hosts(allowed_hosts)
+
+    if host and host not in hosts:
+        hosts.append(host)
+
+    return "\n".join(hosts)
 
 def security_check_context(request: Request, db: Session) -> dict[str, object]:
     app_settings = get_settings()
@@ -2683,7 +2692,6 @@ def test_dns_provider(
             **csrf_context(request),
         },
     )
-
 
 @router.post("/system/site-administration/test-email")
 def send_test_email(
