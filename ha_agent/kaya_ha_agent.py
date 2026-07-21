@@ -8,6 +8,7 @@ import json
 import os
 import secrets
 import sqlite3
+import sys
 import tempfile
 import time
 from datetime import datetime, timezone
@@ -118,10 +119,15 @@ def signed_request(state: State, method: str, path: str, payload: dict | None = 
 
 
 def register(state: State, args) -> None:
+    token = args.token
+    if args.token_stdin:
+        token = sys.stdin.readline().rstrip("\r\n")
+    if not token:
+        raise ValueError("A registration token is required.")
     key = Ed25519PrivateKey.generate()
     private_bytes = key.private_bytes(serialization.Encoding.Raw, serialization.PrivateFormat.Raw, serialization.NoEncryption())
     public_bytes = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
-    response = json_request(args.kaya_url.rstrip("/") + "/api/ha/agent/v1/register", "POST", {"cluster_id": args.cluster_id, "node_id": args.node_id, "bootstrap_token": args.token, "public_key": encoded(public_bytes), "agent_version": args.agent_version, "protocol_version": PROTOCOL_VERSION})
+    response = json_request(args.kaya_url.rstrip("/") + "/api/ha/agent/v1/register", "POST", {"cluster_id": args.cluster_id, "node_id": args.node_id, "bootstrap_token": token, "public_key": encoded(public_bytes), "agent_version": args.agent_version, "protocol_version": PROTOCOL_VERSION})
     atomic_bytes(state.key_path, private_bytes)
     atomic_json(state.config_path, {"agent_id": response["agent_id"], "cluster_id": response["cluster_id"], "node_id": response["node_id"], "kaya_url": args.kaya_url.rstrip("/"), "agent_version": args.agent_version})
     state.set("observed_role", "STANDBY")
@@ -129,22 +135,48 @@ def register(state: State, args) -> None:
     print(f"Registered agent {response['agent_id']}")
 
 
-def reconcile_desired(state: State, desired: dict) -> None:
+def reconcile_desired(state: State, desired: dict, *, helper_runner=None) -> None:
     current = int(state.get("last_valid_cluster_generation", 0))
     incoming = int(desired["cluster_generation"])
     if incoming < current:
         state.queue_event("stale_generation_rejected", "warning", "Rejected desired state with an older cluster generation.")
         return
     state.set("last_valid_cluster_generation", incoming)
+    state.set("observed_generation", incoming)
     state.set("desired_role", desired["desired_role"])
+    state.set("desired_virtual_ip", desired.get("virtual_ip"))
     state.set("last_kaya_contact", datetime.now(timezone.utc).isoformat())
+    action = desired.get("keepalived")
+    if action:
+        try:
+            try:
+                from .keepalived_runtime import KeepalivedRuntimeError, apply_desired_keepalived
+            except ImportError:
+                from keepalived_runtime import KeepalivedRuntimeError, apply_desired_keepalived
+            kwargs = {"runner": helper_runner} if helper_runner is not None else {}
+            result = apply_desired_keepalived(state, action, **kwargs)
+        except KeepalivedRuntimeError as exc:
+            result = {"action_id": action.get("action_id", "invalid"), "action_type": "KEEPALIVED_APPLY", "generation": int(action.get("generation") or 0), "status": "FAILED", "checksum": None, "backup_reference": None, "message": str(exc)[:1000]}
+        state.set("pending_action_result", result)
 
 
 def run_once(state: State) -> None:
     config = json.loads(state.config_path.read_text(encoding="utf-8"))
-    heartbeat = {"observed_role": state.get("observed_role", "STANDBY"), "observed_generation": int(state.get("observed_generation", 0)), "vip_owned": bool(state.get("vip_owned", False)), "dhcp_running": bool(state.get("dhcp_running", False)), "dns_healthy": bool(state.get("dns_healthy", False)), "peer_reachable": bool(state.get("peer_reachable", False)), "lease_generation": int(state.get("lease_generation", 0)), "config_generation": int(state.get("config_generation", 0)), "agent_version": config["agent_version"]}
+    try:
+        try:
+            from .keepalived_runtime import refresh_vip_state
+        except ImportError:
+            from keepalived_runtime import refresh_vip_state
+        refresh_vip_state(state)
+    except Exception:
+        state.set("keepalived_runtime_state", "UNKNOWN")
+    heartbeat = {"observed_role": state.get("observed_role", "STANDBY"), "observed_generation": int(state.get("observed_generation", 0)), "vip_owned": bool(state.get("vip_owned", False)), "dhcp_running": bool(state.get("dhcp_running", False)), "dns_healthy": bool(state.get("dns_healthy", False)), "peer_reachable": bool(state.get("peer_reachable", False)), "lease_generation": int(state.get("lease_generation", 0)), "config_generation": int(state.get("config_generation", 0)), "agent_version": config["agent_version"], "keepalived_runtime_state": state.get("keepalived_runtime_state", "UNKNOWN")}
     response = signed_request(state, "POST", "/api/ha/agent/v1/heartbeat", heartbeat)
     reconcile_desired(state, response["desired"])
+    action_result = state.get("pending_action_result")
+    if action_result:
+        signed_request(state, "POST", "/api/ha/agent/v1/action-result", action_result)
+        state.set("pending_action_result", None)
     queued = state.queued_events()
     if queued:
         signed_request(state, "POST", "/api/ha/agent/v1/events", {"events": queued})
@@ -159,7 +191,9 @@ def main() -> None:
     registration.add_argument("--kaya-url", required=True)
     registration.add_argument("--cluster-id", required=True)
     registration.add_argument("--node-id", required=True)
-    registration.add_argument("--token", required=True)
+    token_source = registration.add_mutually_exclusive_group(required=True)
+    token_source.add_argument("--token")
+    token_source.add_argument("--token-stdin", action="store_true")
     registration.add_argument("--agent-version", default="0.1.0")
     event_parser = commands.add_parser("event")
     event_parser.add_argument("event_type")

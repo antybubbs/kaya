@@ -174,12 +174,38 @@ def test_agent_routes_expose_only_fixed_protocol_operations():
     from app.routers.ha_agent_api import router
 
     paths = {route.path for route in router.routes}
-    assert paths == {"/api/ha/agent/v1/register", "/api/ha/agent/v1/heartbeat", "/api/ha/agent/v1/events", "/api/ha/agent/v1/desired-state"}
+    assert paths == {"/api/ha/agent/v1/install.sh", "/api/ha/agent/v1/files/{name}", "/api/ha/agent/v1/register", "/api/ha/agent/v1/heartbeat", "/api/ha/agent/v1/events", "/api/ha/agent/v1/desired-state", "/api/ha/agent/v1/action-result"}
     assert not any("command" in path or "shell" in path for path in paths)
     template = open("app/templates/high_availability_cluster_agents.html", encoding="utf-8").read()
     assert "one-time token" in template
-    assert "does not install Keepalived" in template
+    assert "Copy command" in template
+    assert "input is hidden" in template
     assert "Revoke Agent" in template
+
+
+def test_guided_installer_is_fixed_checksum_verified_and_keeps_token_off_command_line():
+    from fastapi import HTTPException
+
+    from app.routers.ha_agent_api import install_file, install_script
+    from app.services.ha_agent_installer import agent_file, installer_checksum
+
+    installer = agent_file("install.sh").decode()
+    service = agent_file("kaya-ha-agent.service").decode()
+    assert len(installer_checksum()) == 64
+    assert "--token-stdin" in installer
+    assert 'read -r REGISTRATION_TOKEN </dev/tty' in installer
+    assert "apt-get install -y --no-install-recommends" in installer
+    assert "visudo -cf" in installer
+    assert "curl -k" not in installer and "--insecure" not in installer
+    assert "NoNewPrivileges=true" not in service
+    assert "ReadWritePaths=/var/lib/kaya-ha-agent /etc/keepalived" in service
+    assert b"apt-get install" in install_script().body
+    assert b"Ed25519PrivateKey" in install_file("kaya_ha_agent.py").body
+    with pytest.raises(HTTPException) as missing:
+        install_file("../../etc/passwd")
+    assert missing.value.status_code == 404
+    with pytest.raises(FileNotFoundError):
+        agent_file("../../etc/passwd")
 
 
 def test_soft_deleted_cluster_preserves_and_revokes_agent_identity():

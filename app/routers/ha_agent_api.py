@@ -1,11 +1,12 @@
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.schemas.high_availability import HAAgentEvents, HAAgentHeartbeat, HAAgentRegister
-from app.services.ha_agents import HAAgentError, AuthenticatedAgent, authenticate_agent_request, desired_state, ingest_events, record_heartbeat, register_agent
+from app.schemas.high_availability import HAAgentActionResult, HAAgentEvents, HAAgentHeartbeat, HAAgentRegister
+from app.services.ha_agents import HAAgentError, AuthenticatedAgent, authenticate_agent_request, desired_state, ingest_events, record_action_result, record_heartbeat, register_agent
+from app.services.ha_agent_installer import agent_file
 
 
 router = APIRouter(prefix="/api/ha/agent/v1", tags=["ha-agent"])
@@ -25,6 +26,20 @@ def registration_rate_limited(request: Request) -> bool:
 
 async def require_agent(request: Request, db: Session = Depends(get_db)) -> AuthenticatedAgent:
     return await authenticate_agent_request(request, db)
+
+
+@router.get("/install.sh", include_in_schema=False)
+def install_script():
+    return Response(agent_file("install.sh"), media_type="text/x-shellscript", headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+
+
+@router.get("/files/{name}", include_in_schema=False)
+def install_file(name: str):
+    try:
+        content = agent_file(name)
+    except FileNotFoundError:
+        raise HTTPException(404, "Agent installation file not found")
+    return Response(content, media_type="application/octet-stream", headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
 
 
 @router.post("/register", status_code=201)
@@ -59,3 +74,12 @@ def events(payload: HAAgentEvents, db: Session = Depends(get_db), agent: Authent
 @router.get("/desired-state")
 def get_desired_state(agent: AuthenticatedAgent = Depends(require_agent)):
     return desired_state(agent.node)
+
+
+@router.post("/action-result")
+def action_result(payload: HAAgentActionResult, db: Session = Depends(get_db), agent: AuthenticatedAgent = Depends(require_agent)):
+    try:
+        row = record_action_result(db, agent.node, payload)
+    except HAAgentError as exc:
+        raise HTTPException(409, str(exc))
+    return {"accepted": True, "action_id": row.action_id, "status": row.status}

@@ -23,6 +23,7 @@ RUN npm install --omit=dev --no-audit --no-fund
 
 COPY app ./app
 COPY scripts ./scripts
+COPY ha_agent ./ha_agent
 COPY docker-entrypoint.sh /usr/local/bin/kaya-entrypoint
 
 RUN mkdir -p /app/data /app/uploads /app/data/secret-vault /app/data/secure-send \

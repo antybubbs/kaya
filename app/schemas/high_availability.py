@@ -26,6 +26,17 @@ class HAAgentHeartbeat(HAAgentMessage):
     lease_generation: int = Field(default=0, ge=0)
     config_generation: int = Field(default=0, ge=0)
     agent_version: str = Field(min_length=1, max_length=80)
+    keepalived_runtime_state: str = Field(default="UNKNOWN", pattern="^(RUNNING|STOPPED|FAULT|UNKNOWN)$")
+
+
+class HAAgentActionResult(HAAgentMessage):
+    action_id: str = Field(min_length=20, max_length=180, pattern=r"^[A-Za-z0-9._:-]+$")
+    action_type: str = Field(pattern="^KEEPALIVED_APPLY$")
+    generation: int = Field(ge=1)
+    status: str = Field(pattern="^(APPLIED|FAILED)$")
+    checksum: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    backup_reference: str | None = Field(default=None, max_length=255, pattern=r"^[A-Za-z0-9._:-]+$")
+    message: str = Field(min_length=1, max_length=1000)
 
 
 class HAAgentEventItem(HAAgentMessage):
@@ -81,6 +92,16 @@ class HANodeRead(BaseModel):
     provider_version: str | None
     capabilities_json: str | None
     configuration_checksum: str | None
+    agent_version: str | None
+    last_heartbeat_at: datetime | None
+    observed_role: str | None
+    observed_generation: int
+    vip_owned: bool
+    dhcp_running: bool
+    config_generation: int
+    keepalived_status: str
+    keepalived_config_checksum: str | None
+    keepalived_runtime_state: str
 
 
 class HAHealthCheckRead(BaseModel):
@@ -117,6 +138,13 @@ class HAClusterRead(BaseModel):
     status: str
     virtual_ip: str | None
     prefix_length: int | None
+    cluster_generation: int
+    role_generation: int
+    vrrp_router_id: int | None
+    keepalived_generation: int
+    keepalived_status: str
+    keepalived_requested_at: datetime | None
+    keepalived_deployed_at: datetime | None
     created_at: datetime
     updated_at: datetime
     nodes: list[HANodeRead]

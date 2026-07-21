@@ -1,3 +1,5 @@
+import shlex
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -12,8 +14,10 @@ from app.schemas.high_availability import HAClusterDraftCreate, HAClusterRead, H
 from app.services.audit import write_audit
 from app.services.ha_clusters import HADraftError, create_cluster_draft, soft_delete_cluster, test_draft_node_connection, update_cluster_node
 from app.services.ha_agents import HAAgentError, create_bootstrap_token, revoke_agent
+from app.services.ha_agent_installer import installer_checksum
 from app.services.ha_registry import SUPPORTED_HA_PROVIDERS, provider_for_key
 from app.services.ha_validation import configuration_differences, run_live_validation
+from app.services.ha_keepalived import HAKeepalivedError, deployment_blockers, prepare_deployment, request_manual_vip_move
 from app.services.site_settings import get_site_setting
 
 
@@ -254,6 +258,51 @@ def cluster_events(public_id: str, request: Request, db: Session = Depends(get_d
     return cluster_page(request, user, db, public_id, "events", "high_availability_cluster_events.html")
 
 
+@router.get("/clusters/{public_id}/deployment")
+def cluster_deployment(public_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_high_availability)):
+    cluster = cluster_or_404(db, public_id)
+    return templates.TemplateResponse(request, "high_availability_cluster_deployment.html", ha_context(request, user, "clusters", cluster=cluster, cluster_section="deployment", blockers=deployment_blockers(cluster, router_id=cluster.vrrp_router_id or 51), deployment_error=None))
+
+
+@router.post("/clusters/{public_id}/deployment")
+async def deploy_cluster_keepalived(public_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_ha_admin)):
+    cluster = cluster_or_404(db, public_id)
+    form = await request.form()
+    validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    try:
+        router_id = int(str(form.get("vrrp_router_id") or ""))
+        prepare_deployment(db, cluster, router_id, str(form.get("acknowledge_dhcp_boundary") or "") == "1")
+    except (ValueError, HAKeepalivedError) as exc:
+        db.rollback()
+        cluster = cluster_or_404(db, public_id)
+        message = str(exc) if isinstance(exc, HAKeepalivedError) else "Enter a VRRP router ID between 1 and 255."
+        entered_router_id = str(form.get("vrrp_router_id") or "")
+        try:
+            blocker_router_id = int(entered_router_id)
+        except ValueError:
+            blocker_router_id = None
+        return templates.TemplateResponse(request, "high_availability_cluster_deployment.html", ha_context(request, user, "clusters", cluster=cluster, cluster_section="deployment", blockers=deployment_blockers(cluster, router_id=blocker_router_id), deployment_error=message, entered_router_id=entered_router_id), status_code=400)
+    write_audit(db, user, "deployment_requested", "ha_keepalived", entity_id=cluster.public_id, detail=f"Requested generated Keepalived deployment for {cluster.name}.", metadata={"generation": cluster.keepalived_generation, "vrrp_router_id": cluster.vrrp_router_id, "dhcp_changed": False, "automatic_failover": False})
+    return RedirectResponse(f"/high-availability/clusters/{cluster.public_id}/deployment?requested=1", status_code=303)
+
+
+@router.post("/clusters/{public_id}/deployment/move-vip")
+async def move_cluster_vip(public_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_ha_admin)):
+    cluster = cluster_or_404(db, public_id)
+    form = await request.form()
+    validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    target = node_or_404(cluster, str(form.get("target_node_id") or ""))
+    previous = next((node for node in cluster.nodes if node.vip_owned), None)
+    try:
+        request_manual_vip_move(db, cluster, target, str(form.get("acknowledge_manual_move") or "") == "1")
+    except HAKeepalivedError as exc:
+        db.rollback()
+        cluster = cluster_or_404(db, public_id)
+        return templates.TemplateResponse(request, "high_availability_cluster_deployment.html", ha_context(request, user, "clusters", cluster=cluster, cluster_section="deployment", blockers=deployment_blockers(cluster), deployment_error=str(exc)), status_code=400)
+    write_audit(db, user, "manual_vip_move_requested", "ha_keepalived", entity_id=cluster.public_id, detail=f"Requested manual VIP move to {target.display_name}.", metadata={"generation": cluster.keepalived_generation, "from_node": previous.public_id if previous else None, "to_node": target.public_id, "dhcp_changed": False})
+    return RedirectResponse(f"/high-availability/clusters/{cluster.public_id}/deployment?move_requested=1", status_code=303)
+
+
 @router.post("/clusters/{public_id}/nodes/{node_public_id}/agent/bootstrap")
 async def bootstrap_cluster_agent(public_id: str, node_public_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_ha_admin)):
     cluster = cluster_or_404(db, public_id)
@@ -261,11 +310,20 @@ async def bootstrap_cluster_agent(public_id: str, node_public_id: str, request: 
     form = await request.form()
     validate_csrf_token(request, str(form.get("csrf_token") or ""))
     credential, token = create_bootstrap_token(db, node)
+    kaya_url = str(request.base_url).rstrip("/")
+    installer_path = f"/tmp/kaya-ha-install-{node.public_id}.sh"
+    installer_url = f"{kaya_url}/api/ha/agent/v1/install.sh"
+    install_command = " && ".join((
+        f"curl -fsSL {shlex.quote(installer_url)} -o {shlex.quote(installer_path)}",
+        f"echo {shlex.quote(installer_checksum() + '  ' + installer_path)} | sha256sum -c -",
+        f"sudo sh {shlex.quote(installer_path)} --kaya-url {shlex.quote(kaya_url)} --cluster-id {shlex.quote(cluster.public_id)} --node-id {shlex.quote(node.public_id)}",
+        f"rm -f {shlex.quote(installer_path)}",
+    ))
     write_audit(db, user, "bootstrap_created", "ha_agent", entity_id=credential.agent_id, detail=f"Created one-time agent registration token for {node.display_name}.", metadata={"cluster_id": cluster.public_id, "node_id": node.public_id, "expires_minutes": 15, "secret_logged": False})
     return templates.TemplateResponse(
         request,
         "high_availability_cluster_agents.html",
-        ha_context(request, user, "clusters", cluster=cluster_or_404(db, public_id), cluster_section="agents", differences=[], bootstrap_token=token, bootstrap_node=node, bootstrap_expires_at=credential.bootstrap_expires_at),
+        ha_context(request, user, "clusters", cluster=cluster_or_404(db, public_id), cluster_section="agents", differences=[], bootstrap_token=token, bootstrap_node=node, bootstrap_expires_at=credential.bootstrap_expires_at, install_command=install_command),
     )
 
 

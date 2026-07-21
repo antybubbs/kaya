@@ -10,11 +10,10 @@ Group=kaya-ha
 ExecStart=/usr/bin/python3 /usr/lib/kaya-ha-agent/kaya_ha_agent.py run
 Restart=on-failure
 RestartSec=5
-NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/kaya-ha-agent
+ReadWritePaths=/var/lib/kaya-ha-agent /etc/keepalived
 
 [Install]
 WantedBy=multi-user.target

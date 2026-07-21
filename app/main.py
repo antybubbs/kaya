@@ -692,8 +692,9 @@ def migrate_existing_database():
         conn.execute(text("CREATE TABLE IF NOT EXISTS ha_agent_credentials (id INTEGER NOT NULL PRIMARY KEY, node_id INTEGER NOT NULL UNIQUE REFERENCES ha_nodes(id) ON DELETE CASCADE, agent_id VARCHAR(120) NOT NULL UNIQUE, public_key TEXT UNIQUE, bootstrap_token_hash VARCHAR(64) UNIQUE, bootstrap_expires_at DATETIME, registered_at DATETIME, revoked_at DATETIME, last_rotated_at DATETIME, created_at DATETIME, updated_at DATETIME)"))
         conn.execute(text("CREATE TABLE IF NOT EXISTS ha_agent_requests (id INTEGER NOT NULL PRIMARY KEY, credential_id INTEGER NOT NULL REFERENCES ha_agent_credentials(id) ON DELETE CASCADE, request_id VARCHAR(80) NOT NULL, request_timestamp DATETIME NOT NULL, received_at DATETIME, CONSTRAINT uq_ha_agent_request_replay UNIQUE (credential_id, request_id))"))
         conn.execute(text("CREATE TABLE IF NOT EXISTS ha_events (id INTEGER NOT NULL PRIMARY KEY, cluster_id INTEGER NOT NULL REFERENCES ha_clusters(id) ON DELETE CASCADE, node_id INTEGER REFERENCES ha_nodes(id) ON DELETE CASCADE, event_type VARCHAR(80) NOT NULL, severity VARCHAR(20) NOT NULL, source VARCHAR(40) NOT NULL, message VARCHAR(1000) NOT NULL, details_json_redacted TEXT, agent_event_id VARCHAR(80) UNIQUE, occurred_at DATETIME NOT NULL, received_at DATETIME, acknowledged_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, acknowledged_at DATETIME)"))
+        conn.execute(text("CREATE TABLE IF NOT EXISTS ha_agent_action_results (id INTEGER NOT NULL PRIMARY KEY, action_id VARCHAR(180) NOT NULL UNIQUE, cluster_id INTEGER NOT NULL REFERENCES ha_clusters(id) ON DELETE CASCADE, node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, action_type VARCHAR(60) NOT NULL, generation INTEGER NOT NULL, status VARCHAR(30) NOT NULL, checksum VARCHAR(64), backup_reference VARCHAR(255), message_redacted VARCHAR(1000) NOT NULL, received_at DATETIME)"))
         ha_cluster_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(ha_clusters)"))}
-        for column, definition in {"cluster_generation": "INTEGER DEFAULT 1 NOT NULL", "role_generation": "INTEGER DEFAULT 1 NOT NULL", "desired_sync_generation": "INTEGER DEFAULT 0 NOT NULL"}.items():
+        for column, definition in {"cluster_generation": "INTEGER DEFAULT 1 NOT NULL", "role_generation": "INTEGER DEFAULT 1 NOT NULL", "desired_sync_generation": "INTEGER DEFAULT 0 NOT NULL", "vrrp_router_id": "INTEGER", "keepalived_generation": "INTEGER DEFAULT 0 NOT NULL", "keepalived_status": "VARCHAR(40) DEFAULT 'NOT_CONFIGURED' NOT NULL", "keepalived_requested_at": "DATETIME", "keepalived_deployed_at": "DATETIME"}.items():
             if column not in ha_cluster_columns:
                 conn.execute(text(f"ALTER TABLE ha_clusters ADD COLUMN {column} {definition}"))
         ha_node_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(ha_nodes)"))}
@@ -710,6 +711,12 @@ def migrate_existing_database():
             "peer_reachable": "BOOLEAN",
             "lease_generation": "INTEGER DEFAULT 0 NOT NULL",
             "config_generation": "INTEGER DEFAULT 0 NOT NULL",
+            "keepalived_status": "VARCHAR(40) DEFAULT 'NOT_CONFIGURED' NOT NULL",
+            "keepalived_config_checksum": "VARCHAR(64)",
+            "keepalived_backup_reference": "VARCHAR(255)",
+            "keepalived_last_error": "VARCHAR(1000)",
+            "keepalived_reported_at": "DATETIME",
+            "keepalived_runtime_state": "VARCHAR(30) DEFAULT 'UNKNOWN' NOT NULL",
         }.items():
             if column not in ha_node_columns:
                 conn.execute(text(f"ALTER TABLE ha_nodes ADD COLUMN {column} {definition}"))
@@ -724,6 +731,7 @@ def migrate_existing_database():
             "ha_agent_credentials": ["node_id", "agent_id", "bootstrap_token_hash", "bootstrap_expires_at", "revoked_at"],
             "ha_agent_requests": ["credential_id", "request_id", "request_timestamp", "received_at"],
             "ha_events": ["cluster_id", "node_id", "event_type", "severity", "source", "agent_event_id", "occurred_at", "received_at"],
+            "ha_agent_action_results": ["action_id", "cluster_id", "node_id", "action_type", "generation", "status", "received_at"],
         }.items():
             for column in columns:
                 conn.execute(text(f"CREATE INDEX IF NOT EXISTS ix_{table}_{column} ON {table} ({column})"))

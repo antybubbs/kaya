@@ -627,6 +627,11 @@ class HACluster(Base):
     cluster_generation: Mapped[int] = mapped_column(Integer, default=1)
     role_generation: Mapped[int] = mapped_column(Integer, default=1)
     desired_sync_generation: Mapped[int] = mapped_column(Integer, default=0)
+    vrrp_router_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    keepalived_generation: Mapped[int] = mapped_column(Integer, default=0)
+    keepalived_status: Mapped[str] = mapped_column(String(40), default="NOT_CONFIGURED", index=True)
+    keepalived_requested_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    keepalived_deployed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_healthy_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_failover_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
@@ -675,6 +680,12 @@ class HANode(Base):
     peer_reachable: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     lease_generation: Mapped[int] = mapped_column(Integer, default=0)
     config_generation: Mapped[int] = mapped_column(Integer, default=0)
+    keepalived_status: Mapped[str] = mapped_column(String(40), default="NOT_CONFIGURED", index=True)
+    keepalived_config_checksum: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    keepalived_backup_reference: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    keepalived_last_error: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    keepalived_reported_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    keepalived_runtime_state: Mapped[str] = mapped_column(String(30), default="UNKNOWN")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     cluster = relationship("HACluster", foreign_keys=[cluster_id], back_populates="nodes")
@@ -729,6 +740,23 @@ class HAEvent(Base):
     cluster = relationship("HACluster", back_populates="events")
     node = relationship("HANode")
     acknowledged_by = relationship("User")
+
+
+class HAAgentActionResult(Base):
+    __tablename__ = "ha_agent_action_results"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    action_id: Mapped[str] = mapped_column(String(180), unique=True, index=True)
+    cluster_id: Mapped[int] = mapped_column(ForeignKey("ha_clusters.id", ondelete="CASCADE"), index=True)
+    node_id: Mapped[int] = mapped_column(ForeignKey("ha_nodes.id", ondelete="CASCADE"), index=True)
+    action_type: Mapped[str] = mapped_column(String(60), index=True)
+    generation: Mapped[int] = mapped_column(Integer, index=True)
+    status: Mapped[str] = mapped_column(String(30), index=True)
+    checksum: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    backup_reference: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    message_redacted: Mapped[str] = mapped_column(String(1000))
+    received_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    cluster = relationship("HACluster")
+    node = relationship("HANode")
 
 
 class HAHealthCheck(Base):
