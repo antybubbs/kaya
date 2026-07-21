@@ -8,6 +8,7 @@ from app.db.session import Base
 from app.models.models import DNSClientIPHistory, DNSProviderConfig, DNSRecognisedDevice, HACluster, HANode, HAProviderConnection, User
 from app.services.dns_providers import DNSProviderResult, HAPiHoleProvider, PiHoleProvider, provider_for
 from app.services.ha_sync import HAStaleSyncPlanError, HASyncError, create_live_sync_plan, create_sync_plan, execute_sync, sync_plan
+from app.routers.admin import DNSProviderSettingsError, save_dns_manager_settings
 
 
 def database():
@@ -52,6 +53,51 @@ def test_standalone_provider_path_is_unchanged_and_linking_preserves_history():
         db.commit()
         assert isinstance(provider_for(provider), HAPiHoleProvider)
         assert (provider.id, client.id, history.id) == (provider_id, client_id, history_id)
+
+
+def dns_settings(provider, cluster, **overrides):
+    values = {
+        "dns_manager_enabled": "1", "dns_collector_enabled": "1", "dns_default_provider_id": str(provider.id), "dns_refresh_interval_seconds": "300", "dns_cache_enabled": "1",
+        "dns_vlan_integration_enabled": "1", "dns_match_suggestions_enabled": "1", "dns_auto_link_exact_mac": "", "dns_auto_update_dynamic_ip": "", "dns_stale_client_days": "30",
+        "dns_retain_client_history": "1", "dns_client_history_days": "365", "dns_traffic_history_days": "30", "dns_vlan_enrichment_enabled": "1", "dns_update_empty_managed_hostname": "",
+        "dns_provider_id": str(provider.id), "dns_provider_name": provider.name, "dns_provider_type": "pihole", "dns_provider_connection_mode": "ha_cluster", "dns_provider_ha_cluster_id": str(cluster.id),
+        "dns_provider_base_url": provider.base_url, "dns_provider_auth_method": "password", "dns_provider_secret": "", "dns_provider_ssl_verify": "1", "dns_provider_timeout_seconds": "10", "dns_provider_enabled": "1", "dns_provider_description": "",
+    }
+    values.update(overrides)
+    return values
+
+
+def test_settings_can_convert_existing_provider_to_ha_without_losing_identity_or_history():
+    with database() as db:
+        _, cluster, _, _ = make_cluster(db)
+        provider = DNSProviderConfig(name="Existing", provider_type="pihole", base_url="http://one.invalid")
+        db.add(provider); db.flush()
+        client = DNSRecognisedDevice(provider_id=provider.id, identity_type="mac", identity_value="00:11:22:33:44:55")
+        db.add(client); db.flush()
+        history = DNSClientIPHistory(dns_client_id=client.id, provider_id=provider.id, ip_address="192.0.2.10")
+        db.add(history); db.commit()
+        ids = provider.id, client.id, history.id
+
+        saved = save_dns_manager_settings(db, **dns_settings(provider, cluster))
+        db.commit()
+
+        assert saved.id == ids[0]
+        assert saved.ha_cluster_id == cluster.id
+        assert saved.base_url == "http://192.0.2.53"
+        assert (provider.id, client.id, history.id) == ids
+        assert isinstance(provider_for(saved), HAPiHoleProvider)
+
+
+def test_settings_reject_unready_ha_cluster_instead_of_silently_ignoring_selection():
+    with database() as db:
+        _, cluster, _, _ = make_cluster(db)
+        provider = DNSProviderConfig(name="Existing", provider_type="pihole", base_url="http://one.invalid")
+        db.add(provider); db.commit()
+        cluster.status = "DEGRADED"; db.commit()
+
+        with pytest.raises(DNSProviderSettingsError, match="not currently ready"):
+            save_dns_manager_settings(db, **dns_settings(provider, cluster))
+        assert provider.ha_cluster_id is None
 
 
 def test_ha_provider_refuses_ambiguous_vip_ownership():

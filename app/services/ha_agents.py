@@ -15,6 +15,7 @@ from app.models.models import HAAgentActionResult as HAAgentActionResultRow, HAA
 from app.schemas.high_availability import HAAgentActionResult, HAAgentEventItem, HAAgentHeartbeat, HAAgentRegister
 from app.services.ha_keepalived import desired_keepalived_action
 from app.services.ha_leases import HALeaseError, desired_lease_action, record_lease_stage_result
+from app.services.ha_failover import HAFailoverError, advance_failover, desired_failover_action, record_failover_action_result
 
 
 AGENT_PROTOCOL_VERSION = 1
@@ -166,6 +167,7 @@ def record_heartbeat(db: Session, node: HANode, heartbeat: HAAgentHeartbeat) -> 
     db.commit()
     db.refresh(node)
     reconcile_vip_ownership(db, node.cluster)
+    advance_failover(db, node.cluster)
     return node
 
 
@@ -190,7 +192,12 @@ def record_action_result(db: Session, node: HANode, result: HAAgentActionResult)
         if existing.node_id != node.id:
             raise HAAgentError("The action result belongs to a different node.")
         return existing
-    expected = desired_keepalived_action(node.cluster, node) if result.action_type == "KEEPALIVED_APPLY" else desired_lease_action(node.cluster, node)
+    if result.action_type == "KEEPALIVED_APPLY":
+        expected = desired_keepalived_action(node.cluster, node)
+    elif result.action_type == "LEASE_SNAPSHOT_STAGE":
+        expected = desired_lease_action(node.cluster, node)
+    else:
+        expected = desired_failover_action(node.cluster, node)
     if not expected or result.action_id != expected["action_id"] or result.generation != expected["generation"]:
         raise HAAgentError("The action result does not match the node's current desired generation.")
     if result.status == "APPLIED" and result.checksum != expected["checksum"]:
@@ -202,6 +209,11 @@ def record_action_result(db: Session, node: HANode, result: HAAgentActionResult)
         try:
             record_lease_stage_result(db, node, generation=result.generation, checksum=result.checksum, status=result.status, message=result.message)
         except HALeaseError as exc:
+            raise HAAgentError(str(exc)) from exc
+    elif result.action_type in {"DHCP_DEMOTE", "DHCP_PROMOTE"}:
+        try:
+            record_failover_action_result(db, node, action_type=result.action_type, generation=result.generation, checksum=result.checksum, status=result.status, message=result.message)
+        except HAFailoverError as exc:
             raise HAAgentError(str(exc)) from exc
     else:
         node.keepalived_status = "DEPLOYED" if result.status == "APPLIED" else "ERROR"
@@ -221,6 +233,7 @@ def record_action_result(db: Session, node: HANode, result: HAAgentActionResult)
     db.commit()
     db.refresh(row)
     reconcile_vip_ownership(db, cluster)
+    advance_failover(db, cluster)
     return row
 
 
@@ -251,6 +264,7 @@ def desired_state(node: HANode) -> dict:
     cluster: HACluster = node.cluster
     keepalived = desired_keepalived_action(cluster, node)
     leases = desired_lease_action(cluster, node)
+    failover = desired_failover_action(cluster, node)
     return {
         "protocol_version": AGENT_PROTOCOL_VERSION,
         "cluster_id": cluster.public_id,
@@ -263,7 +277,8 @@ def desired_state(node: HANode) -> dict:
         "virtual_ip": f"{cluster.virtual_ip}/{cluster.prefix_length}" if cluster.virtual_ip else None,
         "maintenance_mode": cluster.maintenance_mode,
         "automatic_failover": False,
-        "allowed_actions": (["KEEPALIVED_APPLY"] if keepalived else []) + (["LEASE_SNAPSHOT_STAGE"] if leases else []),
+        "allowed_actions": (["KEEPALIVED_APPLY"] if keepalived else []) + (["LEASE_SNAPSHOT_STAGE"] if leases else []) + ([failover["action_type"]] if failover else []),
         "keepalived": keepalived,
         "lease_snapshot": leases,
+        "failover": failover,
     }

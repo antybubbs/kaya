@@ -8,6 +8,7 @@ import json
 import os
 import secrets
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import time
@@ -180,6 +181,21 @@ def reconcile_desired(state: State, desired: dict, *, helper_runner=None) -> Non
         except Exception as exc:
             result["message"] = str(exc)[:1000]
         state.set("pending_lease_action_result", result)
+    failover_action = desired.get("failover")
+    if failover_action:
+        pending = state.get("pending_failover_action_result")
+        if pending and pending.get("action_id") == failover_action.get("action_id"):
+            return
+        try:
+            try:
+                from .failover_runtime import FailoverRuntimeError, apply_failover_action
+            except ImportError:
+                from failover_runtime import FailoverRuntimeError, apply_failover_action
+            kwargs = {"runner": helper_runner} if helper_runner is not None else {}
+            result = apply_failover_action(state, failover_action, **kwargs)
+        except FailoverRuntimeError as exc:
+            result = {"action_id": failover_action.get("action_id", "invalid"), "action_type": failover_action.get("action_type", "DHCP_DEMOTE"), "generation": int(failover_action.get("generation") or 0), "status": "FAILED", "checksum": failover_action.get("checksum"), "backup_reference": None, "message": str(exc)[:1000]}
+        state.set("pending_failover_action_result", result)
 
 
 def run_once(state: State) -> None:
@@ -192,6 +208,19 @@ def run_once(state: State) -> None:
         refresh_vip_state(state)
     except Exception:
         state.set("keepalived_runtime_state", "UNKNOWN")
+    try:
+        try:
+            from .failover_runtime import refresh_dhcp_state
+        except ImportError:
+            from failover_runtime import refresh_dhcp_state
+        refresh_dhcp_state(state)
+    except Exception:
+        pass
+    try:
+        check = subprocess.run(["/usr/lib/kaya-ha-agent/check-pihole-dns"], capture_output=True, timeout=10, check=False)
+        state.set("dns_healthy", check.returncode == 0)
+    except (OSError, subprocess.SubprocessError):
+        state.set("dns_healthy", False)
     heartbeat = {"observed_role": state.get("observed_role", "STANDBY"), "observed_generation": int(state.get("observed_generation", 0)), "vip_owned": bool(state.get("vip_owned", False)), "dhcp_running": bool(state.get("dhcp_running", False)), "dns_healthy": bool(state.get("dns_healthy", False)), "peer_reachable": bool(state.get("peer_reachable", False)), "lease_generation": int(state.get("lease_generation", 0)), "config_generation": int(state.get("config_generation", 0)), "agent_version": config["agent_version"], "keepalived_runtime_state": state.get("keepalived_runtime_state", "UNKNOWN")}
     response = signed_request(state, "POST", "/api/ha/agent/v1/heartbeat", heartbeat)
     reconcile_desired(state, response["desired"])
@@ -203,6 +232,10 @@ def run_once(state: State) -> None:
     if lease_action_result:
         signed_request(state, "POST", "/api/ha/agent/v1/action-result", lease_action_result)
         state.set("pending_lease_action_result", None)
+    failover_action_result = state.get("pending_failover_action_result")
+    if failover_action_result:
+        signed_request(state, "POST", "/api/ha/agent/v1/action-result", failover_action_result)
+        state.set("pending_failover_action_result", None)
     queued = state.queued_events()
     if queued:
         signed_request(state, "POST", "/api/ha/agent/v1/events", {"events": queued})
@@ -220,7 +253,7 @@ def main() -> None:
     token_source = registration.add_mutually_exclusive_group(required=True)
     token_source.add_argument("--token")
     token_source.add_argument("--token-stdin", action="store_true")
-    registration.add_argument("--agent-version", default="0.1.3")
+    registration.add_argument("--agent-version", default="0.1.4")
     event_parser = commands.add_parser("event")
     event_parser.add_argument("event_type")
     event_parser.add_argument("message")

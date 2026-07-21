@@ -31,7 +31,7 @@ class HAAgentHeartbeat(HAAgentMessage):
 
 class HAAgentActionResult(HAAgentMessage):
     action_id: str = Field(min_length=20, max_length=180, pattern=r"^[A-Za-z0-9._:-]+$")
-    action_type: str = Field(pattern="^(KEEPALIVED_APPLY|LEASE_SNAPSHOT_STAGE)$")
+    action_type: str = Field(pattern="^(KEEPALIVED_APPLY|LEASE_SNAPSHOT_STAGE|DHCP_DEMOTE|DHCP_PROMOTE)$")
     generation: int = Field(ge=1)
     status: str = Field(pattern="^(APPLIED|FAILED)$")
     checksum: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.db.session import get_db
-from app.models.models import HACluster, HAHealthCheck, HALeaseReplicationState, HANode, HASyncRun
+from app.models.models import HACluster, HAFailoverRun, HAHealthCheck, HALeaseReplicationState, HANode, HASyncRun
 from app.routers.auth import require_user
 from app.schemas.high_availability import HAClusterDraftCreate, HAClusterRead, HAConfigurationDifferenceRead, HANodeDraftCreate, HANodeUpdate
 from app.services.audit import write_audit
@@ -21,6 +21,7 @@ from app.services.ha_validation import GROUP_LABELS, configuration_differences, 
 from app.services.ha_keepalived import HAKeepalivedError, deployment_blockers, prepare_deployment, request_manual_vip_move
 from app.services.ha_sync import HAStaleSyncPlanError, HASyncError, create_live_sync_plan, execute_sync, sync_plan
 from app.services.ha_leases import HALeaseError, latest_snapshot_summary, reconcile_cluster_leases
+from app.services.ha_failover import HAFailoverError, failover_readiness, failover_status, latest_failover, request_failover_rollback, start_controlled_failover
 from app.services.site_settings import get_site_setting
 
 
@@ -80,6 +81,8 @@ def cluster_or_404(db: Session, public_id: str) -> HACluster:
             selectinload(HACluster.nodes).selectinload(HANode.agent_credential),
             selectinload(HACluster.health_checks).selectinload(HAHealthCheck.node),
             selectinload(HACluster.events),
+            selectinload(HACluster.failover_runs).selectinload(HAFailoverRun.source_node),
+            selectinload(HACluster.failover_runs).selectinload(HAFailoverRun.target_node),
         )
         .first()
     )
@@ -259,6 +262,53 @@ def cluster_agents(public_id: str, request: Request, db: Session = Depends(get_d
 @router.get("/clusters/{public_id}/events")
 def cluster_events(public_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_high_availability)):
     return cluster_page(request, user, db, public_id, "events", "high_availability_cluster_events.html")
+
+
+def failover_page_context(request: Request, user, cluster: HACluster, error: str | None = None):
+    run = latest_failover(cluster)
+    return ha_context(request, user, "clusters", cluster=cluster, cluster_section="testing", failover_readiness=failover_readiness(cluster), failover_run=run, failover_state=failover_status(run), failover_error=error)
+
+
+@router.get("/clusters/{public_id}/testing")
+def cluster_testing(public_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_high_availability)):
+    cluster = cluster_or_404(db, public_id)
+    return templates.TemplateResponse(request, "high_availability_cluster_testing.html", failover_page_context(request, user, cluster))
+
+
+@router.post("/clusters/{public_id}/testing/start")
+async def start_cluster_failover(public_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_ha_admin)):
+    cluster = cluster_or_404(db, public_id)
+    form = await request.form()
+    validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    target = node_or_404(cluster, str(form.get("target_node_id") or ""))
+    try:
+        run = start_controlled_failover(db, cluster, target, user, confirmation=str(form.get("cluster_name") or ""), acknowledged=str(form.get("acknowledge_interruption") or "") == "1")
+    except HAFailoverError as exc:
+        db.rollback()
+        cluster = cluster_or_404(db, public_id)
+        return templates.TemplateResponse(request, "high_availability_cluster_testing.html", failover_page_context(request, user, cluster, str(exc)), status_code=409)
+    write_audit(db, user, "started", "ha_controlled_failover", entity_id=run.public_id, detail=f"Started controlled failover for {cluster.name} to {target.display_name}.", severity="warning", metadata={"cluster_id": cluster.public_id, "target_node_id": target.public_id, "automatic": False, "dhcp_managed": run.dhcp_managed})
+    return RedirectResponse(f"/high-availability/clusters/{cluster.public_id}/testing?started=1", status_code=303)
+
+
+@router.post("/clusters/{public_id}/testing/{run_id}/rollback")
+async def rollback_cluster_failover(public_id: str, run_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_ha_admin)):
+    cluster = cluster_or_404(db, public_id)
+    form = await request.form()
+    validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    run = next((item for item in cluster.failover_runs if item.public_id == run_id), None)
+    if run is None: raise HTTPException(404, "Failover run not found")
+    try: request_failover_rollback(db, run, acknowledged=str(form.get("acknowledge_rollback") or "") == "1")
+    except HAFailoverError as exc:
+        return templates.TemplateResponse(request, "high_availability_cluster_testing.html", failover_page_context(request, user, cluster, str(exc)), status_code=409)
+    write_audit(db, user, "rollback_requested", "ha_controlled_failover", entity_id=run.public_id, detail=f"Requested safe rollback for {cluster.name}.", severity="warning", metadata={"automatic": False})
+    return RedirectResponse(f"/high-availability/clusters/{cluster.public_id}/testing?rollback=1", status_code=303)
+
+
+@router.get("/clusters/{public_id}/testing/status")
+def cluster_failover_status(public_id: str, db: Session = Depends(get_db), user=Depends(require_high_availability)):
+    cluster = cluster_or_404(db, public_id)
+    return JSONResponse(failover_status(latest_failover(cluster)))
 
 
 def lease_page_context(request: Request, user, cluster: HACluster, error: str | None = None, notice: str | None = None):

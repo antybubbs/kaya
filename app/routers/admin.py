@@ -259,6 +259,10 @@ def ha_dns_clusters_for_admin(db: Session) -> list[HACluster]:
     )
 
 
+class DNSProviderSettingsError(ValueError):
+    pass
+
+
 def vlan_ip_admin_context(db: Session) -> dict:
     return {
         "vlan_options": db.query(VLAN).order_by(VLAN.name.asc()).all(),
@@ -296,7 +300,8 @@ def save_dns_manager_settings(
     dns_provider_timeout_seconds: str,
     dns_provider_enabled: str,
     dns_provider_description: str,
-) -> None:
+    dns_provider_connection_mode: str = "standalone",
+) -> DNSProviderConfig | None:
     save_site_setting(db, "dns_manager_enabled", "1" if dns_manager_enabled else "")
     save_site_setting(db, "dns_collector_enabled", "1" if dns_collector_enabled else "")
     save_site_setting(db, "dns_cache_enabled", "1" if dns_cache_enabled else "")
@@ -335,8 +340,13 @@ def save_dns_manager_settings(
     if dns_provider_id.strip().isdigit():
         provider = db.get(DNSProviderConfig, int(dns_provider_id.strip()))
     name = dns_provider_name.strip()
+    connection_mode = dns_provider_connection_mode.strip()
+    if connection_mode not in {"standalone", "ha_cluster"}:
+        raise DNSProviderSettingsError("Choose a valid Pi-hole connection source.")
     requested_cluster = None
-    if dns_provider_ha_cluster_id.strip().isdigit():
+    if connection_mode == "ha_cluster" and not dns_provider_ha_cluster_id.strip().isdigit():
+        raise DNSProviderSettingsError("Choose a healthy Kaya HA Pi-hole cluster before saving.")
+    if connection_mode == "ha_cluster":
         requested_cluster = (
             db.query(HACluster)
             .filter(
@@ -349,12 +359,16 @@ def save_dns_manager_settings(
             )
             .first()
         )
+        if requested_cluster is None:
+            raise DNSProviderSettingsError("That HA cluster is not currently ready for DNS Manager. Confirm it is healthy, deployed, and has exactly one virtual-IP owner.")
     base_url = dns_provider_base_url.strip().rstrip("/")
     if requested_cluster is not None:
-        base_url = provider.base_url if provider is not None else (f"http://{requested_cluster.virtual_ip}" if requested_cluster.virtual_ip else "")
+        base_url = f"http://{requested_cluster.virtual_ip}" if requested_cluster.virtual_ip else ""
     if not name or not base_url:
         save_site_setting(db, "dns_default_provider_id", dns_default_provider_id.strip())
-        return
+        if connection_mode == "ha_cluster":
+            raise DNSProviderSettingsError("Enter a display name and choose a cluster with a virtual IP.")
+        return None
 
     if not provider:
         provider = DNSProviderConfig(name=name, provider_type="pihole", base_url=base_url)
@@ -378,6 +392,7 @@ def save_dns_manager_settings(
     provider.description = dns_provider_description.strip() or None
     provider.updated_at = datetime.utcnow()
     save_site_setting(db, "dns_default_provider_id", str(provider.id))
+    return provider
 
 
 def save_remote_manager_settings(db: Session, form) -> bool:
@@ -2437,6 +2452,7 @@ async def save_settings(
     dns_provider_id: str = Form(""),
     dns_provider_name: str = Form(""),
     dns_provider_type: str = Form("pihole"),
+    dns_provider_connection_mode: str = Form("standalone"),
     dns_provider_ha_cluster_id: str = Form(""),
     dns_provider_base_url: str = Form(""),
     dns_provider_auth_method: str = Form("password"),
@@ -2609,35 +2625,40 @@ async def save_settings(
     if not re.fullmatch(r"https?://[^\s/]+(?::\d+)?", gateway_hostname):
         gateway_hostname = "http://localhost:8999"
     save_site_setting(db, "secure_send_gateway_hostname", gateway_hostname)
-    save_dns_manager_settings(
-        db,
-        dns_manager_enabled=dns_manager_enabled,
-        dns_collector_enabled=dns_collector_enabled,
-        dns_default_provider_id=dns_default_provider_id,
-        dns_refresh_interval_seconds=dns_refresh_interval_seconds,
-        dns_cache_enabled=dns_cache_enabled,
-        dns_vlan_integration_enabled=dns_vlan_integration_enabled,
-        dns_match_suggestions_enabled=dns_match_suggestions_enabled,
-        dns_auto_link_exact_mac=dns_auto_link_exact_mac,
-        dns_auto_update_dynamic_ip=dns_auto_update_dynamic_ip,
-        dns_stale_client_days=dns_stale_client_days,
-        dns_retain_client_history=dns_retain_client_history,
-        dns_client_history_days=dns_client_history_days,
-        dns_traffic_history_days=dns_traffic_history_days,
-        dns_vlan_enrichment_enabled=dns_vlan_enrichment_enabled,
-        dns_update_empty_managed_hostname=dns_update_empty_managed_hostname,
-        dns_provider_id=dns_provider_id,
-        dns_provider_name=dns_provider_name,
-        dns_provider_type=dns_provider_type,
-        dns_provider_ha_cluster_id=dns_provider_ha_cluster_id,
-        dns_provider_base_url=dns_provider_base_url,
-        dns_provider_auth_method=dns_provider_auth_method,
-        dns_provider_secret=dns_provider_secret,
-        dns_provider_ssl_verify=dns_provider_ssl_verify,
-        dns_provider_timeout_seconds=dns_provider_timeout_seconds,
-        dns_provider_enabled=dns_provider_enabled,
-        dns_provider_description=dns_provider_description,
-    )
+    try:
+        save_dns_manager_settings(
+            db,
+            dns_manager_enabled=dns_manager_enabled,
+            dns_collector_enabled=dns_collector_enabled,
+            dns_default_provider_id=dns_default_provider_id,
+            dns_refresh_interval_seconds=dns_refresh_interval_seconds,
+            dns_cache_enabled=dns_cache_enabled,
+            dns_vlan_integration_enabled=dns_vlan_integration_enabled,
+            dns_match_suggestions_enabled=dns_match_suggestions_enabled,
+            dns_auto_link_exact_mac=dns_auto_link_exact_mac,
+            dns_auto_update_dynamic_ip=dns_auto_update_dynamic_ip,
+            dns_stale_client_days=dns_stale_client_days,
+            dns_retain_client_history=dns_retain_client_history,
+            dns_client_history_days=dns_client_history_days,
+            dns_traffic_history_days=dns_traffic_history_days,
+            dns_vlan_enrichment_enabled=dns_vlan_enrichment_enabled,
+            dns_update_empty_managed_hostname=dns_update_empty_managed_hostname,
+            dns_provider_id=dns_provider_id,
+            dns_provider_name=dns_provider_name,
+            dns_provider_type=dns_provider_type,
+            dns_provider_connection_mode=dns_provider_connection_mode,
+            dns_provider_ha_cluster_id=dns_provider_ha_cluster_id,
+            dns_provider_base_url=dns_provider_base_url,
+            dns_provider_auth_method=dns_provider_auth_method,
+            dns_provider_secret=dns_provider_secret,
+            dns_provider_ssl_verify=dns_provider_ssl_verify,
+            dns_provider_timeout_seconds=dns_provider_timeout_seconds,
+            dns_provider_enabled=dns_provider_enabled,
+            dns_provider_description=dns_provider_description,
+        )
+    except DNSProviderSettingsError as exc:
+        db.rollback()
+        return templates.TemplateResponse(request, "settings.html", {"user": user, "settings": load_site_settings(db), "dns_providers": dns_providers_for_admin(db), "ha_dns_clusters": ha_dns_clusters_for_admin(db), **vlan_ip_admin_context(db), "security_check": security_check_context(request, db), "message": None, "error": str(exc), **csrf_context(request)}, status_code=422)
     guacamole_bridge_changed = save_remote_manager_settings(db, form)
 
     db.commit()
@@ -2765,6 +2786,7 @@ def test_dns_provider(
     dns_provider_id: str = Form(""),
     dns_provider_name: str = Form(""),
     dns_provider_type: str = Form("pihole"),
+    dns_provider_connection_mode: str = Form("standalone"),
     dns_provider_ha_cluster_id: str = Form(""),
     dns_provider_base_url: str = Form(""),
     dns_provider_auth_method: str = Form("password"),
@@ -2778,35 +2800,40 @@ def test_dns_provider(
     user=Depends(require_admin),
 ):
     validate_csrf_token(request, csrf_token)
-    save_dns_manager_settings(
-        db,
-        dns_manager_enabled=dns_manager_enabled,
-        dns_collector_enabled=dns_collector_enabled,
-        dns_default_provider_id=dns_default_provider_id,
-        dns_refresh_interval_seconds=dns_refresh_interval_seconds,
-        dns_cache_enabled=dns_cache_enabled,
-        dns_vlan_integration_enabled=dns_vlan_integration_enabled,
-        dns_match_suggestions_enabled=dns_match_suggestions_enabled,
-        dns_auto_link_exact_mac=dns_auto_link_exact_mac,
-        dns_auto_update_dynamic_ip=dns_auto_update_dynamic_ip,
-        dns_stale_client_days=dns_stale_client_days,
-        dns_retain_client_history=dns_retain_client_history,
-        dns_client_history_days=dns_client_history_days,
-        dns_traffic_history_days=dns_traffic_history_days,
-        dns_vlan_enrichment_enabled=dns_vlan_enrichment_enabled,
-        dns_update_empty_managed_hostname=dns_update_empty_managed_hostname,
-        dns_provider_id=dns_provider_id,
-        dns_provider_name=dns_provider_name,
-        dns_provider_type=dns_provider_type,
-        dns_provider_ha_cluster_id=dns_provider_ha_cluster_id,
-        dns_provider_base_url=dns_provider_base_url,
-        dns_provider_auth_method=dns_provider_auth_method,
-        dns_provider_secret=dns_provider_secret,
-        dns_provider_ssl_verify=dns_provider_ssl_verify,
-        dns_provider_timeout_seconds=dns_provider_timeout_seconds,
-        dns_provider_enabled=dns_provider_enabled,
-        dns_provider_description=dns_provider_description,
-    )
+    try:
+        save_dns_manager_settings(
+            db,
+            dns_manager_enabled=dns_manager_enabled,
+            dns_collector_enabled=dns_collector_enabled,
+            dns_default_provider_id=dns_default_provider_id,
+            dns_refresh_interval_seconds=dns_refresh_interval_seconds,
+            dns_cache_enabled=dns_cache_enabled,
+            dns_vlan_integration_enabled=dns_vlan_integration_enabled,
+            dns_match_suggestions_enabled=dns_match_suggestions_enabled,
+            dns_auto_link_exact_mac=dns_auto_link_exact_mac,
+            dns_auto_update_dynamic_ip=dns_auto_update_dynamic_ip,
+            dns_stale_client_days=dns_stale_client_days,
+            dns_retain_client_history=dns_retain_client_history,
+            dns_client_history_days=dns_client_history_days,
+            dns_traffic_history_days=dns_traffic_history_days,
+            dns_vlan_enrichment_enabled=dns_vlan_enrichment_enabled,
+            dns_update_empty_managed_hostname=dns_update_empty_managed_hostname,
+            dns_provider_id=dns_provider_id,
+            dns_provider_name=dns_provider_name,
+            dns_provider_type=dns_provider_type,
+            dns_provider_connection_mode=dns_provider_connection_mode,
+            dns_provider_ha_cluster_id=dns_provider_ha_cluster_id,
+            dns_provider_base_url=dns_provider_base_url,
+            dns_provider_auth_method=dns_provider_auth_method,
+            dns_provider_secret=dns_provider_secret,
+            dns_provider_ssl_verify=dns_provider_ssl_verify,
+            dns_provider_timeout_seconds=dns_provider_timeout_seconds,
+            dns_provider_enabled=dns_provider_enabled,
+            dns_provider_description=dns_provider_description,
+        )
+    except DNSProviderSettingsError as exc:
+        db.rollback()
+        return templates.TemplateResponse(request, "settings.html", {"user": user, "settings": load_site_settings(db), "dns_providers": dns_providers_for_admin(db), "ha_dns_clusters": ha_dns_clusters_for_admin(db), **vlan_ip_admin_context(db), "security_check": security_check_context(request, db), "message": None, "error": str(exc), **csrf_context(request)}, status_code=422)
     db.commit()
 
     provider_id = (get_site_setting(db, "dns_default_provider_id") or "").strip()
@@ -2849,6 +2876,68 @@ def test_dns_provider(
             **csrf_context(request),
         },
     )
+
+
+@router.post("/system/site-administration/save-dns-provider")
+def save_dns_provider(
+    request: Request,
+    dns_provider_id: str = Form(""),
+    dns_provider_name: str = Form(""),
+    dns_provider_type: str = Form("pihole"),
+    dns_provider_connection_mode: str = Form("standalone"),
+    dns_provider_ha_cluster_id: str = Form(""),
+    dns_provider_base_url: str = Form(""),
+    dns_provider_auth_method: str = Form("password"),
+    dns_provider_secret: str = Form(""),
+    dns_provider_ssl_verify: str = Form(""),
+    dns_provider_timeout_seconds: str = Form("10"),
+    dns_provider_enabled: str = Form(""),
+    dns_provider_description: str = Form(""),
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    validate_csrf_token(request, csrf_token)
+    current = load_site_settings(db)
+    try:
+        provider = save_dns_manager_settings(
+            db,
+            dns_manager_enabled=current.get("dns_manager_enabled", ""),
+            dns_collector_enabled=current.get("dns_collector_enabled", ""),
+            dns_default_provider_id=current.get("dns_default_provider_id", ""),
+            dns_refresh_interval_seconds=current.get("dns_refresh_interval_seconds", "300"),
+            dns_cache_enabled=current.get("dns_cache_enabled", ""),
+            dns_vlan_integration_enabled=current.get("dns_vlan_integration_enabled", ""),
+            dns_match_suggestions_enabled=current.get("dns_match_suggestions_enabled", ""),
+            dns_auto_link_exact_mac=current.get("dns_auto_link_exact_mac", ""),
+            dns_auto_update_dynamic_ip=current.get("dns_auto_update_dynamic_ip", ""),
+            dns_stale_client_days=current.get("dns_stale_client_days", "30"),
+            dns_retain_client_history=current.get("dns_retain_client_history", ""),
+            dns_client_history_days=current.get("dns_client_history_days", "365"),
+            dns_traffic_history_days=current.get("dns_traffic_history_days", "30"),
+            dns_vlan_enrichment_enabled=current.get("dns_vlan_enrichment_enabled", ""),
+            dns_update_empty_managed_hostname=current.get("dns_update_empty_managed_hostname", ""),
+            dns_provider_id=dns_provider_id,
+            dns_provider_name=dns_provider_name,
+            dns_provider_type=dns_provider_type,
+            dns_provider_connection_mode=dns_provider_connection_mode,
+            dns_provider_ha_cluster_id=dns_provider_ha_cluster_id,
+            dns_provider_base_url=dns_provider_base_url,
+            dns_provider_auth_method=dns_provider_auth_method,
+            dns_provider_secret=dns_provider_secret,
+            dns_provider_ssl_verify=dns_provider_ssl_verify,
+            dns_provider_timeout_seconds=dns_provider_timeout_seconds,
+            dns_provider_enabled=dns_provider_enabled,
+            dns_provider_description=dns_provider_description,
+        )
+        if provider is None:
+            raise DNSProviderSettingsError("Enter a display name and Pi-hole connection details before saving.")
+        db.commit()
+    except DNSProviderSettingsError as exc:
+        db.rollback()
+        return templates.TemplateResponse(request, "settings.html", {"user": user, "settings": load_site_settings(db), "dns_providers": dns_providers_for_admin(db), "ha_dns_clusters": ha_dns_clusters_for_admin(db), **vlan_ip_admin_context(db), "security_check": security_check_context(request, db), "message": None, "error": str(exc), **csrf_context(request)}, status_code=422)
+    write_audit(db, user, "update", "dns_provider", str(provider.id), request.client.host if request.client else None, detail=f"Saved DNS provider {provider.name}.", metadata={"ha_cluster_id": provider.ha_cluster.public_id if provider.ha_cluster else None, "history_preserved": True})
+    return RedirectResponse("/system/site-administration?tab=modules&subtab=module-dns-manager&provider_saved=1", status_code=303)
 
 @router.post("/system/site-administration/test-email")
 def send_test_email(

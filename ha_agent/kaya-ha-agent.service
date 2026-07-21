@@ -13,7 +13,7 @@ RestartSec=5
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/kaya-ha-agent /etc/keepalived
+ReadWritePaths=/var/lib/kaya-ha-agent /etc/keepalived /etc/pihole
 
 [Install]
 WantedBy=multi-user.target

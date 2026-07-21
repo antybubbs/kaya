@@ -14,5 +14,5 @@
   <a class="{{ 'active' if cluster_section == 'synchronisation' else '' }}" {% if cluster_section == 'synchronisation' %}aria-current="page"{% endif %} href="/high-availability/clusters/{{ cluster.public_id }}/synchronisation">Synchronisation</a>
   <a class="{{ 'active' if cluster_section == 'dhcp' else '' }}" {% if cluster_section == 'dhcp' %}aria-current="page"{% endif %} href="/high-availability/clusters/{{ cluster.public_id }}/dhcp">DHCP continuity</a>
   <a class="{{ 'active' if cluster_section == 'events' else '' }}" {% if cluster_section == 'events' %}aria-current="page"{% endif %} href="/high-availability/clusters/{{ cluster.public_id }}/events">Events</a>
-  <span class="disabled" aria-disabled="true">Testing</span>
+  <a class="{{ 'active' if cluster_section == 'testing' else '' }}" {% if cluster_section == 'testing' %}aria-current="page"{% endif %} href="/high-availability/clusters/{{ cluster.public_id }}/testing">Failover test</a>
 </nav>

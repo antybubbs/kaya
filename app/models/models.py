@@ -647,6 +647,7 @@ class HACluster(Base):
     sync_runs = relationship("HASyncRun", cascade="all, delete-orphan", back_populates="cluster")
     lease_replication = relationship("HALeaseReplicationState", uselist=False, cascade="all, delete-orphan", back_populates="cluster")
     lease_snapshots = relationship("HALeaseSnapshot", cascade="all, delete-orphan", back_populates="cluster")
+    failover_runs = relationship("HAFailoverRun", cascade="all, delete-orphan", back_populates="cluster")
     created_by = relationship("User", foreign_keys=[created_by_user_id])
 
 
@@ -811,6 +812,32 @@ class HALeaseSnapshot(Base):
     cluster = relationship("HACluster", back_populates="lease_snapshots")
     source_node = relationship("HANode", foreign_keys=[source_node_id])
     target_node = relationship("HANode", foreign_keys=[target_node_id])
+
+
+class HAFailoverRun(Base):
+    """Auditable, generation-fenced manual failover or failback workflow."""
+
+    __tablename__ = "ha_failover_runs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(36), default=lambda: str(uuid4()), unique=True, index=True)
+    cluster_id: Mapped[int] = mapped_column(ForeignKey("ha_clusters.id", ondelete="CASCADE"), index=True)
+    source_node_id: Mapped[int] = mapped_column(ForeignKey("ha_nodes.id", ondelete="CASCADE"), index=True)
+    target_node_id: Mapped[int] = mapped_column(ForeignKey("ha_nodes.id", ondelete="CASCADE"), index=True)
+    status: Mapped[str] = mapped_column(String(30), default="RUNNING", index=True)
+    phase: Mapped[str] = mapped_column(String(50), default="PREFLIGHT", index=True)
+    dhcp_managed: Mapped[bool] = mapped_column(Boolean, default=False)
+    lease_generation: Mapped[int] = mapped_column(Integer, default=0)
+    role_generation: Mapped[int] = mapped_column(Integer, index=True)
+    error_redacted: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    report_json: Mapped[str] = mapped_column(Text, default="{}")
+    requested_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    cluster = relationship("HACluster", back_populates="failover_runs")
+    source_node = relationship("HANode", foreign_keys=[source_node_id])
+    target_node = relationship("HANode", foreign_keys=[target_node_id])
+    requested_by = relationship("User", foreign_keys=[requested_by_user_id])
 
 
 class HASyncRun(Base):

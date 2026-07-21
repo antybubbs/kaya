@@ -422,6 +422,7 @@
 
   <section class="settings-tab-panel" data-settings-panel="module-dns-manager" data-settings-parent="modules" role="tabpanel" hidden>
     <h2>DNS Manager</h2>
+    {% if request.query_params.get('provider_saved') %}<div class="success"><strong>Pi-hole provider saved</strong><span>DNS Manager will treat the selected HA cluster as one logical Pi-hole through its virtual IP. Existing provider history and linked IP records were retained.</span></div>{% endif %}
     {% set dns_default_id = settings.get('dns_default_provider_id', '') %}
     {% set dns_ns = namespace(provider=none) %}
     {% for item in dns_providers or [] %}
@@ -546,6 +547,7 @@
         </label>
       </div>
       <div class="remote-settings-actions">
+        <button class="button" type="submit" formaction="/system/site-administration/save-dns-provider" formmethod="post">Save Pi-hole provider</button>
         <button class="button secondary" type="submit" formaction="/system/site-administration/test-dns-provider" formmethod="post">Test Pi-hole connection</button>
       </div>
     </div>

@@ -7,6 +7,8 @@ PUBLIC_AGENT_FILES = frozenset({
     "install.sh",
     "kaya_ha_agent.py",
     "keepalived_runtime.py",
+    "failover_runtime.py",
+    "kaya_ha_failover_helper.py",
     "kaya_ha_keepalived_helper.py",
     "kaya_ha_transition.py",
     "check-pihole-dns",

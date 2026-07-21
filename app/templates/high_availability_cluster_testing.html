@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block content %}
+{% include '_high_availability_cluster_header.html' %}
+{% if failover_error %}<div class="alert ha-lease-alert" role="alert"><strong>Failover was not started</strong><span>{{ failover_error }}</span><span>No automatic failover or failback was attempted.</span></div>{% endif %}
+<section class="panel ha-lease-intro">
+  <div><span class="ha-sync-eyebrow">CONTROLLED FAILOVER</span><h2>Test the other Pi-hole safely</h2><p>Kaya performs a deliberate handover to the standby. It stops DHCP on the current owner before moving the virtual IP, then starts DHCP on the new owner only after DNS and VIP ownership are verified.</p></div>
+  <div class="ha-lease-boundaries"><div><strong>This is manual</strong><span>Kaya never starts this test itself and will not automatically fail back.</span></div><div><strong>Your network remains local</strong><span>Pi-hole and Keepalived continue without Kaya after the transition finishes.</span></div></div>
+</section>
+
+{% if failover_run and failover_state.status in ['RUNNING', 'ROLLING_BACK', 'FAILED_SAFE'] %}
+<section id="failover-result" class="panel" data-ha-failover-live data-status-url="/high-availability/clusters/{{ cluster.public_id }}/testing/status">
+  <div class="ha-section-heading"><div><h2>Live handover progress</h2><p class="muted">This updates automatically from agent heartbeats. Keep this page open; refreshing is not required.</p></div><span class="table-chip" data-failover-status>{{ failover_state.status|replace('_', ' ')|title }}</span></div>
+  <div class="ha-failover-progress" role="status" aria-live="polite"><span class="ha-live-dot"></span><strong data-failover-message>{{ failover_state.message }}</strong></div>
+  <ol class="ha-lease-flow"><li>Capture current leases</li><li>Stop DHCP on {{ failover_run.source_node.display_name }}</li><li>Move the virtual IP</li><li>Start and verify {{ failover_run.target_node.display_name }}</li></ol>
+  <div class="ha-agent-diagnostic" data-failover-error {% if not failover_state.error %}hidden{% endif %}><strong>Transition stopped safely</strong><pre data-failover-error-message>{{ failover_state.error or '' }}</pre><small>Kaya does not continue through a failed safety check.</small></div>
+  {% if failover_state.status == 'FAILED_SAFE' and user.role == 'admin' %}<form method="post" action="/high-availability/clusters/{{ cluster.public_id }}/testing/{{ failover_run.public_id }}/rollback"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label class="checkbox-row"><input type="checkbox" name="acknowledge_rollback" value="1" required> Return services to the original node using the same safety checks.</label><button class="button secondary" type="submit">Roll back safely</button></form>{% endif %}
+</section>
+{% else %}
+<section id="failover-result" class="panel">
+  <div class="ha-section-heading"><div><h2>Safety check</h2><p class="muted">Every item must pass before Kaya offers the handover.</p></div><span class="ha-agent-state {{ 'is-online' if failover_readiness.ready else 'is-revoked' }}">{{ 'Ready' if failover_readiness.ready else 'Blocked' }}</span></div>
+  {% if failover_readiness.blockers %}<div class="alert"><strong>Resolve these items first</strong><ul>{% for blocker in failover_readiness.blockers %}<li>{{ blocker }}</li>{% endfor %}</ul></div>{% else %}<div class="success"><strong>Ready for a controlled test</strong><span>Current owner: {{ failover_readiness.source.display_name }}. Target: {{ failover_readiness.target.display_name }}. DHCP: {{ 'managed by this Pi-hole cluster' if failover_readiness.dhcp_managed else 'external and untouched' }}.</span></div>{% endif %}
+  {% if failover_run and failover_state.status in ['SUCCEEDED', 'ROLLED_BACK'] %}<div class="ha-sync-empty"><strong>{{ failover_state.message }}</strong><span>The new active node remains active. Automatic failback is disabled; another controlled handover is required to return.</span></div>{% endif %}
+  {% if user.role == 'admin' and failover_readiness.ready %}<form class="ha-failover-form" method="post" action="/high-availability/clusters/{{ cluster.public_id }}/testing/start"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="target_node_id" value="{{ failover_readiness.target.public_id }}"><label>Type <strong>{{ cluster.name }}</strong> to confirm<input name="cluster_name" autocomplete="off" required></label><label class="checkbox-row"><input type="checkbox" name="acknowledge_interruption" value="1" required> I understand DNS and DHCP may pause briefly and the target will remain active after the test.</label><button class="button" type="submit">Start controlled failover to {{ failover_readiness.target.display_name }}</button></form>{% endif %}
+</section>
+{% endif %}
+<section class="panel ha-sync-offline"><div><h2>If Kaya goes offline</h2><p>It does not undo or continue a half-finished transition. The agents apply generation-fenced steps locally, and network services remain on the last safely verified owner.</p></div><span class="ha-sync-safe-badge">No automatic failback</span></section>
+<script src="/static/js/ha_failover.js" defer></script>
+{% endblock %}
