@@ -58,10 +58,21 @@ def validate_network(cluster: HACluster, router_id: int | None = None) -> None:
 
 def deployment_blockers(cluster: HACluster, *, now: datetime | None = None, router_id: int | None = None) -> list[str]:
     blockers: list[str] = []
+    invalid_interface_nodes = [
+        node
+        for node in cluster.nodes
+        if not node.network_interface or not INTERFACE_PATTERN.fullmatch(node.network_interface)
+    ]
     try:
         validate_network(cluster, router_id)
     except HAKeepalivedError as exc:
-        blockers.append(str(exc))
+        if invalid_interface_nodes:
+            blockers.extend(
+                f"Enter a valid network interface for {node.display_name}."
+                for node in invalid_interface_nodes
+            )
+        else:
+            blockers.append(str(exc))
     if cluster.status not in {"VALIDATED", "VALIDATED_WITH_WARNINGS", "READY_TO_DEPLOY", "DEPLOYING", "HEALTHY"}:
         blockers.append("Complete read-only validation without blocking failures before deployment.")
     current = now or datetime.utcnow()

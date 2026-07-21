@@ -82,6 +82,16 @@ def test_deployment_requires_agents_and_builds_node_bound_desired_actions():
         assert desired_state(prepared.nodes[0])["allowed_actions"] == ["KEEPALIVED_APPLY"]
 
 
+def test_deployment_blockers_report_every_node_with_an_invalid_interface():
+    with database() as db:
+        cluster = ready_cluster(db)
+        cluster.nodes[0].network_interface = ""
+        cluster.nodes[1].network_interface = "not valid"
+        blockers = deployment_blockers(cluster)
+        assert "Enter a valid network interface for Primary." in blockers
+        assert "Enter a valid network interface for Standby." in blockers
+
+
 def test_action_results_are_generation_and_checksum_bound_then_reconcile_one_owner():
     with database() as db:
         cluster = prepare_deployment(db, ready_cluster(db), 51, True)
@@ -181,6 +191,9 @@ def test_deployment_ui_and_agent_protocol_keep_dhcp_outside_milestone_five():
     assert "DHCP excluded" in template
     assert "does not enable, disable, synchronise, or move DHCP" in template
     assert "Move Virtual IP" in template
+    assert "Deployment blocked" in template
+    assert "Resolve blockers to deploy" in template
+    assert "Edit node settings" in template
     assert 'Depends(require_ha_admin)' in router
     assert '"dhcp_changed": False' in router
     assert '@router.post("/action-result")' in agent_router
