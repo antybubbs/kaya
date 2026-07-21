@@ -246,6 +246,19 @@ def dns_providers_for_admin(db: Session) -> list[DNSProviderConfig]:
     return db.query(DNSProviderConfig).order_by(DNSProviderConfig.name.asc()).all()
 
 
+def ha_dns_clusters_for_admin(db: Session) -> list[HACluster]:
+    return (
+        db.query(HACluster)
+        .filter(
+            HACluster.provider_key == "pihole",
+            HACluster.deleted_at.is_(None),
+            HACluster.keepalived_status == "DEPLOYED",
+        )
+        .order_by(HACluster.name.asc())
+        .all()
+    )
+
+
 def vlan_ip_admin_context(db: Session) -> dict:
     return {
         "vlan_options": db.query(VLAN).order_by(VLAN.name.asc()).all(),
@@ -275,6 +288,7 @@ def save_dns_manager_settings(
     dns_provider_id: str,
     dns_provider_name: str,
     dns_provider_type: str,
+    dns_provider_ha_cluster_id: str,
     dns_provider_base_url: str,
     dns_provider_auth_method: str,
     dns_provider_secret: str,
@@ -317,15 +331,31 @@ def save_dns_manager_settings(
         refresh = 300
     save_site_setting(db, "dns_refresh_interval_seconds", str(refresh))
 
+    provider = None
+    if dns_provider_id.strip().isdigit():
+        provider = db.get(DNSProviderConfig, int(dns_provider_id.strip()))
     name = dns_provider_name.strip()
+    requested_cluster = None
+    if dns_provider_ha_cluster_id.strip().isdigit():
+        requested_cluster = (
+            db.query(HACluster)
+            .filter(
+                HACluster.id == int(dns_provider_ha_cluster_id),
+                HACluster.provider_key == "pihole",
+                HACluster.deleted_at.is_(None),
+                HACluster.keepalived_status == "DEPLOYED",
+                HACluster.status == "HEALTHY",
+                HACluster.current_active_node_id.isnot(None),
+            )
+            .first()
+        )
     base_url = dns_provider_base_url.strip().rstrip("/")
+    if requested_cluster is not None:
+        base_url = provider.base_url if provider is not None else (f"http://{requested_cluster.virtual_ip}" if requested_cluster.virtual_ip else "")
     if not name or not base_url:
         save_site_setting(db, "dns_default_provider_id", dns_default_provider_id.strip())
         return
 
-    provider = None
-    if dns_provider_id.strip().isdigit():
-        provider = db.get(DNSProviderConfig, int(dns_provider_id.strip()))
     if not provider:
         provider = DNSProviderConfig(name=name, provider_type="pihole", base_url=base_url)
         db.add(provider)
@@ -333,15 +363,17 @@ def save_dns_manager_settings(
 
     provider.name = name
     provider.provider_type = dns_provider_type if dns_provider_type in {"pihole"} else "pihole"
+    provider.ha_cluster_id = requested_cluster.id if requested_cluster is not None else None
     provider.base_url = base_url
-    provider.auth_method = dns_provider_auth_method if dns_provider_auth_method in {"password", "api_token"} else "password"
-    if dns_provider_secret.strip():
-        provider.encrypted_secret = encrypt_secret(dns_provider_secret.strip())
-    provider.ssl_verify = bool(dns_provider_ssl_verify)
-    try:
-        provider.timeout_seconds = max(1, min(int(dns_provider_timeout_seconds or "10"), 60))
-    except ValueError:
-        provider.timeout_seconds = 10
+    if requested_cluster is None:
+        provider.auth_method = dns_provider_auth_method if dns_provider_auth_method in {"password", "api_token"} else "password"
+        if dns_provider_secret.strip():
+            provider.encrypted_secret = encrypt_secret(dns_provider_secret.strip())
+        provider.ssl_verify = bool(dns_provider_ssl_verify)
+        try:
+            provider.timeout_seconds = max(1, min(int(dns_provider_timeout_seconds or "10"), 60))
+        except ValueError:
+            provider.timeout_seconds = 10
     provider.is_enabled = bool(dns_provider_enabled)
     provider.description = dns_provider_description.strip() or None
     provider.updated_at = datetime.utcnow()
@@ -2076,6 +2108,7 @@ def settings_page(
             "backup_preserved_item_count": db.query(BackupRecord).count() + db.query(BackupJob).count(),
             "backup_inflight_job_count": db.query(BackupJob).filter(BackupJob.status.in_(["queued", "dispatched", "running"])).count(),
             "dns_providers": dns_providers_for_admin(db),
+            "ha_dns_clusters": ha_dns_clusters_for_admin(db),
             **vlan_ip_admin_context(db),
             "security_check": security_check_context(request, db),
             "message": None,
@@ -2404,6 +2437,7 @@ async def save_settings(
     dns_provider_id: str = Form(""),
     dns_provider_name: str = Form(""),
     dns_provider_type: str = Form("pihole"),
+    dns_provider_ha_cluster_id: str = Form(""),
     dns_provider_base_url: str = Form(""),
     dns_provider_auth_method: str = Form("password"),
     dns_provider_secret: str = Form(""),
@@ -2463,6 +2497,7 @@ async def save_settings(
                 "user": user,
                 "settings": submitted_settings,
                 "dns_providers": dns_providers_for_admin(db),
+                "ha_dns_clusters": ha_dns_clusters_for_admin(db),
                 **vlan_ip_admin_context(db),
                 "security_check": security_check_context(request, db),
                 "allowed_host_errors": allowed_host_errors,
@@ -2594,6 +2629,7 @@ async def save_settings(
         dns_provider_id=dns_provider_id,
         dns_provider_name=dns_provider_name,
         dns_provider_type=dns_provider_type,
+        dns_provider_ha_cluster_id=dns_provider_ha_cluster_id,
         dns_provider_base_url=dns_provider_base_url,
         dns_provider_auth_method=dns_provider_auth_method,
         dns_provider_secret=dns_provider_secret,
@@ -2625,6 +2661,7 @@ async def save_settings(
             "user": user,
             "settings": load_site_settings(db),
             "dns_providers": dns_providers_for_admin(db),
+            "ha_dns_clusters": ha_dns_clusters_for_admin(db),
             **vlan_ip_admin_context(db),
             "security_check": security_check_context(request, db),
             "message": "Settings saved successfully.",
@@ -2697,6 +2734,7 @@ def test_backup_storage(
             "user": user,
             "settings": load_site_settings(db),
             "dns_providers": dns_providers_for_admin(db),
+            "ha_dns_clusters": ha_dns_clusters_for_admin(db),
             **vlan_ip_admin_context(db),
             "security_check": security_check_context(request, db),
             "message": f"Backup storage test passed: {detail}" if passed else None,
@@ -2727,6 +2765,7 @@ def test_dns_provider(
     dns_provider_id: str = Form(""),
     dns_provider_name: str = Form(""),
     dns_provider_type: str = Form("pihole"),
+    dns_provider_ha_cluster_id: str = Form(""),
     dns_provider_base_url: str = Form(""),
     dns_provider_auth_method: str = Form("password"),
     dns_provider_secret: str = Form(""),
@@ -2759,6 +2798,7 @@ def test_dns_provider(
         dns_provider_id=dns_provider_id,
         dns_provider_name=dns_provider_name,
         dns_provider_type=dns_provider_type,
+        dns_provider_ha_cluster_id=dns_provider_ha_cluster_id,
         dns_provider_base_url=dns_provider_base_url,
         dns_provider_auth_method=dns_provider_auth_method,
         dns_provider_secret=dns_provider_secret,
@@ -2801,6 +2841,7 @@ def test_dns_provider(
             "user": user,
             "settings": load_site_settings(db),
             "dns_providers": dns_providers_for_admin(db),
+            "ha_dns_clusters": ha_dns_clusters_for_admin(db),
             **vlan_ip_admin_context(db),
             "security_check": security_check_context(request, db),
             "message": detail if passed else None,
@@ -2931,6 +2972,7 @@ def send_test_email(
             "user": user,
             "settings": load_site_settings(db),
             "dns_providers": dns_providers_for_admin(db),
+            "ha_dns_clusters": ha_dns_clusters_for_admin(db),
             **vlan_ip_admin_context(db),
             "security_check": security_check_context(request, db),
             "message": message,

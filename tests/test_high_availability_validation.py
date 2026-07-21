@@ -150,6 +150,7 @@ def test_pihole_ha_configuration_uses_get_only_configuration_surfaces(monkeypatc
     assert result.ok
     assert paths == [
         "/api/lists",
+        "/api/domains",
         "/api/groups",
         "/api/clients",
         "/api/config/dns/hosts",
@@ -157,6 +158,40 @@ def test_pihole_ha_configuration_uses_get_only_configuration_surfaces(monkeypatc
         "/api/config/dns",
         "/api/config/dhcp",
     ]
+
+
+def test_pihole_collection_reconciliation_uses_target_group_ids(monkeypatch):
+    client = object.__new__(PiHoleProvider)
+    source = {
+        "groups": {"groups": [{"id": 7, "name": "Default", "enabled": True}]},
+        "filtering": {
+            "lists": {"lists": [{"address": "https://list.invalid/hosts", "type": "block", "comment": "source", "enabled": True, "groups": [7]}]},
+            "domains": {"domains": [{"domain": "ads.invalid", "type": "deny", "kind": "exact", "comment": "source", "enabled": True, "groups": [7]}]},
+        },
+        "clients": {"clients": [{"client": "192.0.2.10", "comment": "source", "groups": [7]}]},
+    }
+    target = {
+        "groups": {"groups": [{"id": 0, "name": "Default", "enabled": True}]},
+        "filtering": {
+            "lists": {"lists": [{"address": "https://list.invalid/hosts", "type": "block", "comment": "target", "enabled": True, "groups": [0]}]},
+            "domains": {"domains": [{"domain": "ads.invalid", "type": "deny", "kind": "exact", "comment": "target", "enabled": True, "groups": [0]}]},
+        },
+        "clients": {"clients": [{"client": "192.0.2.10", "comment": "target", "groups": [0]}]},
+    }
+    calls = []
+    monkeypatch.setattr(client, "get_ha_configuration", lambda: DNSProviderResult(True, "loaded", {"configuration": target}))
+
+    def request(path, *, method="GET", payload=None):
+        calls.append((method, path, payload))
+        return target["groups"] if path == "/api/groups" and method == "GET" else {}
+
+    monkeypatch.setattr(client, "_v6_request_json", request)
+    result = client.reconcile_ha_collections(source, allow_deletions=False)
+    assert result.ok
+    updates = [call for call in calls if call[0] == "PUT"]
+    assert any(call[1].startswith("/api/lists/") and call[2]["groups"] == [0] for call in updates)
+    assert any(call[1].startswith("/api/domains/") and call[2]["groups"] == [0] for call in updates)
+    assert any(call[1].startswith("/api/clients/") and call[2]["groups"] == [0] for call in updates)
 
 
 def test_validation_report_ui_explains_safety_and_exclusions():

@@ -209,6 +209,12 @@ def test_deployment_ui_and_agent_protocol_keep_dhcp_outside_milestone_five():
     assert "Resolve blockers to deploy" in template
     assert "Edit node settings" in template
     assert "Deployment error reported by this node" in template
+    assert "data-ha-deployment-live" in template
+    assert "ha_deployment.js" in template
+    live_script = Path("app/static/js/ha_deployment.js").read_text(encoding="utf-8")
+    assert "setTimeout" in live_script
+    assert "5000" in live_script
+    assert "window.location.reload" not in live_script
     assert 'Depends(require_ha_admin)' in router
     assert '"dhcp_changed": False' in router
     assert '@router.post("/action-result")' in agent_router

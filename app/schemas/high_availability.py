@@ -99,8 +99,12 @@ class HANodeRead(BaseModel):
     vip_owned: bool
     dhcp_running: bool
     config_generation: int
+    network_interface: str | None
+    vrrp_priority: int | None
     keepalived_status: str
     keepalived_config_checksum: str | None
+    keepalived_last_error: str | None
+    keepalived_reported_at: datetime | None
     keepalived_runtime_state: str
 
 

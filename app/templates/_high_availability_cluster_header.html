@@ -11,7 +11,7 @@
   <a class="{{ 'active' if cluster_section == 'validation' else '' }}" {% if cluster_section == 'validation' %}aria-current="page"{% endif %} href="/high-availability/clusters/{{ cluster.public_id }}/validation">Validation</a>
   <a class="{{ 'active' if cluster_section == 'agents' else '' }}" {% if cluster_section == 'agents' %}aria-current="page"{% endif %} href="/high-availability/clusters/{{ cluster.public_id }}/agents">Agents</a>
   <a class="{{ 'active' if cluster_section == 'deployment' else '' }}" {% if cluster_section == 'deployment' %}aria-current="page"{% endif %} href="/high-availability/clusters/{{ cluster.public_id }}/deployment">Deployment</a>
-  <span class="disabled" aria-disabled="true">Synchronisation</span>
+  <a class="{{ 'active' if cluster_section == 'synchronisation' else '' }}" {% if cluster_section == 'synchronisation' %}aria-current="page"{% endif %} href="/high-availability/clusters/{{ cluster.public_id }}/synchronisation">Synchronisation</a>
   <a class="{{ 'active' if cluster_section == 'events' else '' }}" {% if cluster_section == 'events' %}aria-current="page"{% endif %} href="/high-availability/clusters/{{ cluster.public_id }}/events">Events</a>
   <span class="disabled" aria-disabled="true">Testing</span>
 </nav>

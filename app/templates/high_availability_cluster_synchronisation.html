@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Synchronisation - {{ cluster.name }}{% endblock %}
+{% block content %}
+{% include "_high_availability_cluster_header.html" %}
+
+{% if sync_error %}<div class="alert error"><strong>Synchronisation unavailable</strong><span>{{ sync_error }}</span></div>{% endif %}
+
+<section class="panel">
+  <div class="ha-section-heading"><div><h2>Configuration authority</h2><p class="muted">The authoritative node is the only source. Kaya never uses last-write-wins and never synchronises DHCP leases.</p></div>
+  {% if user.role in ['admin', 'editor'] %}<form method="post" action="/high-availability/clusters/{{ cluster.public_id }}/synchronisation/plan"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit">Refresh sync plan</button></form>{% endif %}</div>
+  {% if sync_plan %}<div class="ha-node-grid"><article class="ha-node-card"><span class="table-chip">Authority</span><h3>{{ sync_plan.source_name }}</h3><p class="muted">Configuration source</p></article><article class="ha-node-card"><span class="table-chip">Target</span><h3>{{ sync_plan.target_name }}</h3><p class="muted">Backed up before any write</p></article><article class="ha-node-card"><span class="table-chip">DHCP</span><h3>{{ sync_plan.dhcp_mode|replace('_', ' ')|title }}</h3><p class="muted">Leases are not synchronised in this milestone</p></article></div>{% endif %}
+</section>
+
+<section class="panel">
+  <h2>Drift and proposed changes</h2>
+  {% if sync_plan and sync_plan.groups %}
+  <div class="table-wrap"><table><thead><tr><th>Configuration</th><th>Risk</th><th>Beta action</th></tr></thead><tbody>
+    {% for item in sync_plan.groups %}<tr><td><strong>{{ item.label }}</strong><small class="muted">{{ item.message }}</small></td><td><span class="table-chip">{{ item.risk|title }}</span></td><td>{{ 'Synchronise and verify' if item.writable else 'Blocked — review manually' }}{% if item.deletion_count %}<small class="danger-text">{{ item.deletion_count }} deletion{{ '' if item.deletion_count == 1 else 's' }}</small>{% endif %}</td></tr>{% endfor %}
+  </tbody></table></div>
+  {% elif sync_plan %}<div class="alert success"><strong>Configuration is in sync</strong><span>No allowlisted drift was detected in the latest validation snapshots.</span></div>
+  {% else %}<p class="muted">Run read-only validation on both nodes before creating a synchronisation plan.</p>{% endif %}
+</section>
+
+{% if sync_run %}<section class="panel">
+  <h2>Latest run</h2><dl class="ha-definition-list"><div><dt>Status</dt><dd>{{ sync_run.status|replace('_', ' ')|title }}</dd></div><div><dt>Created</dt><dd>{{ local_time(sync_run.created_at) }}</dd></div><div><dt>Backup</dt><dd>{{ 'Encrypted last-known-good snapshot stored' if sync_run.backups else 'Created immediately before a write' }}</dd></div></dl>
+  {% if sync_run.error_redacted %}<div class="alert error"><strong>Run detail</strong><span>{{ sync_run.error_redacted }}</span></div>{% endif %}
+  {% if user.role == 'admin' and sync_run.status == 'PLANNED' %}<form method="post" action="/high-availability/clusters/{{ cluster.public_id }}/synchronisation/apply" class="ha-sync-apply"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="sync_run_id" value="{{ sync_run.public_id }}"><label><input type="checkbox" name="acknowledge_authority" value="1"> I understand {{ sync_plan.source_name if sync_plan else 'the selected node' }} is authoritative and the target will be backed up, changed, and verified.</label>{% if sync_plan and sync_plan.deletion_count %}<label><input type="checkbox" name="acknowledge_deletions" value="1"> I explicitly approve {{ sync_plan.deletion_count }} target deletion{{ '' if sync_plan.deletion_count == 1 else 's' }} shown above.</label>{% endif %}<button type="submit" {% if sync_plan and sync_plan.blocked_groups %}disabled title="Unsupported drift must be resolved before apply"{% endif %}>Apply configuration</button></form>{% endif %}
+</section>{% endif %}
+
+<section class="panel"><h2>Runtime independence</h2><p class="muted">Kaya is the control plane only. Existing Pi-hole DNS, DHCP and Keepalived services continue locally if Kaya is offline. DHCP enabled/disabled state and dynamic leases are not changed by this milestone.</p></section>
+{% endblock %}

@@ -238,6 +238,7 @@ def create_cluster_draft(db: Session, draft: HAClusterDraftCreate, user: User) -
     )
     db.add(cluster)
     db.flush()
+    created_nodes = []
     for node, role in ((primary, "ACTIVE"), (secondary, "STANDBY")):
         connection = None
         if node.integration is None:
@@ -251,8 +252,7 @@ def create_cluster_draft(db: Session, draft: HAClusterDraftCreate, user: User) -
             )
             db.add(connection)
             db.flush()
-        db.add(
-            HANode(
+        created_node = HANode(
                 cluster_id=cluster.id,
                 display_name=node.name,
                 management_host=node.management_host,
@@ -263,7 +263,10 @@ def create_cluster_draft(db: Session, draft: HAClusterDraftCreate, user: User) -
                 desired_role=role,
                 status="UNVALIDATED",
             )
-        )
+        db.add(created_node)
+        db.flush()
+        created_nodes.append(created_node)
+    cluster.authoritative_node_id = created_nodes[0].id
     db.commit()
     db.refresh(cluster)
     return cluster

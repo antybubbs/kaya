@@ -482,7 +482,8 @@
 
     <div class="remote-settings-card">
       <header><span>Pi-hole connection</span></header>
-      <div class="remote-settings-grid two">
+      <p class="muted">A standalone Pi-hole keeps the existing DNS Manager behaviour. A Kaya HA cluster remains one logical provider and keeps this provider's stored history and IP links.</p>
+      <div class="remote-settings-grid two" data-dns-provider-settings>
         <input name="dns_provider_id" type="hidden" value="{{ dns_provider.id if dns_provider else '' }}">
         <label>
           <strong>Display name</strong>
@@ -490,18 +491,28 @@
           <input name="dns_provider_name" value="{{ dns_provider.name if dns_provider else '' }}" placeholder="Home Pi-hole">
         </label>
         <label>
-          <strong>Provider type</strong>
-          <small>Pi-hole is the first supported provider.</small>
-          <select name="dns_provider_type">
-            <option value="pihole" selected>Pi-hole</option>
+          <strong>Connection source</strong>
+          <small>Choose a direct Pi-hole or a healthy Kaya HA Pi-hole cluster.</small>
+          <select name="dns_provider_connection_mode" data-dns-connection-mode>
+            <option value="standalone" {% if not dns_provider or not dns_provider.ha_cluster_id %}selected{% endif %}>Pi-hole (standalone)</option>
+            <option value="ha_cluster" {% if dns_provider and dns_provider.ha_cluster_id %}selected{% endif %} {% if not ha_dns_clusters and not (dns_provider and dns_provider.ha_cluster_id) %}disabled{% endif %}>Kaya HA Pi-hole Cluster</option>
+          </select>
+          <input name="dns_provider_type" type="hidden" value="pihole">
+        </label>
+        <label data-dns-ha-field>
+          <strong>HA cluster</strong>
+          <small>Only deployed, healthy clusters with one current VIP owner are selectable.</small>
+          <select name="dns_provider_ha_cluster_id" data-dns-ha-cluster>
+            <option value="">Choose a cluster</option>
+            {% for cluster in ha_dns_clusters or [] %}{% set current_link = dns_provider and dns_provider.ha_cluster_id == cluster.id %}<option value="{{ cluster.id }}" {% if current_link %}selected{% endif %} {% if not current_link and (cluster.status != 'HEALTHY' or not cluster.current_active_node_id) %}disabled{% endif %}>{{ cluster.name }} — {{ cluster.virtual_ip }}{% if cluster.status != 'HEALTHY' or not cluster.current_active_node_id %} (currently unavailable){% endif %}</option>{% endfor %}
           </select>
         </label>
-        <label>
+        <label data-dns-standalone-field>
           <strong>Base URL</strong>
           <small>Pi-hole URL Kaya should connect to.</small>
           <input name="dns_provider_base_url" type="url" value="{{ dns_provider.base_url if dns_provider else '' }}" placeholder="https://pihole.example.local">
         </label>
-        <label>
+        <label data-dns-standalone-field>
           <strong>Authentication method</strong>
           <small>Use an application password or API credential supported by your Pi-hole version.</small>
           <select name="dns_provider_auth_method">
@@ -510,17 +521,17 @@
             <option value="api_token" {% if auth_method == 'api_token' %}selected{% endif %}>API credential</option>
           </select>
         </label>
-        <label>
+        <label data-dns-standalone-field>
           <strong>Application password/API credential</strong>
           <small>{% if dns_provider and dns_provider.encrypted_secret %}A credential is saved. Enter a new one to replace it.{% else %}Stored encrypted by Kaya.{% endif %}</small>
           <input name="dns_provider_secret" type="password" value="" autocomplete="new-password" placeholder="{% if dns_provider and dns_provider.encrypted_secret %}Saved credential{% endif %}">
         </label>
-        <label>
+        <label data-dns-standalone-field>
           <strong>Connection timeout</strong>
           <small>Seconds before Kaya gives up on a provider request.</small>
           <input name="dns_provider_timeout_seconds" type="number" min="1" max="60" value="{{ dns_provider.timeout_seconds if dns_provider else 10 }}">
         </label>
-        <label class="remote-setting-row">
+        <label class="remote-setting-row" data-dns-standalone-field>
           <span><strong>Verify SSL certificate</strong><small>Disable only for trusted internal endpoints with self-signed certificates.</small></span>
           <input class="remote-switch" name="dns_provider_ssl_verify" type="checkbox" value="1" {% if not dns_provider or dns_provider.ssl_verify %}checked{% endif %}>
         </label>
@@ -825,4 +836,5 @@
 {% block extra_scripts %}
 <script src="/static/js/settings_tabs.js?v={{ asset_version }}"></script>
 <script src="/static/js/remote_settings.js?v={{ asset_version }}"></script>
+<script src="/static/js/dns_provider_settings.js?v={{ asset_version }}"></script>
 {% endblock %}

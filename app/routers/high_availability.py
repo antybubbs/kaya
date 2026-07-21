@@ -1,3 +1,4 @@
+import json
 import shlex
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -8,7 +9,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.db.session import get_db
-from app.models.models import HACluster, HAHealthCheck, HANode
+from app.models.models import HACluster, HAHealthCheck, HANode, HASyncRun
 from app.routers.auth import require_user
 from app.schemas.high_availability import HAClusterDraftCreate, HAClusterRead, HAConfigurationDifferenceRead, HANodeDraftCreate, HANodeUpdate
 from app.services.audit import write_audit
@@ -18,6 +19,7 @@ from app.services.ha_agent_installer import installer_checksum
 from app.services.ha_registry import SUPPORTED_HA_PROVIDERS, provider_for_key
 from app.services.ha_validation import configuration_differences, run_live_validation
 from app.services.ha_keepalived import HAKeepalivedError, deployment_blockers, prepare_deployment, request_manual_vip_move
+from app.services.ha_sync import HASyncError, create_sync_plan, execute_sync, sync_plan
 from app.services.site_settings import get_site_setting
 
 
@@ -262,6 +264,54 @@ def cluster_events(public_id: str, request: Request, db: Session = Depends(get_d
 def cluster_deployment(public_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_high_availability)):
     cluster = cluster_or_404(db, public_id)
     return templates.TemplateResponse(request, "high_availability_cluster_deployment.html", ha_context(request, user, "clusters", cluster=cluster, cluster_section="deployment", blockers=deployment_blockers(cluster, router_id=cluster.vrrp_router_id or 51), deployment_error=None))
+
+
+def sync_page_context(request: Request, user, cluster: HACluster, db: Session, error: str | None = None):
+    latest = db.query(HASyncRun).filter(HASyncRun.cluster_id == cluster.id).order_by(HASyncRun.created_at.desc()).first()
+    try:
+        current_plan = sync_plan(cluster)
+    except HASyncError as exc:
+        current_plan = None
+        error = error or str(exc)
+    return ha_context(request, user, "clusters", cluster=cluster, cluster_section="synchronisation", sync_plan=current_plan, sync_run=latest, sync_error=error)
+
+
+@router.get("/clusters/{public_id}/synchronisation")
+def cluster_synchronisation(public_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_high_availability)):
+    cluster = cluster_or_404(db, public_id)
+    return templates.TemplateResponse(request, "high_availability_cluster_synchronisation.html", sync_page_context(request, user, cluster, db))
+
+
+@router.post("/clusters/{public_id}/synchronisation/plan")
+async def plan_cluster_synchronisation(public_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_ha_editor)):
+    cluster = cluster_or_404(db, public_id)
+    form = await request.form()
+    validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    try:
+        run = create_sync_plan(db, cluster, user)
+    except HASyncError as exc:
+        return templates.TemplateResponse(request, "high_availability_cluster_synchronisation.html", sync_page_context(request, user, cluster, db, str(exc)), status_code=400)
+    write_audit(db, user, "planned", "ha_configuration_sync", entity_id=run.public_id, detail=f"Created a read-only synchronisation plan for {cluster.name}.", metadata={"cluster_id": cluster.public_id, "provider_changed": False, "lease_replication": False})
+    return RedirectResponse(f"/high-availability/clusters/{cluster.public_id}/synchronisation?planned=1", status_code=303)
+
+
+@router.post("/clusters/{public_id}/synchronisation/apply")
+async def apply_cluster_synchronisation(public_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_ha_admin)):
+    cluster = cluster_or_404(db, public_id)
+    form = await request.form()
+    validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    run = db.query(HASyncRun).filter(HASyncRun.cluster_id == cluster.id, HASyncRun.public_id == str(form.get("sync_run_id") or "")).first()
+    if run is None:
+        raise HTTPException(status_code=404, detail="Synchronisation plan not found")
+    if str(form.get("acknowledge_authority") or "") != "1":
+        return templates.TemplateResponse(request, "high_availability_cluster_synchronisation.html", sync_page_context(request, user, cluster, db, "Confirm the authoritative-node safety boundary before applying."), status_code=400)
+    try:
+        execute_sync(db, cluster, run, allow_deletions=str(form.get("acknowledge_deletions") or "") == "1")
+    except HASyncError as exc:
+        write_audit(db, user, "failed", "ha_configuration_sync", entity_id=run.public_id, detail=f"Configuration synchronisation for {cluster.name} did not complete.", severity="warning", metadata={"cluster_id": cluster.public_id, "error": str(exc)[:300], "backup_preserved": bool(run.backups), "lease_replication": False})
+        return templates.TemplateResponse(request, "high_availability_cluster_synchronisation.html", sync_page_context(request, user, cluster, db, str(exc)), status_code=409)
+    write_audit(db, user, "completed", "ha_configuration_sync", entity_id=run.public_id, detail=f"Synchronised allowlisted Pi-hole configuration for {cluster.name}.", metadata={"cluster_id": cluster.public_id, "backup_created": True, "verified": True, "lease_replication": False})
+    return RedirectResponse(f"/high-availability/clusters/{cluster.public_id}/synchronisation?synchronised=1", status_code=303)
 
 
 @router.post("/clusters/{public_id}/deployment")

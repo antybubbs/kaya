@@ -360,6 +360,7 @@ class DNSProviderConfig(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(255), index=True)
     provider_type: Mapped[str] = mapped_column(String(40), default="pihole", index=True)
+    ha_cluster_id: Mapped[int | None] = mapped_column(ForeignKey("ha_clusters.id", ondelete="SET NULL"), nullable=True, index=True)
     base_url: Mapped[str] = mapped_column(String(500))
     auth_method: Mapped[str] = mapped_column(String(40), default="password")
     encrypted_secret: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -372,6 +373,7 @@ class DNSProviderConfig(Base):
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    ha_cluster = relationship("HACluster", foreign_keys=[ha_cluster_id], back_populates="dns_providers")
 
 
 class DNSInvestigation(Base):
@@ -641,6 +643,8 @@ class HACluster(Base):
     nodes = relationship("HANode", foreign_keys="HANode.cluster_id", cascade="all, delete-orphan", back_populates="cluster")
     health_checks = relationship("HAHealthCheck", cascade="all, delete-orphan", back_populates="cluster")
     events = relationship("HAEvent", cascade="all, delete-orphan", back_populates="cluster")
+    dns_providers = relationship("DNSProviderConfig", foreign_keys="DNSProviderConfig.ha_cluster_id", back_populates="ha_cluster")
+    sync_runs = relationship("HASyncRun", cascade="all, delete-orphan", back_populates="cluster")
     created_by = relationship("User", foreign_keys=[created_by_user_id])
 
 
@@ -757,6 +761,53 @@ class HAAgentActionResult(Base):
     received_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     cluster = relationship("HACluster")
     node = relationship("HANode")
+
+
+class HASyncRun(Base):
+    __tablename__ = "ha_sync_runs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(36), default=lambda: str(uuid4()), unique=True, index=True)
+    cluster_id: Mapped[int] = mapped_column(ForeignKey("ha_clusters.id", ondelete="CASCADE"), index=True)
+    source_node_id: Mapped[int] = mapped_column(ForeignKey("ha_nodes.id", ondelete="CASCADE"), index=True)
+    target_node_id: Mapped[int] = mapped_column(ForeignKey("ha_nodes.id", ondelete="CASCADE"), index=True)
+    status: Mapped[str] = mapped_column(String(30), default="PLANNED", index=True)
+    plan_json: Mapped[str] = mapped_column(Text)
+    error_redacted: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    cluster = relationship("HACluster", back_populates="sync_runs")
+    source_node = relationship("HANode", foreign_keys=[source_node_id])
+    target_node = relationship("HANode", foreign_keys=[target_node_id])
+    created_by = relationship("User")
+    backups = relationship("HABackup", cascade="all, delete-orphan", back_populates="sync_run")
+    drift_items = relationship("HADriftItem", cascade="all, delete-orphan", back_populates="sync_run")
+
+
+class HABackup(Base):
+    __tablename__ = "ha_backups"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sync_run_id: Mapped[int] = mapped_column(ForeignKey("ha_sync_runs.id", ondelete="CASCADE"), index=True)
+    node_id: Mapped[int] = mapped_column(ForeignKey("ha_nodes.id", ondelete="CASCADE"), index=True)
+    encrypted_snapshot: Mapped[str] = mapped_column(Text)
+    checksum: Mapped[str] = mapped_column(String(64), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    sync_run = relationship("HASyncRun", back_populates="backups")
+    node = relationship("HANode")
+
+
+class HADriftItem(Base):
+    __tablename__ = "ha_drift_items"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sync_run_id: Mapped[int] = mapped_column(ForeignKey("ha_sync_runs.id", ondelete="CASCADE"), index=True)
+    group_key: Mapped[str] = mapped_column(String(80), index=True)
+    risk: Mapped[str] = mapped_column(String(20), index=True)
+    status: Mapped[str] = mapped_column(String(30), default="DRIFT", index=True)
+    source_checksum: Mapped[str] = mapped_column(String(64))
+    target_checksum: Mapped[str] = mapped_column(String(64))
+    message: Mapped[str] = mapped_column(String(1000))
+    sync_run = relationship("HASyncRun", back_populates="drift_items")
 
 
 class HAHealthCheck(Base):

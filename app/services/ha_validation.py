@@ -46,6 +46,7 @@ NODE_SPECIFIC_KEYS = {
     "path",
     "pidfile",
     "socket",
+    "took",
 }
 SECRET_KEY_MARKERS = ("password", "passwd", "secret", "token", "api_key", "apikey", "private_key", "certificate", "session", "sid")
 

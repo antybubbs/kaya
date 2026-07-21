@@ -308,10 +308,18 @@ def main():
         "CREATE TABLE IF NOT EXISTS ha_agent_requests (id INTEGER NOT NULL PRIMARY KEY, credential_id INTEGER NOT NULL REFERENCES ha_agent_credentials(id) ON DELETE CASCADE, request_id VARCHAR(80) NOT NULL, request_timestamp DATETIME NOT NULL, received_at DATETIME, CONSTRAINT uq_ha_agent_request_replay UNIQUE (credential_id, request_id))",
         "CREATE TABLE IF NOT EXISTS ha_events (id INTEGER NOT NULL PRIMARY KEY, cluster_id INTEGER NOT NULL REFERENCES ha_clusters(id) ON DELETE CASCADE, node_id INTEGER REFERENCES ha_nodes(id) ON DELETE CASCADE, event_type VARCHAR(80) NOT NULL, severity VARCHAR(20) NOT NULL, source VARCHAR(40) NOT NULL, message VARCHAR(1000) NOT NULL, details_json_redacted TEXT, agent_event_id VARCHAR(80) UNIQUE, occurred_at DATETIME NOT NULL, received_at DATETIME, acknowledged_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, acknowledged_at DATETIME)",
         "CREATE TABLE IF NOT EXISTS ha_agent_action_results (id INTEGER NOT NULL PRIMARY KEY, action_id VARCHAR(180) NOT NULL UNIQUE, cluster_id INTEGER NOT NULL REFERENCES ha_clusters(id) ON DELETE CASCADE, node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, action_type VARCHAR(60) NOT NULL, generation INTEGER NOT NULL, status VARCHAR(30) NOT NULL, checksum VARCHAR(64), backup_reference VARCHAR(255), message_redacted VARCHAR(1000) NOT NULL, received_at DATETIME)",
+        "CREATE TABLE IF NOT EXISTS ha_sync_runs (id INTEGER NOT NULL PRIMARY KEY, public_id VARCHAR(36) NOT NULL UNIQUE, cluster_id INTEGER NOT NULL REFERENCES ha_clusters(id) ON DELETE CASCADE, source_node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, target_node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, status VARCHAR(30) DEFAULT 'PLANNED' NOT NULL, plan_json TEXT NOT NULL, error_redacted VARCHAR(1000), created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, started_at DATETIME, completed_at DATETIME, created_at DATETIME)",
+        "CREATE TABLE IF NOT EXISTS ha_backups (id INTEGER NOT NULL PRIMARY KEY, sync_run_id INTEGER NOT NULL REFERENCES ha_sync_runs(id) ON DELETE CASCADE, node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, encrypted_snapshot TEXT NOT NULL, checksum VARCHAR(64) NOT NULL, created_at DATETIME)",
+        "CREATE TABLE IF NOT EXISTS ha_drift_items (id INTEGER NOT NULL PRIMARY KEY, sync_run_id INTEGER NOT NULL REFERENCES ha_sync_runs(id) ON DELETE CASCADE, group_key VARCHAR(80) NOT NULL, risk VARCHAR(20) NOT NULL, status VARCHAR(30) DEFAULT 'DRIFT' NOT NULL, source_checksum VARCHAR(64) NOT NULL, target_checksum VARCHAR(64) NOT NULL, message VARCHAR(1000) NOT NULL)",
     ]
     ha_existed = table_exists(cur, "ha_clusters")
     for statement in ha_schema:
         cur.execute(statement)
+    if not column_exists(cur, "dns_providers", "ha_cluster_id"):
+        cur.execute("ALTER TABLE dns_providers ADD COLUMN ha_cluster_id INTEGER REFERENCES ha_clusters(id) ON DELETE SET NULL")
+        migrations_applied.append("dns_provider_ha_cluster_link_v1")
+    cur.execute("CREATE INDEX IF NOT EXISTS ix_dns_providers_ha_cluster_id ON dns_providers (ha_cluster_id)")
+    cur.execute("UPDATE ha_clusters SET authoritative_node_id = (SELECT id FROM ha_nodes WHERE ha_nodes.cluster_id = ha_clusters.id AND role = 'ACTIVE' ORDER BY id LIMIT 1) WHERE authoritative_node_id IS NULL")
     ha_v5_changed = False
     for column, definition in {
         "cluster_generation": "INTEGER DEFAULT 1 NOT NULL",
@@ -363,6 +371,9 @@ def main():
         "ha_agent_requests": ["credential_id", "request_id", "request_timestamp", "received_at"],
         "ha_events": ["cluster_id", "node_id", "event_type", "severity", "source", "agent_event_id", "occurred_at", "received_at"],
         "ha_agent_action_results": ["action_id", "cluster_id", "node_id", "action_type", "generation", "status", "received_at"],
+        "ha_sync_runs": ["public_id", "cluster_id", "source_node_id", "target_node_id", "status", "created_by_user_id", "created_at"],
+        "ha_backups": ["sync_run_id", "node_id", "checksum", "created_at"],
+        "ha_drift_items": ["sync_run_id", "group_key", "risk", "status"],
     }
     for table, columns in ha_indexes.items():
         for column in columns:
