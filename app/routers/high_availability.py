@@ -17,9 +17,9 @@ from app.services.ha_clusters import HADraftError, create_cluster_draft, soft_de
 from app.services.ha_agents import HAAgentError, create_bootstrap_token, revoke_agent
 from app.services.ha_agent_installer import installer_checksum
 from app.services.ha_registry import SUPPORTED_HA_PROVIDERS, provider_for_key
-from app.services.ha_validation import configuration_differences, run_live_validation
+from app.services.ha_validation import GROUP_LABELS, configuration_differences, run_live_validation
 from app.services.ha_keepalived import HAKeepalivedError, deployment_blockers, prepare_deployment, request_manual_vip_move
-from app.services.ha_sync import HASyncError, create_sync_plan, execute_sync, sync_plan
+from app.services.ha_sync import HAStaleSyncPlanError, HASyncError, create_live_sync_plan, execute_sync, sync_plan
 from app.services.site_settings import get_site_setting
 
 
@@ -266,14 +266,14 @@ def cluster_deployment(public_id: str, request: Request, db: Session = Depends(g
     return templates.TemplateResponse(request, "high_availability_cluster_deployment.html", ha_context(request, user, "clusters", cluster=cluster, cluster_section="deployment", blockers=deployment_blockers(cluster, router_id=cluster.vrrp_router_id or 51), deployment_error=None))
 
 
-def sync_page_context(request: Request, user, cluster: HACluster, db: Session, error: str | None = None):
+def sync_page_context(request: Request, user, cluster: HACluster, db: Session, error: str | None = None, notice: str | None = None):
     latest = db.query(HASyncRun).filter(HASyncRun.cluster_id == cluster.id).order_by(HASyncRun.created_at.desc()).first()
     try:
         current_plan = sync_plan(cluster)
     except HASyncError as exc:
         current_plan = None
         error = error or str(exc)
-    return ha_context(request, user, "clusters", cluster=cluster, cluster_section="synchronisation", sync_plan=current_plan, sync_run=latest, sync_error=error)
+    return ha_context(request, user, "clusters", cluster=cluster, cluster_section="synchronisation", sync_plan=current_plan, sync_run=latest, sync_error=error, sync_notice=notice)
 
 
 @router.get("/clusters/{public_id}/synchronisation")
@@ -288,7 +288,15 @@ async def plan_cluster_synchronisation(public_id: str, request: Request, db: Ses
     form = await request.form()
     validate_csrf_token(request, str(form.get("csrf_token") or ""))
     try:
-        run = create_sync_plan(db, cluster, user)
+        run = create_live_sync_plan(db, cluster, user)
+    except HAStaleSyncPlanError as exc:
+        write_audit(db, user, "stale", "ha_configuration_sync", entity_id=run.public_id, detail=f"Live Pi-hole configuration changed while reviewing the synchronisation plan for {cluster.name}.", severity="warning", metadata={"cluster_id": cluster.public_id, "changed_groups": exc.changed_groups, "provider_changed": False, "lease_replication": False})
+        try:
+            refreshed = create_live_sync_plan(db, cluster, user)
+        except HASyncError as refresh_exc:
+            return templates.TemplateResponse(request, "high_availability_cluster_synchronisation.html", sync_page_context(request, user, cluster, db, f"{exc} Kaya could not create a replacement plan: {refresh_exc}"), status_code=409)
+        write_audit(db, user, "planned", "ha_configuration_sync", entity_id=refreshed.public_id, detail=f"Automatically refreshed the read-only synchronisation plan for {cluster.name}.", metadata={"cluster_id": cluster.public_id, "changed_groups": exc.changed_groups, "provider_changed": False, "lease_replication": False})
+        return templates.TemplateResponse(request, "high_availability_cluster_synchronisation.html", sync_page_context(request, user, cluster, db, notice=f"Kaya detected a live change in {', '.join(GROUP_LABELS.get(key, key.replace('_', ' ').title()) for key in exc.changed_groups)}. Nothing was written. A fresh plan is ready below; review it again before synchronising."))
     except HASyncError as exc:
         return templates.TemplateResponse(request, "high_availability_cluster_synchronisation.html", sync_page_context(request, user, cluster, db, str(exc)), status_code=400)
     write_audit(db, user, "planned", "ha_configuration_sync", entity_id=run.public_id, detail=f"Created a read-only synchronisation plan for {cluster.name}.", metadata={"cluster_id": cluster.public_id, "provider_changed": False, "lease_replication": False})

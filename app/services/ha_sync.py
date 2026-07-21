@@ -15,10 +15,26 @@ from app.services.ha_validation import GROUP_LABELS, HIGH_RISK_GROUPS, _safe_con
 
 WRITABLE_CONFIGURATION_GROUPS = {"filtering", "groups", "clients", "local_dns", "cname", "upstream_dns", "dhcp"}
 COLLECTION_RECONCILIATION_GROUPS = {"filtering", "groups", "clients"}
+GROUP_EXPLANATIONS = {
+    "filtering": "Subscribed block/allow lists and the domains that Pi-hole allows or blocks.",
+    "groups": "Pi-hole groups used to organise filtering rules for different devices.",
+    "clients": "Known Pi-hole clients and the filtering groups assigned to them.",
+    "local_dns": "Local host names and the IP addresses they resolve to on your network.",
+    "cname": "Local DNS aliases that point one name at another name.",
+    "upstream_dns": "The external DNS servers and conditional forwarding rules Pi-hole uses.",
+    "dhcp": "DHCP range and reservation settings. DHCP on/off state and active leases are not copied.",
+}
 
 
 class HASyncError(ValueError):
     pass
+
+
+class HAStaleSyncPlanError(HASyncError):
+    def __init__(self, changed_groups: list[str]):
+        self.changed_groups = sorted(changed_groups)
+        labels = [GROUP_LABELS.get(key, key.replace("_", " ").title()) for key in self.changed_groups]
+        super().__init__("Live configuration changed in: " + ", ".join(labels) + ". Review the refreshed plan before synchronising.")
 
 
 def _checksum(value: Any) -> str:
@@ -145,6 +161,7 @@ def sync_plan(cluster: HACluster) -> dict[str, Any]:
             "source_checksum": _checksum(source_value),
             "target_checksum": _checksum(target_value),
             "message": "Ready for guarded item reconciliation." if key in COLLECTION_RECONCILIATION_GROUPS else "Ready for guarded Pi-hole configuration patch." if writable else "This configuration group is not supported.",
+            "description": GROUP_EXPLANATIONS.get(key, "A supported Pi-hole configuration area."),
             "deletion_count": deletion_count,
         })
     dhcp_value = raw_source_snapshot.get("dhcp")
@@ -205,6 +222,24 @@ def _live_configuration(node: HANode, client_factory: Callable = PiHoleProvider)
     return client, {key: _safe_configuration(value) for key, value in raw.items() if key in GROUP_LABELS}
 
 
+def create_live_sync_plan(
+    db: Session,
+    cluster: HACluster,
+    user: User,
+    *,
+    client_factory: Callable = PiHoleProvider,
+) -> HASyncRun:
+    """Refresh both read-only snapshots before creating a plan the user can review."""
+    source, target = authority_and_target(cluster)
+    for node in (source, target):
+        _, configuration = _live_configuration(node, client_factory)
+        snapshot = json.dumps(configuration, sort_keys=True, separators=(",", ":"))
+        node.configuration_snapshot_json = snapshot
+        node.configuration_checksum = hashlib.sha256(snapshot.encode()).hexdigest()
+    db.commit()
+    return create_sync_plan(db, cluster, user)
+
+
 def execute_sync(db: Session, cluster: HACluster, run: HASyncRun, *, allow_deletions: bool = False, client_factory: Callable = PiHoleProvider) -> HASyncRun:
     if run.cluster_id != cluster.id or run.status != "PLANNED":
         raise HASyncError("This synchronisation plan is no longer executable.")
@@ -242,7 +277,7 @@ def execute_sync(db: Session, cluster: HACluster, run: HASyncRun, *, allow_delet
             or _checksum(target_before.get(key)) != item["target_checksum"]
         ]
         if changed_after_plan:
-            raise HASyncError("Configuration changed after this plan was created. Create and review a new plan.")
+            raise HAStaleSyncPlanError(changed_after_plan)
         backup_text = json.dumps(target_before_raw, sort_keys=True, separators=(",", ":"))
         backup = HABackup(
             sync_run_id=run.id,

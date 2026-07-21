@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.db.session import Base
 from app.models.models import DNSClientIPHistory, DNSProviderConfig, DNSRecognisedDevice, HACluster, HANode, HAProviderConnection, User
 from app.services.dns_providers import DNSProviderResult, HAPiHoleProvider, PiHoleProvider, provider_for
-from app.services.ha_sync import HASyncError, create_sync_plan, execute_sync, sync_plan
+from app.services.ha_sync import HAStaleSyncPlanError, HASyncError, create_live_sync_plan, create_sync_plan, execute_sync, sync_plan
 
 
 def database():
@@ -108,6 +108,50 @@ def test_sync_creates_encrypted_backup_before_write_and_verifies():
         assert run.backups[0].encrypted_snapshot != json.dumps({"local_dns": target_value}, sort_keys=True, separators=(",", ":"))
         assert SyncPiHole.writes == [(f"ha-{target.ha_connection_id}", "local_dns")]
         assert target.last_sync_at is not None
+
+
+def test_live_plan_refreshes_both_snapshots_before_review():
+    with database() as db:
+        user, cluster, source, target = make_cluster(db)
+        old_value = {"config": {"dns": {"hosts": []}}}
+        source_value = {"config": {"dns": {"hosts": ["one.test,192.0.2.10"]}}}
+        target_value = {"config": {"dns": {"hosts": ["two.test,192.0.2.11"]}}}
+        source.configuration_snapshot_json = json.dumps({"local_dns": old_value})
+        target.configuration_snapshot_json = json.dumps({"local_dns": old_value})
+        db.commit()
+        SyncPiHole.state = {
+            f"ha-{source.ha_connection_id}": {"local_dns": source_value},
+            f"ha-{target.ha_connection_id}": {"local_dns": target_value},
+        }
+
+        run = create_live_sync_plan(db, cluster, user, client_factory=SyncPiHole)
+
+        assert run.status == "PLANNED"
+        assert json.loads(source.configuration_snapshot_json)["local_dns"] == source_value
+        assert json.loads(target.configuration_snapshot_json)["local_dns"] == target_value
+
+
+def test_live_change_names_stale_configuration_group_and_writes_nothing():
+    with database() as db:
+        user, cluster, source, target = make_cluster(db)
+        source_value = {"config": {"dns": {"hosts": ["one.test,192.0.2.10"]}}}
+        target_value = {"config": {"dns": {"hosts": []}}}
+        source.configuration_snapshot_json = json.dumps({"local_dns": source_value})
+        target.configuration_snapshot_json = json.dumps({"local_dns": target_value})
+        db.commit()
+        SyncPiHole.state = {
+            f"ha-{source.ha_connection_id}": {"local_dns": source_value},
+            f"ha-{target.ha_connection_id}": {"local_dns": target_value},
+        }
+        SyncPiHole.writes = []
+        run = create_sync_plan(db, cluster, user)
+        SyncPiHole.state[f"ha-{source.ha_connection_id}"] = {"local_dns": {"config": {"dns": {"hosts": ["changed.test,192.0.2.12"]}}}}
+
+        with pytest.raises(HAStaleSyncPlanError, match="Local DNS") as error:
+            execute_sync(db, cluster, run, client_factory=SyncPiHole)
+
+        assert error.value.changed_groups == ["local_dns"]
+        assert SyncPiHole.writes == []
 
 
 def test_collection_deletions_require_explicit_confirmation_and_leases_are_excluded():
