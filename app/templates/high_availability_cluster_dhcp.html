@@ -12,7 +12,7 @@
 </section>
 
 <section class="panel">
-  <div class="ha-section-heading"><div><h2>Current state</h2><p class="muted">Kaya checks automatically every {{ cluster.sync_interval_seconds // 60 if cluster.sync_interval_seconds >= 60 else cluster.sync_interval_seconds }} {{ 'minutes' if cluster.sync_interval_seconds >= 60 else 'seconds' }}. Run it now after changing DHCP settings.</p></div>{% if user.role == 'admin' %}<form method="post" action="/high-availability/clusters/{{ cluster.public_id }}/dhcp/reconcile"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit">Check and stage leases</button></form>{% endif %}</div>
+  <div class="ha-section-heading"><div><h2>Current state</h2><p class="muted">Automatic: Kaya checks and stages changes every {{ cluster.sync_interval_seconds // 60 if cluster.sync_interval_seconds >= 60 else cluster.sync_interval_seconds }} {{ 'minutes' if cluster.sync_interval_seconds >= 60 else 'seconds' }}. You do not need to run this manually.</p></div>{% if user.role == 'admin' %}<form method="post" action="/high-availability/clusters/{{ cluster.public_id }}/dhcp/reconcile"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit" title="Optional: run the automatic check immediately">Check now</button></form>{% endif %}</div>
   {% if not lease_state %}
   <div class="ha-sync-empty"><strong>Not checked yet</strong><span>Kaya has not inspected DHCP for this cluster. The check is read-only until a validated snapshot is handed to the standby agent.</span></div>
   {% elif lease_state.status == 'NOT_APPLICABLE' %}

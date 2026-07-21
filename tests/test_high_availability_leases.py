@@ -82,6 +82,23 @@ def test_validated_snapshot_is_encrypted_and_only_assigned_to_standby():
         assert standby.dhcp_running is False
 
 
+def test_unchanged_periodic_reconciliation_does_not_create_false_generation():
+    with database() as db:
+        cluster, _, _ = make_cluster(db)
+        LeasePiHole.active = True
+        LeasePiHole.hosts = []
+        LeasePiHole.leases = []
+        first = reconcile_cluster_leases(db, cluster, client_factory=LeasePiHole)
+        first_generation = first.desired_generation
+
+        second = reconcile_cluster_leases(db, cluster, client_factory=LeasePiHole)
+
+        assert first_generation == 1
+        assert second.desired_generation == first_generation
+        assert second.difference_count == 0
+        assert db.query(HALeaseSnapshot).count() == 1
+
+
 def test_external_dhcp_is_a_noop_and_preserves_existing_histories_by_separation():
     with database() as db:
         cluster, _, _ = make_cluster(db)

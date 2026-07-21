@@ -197,7 +197,10 @@ def reconcile_cluster_leases(db: Session, cluster: HACluster, *, client_factory:
             state.lease_count = state.difference_count = state.conflict_count = 0
             db.commit()
             return state
-        payload = {"version": 1, "cluster_id": cluster.public_id, "source_node_id": plan.source.public_id, "created_at": now.isoformat() + "Z", "leases": plan.leases}
+        # Only lease content belongs in the checksum. Snapshot timestamps live on
+        # the database row; including one here would create false drift on every
+        # periodic check even when no lease changed.
+        payload = {"version": 1, "cluster_id": cluster.public_id, "source_node_id": plan.source.public_id, "leases": plan.leases}
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         checksum = hashlib.sha256(encoded.encode()).hexdigest()
         latest = db.query(HALeaseSnapshot).filter(HALeaseSnapshot.cluster_id == cluster.id).order_by(HALeaseSnapshot.generation.desc()).first()
