@@ -253,7 +253,7 @@ def main() -> None:
     token_source = registration.add_mutually_exclusive_group(required=True)
     token_source.add_argument("--token")
     token_source.add_argument("--token-stdin", action="store_true")
-    registration.add_argument("--agent-version", default="0.1.4")
+    registration.add_argument("--agent-version", default="0.1.5")
     event_parser = commands.add_parser("event")
     event_parser.add_argument("event_type")
     event_parser.add_argument("message")

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Root-only, fixed-purpose DHCP transition helper for Kaya HA."""
-import fcntl, ipaddress, json, os, re, shutil, sqlite3, subprocess, sys, tempfile
+import fcntl, grp, ipaddress, json, os, pwd, re, shutil, socket, sqlite3, stat, subprocess, sys, tempfile, time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -54,21 +54,53 @@ def _lease_lines(generation):
         lines.append(f"{expires} {mac} {address} {hostname} {client_id}\n")
     return "".join(lines)
 
-def _atomic_write(path, content):
+def _pihole_ownership(path):
+    try:
+        mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o644
+        mode |= stat.S_IRUSR | stat.S_IWUSR
+        return pwd.getpwnam("pihole").pw_uid, grp.getgrnam("pihole").gr_gid, mode
+    except KeyError as exc:
+        raise RuntimeError("The Pi-hole service account could not be identified.") from exc
+
+def _atomic_write(path, content, ownership=None):
     path.parent.mkdir(parents=True, exist_ok=True)
+    uid, gid, mode = ownership or _pihole_ownership(path)
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
             stream.write(content); stream.flush(); os.fsync(stream.fileno())
-        os.chmod(temporary, 0o644); os.replace(temporary, path)
+        os.chmod(temporary, mode)
+        os.chown(temporary, uid, gid)
+        os.replace(temporary, path)
     finally:
         if os.path.exists(temporary): os.unlink(temporary)
 
 def _backup(generation):
     BACKUP_ROOT.mkdir(parents=True, exist_ok=True)
     target = BACKUP_ROOT / f"leases-{generation}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+    ownership = _pihole_ownership(LEASE_FILE)
     shutil.copy2(LEASE_FILE, target) if LEASE_FILE.exists() else target.write_text("", encoding="utf-8")
-    return target
+    os.chown(target, ownership[0], ownership[1]); os.chmod(target, ownership[2])
+    return target, ownership
+
+def _dns_healthy():
+    service = _run(["systemctl", "is-active", "pihole-FTL"])
+    if service.returncode:
+        return False
+    query_id = 0x4B41
+    packet = __import__("struct").pack("!HHHHHH", query_id, 0x0100, 1, 0, 0, 0) + b"\x02pi\x04hole\x00" + __import__("struct").pack("!HH", 1, 1)
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
+            client.settimeout(2); client.sendto(packet, ("127.0.0.1", 53)); response, _ = client.recvfrom(512)
+        return len(response) >= 12 and int.from_bytes(response[:2], "big") == query_id
+    except OSError:
+        return False
+
+def _wait_for_dns():
+    for _ in range(10):
+        if _dns_healthy(): return
+        time.sleep(1)
+    raise RuntimeError("Pi-hole FTL did not return to a healthy DNS state after DHCP activation.")
 
 def main():
     if len(sys.argv) not in (2, 3) or sys.argv[1] not in {"status", "demote", "promote"}:
@@ -85,13 +117,14 @@ def main():
             _set_dhcp(False); print(json.dumps({"status": "applied", "dhcp_running": False})); return
         if not _owns_vip() or _state("dns_healthy", False) is not True:
             raise RuntimeError("Promotion requires local VIP ownership and healthy DNS.")
-        backup = _backup(generation)
+        backup, ownership = _backup(generation)
         try:
             if not bool(_state("failover_restore_original", False)):
-                _atomic_write(LEASE_FILE, _lease_lines(int(_state("failover_lease_generation", 0))))
+                _atomic_write(LEASE_FILE, _lease_lines(int(_state("failover_lease_generation", 0))), ownership)
             _set_dhcp(True)
+            _wait_for_dns()
         except Exception:
-            try: _set_dhcp(False); shutil.copy2(backup, LEASE_FILE)
+            try: _set_dhcp(False); _atomic_write(LEASE_FILE, backup.read_text(encoding="utf-8"), ownership)
             finally: raise
         print(json.dumps({"status": "applied", "dhcp_running": True, "backup_reference": backup.name}))
 

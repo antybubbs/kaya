@@ -13,7 +13,7 @@ from app.services.ha_leases import HALeaseError, reconcile_cluster_leases
 
 
 ACTIVE_RUN_STATUSES = {"RUNNING", "ROLLING_BACK"}
-MIN_AGENT_VERSION = (0, 1, 4)
+MIN_AGENT_VERSION = (0, 1, 5)
 
 
 class HAFailoverError(ValueError):
@@ -66,7 +66,7 @@ def failover_readiness(cluster: HACluster, *, now: datetime | None = None) -> Fa
         if not node.last_heartbeat_at or node.last_heartbeat_at < current - timedelta(minutes=2):
             blockers.append(f"Wait for a recent heartbeat from {node.display_name}.")
         if _version(node.agent_version) < MIN_AGENT_VERSION:
-            blockers.append(f"Update {node.display_name} to agent 0.1.4 before controlled failover.")
+            blockers.append(f"Update {node.display_name} to agent 0.1.5 before controlled failover.")
         if node.dns_healthy is not True:
             blockers.append(f"Resolve the DNS health warning on {node.display_name}.")
         if node.keepalived_runtime_state != "RUNNING":
@@ -172,6 +172,23 @@ def _safe_failure(db: Session, run: HAFailoverRun, message: str) -> None:
     _event(db, run, "controlled_failover_failed_safe", "critical", message[:1000])
 
 
+def _mark_verification_started(run: HAFailoverRun) -> None:
+    try:
+        report = json.loads(run.report_json or "{}")
+    except json.JSONDecodeError:
+        report = {}
+    report["verification_started_at"] = datetime.utcnow().isoformat()
+    run.report_json = json.dumps(report, sort_keys=True)
+
+
+def _verification_started_at(run: HAFailoverRun) -> datetime:
+    try:
+        value = json.loads(run.report_json or "{}").get("verification_started_at")
+        return datetime.fromisoformat(value) if value else run.started_at
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return run.started_at
+
+
 def record_failover_action_result(db: Session, node: HANode, *, action_type: str, generation: int, checksum: str | None, status: str, message: str) -> HAFailoverRun:
     run = active_failover(node.cluster)
     expected = desired_failover_action(node.cluster, node)
@@ -187,6 +204,7 @@ def record_failover_action_result(db: Session, node: HANode, *, action_type: str
     elif run.phase == "PROMOTING_TARGET":
         node.dhcp_running = True
         run.phase = "VERIFYING_TARGET"
+        _mark_verification_started(run)
     elif run.phase == "ROLLBACK_DEMOTING_TARGET":
         node.dhcp_running = False
         run.phase = "ROLLBACK_MOVING_VIP"
@@ -194,6 +212,7 @@ def record_failover_action_result(db: Session, node: HANode, *, action_type: str
     elif run.phase == "ROLLBACK_PROMOTING_SOURCE":
         node.dhcp_running = True
         run.phase = "ROLLBACK_VERIFYING_SOURCE"
+        _mark_verification_started(run)
     return run
 
 
@@ -232,16 +251,26 @@ def advance_failover(db: Session, cluster: HACluster) -> HAFailoverRun | None:
         dhcp_ok = (run.target_node.dhcp_running and not run.source_node.dhcp_running) if run.dhcp_managed else not any(node.dhcp_running for node in cluster.nodes)
         if run.target_node.vip_owned and not run.source_node.vip_owned and run.target_node.dns_healthy is True and dhcp_ok:
             _complete(db, run, rolled_back=False)
+        elif datetime.utcnow() - _verification_started_at(run) > timedelta(seconds=30):
+            _safe_failure(db, run, f"{run.target_node.display_name} did not report healthy DNS within 30 seconds. The transition stopped and can be rolled back safely.")
     elif run.phase == "ROLLBACK_VERIFYING_SOURCE":
         dhcp_ok = (run.source_node.dhcp_running and not run.target_node.dhcp_running) if run.dhcp_managed else not any(node.dhcp_running for node in cluster.nodes)
         if run.source_node.vip_owned and not run.target_node.vip_owned and run.source_node.dns_healthy is True and dhcp_ok:
             _complete(db, run, rolled_back=True)
+        elif datetime.utcnow() - _verification_started_at(run) > timedelta(seconds=30):
+            _safe_failure(db, run, f"{run.source_node.display_name} did not report healthy DNS within 30 seconds during rollback. Manual recovery is required; Kaya will not enable another DHCP owner.")
     db.commit()
     return run
 
 
 def request_failover_rollback(db: Session, run: HAFailoverRun, *, acknowledged: bool) -> HAFailoverRun:
-    if not acknowledged or run.status != "FAILED_SAFE":
+    recover_unhealthy_active = (
+        run.status == "SUCCEEDED"
+        and run.target_node.vip_owned
+        and run.target_node.dns_healthy is not True
+        and run.source_node.dns_healthy is True
+    )
+    if not acknowledged or (run.status != "FAILED_SAFE" and not recover_unhealthy_active):
         raise HAFailoverError("Confirm rollback of the failed controlled transition.")
     run.status = "ROLLING_BACK"
     run.cluster.cluster_generation += 1
@@ -251,7 +280,7 @@ def request_failover_rollback(db: Session, run: HAFailoverRun, *, acknowledged: 
         _complete(db, run, rolled_back=True)
     else:
         run.phase = "ROLLBACK_DEMOTING_TARGET"
-        run.error_redacted = run.error_redacted or "Operator requested rollback."
+        run.error_redacted = run.error_redacted or ("The promoted node reported unhealthy DNS after handover." if recover_unhealthy_active else "Operator requested rollback.")
         _event(db, run, "controlled_failover_rollback_started", "warning", f"Rollback to {run.source_node.display_name} started.")
     db.commit()
     db.refresh(run)

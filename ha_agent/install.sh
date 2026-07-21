@@ -55,6 +55,10 @@ visudo -cf "$TEMP_DIR/kaya-ha-agent.sudoers" >/dev/null || fail "the restricted 
 install -m 0755 -o root -g root "$TEMP_DIR/kaya_ha_agent.py" "$TEMP_DIR/keepalived_runtime.py" "$TEMP_DIR/failover_runtime.py" "$TEMP_DIR/kaya_ha_keepalived_helper.py" "$TEMP_DIR/kaya_ha_failover_helper.py" "$TEMP_DIR/kaya_ha_transition.py" "$TEMP_DIR/check-pihole-dns" /usr/lib/kaya-ha-agent/
 install -m 0440 -o root -g root "$TEMP_DIR/kaya-ha-agent.sudoers" /etc/sudoers.d/kaya-ha-agent
 install -m 0644 -o root -g root "$TEMP_DIR/kaya-ha-agent.service" /etc/systemd/system/kaya-ha-agent.service
+if [ -e /etc/pihole/dhcp.leases ] && getent passwd pihole >/dev/null 2>&1 && getent group pihole >/dev/null 2>&1; then
+    chown pihole:pihole /etc/pihole/dhcp.leases
+    chmod u+rw /etc/pihole/dhcp.leases
+fi
 
 printf 'Paste the one-time registration token from Kaya (input is hidden): '
 stty -echo </dev/tty
