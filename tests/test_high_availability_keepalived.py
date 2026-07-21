@@ -152,6 +152,15 @@ def test_agent_validates_and_applies_only_fixed_keepalived_action(tmp_path):
         validate_desired_configuration(tampered)
     state.db.close()
 
+    failed_state = State(tmp_path / "failed")
+    with pytest.raises(KeepalivedRuntimeError, match="sudo: helper denied"):
+        apply_desired_keepalived(
+            failed_state,
+            action,
+            runner=lambda argv, **kwargs: subprocess.CompletedProcess(argv, 1, "not-json", "sudo: helper denied"),
+        )
+    failed_state.db.close()
+
 
 def test_root_helper_rolls_back_invalid_config_and_preserves_unrelated_content(tmp_path, monkeypatch, capsys):
     import ha_agent.kaya_ha_keepalived_helper as helper
@@ -166,7 +175,9 @@ def test_root_helper_rolls_back_invalid_config_and_preserves_unrelated_content(t
     monkeypatch.setattr(helper, "SOURCE", source); monkeypatch.setattr(helper, "MAIN", main); monkeypatch.setattr(helper, "TARGET", target); monkeypatch.setattr(helper, "BACKUPS", backups)
     monkeypatch.setattr(helper, "command", lambda argv, timeout=15: subprocess.CompletedProcess(argv, 1, "", "invalid"))
     assert helper.apply(str(source)) == 1
-    capsys.readouterr()
+    result = json.loads(capsys.readouterr().out)
+    assert result["ok"] is False
+    assert "Diagnostic: invalid" in result["message"]
     assert main.read_text(encoding="utf-8") == "global_defs { router_id EXISTING }\n"
     assert target.read_text(encoding="utf-8") == "# previous Kaya include\n"
     assert list(backups.glob("*.main")) and list(backups.glob("*.include"))
@@ -194,6 +205,7 @@ def test_deployment_ui_and_agent_protocol_keep_dhcp_outside_milestone_five():
     assert "Deployment blocked" in template
     assert "Resolve blockers to deploy" in template
     assert "Edit node settings" in template
+    assert "Deployment error reported by this node" in template
     assert 'Depends(require_ha_admin)' in router
     assert '"dhcp_changed": False' in router
     assert '@router.post("/action-result")' in agent_router

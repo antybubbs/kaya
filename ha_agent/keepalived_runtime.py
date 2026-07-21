@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -13,6 +14,13 @@ FORBIDDEN_CONFIG_MARKERS = (";", "`", "$", "|", "&&", ">", "<", "include ", "glo
 
 class KeepalivedRuntimeError(RuntimeError):
     pass
+
+
+def command_diagnostic(completed: subprocess.CompletedProcess, limit: int = 700) -> str:
+    output = (completed.stderr or "").strip() or (completed.stdout or "").strip()
+    output = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", output)
+    output = " ".join("".join(character for character in output if character.isprintable() or character.isspace()).split())
+    return output[:limit]
 
 
 def atomic_bytes(path: Path, value: bytes) -> None:
@@ -55,9 +63,16 @@ def apply_desired_keepalived(state, action: dict, *, runner: Callable = subproce
     atomic_bytes(pending, validate_desired_configuration(action))
     try:
         completed = runner(["sudo", "-n", HELPER_PATH, "apply", str(pending)], capture_output=True, text=True, timeout=30, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise KeepalivedRuntimeError("The restricted Keepalived helper could not be executed.") from exc
+    try:
         output = json.loads((completed.stdout or "{}").strip())
-    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
-        raise KeepalivedRuntimeError("The restricted Keepalived helper did not return a valid result.") from exc
+    except json.JSONDecodeError as exc:
+        detail = command_diagnostic(completed)
+        raise KeepalivedRuntimeError(
+            "The restricted Keepalived helper did not return a valid result."
+            + (f" Diagnostic: {detail}" if detail else "")
+        ) from exc
     if completed.returncode != 0 or not output.get("ok"):
         return {"action_id": action["action_id"], "action_type": "KEEPALIVED_APPLY", "generation": generation, "status": "FAILED", "checksum": None, "backup_reference": output.get("backup_reference"), "message": str(output.get("message") or "Keepalived validation or activation failed and was rolled back.")[:1000]}
     state.set("config_generation", generation)

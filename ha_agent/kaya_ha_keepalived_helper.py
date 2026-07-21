@@ -37,6 +37,14 @@ SAFE_LINES = (
 )
 
 
+def command_diagnostic(completed: subprocess.CompletedProcess, limit: int = 700) -> str:
+    """Return bounded, single-line command output suitable for an agent result."""
+    output = (completed.stderr or "").strip() or (completed.stdout or "").strip()
+    output = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", output)
+    output = " ".join("".join(character for character in output if character.isprintable() or character.isspace()).split())
+    return output[:limit]
+
+
 def emit(ok: bool, message: str, **extra) -> int:
     print(json.dumps({"ok": ok, "message": message, **extra}, separators=(",", ":")))
     return 0 if ok else 1
@@ -105,12 +113,20 @@ def apply(source: str) -> int:
             atomic_write(MAIN, main_content.encode())
         validation = command(["keepalived", "--config-test", "-f", str(MAIN)])
         if validation.returncode != 0:
-            raise RuntimeError("Keepalived rejected the generated configuration.")
+            detail = command_diagnostic(validation)
+            raise RuntimeError(
+                "Keepalived rejected the generated configuration."
+                + (f" Diagnostic: {detail}" if detail else " No diagnostic output was returned.")
+            )
         activation = command(["systemctl", "reload", "keepalived"])
         if activation.returncode != 0:
             activation = command(["systemctl", "restart", "keepalived"])
         if activation.returncode != 0:
-            raise RuntimeError("Keepalived could not be reloaded.")
+            detail = command_diagnostic(activation)
+            raise RuntimeError(
+                "Keepalived could not be reloaded."
+                + (f" Diagnostic: {detail}" if detail else " No diagnostic output was returned.")
+            )
         return emit(True, "Keepalived configuration validated and activated.", backup_reference=reference)
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
         try:
