@@ -94,6 +94,10 @@ def render_keepalived_config(cluster: HACluster, node: HANode) -> KeepalivedConf
     content = (
         "# Managed by Kaya High Availability. Do not edit.\n"
         f"# cluster={cluster.public_id} generation={generation}\n"
+        "global_defs {\n"
+        "    script_user kaya-ha kaya-ha\n"
+        "    enable_script_security\n"
+        "}\n\n"
         f"vrrp_script KAYA_DNS_{cluster.public_id.replace('-', '')[:8].upper()} {{\n"
         "    script \"/usr/lib/kaya-ha-agent/check-pihole-dns\"\n"
         "    interval 2\n    timeout 2\n    fall 3\n    rise 3\n    weight -60\n}\n\n"

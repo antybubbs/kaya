@@ -21,6 +21,9 @@ INCLUDE = "include /etc/keepalived/conf.d/*.conf"
 SAFE_LINES = (
     re.compile(r"# Managed by Kaya High Availability\. Do not edit\."),
     re.compile(r"# cluster=[0-9a-f-]{36} generation=[1-9][0-9]*"),
+    re.compile(r"global_defs \{"),
+    re.compile(r"script_user kaya-ha kaya-ha"),
+    re.compile(r"enable_script_security"),
     re.compile(r"vrrp_script KAYA_DNS_[A-F0-9]{8} \{"),
     re.compile(r"vrrp_instance KAYA_HA_[A-F0-9]{8} \{"),
     re.compile(r"script \"/usr/lib/kaya-ha-agent/check-pihole-dns\""),
@@ -76,6 +79,8 @@ def validate_managed_document(content: bytes) -> bool:
     if not lines or any(not any(pattern.fullmatch(line) for pattern in SAFE_LINES) for line in lines):
         return False
     if sum(line.startswith("vrrp_instance ") for line in lines) != 1 or sum(line.startswith("vrrp_script ") for line in lines) != 1:
+        return False
+    if lines.count("global_defs {") != 1 or lines.count("script_user kaya-ha kaya-ha") != 1 or lines.count("enable_script_security") != 1:
         return False
     if {role: sum(line.startswith(f"notify_{role} ") for line in lines) for role in ("master", "backup", "fault")} != {"master": 1, "backup": 1, "fault": 1}:
         return False

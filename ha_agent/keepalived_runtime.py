@@ -9,7 +9,7 @@ from typing import Callable
 
 
 HELPER_PATH = "/usr/lib/kaya-ha-agent/kaya_ha_keepalived_helper.py"
-FORBIDDEN_CONFIG_MARKERS = (";", "`", "$", "|", "&&", ">", "<", "include ", "global_defs")
+FORBIDDEN_CONFIG_MARKERS = (";", "`", "$", "|", "&&", ">", "<", "include ")
 
 
 class KeepalivedRuntimeError(RuntimeError):
@@ -43,7 +43,7 @@ def validate_desired_configuration(action: dict) -> bytes:
         raise KeepalivedRuntimeError("Keepalived configuration is not a valid Kaya-managed document.")
     if any(marker in content for marker in FORBIDDEN_CONFIG_MARKERS):
         raise KeepalivedRuntimeError("Keepalived configuration contains a forbidden directive or shell marker.")
-    required = ("vrrp_script KAYA_DNS_", "vrrp_instance KAYA_HA_", "state BACKUP", "virtual_router_id ", "virtual_ipaddress {", "notify_master \"/usr/lib/kaya-ha-agent/kaya_ha_transition.py master ", "notify_backup \"/usr/lib/kaya-ha-agent/kaya_ha_transition.py backup ", "notify_fault \"/usr/lib/kaya-ha-agent/kaya_ha_transition.py fault ")
+    required = ("global_defs {", "script_user kaya-ha kaya-ha", "enable_script_security", "vrrp_script KAYA_DNS_", "vrrp_instance KAYA_HA_", "state BACKUP", "virtual_router_id ", "virtual_ipaddress {", "notify_master \"/usr/lib/kaya-ha-agent/kaya_ha_transition.py master ", "notify_backup \"/usr/lib/kaya-ha-agent/kaya_ha_transition.py backup ", "notify_fault \"/usr/lib/kaya-ha-agent/kaya_ha_transition.py fault ")
     if any(content.count(marker) != 1 for marker in required):
         raise KeepalivedRuntimeError("Keepalived configuration does not match the fixed Kaya structure.")
     actual = hashlib.sha256(content.encode()).hexdigest()

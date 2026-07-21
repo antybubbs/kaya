@@ -49,6 +49,9 @@ def test_keepalived_generator_is_deterministic_and_rejects_unsafe_network_input(
         second = render_keepalived_config(cluster, primary)
         assert first == second
         assert "state BACKUP" in first.content
+        assert "global_defs {" in first.content
+        assert "script_user kaya-ha kaya-ha" in first.content
+        assert "enable_script_security" in first.content
         assert "priority 150" in first.content
         assert "192.168.50.53/24" in first.content
         assert "DHCP" not in first.content
