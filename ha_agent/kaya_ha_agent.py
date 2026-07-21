@@ -158,6 +158,28 @@ def reconcile_desired(state: State, desired: dict, *, helper_runner=None) -> Non
         except KeepalivedRuntimeError as exc:
             result = {"action_id": action.get("action_id", "invalid"), "action_type": "KEEPALIVED_APPLY", "generation": int(action.get("generation") or 0), "status": "FAILED", "checksum": None, "backup_reference": None, "message": str(exc)[:1000]}
         state.set("pending_action_result", result)
+    lease_action = desired.get("lease_snapshot")
+    if lease_action:
+        generation = int(lease_action.get("generation") or 0)
+        result = {"action_id": lease_action.get("action_id", "invalid"), "action_type": "LEASE_SNAPSHOT_STAGE", "generation": generation, "status": "FAILED", "checksum": None, "backup_reference": None, "message": "Lease snapshot staging failed."}
+        try:
+            response = signed_request(state, "GET", str(lease_action["snapshot_path"]))
+            payload = response.get("payload")
+            if not isinstance(payload, dict) or not isinstance(payload.get("leases"), list):
+                raise ValueError("Kaya returned an invalid lease snapshot.")
+            encoded_payload = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+            checksum = hashlib.sha256(encoded_payload).hexdigest()
+            if checksum != lease_action.get("checksum") or checksum != response.get("checksum"):
+                raise ValueError("Lease snapshot checksum verification failed.")
+            if int(response.get("generation") or 0) != generation:
+                raise ValueError("Lease snapshot generation verification failed.")
+            snapshot_path = state.root / "lease-snapshots" / "current.json"
+            atomic_json(snapshot_path, response)
+            state.set("lease_generation", generation)
+            result.update({"status": "APPLIED", "checksum": checksum, "backup_reference": f"lease-generation-{generation}", "message": "Validated lease snapshot staged locally; DHCP was not changed."})
+        except Exception as exc:
+            result["message"] = str(exc)[:1000]
+        state.set("pending_lease_action_result", result)
 
 
 def run_once(state: State) -> None:
@@ -177,6 +199,10 @@ def run_once(state: State) -> None:
     if action_result:
         signed_request(state, "POST", "/api/ha/agent/v1/action-result", action_result)
         state.set("pending_action_result", None)
+    lease_action_result = state.get("pending_lease_action_result")
+    if lease_action_result:
+        signed_request(state, "POST", "/api/ha/agent/v1/action-result", lease_action_result)
+        state.set("pending_lease_action_result", None)
     queued = state.queued_events()
     if queued:
         signed_request(state, "POST", "/api/ha/agent/v1/events", {"events": queued})
@@ -194,7 +220,7 @@ def main() -> None:
     token_source = registration.add_mutually_exclusive_group(required=True)
     token_source.add_argument("--token")
     token_source.add_argument("--token-stdin", action="store_true")
-    registration.add_argument("--agent-version", default="0.1.2")
+    registration.add_argument("--agent-version", default="0.1.3")
     event_parser = commands.add_parser("event")
     event_parser.add_argument("event_type")
     event_parser.add_argument("message")

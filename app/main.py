@@ -24,6 +24,7 @@ from app.services.network_monitor import monitor_loop
 from app.services.domain_polling import domain_poll_loop
 from app.services.compute_monitor import compute_monitor_loop
 from app.services.dns_collector import dns_collector_loop
+from app.services.ha_lease_monitor import ha_lease_reconciliation_loop
 from app.services.audit import begin_request_context, end_request_context, request_event_written, write_audit
 from app.services.client_ip import TrustedProxyMiddleware, client_ip
 from app.services.site_settings import (
@@ -51,6 +52,7 @@ compute_monitor_task = None
 dns_collector_task = None
 version_check_task = None
 secure_send_cleanup_task = None
+ha_lease_reconciliation_task = None
 app.state.demo_mode = settings.demo_mode
 app.state.demo_reset_schedule = settings.demo_reset_schedule
 
@@ -696,6 +698,8 @@ def migrate_existing_database():
         conn.execute(text("CREATE TABLE IF NOT EXISTS ha_sync_runs (id INTEGER NOT NULL PRIMARY KEY, public_id VARCHAR(36) NOT NULL UNIQUE, cluster_id INTEGER NOT NULL REFERENCES ha_clusters(id) ON DELETE CASCADE, source_node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, target_node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, status VARCHAR(30) DEFAULT 'PLANNED' NOT NULL, plan_json TEXT NOT NULL, error_redacted VARCHAR(1000), created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, started_at DATETIME, completed_at DATETIME, created_at DATETIME)"))
         conn.execute(text("CREATE TABLE IF NOT EXISTS ha_backups (id INTEGER NOT NULL PRIMARY KEY, sync_run_id INTEGER NOT NULL REFERENCES ha_sync_runs(id) ON DELETE CASCADE, node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, encrypted_snapshot TEXT NOT NULL, checksum VARCHAR(64) NOT NULL, created_at DATETIME)"))
         conn.execute(text("CREATE TABLE IF NOT EXISTS ha_drift_items (id INTEGER NOT NULL PRIMARY KEY, sync_run_id INTEGER NOT NULL REFERENCES ha_sync_runs(id) ON DELETE CASCADE, group_key VARCHAR(80) NOT NULL, risk VARCHAR(20) NOT NULL, status VARCHAR(30) DEFAULT 'DRIFT' NOT NULL, source_checksum VARCHAR(64) NOT NULL, target_checksum VARCHAR(64) NOT NULL, message VARCHAR(1000) NOT NULL)"))
+        conn.execute(text("CREATE TABLE IF NOT EXISTS ha_lease_replication_states (id INTEGER NOT NULL PRIMARY KEY, cluster_id INTEGER NOT NULL UNIQUE REFERENCES ha_clusters(id) ON DELETE CASCADE, source_node_id INTEGER REFERENCES ha_nodes(id) ON DELETE SET NULL, target_node_id INTEGER REFERENCES ha_nodes(id) ON DELETE SET NULL, status VARCHAR(30) DEFAULT 'NOT_APPLICABLE' NOT NULL, desired_generation INTEGER DEFAULT 0 NOT NULL, applied_generation INTEGER DEFAULT 0 NOT NULL, lease_count INTEGER DEFAULT 0 NOT NULL, difference_count INTEGER DEFAULT 0 NOT NULL, conflict_count INTEGER DEFAULT 0 NOT NULL, last_event_at DATETIME, last_full_reconciliation_at DATETIME, last_applied_at DATETIME, last_error_redacted VARCHAR(1000), created_at DATETIME, updated_at DATETIME)"))
+        conn.execute(text("CREATE TABLE IF NOT EXISTS ha_lease_snapshots (id INTEGER NOT NULL PRIMARY KEY, public_id VARCHAR(36) NOT NULL UNIQUE, cluster_id INTEGER NOT NULL REFERENCES ha_clusters(id) ON DELETE CASCADE, source_node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, target_node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, generation INTEGER NOT NULL, checksum VARCHAR(64) NOT NULL, encrypted_payload TEXT NOT NULL, lease_count INTEGER DEFAULT 0 NOT NULL, status VARCHAR(30) DEFAULT 'PENDING' NOT NULL, validation_summary_json TEXT DEFAULT '{}' NOT NULL, created_at DATETIME, staged_at DATETIME, CONSTRAINT uq_ha_lease_snapshot_generation UNIQUE (cluster_id, generation))"))
         ha_cluster_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(ha_clusters)"))}
         for column, definition in {"cluster_generation": "INTEGER DEFAULT 1 NOT NULL", "role_generation": "INTEGER DEFAULT 1 NOT NULL", "desired_sync_generation": "INTEGER DEFAULT 0 NOT NULL", "vrrp_router_id": "INTEGER", "keepalived_generation": "INTEGER DEFAULT 0 NOT NULL", "keepalived_status": "VARCHAR(40) DEFAULT 'NOT_CONFIGURED' NOT NULL", "keepalived_requested_at": "DATETIME", "keepalived_deployed_at": "DATETIME"}.items():
             if column not in ha_cluster_columns:
@@ -743,6 +747,8 @@ def migrate_existing_database():
             "ha_sync_runs": ["public_id", "cluster_id", "source_node_id", "target_node_id", "status", "created_by_user_id", "created_at"],
             "ha_backups": ["sync_run_id", "node_id", "checksum", "created_at"],
             "ha_drift_items": ["sync_run_id", "group_key", "risk", "status"],
+            "ha_lease_replication_states": ["cluster_id", "source_node_id", "target_node_id", "status", "last_full_reconciliation_at"],
+            "ha_lease_snapshots": ["public_id", "cluster_id", "source_node_id", "target_node_id", "generation", "checksum", "status", "created_at"],
         }.items():
             for column in columns:
                 conn.execute(text(f"CREATE INDEX IF NOT EXISTS ix_{table}_{column} ON {table} ({column})"))
@@ -760,12 +766,13 @@ async def on_startup():
     if settings.demo_mode:
         return
     start_kaya_remote_service()
-    global monitor_task, domain_poll_task, compute_monitor_task, dns_collector_task, secure_send_cleanup_task
+    global monitor_task, domain_poll_task, compute_monitor_task, dns_collector_task, secure_send_cleanup_task, ha_lease_reconciliation_task
     monitor_task = asyncio.create_task(monitor_loop())
     domain_poll_task = asyncio.create_task(domain_poll_loop())
     compute_monitor_task = asyncio.create_task(compute_monitor_loop())
     dns_collector_task = asyncio.create_task(dns_collector_loop())
     secure_send_cleanup_task = asyncio.create_task(secure_send_cleanup_loop())
+    ha_lease_reconciliation_task = asyncio.create_task(ha_lease_reconciliation_loop())
 
 
 @app.on_event("shutdown")
@@ -782,6 +789,8 @@ async def on_shutdown():
         dns_collector_task.cancel()
     if secure_send_cleanup_task:
         secure_send_cleanup_task.cancel()
+    if ha_lease_reconciliation_task:
+        ha_lease_reconciliation_task.cancel()
     stop_kaya_remote_service()
     stop_guacamole_bridge()
 

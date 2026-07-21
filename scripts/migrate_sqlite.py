@@ -311,6 +311,8 @@ def main():
         "CREATE TABLE IF NOT EXISTS ha_sync_runs (id INTEGER NOT NULL PRIMARY KEY, public_id VARCHAR(36) NOT NULL UNIQUE, cluster_id INTEGER NOT NULL REFERENCES ha_clusters(id) ON DELETE CASCADE, source_node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, target_node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, status VARCHAR(30) DEFAULT 'PLANNED' NOT NULL, plan_json TEXT NOT NULL, error_redacted VARCHAR(1000), created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, started_at DATETIME, completed_at DATETIME, created_at DATETIME)",
         "CREATE TABLE IF NOT EXISTS ha_backups (id INTEGER NOT NULL PRIMARY KEY, sync_run_id INTEGER NOT NULL REFERENCES ha_sync_runs(id) ON DELETE CASCADE, node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, encrypted_snapshot TEXT NOT NULL, checksum VARCHAR(64) NOT NULL, created_at DATETIME)",
         "CREATE TABLE IF NOT EXISTS ha_drift_items (id INTEGER NOT NULL PRIMARY KEY, sync_run_id INTEGER NOT NULL REFERENCES ha_sync_runs(id) ON DELETE CASCADE, group_key VARCHAR(80) NOT NULL, risk VARCHAR(20) NOT NULL, status VARCHAR(30) DEFAULT 'DRIFT' NOT NULL, source_checksum VARCHAR(64) NOT NULL, target_checksum VARCHAR(64) NOT NULL, message VARCHAR(1000) NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS ha_lease_replication_states (id INTEGER NOT NULL PRIMARY KEY, cluster_id INTEGER NOT NULL UNIQUE REFERENCES ha_clusters(id) ON DELETE CASCADE, source_node_id INTEGER REFERENCES ha_nodes(id) ON DELETE SET NULL, target_node_id INTEGER REFERENCES ha_nodes(id) ON DELETE SET NULL, status VARCHAR(30) DEFAULT 'NOT_APPLICABLE' NOT NULL, desired_generation INTEGER DEFAULT 0 NOT NULL, applied_generation INTEGER DEFAULT 0 NOT NULL, lease_count INTEGER DEFAULT 0 NOT NULL, difference_count INTEGER DEFAULT 0 NOT NULL, conflict_count INTEGER DEFAULT 0 NOT NULL, last_event_at DATETIME, last_full_reconciliation_at DATETIME, last_applied_at DATETIME, last_error_redacted VARCHAR(1000), created_at DATETIME, updated_at DATETIME)",
+        "CREATE TABLE IF NOT EXISTS ha_lease_snapshots (id INTEGER NOT NULL PRIMARY KEY, public_id VARCHAR(36) NOT NULL UNIQUE, cluster_id INTEGER NOT NULL REFERENCES ha_clusters(id) ON DELETE CASCADE, source_node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, target_node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, generation INTEGER NOT NULL, checksum VARCHAR(64) NOT NULL, encrypted_payload TEXT NOT NULL, lease_count INTEGER DEFAULT 0 NOT NULL, status VARCHAR(30) DEFAULT 'PENDING' NOT NULL, validation_summary_json TEXT DEFAULT '{}' NOT NULL, created_at DATETIME, staged_at DATETIME, CONSTRAINT uq_ha_lease_snapshot_generation UNIQUE (cluster_id, generation))",
     ]
     ha_existed = table_exists(cur, "ha_clusters")
     for statement in ha_schema:
@@ -374,6 +376,8 @@ def main():
         "ha_sync_runs": ["public_id", "cluster_id", "source_node_id", "target_node_id", "status", "created_by_user_id", "created_at"],
         "ha_backups": ["sync_run_id", "node_id", "checksum", "created_at"],
         "ha_drift_items": ["sync_run_id", "group_key", "risk", "status"],
+        "ha_lease_replication_states": ["cluster_id", "source_node_id", "target_node_id", "status", "last_full_reconciliation_at"],
+        "ha_lease_snapshots": ["public_id", "cluster_id", "source_node_id", "target_node_id", "generation", "checksum", "status", "created_at"],
     }
     for table, columns in ha_indexes.items():
         for column in columns:

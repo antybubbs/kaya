@@ -174,7 +174,7 @@ def test_agent_routes_expose_only_fixed_protocol_operations():
     from app.routers.ha_agent_api import router
 
     paths = {route.path for route in router.routes}
-    assert paths == {"/api/ha/agent/v1/install.sh", "/api/ha/agent/v1/files/{name}", "/api/ha/agent/v1/register", "/api/ha/agent/v1/heartbeat", "/api/ha/agent/v1/events", "/api/ha/agent/v1/desired-state", "/api/ha/agent/v1/action-result"}
+    assert paths == {"/api/ha/agent/v1/install.sh", "/api/ha/agent/v1/files/{name}", "/api/ha/agent/v1/register", "/api/ha/agent/v1/heartbeat", "/api/ha/agent/v1/events", "/api/ha/agent/v1/desired-state", "/api/ha/agent/v1/lease-snapshot/{generation}", "/api/ha/agent/v1/action-result"}
     assert not any("command" in path or "shell" in path for path in paths)
     template = open("app/templates/high_availability_cluster_agents.html", encoding="utf-8").read()
     assert "one-time token" in template

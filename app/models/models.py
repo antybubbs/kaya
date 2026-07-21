@@ -645,6 +645,8 @@ class HACluster(Base):
     events = relationship("HAEvent", cascade="all, delete-orphan", back_populates="cluster")
     dns_providers = relationship("DNSProviderConfig", foreign_keys="DNSProviderConfig.ha_cluster_id", back_populates="ha_cluster")
     sync_runs = relationship("HASyncRun", cascade="all, delete-orphan", back_populates="cluster")
+    lease_replication = relationship("HALeaseReplicationState", uselist=False, cascade="all, delete-orphan", back_populates="cluster")
+    lease_snapshots = relationship("HALeaseSnapshot", cascade="all, delete-orphan", back_populates="cluster")
     created_by = relationship("User", foreign_keys=[created_by_user_id])
 
 
@@ -761,6 +763,54 @@ class HAAgentActionResult(Base):
     received_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     cluster = relationship("HACluster")
     node = relationship("HANode")
+
+
+class HALeaseReplicationState(Base):
+    """Current lease staging state, deliberately separate from DNS Manager history."""
+
+    __tablename__ = "ha_lease_replication_states"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    cluster_id: Mapped[int] = mapped_column(ForeignKey("ha_clusters.id", ondelete="CASCADE"), unique=True, index=True)
+    source_node_id: Mapped[int | None] = mapped_column(ForeignKey("ha_nodes.id", ondelete="SET NULL"), nullable=True, index=True)
+    target_node_id: Mapped[int | None] = mapped_column(ForeignKey("ha_nodes.id", ondelete="SET NULL"), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(30), default="NOT_APPLICABLE", index=True)
+    desired_generation: Mapped[int] = mapped_column(Integer, default=0)
+    applied_generation: Mapped[int] = mapped_column(Integer, default=0)
+    lease_count: Mapped[int] = mapped_column(Integer, default=0)
+    difference_count: Mapped[int] = mapped_column(Integer, default=0)
+    conflict_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_event_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_full_reconciliation_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    last_applied_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_error_redacted: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    cluster = relationship("HACluster", back_populates="lease_replication")
+    source_node = relationship("HANode", foreign_keys=[source_node_id])
+    target_node = relationship("HANode", foreign_keys=[target_node_id])
+
+
+class HALeaseSnapshot(Base):
+    """Encrypted, validated HA lease snapshot; never used as DNS Manager history."""
+
+    __tablename__ = "ha_lease_snapshots"
+    __table_args__ = (UniqueConstraint("cluster_id", "generation", name="uq_ha_lease_snapshot_generation"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(36), default=lambda: str(uuid4()), unique=True, index=True)
+    cluster_id: Mapped[int] = mapped_column(ForeignKey("ha_clusters.id", ondelete="CASCADE"), index=True)
+    source_node_id: Mapped[int] = mapped_column(ForeignKey("ha_nodes.id", ondelete="CASCADE"), index=True)
+    target_node_id: Mapped[int] = mapped_column(ForeignKey("ha_nodes.id", ondelete="CASCADE"), index=True)
+    generation: Mapped[int] = mapped_column(Integer, index=True)
+    checksum: Mapped[str] = mapped_column(String(64), index=True)
+    encrypted_payload: Mapped[str] = mapped_column(Text)
+    lease_count: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(30), default="PENDING", index=True)
+    validation_summary_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    staged_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    cluster = relationship("HACluster", back_populates="lease_snapshots")
+    source_node = relationship("HANode", foreign_keys=[source_node_id])
+    target_node = relationship("HANode", foreign_keys=[target_node_id])
 
 
 class HASyncRun(Base):

@@ -7,6 +7,7 @@ from app.db.session import get_db
 from app.schemas.high_availability import HAAgentActionResult, HAAgentEvents, HAAgentHeartbeat, HAAgentRegister
 from app.services.ha_agents import HAAgentError, AuthenticatedAgent, authenticate_agent_request, desired_state, ingest_events, record_action_result, record_heartbeat, register_agent
 from app.services.ha_agent_installer import agent_file
+from app.services.ha_leases import HALeaseError, snapshot_for_agent
 
 
 router = APIRouter(prefix="/api/ha/agent/v1", tags=["ha-agent"])
@@ -74,6 +75,19 @@ def events(payload: HAAgentEvents, db: Session = Depends(get_db), agent: Authent
 @router.get("/desired-state")
 def get_desired_state(agent: AuthenticatedAgent = Depends(require_agent)):
     return desired_state(agent.node)
+
+
+@router.get("/lease-snapshot/{generation}")
+def lease_snapshot(generation: int, agent: AuthenticatedAgent = Depends(require_agent)):
+    try:
+        payload = snapshot_for_agent(agent.node, generation)
+    except HALeaseError as exc:
+        raise HTTPException(404, str(exc))
+    return Response(
+        content=__import__("json").dumps(payload, separators=(",", ":")),
+        media_type="application/json",
+        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+    )
 
 
 @router.post("/action-result")

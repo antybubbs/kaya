@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.db.session import get_db
-from app.models.models import HACluster, HAHealthCheck, HANode, HASyncRun
+from app.models.models import HACluster, HAHealthCheck, HALeaseReplicationState, HANode, HASyncRun
 from app.routers.auth import require_user
 from app.schemas.high_availability import HAClusterDraftCreate, HAClusterRead, HAConfigurationDifferenceRead, HANodeDraftCreate, HANodeUpdate
 from app.services.audit import write_audit
@@ -20,6 +20,7 @@ from app.services.ha_registry import SUPPORTED_HA_PROVIDERS, provider_for_key
 from app.services.ha_validation import GROUP_LABELS, configuration_differences, run_live_validation
 from app.services.ha_keepalived import HAKeepalivedError, deployment_blockers, prepare_deployment, request_manual_vip_move
 from app.services.ha_sync import HAStaleSyncPlanError, HASyncError, create_live_sync_plan, execute_sync, sync_plan
+from app.services.ha_leases import HALeaseError, latest_snapshot_summary, reconcile_cluster_leases
 from app.services.site_settings import get_site_setting
 
 
@@ -258,6 +259,41 @@ def cluster_agents(public_id: str, request: Request, db: Session = Depends(get_d
 @router.get("/clusters/{public_id}/events")
 def cluster_events(public_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_high_availability)):
     return cluster_page(request, user, db, public_id, "events", "high_availability_cluster_events.html")
+
+
+def lease_page_context(request: Request, user, cluster: HACluster, error: str | None = None, notice: str | None = None):
+    def version_tuple(value: str | None) -> tuple[int, int, int]:
+        try:
+            parts = [int(part) for part in str(value or "0").split(".")[:3]]
+        except ValueError:
+            return (0, 0, 0)
+        return tuple((parts + [0, 0, 0])[:3])
+
+    upgrades = [node for node in cluster.nodes if version_tuple(node.agent_version) < (0, 1, 3)]
+    return ha_context(request, user, "clusters", cluster=cluster, cluster_section="dhcp", lease_state=cluster.lease_replication, lease_snapshot=latest_snapshot_summary(cluster), lease_error=error, lease_notice=notice, lease_agent_upgrades=upgrades)
+
+
+@router.get("/clusters/{public_id}/dhcp")
+def cluster_dhcp(public_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_high_availability)):
+    cluster = cluster_or_404(db, public_id)
+    return templates.TemplateResponse(request, "high_availability_cluster_dhcp.html", lease_page_context(request, user, cluster))
+
+
+@router.post("/clusters/{public_id}/dhcp/reconcile")
+async def reconcile_cluster_dhcp(public_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_ha_admin)):
+    cluster = cluster_or_404(db, public_id)
+    form = await request.form()
+    validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    try:
+        state = reconcile_cluster_leases(db, cluster)
+    except HALeaseError as exc:
+        write_audit(db, user, "blocked", "ha_lease_replication", entity_id=cluster.public_id, detail=f"DHCP lease reconciliation for {cluster.name} was blocked before staging.", severity="warning", metadata={"cluster_id": cluster.public_id, "dhcp_changed": False, "lease_file_changed": False, "error": str(exc)[:300]})
+        cluster = cluster_or_404(db, public_id)
+        return templates.TemplateResponse(request, "high_availability_cluster_dhcp.html", lease_page_context(request, user, cluster, error=str(exc)), status_code=422)
+    applicable = state.status != "NOT_APPLICABLE"
+    write_audit(db, user, "reconciled" if applicable else "not_applicable", "ha_lease_replication", entity_id=cluster.public_id, detail=(f"Validated and queued a lease snapshot for {cluster.name}." if applicable else f"Confirmed that {cluster.name} uses external DHCP; no lease replication is required."), metadata={"cluster_id": cluster.public_id, "generation": state.desired_generation, "lease_count": state.lease_count, "dhcp_changed": False, "lease_file_changed": False})
+    destination = f"/high-availability/clusters/{cluster.public_id}/dhcp?{'queued=1' if applicable else 'external=1'}"
+    return RedirectResponse(destination, status_code=303)
 
 
 @router.get("/clusters/{public_id}/deployment")
