@@ -19,10 +19,10 @@
   <div class="ha-lease-mode is-external"><div><span class="ha-check-state ha-check-state--pass">External DHCP</span><h3>No Pi-hole lease replication required</h3><p>Your Pi-holes are providing DNS only. Kaya will leave your separate DHCP server completely alone.</p></div></div>
   {% else %}
   <div class="ha-lease-summary">
-    <article><span>Status</span><strong>{{ lease_state.status|replace('_', ' ')|title }}</strong><small>{% if lease_state.status == 'CURRENT' %}Snapshot safely staged on standby{% elif lease_state.status == 'PENDING' %}Waiting for a compatible standby agent heartbeat{% else %}Review the message above{% endif %}</small></article>
-    <article><span>Active leases</span><strong>{{ lease_state.lease_count }}</strong><small>Validated on the main Pi-hole</small></article>
-    <article><span>Standby generation</span><strong>{{ lease_state.applied_generation }} / {{ lease_state.desired_generation }}</strong><small>Stored locally; not imported into live DHCP</small></article>
-    <article><span>Conflicts</span><strong>{{ lease_state.conflict_count }}</strong><small>Conflicting or invalid leases block staging</small></article>
+    <article><span>Status</span><strong data-ha-lease-field="status">{{ lease_state.status|replace('_', ' ')|title }}</strong><small>{% if lease_state.status == 'CURRENT' %}Snapshot safely staged on standby{% elif lease_state.status == 'PENDING' %}Waiting for a compatible standby agent heartbeat{% else %}Review the message above{% endif %}</small></article>
+    <article><span>Active leases</span><strong data-ha-lease-field="lease_count">{{ lease_state.lease_count }}</strong><small>Validated on the main Pi-hole</small></article>
+    <article><span>Standby generation</span><strong><span data-ha-lease-field="applied_generation">{{ lease_state.applied_generation }}</span> / <span data-ha-lease-field="desired_generation">{{ lease_state.desired_generation }}</span></strong><small>Stored locally; not imported into live DHCP</small></article>
+    <article><span>Conflicts</span><strong data-ha-lease-field="conflict_count">{{ lease_state.conflict_count }}</strong><small>Conflicting or invalid leases block staging</small></article>
   </div>
   <p class="muted">Last full check: {{ local_time(lease_state.last_full_reconciliation_at, 'friendly') if lease_state.last_full_reconciliation_at else 'Never' }}{% if lease_state.last_applied_at %} · Last safely staged: {{ local_time(lease_state.last_applied_at, 'friendly') }}{% endif %}</p>
   {% if lease_state.last_error_redacted %}<div class="ha-agent-diagnostic"><strong>Latest safe error</strong><pre>{{ lease_state.last_error_redacted }}</pre></div>{% endif %}

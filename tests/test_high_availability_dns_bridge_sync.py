@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, event
@@ -9,6 +10,18 @@ from app.models.models import DNSClientIPHistory, DNSProviderConfig, DNSRecognis
 from app.services.dns_providers import DNSProviderResult, HAPiHoleProvider, PiHoleProvider, provider_for
 from app.services.ha_sync import HAStaleSyncPlanError, HASyncError, create_live_sync_plan, create_sync_plan, execute_sync, sync_plan
 from app.routers.admin import DNSProviderSettingsError, save_dns_manager_settings
+
+
+def test_dns_provider_actions_are_not_blocked_by_hidden_settings_panels():
+    template = Path("app/templates/settings.html").read_text(encoding="utf-8")
+    assert 'formaction="/system/site-administration/save-dns-provider" formmethod="post" formnovalidate' in template
+    assert 'formaction="/system/site-administration/test-dns-provider" formmethod="post" formnovalidate' in template
+
+    script = Path("app/static/js/settings_tabs.js").read_text(encoding="utf-8")
+    assert "event.submitter?.formNoValidate" in script
+
+    router = Path("app/routers/admin.py").read_text(encoding="utf-8")
+    assert 'RedirectResponse("/system/site-administration?tab=module-dns-manager&provider_saved=1"' in router
 
 
 def database():

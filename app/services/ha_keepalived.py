@@ -106,7 +106,7 @@ def render_keepalived_config(cluster: HACluster, node: HANode) -> KeepalivedConf
         f"    interface {node.network_interface}\n"
         f"    virtual_router_id {cluster.vrrp_router_id}\n"
         f"    priority {node.vrrp_priority}\n"
-        "    advert_int 1\n    preempt_delay 5\n\n"
+        "    advert_int 1\n    nopreempt\n\n"
         "    virtual_ipaddress {\n"
         f"        {cluster.virtual_ip}/{cluster.prefix_length}\n"
         "    }\n\n"

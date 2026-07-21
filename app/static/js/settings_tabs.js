@@ -284,6 +284,9 @@
       if (errors) errors.replaceChildren();
     });
     root.addEventListener("submit", (event) => {
+      // Panel-specific actions validate their own fields server-side. Do not let
+      // an unrelated hidden settings panel prevent those requests from running.
+      if (event.submitter?.formNoValidate) return;
       const value = String(field?.value || "");
       const entryErrors = [];
       value.split(/\r?\n/).forEach((line, index) => {

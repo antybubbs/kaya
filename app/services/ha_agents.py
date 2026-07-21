@@ -174,6 +174,8 @@ def record_heartbeat(db: Session, node: HANode, heartbeat: HAAgentHeartbeat) -> 
 def reconcile_vip_ownership(db: Session, cluster: HACluster) -> None:
     if cluster.keepalived_status != "DEPLOYED" or any(node.keepalived_status != "DEPLOYED" for node in cluster.nodes):
         return
+    previous_active_id = cluster.current_active_node_id
+    previous_status = cluster.status
     owners = [node for node in cluster.nodes if node.vip_owned]
     current = owners[0] if len(owners) == 1 else None
     cluster.current_active_node_id = current.id if current else None
@@ -183,6 +185,21 @@ def reconcile_vip_ownership(db: Session, cluster: HACluster) -> None:
         cluster.status = "ERROR"
     else:
         cluster.status = "DEGRADED"
+    if len(owners) > 1 and previous_status != "ERROR":
+        db.add(HAEvent(cluster_id=cluster.id, node_id=None, event_type="split_brain_detected", severity="critical", source="kaya", message="Multiple virtual-IP owners were reported. Automatic DHCP activation remains blocked.", details_json_redacted="{}", occurred_at=datetime.utcnow()))
+    if cluster.automatic_failover_enabled and current and previous_active_id and previous_active_id != current.id:
+        peers = [node for node in cluster.nodes if node.id != current.id]
+        dhcp_managed = bool(cluster.lease_replication and cluster.lease_replication.status != "NOT_APPLICABLE")
+        safe_dhcp = not dhcp_managed or (current.dhcp_running and all(not peer.dhcp_running for peer in peers))
+        if current.dns_healthy and safe_dhcp:
+            for node in cluster.nodes:
+                node.desired_role = "ACTIVE" if node.id == current.id else "STANDBY"
+                node.role = node.desired_role
+                node.vrrp_priority = 150 if node.id == current.id else 100
+            cluster.authoritative_node_id = current.id
+            cluster.role_generation += 1
+            cluster.last_failover_at = datetime.utcnow()
+            db.add(HAEvent(cluster_id=cluster.id, node_id=current.id, event_type="automatic_failover_reconciled", severity="warning", source="kaya", message=f"Kaya reconciled the local failover and adopted {current.display_name} as active. Automatic failback remains disabled.", details_json_redacted=json.dumps({"automatic": True}, sort_keys=True), occurred_at=datetime.utcnow()))
     db.commit()
 
 
@@ -265,6 +282,8 @@ def desired_state(node: HANode) -> dict:
     keepalived = desired_keepalived_action(cluster, node)
     leases = desired_lease_action(cluster, node)
     failover = desired_failover_action(cluster, node)
+    peer = next((item for item in cluster.nodes if item.id != node.id), None)
+    dhcp_managed = bool(cluster.lease_replication and cluster.lease_replication.status != "NOT_APPLICABLE")
     return {
         "protocol_version": AGENT_PROTOCOL_VERSION,
         "cluster_id": cluster.public_id,
@@ -276,7 +295,12 @@ def desired_state(node: HANode) -> dict:
         "desired_agent_version": None,
         "virtual_ip": f"{cluster.virtual_ip}/{cluster.prefix_length}" if cluster.virtual_ip else None,
         "maintenance_mode": cluster.maintenance_mode,
-        "automatic_failover": False,
+        "automatic_failover": bool(cluster.automatic_failover_enabled),
+        "automatic_failback": False,
+        "automatic_hold_down_seconds": 10,
+        "dhcp_managed": dhcp_managed,
+        "peer_host": peer.management_host if peer else None,
+        "network_interface": node.network_interface,
         "allowed_actions": (["KEEPALIVED_APPLY"] if keepalived else []) + (["LEASE_SNAPSHOT_STAGE"] if leases else []) + ([failover["action_type"]] if failover else []),
         "keepalived": keepalived,
         "lease_snapshot": leases,

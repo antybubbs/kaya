@@ -146,6 +146,13 @@ def reconcile_desired(state: State, desired: dict, *, helper_runner=None) -> Non
     state.set("observed_generation", incoming)
     state.set("desired_role", desired["desired_role"])
     state.set("desired_virtual_ip", desired.get("virtual_ip"))
+    state.set("role_generation", int(desired.get("role_generation") or 0))
+    state.set("automatic_failover", bool(desired.get("automatic_failover", False)))
+    state.set("maintenance_mode", bool(desired.get("maintenance_mode", False)))
+    state.set("dhcp_managed", bool(desired.get("dhcp_managed", False)))
+    state.set("peer_host", desired.get("peer_host"))
+    state.set("network_interface", desired.get("network_interface"))
+    state.set("automatic_hold_down_seconds", max(5, min(60, int(desired.get("automatic_hold_down_seconds") or 10))))
     state.set("last_kaya_contact", datetime.now(timezone.utc).isoformat())
     action = desired.get("keepalived")
     if action:
@@ -217,10 +224,17 @@ def run_once(state: State) -> None:
     except Exception:
         pass
     try:
-        check = subprocess.run(["/usr/lib/kaya-ha-agent/check-pihole-dns"], capture_output=True, timeout=10, check=False)
+        check = subprocess.run(["/usr/lib/kaya-ha-agent/check-pihole-dns", "--observe"], capture_output=True, timeout=10, check=False)
         state.set("dns_healthy", check.returncode == 0)
     except (OSError, subprocess.SubprocessError):
         state.set("dns_healthy", False)
+    peer_host = str(state.get("peer_host", "") or "").strip()
+    if peer_host:
+        try:
+            peer = subprocess.run(["/usr/bin/ping", "-c", "1", "-W", "1", peer_host], capture_output=True, timeout=3, check=False)
+            state.set("peer_reachable", peer.returncode == 0)
+        except (OSError, subprocess.SubprocessError):
+            state.set("peer_reachable", False)
     heartbeat = {"observed_role": state.get("observed_role", "STANDBY"), "observed_generation": int(state.get("observed_generation", 0)), "vip_owned": bool(state.get("vip_owned", False)), "dhcp_running": bool(state.get("dhcp_running", False)), "dns_healthy": bool(state.get("dns_healthy", False)), "peer_reachable": bool(state.get("peer_reachable", False)), "lease_generation": int(state.get("lease_generation", 0)), "config_generation": int(state.get("config_generation", 0)), "agent_version": config["agent_version"], "keepalived_runtime_state": state.get("keepalived_runtime_state", "UNKNOWN")}
     response = signed_request(state, "POST", "/api/ha/agent/v1/heartbeat", heartbeat)
     reconcile_desired(state, response["desired"])
@@ -253,7 +267,7 @@ def main() -> None:
     token_source = registration.add_mutually_exclusive_group(required=True)
     token_source.add_argument("--token")
     token_source.add_argument("--token-stdin", action="store_true")
-    registration.add_argument("--agent-version", default="0.1.5")
+    registration.add_argument("--agent-version", default="0.2.0")
     event_parser = commands.add_parser("event")
     event_parser.add_argument("event_type")
     event_parser.add_argument("message")

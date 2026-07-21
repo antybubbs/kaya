@@ -102,25 +102,37 @@ def _wait_for_dns():
         time.sleep(1)
     raise RuntimeError("Pi-hole FTL did not return to a healthy DNS state after DHCP activation.")
 
+def _automatic_allowed(generation):
+    return (
+        bool(_state("automatic_failover", False))
+        and not bool(_state("maintenance_mode", False))
+        and bool(_state("dhcp_managed", False))
+        and generation == int(_state("keepalived_generation", 0))
+    )
+
 def main():
-    if len(sys.argv) not in (2, 3) or sys.argv[1] not in {"status", "demote", "promote"}:
-        raise SystemExit("usage: helper status|demote|promote [generation]")
+    commands = {"status", "demote", "promote", "automatic-demote", "automatic-promote"}
+    if len(sys.argv) not in (2, 3) or sys.argv[1] not in commands:
+        raise SystemExit("usage: helper status|demote|promote|automatic-demote|automatic-promote [generation]")
     if sys.argv[1] == "status":
         print(json.dumps({"status": "ok", "dhcp_running": _dhcp_active()})); return
     generation = int(sys.argv[2])
-    if generation < 1 or generation != int(_state("failover_generation", 0)):
-        raise RuntimeError("The DHCP action generation is stale.")
+    automatic = sys.argv[1].startswith("automatic-")
+    if generation < 1 or (not _automatic_allowed(generation) if automatic else generation != int(_state("failover_generation", 0))):
+        raise RuntimeError("The DHCP action generation is stale or automatic failover is not permitted.")
     STATE_ROOT.mkdir(parents=True, exist_ok=True)
     with LOCK_FILE.open("a+") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        if sys.argv[1] == "demote":
+        if sys.argv[1] in {"demote", "automatic-demote"}:
             _set_dhcp(False); print(json.dumps({"status": "applied", "dhcp_running": False})); return
         if not _owns_vip() or _state("dns_healthy", False) is not True:
             raise RuntimeError("Promotion requires local VIP ownership and healthy DNS.")
         backup, ownership = _backup(generation)
         try:
-            if not bool(_state("failover_restore_original", False)):
-                _atomic_write(LEASE_FILE, _lease_lines(int(_state("failover_lease_generation", 0))), ownership)
+            restore_original = bool(_state("failover_restore_original", False)) if not automatic else False
+            lease_generation = int(_state("failover_lease_generation", 0)) if not automatic else int(_state("lease_generation", 0))
+            if not restore_original:
+                _atomic_write(LEASE_FILE, _lease_lines(lease_generation), ownership)
             _set_dhcp(True)
             _wait_for_dns()
         except Exception:

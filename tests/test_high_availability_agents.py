@@ -146,6 +146,23 @@ def test_heartbeat_tracks_divergence_and_desired_state_has_no_commands():
         assert state["allowed_actions"] == []
 
 
+def test_desired_state_supplies_offline_failover_safety_context():
+    with database() as db:
+        cluster, primary, standby = cluster_with_nodes(db)
+        cluster.automatic_failover_enabled = True
+        cluster.maintenance_mode = False
+        primary.management_host = "192.0.2.20"
+        standby.management_host = "192.0.2.21"
+        standby.network_interface = "eth0"
+        db.commit()
+        state = desired_state(standby)
+        assert state["automatic_failover"] is True
+        assert state["automatic_failback"] is False
+        assert state["peer_host"] == "192.0.2.20"
+        assert state["network_interface"] == "eth0"
+        assert state["automatic_hold_down_seconds"] >= 5
+
+
 def test_agent_events_are_deduplicated_and_sensitive_details_are_removed():
     with database() as db:
         _, primary, _ = cluster_with_nodes(db)

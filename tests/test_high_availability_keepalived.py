@@ -193,6 +193,8 @@ def test_root_helper_independently_allows_generated_config_and_rejects_injected_
         cluster = prepare_deployment(db, ready_cluster(db), 51, True)
         generated = render_keepalived_config(cluster, cluster.nodes[0]).content.encode()
     assert helper.validate_managed_document(generated)
+    assert b"nopreempt" in generated
+    assert b"preempt_delay" not in generated
     assert not helper.validate_managed_document(generated.replace(b"state BACKUP", b"state BACKUP\ninclude /tmp/evil.conf"))
 
 
@@ -221,4 +223,7 @@ def test_deployment_ui_and_agent_protocol_keep_dhcp_outside_milestone_five():
     assert "shell=True" not in helper
     assert "--config-test" in helper
     assert "rollback" not in helper.lower() or "reload" in helper
-    assert '"dhcp_running"' not in transition
+    assert "automatic_failover" in transition
+    assert "automatic-promote" in transition
+    assert "split_brain_prevented" in transition
+    assert "shell=True" not in transition

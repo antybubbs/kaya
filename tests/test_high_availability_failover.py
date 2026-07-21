@@ -5,8 +5,8 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session
 
 from app.db.session import Base
-from app.models.models import HACluster, HALeaseReplicationState, HANode, User
-from app.services.ha_failover import HAFailoverError, advance_failover, desired_failover_action, failover_readiness, request_failover_rollback, start_controlled_failover
+from app.models.models import HACluster, HAFailoverRun, HALeaseReplicationState, HANode, User
+from app.services.ha_failover import HAFailoverError, advance_failover, automatic_failover_blockers, desired_failover_action, failover_readiness, request_failover_rollback, set_automatic_failover, start_controlled_failover
 
 
 def database():
@@ -129,3 +129,20 @@ def test_completed_failover_can_return_safely_if_promoted_dns_later_fails(monkey
         assert run.status == "ROLLING_BACK"
         assert run.phase == "ROLLBACK_DEMOTING_TARGET"
         assert desired_failover_action(cluster, target)["action_type"] == "DHCP_DEMOTE"
+
+
+def test_automatic_failover_requires_current_agents_and_successful_controlled_test():
+    with database() as db:
+        user, cluster, source, target = ready_pair(db)
+        assert "successful controlled failover" in " ".join(automatic_failover_blockers(cluster))
+        source.agent_version = target.agent_version = "0.2.0"
+        db.add(HAFailoverRun(cluster_id=cluster.id, source_node_id=source.id, target_node_id=target.id, status="SUCCEEDED", phase="COMPLETE", dhcp_managed=True, lease_generation=7, role_generation=2, requested_by_user_id=user.id))
+        db.commit()
+        assert automatic_failover_blockers(cluster) == []
+        set_automatic_failover(db, cluster, enabled=True, confirmation="Test Pair", acknowledged=True)
+        assert cluster.automatic_failover_enabled is True
+        assert cluster.automatic_failback_enabled is False
+        assert cluster.keepalived_status == "PENDING_AGENT"
+        assert all(node.keepalived_status == "PENDING_AGENT" for node in cluster.nodes)
+        set_automatic_failover(db, cluster, enabled=False, confirmation="", acknowledged=False)
+        assert cluster.automatic_failover_enabled is False

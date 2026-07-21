@@ -1,15 +1,17 @@
 import json
+import re
 import shlex
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.db.session import get_db
-from app.models.models import HACluster, HAFailoverRun, HAHealthCheck, HALeaseReplicationState, HANode, HASyncRun
+from app.models.models import HACluster, HAEvent, HAFailoverRun, HAHealthCheck, HALeaseReplicationState, HANode, HASyncRun
 from app.routers.auth import require_user
 from app.schemas.high_availability import HAClusterDraftCreate, HAClusterRead, HAConfigurationDifferenceRead, HANodeDraftCreate, HANodeUpdate
 from app.services.audit import write_audit
@@ -21,7 +23,7 @@ from app.services.ha_validation import GROUP_LABELS, configuration_differences, 
 from app.services.ha_keepalived import HAKeepalivedError, deployment_blockers, prepare_deployment, request_manual_vip_move
 from app.services.ha_sync import HAStaleSyncPlanError, HASyncError, create_live_sync_plan, execute_sync, sync_plan
 from app.services.ha_leases import HALeaseError, latest_snapshot_summary, reconcile_cluster_leases
-from app.services.ha_failover import HAFailoverError, failover_readiness, failover_status, latest_failover, request_failover_rollback, start_controlled_failover
+from app.services.ha_failover import HAFailoverError, automatic_failover_blockers, failover_readiness, failover_status, latest_failover, request_failover_rollback, set_automatic_failover, start_controlled_failover
 from app.services.site_settings import get_site_setting
 
 
@@ -241,7 +243,92 @@ async def save_cluster(request: Request, db: Session = Depends(get_db), user=Dep
 
 @router.get("/clusters/{public_id}")
 def cluster_detail(public_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_high_availability)):
-    return cluster_page(request, user, db, public_id, "overview", "high_availability_cluster_detail.html")
+    cluster = cluster_or_404(db, public_id)
+    return templates.TemplateResponse(request, "high_availability_cluster_detail.html", ha_context(request, user, "clusters", cluster=cluster, cluster_section="overview", failover_readiness=failover_readiness(cluster), failover_run=latest_failover(cluster), automatic_blockers=automatic_failover_blockers(cluster)))
+
+
+@router.get("/clusters/{public_id}/live")
+def cluster_live_status(public_id: str, db: Session = Depends(get_db), user=Depends(require_high_availability)):
+    cluster = db.query(HACluster).filter(HACluster.public_id == public_id, HACluster.deleted_at.is_(None)).options(selectinload(HACluster.nodes), selectinload(HACluster.lease_replication), selectinload(HACluster.failover_runs).selectinload(HAFailoverRun.source_node), selectinload(HACluster.failover_runs).selectinload(HAFailoverRun.target_node)).first()
+    if cluster is None:
+        raise HTTPException(status_code=404, detail="Cluster not found")
+    readiness = failover_readiness(cluster)
+    lease = cluster.lease_replication
+    run = latest_failover(cluster)
+    events = db.query(HAEvent).filter(HAEvent.cluster_id == cluster.id).order_by(HAEvent.occurred_at.desc()).limit(20).all()
+    unacknowledged_alerts = db.query(HAEvent.id).filter(HAEvent.cluster_id == cluster.id, HAEvent.severity.in_(["warning", "error", "critical"]), HAEvent.acknowledged_at.is_(None)).count()
+    deployment_items = deployment_blockers(cluster, router_id=cluster.vrrp_router_id or 51)
+    return JSONResponse({
+        "server_time": datetime.utcnow().isoformat() + "Z",
+        "cluster": {
+            "status": cluster.status,
+            "keepalived_status": cluster.keepalived_status,
+            "keepalived_generation": cluster.keepalived_generation,
+            "automatic_failover": bool(cluster.automatic_failover_enabled),
+            "automatic_failback": False,
+            "active_node": readiness.source.display_name if readiness.source else None,
+            "standby_node": readiness.target.display_name if readiness.target else None,
+            "vip_owner_count": len([node for node in cluster.nodes if node.vip_owned]),
+            "last_failover_at": cluster.last_failover_at.isoformat() + "Z" if cluster.last_failover_at else None,
+            "unacknowledged_alerts": unacknowledged_alerts,
+        },
+        "nodes": [{
+            "id": node.public_id, "name": node.display_name, "desired_role": node.desired_role,
+            "observed_role": node.observed_role, "agent_version": node.agent_version,
+            "last_heartbeat_at": node.last_heartbeat_at.isoformat() + "Z" if node.last_heartbeat_at else None,
+            "dns_healthy": node.dns_healthy, "dhcp_running": node.dhcp_running,
+            "vip_owned": node.vip_owned, "peer_reachable": node.peer_reachable,
+            "keepalived_status": node.keepalived_status, "keepalived_runtime_state": node.keepalived_runtime_state,
+            "network_interface": node.network_interface, "vrrp_priority": node.vrrp_priority,
+            "keepalived_config_checksum": node.keepalived_config_checksum, "keepalived_last_error": node.keepalived_last_error,
+            "lease_generation": node.lease_generation, "config_generation": node.config_generation,
+        } for node in cluster.nodes],
+        "lease": None if lease is None else {"status": lease.status, "lease_count": lease.lease_count, "conflict_count": lease.conflict_count, "desired_generation": lease.desired_generation, "applied_generation": lease.applied_generation, "last_applied_at": lease.last_applied_at.isoformat() + "Z" if lease.last_applied_at else None},
+        "failover": failover_status(run),
+        "readiness": {"ready": readiness.ready, "blockers": readiness.blockers, "target_id": readiness.target.public_id if readiness.target else None, "target_name": readiness.target.display_name if readiness.target else None},
+        "deployment": {"ready": not deployment_items, "blockers": deployment_items},
+        "events": [{"id": event.id, "type": event.event_type, "severity": event.severity, "message": event.message, "node": event.node.display_name if event.node else "Cluster", "occurred_at": event.occurred_at.isoformat() + "Z", "acknowledged": event.acknowledged_at is not None} for event in events[:20]],
+    })
+
+
+@router.get("/clusters/{public_id}/report")
+def cluster_report(public_id: str, db: Session = Depends(get_db), user=Depends(require_high_availability)):
+    cluster = cluster_or_404(db, public_id)
+    payload = cluster_live_status(public_id, db, user).body
+    safe_name = re.sub(r"[^a-z0-9-]+", "-", cluster.name.lower()).strip("-") or "cluster"
+    filename = f"kaya-ha-{safe_name}-report.json"
+    return Response(payload, media_type="application/json", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+@router.post("/clusters/{public_id}/automatic-failover")
+async def configure_automatic_failover(public_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_ha_admin)):
+    cluster = cluster_or_404(db, public_id)
+    form = await request.form()
+    validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    enabled = str(form.get("enabled") or "") == "1"
+    try:
+        set_automatic_failover(db, cluster, enabled=enabled, confirmation=str(form.get("cluster_name") or ""), acknowledged=str(form.get("acknowledge_automatic") or "") == "1")
+    except HAFailoverError as exc:
+        db.rollback()
+        cluster = cluster_or_404(db, public_id)
+        return templates.TemplateResponse(request, "high_availability_cluster_detail.html", ha_context(request, user, "clusters", cluster=cluster, cluster_section="overview", failover_readiness=failover_readiness(cluster), failover_run=latest_failover(cluster), automatic_blockers=automatic_failover_blockers(cluster), automatic_error=str(exc)), status_code=409)
+    write_audit(db, user, "enabled" if enabled else "disabled", "ha_automatic_failover", entity_id=cluster.public_id, detail=f"{'Enabled' if enabled else 'Disabled'} offline automatic failover for {cluster.name}.", severity="warning" if enabled else "info", metadata={"automatic_failback": False})
+    return RedirectResponse(f"/high-availability/clusters/{cluster.public_id}?automatic={'enabled' if enabled else 'disabled'}", status_code=303)
+
+
+@router.post("/clusters/{public_id}/events/acknowledge")
+async def acknowledge_cluster_events(public_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_ha_editor)):
+    cluster = cluster_or_404(db, public_id)
+    form = await request.form()
+    validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    now = datetime.utcnow()
+    for event in cluster.events:
+        if event.acknowledged_at is None:
+            event.acknowledged_at = now
+            event.acknowledged_by_user_id = user.id
+    db.commit()
+    write_audit(db, user, "acknowledged", "ha_events", entity_id=cluster.public_id, detail=f"Acknowledged current HA alerts for {cluster.name}.")
+    return RedirectResponse(f"/high-availability/clusters/{cluster.public_id}/events?acknowledged=1", status_code=303)
 
 
 @router.get("/clusters/{public_id}/nodes")
@@ -501,7 +588,7 @@ async def delete_cluster(public_id: str, request: Request, db: Session = Depends
         return templates.TemplateResponse(
             request,
             "high_availability_cluster_detail.html",
-            ha_context(request, user, "clusters", cluster=cluster, cluster_section="overview", differences=[], delete_error=str(exc)),
+            ha_context(request, user, "clusters", cluster=cluster, cluster_section="overview", differences=[], delete_error=str(exc), failover_readiness=failover_readiness(cluster), failover_run=latest_failover(cluster), automatic_blockers=automatic_failover_blockers(cluster)),
             status_code=400,
         )
     write_audit(

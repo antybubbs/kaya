@@ -78,7 +78,7 @@
       <header><span>High Availability</span>{% set maturity_label='Beta' %}{% include 'components/maturity_badge.html' %}</header>
       <div class="experimental-feature-body"><div><strong>High Availability framework</strong><small>Shows the read-only HA overview and Pi-hole provider registry. This milestone does not run jobs, sync configuration, fail over services, or modify DNS data.</small></div><span class="feature-state {% if settings.get('high_availability_enabled') == '1' %}is-enabled{% endif %}">{{ 'Enabled' if settings.get('high_availability_enabled') == '1' else 'Disabled' }}</span></div>
       <div class="form-actions experimental-feature-actions">
-        {% if settings.get('high_availability_enabled') == '1' %}{% if ha_active_cluster_count %}<label class="ha-disable-ack"><input type="checkbox" name="acknowledge_ha_disable" value="1" required><span><strong>Preserve and stop managing {{ ha_active_cluster_count }} cluster{{ '' if ha_active_cluster_count == 1 else 's' }}</strong><small>Cluster records remain in Kaya. Existing local services continue operating, but Kaya management is hidden and HA jobs are stopped.</small></span></label>{% endif %}<button class="button secondary" name="enabled" value="0" formaction="/system/site-administration/experimental-features/high-availability" formmethod="post">Disable High Availability</button>
+        {% if settings.get('high_availability_enabled') == '1' %}{% if ha_active_cluster_count %}<label class="ha-disable-ack"><input type="checkbox" name="acknowledge_ha_disable" value="1"><span><strong>Preserve and stop managing {{ ha_active_cluster_count }} cluster{{ '' if ha_active_cluster_count == 1 else 's' }}</strong><small>Cluster records remain in Kaya. Existing local services continue operating, but Kaya management is hidden and HA jobs are stopped.</small></span></label>{% endif %}<button class="button secondary" name="enabled" value="0" formaction="/system/site-administration/experimental-features/high-availability" formmethod="post" formnovalidate>Disable High Availability</button>
         {% else %}<button class="button" name="enabled" value="1" formaction="/system/site-administration/experimental-features/high-availability" formmethod="post">Enable High Availability</button>{% endif %}
       </div>
     </div>
@@ -86,7 +86,7 @@
       <header><span>Backup Manager</span>{% set maturity_label='Beta' %}{% set maturity_tooltip='Backup Manager is a beta feature.' %}{% include 'components/maturity_badge.html' %}</header>
       <div class="experimental-feature-body"><div><strong>Backup Manager</strong><small>Tracks Proxmox jobs and manages encrypted Docker Agent backups and restores. Disabling hides the module and pauses new job dispatch without deleting targets, records, history, or artifacts.</small></div><span class="feature-state {% if settings.get('backup_manager_enabled', '1') == '1' %}is-enabled{% endif %}">{{ 'Enabled' if settings.get('backup_manager_enabled', '1') == '1' else 'Disabled' }}</span></div>
       <div class="form-actions experimental-feature-actions">
-        {% if settings.get('backup_manager_enabled', '1') == '1' %}{% if backup_preserved_item_count %}<label class="ha-disable-ack"><input type="checkbox" name="acknowledge_backup_disable" value="1" required><span><strong>Preserve {{ backup_preserved_item_count }} backup record{{ '' if backup_preserved_item_count == 1 else 's' }}</strong><small>All targets, records, job history and artifacts remain. New agent jobs stop dispatching; {{ backup_inflight_job_count }} queued or in-flight job{{ '' if backup_inflight_job_count == 1 else 's' }} may still report final status.</small></span></label>{% endif %}<button class="button secondary" name="enabled" value="0" formaction="/system/site-administration/experimental-features/backup-manager" formmethod="post">Disable Backup Manager</button>
+        {% if settings.get('backup_manager_enabled', '1') == '1' %}{% if backup_preserved_item_count %}<label class="ha-disable-ack"><input type="checkbox" name="acknowledge_backup_disable" value="1"><span><strong>Preserve {{ backup_preserved_item_count }} backup record{{ '' if backup_preserved_item_count == 1 else 's' }}</strong><small>All targets, records, job history and artifacts remain. New agent jobs stop dispatching; {{ backup_inflight_job_count }} queued or in-flight job{{ '' if backup_inflight_job_count == 1 else 's' }} may still report final status.</small></span></label>{% endif %}<button class="button secondary" name="enabled" value="0" formaction="/system/site-administration/experimental-features/backup-manager" formmethod="post" formnovalidate>Disable Backup Manager</button>
         {% else %}<button class="button" name="enabled" value="1" formaction="/system/site-administration/experimental-features/backup-manager" formmethod="post">Enable Backup Manager</button>{% endif %}
       </div>
     </div>
@@ -547,8 +547,8 @@
         </label>
       </div>
       <div class="remote-settings-actions">
-        <button class="button" type="submit" formaction="/system/site-administration/save-dns-provider" formmethod="post">Save Pi-hole provider</button>
-        <button class="button secondary" type="submit" formaction="/system/site-administration/test-dns-provider" formmethod="post">Test Pi-hole connection</button>
+        <button class="button" type="submit" formaction="/system/site-administration/save-dns-provider" formmethod="post" formnovalidate>Save Pi-hole provider</button>
+        <button class="button secondary" type="submit" formaction="/system/site-administration/test-dns-provider" formmethod="post" formnovalidate>Test Pi-hole connection</button>
       </div>
     </div>
   </section>

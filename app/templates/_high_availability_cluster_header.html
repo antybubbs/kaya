@@ -1,18 +1,19 @@
 <section class="module-header ha-header">
   <div>
-    <div class="ha-title-line"><h1>{{ cluster.name }}</h1><span class="table-chip">{{ cluster.status|replace('_', ' ')|title }}</span>{% set maturity_label='Beta' %}{% include 'components/maturity_badge.html' %}</div>
+    <div class="ha-title-line"><h1>{{ cluster.name }}</h1><span class="table-chip" data-ha-cluster-field="status">{{ cluster.status|replace('_', ' ')|title }}</span>{% set maturity_label='Beta' %}{% include 'components/maturity_badge.html' %}</div>
     <p class="muted">{{ cluster.description or 'Pi-hole high-availability draft' }}</p>
   </div>
-  <a class="button secondary" href="/high-availability/clusters">Back to clusters</a>
+  <div class="ha-header-actions"><span class="ha-agent-state is-pending" data-ha-live-indicator aria-live="polite">Connecting</span><a class="button secondary" href="/high-availability/clusters/{{ cluster.public_id }}/report">Download report</a><a class="button secondary" href="/high-availability/clusters">Back to clusters</a></div>
 </section>
+<div data-ha-live-root data-live-url="/high-availability/clusters/{{ cluster.public_id }}/live" hidden></div>
 <nav class="module-tabs ha-detail-tabs" aria-label="Cluster sections">
   <a class="{{ 'active' if cluster_section == 'overview' else '' }}" {% if cluster_section == 'overview' %}aria-current="page"{% endif %} href="/high-availability/clusters/{{ cluster.public_id }}">Overview</a>
-  <a class="{{ 'active' if cluster_section == 'nodes' else '' }}" {% if cluster_section == 'nodes' %}aria-current="page"{% endif %} href="/high-availability/clusters/{{ cluster.public_id }}/nodes">Nodes</a>
-  <a class="{{ 'active' if cluster_section == 'validation' else '' }}" {% if cluster_section == 'validation' %}aria-current="page"{% endif %} href="/high-availability/clusters/{{ cluster.public_id }}/validation">Validation</a>
-  <a class="{{ 'active' if cluster_section == 'agents' else '' }}" {% if cluster_section == 'agents' %}aria-current="page"{% endif %} href="/high-availability/clusters/{{ cluster.public_id }}/agents">Agents</a>
-  <a class="{{ 'active' if cluster_section == 'deployment' else '' }}" {% if cluster_section == 'deployment' %}aria-current="page"{% endif %} href="/high-availability/clusters/{{ cluster.public_id }}/deployment">Deployment</a>
-  <a class="{{ 'active' if cluster_section == 'synchronisation' else '' }}" {% if cluster_section == 'synchronisation' %}aria-current="page"{% endif %} href="/high-availability/clusters/{{ cluster.public_id }}/synchronisation">Synchronisation</a>
-  <a class="{{ 'active' if cluster_section == 'dhcp' else '' }}" {% if cluster_section == 'dhcp' %}aria-current="page"{% endif %} href="/high-availability/clusters/{{ cluster.public_id }}/dhcp">DHCP continuity</a>
-  <a class="{{ 'active' if cluster_section == 'events' else '' }}" {% if cluster_section == 'events' %}aria-current="page"{% endif %} href="/high-availability/clusters/{{ cluster.public_id }}/events">Events</a>
-  <a class="{{ 'active' if cluster_section == 'testing' else '' }}" {% if cluster_section == 'testing' %}aria-current="page"{% endif %} href="/high-availability/clusters/{{ cluster.public_id }}/testing">Failover test</a>
+  <a class="{{ 'active' if cluster_section == 'nodes' else '' }}" {% if cluster_section == 'nodes' %}aria-current="page"{% endif %} href="/high-availability/clusters/{{ cluster.public_id }}/nodes">{{ '1. Nodes' if cluster.status not in ['HEALTHY', 'DEGRADED', 'ERROR'] else 'Nodes' }}</a>
+  {% if cluster.status not in ['HEALTHY', 'DEGRADED', 'ERROR'] %}<a class="{{ 'active' if cluster_section == 'validation' else '' }}" href="/high-availability/clusters/{{ cluster.public_id }}/validation">2. Validate</a><a class="{{ 'active' if cluster_section == 'agents' else '' }}" href="/high-availability/clusters/{{ cluster.public_id }}/agents">3. Install agents</a><a class="{{ 'active' if cluster_section == 'deployment' else '' }}" href="/high-availability/clusters/{{ cluster.public_id }}/deployment">4. Deploy</a>{% endif %}
+  <a class="{{ 'active' if cluster_section == 'synchronisation' else '' }}" {% if cluster_section == 'synchronisation' %}aria-current="page"{% endif %} href="/high-availability/clusters/{{ cluster.public_id }}/synchronisation">Sync</a>
+  <a class="{{ 'active' if cluster_section == 'dhcp' else '' }}" {% if cluster_section == 'dhcp' %}aria-current="page"{% endif %} href="/high-availability/clusters/{{ cluster.public_id }}/dhcp">DHCP</a>
+  <a class="{{ 'active' if cluster_section == 'events' else '' }}" {% if cluster_section == 'events' %}aria-current="page"{% endif %} href="/high-availability/clusters/{{ cluster.public_id }}/events">Activity <span class="ha-nav-count" data-ha-cluster-field="unacknowledged_alerts"></span></a>
+  <a class="{{ 'active' if cluster_section == 'testing' else '' }}" {% if cluster_section == 'testing' %}aria-current="page"{% endif %} href="/high-availability/clusters/{{ cluster.public_id }}/testing">Failover</a>
+  {% if cluster.status in ['HEALTHY', 'DEGRADED', 'ERROR'] %}<details class="ha-setup-menu" {% if cluster_section in ['validation', 'agents', 'deployment'] %}open{% endif %}><summary>Setup & maintenance</summary><div><a href="/high-availability/clusters/{{ cluster.public_id }}/validation">Validation</a><a href="/high-availability/clusters/{{ cluster.public_id }}/agents">Agents</a><a href="/high-availability/clusters/{{ cluster.public_id }}/deployment">Keepalived</a></div></details>{% endif %}
 </nav>
+<script src="/static/js/ha_live.js?v={{ asset_version }}" defer></script>

@@ -26,7 +26,7 @@ command -v systemctl >/dev/null 2>&1 || fail "systemd is required"
 printf 'Installing Keepalived and Kaya HA agent dependencies...\n'
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends ca-certificates curl keepalived python3 python3-cryptography sudo
+apt-get install -y --no-install-recommends ca-certificates curl keepalived iputils-arping iputils-ping python3 python3-cryptography sudo
 
 if ! getent group kaya-ha >/dev/null 2>&1; then addgroup --system kaya-ha; fi
 if ! id kaya-ha >/dev/null 2>&1; then

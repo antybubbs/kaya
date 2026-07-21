@@ -14,6 +14,7 @@ from app.services.ha_leases import HALeaseError, reconcile_cluster_leases
 
 ACTIVE_RUN_STATUSES = {"RUNNING", "ROLLING_BACK"}
 MIN_AGENT_VERSION = (0, 1, 5)
+AUTOMATIC_AGENT_VERSION = (0, 2, 0)
 
 
 class HAFailoverError(ValueError):
@@ -92,6 +93,44 @@ def failover_readiness(cluster: HACluster, *, now: datetime | None = None) -> Fa
     return FailoverReadiness(source, target, dhcp_managed, list(dict.fromkeys(blockers)), warnings)
 
 
+def automatic_failover_blockers(cluster: HACluster, *, now: datetime | None = None) -> list[str]:
+    blockers = list(failover_readiness(cluster, now=now).blockers)
+    if not any(run.status == "SUCCEEDED" for run in cluster.failover_runs):
+        blockers.append("Complete one successful controlled failover test first.")
+    for node in cluster.nodes:
+        if _version(node.agent_version) < AUTOMATIC_AGENT_VERSION:
+            blockers.append(f"Update {node.display_name} to agent 0.2.0 for offline automatic failover.")
+    if cluster.maintenance_mode:
+        blockers.append("Exit maintenance mode before enabling automatic failover.")
+    return list(dict.fromkeys(blockers))
+
+
+def set_automatic_failover(db: Session, cluster: HACluster, *, enabled: bool, confirmation: str, acknowledged: bool) -> HACluster:
+    if enabled:
+        if confirmation.strip() != cluster.name or not acknowledged:
+            raise HAFailoverError(f"Type {cluster.name} and confirm the automatic-failover safety warning.")
+        blockers = automatic_failover_blockers(cluster)
+        if blockers:
+            raise HAFailoverError(" ".join(blockers))
+    if cluster.automatic_failover_enabled == enabled:
+        return cluster
+    cluster.automatic_failover_enabled = enabled
+    cluster.automatic_failback_enabled = False
+    cluster.cluster_generation += 1
+    if enabled:
+        cluster.keepalived_generation += 1
+        cluster.keepalived_status = "PENDING_AGENT"
+        cluster.keepalived_requested_at = datetime.utcnow()
+        cluster.status = "DEPLOYING"
+        for node in cluster.nodes:
+            node.keepalived_status = "PENDING_AGENT"
+            node.keepalived_last_error = None
+    db.add(HAEvent(cluster_id=cluster.id, node_id=None, event_type="automatic_failover_enabled" if enabled else "automatic_failover_disabled", severity="warning" if enabled else "info", source="kaya", message=("Offline automatic failover was enabled. Automatic failback remains disabled." if enabled else "Offline automatic failover was disabled. Existing DNS and DHCP services were not changed."), details_json_redacted=json.dumps({"automatic_failback": False}, sort_keys=True), occurred_at=datetime.utcnow()))
+    db.commit()
+    db.refresh(cluster)
+    return cluster
+
+
 def _action_checksum(run: HAFailoverRun, node: HANode, action_type: str) -> str:
     value = f"{action_type}:{run.public_id}:{run.role_generation}:{node.public_id}"
     return hashlib.sha256(value.encode()).hexdigest()
@@ -132,6 +171,7 @@ def start_controlled_failover(db: Session, cluster: HACluster, target: HANode, u
             raise HAFailoverError(f"Final lease capture failed: {exc}") from exc
     cluster.role_generation += 1
     cluster.cluster_generation += 1
+    cluster.maintenance_mode = True
     phase = "WAITING_FOR_LEASES" if readiness.dhcp_managed and state and state.status != "CURRENT" else ("DEMOTING_SOURCE" if readiness.dhcp_managed else "MOVING_VIP")
     run = HAFailoverRun(cluster_id=cluster.id, source_node_id=readiness.source.id, target_node_id=target.id, status="RUNNING", phase=phase, dhcp_managed=readiness.dhcp_managed, lease_generation=state.desired_generation if state else 0, role_generation=cluster.role_generation, requested_by_user_id=user.id, report_json=json.dumps({"starting_vip_owner": readiness.source.public_id, "target": target.public_id, "automatic": False}, sort_keys=True))
     db.add(run)
@@ -225,6 +265,7 @@ def _complete(db: Session, run: HAFailoverRun, *, rolled_back: bool) -> None:
     run.cluster.authoritative_node_id = active.id
     run.cluster.status = "HEALTHY"
     run.cluster.last_failover_at = datetime.utcnow()
+    run.cluster.maintenance_mode = False
     run.status = "ROLLED_BACK" if rolled_back else "SUCCEEDED"
     run.phase = "ROLLED_BACK" if rolled_back else "COMPLETE"
     run.completed_at = datetime.utcnow()
@@ -273,6 +314,7 @@ def request_failover_rollback(db: Session, run: HAFailoverRun, *, acknowledged: 
     if not acknowledged or (run.status != "FAILED_SAFE" and not recover_unhealthy_active):
         raise HAFailoverError("Confirm rollback of the failed controlled transition.")
     run.status = "ROLLING_BACK"
+    run.cluster.maintenance_mode = True
     run.cluster.cluster_generation += 1
     run.cluster.role_generation += 1
     run.role_generation = run.cluster.role_generation

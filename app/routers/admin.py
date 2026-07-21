@@ -2937,7 +2937,7 @@ def save_dns_provider(
         db.rollback()
         return templates.TemplateResponse(request, "settings.html", {"user": user, "settings": load_site_settings(db), "dns_providers": dns_providers_for_admin(db), "ha_dns_clusters": ha_dns_clusters_for_admin(db), **vlan_ip_admin_context(db), "security_check": security_check_context(request, db), "message": None, "error": str(exc), **csrf_context(request)}, status_code=422)
     write_audit(db, user, "update", "dns_provider", str(provider.id), request.client.host if request.client else None, detail=f"Saved DNS provider {provider.name}.", metadata={"ha_cluster_id": provider.ha_cluster.public_id if provider.ha_cluster else None, "history_preserved": True})
-    return RedirectResponse("/system/site-administration?tab=modules&subtab=module-dns-manager&provider_saved=1", status_code=303)
+    return RedirectResponse("/system/site-administration?tab=module-dns-manager&provider_saved=1", status_code=303)
 
 @router.post("/system/site-administration/test-email")
 def send_test_email(
