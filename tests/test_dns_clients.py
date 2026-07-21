@@ -82,6 +82,48 @@ def test_same_mac_retains_identity_and_idempotent_history_and_events():
         assert db.query(DNSClientEvent).filter_by(event_type="hostname_changed").count() == 1
 
 
+def test_legacy_identity_row_is_reused_and_backfilled_without_losing_user_data():
+    make = factory()
+    with make() as db:
+        provider = setup_provider(db)
+        legacy = DNSRecognisedDevice(
+            provider_id=provider.id,
+            provider_type="pihole",
+            identity_type="mac",
+            identity_value="00:be:43:9a:d5:91",
+            friendly_name="Alyssa's PC",
+            notes="Retain this history",
+            first_seen_at=datetime.utcnow() - timedelta(days=30),
+            last_seen_at=datetime.utcnow() - timedelta(days=1),
+        )
+        db.add(legacy)
+        db.commit()
+        original_id = legacy.id
+
+        refreshed = observe_client(db, provider, observation(hostname="HAL-AlyssaDesk", ip="192.168.1.200", mac="00:be:43:9a:d5:91"), datetime.utcnow())
+        db.commit()
+        assert refreshed.id == original_id
+        assert refreshed.normalised_mac == "00:be:43:9a:d5:91"
+        assert refreshed.friendly_name == "Alyssa's PC"
+        assert refreshed.notes == "Retain this history"
+        assert db.query(DNSRecognisedDevice).count() == 1
+
+
+def test_same_mac_on_different_providers_keeps_separate_provider_history():
+    make = factory()
+    with make() as db:
+        first_provider = setup_provider(db)
+        second_provider = DNSProviderConfig(name="Pi-hole standby", provider_type="pihole", base_url="http://standby.invalid")
+        db.add(second_provider)
+        db.commit()
+        first = observe_client(db, first_provider, observation(), datetime.utcnow())
+        second = observe_client(db, second_provider, observation(), datetime.utcnow())
+        db.commit()
+        assert first.id != second.id
+        assert first.provider_id == first_provider.id
+        assert second.provider_id == second_provider.id
+
+
 def test_same_hostname_with_different_macs_does_not_merge_and_null_mac_does_not_false_match():
     make = factory()
     with make() as db:
