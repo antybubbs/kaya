@@ -17,7 +17,7 @@ from app.schemas.high_availability import HAClusterDraftCreate, HAClusterRead, H
 from app.services.audit import write_audit
 from app.services.ha_clusters import HADraftError, create_cluster_draft, soft_delete_cluster, test_draft_node_connection, update_cluster_node
 from app.services.ha_agents import HEARTBEAT_FRESH_SECONDS, HAAgentError, create_bootstrap_token, reconcile_vip_ownership, revoke_agent
-from app.services.ha_agent_installer import installer_checksum
+from app.services.ha_agent_installer import CURRENT_AGENT_VERSION, agent_version_status, installer_checksum, uninstaller_checksum, updater_checksum
 from app.services.ha_registry import SUPPORTED_HA_PROVIDERS, provider_for_key
 from app.services.ha_validation import GROUP_LABELS, configuration_differences, run_live_validation
 from app.services.ha_keepalived import HAKeepalivedError, deployment_blockers, prepare_deployment, request_manual_vip_move
@@ -60,6 +60,27 @@ def ha_context(request: Request, user, active_section: str, **extra) -> dict[str
         "providers": SUPPORTED_HA_PROVIDERS,
         **extra,
         **csrf_context(request),
+    }
+
+
+def agent_management_context(request: Request, cluster: HACluster) -> dict[str, object]:
+    kaya_url = str(request.base_url).rstrip("/")
+
+    def verified_command(script: str, checksum: str, arguments: str) -> str:
+        path = f"/tmp/kaya-ha-{script}"
+        url = f"{kaya_url}/api/ha/agent/v1/files/{script}"
+        return " && ".join((
+            f"curl -fsSL {shlex.quote(url)} -o {shlex.quote(path)}",
+            f"echo {shlex.quote(checksum + '  ' + path)} | sha256sum -c -",
+            f"sudo sh {shlex.quote(path)} {arguments}",
+            f"rm -f {shlex.quote(path)}",
+        ))
+
+    return {
+        "current_agent_version": CURRENT_AGENT_VERSION,
+        "agent_version_statuses": {node.public_id: agent_version_status(node.agent_version) for node in cluster.nodes},
+        "agent_update_command": verified_command("update.sh", updater_checksum(), f"--kaya-url {shlex.quote(kaya_url)}"),
+        "agent_uninstall_command": verified_command("uninstall.sh", uninstaller_checksum(), "--remove-kaya-ha-config"),
     }
 
 
@@ -113,6 +134,8 @@ def node_form_values(node: HANode) -> dict[str, str]:
 
 def cluster_page(request: Request, user, db: Session, public_id: str, section: str, template_name: str, **extra):
     cluster = cluster_or_404(db, public_id)
+    if section == "agents":
+        extra = {**agent_management_context(request, cluster), **extra}
     return templates.TemplateResponse(
         request,
         template_name,
@@ -270,6 +293,7 @@ def cluster_live_status(public_id: str, db: Session = Depends(get_db), user=Depe
             "keepalived_generation": cluster.keepalived_generation,
             "automatic_failover": bool(cluster.automatic_failover_enabled),
             "automatic_failback": False,
+            "current_agent_version": CURRENT_AGENT_VERSION,
             "active_node": active_node.display_name if active_node else None,
             "standby_node": readiness.target.display_name if readiness.target else None,
             "vip_owner_count": len([node for node in current_nodes if node.vip_owned]),
@@ -279,6 +303,7 @@ def cluster_live_status(public_id: str, db: Session = Depends(get_db), user=Depe
         "nodes": [{
             "id": node.public_id, "name": node.display_name, "desired_role": node.desired_role,
             "observed_role": node.observed_role, "agent_version": node.agent_version,
+            "agent_version_status": agent_version_status(node.agent_version),
             "last_heartbeat_at": node.last_heartbeat_at.isoformat() + "Z" if node.last_heartbeat_at else None,
             "heartbeat_current": node in current_nodes,
             "dns_healthy": node.dns_healthy, "dhcp_running": node.dhcp_running,
@@ -559,7 +584,7 @@ async def bootstrap_cluster_agent(public_id: str, node_public_id: str, request: 
     return templates.TemplateResponse(
         request,
         "high_availability_cluster_agents.html",
-        ha_context(request, user, "clusters", cluster=cluster_or_404(db, public_id), cluster_section="agents", differences=[], bootstrap_token=token, bootstrap_node=node, bootstrap_expires_at=credential.bootstrap_expires_at, install_command=install_command),
+        ha_context(request, user, "clusters", cluster=cluster_or_404(db, public_id), cluster_section="agents", differences=[], bootstrap_token=token, bootstrap_node=node, bootstrap_expires_at=credential.bootstrap_expires_at, install_command=install_command, **agent_management_context(request, cluster)),
     )
 
 
@@ -572,7 +597,7 @@ async def revoke_cluster_agent(public_id: str, node_public_id: str, request: Req
     try:
         credential = revoke_agent(db, node)
     except HAAgentError as exc:
-        return templates.TemplateResponse(request, "high_availability_cluster_agents.html", ha_context(request, user, "clusters", cluster=cluster, cluster_section="agents", differences=[], agent_error=str(exc)), status_code=400)
+        return templates.TemplateResponse(request, "high_availability_cluster_agents.html", ha_context(request, user, "clusters", cluster=cluster, cluster_section="agents", differences=[], agent_error=str(exc), **agent_management_context(request, cluster)), status_code=400)
     write_audit(db, user, "revoked", "ha_agent", entity_id=credential.agent_id, detail=f"Revoked the High Availability agent for {node.display_name}.", metadata={"cluster_id": cluster.public_id, "node_id": node.public_id})
     return RedirectResponse(f"/high-availability/clusters/{cluster.public_id}/agents?agent_revoked=1", status_code=303)
 

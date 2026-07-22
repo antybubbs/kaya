@@ -43,6 +43,11 @@
         const current = node.heartbeat_current === true;
         updateFields(card, "[data-ha-node-field]", node);
         card.querySelectorAll("[data-ha-node-role]").forEach((element) => { element.textContent = title(node.desired_role); });
+        card.querySelectorAll("[data-ha-agent-version-status]").forEach((element) => {
+          element.textContent = node.agent_version_status;
+          element.classList.toggle("is-current", node.agent_version_status === "Up to date");
+          element.classList.toggle("is-update", node.agent_version_status !== "Up to date");
+        });
         card.querySelectorAll('[data-ha-node-field="last_heartbeat_at"]').forEach((element) => { element.textContent = relative(node.last_heartbeat_at); });
         card.querySelectorAll('[data-ha-node-field="health_summary"]').forEach((element) => { element.textContent = current ? `${yesNo(node.dns_healthy, "DNS healthy", "DNS unavailable")} · ${node.dhcp_running ? "DHCP running" : "DHCP stopped"} · ${node.vip_owned ? "VIP owned" : "VIP standby"}` : "Telemetry delayed — waiting for this node"; });
         card.querySelectorAll('[data-ha-node-field="observed_role"]').forEach((element) => { element.textContent = current ? title(node.observed_role) : `${title(node.observed_role)} (last report)`; });
@@ -126,6 +131,7 @@
       if (!response.ok) throw new Error("Live status unavailable");
       const data = await response.json();
       updateFields(document, "[data-ha-cluster-field]", data.cluster);
+      document.querySelectorAll("[data-ha-current-agent-version]").forEach((element) => { element.textContent = data.cluster.current_agent_version; });
       updateStatusChips(data.cluster.status);
       document.querySelectorAll("[data-ha-cluster-status]").forEach((element) => { element.textContent = title(data.cluster.keepalived_status); });
       document.querySelectorAll("[data-ha-generation]").forEach((element) => { element.textContent = data.cluster.keepalived_generation; });

@@ -1,8 +1,7 @@
 (() => {
-  const button = document.querySelector("[data-copy-ha-install]");
-  const command = document.querySelector("[data-ha-install-command]");
-  if (!button || !command) return;
-  button.addEventListener("click", async () => {
+  document.querySelectorAll("[data-copy-ha-command]").forEach((button) => button.addEventListener("click", async () => {
+    const command = button.closest(".ha-install-command")?.querySelector("[data-ha-command]");
+    if (!command) return;
     const value = command.textContent.trim();
     try {
       await navigator.clipboard.writeText(value);
@@ -16,6 +15,7 @@
       selection.removeAllRanges();
     }
     button.textContent = "Copied";
-    window.setTimeout(() => { button.textContent = "Copy command"; }, 1500);
-  });
+    const label = button.textContent;
+    window.setTimeout(() => { button.textContent = label; }, 1500);
+  }));
 })();

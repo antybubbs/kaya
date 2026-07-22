@@ -294,23 +294,38 @@ def test_agent_routes_expose_only_fixed_protocol_operations():
     assert "one-time token" in template
     assert "Copy command" in template
     assert "input is hidden" in template
-    assert "Revoke Agent" in template
+    assert "Revoke identity in Kaya" in template
+    assert "Completely remove the Kaya HA agents" in template
+    assert "standby node first" in template
 
 
 def test_guided_installer_is_fixed_checksum_verified_and_keeps_token_off_command_line():
     from fastapi import HTTPException
 
     from app.routers.ha_agent_api import install_file, install_script
-    from app.services.ha_agent_installer import agent_file, installer_checksum
+    from app.services.ha_agent_installer import CURRENT_AGENT_VERSION, agent_file, agent_version_status, installer_checksum, uninstaller_checksum, updater_checksum
 
     installer = agent_file("install.sh").decode()
+    updater = agent_file("update.sh").decode()
+    uninstaller = agent_file("uninstall.sh").decode()
     service = agent_file("kaya-ha-agent.service").decode()
     assert len(installer_checksum()) == 64
+    assert len(updater_checksum()) == 64
+    assert len(uninstaller_checksum()) == 64
     assert "--token-stdin" in installer
     assert 'read -r REGISTRATION_TOKEN </dev/tty' in installer
     assert "apt-get install -y --no-install-recommends" in installer
     assert "visudo -cf" in installer
     assert "curl -k" not in installer and "--insecure" not in installer
+    assert "registration token" not in updater.lower()
+    assert "/var/lib/kaya-ha-agent/config.json" in updater
+    assert "existing node identity and Kaya link were preserved" in updater
+    assert "--remove-kaya-ha-config" in uninstaller
+    assert "rm -rf /usr/lib/kaya-ha-agent /var/lib/kaya-ha-agent" in uninstaller
+    assert "Keepalived package were not uninstalled" in uninstaller
+    assert agent_version_status(CURRENT_AGENT_VERSION) == "Up to date"
+    assert agent_version_status("0.1.9") == "Update available"
+    assert agent_version_status(None) == "Not reported"
     assert "NoNewPrivileges=true" not in service
     assert "ReadWritePaths=/var/lib/kaya-ha-agent /etc/keepalived" in service
     assert b"apt-get install" in install_script().body

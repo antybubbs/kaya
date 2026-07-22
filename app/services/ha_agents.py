@@ -16,6 +16,7 @@ from app.schemas.high_availability import HAAgentActionResult, HAAgentEventItem,
 from app.services.ha_keepalived import desired_keepalived_action
 from app.services.ha_leases import HALeaseError, desired_lease_action, record_lease_stage_result
 from app.services.ha_failover import HAFailoverError, advance_failover, desired_failover_action, record_failover_action_result
+from app.services.ha_agent_installer import CURRENT_AGENT_VERSION
 
 
 AGENT_PROTOCOL_VERSION = 1
@@ -421,7 +422,7 @@ def desired_state(node: HANode) -> dict:
         "role_generation": cluster.role_generation,
         "desired_role": node.desired_role,
         "desired_sync_generation": cluster.desired_sync_generation,
-        "desired_agent_version": None,
+        "desired_agent_version": CURRENT_AGENT_VERSION,
         "virtual_ip": f"{cluster.virtual_ip}/{cluster.prefix_length}" if cluster.virtual_ip else None,
         "maintenance_mode": cluster.maintenance_mode,
         "automatic_failover": bool(cluster.automatic_failover_enabled),
