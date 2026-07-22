@@ -180,7 +180,7 @@ def sync_plan(cluster: HACluster) -> dict[str, Any]:
     }
 
 
-def create_sync_plan(db: Session, cluster: HACluster, user: User) -> HASyncRun:
+def create_sync_plan(db: Session, cluster: HACluster, user: User | None = None) -> HASyncRun:
     plan = sync_plan(cluster)
     run = HASyncRun(
         cluster_id=cluster.id,
@@ -188,7 +188,7 @@ def create_sync_plan(db: Session, cluster: HACluster, user: User) -> HASyncRun:
         target_node_id=plan["target_node_id"],
         status="PLANNED" if plan["groups"] else "IN_SYNC",
         plan_json=json.dumps(plan, sort_keys=True, separators=(",", ":")),
-        created_by_user_id=user.id,
+        created_by_user_id=user.id if user else None,
         completed_at=datetime.utcnow() if not plan["groups"] else None,
     )
     db.add(run)
@@ -225,7 +225,7 @@ def _live_configuration(node: HANode, client_factory: Callable = PiHoleProvider)
 def create_live_sync_plan(
     db: Session,
     cluster: HACluster,
-    user: User,
+    user: User | None = None,
     *,
     client_factory: Callable = PiHoleProvider,
 ) -> HASyncRun:

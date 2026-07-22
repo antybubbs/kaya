@@ -25,7 +25,7 @@
     return value ?? "Not reported";
   };
   const updateFields = (scope, selector, object) => scope.querySelectorAll(selector).forEach((element) => {
-    const key = element.dataset.haClusterField || element.dataset.haNodeField || element.dataset.haLeaseField || element.dataset.haFailoverField;
+    const key = element.dataset.haClusterField || element.dataset.haNodeField || element.dataset.haLeaseField || element.dataset.haFailoverField || element.dataset.haSyncField;
     element.textContent = valueFor(object, key);
   });
   const setStateClass = (element, good, warning = false) => {
@@ -140,6 +140,12 @@
       updateNodes(data.nodes);
       if (data.lease) updateFields(document, "[data-ha-lease-field]", data.lease);
       updateFields(document, "[data-ha-failover-field]", data.failover);
+      if (data.sync) {
+        updateFields(document, "[data-ha-sync-field]", data.sync);
+        document.querySelectorAll("[data-ha-sync-state]").forEach((element) => {
+          element.dataset.haSyncState = String(data.sync.state || "waiting").toLowerCase();
+        });
+      }
       updateReadiness(data.readiness);
       updateDeployment(data.deployment);
       updateEvents(data.events);

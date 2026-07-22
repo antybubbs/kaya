@@ -114,6 +114,44 @@ def cluster_or_404(db: Session, public_id: str) -> HACluster:
     return cluster
 
 
+def sync_operational_summary(db: Session, cluster: HACluster) -> dict[str, object]:
+    latest = db.query(HASyncRun).filter(HASyncRun.cluster_id == cluster.id).order_by(HASyncRun.created_at.desc()).first()
+    last_applied = db.query(HASyncRun).filter(HASyncRun.cluster_id == cluster.id, HASyncRun.status == "SUCCEEDED").order_by(HASyncRun.completed_at.desc()).first()
+    interval = max(30, min(int(cluster.drift_check_interval_seconds or 300), 86400))
+    drift_count = 0
+    if latest:
+        try:
+            drift_count = len(json.loads(latest.plan_json).get("groups") or [])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            drift_count = len(latest.drift_items)
+    state_map = {
+        "IN_SYNC": ("IN_SYNC", "In sync"),
+        "SUCCEEDED": ("IN_SYNC", "In sync"),
+        "PLANNED": ("DRIFT", f"{drift_count} change{'s' if drift_count != 1 else ''} found"),
+        "RUNNING": ("RUNNING", "Synchronising"),
+        "FAILED": ("ATTENTION", "Sync failed"),
+        "ROLLED_BACK": ("ATTENTION", "Rolled back safely"),
+        "CHECK_FAILED": ("ATTENTION", "Check needs attention"),
+    }
+    state, label = state_map.get(latest.status if latest else "", ("WAITING", "First check pending"))
+    next_check = (latest.created_at + timedelta(seconds=interval)) if latest else datetime.utcnow()
+    source = next((node for node in cluster.nodes if node.id == cluster.authoritative_node_id), None)
+    target = next((node for node in cluster.nodes if source and node.id != source.id), None)
+    return {
+        "monitoring": "Active" if cluster.status in {"HEALTHY", "DEGRADED", "ERROR"} else "Starts after setup",
+        "state": state,
+        "state_label": label,
+        "drift_count": drift_count,
+        "last_checked_at": latest.created_at if latest else None,
+        "last_applied_at": last_applied.completed_at if last_applied else None,
+        "next_check_at": next_check,
+        "interval_seconds": interval,
+        "source_name": source.display_name if source else "Not selected",
+        "target_name": target.display_name if target else "Not selected",
+        "error": latest.error_redacted if latest and latest.status in {"FAILED", "ROLLED_BACK", "CHECK_FAILED"} else None,
+    }
+
+
 def node_or_404(cluster: HACluster, node_public_id: str) -> HANode:
     node = next((item for item in cluster.nodes if item.public_id == node_public_id), None)
     if node is None:
@@ -267,7 +305,7 @@ async def save_cluster(request: Request, db: Session = Depends(get_db), user=Dep
 @router.get("/clusters/{public_id}")
 def cluster_detail(public_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_high_availability)):
     cluster = cluster_or_404(db, public_id)
-    return templates.TemplateResponse(request, "high_availability_cluster_detail.html", ha_context(request, user, "clusters", cluster=cluster, cluster_section="overview", failover_readiness=failover_readiness(cluster), failover_run=latest_failover(cluster), automatic_blockers=automatic_failover_blockers(cluster)))
+    return templates.TemplateResponse(request, "high_availability_cluster_detail.html", ha_context(request, user, "clusters", cluster=cluster, cluster_section="overview", failover_readiness=failover_readiness(cluster), failover_run=latest_failover(cluster), automatic_blockers=automatic_failover_blockers(cluster), sync_summary=sync_operational_summary(db, cluster)))
 
 
 @router.get("/clusters/{public_id}/live")
@@ -285,6 +323,11 @@ def cluster_live_status(public_id: str, db: Session = Depends(get_db), user=Depe
     events = db.query(HAEvent).filter(HAEvent.cluster_id == cluster.id).order_by(HAEvent.occurred_at.desc()).limit(20).all()
     unacknowledged_alerts = db.query(HAEvent.id).filter(HAEvent.cluster_id == cluster.id, HAEvent.severity.in_(["warning", "error", "critical"]), HAEvent.acknowledged_at.is_(None)).count()
     deployment_items = deployment_blockers(cluster, router_id=cluster.vrrp_router_id or 51)
+    sync_summary = sync_operational_summary(db, cluster)
+    sync_json = {**sync_summary}
+    for key in ("last_checked_at", "last_applied_at", "next_check_at"):
+        value = sync_json[key]
+        sync_json[key] = value.isoformat() + "Z" if value else None
     return JSONResponse({
         "server_time": datetime.utcnow().isoformat() + "Z",
         "cluster": {
@@ -317,6 +360,7 @@ def cluster_live_status(public_id: str, db: Session = Depends(get_db), user=Depe
         "failover": failover_status(run),
         "readiness": {"ready": readiness.ready, "blockers": readiness.blockers, "target_id": readiness.target.public_id if readiness.target else None, "target_name": readiness.target.display_name if readiness.target else None},
         "deployment": {"ready": not deployment_items, "blockers": deployment_items},
+        "sync": sync_json,
         "events": [{"id": event.id, "type": event.event_type, "severity": event.severity, "message": event.message, "node": event.node.display_name if event.node else "Cluster", "occurred_at": event.occurred_at.isoformat() + "Z", "acknowledged": event.acknowledged_at is not None} for event in events[:20]],
     })
 
@@ -476,7 +520,7 @@ def sync_page_context(request: Request, user, cluster: HACluster, db: Session, e
     except HASyncError as exc:
         current_plan = None
         error = error or str(exc)
-    return ha_context(request, user, "clusters", cluster=cluster, cluster_section="synchronisation", sync_plan=current_plan, sync_run=latest, sync_error=error, sync_notice=notice)
+    return ha_context(request, user, "clusters", cluster=cluster, cluster_section="synchronisation", sync_plan=current_plan, sync_run=latest, sync_error=error, sync_notice=notice, sync_summary=sync_operational_summary(db, cluster))
 
 
 @router.get("/clusters/{public_id}/synchronisation")

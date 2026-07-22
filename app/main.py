@@ -25,6 +25,7 @@ from app.services.domain_polling import domain_poll_loop
 from app.services.compute_monitor import compute_monitor_loop
 from app.services.dns_collector import dns_collector_loop
 from app.services.ha_lease_monitor import ha_lease_reconciliation_loop
+from app.services.ha_sync_monitor import ha_sync_monitor_loop
 from app.services.audit import begin_request_context, end_request_context, request_event_written, write_audit
 from app.services.client_ip import TrustedProxyMiddleware, client_ip
 from app.services.site_settings import (
@@ -53,6 +54,7 @@ dns_collector_task = None
 version_check_task = None
 secure_send_cleanup_task = None
 ha_lease_reconciliation_task = None
+ha_sync_monitor_task = None
 app.state.demo_mode = settings.demo_mode
 app.state.demo_reset_schedule = settings.demo_reset_schedule
 
@@ -768,13 +770,14 @@ async def on_startup():
     if settings.demo_mode:
         return
     start_kaya_remote_service()
-    global monitor_task, domain_poll_task, compute_monitor_task, dns_collector_task, secure_send_cleanup_task, ha_lease_reconciliation_task
+    global monitor_task, domain_poll_task, compute_monitor_task, dns_collector_task, secure_send_cleanup_task, ha_lease_reconciliation_task, ha_sync_monitor_task
     monitor_task = asyncio.create_task(monitor_loop())
     domain_poll_task = asyncio.create_task(domain_poll_loop())
     compute_monitor_task = asyncio.create_task(compute_monitor_loop())
     dns_collector_task = asyncio.create_task(dns_collector_loop())
     secure_send_cleanup_task = asyncio.create_task(secure_send_cleanup_loop())
     ha_lease_reconciliation_task = asyncio.create_task(ha_lease_reconciliation_loop())
+    ha_sync_monitor_task = asyncio.create_task(ha_sync_monitor_loop())
 
 
 @app.on_event("shutdown")
@@ -793,6 +796,8 @@ async def on_shutdown():
         secure_send_cleanup_task.cancel()
     if ha_lease_reconciliation_task:
         ha_lease_reconciliation_task.cancel()
+    if ha_sync_monitor_task:
+        ha_sync_monitor_task.cancel()
     stop_kaya_remote_service()
     stop_guacamole_bridge()
 
