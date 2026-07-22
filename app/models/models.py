@@ -622,6 +622,8 @@ class HACluster(Base):
     current_active_node_id: Mapped[int | None] = mapped_column(ForeignKey("ha_nodes.id", ondelete="SET NULL"), nullable=True)
     automatic_failover_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     automatic_failback_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    automatic_sync_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    automatic_sync_allow_deletions: Mapped[bool] = mapped_column(Boolean, default=False)
     sync_mode: Mapped[str] = mapped_column(String(40), default="active_authoritative")
     sync_interval_seconds: Mapped[int] = mapped_column(Integer, default=300)
     drift_check_interval_seconds: Mapped[int] = mapped_column(Integer, default=300)

@@ -23,7 +23,7 @@
 </section>
 
 <section class="panel ha-overview-sync" data-ha-sync-state="{{ sync_summary.state|lower }}">
-  <div class="ha-section-heading"><div><span class="ha-sync-eyebrow">Configuration sync</span><h2 data-ha-sync-field="state_label">{{ sync_summary.state_label }}</h2><p class="muted">Automatic read-only monitoring is <strong data-ha-sync-field="monitoring">{{ sync_summary.monitoring|lower }}</strong>. Configuration is never copied without review and approval.</p></div><a class="button secondary" href="/high-availability/clusters/{{ cluster.public_id }}/synchronisation">View sync status</a></div>
+  <div class="ha-section-heading"><div><span class="ha-sync-eyebrow">Configuration sync</span><h2 data-ha-sync-field="state_label">{{ sync_summary.state_label }}</h2><p class="muted">Monitoring is <strong data-ha-sync-field="monitoring">{{ sync_summary.monitoring|lower }}</strong>. Change handling: <strong data-ha-sync-field="automation">{{ sync_summary.automation|lower }}</strong>.</p></div><a class="button secondary" href="/high-availability/clusters/{{ cluster.public_id }}/synchronisation">View sync status</a></div>
   <div class="ha-overview-sync-facts">
     <div><span>Copy direction</span><strong>{{ sync_summary.source_name }} &rarr; {{ sync_summary.target_name }}</strong></div>
     <div><span>Last checked</span><strong data-ha-sync-field="last_checked_at">{{ local_time(sync_summary.last_checked_at, 'friendly') if sync_summary.last_checked_at else 'First check pending' }}</strong></div>

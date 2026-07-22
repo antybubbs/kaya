@@ -20,6 +20,7 @@ def monitor_database():
         target = HANode(cluster_id=cluster.id, display_name="Standby", api_base_url="http://two.invalid", role="STANDBY", desired_role="STANDBY")
         db.add_all([source, target]); db.flush()
         cluster.authoritative_node_id = source.id
+        cluster.current_active_node_id = source.id
         db.commit()
     return factory
 
@@ -49,3 +50,35 @@ def test_monitor_does_not_repeat_a_recent_check(monkeypatch):
     ha_sync_monitor.run_ha_sync_monitor_pass(factory)
 
     assert checked == []
+
+
+def test_opted_in_monitor_applies_safe_drift_from_current_vip_owner(monkeypatch):
+    factory = monitor_database()
+    with factory() as db:
+        cluster = db.query(HACluster).one()
+        cluster.automatic_sync_enabled = True
+        db.commit()
+    applied = []
+
+    def create_plan(db, cluster):
+        source = next(node for node in cluster.nodes if node.id == cluster.authoritative_node_id)
+        target = next(node for node in cluster.nodes if node.id != source.id)
+        run = HASyncRun(cluster_id=cluster.id, source_node_id=source.id, target_node_id=target.id, status="PLANNED", plan_json='{"blocked_groups":[],"deletion_count":0,"groups":[{"key":"local_dns"}]}')
+        db.add(run); db.commit(); db.refresh(run)
+        return run
+
+    def apply_plan(db, cluster, run, *, allow_deletions):
+        applied.append((run.source_node_id, run.target_node_id, allow_deletions))
+        run.status = "SUCCEEDED"
+        run.completed_at = datetime.utcnow()
+        db.commit()
+        return run
+
+    monkeypatch.setattr(ha_sync_monitor, "get_site_setting", lambda db, key: "1")
+    monkeypatch.setattr(ha_sync_monitor, "create_live_sync_plan", create_plan)
+    monkeypatch.setattr(ha_sync_monitor, "execute_sync", apply_plan)
+
+    ha_sync_monitor.run_ha_sync_monitor_pass(factory)
+
+    assert len(applied) == 1
+    assert applied[0][2] is False

@@ -139,6 +139,9 @@ def sync_operational_summary(db: Session, cluster: HACluster) -> dict[str, objec
     target = next((node for node in cluster.nodes if source and node.id != source.id), None)
     return {
         "monitoring": "Active" if cluster.status in {"HEALTHY", "DEGRADED", "ERROR"} else "Starts after setup",
+        "automation": "Automatic" if cluster.automatic_sync_enabled else "Approval required",
+        "automatic_sync_enabled": bool(cluster.automatic_sync_enabled),
+        "automatic_sync_allow_deletions": bool(cluster.automatic_sync_allow_deletions),
         "state": state,
         "state_label": label,
         "drift_count": drift_count,
@@ -548,6 +551,32 @@ async def plan_cluster_synchronisation(public_id: str, request: Request, db: Ses
         return templates.TemplateResponse(request, "high_availability_cluster_synchronisation.html", sync_page_context(request, user, cluster, db, str(exc)), status_code=400)
     write_audit(db, user, "planned", "ha_configuration_sync", entity_id=run.public_id, detail=f"Created a read-only synchronisation plan for {cluster.name}.", metadata={"cluster_id": cluster.public_id, "provider_changed": False, "lease_replication": False})
     return RedirectResponse(f"/high-availability/clusters/{cluster.public_id}/synchronisation?planned=1", status_code=303)
+
+
+@router.post("/clusters/{public_id}/synchronisation/automatic")
+async def configure_automatic_synchronisation(public_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_ha_admin)):
+    cluster = cluster_or_404(db, public_id)
+    form = await request.form()
+    validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    enabled = str(form.get("enabled") or "") == "1"
+    if enabled and str(form.get("acknowledge_direction") or "") != "1":
+        return templates.TemplateResponse(request, "high_availability_cluster_synchronisation.html", sync_page_context(request, user, cluster, db, "Confirm that the current active Pi-hole will be the configuration source before enabling automatic synchronisation."), status_code=400)
+    cluster.automatic_sync_enabled = enabled
+    cluster.automatic_sync_allow_deletions = enabled and str(form.get("allow_deletions") or "") == "1"
+    cluster.sync_mode = "active_authoritative"
+    db.add(HAEvent(
+        cluster_id=cluster.id,
+        node_id=None,
+        event_type="automatic_config_sync_enabled" if enabled else "automatic_config_sync_disabled",
+        severity="warning" if enabled else "info",
+        source="kaya",
+        message=("Automatic configuration synchronisation was enabled. The current VIP owner is the source; the other node is backed up and verified before changes are applied." if enabled else "Automatic configuration synchronisation was disabled. Read-only monitoring remains active."),
+        details_json_redacted=json.dumps({"allow_deletions": cluster.automatic_sync_allow_deletions, "sync_mode": cluster.sync_mode}, sort_keys=True),
+        occurred_at=datetime.utcnow(),
+    ))
+    db.commit()
+    write_audit(db, user, "enabled" if enabled else "disabled", "ha_automatic_configuration_sync", entity_id=cluster.public_id, detail=f"{'Enabled' if enabled else 'Disabled'} automatic configuration synchronisation for {cluster.name}.", severity="warning" if enabled else "info", metadata={"allow_deletions": cluster.automatic_sync_allow_deletions, "active_node_authoritative": True, "automatic_failback": False})
+    return RedirectResponse(f"/high-availability/clusters/{cluster.public_id}/synchronisation?automatic={'enabled' if enabled else 'disabled'}", status_code=303)
 
 
 @router.post("/clusters/{public_id}/synchronisation/apply")

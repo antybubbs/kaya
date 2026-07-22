@@ -5,28 +5,43 @@
 
 {% if sync_error %}<div class="alert error ha-sync-alert"><strong>Synchronisation cannot continue</strong><span>{{ sync_error }}</span></div>{% endif %}
 {% if sync_notice %}<div class="alert warning ha-sync-alert"><strong>The plan was refreshed safely</strong><span>{{ sync_notice }}</span></div>{% endif %}
+{% if request.query_params.get('automatic') == 'enabled' %}<div class="success" role="status"><strong>Automatic configuration sync is enabled.</strong><span>Kaya will back up, copy and verify supported changes after each safe comparison.</span></div>{% endif %}
+{% if request.query_params.get('automatic') == 'disabled' %}<div class="success" role="status"><strong>Automatic configuration sync is disabled.</strong><span>Read-only monitoring continues and changes require approval.</span></div>{% endif %}
 
 <section class="panel ha-sync-operations">
   <div class="ha-section-heading">
-    <div><span class="ha-sync-eyebrow">Configuration monitoring</span><h2>Pi-hole configuration sync</h2><p class="muted">Kaya checks both Pi-holes automatically. Read-only checks never change either node; differences must still be reviewed and approved.</p></div>
+    <div><span class="ha-sync-eyebrow">Configuration monitoring</span><h2>Pi-hole configuration sync</h2><p class="muted">Kaya checks both Pi-holes automatically. {{ 'Safe supported differences are backed up, applied and verified automatically.' if cluster.automatic_sync_enabled else 'Read-only checks never change either node; differences must be reviewed and approved.' }}</p></div>
     {% if user.role in ['admin', 'editor'] %}<form method="post" action="/high-availability/clusters/{{ cluster.public_id }}/synchronisation/plan"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit">Check now</button></form>{% endif %}
   </div>
   <div class="ha-sync-status-grid" data-ha-sync-state="{{ sync_summary.state|lower }}">
     <article><span>Monitoring</span><strong data-ha-sync-field="monitoring">{{ sync_summary.monitoring }}</strong><small>Read-only every {{ (sync_summary.interval_seconds / 60)|round|int }} minutes</small></article>
-    <article><span>Current state</span><strong data-ha-sync-field="state_label">{{ sync_summary.state_label }}</strong><small>Approved changes are never applied automatically</small></article>
+    <article><span>Change handling</span><strong data-ha-sync-field="automation">{{ sync_summary.automation }}</strong><small>{{ 'Current active node copies to its peer' if sync_summary.automatic_sync_enabled else 'Review and approve before copying' }}</small></article>
+    <article><span>Current state</span><strong data-ha-sync-field="state_label">{{ sync_summary.state_label }}</strong><small>{{ 'Safe changes apply automatically' if cluster.automatic_sync_enabled else 'Changes wait for approval' }}</small></article>
     <article><span>Last checked</span><strong data-ha-sync-field="last_checked_at">{{ local_time(sync_summary.last_checked_at, 'friendly') if sync_summary.last_checked_at else 'First check pending' }}</strong><small>Both nodes were read at this time</small></article>
     <article><span>Last applied</span><strong data-ha-sync-field="last_applied_at">{{ local_time(sync_summary.last_applied_at, 'friendly') if sync_summary.last_applied_at else 'No sync needed yet' }}</strong><small>Last verified configuration write</small></article>
     <article><span>Next check</span><strong data-ha-sync-field="next_check_at">{{ local_time(sync_summary.next_check_at, 'friendly') }}</strong><small>Runs while Kaya is online</small></article>
   </div>
 </section>
 
+<section class="panel ha-sync-automation">
+  <div class="ha-section-heading"><div><span class="ha-sync-eyebrow">Automation</span><h2>Keep the active and standby Pi-holes aligned</h2><p class="muted">During normal operation the VIP owner is the source. After failover, the secondary becomes the source, so changes made there can be copied safely to the recovered primary.</p></div><span class="ha-sync-status {{ 'is-succeeded' if cluster.automatic_sync_enabled else 'is-planned' }}" data-ha-sync-field="automation">{{ sync_summary.automation }}</span></div>
+  {% if cluster.automatic_sync_enabled %}
+  <div class="success"><strong>Automatic sync is on</strong><span>Supported differences are backed up, copied and verified automatically. {{ 'Approved deletions are also automatic.' if cluster.automatic_sync_allow_deletions else 'Deletions still wait for approval.' }}</span></div>
+  {% if user.role == 'admin' %}<form method="post" action="/high-availability/clusters/{{ cluster.public_id }}/synchronisation/automatic" class="ha-inline-action"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="enabled" value="0"><button class="button secondary" type="submit">Turn off automatic sync</button></form>{% endif %}
+  {% else %}
+  <div class="ha-context-note"><strong>What enabling this does</strong><span>Kaya checks every {{ (sync_summary.interval_seconds / 60)|round|int }} minutes. If exactly one healthy node owns the VIP, Kaya backs up the other node, copies supported settings and verifies the result. Unsafe or unsupported differences stop for review.</span></div>
+  {% if user.role == 'admin' %}<details class="ha-action-disclosure"><summary class="button">Enable automatic sync</summary><form method="post" action="/high-availability/clusters/{{ cluster.public_id }}/synchronisation/automatic"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="enabled" value="1"><label class="checkbox-row"><input type="checkbox" name="acknowledge_direction" value="1" required> I understand the Pi-hole currently owning the VIP is the source and its peer will be updated.</label><label class="checkbox-row"><input type="checkbox" name="allow_deletions" value="1"> Also apply deletions automatically when an item exists only on the standby. <small>Leave this clear to review deletions manually.</small></label><button type="submit">Enable automatic configuration sync</button></form></details>{% endif %}
+  {% endif %}
+  <p class="muted ha-sync-automation-note"><strong>Service return is separate:</strong> a recovered primary remains standby until a controlled failback. This avoids a second outage immediately after recovery.</p>
+</section>
+
 <section class="panel ha-sync-direction">
-  <div class="ha-section-heading"><div><h2>Copy direction</h2><p class="muted">{{ sync_summary.source_name }} is the source of truth. Kaya only writes to {{ sync_summary.target_name }} after approval.</p></div></div>
+  <div class="ha-section-heading"><div><h2>Copy direction</h2><p class="muted">{{ sync_summary.source_name }} currently owns the VIP and is the source of truth. Kaya writes to {{ sync_summary.target_name }} {{ 'after safety checks' if cluster.automatic_sync_enabled else 'only after approval' }}.</p></div></div>
   {% if sync_plan %}
   <div class="ha-sync-route" aria-label="Configuration copy direction">
-    <article class="ha-sync-node is-source"><span class="ha-sync-node-label">Main Pi-hole - source</span><h3>{{ sync_plan.source_name }}</h3><p>Read only. This node is not changed by synchronisation.</p></article>
+    <article class="ha-sync-node is-source"><span class="ha-sync-node-label">Active authority - source</span><h3>{{ sync_plan.source_name }}</h3><p>This node owns the VIP and is not changed by synchronisation.</p></article>
     <div class="ha-sync-arrow" aria-hidden="true"><span>Approved settings copy this way</span><b>&rarr;</b></div>
-    <article class="ha-sync-node is-target"><span class="ha-sync-node-label">Standby Pi-hole - destination</span><h3>{{ sync_plan.target_name }}</h3><p>Backed up before any approved change, then verified afterwards.</p></article>
+    <article class="ha-sync-node is-target"><span class="ha-sync-node-label">Peer Pi-hole - destination</span><h3>{{ sync_plan.target_name }}</h3><p>Backed up before any change, then verified afterwards.</p></article>
   </div>
   <div class="ha-sync-boundary"><strong>DHCP: {{ sync_plan.dhcp_mode|replace('_', ' ')|title }}</strong><span>Configuration can be compared, but DHCP on/off state and active leases are not copied here.</span></div>
   {% else %}<div class="ha-sync-empty"><strong>Waiting for the first comparison.</strong><span>Kaya will check automatically, or you can select Check now.</span></div>{% endif %}
