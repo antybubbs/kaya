@@ -1,17 +1,17 @@
 {% extends "base.html" %}
 {% block content %}
 <section class="module-header ha-header">
-  <div><div class="ha-title-line"><h1>High Availability</h1>{% set maturity_label='Beta' %}{% include 'components/maturity_badge.html' %}</div><p class="muted">Create draft service pairs and run read-only local validation without changing either node.</p></div>
+  <div><div class="ha-title-line"><h1>High Availability</h1>{% set maturity_label='Beta' %}{% include 'components/maturity_badge.html' %}</div><p class="muted">Monitor resilient services, keep paired nodes aligned, and manage controlled failover.</p></div>
   {% if user.role == 'admin' %}<a class="button" href="/high-availability/clusters/new">Create Cluster</a>{% endif %}
 </section>
 {% include '_high_availability_nav.html' %}
-<div class="ha-beta-notice" role="note"><strong>Beta feature</strong><span>High Availability is intended for controlled homelab evaluation. Milestone 2 saves drafts only; it does not deploy, synchronise, fail over, or change DNS/DHCP services.</span></div>
-{% set drafts = clusters|selectattr('status', 'equalto', 'DRAFT')|list %}
-<section class="ha-summary-grid" aria-label="High Availability summary">
-  <div class="panel ha-summary-card"><span>Clusters</span><strong>{{ clusters|length }}</strong><small>Saved configurations</small></div>
-  <div class="panel ha-summary-card"><span>Drafts</span><strong>{{ drafts|length }}</strong><small>No local changes</small></div>
-  <div class="panel ha-summary-card"><span>Supported services</span><strong>{{ providers|length }}</strong><small>Pi-hole DNS and DHCP</small></div>
+{% set healthy = clusters|selectattr('status', 'equalto', 'HEALTHY')|list %}
+{% set attention = clusters|rejectattr('status', 'equalto', 'HEALTHY')|list %}
+<section class="ha-summary-grid ha-overview-summary" aria-label="High Availability summary">
+  <article><span>Total clusters</span><strong>{{ clusters|length }}</strong><small>{{ 'Protected service pair' if clusters|length == 1 else 'Protected service pairs' }}</small></article>
+  <article class="is-healthy"><span>Healthy</span><strong>{{ healthy|length }}</strong><small>Ready and operating normally</small></article>
+  <article class="{{ 'is-attention' if attention else 'is-healthy' }}"><span>Needs attention</span><strong>{{ attention|length }}</strong><small>{{ 'Setup or action required' if attention else 'No outstanding cluster issues' }}</small></article>
 </section>
-{% if clusters %}<section class="panel"><div class="ha-section-heading"><div><h2>Recent clusters</h2><p class="muted">Draft configuration and local validation status.</p></div><a href="/high-availability/clusters">View all</a></div><div class="ha-cluster-list">{% for cluster in clusters[:5] %}<a class="ha-cluster-row" href="/high-availability/clusters/{{ cluster.public_id }}"><div><strong>{{ cluster.name }}</strong><small>{{ cluster.nodes|length }} Pi-hole nodes</small></div><span class="table-chip">{{ cluster.status|replace('_', ' ')|title }}</span></a>{% endfor %}</div></section>
-{% else %}<section class="panel ha-empty-state"><h2>No high-availability clusters yet</h2><p class="muted">Choose a supported provider or application, then configure both nodes inside High Availability. Saving and validating a draft does not contact or change either node.</p>{% if user.role == 'admin' %}<a class="button" href="/high-availability/clusters/new">Create your first cluster</a>{% else %}<small>Only administrators can create clusters.</small>{% endif %}</section>{% endif %}
+{% if clusters %}<section class="panel"><div class="ha-section-heading"><div><h2>Your clusters</h2><p class="muted">Open a cluster for live node health, synchronisation, DHCP continuity, and failover controls.</p></div><a class="button secondary small" href="/high-availability/clusters">View all clusters</a></div><div class="ha-cluster-list">{% for cluster in clusters[:5] %}<a class="ha-cluster-row" href="/high-availability/clusters/{{ cluster.public_id }}"><div><strong>{{ cluster.name }}</strong><small>Pi-hole · {{ cluster.nodes|length }} nodes{% if cluster.virtual_ip %} · VIP {{ cluster.virtual_ip }}{% endif %}</small></div><span class="table-chip ha-status-chip is-{{ cluster.status|lower|replace('_', '-') }}">{{ cluster.status|replace('_', ' ')|title }}</span></a>{% endfor %}</div></section>
+{% else %}<section class="panel ha-empty-state"><h2>Create your first resilient service</h2><p class="muted">Add two Pi-hole nodes and a shared virtual IP. Kaya guides you through connection testing, validation, agent installation, and safe deployment.</p>{% if user.role == 'admin' %}<a class="button" href="/high-availability/clusters/new">Create your first cluster</a>{% else %}<small>Ask an administrator to create a cluster.</small>{% endif %}</section>{% endif %}
 {% endblock %}

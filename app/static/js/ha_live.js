@@ -32,17 +32,24 @@
     element.classList.remove("is-live", "is-delayed", "is-error", "is-online", "is-pending", "is-revoked");
     element.classList.add(good ? "is-online" : warning ? "is-pending" : "is-revoked");
   };
+  const updateStatusChips = (status) => document.querySelectorAll(".ha-status-chip").forEach((element) => {
+    Array.from(element.classList).filter((name) => name.startsWith("is-")).forEach((name) => element.classList.remove(name));
+    element.classList.add(`is-${String(status || "unknown").toLowerCase().replaceAll("_", "-")}`);
+  });
 
   function updateNodes(nodes) {
     nodes.forEach((node) => {
       document.querySelectorAll(`[data-ha-node-id="${CSS.escape(node.id)}"]`).forEach((card) => {
+        const current = node.heartbeat_current === true;
         updateFields(card, "[data-ha-node-field]", node);
+        card.querySelectorAll("[data-ha-node-role]").forEach((element) => { element.textContent = title(node.desired_role); });
         card.querySelectorAll('[data-ha-node-field="last_heartbeat_at"]').forEach((element) => { element.textContent = relative(node.last_heartbeat_at); });
-        card.querySelectorAll('[data-ha-node-field="health_summary"]').forEach((element) => { element.textContent = `${yesNo(node.dns_healthy, "DNS healthy", "DNS unavailable")} · ${node.dhcp_running ? "DHCP running" : "DHCP stopped"} · ${node.vip_owned ? "VIP owned" : "VIP standby"}`; });
-        card.querySelectorAll('[data-ha-node-field="vip_owned"]').forEach((element) => { element.textContent = node.vip_owned ? "Owned" : "Not owned"; });
-        card.querySelectorAll('[data-ha-node-field="dns_healthy"]').forEach((element) => { element.textContent = yesNo(node.dns_healthy, "Healthy", "Unhealthy"); });
-        card.querySelectorAll('[data-ha-node-field="dhcp_running"]').forEach((element) => { element.textContent = node.dhcp_running ? "Running" : "Stopped"; });
-        card.querySelectorAll('[data-ha-node-field="peer_reachable"]').forEach((element) => { element.textContent = yesNo(node.peer_reachable, "Reachable", "Not reachable"); });
+        card.querySelectorAll('[data-ha-node-field="health_summary"]').forEach((element) => { element.textContent = current ? `${yesNo(node.dns_healthy, "DNS healthy", "DNS unavailable")} · ${node.dhcp_running ? "DHCP running" : "DHCP stopped"} · ${node.vip_owned ? "VIP owned" : "VIP standby"}` : "Telemetry delayed — waiting for this node"; });
+        card.querySelectorAll('[data-ha-node-field="observed_role"]').forEach((element) => { element.textContent = current ? title(node.observed_role) : `${title(node.observed_role)} (last report)`; });
+        card.querySelectorAll('[data-ha-node-field="vip_owned"]').forEach((element) => { element.textContent = current ? (node.vip_owned ? "Owned" : "Not owned") : "Unknown — node offline"; });
+        card.querySelectorAll('[data-ha-node-field="dns_healthy"]').forEach((element) => { element.textContent = current ? yesNo(node.dns_healthy, "Healthy", "Unhealthy") : "Unknown — node offline"; });
+        card.querySelectorAll('[data-ha-node-field="dhcp_running"]').forEach((element) => { element.textContent = current ? (node.dhcp_running ? "Running" : "Stopped") : "Unknown — node offline"; });
+        card.querySelectorAll('[data-ha-node-field="peer_reachable"]').forEach((element) => { element.textContent = current ? yesNo(node.peer_reachable, "Reachable", "Not reachable") : "Unknown — node offline"; });
         card.querySelectorAll("[data-ha-runtime]").forEach((element) => { element.textContent = title(node.keepalived_runtime_state); });
         card.querySelectorAll("[data-ha-interface]").forEach((element) => { element.textContent = node.network_interface || "Not set"; });
         card.querySelectorAll("[data-ha-priority]").forEach((element) => { element.textContent = node.vrrp_priority || "Not assigned"; });
@@ -56,7 +63,6 @@
         if (diagnosticMessage) diagnosticMessage.textContent = node.keepalived_last_error || "";
         const state = card.querySelector("[data-ha-node-live-state]");
         if (state) {
-          const current = node.last_heartbeat_at && Date.now() - new Date(node.last_heartbeat_at).getTime() < 30000;
           state.textContent = current ? "Live" : "Delayed";
           setStateClass(state, current, !current);
         }
@@ -120,6 +126,7 @@
       if (!response.ok) throw new Error("Live status unavailable");
       const data = await response.json();
       updateFields(document, "[data-ha-cluster-field]", data.cluster);
+      updateStatusChips(data.cluster.status);
       document.querySelectorAll("[data-ha-cluster-status]").forEach((element) => { element.textContent = title(data.cluster.keepalived_status); });
       document.querySelectorAll("[data-ha-generation]").forEach((element) => { element.textContent = data.cluster.keepalived_generation; });
       const vipSummary = data.nodes.filter((node) => node.vip_owned);

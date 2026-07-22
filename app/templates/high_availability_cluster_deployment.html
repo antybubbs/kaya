@@ -2,7 +2,6 @@
 {# ha_deployment.js is superseded by the shared one-second ha_live.js controller. #}
 {% block content %}
 {% include '_high_availability_cluster_header.html' %}
-<div class="ha-beta-notice"><strong>DHCP excluded from setup deployment</strong><span>Keepalived installation does not enable, disable, synchronise, or move DHCP. Operational failover is managed separately and only after onboarding succeeds.</span></div>
 {% if request.query_params.get('requested') %}<div class="success" role="status">Keepalived deployment queued for both agents. Configuration will be validated locally before activation.</div>{% endif %}
 {% if request.query_params.get('move_requested') %}<div class="success" role="status">Manual VIP move queued. DHCP was not included in this action.</div>{% endif %}
 {% if deployment_error %}<div class="alert" role="alert">{{ deployment_error }}</div>{% endif %}
@@ -10,7 +9,7 @@
 <div data-ha-deployment-live>
 <section class="ha-detail-grid">
   <div class="panel"><h2>Keepalived deployment</h2><dl class="ha-definition-list"><div><dt>Status</dt><dd data-ha-cluster-status>{{ cluster.keepalived_status|replace('_', ' ')|title }}</dd></div><div><dt>Virtual IP</dt><dd class="mono">{{ cluster.virtual_ip or 'Not set' }}{% if cluster.virtual_ip %}/{{ cluster.prefix_length }}{% endif %}</dd></div><div><dt>VRRP router ID</dt><dd>{{ cluster.vrrp_router_id or 'Not set' }}</dd></div><div><dt>Generation</dt><dd data-ha-generation>{{ cluster.keepalived_generation }}</dd></div><div><dt>VIP ownership</dt><dd data-ha-vip-summary>{% if owners|length == 1 %}<span class="ha-readiness ha-readiness--ready">{{ owners[0].display_name }}</span>{% elif owners|length > 1 %}<span class="ha-readiness ha-readiness--blocked">Unsafe: multiple owners</span>{% else %}<span class="ha-readiness ha-readiness--warning">No owner reported</span>{% endif %}</dd></div></dl></div>
-  <div class="panel"><h2>What this page does</h2><p class="muted">This installs the shared virtual IP configuration. Existing Keepalived configuration is backed up, validated and restored automatically if activation fails.</p><div class="ha-beta-notice"><strong>Normal operation is managed from Overview</strong><span>After initial deployment, use Overview for live status and controlled failover. Return here only to repair or redeploy Keepalived.</span></div></div>
+  <div class="panel"><h2>Shared virtual IP setup</h2><p class="muted">Kaya backs up the existing Keepalived configuration, installs the generated virtual IP configuration, validates it, and restores the backup automatically if activation fails.</p><div class="ha-context-note"><strong>DHCP is not changed here</strong><span>This setup deploys Keepalived only. Use Overview for normal monitoring and Failover for a complete DNS and DHCP handover.</span></div></div>
 </section>
 <section class="panel section-gap">
   <div class="ha-section-heading"><div><h2>Deployment readiness</h2><p class="muted">Both agents must be current, validation must pass, and the VIP must share the nodes' IPv4 subnet.</p></div></div>

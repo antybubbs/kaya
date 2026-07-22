@@ -131,7 +131,7 @@ def test_admin_toggle_is_audited_and_preserves_dns_links_and_history():
         assert audit.action == "feature_enabled"
 
 
-def test_feature_ui_is_gated_read_only_and_uses_reusable_maturity_badges():
+def test_feature_ui_is_gated_operational_and_uses_reusable_maturity_badges():
     base = Path("app/templates/base.html").read_text(encoding="utf-8")
     settings = Path("app/templates/settings.html").read_text(encoding="utf-8")
     overview = Path("app/templates/high_availability.html").read_text(encoding="utf-8")
@@ -140,7 +140,8 @@ def test_feature_ui_is_gated_read_only_and_uses_reusable_maturity_badges():
     assert "high_availability_enabled|default(false)" in base
     assert "Experimental Features" in settings
     assert "feature_status" in settings
-    assert "read-only" in overview
+    assert "manage controlled failover" in overview
+    assert "Milestone" not in overview
     assert "managed within High Availability" in services
     assert "maturity-badge--" in badge
     assert "tabindex=\"0\"" in badge
@@ -239,12 +240,13 @@ def test_draft_requires_two_different_nodes_and_admin_creation_permission():
         assert db.query(HANode).count() == 0
 
 
-def test_milestone_two_templates_explain_draft_safety_boundary():
+def test_cluster_creation_explains_safe_setup_boundary():
     wizard = Path("app/templates/high_availability_cluster_form.html").read_text(encoding="utf-8")
     picker = Path("app/templates/high_availability_provider_picker.html").read_text(encoding="utf-8")
     nodes_page = Path("app/templates/high_availability_cluster_nodes.html").read_text(encoding="utf-8")
     routes = Path("app/routers/high_availability.py").read_text(encoding="utf-8")
-    assert "does not connect to, configure, restart, synchronise, or fail over" in wizard
+    assert "Nothing is deployed or moved until" in wizard
+    assert "Create Cluster" in wizard
     assert "Choose the provider or application" in picker
     assert "/high-availability/clusters/new/{{ provider.key }}" in picker
     assert "managed from High Availability" in wizard
@@ -253,6 +255,14 @@ def test_milestone_two_templates_explain_draft_safety_boundary():
     assert "credentials are not duplicated" in nodes_page
     assert "Depends(require_ha_admin)" in routes
     assert "response_model=list[HAClusterRead]" in routes
+
+
+def test_setup_menu_is_not_clipped_or_forced_open():
+    header = Path("app/templates/_high_availability_cluster_header.html").read_text(encoding="utf-8")
+    styles = Path("app/static/css/kaya.css").read_text(encoding="utf-8")
+    assert '<details class="ha-setup-menu {{' in header
+    assert "{% if cluster_section in ['validation', 'agents', 'deployment'] %}open{% endif %}" not in header
+    assert ".ha-detail-tabs{flex-wrap:wrap;overflow:visible}" in styles
 
 
 def test_draft_connection_route_returns_inline_result_and_audits_without_secret(monkeypatch):

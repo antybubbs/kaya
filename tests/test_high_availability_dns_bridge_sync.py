@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import create_engine, event
@@ -123,7 +124,25 @@ def test_ha_provider_refuses_ambiguous_vip_ownership():
         db.commit()
         result = provider_for(provider).test_connection()
         assert not result.ok
-        assert "one current Pi-hole VIP owner" in result.message
+        assert "one live Pi-hole VIP owner" in result.message
+
+
+def test_ha_provider_routes_to_current_owner_and_ignores_offline_cached_owner():
+    with database() as db:
+        _, cluster, first, second = make_cluster(db)
+        provider = DNSProviderConfig(name="HA", provider_type="pihole", base_url="http://192.0.2.53", ha_cluster_id=cluster.id)
+        db.add(provider)
+        first.last_heartbeat_at = datetime.utcnow() - timedelta(minutes=6)
+        first.vip_owned = True
+        second.last_heartbeat_at = datetime.utcnow()
+        second.vip_owned = True
+        second.dns_healthy = True
+        second.keepalived_runtime_state = "RUNNING"
+        cluster.current_active_node_id = second.id
+        db.commit()
+
+        active = provider_for(provider)._active_provider()
+        assert active.config.base_url == "http://two.invalid"
 
 
 class SyncPiHole:

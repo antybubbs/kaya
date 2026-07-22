@@ -2,11 +2,10 @@
 {% block content %}
 <section class="module-header ha-header"><div><div class="ha-title-line"><h1>Edit {{ node.display_name }}</h1>{% set maturity_label='Beta' %}{% include 'components/maturity_badge.html' %}</div><p class="muted">{{ cluster.name }} · {{ node.role|title }} node</p></div><a class="button secondary" href="/high-availability/clusters/{{ cluster.public_id }}/nodes">Cancel</a></section>
 {% include '_high_availability_nav.html' %}
-<div class="ha-beta-notice" role="note"><strong>HA-owned settings</strong><span>Changes made here do not modify DNS Manager. Updating a reused connection with a new credential creates an HA-owned connection instead.</span></div>
 {% if error %}<div class="alert" role="alert">{{ error }}</div>{% endif %}
 <form class="panel ha-node-edit" method="post" action="/high-availability/clusters/{{ cluster.public_id }}/nodes/{{ node.public_id }}/edit">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <header><h2>Node connection</h2><p class="muted">Saving changes invalidates the previous validation report. Run read-only validation again afterwards.</p></header>
+  <header><h2>Node connection</h2><p class="muted">These settings belong to High Availability and do not alter DNS Manager. Saving a change requires the cluster to be validated again.</p></header>
   <div class="form-grid">
     <label><strong>Display name</strong><input name="name" maxlength="255" required value="{{ form_values.get('name', '') }}"></label>
     <label><strong>Network interface</strong><input name="network_interface" maxlength="80" value="{{ form_values.get('network_interface', '') }}" placeholder="ens18"></label>

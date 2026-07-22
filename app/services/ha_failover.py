@@ -53,7 +53,8 @@ def active_failover(cluster: HACluster) -> HAFailoverRun | None:
 def failover_readiness(cluster: HACluster, *, now: datetime | None = None) -> FailoverReadiness:
     blockers: list[str] = []
     warnings: list[str] = ["DNS and DHCP may pause briefly while ownership changes."]
-    owners = [node for node in cluster.nodes if node.vip_owned]
+    current = now or datetime.utcnow()
+    owners = [node for node in cluster.nodes if node.vip_owned and node.last_heartbeat_at and node.last_heartbeat_at >= current - timedelta(minutes=2)]
     source = owners[0] if len(owners) == 1 else None
     target = next((node for node in cluster.nodes if source and node.id != source.id), None)
     if len(cluster.nodes) != 2:
@@ -62,7 +63,6 @@ def failover_readiness(cluster: HACluster, *, now: datetime | None = None) -> Fa
         blockers.append("Exactly one node must currently own the virtual IP.")
     if cluster.keepalived_status != "DEPLOYED" or any(node.keepalived_status != "DEPLOYED" for node in cluster.nodes):
         blockers.append("Keepalived must be deployed and current on both nodes.")
-    current = now or datetime.utcnow()
     for node in cluster.nodes:
         if not node.last_heartbeat_at or node.last_heartbeat_at < current - timedelta(minutes=2):
             blockers.append(f"Wait for a recent heartbeat from {node.display_name}.")

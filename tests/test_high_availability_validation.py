@@ -305,7 +305,7 @@ def test_node_edit_ui_is_admin_only_and_never_repopulates_credentials():
     routes = Path("app/routers/high_availability.py").read_text(encoding="utf-8")
     assert "Edit Node" in detail
     assert "check.node.display_name" in validation
-    assert "Changes made here do not modify DNS Manager" in template
+    assert "do not alter DNS Manager" in template
     assert 'name="secret" type="password"' in template
     assert "form_values.get('secret'" not in template
     assert 'if key != "secret"' in routes

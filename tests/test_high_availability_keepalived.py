@@ -110,6 +110,9 @@ def test_action_results_are_generation_and_checksum_bound_then_reconcile_one_own
         assert cluster.status == "DEGRADED"
 
         record_heartbeat(db, first, HAAgentHeartbeat(observed_role="ACTIVE", observed_generation=cluster.cluster_generation, vip_owned=True, dhcp_running=False, dns_healthy=True, peer_reachable=True, config_generation=1, agent_version="0.1", keepalived_runtime_state="RUNNING"))
+        assert cluster.status == "DEGRADED"
+        assert cluster.current_active_node_id == first.id
+        record_heartbeat(db, second, HAAgentHeartbeat(observed_role="STANDBY", observed_generation=cluster.cluster_generation, vip_owned=False, dhcp_running=False, dns_healthy=True, peer_reachable=True, config_generation=1, agent_version="0.1", keepalived_runtime_state="RUNNING"))
         assert cluster.status == "HEALTHY"
         assert cluster.current_active_node_id == first.id
         record_heartbeat(db, second, HAAgentHeartbeat(observed_role="STANDBY", observed_generation=cluster.cluster_generation, vip_owned=True, dhcp_running=False, dns_healthy=True, peer_reachable=True, config_generation=1, agent_version="0.1", keepalived_runtime_state="RUNNING"))
@@ -198,14 +201,14 @@ def test_root_helper_independently_allows_generated_config_and_rejects_injected_
     assert not helper.validate_managed_document(generated.replace(b"state BACKUP", b"state BACKUP\ninclude /tmp/evil.conf"))
 
 
-def test_deployment_ui_and_agent_protocol_keep_dhcp_outside_milestone_five():
+def test_deployment_ui_and_agent_protocol_keep_dhcp_outside_keepalived_setup():
     template = Path("app/templates/high_availability_cluster_deployment.html").read_text(encoding="utf-8")
     router = Path("app/routers/high_availability.py").read_text(encoding="utf-8")
     agent_router = Path("app/routers/ha_agent_api.py").read_text(encoding="utf-8")
     helper = Path("ha_agent/kaya_ha_keepalived_helper.py").read_text(encoding="utf-8")
     transition = Path("ha_agent/kaya_ha_transition.py").read_text(encoding="utf-8")
-    assert "DHCP excluded" in template
-    assert "does not enable, disable, synchronise, or move DHCP" in template
+    assert "DHCP is not changed here" in template
+    assert "This setup deploys Keepalived only" in template
     assert "Move Virtual IP" in template
     assert "Deployment blocked" in template
     assert "Resolve blockers to deploy" in template

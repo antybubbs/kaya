@@ -3,7 +3,7 @@ import base64
 import hashlib
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -14,9 +14,9 @@ from sqlalchemy.orm import Session
 from starlette.requests import Request
 
 from app.db.session import Base
-from app.models.models import HAAgentCredential, HAAgentRequest, HACluster, HAEvent, HANode
+from app.models.models import HAAgentCredential, HAAgentRequest, HACluster, HAEvent, HALeaseReplicationState, HANode
 from app.schemas.high_availability import HAAgentEventItem, HAAgentHeartbeat, HAAgentRegister
-from app.services.ha_agents import HAAgentError, authenticate_agent_request, create_bootstrap_token, desired_state, ingest_events, record_heartbeat, register_agent, revoke_agent
+from app.services.ha_agents import HAAgentError, authenticate_agent_request, create_bootstrap_token, desired_state, ingest_events, reconcile_vip_ownership, record_heartbeat, register_agent, revoke_agent
 from app.services.ha_clusters import soft_delete_cluster
 from ha_agent.kaya_ha_agent import State, reconcile_desired
 
@@ -172,6 +172,103 @@ def test_agent_events_are_deduplicated_and_sensitive_details_are_removed():
         row = db.query(HAEvent).one()
         assert "must-not-persist" not in (row.details_json_redacted or "")
         assert json.loads(row.details_json_redacted) == {"attempt": 3}
+
+
+def test_verified_automatic_failover_event_immediately_adopts_the_surviving_owner():
+    with database() as db:
+        cluster, primary, standby = cluster_with_nodes(db)
+        cluster.keepalived_status = "DEPLOYED"
+        cluster.keepalived_generation = 8
+        cluster.automatic_failover_enabled = True
+        cluster.current_active_node_id = primary.id
+        cluster.authoritative_node_id = primary.id
+        cluster.status = "HEALTHY"
+        for node in (primary, standby):
+            node.keepalived_status = "DEPLOYED"
+            node.keepalived_runtime_state = "RUNNING"
+            node.config_generation = 8
+            node.last_heartbeat_at = datetime.utcnow()
+            node.dns_healthy = True
+        primary.vip_owned = True
+        db.commit()
+
+        record_heartbeat(db, standby, HAAgentHeartbeat(observed_role="ACTIVE", observed_generation=8, vip_owned=True, dhcp_running=False, dns_healthy=True, peer_reachable=False, lease_generation=0, config_generation=8, agent_version="0.2.0", keepalived_runtime_state="RUNNING"))
+        assert cluster.status == "ERROR"
+
+        completed = HAAgentEventItem(event_id="automatic-completed-001", event_type="automatic_failover_completed", severity="warning", message="Local failover completed without requiring Kaya.", occurred_at=datetime.utcnow(), details={"generation": 8, "automatic": True})
+        assert ingest_events(db, standby, [completed]) == (1, 0)
+        db.refresh(cluster); db.refresh(primary); db.refresh(standby)
+        assert cluster.status == "DEGRADED"
+        assert cluster.current_active_node_id == standby.id
+        assert cluster.authoritative_node_id == standby.id
+        assert standby.vip_owned is True and primary.vip_owned is False
+        assert standby.role == standby.desired_role == "ACTIVE"
+        assert primary.role == primary.desired_role == "STANDBY"
+        reconciled = db.query(HAEvent).filter_by(event_type="ownership_reconciled").one()
+        assert reconciled.severity == "info"
+        assert db.query(HAEvent).filter_by(event_type="automatic_failover_completed").one()
+
+
+def test_stale_cached_owner_recovers_on_the_next_surviving_heartbeat():
+    with database() as db:
+        cluster, primary, standby = cluster_with_nodes(db)
+        cluster.keepalived_status = "DEPLOYED"
+        cluster.keepalived_generation = 4
+        cluster.automatic_failover_enabled = True
+        cluster.status = "ERROR"
+        cluster.current_active_node_id = None
+        for node in (primary, standby):
+            node.keepalived_status = "DEPLOYED"
+            node.keepalived_runtime_state = "RUNNING"
+            node.config_generation = 4
+            node.dns_healthy = True
+            node.vip_owned = True
+        primary.last_heartbeat_at = datetime.utcnow() - timedelta(seconds=60)
+        standby.last_heartbeat_at = datetime.utcnow()
+        standby.observed_role = "ACTIVE"
+        db.add(HAEvent(cluster_id=cluster.id, node_id=standby.id, event_type="automatic_failover_completed", severity="warning", source="agent", message="Local failover completed without requiring Kaya.", details_json_redacted='{"generation":4}', agent_event_id="historic-auto-001", occurred_at=datetime.utcnow()))
+        db.add(HAEvent(cluster_id=cluster.id, event_type="split_brain_detected", severity="critical", source="kaya", message="Cached owners conflicted.", details_json_redacted="{}", occurred_at=datetime.utcnow()))
+        db.commit()
+
+        reconcile_vip_ownership(db, cluster)
+        db.refresh(cluster); db.refresh(primary)
+        assert cluster.status == "DEGRADED"
+        assert cluster.current_active_node_id == standby.id
+        assert primary.vip_owned is False
+        assert db.query(HAEvent).filter_by(event_type="ownership_reconciled", severity="info").one()
+
+
+def test_completed_managed_failover_adopts_active_node_despite_stale_peer_dhcp_cache():
+    with database() as db:
+        cluster, primary, standby = cluster_with_nodes(db)
+        cluster.keepalived_status = "DEPLOYED"
+        cluster.keepalived_generation = 6
+        cluster.automatic_failover_enabled = True
+        cluster.status = "DEGRADED"
+        cluster.current_active_node_id = standby.id
+        cluster.authoritative_node_id = primary.id
+        db.add(HALeaseReplicationState(cluster_id=cluster.id, source_node_id=primary.id, target_node_id=standby.id, status="CURRENT"))
+        for node in (primary, standby):
+            node.keepalived_status = "DEPLOYED"
+            node.keepalived_runtime_state = "RUNNING"
+            node.config_generation = 6
+            node.dns_healthy = True
+            node.vip_owned = True
+            node.dhcp_running = True
+        primary.last_heartbeat_at = datetime.utcnow() - timedelta(minutes=6)
+        standby.last_heartbeat_at = datetime.utcnow()
+        standby.observed_role = "ACTIVE"
+        db.add(HAEvent(cluster_id=cluster.id, node_id=standby.id, event_type="automatic_failover_completed", severity="warning", source="agent", message="Local failover completed without requiring Kaya.", details_json_redacted='{"automatic":true,"generation":6}', agent_event_id="managed-auto-001", occurred_at=datetime.utcnow()))
+        db.commit()
+
+        reconcile_vip_ownership(db, cluster)
+        db.refresh(cluster); db.refresh(primary); db.refresh(standby)
+        assert cluster.status == "DEGRADED"
+        assert cluster.current_active_node_id == standby.id
+        assert cluster.authoritative_node_id == standby.id
+        assert standby.role == standby.desired_role == "ACTIVE"
+        assert primary.role == primary.desired_role == "STANDBY"
+        assert standby.vip_owned is True and primary.vip_owned is False
 
 
 def test_local_event_queue_survives_restart_and_rejects_stale_desired_state(tmp_path):

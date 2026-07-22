@@ -123,7 +123,7 @@ def render_keepalived_config(cluster: HACluster, node: HANode) -> KeepalivedConf
 
 def prepare_deployment(db: Session, cluster: HACluster, router_id: int, acknowledged: bool) -> HACluster:
     if not acknowledged:
-        raise HAKeepalivedError("Confirm that this milestone will not enable, disable, or move DHCP.")
+        raise HAKeepalivedError("Confirm that Keepalived deployment will not enable, disable, or move DHCP.")
     cluster.vrrp_router_id = router_id
     blockers = deployment_blockers(cluster)
     if blockers:

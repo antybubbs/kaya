@@ -1,7 +1,7 @@
 import json
 import re
 import shlex
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
@@ -16,7 +16,7 @@ from app.routers.auth import require_user
 from app.schemas.high_availability import HAClusterDraftCreate, HAClusterRead, HAConfigurationDifferenceRead, HANodeDraftCreate, HANodeUpdate
 from app.services.audit import write_audit
 from app.services.ha_clusters import HADraftError, create_cluster_draft, soft_delete_cluster, test_draft_node_connection, update_cluster_node
-from app.services.ha_agents import HAAgentError, create_bootstrap_token, revoke_agent
+from app.services.ha_agents import HEARTBEAT_FRESH_SECONDS, HAAgentError, create_bootstrap_token, reconcile_vip_ownership, revoke_agent
 from app.services.ha_agent_installer import installer_checksum
 from app.services.ha_registry import SUPPORTED_HA_PROVIDERS, provider_for_key
 from app.services.ha_validation import GROUP_LABELS, configuration_differences, run_live_validation
@@ -252,6 +252,10 @@ def cluster_live_status(public_id: str, db: Session = Depends(get_db), user=Depe
     cluster = db.query(HACluster).filter(HACluster.public_id == public_id, HACluster.deleted_at.is_(None)).options(selectinload(HACluster.nodes), selectinload(HACluster.lease_replication), selectinload(HACluster.failover_runs).selectinload(HAFailoverRun.source_node), selectinload(HACluster.failover_runs).selectinload(HAFailoverRun.target_node)).first()
     if cluster is None:
         raise HTTPException(status_code=404, detail="Cluster not found")
+    reconcile_vip_ownership(db, cluster)
+    now = datetime.utcnow()
+    current_nodes = [node for node in cluster.nodes if node.last_heartbeat_at and node.last_heartbeat_at >= now - timedelta(seconds=HEARTBEAT_FRESH_SECONDS)]
+    active_node = next((node for node in cluster.nodes if node.id == cluster.current_active_node_id), None)
     readiness = failover_readiness(cluster)
     lease = cluster.lease_replication
     run = latest_failover(cluster)
@@ -266,9 +270,9 @@ def cluster_live_status(public_id: str, db: Session = Depends(get_db), user=Depe
             "keepalived_generation": cluster.keepalived_generation,
             "automatic_failover": bool(cluster.automatic_failover_enabled),
             "automatic_failback": False,
-            "active_node": readiness.source.display_name if readiness.source else None,
+            "active_node": active_node.display_name if active_node else None,
             "standby_node": readiness.target.display_name if readiness.target else None,
-            "vip_owner_count": len([node for node in cluster.nodes if node.vip_owned]),
+            "vip_owner_count": len([node for node in current_nodes if node.vip_owned]),
             "last_failover_at": cluster.last_failover_at.isoformat() + "Z" if cluster.last_failover_at else None,
             "unacknowledged_alerts": unacknowledged_alerts,
         },
@@ -276,6 +280,7 @@ def cluster_live_status(public_id: str, db: Session = Depends(get_db), user=Depe
             "id": node.public_id, "name": node.display_name, "desired_role": node.desired_role,
             "observed_role": node.observed_role, "agent_version": node.agent_version,
             "last_heartbeat_at": node.last_heartbeat_at.isoformat() + "Z" if node.last_heartbeat_at else None,
+            "heartbeat_current": node in current_nodes,
             "dns_healthy": node.dns_healthy, "dhcp_running": node.dhcp_running,
             "vip_owned": node.vip_owned, "peer_reachable": node.peer_reachable,
             "keepalived_status": node.keepalived_status, "keepalived_runtime_state": node.keepalived_runtime_state,

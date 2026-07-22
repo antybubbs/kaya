@@ -171,15 +171,53 @@ def record_heartbeat(db: Session, node: HANode, heartbeat: HAAgentHeartbeat) -> 
     return node
 
 
+HEARTBEAT_FRESH_SECONDS = 45
+
+
+def _heartbeat_is_fresh(node: HANode, now: datetime) -> bool:
+    return bool(node.last_heartbeat_at and node.last_heartbeat_at >= now - timedelta(seconds=HEARTBEAT_FRESH_SECONDS))
+
+
+def _automatic_completion_for_generation(db: Session, cluster: HACluster, node: HANode) -> HAEvent | None:
+    events = (
+        db.query(HAEvent)
+        .filter(
+            HAEvent.cluster_id == cluster.id,
+            HAEvent.node_id == node.id,
+            HAEvent.event_type == "automatic_failover_completed",
+        )
+        .order_by(HAEvent.received_at.desc())
+        .limit(50)
+        .all()
+    )
+    for event in events:
+        try:
+            details = json.loads(event.details_json_redacted or "{}")
+            if int(details.get("generation", -1)) == cluster.keepalived_generation:
+                return event
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+    return None
+
+
 def reconcile_vip_ownership(db: Session, cluster: HACluster) -> None:
     if cluster.keepalived_status != "DEPLOYED" or any(node.keepalived_status != "DEPLOYED" for node in cluster.nodes):
         return
+    now = datetime.utcnow()
     previous_active_id = cluster.current_active_node_id
     previous_status = cluster.status
-    owners = [node for node in cluster.nodes if node.vip_owned]
+    current_nodes = [node for node in cluster.nodes if _heartbeat_is_fresh(node, now)]
+    owners = [node for node in current_nodes if node.vip_owned]
     current = owners[0] if len(owners) == 1 else None
+    completed = _automatic_completion_for_generation(db, cluster, current) if current else None
     cluster.current_active_node_id = current.id if current else None
-    if len(owners) == 1 and all(node.config_generation >= cluster.keepalived_generation for node in cluster.nodes):
+    fully_healthy = (
+        len(current_nodes) == len(cluster.nodes)
+        and all(node.dns_healthy is True for node in current_nodes)
+        and all(node.keepalived_runtime_state == "RUNNING" for node in current_nodes)
+        and all(node.config_generation >= cluster.keepalived_generation for node in cluster.nodes)
+    )
+    if len(owners) == 1 and fully_healthy:
         cluster.status = "HEALTHY"
     elif len(owners) > 1:
         cluster.status = "ERROR"
@@ -187,10 +225,24 @@ def reconcile_vip_ownership(db: Session, cluster: HACluster) -> None:
         cluster.status = "DEGRADED"
     if len(owners) > 1 and previous_status != "ERROR":
         db.add(HAEvent(cluster_id=cluster.id, node_id=None, event_type="split_brain_detected", severity="critical", source="kaya", message="Multiple virtual-IP owners were reported. Automatic DHCP activation remains blocked.", details_json_redacted="{}", occurred_at=datetime.utcnow()))
-    if cluster.automatic_failover_enabled and current and previous_active_id and previous_active_id != current.id:
+    needs_adoption = bool(
+        current
+        and (
+            previous_active_id != current.id
+            or cluster.authoritative_node_id != current.id
+            or current.role != "ACTIVE"
+            or current.desired_role != "ACTIVE"
+        )
+    )
+    if cluster.automatic_failover_enabled and current and needs_adoption:
         peers = [node for node in cluster.nodes if node.id != current.id]
         dhcp_managed = bool(cluster.lease_replication and cluster.lease_replication.status != "NOT_APPLICABLE")
-        safe_dhcp = not dhcp_managed or (current.dhcp_running and all(not peer.dhcp_running for peer in peers))
+        current_peers = [peer for peer in peers if _heartbeat_is_fresh(peer, now)]
+        safe_dhcp = not dhcp_managed or (
+            current.dhcp_running
+            and all(not peer.dhcp_running for peer in current_peers)
+            and (len(current_peers) == len(peers) or completed is not None)
+        )
         if current.dns_healthy and safe_dhcp:
             for node in cluster.nodes:
                 node.desired_role = "ACTIVE" if node.id == current.id else "STANDBY"
@@ -198,9 +250,85 @@ def reconcile_vip_ownership(db: Session, cluster: HACluster) -> None:
                 node.vrrp_priority = 150 if node.id == current.id else 100
             cluster.authoritative_node_id = current.id
             cluster.role_generation += 1
-            cluster.last_failover_at = datetime.utcnow()
+            cluster.last_failover_at = completed.occurred_at if completed else datetime.utcnow()
             db.add(HAEvent(cluster_id=cluster.id, node_id=current.id, event_type="automatic_failover_reconciled", severity="warning", source="kaya", message=f"Kaya reconciled the local failover and adopted {current.display_name} as active. Automatic failback remains disabled.", details_json_redacted=json.dumps({"automatic": True}, sort_keys=True), occurred_at=datetime.utcnow()))
+    if current and completed:
+        # The other node has stopped reporting and the surviving agent has
+        # already completed its local ownership safety checks. Retire the
+        # offline node's cached owner bit so every live API response uses
+        # the verified current owner instead of stale telemetry.
+        for peer in cluster.nodes:
+            if peer.id != current.id and not _heartbeat_is_fresh(peer, now):
+                peer.vip_owned = False
+        transient = (
+            db.query(HAEvent)
+            .filter(
+                HAEvent.cluster_id == cluster.id,
+                HAEvent.event_type == "split_brain_detected",
+                HAEvent.source == "kaya",
+                HAEvent.received_at >= completed.received_at - timedelta(minutes=1),
+                HAEvent.received_at <= completed.received_at + timedelta(minutes=1),
+            )
+            .order_by(HAEvent.received_at.desc())
+            .first()
+        )
+        if transient is not None:
+            transient.event_type = "ownership_reconciled"
+            transient.severity = "info"
+            transient.message = f"Kaya reconciled cached ownership after verified automatic failover. {current.display_name} is the exclusive virtual-IP owner."
     db.commit()
+
+
+def _adopt_verified_automatic_owner(db: Session, node: HANode, event: HAAgentEventItem) -> None:
+    cluster = node.cluster
+    try:
+        generation = int(event.details.get("generation", -1))
+    except (TypeError, ValueError):
+        return
+    if (
+        event.event_type != "automatic_failover_completed"
+        or not cluster.automatic_failover_enabled
+        or generation != cluster.keepalived_generation
+        or node.observed_role != "ACTIVE"
+        or node.vip_owned is not True
+        or node.dns_healthy is not True
+    ):
+        return
+    dhcp_managed = bool(cluster.lease_replication and cluster.lease_replication.status != "NOT_APPLICABLE")
+    if dhcp_managed and node.dhcp_running is not True:
+        return
+    previous_active_id = cluster.current_active_node_id
+    for peer in cluster.nodes:
+        active = peer.id == node.id
+        peer.vip_owned = active
+        peer.role = peer.desired_role = "ACTIVE" if active else "STANDBY"
+        peer.vrrp_priority = 150 if active else 100
+    cluster.current_active_node_id = node.id
+    cluster.authoritative_node_id = node.id
+    cluster.status = "DEGRADED"
+    cluster.last_failover_at = event.occurred_at.replace(tzinfo=None)
+    if previous_active_id != node.id:
+        cluster.role_generation += 1
+
+    # A heartbeat arriving immediately before the completion event can compare
+    # the new owner with the powered-off node's cached owner bit. Preserve that
+    # audit row, but reclassify it once the signed agent event proves exclusive
+    # ownership through its hold-down and duplicate-address checks.
+    transient = (
+        db.query(HAEvent)
+        .filter(
+            HAEvent.cluster_id == cluster.id,
+            HAEvent.event_type == "split_brain_detected",
+            HAEvent.source == "kaya",
+            HAEvent.received_at >= datetime.utcnow() - timedelta(minutes=1),
+        )
+        .order_by(HAEvent.received_at.desc())
+        .first()
+    )
+    if transient is not None:
+        transient.event_type = "ownership_reconciled"
+        transient.severity = "info"
+        transient.message = f"Kaya reconciled cached ownership after verified automatic failover. {node.display_name} is the exclusive virtual-IP owner."
 
 
 def record_action_result(db: Session, node: HANode, result: HAAgentActionResult) -> HAAgentActionResultRow:
@@ -272,6 +400,7 @@ def ingest_events(db: Session, node: HANode, events: list[HAAgentEventItem]) -> 
             duplicates += 1
             continue
         db.add(HAEvent(cluster_id=node.cluster_id, node_id=node.id, event_type=event.event_type, severity=event.severity, source="agent", message=event.message, details_json_redacted=_redacted_details(event.details), agent_event_id=event.event_id, occurred_at=event.occurred_at.replace(tzinfo=None)))
+        _adopt_verified_automatic_owner(db, node, event)
         accepted += 1
     db.commit()
     return accepted, duplicates

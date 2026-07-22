@@ -7,6 +7,7 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -535,12 +536,17 @@ class HAPiHoleProvider(DNSProvider):
         cluster = self.config.ha_cluster
         if cluster is None or cluster.deleted_at is not None:
             raise DNSProviderError("The linked Kaya HA Pi-hole cluster is unavailable.")
+        now = datetime.utcnow()
         owners = [
             node for node in cluster.nodes
-            if node.vip_owned and node.keepalived_runtime_state == "RUNNING" and node.dns_healthy is not False
+            if node.vip_owned
+            and node.last_heartbeat_at is not None
+            and node.last_heartbeat_at >= now - timedelta(seconds=45)
+            and node.keepalived_runtime_state == "RUNNING"
+            and node.dns_healthy is True
         ]
         if len(owners) != 1 or cluster.current_active_node_id != owners[0].id:
-            raise DNSProviderError("Kaya cannot safely identify one current Pi-hole VIP owner. Check the HA cluster before retrying.")
+            raise DNSProviderError("Kaya cannot safely identify one live Pi-hole VIP owner. Check the HA cluster before retrying.")
         node = owners[0]
         source = node.integration if node.integration is not None else node.ha_connection
         if source is None or getattr(source, "deleted_at", None) is not None:
