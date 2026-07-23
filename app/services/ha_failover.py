@@ -219,6 +219,24 @@ def _safe_failure(db: Session, run: HAFailoverRun, message: str) -> None:
     _event(db, run, "controlled_failover_failed_safe", "critical", message[:1000])
 
 
+def _restore_dhcp_after_failed_vip_move(db: Session, run: HAFailoverRun, message: str) -> None:
+    run.status = "ROLLING_BACK"
+    run.phase = "ROLLBACK_PROMOTING_SOURCE"
+    run.error_redacted = message[:1000]
+    run.cluster.status = "DEGRADED"
+    run.cluster.maintenance_mode = True
+    run.cluster.role_generation += 1
+    run.cluster.cluster_generation += 1
+    run.role_generation = run.cluster.role_generation
+    _event(
+        db,
+        run,
+        "controlled_failover_auto_recovery_started",
+        "critical",
+        f"The virtual IP did not move. {run.source_node.display_name} retained exclusive ownership, so Kaya is restoring DHCP there automatically.",
+    )
+
+
 def _mark_verification_started(run: HAFailoverRun) -> None:
     try:
         report = json.loads(run.report_json or "{}")
@@ -336,6 +354,15 @@ def advance_failover(db: Session, cluster: HACluster) -> HAFailoverRun | None:
     state = cluster.lease_replication
     if run.phase == "WAITING_FOR_LEASES" and state and state.status == "CURRENT" and state.applied_generation >= run.lease_generation:
         run.phase = "DEMOTING_SOURCE"
+    elif (
+        run.phase == "ROLLBACK_DEMOTING_TARGET"
+        and run.source_node.vip_owned
+        and not run.target_node.vip_owned
+        and not run.target_node.dhcp_running
+    ):
+        # The failed forward move never left the original VIP owner. Restore
+        # DHCP there directly instead of needlessly redeploying Keepalived.
+        run.phase = "ROLLBACK_PROMOTING_SOURCE"
     elif run.phase in {"MOVING_VIP", "ROLLBACK_MOVING_VIP"}:
         expected = run.target_node if run.phase == "MOVING_VIP" else run.source_node
         other = run.source_node if run.phase == "MOVING_VIP" else run.target_node
@@ -345,7 +372,17 @@ def advance_failover(db: Session, cluster: HACluster) -> HAFailoverRun | None:
             else:
                 run.phase = "ROLLBACK_PROMOTING_SOURCE" if run.dhcp_managed else "ROLLBACK_VERIFYING_SOURCE"
         elif datetime.utcnow() - _vip_move_started_at(run) > timedelta(seconds=60):
-            _safe_failure(db, run, _vip_move_failure(run))
+            failure = _vip_move_failure(run)
+            if (
+                run.phase == "MOVING_VIP"
+                and run.dhcp_managed
+                and run.source_node.vip_owned
+                and not run.target_node.vip_owned
+                and not run.target_node.dhcp_running
+            ):
+                _restore_dhcp_after_failed_vip_move(db, run, failure)
+            else:
+                _safe_failure(db, run, failure)
     if run.phase == "VERIFYING_TARGET":
         dhcp_ok = (run.target_node.dhcp_running and not run.source_node.dhcp_running) if run.dhcp_managed else not any(node.dhcp_running for node in cluster.nodes)
         if run.target_node.vip_owned and not run.source_node.vip_owned and run.target_node.dns_healthy is True and dhcp_ok:
@@ -376,8 +413,13 @@ def request_failover_rollback(db: Session, run: HAFailoverRun, *, acknowledged: 
     run.cluster.cluster_generation += 1
     run.cluster.role_generation += 1
     run.role_generation = run.cluster.role_generation
-    if run.source_node.vip_owned and (not run.dhcp_managed or run.source_node.dhcp_running):
+    source_still_owns_vip = run.source_node.vip_owned and not run.target_node.vip_owned
+    if source_still_owns_vip and (not run.dhcp_managed or run.source_node.dhcp_running):
         _complete(db, run, rolled_back=True)
+    elif source_still_owns_vip and run.dhcp_managed and not run.target_node.dhcp_running:
+        run.phase = "ROLLBACK_PROMOTING_SOURCE"
+        run.error_redacted = run.error_redacted or "The original node retained the virtual IP and DHCP is being restored there."
+        _event(db, run, "controlled_failover_rollback_started", "warning", f"Direct DHCP recovery on {run.source_node.display_name} started because it retained exclusive virtual-IP ownership.")
     else:
         run.phase = "ROLLBACK_DEMOTING_TARGET"
         run.error_redacted = run.error_redacted or ("The promoted node reported unhealthy DNS after handover." if recover_unhealthy_active else "Operator requested rollback.")

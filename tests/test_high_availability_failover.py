@@ -138,6 +138,62 @@ def test_virtual_ip_move_times_out_with_actionable_status():
         assert "Standby: pending agent" in run.error_redacted
 
 
+def test_vip_timeout_automatically_restores_dhcp_when_original_owner_is_exclusive():
+    with database() as db:
+        user, cluster, source, target = ready_pair(db)
+        source.dhcp_running = False
+        run = HAFailoverRun(
+            cluster_id=cluster.id,
+            source_node_id=source.id,
+            target_node_id=target.id,
+            status="RUNNING",
+            phase="MOVING_VIP",
+            dhcp_managed=True,
+            lease_generation=7,
+            role_generation=cluster.role_generation,
+            requested_by_user_id=user.id,
+            started_at=datetime.utcnow() - timedelta(seconds=61),
+        )
+        source.vip_owned = True
+        target.vip_owned = False
+        source.keepalived_status = target.keepalived_status = "DEPLOYED"
+        db.add(run)
+        db.commit()
+
+        advance_failover(db, cluster)
+
+        assert run.status == "ROLLING_BACK"
+        assert run.phase == "ROLLBACK_PROMOTING_SOURCE"
+        assert desired_failover_action(cluster, source)["action_type"] == "DHCP_PROMOTE"
+
+
+def test_vip_timeout_does_not_restore_dhcp_when_ownership_is_ambiguous():
+    with database() as db:
+        user, cluster, source, target = ready_pair(db)
+        source.dhcp_running = False
+        source.vip_owned = target.vip_owned = True
+        run = HAFailoverRun(
+            cluster_id=cluster.id,
+            source_node_id=source.id,
+            target_node_id=target.id,
+            status="RUNNING",
+            phase="MOVING_VIP",
+            dhcp_managed=True,
+            lease_generation=7,
+            role_generation=cluster.role_generation,
+            requested_by_user_id=user.id,
+            started_at=datetime.utcnow() - timedelta(seconds=61),
+        )
+        source.keepalived_status = target.keepalived_status = "DEPLOYED"
+        db.add(run)
+        db.commit()
+
+        advance_failover(db, cluster)
+
+        assert run.status == "FAILED_SAFE"
+        assert desired_failover_action(cluster, source) is None
+
+
 def test_live_failover_page_can_reveal_failure_and_rollback_without_reload():
     template = Path("app/templates/high_availability_cluster_testing.html").read_text(encoding="utf-8")
     script = Path("app/static/js/ha_live.js").read_text(encoding="utf-8")
@@ -296,19 +352,10 @@ def test_failed_vip_move_rolls_back_to_existing_owner_and_restores_dhcp(monkeypa
         for node in cluster.nodes:
             node.keepalived_status = "DEPLOYED"
         advance_failover(db, cluster)
-        assert run.status == "FAILED_SAFE"
+        assert run.status == "ROLLING_BACK"
+        assert run.phase == "ROLLBACK_PROMOTING_SOURCE"
         assert source.vip_owned and not source.dhcp_running
 
-        request_failover_rollback(db, run, acknowledged=True)
-        target_demote = desired_failover_action(cluster, target)
-        record_failover_action_result(db, target, action_type="DHCP_DEMOTE", generation=target_demote["generation"], checksum=target_demote["checksum"], status="APPLIED", message="already stopped")
-        assert run.phase == "ROLLBACK_MOVING_VIP"
-        from app.services.ha_keepalived import desired_keepalived_action
-        assert "preempt_delay 3" in desired_keepalived_action(cluster, source)["configuration"]
-
-        for node in cluster.nodes:
-            node.keepalived_status = "DEPLOYED"
-        advance_failover(db, cluster)
         promote = desired_failover_action(cluster, source)
         record_failover_action_result(db, source, action_type="DHCP_PROMOTE", generation=promote["generation"], checksum=promote["checksum"], status="APPLIED", message="started")
         advance_failover(db, cluster)
@@ -317,6 +364,30 @@ def test_failed_vip_move_rolls_back_to_existing_owner_and_restores_dhcp(monkeypa
         assert source.vip_owned and source.dhcp_running
         assert not target.vip_owned and not target.dhcp_running
         assert cluster.keepalived_status == "PENDING_AGENT"
+
+
+def test_in_progress_rollback_skips_vip_redeployment_when_source_still_owns_it():
+    with database() as db:
+        user, cluster, source, target = ready_pair(db)
+        source.dhcp_running = False
+        run = HAFailoverRun(
+            cluster_id=cluster.id,
+            source_node_id=source.id,
+            target_node_id=target.id,
+            status="ROLLING_BACK",
+            phase="ROLLBACK_DEMOTING_TARGET",
+            dhcp_managed=True,
+            lease_generation=7,
+            role_generation=3,
+            requested_by_user_id=user.id,
+        )
+        db.add(run)
+        db.commit()
+
+        advance_failover(db, cluster)
+
+        assert run.phase == "ROLLBACK_PROMOTING_SOURCE"
+        assert desired_failover_action(cluster, source)["action_type"] == "DHCP_PROMOTE"
 
 
 def test_automatic_failover_requires_current_agents_and_successful_controlled_test():
