@@ -7,12 +7,12 @@
 {% if lease_agent_upgrades and lease_state and lease_state.status != 'NOT_APPLICABLE' %}<div class="ha-beta-notice" role="status"><strong>Update the node agents to enable DHCP continuity</strong><span>{{ lease_agent_upgrades|map(attribute='display_name')|join(', ') }} {{ 'needs' if lease_agent_upgrades|length == 1 else 'need' }} an agent update. Use Update / reinstall agent on the Agents page; Pi-hole DNS and DHCP continue running during the update.</span><a class="button secondary" href="/high-availability/clusters/{{ cluster.public_id }}/agents">Open Agents</a></div>{% endif %}
 
 <section class="panel ha-lease-intro">
-  <div><span class="ha-sync-eyebrow">DHCP CONTINUITY</span><h2>Prepare leases without controlling your network</h2><p>Kaya checks whether the main Pi-hole provides DHCP. If it does, Kaya validates its active leases and securely stages a copy on the standby node. This page never starts, stops, enables, or disables DHCP.</p></div>
+  <div><span class="ha-sync-eyebrow">DHCP CONTINUITY · {{ deployment_mode_label }}</span><h2>{% if pihole_manages_dhcp %}Prepare leases without controlling your network{% else %}Your DHCP service remains external{% endif %}</h2><p>{% if pihole_manages_dhcp %}Kaya validates active leases and securely stages a copy on the standby node. This page never starts, stops, enables, or disables DHCP during normal checks.{% else %}{{ (cluster.external_dhcp_provider or 'Another service')|replace('_', ' ')|title }} provides IP addresses. Kaya will not read, copy, start, stop or change that service.{% endif %}</p></div>
   <div class="ha-lease-boundaries"><div><strong>What Kaya does now</strong><span>Copies reservations through configuration synchronisation and stages a validated lease snapshot.</span></div><div><strong>What Kaya does not do</strong><span>It does not activate DHCP or make network access depend on Kaya being online.</span></div></div>
 </section>
 
 <section class="panel">
-  <div class="ha-section-heading"><div><h2>Current state</h2><p class="muted">Automatic: Kaya checks and stages changes every {{ cluster.sync_interval_seconds // 60 if cluster.sync_interval_seconds >= 60 else cluster.sync_interval_seconds }} {{ 'minutes' if cluster.sync_interval_seconds >= 60 else 'seconds' }}. You do not need to run this manually.</p></div>{% if user.role == 'admin' %}<form method="post" action="/high-availability/clusters/{{ cluster.public_id }}/dhcp/reconcile"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit" title="Optional: run the automatic check immediately">Check now</button></form>{% endif %}</div>
+  <div class="ha-section-heading"><div><h2>Current state</h2><p class="muted">{% if pihole_manages_dhcp %}Automatic: Kaya checks and stages changes every {{ cluster.sync_interval_seconds // 60 if cluster.sync_interval_seconds >= 60 else cluster.sync_interval_seconds }} {{ 'minutes' if cluster.sync_interval_seconds >= 60 else 'seconds' }}. You do not need to run this manually.{% else %}No Pi-hole lease replication is required in DNS-only mode.{% endif %}</p></div>{% if user.role == 'admin' and pihole_manages_dhcp %}<form method="post" action="/high-availability/clusters/{{ cluster.public_id }}/dhcp/reconcile"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit" title="Optional: run the automatic check immediately">Check now</button></form>{% endif %}</div>
   {% if not lease_state %}
   <div class="ha-sync-empty"><strong>Waiting for the first check</strong><span>Kaya has not inspected DHCP for this cluster yet. The automatic check will identify whether Pi-hole provides DHCP and prepare continuity safely.</span></div>
   {% elif lease_state.status == 'NOT_APPLICABLE' %}
@@ -29,10 +29,10 @@
   {% endif %}
 </section>
 
-<section class="panel ha-detail-grid">
+{% if pihole_manages_dhcp %}<section class="panel ha-detail-grid">
   <div><h2>How the copy flows</h2><ol class="ha-lease-flow"><li><strong>Main Pi-hole</strong><span>Kaya reads current reservations and active leases.</span></li><li><strong>Validation</strong><span>IPv4, MAC, expiry, DHCP range, reservations, duplicates and conflicts are checked.</span></li><li><strong>Standby agent</strong><span>An encrypted-at-rest snapshot is checksum-verified and stored with owner-only permissions.</span></li></ol></div>
   <div><h2>Latest snapshot</h2>{% if lease_snapshot %}<dl class="ha-definition-list"><div><dt>Status</dt><dd>{{ lease_snapshot.status|title }}</dd></div><div><dt>Generation</dt><dd>{{ lease_snapshot.generation }}</dd></div><div><dt>Leases</dt><dd>{{ lease_snapshot.lease_count }}</dd></div><div><dt>Reservations recognised</dt><dd>{{ lease_snapshot.reservation_count }}</dd></div><div><dt>Validated range</dt><dd>{{ lease_snapshot.range or 'Not reported' }}</dd></div><div><dt>Checksum</dt><dd><code>{{ lease_snapshot.checksum }}</code></dd></div></dl>{% else %}<p class="muted">No lease snapshot has been created.</p>{% endif %}</div>
-</section>
+</section>{% endif %}
 
-<section class="panel ha-sync-offline"><div><h2>If Kaya goes offline</h2><p>DNS, DHCP and Keepalived keep running on the Pi-holes. The last validated standby snapshot remains local. Kaya is a coordinator, never the path your devices use to reach the network.</p></div><span class="ha-sync-safe-badge">Network services stay local</span></section>
+<section class="panel ha-sync-offline"><div><h2>If Kaya goes offline</h2><p>DNS{% if pihole_manages_dhcp %}, DHCP{% endif %} and automatic failover keep running on the Pi-holes. Kaya is a coordinator, never the path your devices use to reach the network.</p></div><span class="ha-sync-safe-badge">Network services stay local</span></section>
 {% endblock %}

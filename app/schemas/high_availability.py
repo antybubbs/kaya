@@ -57,6 +57,7 @@ class HANodeDraftCreate(BaseModel):
     api_base_url: str = Field(min_length=1, max_length=500)
     secret: str | None = Field(default=None, max_length=2000)
     ssl_verify: bool = True
+    network_interface: str | None = Field(default=None, max_length=80, pattern=r"^[A-Za-z0-9_.:-]{1,80}$")
 
 
 class HANodeUpdate(BaseModel):
@@ -72,6 +73,9 @@ class HAClusterDraftCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=2000)
     provider_key: str = Field(default="pihole", min_length=1, max_length=40)
+    deployment_mode: str = Field(default="DNS_DHCP", pattern="^(DNS_ONLY|DNS_DHCP)$")
+    external_dhcp_provider: str | None = Field(default=None, pattern="^(router|pfsense|opnsense|unifi|windows_server|other)$")
+    gateway_address: str | None = Field(default=None, max_length=80)
     primary: HANodeDraftCreate
     secondary: HANodeDraftCreate
     virtual_ip: str | None = None
@@ -139,6 +143,9 @@ class HAClusterRead(BaseModel):
     name: str
     description: str | None
     provider_key: str
+    deployment_mode: str | None
+    external_dhcp_provider: str | None
+    gateway_address: str | None
     status: str
     virtual_ip: str | None
     prefix_length: int | None

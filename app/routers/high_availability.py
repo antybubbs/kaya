@@ -25,6 +25,7 @@ from app.services.ha_sync import HAStaleSyncPlanError, HASyncError, create_live_
 from app.services.ha_leases import HALeaseError, latest_snapshot_summary, reconcile_cluster_leases
 from app.services.ha_failover import HAFailoverError, automatic_failover_blockers, failover_readiness, failover_status, latest_failover, request_failover_rollback, set_automatic_failover, start_controlled_failover
 from app.services.site_settings import get_site_setting
+from app.services.ha_topology import deployment_mode, pihole_manages_dhcp
 
 
 router = APIRouter(prefix="/high-availability", tags=["high-availability"], dependencies=[Depends(require_module_access("high_availability"))])
@@ -54,6 +55,18 @@ def require_ha_editor(user=Depends(require_high_availability)):
 
 
 def ha_context(request: Request, user, active_section: str, **extra) -> dict[str, object]:
+    cluster = extra.get("cluster")
+    if isinstance(cluster, HACluster):
+        mode = deployment_mode(cluster)
+        checks = [item for item in cluster.health_checks if item.severity in {"blocking", "warning", "info"}]
+        passed = len([item for item in checks if item.status == "PASS"])
+        extra = {
+            "deployment_mode": mode,
+            "deployment_mode_label": "DNS + DHCP" if mode == "DNS_DHCP" else "DNS only",
+            "pihole_manages_dhcp": pihole_manages_dhcp(cluster),
+            "readiness_percentage": round((passed / len(checks)) * 100) if checks else 0,
+            **extra,
+        }
     return {
         "user": user,
         "active_section": active_section,
@@ -214,14 +227,14 @@ def new_cluster(request: Request, db: Session = Depends(get_db), user=Depends(re
 
 
 @router.get("/clusters/new/{provider_key}")
-def new_cluster_for_provider(provider_key: str, request: Request, user=Depends(require_ha_admin)):
+def new_cluster_for_provider(provider_key: str, request: Request, db: Session = Depends(get_db), user=Depends(require_ha_admin)):
     provider = provider_for_key(provider_key)
     if not provider or not provider.selectable:
         raise HTTPException(status_code=404, detail="Provider not found")
     return templates.TemplateResponse(
         request,
         "high_availability_cluster_form.html",
-        ha_context(request, user, "clusters", provider=provider, error=None, form_values={}),
+        ha_context(request, user, "clusters", provider=provider, error=None, form_values={}, existing_vips=[cluster.virtual_ip for cluster in active_clusters(db) if cluster.virtual_ip]),
     )
 
 
@@ -262,17 +275,22 @@ async def save_cluster(request: Request, db: Session = Depends(get_db), user=Dep
             name=values.get("name", ""),
             description=values.get("description") or None,
             provider_key=provider.key,
+            deployment_mode=values.get("deployment_mode", ""),
+            external_dhcp_provider=values.get("external_dhcp_provider") or None,
+            gateway_address=values.get("gateway_address") or None,
             primary={
                 "name": values.get("primary_name", ""),
                 "api_base_url": values.get("primary_api_base_url", ""),
                 "secret": values.get("primary_secret") or None,
                 "ssl_verify": values.get("primary_ssl_verify") == "1",
+                "network_interface": values.get("primary_network_interface") or None,
             },
             secondary={
                 "name": values.get("secondary_name", ""),
                 "api_base_url": values.get("secondary_api_base_url", ""),
                 "secret": values.get("secondary_secret") or None,
                 "ssl_verify": values.get("secondary_ssl_verify") == "1",
+                "network_interface": values.get("secondary_network_interface") or None,
             },
             virtual_ip=values.get("virtual_ip") or None,
             prefix_length=values.get("prefix_length") or None,
@@ -290,6 +308,7 @@ async def save_cluster(request: Request, db: Session = Depends(get_db), user=Dep
                 provider=provider,
                 error=message,
                 form_values=safe_values,
+                existing_vips=[cluster.virtual_ip for cluster in active_clusters(db) if cluster.virtual_ip],
             ),
             status_code=400,
         )
@@ -300,7 +319,7 @@ async def save_cluster(request: Request, db: Session = Depends(get_db), user=Dep
         "ha_cluster",
         entity_id=cluster.public_id,
         detail=f"Saved High Availability draft cluster {cluster.name}.",
-        metadata={"provider": provider.key, "status": "DRAFT"},
+        metadata={"provider": provider.key, "status": "DRAFT", "deployment_mode": cluster.deployment_mode},
     )
     return RedirectResponse(f"/high-availability/clusters/{cluster.public_id}?saved=1", status_code=303)
 
@@ -339,6 +358,8 @@ def cluster_live_status(public_id: str, db: Session = Depends(get_db), user=Depe
             "keepalived_generation": cluster.keepalived_generation,
             "automatic_failover": bool(cluster.automatic_failover_enabled),
             "automatic_failback": False,
+            "deployment_mode": deployment_mode(cluster),
+            "deployment_mode_label": "DNS + DHCP" if pihole_manages_dhcp(cluster) else "DNS only",
             "current_agent_version": CURRENT_AGENT_VERSION,
             "active_node": active_node.display_name if active_node else None,
             "standby_node": readiness.target.display_name if readiness.target else None,

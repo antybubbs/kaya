@@ -146,6 +146,9 @@ def sync_plan(cluster: HACluster) -> dict[str, Any]:
     raw_source_snapshot = _snapshot(source)
     source_snapshot = _canonical_sync_snapshot(raw_source_snapshot)
     target_snapshot = _canonical_sync_snapshot(_snapshot(target))
+    if cluster.deployment_mode == "DNS_ONLY":
+        source_snapshot.pop("dhcp", None)
+        target_snapshot.pop("dhcp", None)
     groups = []
     for key in sorted(set(source_snapshot) | set(target_snapshot)):
         source_value, target_value = source_snapshot.get(key), target_snapshot.get(key)
@@ -164,9 +167,12 @@ def sync_plan(cluster: HACluster) -> dict[str, Any]:
             "description": GROUP_EXPLANATIONS.get(key, "A supported Pi-hole configuration area."),
             "deletion_count": deletion_count,
         })
-    dhcp_value = raw_source_snapshot.get("dhcp")
-    dhcp_text = json.dumps(dhcp_value, sort_keys=True).casefold() if dhcp_value is not None else ""
-    dhcp_mode = "PIHOLE_MANAGED" if '"active": true' in dhcp_text or '"enabled": true' in dhcp_text else "EXTERNAL" if dhcp_value is not None else "UNKNOWN"
+    if cluster.deployment_mode in {"DNS_ONLY", "DNS_DHCP"}:
+        dhcp_mode = "PIHOLE_MANAGED" if cluster.deployment_mode == "DNS_DHCP" else "EXTERNAL"
+    else:
+        dhcp_value = raw_source_snapshot.get("dhcp")
+        dhcp_text = json.dumps(dhcp_value, sort_keys=True).casefold() if dhcp_value is not None else ""
+        dhcp_mode = "PIHOLE_MANAGED" if '"active": true' in dhcp_text or '"enabled": true' in dhcp_text else "EXTERNAL" if dhcp_value is not None else "UNKNOWN"
     return {
         "source_node_id": source.id,
         "source_name": source.display_name,

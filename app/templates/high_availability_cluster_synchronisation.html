@@ -77,6 +77,6 @@
   </form>{% endif %}
 </section>{% endif %}
 
-<section class="panel ha-sync-offline"><div><h2>If Kaya goes offline</h2><p>Pi-hole, DNS, DHCP and Keepalived continue running locally. Automatic configuration checks resume when Kaya returns.</p></div><span class="ha-sync-safe-badge">Network services stay local</span></section>
+<section class="panel ha-sync-offline"><div><h2>If Kaya goes offline</h2><p>Pi-hole, DNS, DHCP and the local failover service continue running. Automatic configuration checks resume when Kaya returns.</p></div><span class="ha-sync-safe-badge">Network services stay local</span></section>
 {% endblock %}
 {% block extra_scripts %}{{ super() }}<script src="/static/js/ha_sync.js?v={{ asset_version }}"></script>{% endblock %}

@@ -17,6 +17,7 @@ from app.services.ha_keepalived import desired_keepalived_action
 from app.services.ha_leases import HALeaseError, desired_lease_action, record_lease_stage_result
 from app.services.ha_failover import HAFailoverError, advance_failover, desired_failover_action, record_failover_action_result
 from app.services.ha_agent_installer import CURRENT_AGENT_VERSION
+from app.services.ha_topology import pihole_manages_dhcp
 
 
 AGENT_PROTOCOL_VERSION = 1
@@ -237,7 +238,7 @@ def reconcile_vip_ownership(db: Session, cluster: HACluster) -> None:
     )
     if cluster.automatic_failover_enabled and current and needs_adoption:
         peers = [node for node in cluster.nodes if node.id != current.id]
-        dhcp_managed = bool(cluster.lease_replication and cluster.lease_replication.status != "NOT_APPLICABLE")
+        dhcp_managed = pihole_manages_dhcp(cluster)
         current_peers = [peer for peer in peers if _heartbeat_is_fresh(peer, now)]
         safe_dhcp = not dhcp_managed or (
             current.dhcp_running
@@ -295,7 +296,7 @@ def _adopt_verified_automatic_owner(db: Session, node: HANode, event: HAAgentEve
         or node.dns_healthy is not True
     ):
         return
-    dhcp_managed = bool(cluster.lease_replication and cluster.lease_replication.status != "NOT_APPLICABLE")
+    dhcp_managed = pihole_manages_dhcp(cluster)
     if dhcp_managed and node.dhcp_running is not True:
         return
     previous_active_id = cluster.current_active_node_id
@@ -413,7 +414,7 @@ def desired_state(node: HANode) -> dict:
     leases = desired_lease_action(cluster, node)
     failover = desired_failover_action(cluster, node)
     peer = next((item for item in cluster.nodes if item.id != node.id), None)
-    dhcp_managed = bool(cluster.lease_replication and cluster.lease_replication.status != "NOT_APPLICABLE")
+    dhcp_managed = pihole_manages_dhcp(cluster)
     return {
         "protocol_version": AGENT_PROTOCOL_VERSION,
         "cluster_id": cluster.public_id,

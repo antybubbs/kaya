@@ -1,0 +1,72 @@
+---
+title: High Availability
+description: Build and operate resilient provider and application services with Kaya.
+---
+
+# High Availability
+
+Kaya High Availability is a resilience framework for supported providers and applications. Each integration defines its own topology, health checks, configuration controls and recovery actions. Pi-hole is the first Beta integration; High Availability is not limited to DNS services.
+
+## How Kaya fits into your service
+
+Kaya is the management plane. It helps you configure, validate and observe the cluster, but it is not in the path used by clients. A deployed service continues locally when Kaya is offline.
+
+For Pi-hole, two small node agents perform only fixed, signed and generation-checked HA actions. The agents and the local failover service continue monitoring the nodes without Kaya. A recovered node returns as standby; Kaya does not automatically move service back to the preferred node.
+
+## Pi-hole deployment modes
+
+### DNS only
+
+Choose this when a router, pfSense, OPNsense, UniFi, Windows Server or another platform provides DHCP.
+
+Configure that DHCP service—and any statically configured clients—to use the **DNS Virtual IP** as their DNS server. The address remains the same while Kaya’s local failover configuration moves it between healthy Pi-hole nodes.
+
+### DNS + DHCP
+
+Choose this when Pi-hole provides IP addresses as well as DNS.
+
+Clients use:
+
+- **Primary DNS:** the DNS Virtual IP
+- **Secondary DNS:** the physical address of the standby Pi-hole
+
+When roles change, the DNS Virtual IP moves to the new active node. DHCP may run only on the node that owns that address. Lease snapshots and reservations are prepared on the standby so that failover does not depend on Kaya being online.
+
+## Guided setup
+
+1. Enable **High Availability (Beta)** in Site Administration.
+2. Select **Create cluster**, then choose the provider or application. Pi-hole is the available Phase 1 integration.
+3. Choose **DNS only** or **DNS + DHCP**.
+4. Enter both node API addresses and application passwords.
+5. Enter each node’s client-network interface, the DNS Virtual IP, network prefix and gateway.
+6. Test both read-only connections and review the architecture summary.
+7. Save the cluster, install an agent on each node and run validation.
+8. Resolve every blocking readiness check before deploying the shared DNS address.
+9. Review configuration differences, synchronise supported settings and test a controlled failover.
+10. Enable automatic failover only after the controlled test succeeds.
+
+The DNS Virtual IP must be unused, unique in Kaya and on the same Layer 2 IPv4 network as both nodes. Both Pi-holes must run the same supported major/version combination.
+
+## Day-to-day operation
+
+Use **Overview** for current ownership, node health, synchronisation state, alerts and failover. Operational cards update automatically.
+
+- **Nodes** manages provider connections and network interfaces.
+- **Sync** compares supported configuration from the authoritative node to the target, then backs up, applies, verifies and rolls back if needed.
+- **DHCP** is active only for DNS + DHCP clusters. DNS-only clusters leave their external DHCP service untouched.
+- **Activity** retains agent, failover and safety events.
+- **Failover** shows controlled and automatic transition history.
+- **Setup & maintenance** contains validation, agents and shared-address deployment details.
+
+## Safety and data retention
+
+- Unknown or ambiguous high-risk state blocks deployment or DHCP activation.
+- Split-brain evidence blocks automatic DHCP promotion.
+- Secrets are encrypted and never displayed again.
+- Provider writes use allowlisted operations, backup-before-write, read-back verification and rollback.
+- Removing a cluster is a soft deletion. Stored nodes, DNS Manager links, linked IP details, validation records and history remain unless the user explicitly deletes data in the module that owns it.
+- A healthy Pi-hole HA cluster can be selected in DNS Manager as one logical provider through its DNS Virtual IP. Standalone Pi-hole providers continue to work as before.
+
+## Future integrations
+
+Future providers and applications may use different node counts, service-address mechanisms, agents, validation checks or recovery strategies. Pi-hole-specific pages and language appear only when the Pi-hole integration is selected; the framework, navigation and permission model remain provider-neutral.

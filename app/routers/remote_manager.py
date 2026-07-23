@@ -2,6 +2,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import re
 import secrets
 import shutil
 import subprocess
@@ -34,6 +35,14 @@ from app.services.sessions import active_user_session
 router = APIRouter(prefix="/remote-manager", dependencies=[Depends(require_module_access("remote_manager"))])
 templates = Jinja2Templates(directory="app/templates")
 PROTOCOLS = {"ssh", "rdp"}
+SSH_HOST_KEY_ALGORITHMS = {
+    "ssh-ed25519",
+    "ecdsa-sha2-nistp256",
+    "ecdsa-sha2-nistp384",
+    "ecdsa-sha2-nistp521",
+    "ssh-rsa",
+}
+SSH_SHA256_FINGERPRINT = re.compile(r"^SHA256:[A-Za-z0-9+/]{43}$")
 SETTINGS = {
     "guacamole_enabled": "0",
     "split_screen_enabled": "1",
@@ -587,6 +596,17 @@ def scan_ssh_host_key(row: RemoteAccess) -> str:
     return min(candidates, key=lambda item: item[0])[1]
 
 
+def trusted_ssh_host_key(row: RemoteAccess) -> tuple[str, str] | None:
+    """Return a strictly validated enrolled key without contacting the host."""
+    stored = (row.host_key_fingerprint or "").strip()
+    if " " not in stored:
+        return None
+    algorithm, fingerprint = stored.split(" ", 1)
+    if algorithm not in SSH_HOST_KEY_ALGORITHMS or not SSH_SHA256_FINGERPRINT.fullmatch(fingerprint):
+        return None
+    return algorithm, fingerprint
+
+
 def websocket_origin_allowed(websocket: WebSocket) -> bool:
     origin = websocket.headers.get("origin")
     if not origin:
@@ -760,7 +780,7 @@ def remote_session(request: Request, remote_id: int, db: Session = Depends(get_d
     settings = settings_map(db)
     remote_settings = effective_remote_settings(row, settings)
     title = remote_label(row)
-    return templates.TemplateResponse(request, "remote_session.html", {"user": user, "remote": row, "rows": rows, "remote_label": title, "remote_label_fn": remote_label, "settings": settings, "remote_settings": remote_settings, "recording_enabled": recording_controls_enabled(settings), "recording_auto_enabled": recording_auto_enabled(row, settings), "remote_category": remote_category(row), **csrf_context(request)})
+    return templates.TemplateResponse(request, "remote_session.html", {"user": user, "remote": row, "rows": rows, "remote_label": title, "remote_label_fn": remote_label, "settings": settings, "remote_settings": remote_settings, "ssh_host_key_ready": trusted_ssh_host_key(row) is not None, "recording_enabled": recording_controls_enabled(settings), "recording_auto_enabled": recording_auto_enabled(row, settings), "remote_category": remote_category(row), **csrf_context(request)})
 
 
 @router.get("/{remote_id}/settings")
@@ -899,7 +919,7 @@ def remote_session_panel(request: Request, remote_id: int, db: Session = Depends
     settings = settings_map(db)
     remote_settings = effective_remote_settings(row, settings)
     title = remote_label(row)
-    return templates.TemplateResponse(request, "remote_session_panel.html", {"user": user, "remote": row, "remote_label": title, "settings": settings, "remote_settings": remote_settings, "recording_enabled": recording_controls_enabled(settings), "recording_auto_enabled": recording_auto_enabled(row, settings), "remote_category": remote_category(row), **csrf_context(request)})
+    return templates.TemplateResponse(request, "remote_session_panel.html", {"user": user, "remote": row, "remote_label": title, "settings": settings, "remote_settings": remote_settings, "ssh_host_key_ready": trusted_ssh_host_key(row) is not None, "recording_enabled": recording_controls_enabled(settings), "recording_auto_enabled": recording_auto_enabled(row, settings), "remote_category": remote_category(row), **csrf_context(request)})
 
 
 @router.post("/{remote_id}/recordings/upload")
@@ -1077,13 +1097,19 @@ async def ssh_websocket(websocket: WebSocket, remote_id: int):
         if not remote or not remote.is_enabled or remote.protocol != "ssh" or not remote.username:
             await websocket.close(code=1008)
             return
-        if not remote.host_key_fingerprint or " " not in remote.host_key_fingerprint:
-            await websocket.close(code=1008, reason="SSH host key is not enrolled")
+        trusted_host_key = trusted_ssh_host_key(remote)
+        if trusted_host_key is None:
+            await websocket.accept()
+            await websocket.send_json({
+                "type": "error",
+                "message": "SSH host verification is required. Open this host's settings, scan the key, verify its fingerprint, and trust it before connecting.",
+            })
+            await websocket.close(code=1008, reason="SSH host verification required")
             return
         host = remote.ip_address.address
         port = remote.port
         username = remote.username
-        host_key_algorithm, host_key_fingerprint = remote.host_key_fingerprint.split(" ", 1)
+        host_key_algorithm, host_key_fingerprint = trusted_host_key
     finally:
         db.close()
     await websocket.accept()

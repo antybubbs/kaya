@@ -3,6 +3,7 @@ import hashlib
 import io
 import asyncio
 from datetime import datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 from sqlalchemy import create_engine
@@ -145,6 +146,28 @@ def test_ssh_host_key_scan_returns_a_verifiable_sha256_fingerprint(monkeypatch):
     assert remote_manager.scan_ssh_host_key(row) == f"ssh-ed25519 SHA256:{expected}"
     assert calls[0][0] == ["/usr/bin/ssh-keyscan", "-T", "5", "-p", "2222", "192.0.2.10"]
     assert calls[0][1]["timeout"] == 10
+
+
+def test_trusted_ssh_host_key_rejects_missing_or_malformed_values():
+    row = SimpleNamespace(host_key_fingerprint=None)
+    assert remote_manager.trusted_ssh_host_key(row) is None
+    row.host_key_fingerprint = "ssh-ed25519 SHA256:not-a-valid-fingerprint"
+    assert remote_manager.trusted_ssh_host_key(row) is None
+    row.host_key_fingerprint = f"unknown-key SHA256:{'A' * 43}"
+    assert remote_manager.trusted_ssh_host_key(row) is None
+
+
+def test_trusted_ssh_host_key_accepts_enrolled_supported_identity():
+    fingerprint = f"SHA256:{'A' * 43}"
+    row = SimpleNamespace(host_key_fingerprint=f"ssh-ed25519 {fingerprint}")
+    assert remote_manager.trusted_ssh_host_key(row) == ("ssh-ed25519", fingerprint)
+
+
+def test_ssh_panel_blocks_password_entry_until_host_identity_is_enrolled():
+    panel = Path("app/templates/_remote_session_panel.html").read_text(encoding="utf-8")
+    assert "SSH host verification required" in panel
+    assert "ssh_host_key_ready" in panel
+    assert "Verify SSH host" in panel
 
 
 def test_plaintext_ftp_is_blocked_even_when_its_legacy_path_is_writable(tmp_path):
