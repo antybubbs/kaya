@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="/static/css/kaya.css?v={{ asset_version }}">
   <link rel="stylesheet" href="/static/css/remote.css?v={{ asset_version }}">
   <link rel="stylesheet" href="/static/css/responsive.css?v={{ asset_version }}">
+  <script src="/static/js/ssh_host_identity.js?v={{ asset_version }}" defer></script>
   <script>
     (function () {
       var theme = localStorage.getItem("kaya.ui.theme") === "light-ops" ? "light-ops" : "command";
@@ -51,18 +52,22 @@
       {% if host_key_candidate %}
       <div class="ssh-identity-steps">
         <span>1</span>
-        <div><strong>Compare the fingerprint</strong><p>Check it against the fingerprint shown by the SSH server or its trusted console. Do not approve it if the values differ.</p></div>
+        <div><strong>Open the server's trusted console</strong><p>Run the command below directly on the server, not inside this SSH session. It reads the public host key and does not expose a private key.</p></div>
       </div>
-      <form method="post" action="/remote-manager/{{ remote.id }}/ssh/host-key/trust" class="ssh-identity-form">
+      <form method="post" action="/remote-manager/{{ remote.id }}/ssh/host-key/trust" class="ssh-identity-form" data-ssh-identity-verify data-candidate-fingerprint="{{ host_key_candidate }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="host_key_view" value="{{ host_key_view }}">
         <input type="hidden" name="host_key_candidate" value="{{ host_key_candidate }}">
-        <label class="ssh-identity-confirm">
-          <input type="checkbox" name="confirm_host_key" value="1" required>
-          <span><strong>I verified this fingerprint independently</strong><small>I understand that trusting the wrong key could expose my SSH password and session.</small></span>
-        </label>
+        <div class="ssh-identity-console-check">
+          <div><span>Run on the server console</span><strong>Independent source</strong></div>
+          <code>{{ host_key_console_command }}</code>
+          <label>Paste the fingerprint shown by that command
+            <input type="text" name="verified_host_fingerprint" maxlength="500" autocomplete="off" spellcheck="false" placeholder="SHA256:..." required data-server-fingerprint>
+          </label>
+          <p class="ssh-identity-match" role="status" aria-live="polite" data-fingerprint-match>Waiting for the server-console fingerprint.</p>
+        </div>
         <div class="ssh-identity-actions">
-          <button type="submit">Trust identity and continue</button>
+          <button type="submit" data-trust-button disabled>Trust matching identity and continue</button>
           <a class="button secondary" href="{{ host_key_return_path }}">Cancel</a>
         </div>
       </form>

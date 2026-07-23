@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block extra_head %}<link rel="stylesheet" href="/static/css/remote.css?v={{ asset_version }}">{% endblock %}
+{% block extra_head %}<link rel="stylesheet" href="/static/css/remote.css?v={{ asset_version }}"><script src="/static/js/ssh_host_identity.js?v={{ asset_version }}" defer></script>{% endblock %}
 {% macro override_select(key, label, options, overrides) %}
 <label>{{ label }}
   {% set current = overrides.get(key, '') %}
@@ -52,9 +52,16 @@
     <div class="ssh-identity-fingerprint"><div><span>Fingerprint found on the server</span><strong>Verify before approving</strong></div><code>{{ host_key_candidate }}</code></div>
     <input type="hidden" name="host_key_view" value="settings">
     <input type="hidden" name="host_key_candidate" value="{{ host_key_candidate }}">
-    <label class="ssh-identity-confirm"><input type="checkbox" name="confirm_host_key" value="1"><span><strong>I compared this fingerprint with the SSH server console</strong><small>Do not approve the key if the fingerprints differ.</small></span></label>
+    <div class="ssh-identity-console-check" data-ssh-identity-verify data-candidate-fingerprint="{{ host_key_candidate }}">
+      <div><span>Run on the server console</span><strong>Independent source</strong></div>
+      <code>{{ host_key_console_command }}</code>
+      <label>Paste the fingerprint shown by that command
+        <input type="text" name="verified_host_fingerprint" maxlength="500" autocomplete="off" spellcheck="false" placeholder="SHA256:..." data-server-fingerprint>
+      </label>
+      <p class="ssh-identity-match" role="status" aria-live="polite" data-fingerprint-match>Waiting for the server-console fingerprint.</p>
+    </div>
     <div class="ssh-identity-actions">
-      <button type="submit" formaction="/remote-manager/{{ remote.id }}/ssh/host-key/trust" formmethod="post">Trust verified identity</button>
+      <button type="submit" formaction="/remote-manager/{{ remote.id }}/ssh/host-key/trust" formmethod="post" data-trust-button disabled>Trust matching identity</button>
       <button class="button secondary" type="submit" formaction="/remote-manager/{{ remote.id }}/ssh/host-key/scan" formmethod="post">Scan again</button>
     </div>
     {% else %}
