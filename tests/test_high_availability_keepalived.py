@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session
 
 from app.db.session import Base
-from app.models.models import HAAgentCredential, HACluster, HANode, User
+from app.models.models import HAAgentCredential, HACluster, HAFailoverRun, HANode, User
 from app.schemas.high_availability import HAAgentActionResult, HAAgentHeartbeat
 from app.services.ha_agents import HAAgentError, desired_state, record_action_result, record_heartbeat
 from app.services.ha_keepalived import HAKeepalivedError, deployment_blockers, desired_keepalived_action, prepare_deployment, render_keepalived_config, request_manual_vip_move, validate_network
@@ -83,6 +83,42 @@ def test_deployment_requires_agents_and_builds_node_bound_desired_actions():
         assert actions[0]["action_id"] != actions[1]["action_id"]
         assert {action["checksum"] for action in actions} == {render_keepalived_config(prepared, node).checksum for node in prepared.nodes}
         assert desired_state(prepared.nodes[0])["allowed_actions"] == ["KEEPALIVED_APPLY"]
+
+
+def test_controlled_move_temporarily_allows_only_the_destination_to_preempt():
+    with database() as db:
+        cluster = prepare_deployment(db, ready_cluster(db), 51, True)
+        source = next(node for node in cluster.nodes if node.desired_role == "ACTIVE")
+        target = next(node for node in cluster.nodes if node.id != source.id)
+        source.role = source.desired_role = "ACTIVE"
+        target.role = target.desired_role = "STANDBY"
+        source.vrrp_priority = 100
+        target.vrrp_priority = 150
+        run = HAFailoverRun(
+            cluster_id=cluster.id,
+            source_node_id=source.id,
+            target_node_id=target.id,
+            status="RUNNING",
+            phase="MOVING_VIP",
+            dhcp_managed=True,
+            role_generation=2,
+        )
+        db.add(run)
+        db.flush()
+        for node in cluster.nodes:
+            node.keepalived_status = "PENDING_AGENT"
+
+        source_config = desired_keepalived_action(cluster, source)["configuration"]
+        target_config = desired_keepalived_action(cluster, target)["configuration"]
+
+        assert "nopreempt" in source_config
+        assert "preempt_delay 3" not in source_config
+        assert "nopreempt" not in target_config
+        assert "preempt_delay 3" in target_config
+        target_action = desired_keepalived_action(cluster, target)
+        assert validate_desired_configuration(target_action) == target_config.encode()
+        from ha_agent.kaya_ha_keepalived_helper import validate_managed_document
+        assert validate_managed_document(target_config.encode())
 
 
 def test_deployment_blockers_report_every_node_with_an_invalid_interface():

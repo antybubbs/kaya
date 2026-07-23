@@ -300,6 +300,18 @@ def _complete(db: Session, run: HAFailoverRun, *, rolled_back: bool) -> None:
     run.phase = "ROLLED_BACK" if rolled_back else "COMPLETE"
     run.completed_at = datetime.utcnow()
     run.error_redacted = None if not rolled_back else run.error_redacted
+    # The destination temporarily receives a preempt-capable configuration so
+    # it can take the VIP from a nopreempt MASTER. Once ownership and services
+    # are verified, immediately restore nopreempt on both nodes to retain the
+    # no-automatic-failback safety boundary.
+    run.cluster.cluster_generation += 1
+    run.cluster.keepalived_generation += 1
+    run.cluster.keepalived_status = "PENDING_AGENT"
+    run.cluster.keepalived_requested_at = datetime.utcnow()
+    run.cluster.status = "DEPLOYING"
+    for node in run.cluster.nodes:
+        node.keepalived_status = "PENDING_AGENT"
+        node.keepalived_last_error = None
     _event(db, run, "controlled_failover_rolled_back" if rolled_back else "controlled_failover_completed", "warning" if rolled_back else "info", f"Controlled transition completed with {active.display_name} active. Automatic failback remains disabled.")
 
 

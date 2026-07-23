@@ -2,6 +2,7 @@ import json
 import re
 import shlex
 from datetime import datetime, timedelta
+from ipaddress import IPv4Address, IPv4Interface
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
@@ -23,7 +24,7 @@ from app.services.ha_validation import GROUP_LABELS, configuration_differences, 
 from app.services.ha_keepalived import HAKeepalivedError, deployment_blockers, prepare_deployment, request_manual_vip_move
 from app.services.ha_sync import HAStaleSyncPlanError, HASyncError, create_live_sync_plan, execute_sync, sync_plan
 from app.services.ha_leases import HALeaseError, latest_snapshot_summary, reconcile_cluster_leases
-from app.services.ha_failover import HAFailoverError, automatic_failover_blockers, failover_readiness, failover_status, latest_failover, request_failover_rollback, set_automatic_failover, start_controlled_failover
+from app.services.ha_failover import HAFailoverError, active_failover, automatic_failover_blockers, failover_readiness, failover_status, latest_failover, request_failover_rollback, set_automatic_failover, start_controlled_failover
 from app.services.site_settings import get_site_setting
 from app.services.ha_topology import deployment_mode, pihole_manages_dhcp
 
@@ -328,6 +329,87 @@ async def save_cluster(request: Request, db: Session = Depends(get_db), user=Dep
 def cluster_detail(public_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_high_availability)):
     cluster = cluster_or_404(db, public_id)
     return templates.TemplateResponse(request, "high_availability_cluster_detail.html", ha_context(request, user, "clusters", cluster=cluster, cluster_section="overview", failover_readiness=failover_readiness(cluster), failover_run=latest_failover(cluster), automatic_blockers=automatic_failover_blockers(cluster), sync_summary=sync_operational_summary(db, cluster)))
+
+
+def topology_page_context(request: Request, user, cluster: HACluster, error: str | None = None):
+    return ha_context(request, user, "clusters", cluster=cluster, cluster_section="topology", topology_error=error)
+
+
+@router.get("/clusters/{public_id}/topology")
+def cluster_topology(public_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_high_availability)):
+    cluster = cluster_or_404(db, public_id)
+    return templates.TemplateResponse(request, "high_availability_cluster_topology.html", topology_page_context(request, user, cluster))
+
+
+@router.post("/clusters/{public_id}/topology")
+async def update_cluster_topology(public_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_ha_admin)):
+    cluster = cluster_or_404(db, public_id)
+    form = await request.form()
+    validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    mode = str(form.get("deployment_mode") or "")
+    external_provider = str(form.get("external_dhcp_provider") or "")
+    allowed_external_providers = {"router", "pfsense", "opnsense", "unifi", "windows_server", "other"}
+    error: str | None = None
+    if mode not in {"DNS_ONLY", "DNS_DHCP"}:
+        error = "Choose whether this HA service provides DNS only or both DNS and DHCP."
+    elif str(form.get("cluster_name") or "").strip() != cluster.name:
+        error = f"Type {cluster.name} exactly to confirm this responsibility change."
+    elif active_failover(cluster):
+        error = "Wait for the current failover operation to finish before changing service responsibilities."
+    elif mode == "DNS_DHCP" and str(form.get("acknowledge_managed_dhcp") or "") != "1":
+        error = "Confirm that Pi-hole is the intended DHCP service before enabling DHCP continuity."
+    elif mode == "DNS_ONLY" and external_provider not in allowed_external_providers:
+        error = "Choose the external service that provides DHCP."
+    elif mode == "DNS_ONLY" and any(node.dhcp_running for node in cluster.nodes):
+        error = "Kaya cannot mark DHCP as external while a Pi-hole agent reports DHCP running. Stop Pi-hole DHCP first, wait for live status to update, then save again."
+    gateway = str(form.get("gateway_address") or "").strip()
+    if not error and mode == "DNS_ONLY" and gateway:
+        try:
+            gateway_ip = IPv4Address(gateway)
+            if cluster.virtual_ip and cluster.prefix_length and gateway_ip not in IPv4Interface(f"{cluster.virtual_ip}/{cluster.prefix_length}").network:
+                error = "The gateway must use the same IPv4 network as the DNS Virtual IP."
+        except ValueError:
+            error = "Gateway must be a valid IPv4 address."
+    if error:
+        return templates.TemplateResponse(
+            request,
+            "high_availability_cluster_topology.html",
+            topology_page_context(request, user, cluster, error),
+            status_code=409,
+        )
+
+    previous_mode = deployment_mode(cluster)
+    cluster.deployment_mode = mode
+    cluster.external_dhcp_provider = external_provider if mode == "DNS_ONLY" else None
+    cluster.gateway_address = (gateway or None) if mode == "DNS_ONLY" else None
+    if previous_mode != mode:
+        cluster.automatic_failover_enabled = False
+        cluster.cluster_generation += 1
+        if cluster.lease_replication is not None:
+            cluster.lease_replication.status = "NOT_APPLICABLE" if mode == "DNS_ONLY" else "PENDING"
+            cluster.lease_replication.last_error_redacted = None
+    db.add(HAEvent(
+        cluster_id=cluster.id,
+        node_id=None,
+        event_type="service_responsibilities_updated",
+        severity="warning",
+        source="kaya",
+        message=("Pi-hole was selected as the DNS and DHCP service. Kaya will validate DHCP continuity before failover. Automatic failover must be re-enabled after a safe test." if mode == "DNS_DHCP" else "DHCP was assigned to an external service. Kaya will not control or copy DHCP. Automatic failover must be re-enabled after a safe test."),
+        details_json_redacted=json.dumps({"previous_mode": previous_mode, "deployment_mode": mode, "external_dhcp_provider": cluster.external_dhcp_provider}, sort_keys=True),
+        occurred_at=datetime.utcnow(),
+    ))
+    db.commit()
+    write_audit(
+        db,
+        user,
+        "updated",
+        "ha_service_responsibilities",
+        entity_id=cluster.public_id,
+        detail=f"Updated service responsibilities for {cluster.name}.",
+        severity="warning",
+        metadata={"previous_mode": previous_mode, "deployment_mode": mode, "automatic_failover_disabled": previous_mode != mode, "dhcp_service_changed": False, "secret_logged": False},
+    )
+    return RedirectResponse(f"/high-availability/clusters/{cluster.public_id}/topology?saved=1", status_code=303)
 
 
 @router.get("/clusters/{public_id}/live")

@@ -69,6 +69,8 @@ def test_managed_failover_orders_dhcp_stop_vip_move_then_dhcp_start(monkeypatch)
         assert cluster.current_active_node_id == target.id
         assert target.dhcp_running and not source.dhcp_running
         assert cluster.automatic_failback_enabled is False
+        assert cluster.keepalived_status == "PENDING_AGENT"
+        assert all(node.keepalived_status == "PENDING_AGENT" for node in cluster.nodes)
 
 
 def test_external_dhcp_failover_never_emits_dhcp_action():
@@ -276,6 +278,45 @@ def test_completed_failover_can_return_safely_if_promoted_dns_later_fails(monkey
         assert run.status == "ROLLING_BACK"
         assert run.phase == "ROLLBACK_DEMOTING_TARGET"
         assert desired_failover_action(cluster, target)["action_type"] == "DHCP_DEMOTE"
+
+
+def test_failed_vip_move_rolls_back_to_existing_owner_and_restores_dhcp(monkeypatch):
+    with database() as db:
+        user, cluster, source, target = ready_pair(db)
+        cluster.vrrp_router_id = 51
+        for address, node in zip(("192.168.50.2", "192.168.50.3"), (source, target)):
+            node.management_host = address
+            node.network_interface = "eth0"
+        monkeypatch.setattr("app.services.ha_failover.reconcile_cluster_leases", lambda db, cluster: cluster.lease_replication)
+        run = start_controlled_failover(db, cluster, target, user, confirmation="Test Pair", acknowledged=True)
+        from app.services.ha_failover import record_failover_action_result
+        demote = desired_failover_action(cluster, source)
+        record_failover_action_result(db, source, action_type="DHCP_DEMOTE", generation=demote["generation"], checksum=demote["checksum"], status="APPLIED", message="stopped")
+        run.report_json = '{"vip_move_started_at":"2020-01-01T00:00:00"}'
+        for node in cluster.nodes:
+            node.keepalived_status = "DEPLOYED"
+        advance_failover(db, cluster)
+        assert run.status == "FAILED_SAFE"
+        assert source.vip_owned and not source.dhcp_running
+
+        request_failover_rollback(db, run, acknowledged=True)
+        target_demote = desired_failover_action(cluster, target)
+        record_failover_action_result(db, target, action_type="DHCP_DEMOTE", generation=target_demote["generation"], checksum=target_demote["checksum"], status="APPLIED", message="already stopped")
+        assert run.phase == "ROLLBACK_MOVING_VIP"
+        from app.services.ha_keepalived import desired_keepalived_action
+        assert "preempt_delay 3" in desired_keepalived_action(cluster, source)["configuration"]
+
+        for node in cluster.nodes:
+            node.keepalived_status = "DEPLOYED"
+        advance_failover(db, cluster)
+        promote = desired_failover_action(cluster, source)
+        record_failover_action_result(db, source, action_type="DHCP_PROMOTE", generation=promote["generation"], checksum=promote["checksum"], status="APPLIED", message="started")
+        advance_failover(db, cluster)
+
+        assert run.status == "ROLLED_BACK"
+        assert source.vip_owned and source.dhcp_running
+        assert not target.vip_owned and not target.dhcp_running
+        assert cluster.keepalived_status == "PENDING_AGENT"
 
 
 def test_automatic_failover_requires_current_agents_and_successful_controlled_test():

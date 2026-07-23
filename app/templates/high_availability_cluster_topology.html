@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block content %}
+{% include '_high_availability_cluster_header.html' %}
+{% if request.query_params.get('saved') %}<div class="success" role="status"><strong>Service responsibilities saved</strong><span>{% if pihole_manages_dhcp %}Kaya will validate DHCP continuity. Open the DHCP page and wait for the standby snapshot to become current before testing failover.{% else %}Kaya will leave DHCP entirely with the external service selected below.{% endif %} If the responsibility changed, automatic failover was disabled until you complete a safe test and enable it again.</span></div>{% endif %}
+{% if topology_error %}<div class="alert" role="alert"><strong>Nothing was changed</strong><span>{{ topology_error }}</span></div>{% endif %}
+<section class="panel">
+  <div class="ha-section-heading"><div><span class="ha-sync-eyebrow">Service responsibilities</span><h2>Tell Kaya where DHCP runs</h2><p class="muted">This controls the failover safety workflow. Saving this page does not start, stop, enable or disable DHCP on either node.</p></div></div>
+  <div class="ha-context-note"><strong>Why this matters</strong><span>If Pi-hole supplies device addresses, Kaya must prepare DHCP continuity before moving the service. If another platform supplies DHCP, Kaya must leave it alone.</span></div>
+  {% if user.role == 'admin' %}
+  <form class="ha-topology-form" method="post" action="/high-availability/clusters/{{ cluster.public_id }}/topology">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="ha-mode-grid">
+      <label class="ha-choice-card"><input type="radio" name="deployment_mode" value="DNS_DHCP" required {% if deployment_mode == 'DNS_DHCP' %}checked{% endif %}><span><strong>Pi-hole provides DNS + DHCP</strong><small>One Pi-hole owns the shared DNS address and is the only node allowed to serve DHCP. Kaya prepares the other node for safe takeover.</small></span></label>
+      <label class="ha-choice-card"><input type="radio" name="deployment_mode" value="DNS_ONLY" required {% if deployment_mode == 'DNS_ONLY' %}checked{% endif %}><span><strong>Pi-hole provides DNS only</strong><small>Your router, firewall or another server supplies DHCP. Kaya never reads, copies, starts or stops that DHCP service.</small></span></label>
+    </div>
+    <div class="ha-conditional-field" data-ha-topology-managed {% if deployment_mode != 'DNS_DHCP' %}hidden{% endif %}>
+      <label class="checkbox-row"><input type="checkbox" name="acknowledge_managed_dhcp" value="1" {% if deployment_mode == 'DNS_DHCP' %}required{% endif %}> I confirm Pi-hole is intended to provide DHCP and no other DHCP server is active on this network.</label>
+    </div>
+    <div class="ha-conditional-field" data-ha-topology-external {% if deployment_mode != 'DNS_ONLY' %}hidden{% endif %}>
+      <label>External DHCP service<select name="external_dhcp_provider">{% for value, label in [('router', 'Router'), ('pfsense', 'pfSense'), ('opnsense', 'OPNsense'), ('unifi', 'UniFi'), ('windows_server', 'Windows Server'), ('other', 'Other')] %}<option value="{{ value }}" {% if cluster.external_dhcp_provider == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+      <label>Gateway address <span class="muted">(optional)</span><input name="gateway_address" value="{{ cluster.gateway_address or '' }}" maxlength="80" placeholder="192.168.1.1"></label>
+    </div>
+    <label>Type <strong>{{ cluster.name }}</strong> to confirm<input name="cluster_name" autocomplete="off" maxlength="120" required></label>
+    <div class="ha-form-actions"><button class="button" type="submit">Save service responsibilities</button><a class="button secondary" href="/high-availability/clusters/{{ cluster.public_id }}">Cancel</a></div>
+  </form>
+  {% else %}<div class="ha-inline-empty"><p>An administrator can change this setting.</p></div>{% endif %}
+</section>
+<script src="/static/js/ha_topology.js?v={{ asset_version }}" defer></script>
+{% endblock %}

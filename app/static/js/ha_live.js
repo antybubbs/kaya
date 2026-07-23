@@ -101,7 +101,18 @@
       list.replaceChildren(...readiness.blockers.map((message) => { const item = document.createElement("li"); item.textContent = message; return item; }));
       list.hidden = readiness.ready;
     });
-    document.querySelectorAll("[data-ha-failover-submit]").forEach((button) => { button.disabled = !readiness.ready; });
+    document.querySelectorAll("[data-ha-failover-submit]").forEach((button) => {
+      button.disabled = !readiness.ready;
+      button.textContent = readiness.ready ? "Start safe failover" : "Failover unavailable";
+    });
+    document.querySelectorAll("[data-ha-failover-help]").forEach((message) => { message.hidden = readiness.ready; });
+    document.querySelectorAll("[data-ha-failover-summary]").forEach((summary) => {
+      summary.classList.toggle("is-disabled", !readiness.ready);
+      summary.setAttribute("aria-disabled", readiness.ready ? "false" : "true");
+    });
+    document.querySelectorAll("[data-ha-failover-summary-label]").forEach((label) => {
+      label.textContent = readiness.ready ? "Fail over to" : "Failover unavailable";
+    });
     document.querySelectorAll("[data-ha-failover-target]").forEach((input) => { input.value = readiness.target_id || ""; });
     document.querySelectorAll("[data-ha-failover-target-name]").forEach((element) => { element.textContent = readiness.target_name || "standby node"; });
   }
