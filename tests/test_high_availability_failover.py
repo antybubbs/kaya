@@ -114,6 +114,85 @@ def test_lease_replacement_preserves_service_ownership_and_mode(tmp_path, monkey
     assert (after.st_uid, after.st_gid, after.st_mode & 0o777) == service_owner
 
 
+def test_dhcp_status_requires_the_service_and_udp_67_listener(tmp_path, monkeypatch):
+    from ha_agent import kaya_ha_failover_helper as helper
+
+    udp = tmp_path / "udp"
+    udp.write_text(
+        "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode\n"
+        "  12: 00000000:0043 00000000:0000 07 00000000:00000000 00:00000000 00000000 0 0 1\n",
+        encoding="ascii",
+    )
+    monkeypatch.setattr(helper, "PROC_UDP", (udp,))
+    monkeypatch.setattr(
+        helper,
+        "_run",
+        lambda command: type(
+            "Result",
+            (),
+            {
+                "returncode": 0,
+                "stdout": "dhcp.active = true" if command[0] == helper.FTL else "active\n",
+            },
+        )(),
+    )
+
+    status = helper._dhcp_status()
+
+    assert status == {
+        "configured": True,
+        "service_active": True,
+        "listening": True,
+        "dhcp_running": True,
+    }
+
+
+def test_dhcp_status_does_not_treat_config_flag_as_runtime_health(tmp_path, monkeypatch):
+    from ha_agent import kaya_ha_failover_helper as helper
+
+    udp = tmp_path / "udp"
+    udp.write_text("  sl  local_address rem_address st\n", encoding="ascii")
+    monkeypatch.setattr(helper, "PROC_UDP", (udp,))
+    monkeypatch.setattr(
+        helper,
+        "_run",
+        lambda command: type(
+            "Result",
+            (),
+            {
+                "returncode": 0,
+                "stdout": "dhcp.active = true" if command[0] == helper.FTL else "active\n",
+            },
+        )(),
+    )
+
+    status = helper._dhcp_status()
+
+    assert status["configured"] is True
+    assert status["service_active"] is True
+    assert status["listening"] is False
+    assert status["dhcp_running"] is False
+
+
+def test_dhcp_promotion_fails_closed_when_udp_67_never_starts(monkeypatch):
+    from ha_agent import kaya_ha_failover_helper as helper
+
+    monkeypatch.setattr(helper.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(
+        helper,
+        "_dhcp_status",
+        lambda: {
+            "configured": True,
+            "service_active": True,
+            "listening": False,
+            "dhcp_running": False,
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="UDP port 67"):
+        helper._wait_for_dhcp(True)
+
+
 def test_completed_failover_can_return_safely_if_promoted_dns_later_fails(monkeypatch):
     with database() as db:
         user, cluster, source, target = ready_pair(db)
@@ -135,7 +214,7 @@ def test_automatic_failover_requires_current_agents_and_successful_controlled_te
     with database() as db:
         user, cluster, source, target = ready_pair(db)
         assert "successful controlled failover" in " ".join(automatic_failover_blockers(cluster))
-        source.agent_version = target.agent_version = "0.2.0"
+        source.agent_version = target.agent_version = "0.2.1"
         db.add(HAFailoverRun(cluster_id=cluster.id, source_node_id=source.id, target_node_id=target.id, status="SUCCEEDED", phase="COMPLETE", dhcp_managed=True, lease_generation=7, role_generation=2, requested_by_user_id=user.id))
         db.commit()
         assert automatic_failover_blockers(cluster) == []

@@ -21,6 +21,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 
 PROTOCOL_VERSION = 1
+AGENT_VERSION = "0.2.1"
 
 
 def encoded(value: bytes) -> str:
@@ -235,7 +236,7 @@ def run_once(state: State) -> None:
             state.set("peer_reachable", peer.returncode == 0)
         except (OSError, subprocess.SubprocessError):
             state.set("peer_reachable", False)
-    heartbeat = {"observed_role": state.get("observed_role", "STANDBY"), "observed_generation": int(state.get("observed_generation", 0)), "vip_owned": bool(state.get("vip_owned", False)), "dhcp_running": bool(state.get("dhcp_running", False)), "dns_healthy": bool(state.get("dns_healthy", False)), "peer_reachable": bool(state.get("peer_reachable", False)), "lease_generation": int(state.get("lease_generation", 0)), "config_generation": int(state.get("config_generation", 0)), "agent_version": config["agent_version"], "keepalived_runtime_state": state.get("keepalived_runtime_state", "UNKNOWN")}
+    heartbeat = {"observed_role": state.get("observed_role", "STANDBY"), "observed_generation": int(state.get("observed_generation", 0)), "vip_owned": bool(state.get("vip_owned", False)), "dhcp_running": bool(state.get("dhcp_running", False)), "dns_healthy": bool(state.get("dns_healthy", False)), "peer_reachable": bool(state.get("peer_reachable", False)), "lease_generation": int(state.get("lease_generation", 0)), "config_generation": int(state.get("config_generation", 0)), "agent_version": AGENT_VERSION, "keepalived_runtime_state": state.get("keepalived_runtime_state", "UNKNOWN")}
     response = signed_request(state, "POST", "/api/ha/agent/v1/heartbeat", heartbeat)
     reconcile_desired(state, response["desired"])
     action_result = state.get("pending_action_result")
@@ -267,7 +268,7 @@ def main() -> None:
     token_source = registration.add_mutually_exclusive_group(required=True)
     token_source.add_argument("--token")
     token_source.add_argument("--token-stdin", action="store_true")
-    registration.add_argument("--agent-version", default="0.2.0")
+    registration.add_argument("--agent-version", default=AGENT_VERSION)
     event_parser = commands.add_parser("event")
     event_parser.add_argument("event_type")
     event_parser.add_argument("message")

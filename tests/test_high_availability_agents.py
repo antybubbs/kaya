@@ -154,6 +154,7 @@ def test_desired_state_supplies_offline_failover_safety_context():
         primary.management_host = "192.0.2.20"
         standby.management_host = "192.0.2.21"
         standby.network_interface = "eth0"
+        standby.agent_version = "0.2.1"
         db.commit()
         state = desired_state(standby)
         assert state["automatic_failover"] is True
@@ -161,6 +162,16 @@ def test_desired_state_supplies_offline_failover_safety_context():
         assert state["peer_host"] == "192.0.2.20"
         assert state["network_interface"] == "eth0"
         assert state["automatic_hold_down_seconds"] >= 5
+
+
+def test_desired_state_disables_automatic_failover_for_unverified_agent_runtime():
+    with database() as db:
+        cluster, _, standby = cluster_with_nodes(db)
+        cluster.automatic_failover_enabled = True
+        standby.agent_version = "0.2.0"
+        db.commit()
+
+        assert desired_state(standby)["automatic_failover"] is False
 
 
 def test_agent_events_are_deduplicated_and_sensitive_details_are_removed():
@@ -192,7 +203,7 @@ def test_verified_automatic_failover_event_immediately_adopts_the_surviving_owne
         primary.vip_owned = True
         db.commit()
 
-        record_heartbeat(db, standby, HAAgentHeartbeat(observed_role="ACTIVE", observed_generation=8, vip_owned=True, dhcp_running=False, dns_healthy=True, peer_reachable=False, lease_generation=0, config_generation=8, agent_version="0.2.0", keepalived_runtime_state="RUNNING"))
+        record_heartbeat(db, standby, HAAgentHeartbeat(observed_role="ACTIVE", observed_generation=8, vip_owned=True, dhcp_running=False, dns_healthy=True, peer_reachable=False, lease_generation=0, config_generation=8, agent_version="0.2.1", keepalived_runtime_state="RUNNING"))
         assert cluster.status == "ERROR"
 
         completed = HAAgentEventItem(event_id="automatic-completed-001", event_type="automatic_failover_completed", severity="warning", message="Local failover completed without requiring Kaya.", occurred_at=datetime.utcnow(), details={"generation": 8, "automatic": True})
@@ -326,6 +337,7 @@ def test_guided_installer_is_fixed_checksum_verified_and_keeps_token_off_command
     assert agent_version_status(CURRENT_AGENT_VERSION) == "Up to date"
     assert agent_version_status("0.1.9") == "Update available"
     assert agent_version_status(None) == "Not reported"
+    assert f'AGENT_VERSION = "{CURRENT_AGENT_VERSION}"' in agent_file("kaya_ha_agent.py").decode()
     assert "NoNewPrivileges=true" not in service
     assert "ReadWritePaths=/var/lib/kaya-ha-agent /etc/keepalived" in service
     assert b"apt-get install" in install_script().body

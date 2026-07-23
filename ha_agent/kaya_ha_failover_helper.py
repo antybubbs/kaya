@@ -10,6 +10,7 @@ SNAPSHOT = STATE_ROOT / "lease-snapshots/current.json"
 LEASE_FILE = Path("/etc/pihole/dhcp.leases")
 BACKUP_ROOT = STATE_ROOT / "failover-backups"
 LOCK_FILE = STATE_ROOT / "failover.lock"
+PROC_UDP = (Path("/proc/net/udp"), Path("/proc/net/udp6"))
 FTL, IP = "/usr/bin/pihole-FTL", "/usr/sbin/ip"
 MAC = re.compile(r"^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$", re.I)
 
@@ -28,10 +29,62 @@ def _dhcp_active():
         raise RuntimeError("Pi-hole DHCP state could not be read.")
     return matches[-1] == "true"
 
+
+def _udp_port_bound(port, paths=None):
+    """Read the kernel socket table without invoking a shell or a broad helper."""
+    for path in paths or PROC_UDP:
+        try:
+            lines = path.read_text(encoding="ascii", errors="strict").splitlines()[1:]
+        except (FileNotFoundError, OSError, UnicodeError):
+            continue
+        for line in lines:
+            fields = line.split()
+            if len(fields) < 2:
+                continue
+            try:
+                if int(fields[1].rsplit(":", 1)[1], 16) == port:
+                    return True
+            except (IndexError, ValueError):
+                continue
+    return False
+
+
+def _dhcp_status():
+    configured = _dhcp_active()
+    service = _run(["systemctl", "is-active", "pihole-FTL"])
+    listening = _udp_port_bound(67)
+    return {
+        "configured": configured,
+        "service_active": service.returncode == 0,
+        "listening": listening,
+        "dhcp_running": configured and service.returncode == 0 and listening,
+    }
+
+
+def _wait_for_dhcp(enabled):
+    latest = {}
+    for _ in range(20):
+        latest = _dhcp_status()
+        ready = latest["dhcp_running"] if enabled else not latest["configured"] and not latest["listening"]
+        if ready:
+            return latest
+        time.sleep(1)
+    if enabled:
+        raise RuntimeError(
+            "Pi-hole accepted the DHCP setting but did not start serving on UDP port 67. "
+            "Check the standby DHCP range, network interface, Pi-hole FTL log, and host firewall."
+        )
+    raise RuntimeError(
+        "Pi-hole accepted the DHCP setting but UDP port 67 is still in use. "
+        "DHCP ownership could not be released safely."
+    )
+
+
 def _set_dhcp(enabled):
     result = _run([FTL, "--config", "dhcp.active", "true" if enabled else "false"])
-    if result.returncode or _dhcp_active() is not enabled:
+    if result.returncode:
         raise RuntimeError("Pi-hole did not confirm the requested DHCP state.")
+    return _wait_for_dhcp(enabled)
 
 def _owns_vip():
     desired = str(_state("desired_virtual_ip", "")).split("/", 1)[0]
@@ -115,7 +168,7 @@ def main():
     if len(sys.argv) not in (2, 3) or sys.argv[1] not in commands:
         raise SystemExit("usage: helper status|demote|promote|automatic-demote|automatic-promote [generation]")
     if sys.argv[1] == "status":
-        print(json.dumps({"status": "ok", "dhcp_running": _dhcp_active()})); return
+        print(json.dumps({"status": "ok", **_dhcp_status()})); return
     generation = int(sys.argv[2])
     automatic = sys.argv[1].startswith("automatic-")
     if generation < 1 or (not _automatic_allowed(generation) if automatic else generation != int(_state("failover_generation", 0))):

@@ -16,7 +16,7 @@ from app.schemas.high_availability import HAAgentActionResult, HAAgentEventItem,
 from app.services.ha_keepalived import desired_keepalived_action
 from app.services.ha_leases import HALeaseError, desired_lease_action, record_lease_stage_result
 from app.services.ha_failover import HAFailoverError, advance_failover, desired_failover_action, record_failover_action_result
-from app.services.ha_agent_installer import CURRENT_AGENT_VERSION
+from app.services.ha_agent_installer import CURRENT_AGENT_VERSION, version_tuple
 from app.services.ha_topology import pihole_manages_dhcp
 
 
@@ -426,7 +426,12 @@ def desired_state(node: HANode) -> dict:
         "desired_agent_version": CURRENT_AGENT_VERSION,
         "virtual_ip": f"{cluster.virtual_ip}/{cluster.prefix_length}" if cluster.virtual_ip else None,
         "maintenance_mode": cluster.maintenance_mode,
-        "automatic_failover": bool(cluster.automatic_failover_enabled),
+        # Old agents only checked the Pi-hole configuration flag and could
+        # mistake a failed DHCP listener for a successful promotion.
+        "automatic_failover": bool(
+            cluster.automatic_failover_enabled
+            and version_tuple(node.agent_version) >= version_tuple(CURRENT_AGENT_VERSION)
+        ),
         "automatic_failback": False,
         "automatic_hold_down_seconds": 10,
         "dhcp_managed": dhcp_managed,
