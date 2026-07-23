@@ -19,7 +19,10 @@
     <tbody>
       {% for job in proxmox_jobs %}
       <tr>
-        <td><strong>{{ job.name }}</strong></td>
+        <td>
+          <strong>{{ job.name }}</strong>
+          {% if job.job_id %}<br><small class="muted mono">{{ job.job_id }}</small>{% endif %}
+        </td>
         <td>{{ job.host.name }}</td>
         <td><span class="compute-state {{ job.status }}">{{ job.status }}</span></td>
         <td>{{ local_time(job.last_run_at, 'minute') }}</td>

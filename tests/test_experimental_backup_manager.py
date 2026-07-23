@@ -10,9 +10,9 @@ from starlette.requests import Request
 
 from app.db.session import Base
 from app.main import app
-from app.models.models import AuditLog, BackupJob, BackupRecord, ComputeHost, RemoteManagerSetting, User
+from app.models.models import AuditLog, BackupJob, BackupRecord, ComputeHost, ComputeInventoryItem, RemoteManagerSetting, User
 from app.routers.admin import set_backup_manager_feature
-from app.routers.backup_manager import agent_jobs, hash_agent_token, require_backup_user
+from app.routers.backup_manager import agent_jobs, hash_agent_token, proxmox_backup_jobs, require_backup_user
 from app.services.site_settings import get_site_setting
 
 
@@ -108,3 +108,49 @@ def test_backup_manager_uses_shared_beta_and_experimental_feature_ui():
     assert "components/maturity_badge.html" in page
     assert "experimental-features/backup-manager" in settings
     assert "pauses new job dispatch without deleting" in settings
+
+
+def test_proxmox_backup_jobs_use_comment_as_the_user_friendly_label():
+    with database() as db:
+        host = ComputeHost(name="PVE test host", platform="proxmox", base_url="https://pve.invalid")
+        db.add(host)
+        db.flush()
+        db.add(
+            ComputeInventoryItem(
+                host_id=host.id,
+                external_id="backup-fake123",
+                name="backup-fake123",
+                kind="backup",
+                status="enabled",
+                metadata_json='{"id":"backup-fake123","comment":"  Plex media backup\\n nightly  ","schedule":"01:00"}',
+            )
+        )
+        db.commit()
+
+        jobs = proxmox_backup_jobs(db)
+
+        assert jobs[0]["name"] == "Plex media backup nightly"
+        assert jobs[0]["job_id"] == "backup-fake123"
+
+
+def test_proxmox_backup_jobs_fall_back_to_job_id_without_a_comment():
+    with database() as db:
+        host = ComputeHost(name="PVE test host", platform="proxmox", base_url="https://pve.invalid")
+        db.add(host)
+        db.flush()
+        db.add(
+            ComputeInventoryItem(
+                host_id=host.id,
+                external_id="backup-fallback456",
+                name="backup-fallback456",
+                kind="backup",
+                status="enabled",
+                metadata_json='{"id":"backup-fallback456","comment":"   "}',
+            )
+        )
+        db.commit()
+
+        jobs = proxmox_backup_jobs(db)
+
+        assert jobs[0]["name"] == "backup-fallback456"
+        assert jobs[0]["job_id"] is None

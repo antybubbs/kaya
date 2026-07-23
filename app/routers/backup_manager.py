@@ -349,6 +349,9 @@ def proxmox_backup_jobs(db: Session) -> list[dict]:
     jobs = []
     for item, host in rows:
         data = metadata(item.metadata_json)
+        raw_comment = data.get("comment")
+        comment = " ".join(raw_comment.split())[:255] if isinstance(raw_comment, str) else ""
+        job_id = str(data.get("id") or item.external_id or item.name)[:500]
         last_task = data.get("last_task") if isinstance(data.get("last_task"), dict) else {}
         last_run_at = None
         if last_task.get("starttime"):
@@ -359,7 +362,8 @@ def proxmox_backup_jobs(db: Session) -> list[dict]:
         jobs.append(
             {
                 "host": host,
-                "name": item.name,
+                "name": comment or item.name,
+                "job_id": job_id if comment else None,
                 "status": item.status or "unknown",
                 "last_status": data.get("last_status") or "unknown",
                 "last_run_at": last_run_at,
