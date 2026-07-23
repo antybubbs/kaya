@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.db.session import get_db
 from app.models.models import HACluster, HAEvent, HAFailoverRun, HAHealthCheck, HALeaseReplicationState, HANode, HASyncRun
-from app.routers.auth import require_user
+from app.routers.auth import require_module_access, require_user
 from app.schemas.high_availability import HAClusterDraftCreate, HAClusterRead, HAConfigurationDifferenceRead, HANodeDraftCreate, HANodeUpdate
 from app.services.audit import write_audit
 from app.services.ha_clusters import HADraftError, create_cluster_draft, soft_delete_cluster, test_draft_node_connection, update_cluster_node
@@ -27,7 +27,7 @@ from app.services.ha_failover import HAFailoverError, automatic_failover_blocker
 from app.services.site_settings import get_site_setting
 
 
-router = APIRouter(prefix="/high-availability", tags=["high-availability"])
+router = APIRouter(prefix="/high-availability", tags=["high-availability"], dependencies=[Depends(require_module_access("high_availability"))])
 templates = Jinja2Templates(directory="app/templates")
 
 

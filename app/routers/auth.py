@@ -3,12 +3,13 @@ import secrets
 import smtplib
 import time
 from datetime import datetime, timedelta
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, Form, Request, WebSocketException, status
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, text
 from sqlalchemy.exc import OperationalError
+from starlette.requests import HTTPConnection
 from app.core.config import get_settings
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.core.demo import DEMO_ACCOUNTS, demo_generation, demo_login_email
@@ -23,6 +24,8 @@ from app.services.site_settings import get_site_setting
 from app.services.oidc_client import safe_return_path
 from app.services.user_names import clean_name_part, first_name_contains_last_name
 from app.services.authentication_policy import get_authentication_policy, normal_local_login_allowed
+from app.services.modules import grant_all_registered_modules, has_module_access, module_landing_url
+from app.services.client_ip import client_ip
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
@@ -184,6 +187,35 @@ def require_editor(request: Request, db: Session = Depends(get_db)) -> User:
     if user.role not in ["admin", "editor"]:
         raise PermissionError("Editor access required")
     return user
+
+
+def require_module_access(module_key: str):
+    """Build a reusable module gate that remains independent of role checks."""
+    def dependency(connection: HTTPConnection, db: Session = Depends(get_db)) -> User:
+        user = current_user(connection, db)
+        if not user:
+            if connection.scope["type"] == "websocket":
+                raise WebSocketException(code=1008, reason="Authentication required")
+            raise PermissionError("Authentication required")
+        if not has_module_access(db, user, module_key):
+            write_audit(
+                db,
+                user,
+                "module_access_denied",
+                "module_permission",
+                module_key,
+                ip_address=None if settings.demo_mode else client_ip(connection),
+                detail=f"Access denied to module {module_key}",
+                status_code=403,
+                metadata={"module_key": module_key},
+            )
+            if connection.scope["type"] == "websocket":
+                raise WebSocketException(code=1008, reason="Module access denied")
+            raise PermissionError("Module access required")
+        connection.state.accessible_module_keys = getattr(user, "_accessible_module_keys", frozenset())
+        return user
+
+    return dependency
 
 
 @router.get("/login")
@@ -528,6 +560,8 @@ def setup_submit(
             is_active=True
         )
         db.add(user)
+        db.flush()
+        grant_all_registered_modules(db, user)
         db.commit()
     except OperationalError:
         db.rollback()
@@ -615,7 +649,7 @@ def login(request: Request, email: str = Form(""), password: str = Form(""), tot
         start_user_session(db, request, user)
         LOGIN_FAILURES.pop(key, None)
         write_audit(db, user, "login", "user", str(user.id), request.client.host if request.client else None, detail="2FA verified")
-        return RedirectResponse("/dashboard", status_code=303)
+        return RedirectResponse(module_landing_url(db, user), status_code=303)
 
     login_email = demo_login_email(email) if settings.demo_mode else email.strip().lower()
     user = db.query(User).filter(User.email == login_email, User.is_active == True).first()
@@ -663,7 +697,7 @@ def login(request: Request, email: str = Form(""), password: str = Form(""), tot
     start_user_session(db, request, user)
     LOGIN_FAILURES.pop(key, None)
     write_audit(db, user, "login", "user", str(user.id), request.client.host if request.client else None)
-    return RedirectResponse("/dashboard", status_code=303)
+    return RedirectResponse(module_landing_url(db, user), status_code=303)
 
 
 @router.post("/logout")

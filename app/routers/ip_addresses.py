@@ -9,7 +9,7 @@ from starlette import status
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.db.session import get_db
 from app.models.models import CustomFieldValue, ComputeWorkload, DHCPLeaseHistory, DHCPRange, DNSClientTrafficEvent, DNSRecognisedDevice, IPAddress, NetworkMonitor, NetworkMonitorCheck, NetworkMonitorEvent, NetworkMonitorOutage, NetworkMonitorStatistic, RemoteAccess, RemoteSessionRecording, VLAN
-from app.routers.auth import require_editor, require_user
+from app.routers.auth import require_editor, require_module_access, require_user
 from app.routers.compute_manager import uptime_label, workload_addresses
 from app.routers.remote_manager import RDP_SETTING_KEYS, SETTINGS as REMOTE_MANAGER_DEFAULTS, TERMINAL_SETTING_KEYS, clean_global_setting, decode_settings_blob, encode_settings_blob
 from app.services.audit import write_audit
@@ -19,7 +19,7 @@ from app.services.network_monitor import clamp_interval, clamp_timeout, ping_ipv
 from app.services.dns_clients import add_event, client_display_name, client_status, dhcp_range_for_ip, normalise_mac
 from app.services.site_settings import get_site_setting
 
-router = APIRouter(prefix="/networking/vlan-ip-manager")
+router = APIRouter(prefix="/networking/vlan-ip-manager", dependencies=[Depends(require_module_access("vlan_ip_manager"))])
 templates = Jinja2Templates(directory="app/templates")
 ASSIGNMENT_TYPES = {"Static", "Dynamic"}
 REMOTE_PROTOCOLS = {"ssh", "rdp"}

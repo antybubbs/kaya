@@ -23,6 +23,7 @@ SQLAlchemy models are defined in `app/models/models.py`.
 Major tables:
 
 - `users`
+- `user_module_permissions`
 - `password_reset_tokens`
 - `app_sessions`
 - `licences`
@@ -62,6 +63,7 @@ Major tables:
 - `NetworkMonitor` has a one-to-one relationship with `IPAddress`.
 - `RemoteAccess` has a one-to-one relationship with `IPAddress`.
 - `RemoteSessionRecording` references `RemoteAccess` and `User`.
+- `UserModulePermission` grants one stable registered module key to a user. Its unique `(user_id, module_key)` constraint prevents duplicate grants, and `created_by` records the administrator responsible for the current grant.
 - `RunbookPage` belongs to an optional `RunbookSpace`, optional parent page, creator, and updater.
 - `RunbookPageHistory` references a page and saving user.
 - `RackItem` belongs to `Rack` and may reference `HardwareAsset`.
@@ -104,3 +106,5 @@ DNS Manager adds three additive tables:
 - `dns_recognised_devices` stores stable provider-scoped device identities and observed IP/hostname changes.
 
 Existing databases are upgraded idempotently during normal application bootstrap. Existing DNS providers, investigations and recognised-hostname settings are preserved; recognised hostname settings are imported lazily into stable device records when a successful analysis observes the device.
+
+Existing users are backfilled with every registered module when `user_module_permissions` is first introduced, preserving upgrade access. Users created afterwards receive no module grants by default; the first setup administrator is explicitly granted every registered module.

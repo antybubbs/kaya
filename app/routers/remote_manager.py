@@ -25,13 +25,13 @@ from app.core.csrf import csrf_context, validate_csrf_token
 from app.core.security import encrypt_secret
 from app.db.session import SessionLocal, get_db
 from app.models.models import RemoteAccess, RemoteManagerSetting, RemoteSessionRecording, User
-from app.routers.auth import require_admin, require_editor, require_user
+from app.routers.auth import require_admin, require_editor, require_module_access, require_user
 from app.services.audit import write_audit
 from app.services.guacamole_bridge import restart_guacamole_bridge, start_guacamole_bridge
 from app.services.site_settings import get_site_setting
 from app.services.sessions import active_user_session
 
-router = APIRouter(prefix="/remote-manager")
+router = APIRouter(prefix="/remote-manager", dependencies=[Depends(require_module_access("remote_manager"))])
 templates = Jinja2Templates(directory="app/templates")
 PROTOCOLS = {"ssh", "rdp"}
 SETTINGS = {

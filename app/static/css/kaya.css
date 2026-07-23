@@ -1132,6 +1132,13 @@ input[aria-invalid=true]{border-color:var(--danger)!important}
 .user-identity-list dd{color:var(--text);margin:0;min-width:0;overflow-wrap:anywhere;word-break:break-word}
 .user-editor-actions{align-items:center;border-top:1px solid var(--line);display:flex;flex-wrap:wrap;gap:8px;padding-top:14px}
 .user-editor-actions form{margin-left:auto}
+.module-access-editor{display:grid;gap:14px;padding:16px}
+.module-access-editor>label{max-width:420px}
+.module-access-grid{display:grid;gap:9px;grid-template-columns:repeat(3,minmax(0,1fr))}
+.module-access-option{align-items:start;background:var(--panel2);border:1px solid var(--line);border-radius:9px;gap:10px;padding:11px}
+.module-access-option:hover{border-color:rgba(255,138,0,.48)}
+.module-access-option span,.module-access-option small{display:block;min-width:0}
+.module-access-option small{color:var(--muted);font-weight:600;margin-top:3px;overflow-wrap:anywhere}
 .user-security-action{border-color:rgba(245,158,11,.4)!important;color:#fcd34d!important}
 html[data-kaya-theme=light-ops] .field-error{color:#b91c1c!important}
 html[data-kaya-theme=light-ops] .user-security-option{background:#fffbeb;border-color:#f3c76a}
@@ -1140,6 +1147,7 @@ html[data-kaya-theme=light-ops] .user-security-action{color:#92400e!important}
 @media(max-width:720px){
   .user-editor-shell{gap:11px}
   .user-editor-fields,.user-identity-list{grid-template-columns:1fr}
+  .module-access-grid{grid-template-columns:1fr}
   .user-identity-list>div:nth-child(odd){border-right:0}
   .user-identity-list>div:nth-last-child(2){border-bottom:1px solid var(--line)}
   .user-editor-actions{align-items:stretch;display:grid;grid-template-columns:1fr}

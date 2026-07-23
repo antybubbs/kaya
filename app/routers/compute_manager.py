@@ -12,14 +12,15 @@ from app.core.csrf import csrf_context, validate_csrf_token
 from app.core.security import encrypt_secret
 from app.db.session import get_db
 from app.models.models import BackupJob, ComputeEvent, ComputeHost, ComputeInventoryItem, ComputeMetric, ComputeWorkload, IPAddress
-from app.routers.auth import require_editor, require_user
+from app.routers.auth import require_editor, require_module_access, require_user
 from app.services.audit import write_audit
 from app.services.compute_monitor import compute_summary, prune_missing_workloads, reconcile_workload, sync_host, workload_identity
 from app.services.site_settings import get_site_setting
 from datetime import datetime, timedelta
 
 
-router=APIRouter(prefix='/infrastructure/vm-docker-manager')
+router=APIRouter(prefix='/infrastructure/vm-docker-manager', dependencies=[Depends(require_module_access("compute_manager"))])
+agent_router=APIRouter(prefix='/infrastructure/vm-docker-manager')
 templates=Jinja2Templates(directory='app/templates')
 
 def metadata(value):
@@ -221,7 +222,7 @@ def delete_host(request:Request,host_id:int,csrf_token:str=Form(...),db:Session=
     db.delete(host); db.commit(); write_audit(db,user,'delete','compute_host',None,request.client.host if request.client else None,detail=name)
     return RedirectResponse('/infrastructure/vm-docker-manager',status_code=303)
 
-@router.post('/api/agent/checkin')
+@agent_router.post('/api/agent/checkin')
 async def agent_checkin(
     request: Request,
     db: Session = Depends(get_db),

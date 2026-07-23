@@ -14,10 +14,10 @@ from app.core.config import get_settings
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.db.session import get_db
 from app.models.models import RunbookImage, RunbookPage, RunbookPageHistory, RunbookSpace
-from app.routers.auth import require_editor, require_user
+from app.routers.auth import require_editor, require_module_access, require_user
 from app.services.audit import write_audit
 
-router = APIRouter(prefix="/documentation/runbook-manager")
+router = APIRouter(prefix="/documentation/runbook-manager", dependencies=[Depends(require_module_access("runbooks"))])
 templates = Jinja2Templates(directory="app/templates")
 RUNBOOK_IMAGE_TYPES = {
     ".gif": ("image/gif", (b"GIF87a", b"GIF89a")),

@@ -26,7 +26,7 @@ def category_for(action: str, entity: str) -> str:
         return "authentication"
     if action in {"login", "logout", "login_failed", "login_blocked", "2fa_failed", "2fa_challenge", "create_initial_admin"}:
         return "authentication"
-    if action in {"change_password", "password_reset_blocked", "password_reset_completed", "password_reset_email_failed", "password_reset_requested", "start_2fa", "enable_2fa", "disable_2fa", "reveal"}:
+    if action in {"change_password", "password_reset_blocked", "password_reset_completed", "password_reset_email_failed", "password_reset_requested", "start_2fa", "enable_2fa", "disable_2fa", "reveal", "module_access_denied", "module_access_granted", "module_access_removed"}:
         return "security"
     if action in {"import", "export"}:
         return "data"
@@ -42,7 +42,7 @@ def severity_for(action: str, status_code: int | None = None) -> str:
         return "error"
     if status_code is not None and status_code >= 400:
         return "warning"
-    if action in {"login_failed", "login_blocked", "2fa_failed", "delete", "reveal", "disable_2fa", "break_glass_login_succeeded", "break_glass_login_failed", "oidc_link_failed"}:
+    if action in {"login_failed", "login_blocked", "2fa_failed", "delete", "reveal", "disable_2fa", "break_glass_login_succeeded", "break_glass_login_failed", "oidc_link_failed", "module_access_denied", "module_access_removed"}:
         return "warning"
     return "info"
 

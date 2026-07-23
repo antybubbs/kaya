@@ -8,12 +8,12 @@ from app.core.csrf import csrf_context, validate_csrf_token
 from app.core.security import decrypt_secret, encrypt_secret, mask_key
 from app.db.session import get_db
 from app.models.models import CustomFieldValue, Licence
-from app.routers.auth import require_editor, require_user
+from app.routers.auth import require_editor, require_module_access, require_user
 from app.services.audit import write_audit
 from app.services.custom_fields import active_fields, field_values, option_list, save_custom_values, validate_custom_values
 from app.services.managed_lists import list_values
 
-router = APIRouter(prefix="/security/license-keys")
+router = APIRouter(prefix="/security/license-keys", dependencies=[Depends(require_module_access("licence_manager"))])
 templates = Jinja2Templates(directory="app/templates")
 MODULE = "licences"
 ENTITY_TYPE = "licence"

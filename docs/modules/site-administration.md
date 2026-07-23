@@ -24,6 +24,7 @@ Site Administration is the central admin area for settings, security, integratio
 ## Models Used
 
 - `User`
+- `UserModulePermission`
 - `AppSession`
 - `AuditLog`
 - `RemoteManagerSetting`
@@ -52,11 +53,14 @@ Settings are stored primarily in `remote_manager_settings` as key/value rows. Th
 ## Permissions
 
 - Admin only for most pages.
+- User roles control actions, while module grants independently control which registered modules may be entered.
+- Team → Users is the single place to assign enabled modules. New users receive no module access by default.
+- Module-backed import/export, custom-field, and managed-list operations enforce the same module grant server-side.
 - User profile security is separate and available to the current user.
 
 ## Workflows
 
-- Create/edit users.
+- Create/edit users and assign searchable per-user module access.
 - Reset user 2FA.
 - View audit logs.
 - View system/about information.

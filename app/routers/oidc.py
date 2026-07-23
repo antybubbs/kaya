@@ -26,6 +26,7 @@ from app.services.oidc_discovery import OIDCDiscoveryError, test_and_store_disco
 from app.services.oidc_identity import OIDCIdentityError, confirm_transaction_link, resolve_login, unlink_identity
 from app.services.sessions import start_user_session
 from app.services.site_settings import get_site_setting
+from app.services.modules import has_module_access, module_for_path, module_landing_url
 
 
 router = APIRouter()
@@ -229,6 +230,9 @@ async def oidc_callback(request: Request, state: str = "", code: str = "", error
         if not user:
             raise OIDCIdentityError("unresolved_user")
         return_path = transaction.return_path
+        return_module = module_for_path(return_path.split("?", 1)[0])
+        if return_module and not has_module_access(db, user, return_module.key):
+            return_path = module_landing_url(db, user)
         db.delete(transaction)
         db.commit()
         _start_session(request, db, user, method="oidc", id_token_hint=id_token_hint)
@@ -363,7 +367,7 @@ def emergency_login_submit(request: Request, email: str = Form(""), password: st
         return templates.TemplateResponse(request, "emergency_login.html", {"error": "Invalid email, password, or authentication code.", "requires_2fa": bool(pending), **csrf_context(request, include_version=False)}, status_code=401)
     _start_session(request, db, user, method="break_glass")
     write_audit(db, user, "break_glass_login_succeeded", "user", str(user.id), request.client.host if request.client else None, severity="error")
-    return RedirectResponse("/dashboard", status_code=303)
+    return RedirectResponse(module_landing_url(db, user), status_code=303)
 
 
 def _provider_status(db: Session, provider: OIDCProvider | None) -> dict:

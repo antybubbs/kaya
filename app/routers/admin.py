@@ -56,12 +56,20 @@ from app.routers.auth import require_admin
 from app.services.about import collect_about
 from app.services.audit import write_audit
 from app.services.user_names import clean_name_part, first_name_contains_last_name
-from app.services.client_ip import client_ip_details, validate_trusted_proxies
+from app.services.client_ip import client_ip as trusted_client_ip, client_ip_details, validate_trusted_proxies
 from app.services.custom_fields import FIELD_TYPES, make_field_key
 from app.services.exporter import export_ip_addresses_csv, export_licences_csv
 from app.services.importer import ImportCSVError, import_csv, import_ip_addresses_csv
 from app.services.managed_lists import MANAGED_LIST_MODULES, MANAGED_LISTS, list_label
 from app.services.mail import MailConfigurationError, render_email_template, send_mail
+from app.services.modules import (
+    MODULE_KEYS,
+    accessible_module_keys,
+    enabled_modules,
+    has_module_access,
+    module_access_counts,
+    replace_module_access,
+)
 from app.services.sessions import active_since
 from app.services.dns_providers import provider_for
 from app.services.guacamole_bridge import restart_guacamole_bridge
@@ -94,6 +102,75 @@ CUSTOM_FIELD_MODULES = {
     "hardware_assets": "Asset Manager",
     "licences": "License Keys",
 }
+INTERNAL_MODULE_KEYS = {
+    "ip_addresses": "vlan_ip_manager",
+    "hardware_assets": "asset_manager",
+    "licences": "licence_manager",
+}
+
+
+def module_form_context(db: Session, target: User | None, selected: set[str] | None = None) -> dict:
+    return {
+        "modules": enabled_modules(db),
+        "selected_module_keys": selected if selected is not None else (
+            set(accessible_module_keys(db, target)) if target else set()
+        ),
+    }
+
+
+def selected_module_keys(values) -> set[str]:
+    if not isinstance(values, list):
+        return set()
+    if len(values) > len(MODULE_KEYS) or any(not isinstance(value, str) or len(value) > 80 for value in values):
+        raise ValueError("One or more selected modules are invalid.")
+    selected = set(values)
+    if selected - MODULE_KEYS:
+        raise ValueError("One or more selected modules are invalid.")
+    return selected
+
+
+def require_data_module(request: Request, db: Session, user: User, module: str) -> tuple[str, str]:
+    mapping = {
+        "licences": ("licences", "licence_manager"),
+        "ip-addresses": ("ip-addresses", "vlan_ip_manager"),
+    }
+    resolved = mapping.get(module)
+    if not resolved:
+        raise HTTPException(status_code=404, detail="Module not found")
+    if not has_module_access(db, user, resolved[1]):
+        write_audit(
+            db, user, "module_access_denied", "module_permission", resolved[1],
+            trusted_client_ip(request),
+            detail=f"Access denied to module {resolved[1]}",
+            status_code=403,
+            metadata={"module_key": resolved[1]},
+        )
+        raise PermissionError("Module access required")
+    return resolved
+
+
+def require_internal_module(request: Request, db: Session, user: User, module: str) -> str:
+    module_key = INTERNAL_MODULE_KEYS.get(module)
+    if not module_key:
+        raise HTTPException(status_code=404, detail="Module not found")
+    if not has_module_access(db, user, module_key):
+        write_audit(
+            db, user, "module_access_denied", "module_permission", module_key,
+            trusted_client_ip(request),
+            detail=f"Access denied to module {module_key}",
+            status_code=403,
+            metadata={"module_key": module_key},
+        )
+        raise PermissionError("Module access required")
+    return module
+
+
+def permitted_internal_modules(db: Session, user: User, choices: dict[str, str]) -> dict[str, str]:
+    return {
+        module: label
+        for module, label in choices.items()
+        if has_module_access(db, user, INTERNAL_MODULE_KEYS[module])
+    }
 
 SITE_SETTING_KEYS = {
     "app_name": APP_BRAND_NAME,
@@ -867,6 +944,8 @@ def users(
     user=Depends(require_admin),
 ):
     rows = db.query(User).order_by(User.email.asc()).all()
+    module_counts = module_access_counts(db, rows)
+    enabled_module_count = len(enabled_modules(db))
 
     return templates.TemplateResponse(
         request,
@@ -874,6 +953,8 @@ def users(
         {
             "user": user,
             "rows": rows,
+            "module_counts": module_counts,
+            "enabled_module_count": enabled_module_count,
             **csrf_context(request),
         },
     )
@@ -882,6 +963,7 @@ def users(
 @router.get("/team/users/new")
 def new_user(
     request: Request,
+    db: Session = Depends(get_db),
     user=Depends(require_admin),
 ):
     return templates.TemplateResponse(
@@ -894,6 +976,7 @@ def new_user(
             "error": None,
             "field_errors": {},
             "form_values": {},
+            **module_form_context(db, None),
             **csrf_context(request),
         },
     )
@@ -907,6 +990,7 @@ def create_user(
     last_name: str = Form("", max_length=120),
     password: str = Form(..., min_length=12, max_length=255),
     role: str = Form("viewer"),
+    module_keys: list[str] = Form(default=[]),
     csrf_token: str = Form(...),
     db: Session = Depends(get_db),
     user=Depends(require_admin),
@@ -914,6 +998,20 @@ def create_user(
     validate_csrf_token(request, csrf_token)
 
     role = role if role in ROLES else "viewer"
+    try:
+        selected_modules = selected_module_keys(module_keys)
+    except ValueError as exc:
+        return templates.TemplateResponse(
+            request,
+            "user_form.html",
+            {
+                "user": user, "target": None, "roles": sorted(ROLES), "error": str(exc),
+                "field_errors": {}, "form_values": {},
+                **module_form_context(db, None),
+                **csrf_context(request),
+            },
+            status_code=400,
+        )
     email = email.strip().lower()
     first_name = clean_name_part(first_name)
     last_name = clean_name_part(last_name)
@@ -925,6 +1023,7 @@ def create_user(
                 "user": user, "target": None, "roles": sorted(ROLES), "error": None,
                 "field_errors": {"first_name": "Enter only the given name here; the surname is already in the last name field."},
                 "form_values": {"email": email, "first_name": first_name, "last_name": last_name, "role": role},
+                **module_form_context(db, None, selected_modules),
                 **csrf_context(request),
             },
             status_code=400,
@@ -941,6 +1040,7 @@ def create_user(
                 "error": "A user with that email already exists.",
                 "field_errors": {"email": "This email address is already in use."},
                 "form_values": {"email": email, "first_name": first_name, "last_name": last_name, "role": role},
+                **module_form_context(db, None, selected_modules),
                 **csrf_context(request),
             },
             status_code=400,
@@ -956,6 +1056,8 @@ def create_user(
     )
 
     db.add(row)
+    db.flush()
+    added_modules, _ = replace_module_access(db, row, selected_modules, user)
     db.commit()
 
     write_audit(
@@ -966,7 +1068,15 @@ def create_user(
         str(row.id),
         request.client.host if request.client else None,
         detail=email,
+        metadata={"module_keys": sorted(added_modules)},
     )
+    for module_key in sorted(added_modules):
+        write_audit(
+            db, user, "module_access_granted", "module_permission", f"{row.id}:{module_key}",
+            trusted_client_ip(request),
+            detail=f"Granted {module_key} to user {row.id}",
+            metadata={"target_user_id": row.id, "module_key": module_key},
+        )
 
     return RedirectResponse("/team/users", status_code=303)
 
@@ -996,6 +1106,7 @@ def edit_user(
             "error": None,
             "field_errors": {},
             "form_values": {},
+            **module_form_context(db, target),
             **csrf_context(request),
         },
     )
@@ -1010,6 +1121,7 @@ def update_user(
     last_name: str = Form("", max_length=120),
     password: str = Form("", max_length=255),
     role: str = Form("viewer"),
+    module_keys: list[str] = Form(default=[]),
     is_active: str = Form(""),
     is_break_glass: str = Form(""),
     role_source: str = Form("local"),
@@ -1027,6 +1139,21 @@ def update_user(
             detail="User not found",
         )
 
+    try:
+        selected_modules = selected_module_keys(module_keys)
+    except ValueError as exc:
+        return templates.TemplateResponse(
+            request,
+            "user_form.html",
+            {
+                "user": user, "target": target, "roles": sorted(ROLES), "error": str(exc),
+                "field_errors": {}, "form_values": {},
+                **module_form_context(db, target),
+                **csrf_context(request),
+            },
+            status_code=400,
+        )
+
     if target.id == user.id and (role != "admin" or not is_active):
         return templates.TemplateResponse(
             request,
@@ -1036,6 +1163,7 @@ def update_user(
                 "target": target,
                 "roles": sorted(ROLES),
                 "error": "You cannot remove your own admin access or deactivate yourself.",
+                **module_form_context(db, target, selected_modules),
                 **csrf_context(request),
             },
             status_code=400,
@@ -1054,6 +1182,7 @@ def update_user(
                     "email": email.strip().lower(), "first_name": clean_first_name, "last_name": clean_last_name,
                     "role": role, "is_active": bool(is_active), "is_break_glass": is_break_glass == "1", "role_source": role_source,
                 },
+                **module_form_context(db, target, selected_modules),
                 **csrf_context(request),
             },
             status_code=400,
@@ -1068,7 +1197,12 @@ def update_user(
     if requested_break_glass and (role != "admin" or not target.is_active or not (password or target.password_hash)):
         return templates.TemplateResponse(
             request, "user_form.html",
-            {"user": user, "target": target, "roles": sorted(ROLES), "error": "Break-glass access requires an active administrator with a local password.", **csrf_context(request)},
+            {
+                "user": user, "target": target, "roles": sorted(ROLES),
+                "error": "Break-glass access requires an active administrator with a local password.",
+                **module_form_context(db, target, selected_modules),
+                **csrf_context(request),
+            },
             status_code=400,
         )
     target.is_break_glass = requested_break_glass
@@ -1087,6 +1221,7 @@ def update_user(
                     "target": target,
                     "roles": sorted(ROLES),
                     "error": "New passwords must be at least 12 characters.",
+                    **module_form_context(db, target, selected_modules),
                     **csrf_context(request),
                 },
                 status_code=400,
@@ -1095,6 +1230,7 @@ def update_user(
         target.password_hash = hash_password(password)
         target.authentication_type = "local_and_oidc" if identity else "local"
 
+    granted_modules, removed_modules = replace_module_access(db, target, selected_modules, user)
     db.query(VaultSession).filter(VaultSession.user_id == target.id, VaultSession.revoked_at.is_(None)).update({VaultSession.revoked_at: datetime.utcnow()}, synchronize_session=False)
     revoke_user_sessions(
         db,
@@ -1111,7 +1247,23 @@ def update_user(
         str(target.id),
         request.client.host if request.client else None,
         detail=target.email,
+        metadata={"modules_granted": sorted(granted_modules), "modules_removed": sorted(removed_modules)},
     )
+
+    for module_key in sorted(granted_modules):
+        write_audit(
+            db, user, "module_access_granted", "module_permission", f"{target.id}:{module_key}",
+            trusted_client_ip(request),
+            detail=f"Granted {module_key} to user {target.id}",
+            metadata={"target_user_id": target.id, "module_key": module_key},
+        )
+    for module_key in sorted(removed_modules):
+        write_audit(
+            db, user, "module_access_removed", "module_permission", f"{target.id}:{module_key}",
+            trusted_client_ip(request),
+            detail=f"Removed {module_key} from user {target.id}",
+            metadata={"target_user_id": target.id, "module_key": module_key},
+        )
 
     return RedirectResponse("/team/users", status_code=303)
 
@@ -1161,14 +1313,16 @@ def reset_user_2fa(
 def import_page(
     request: Request,
     module: str = "licences",
+    db: Session = Depends(get_db),
     user=Depends(require_admin),
 ):
+    active_module, _ = require_data_module(request, db, user, module)
     return templates.TemplateResponse(
         request,
         "import.html",
         {
             "user": user,
-            "active_module": module if module in {"licences", "ip-addresses"} else "licences",
+            "active_module": active_module,
             "message": None,
             "error": None,
             **csrf_context(request),
@@ -1187,7 +1341,7 @@ async def import_upload(
 ):
     validate_csrf_token(request, csrf_token)
 
-    active_module = module if module in {"licences", "ip-addresses"} else "licences"
+    active_module, _ = require_data_module(request, db, user, module)
     filename = file.filename or ""
 
     if not filename.lower().endswith(".csv"):
@@ -1281,8 +1435,9 @@ def export_csv(
     user=Depends(require_admin),
 ):
     validate_csrf_token(request, csrf_token)
+    active_module, _ = require_data_module(request, db, user, module)
 
-    if module == "ip-addresses":
+    if active_module == "ip-addresses":
         csv_data = export_ip_addresses_csv(db)
         entity = "ip_address"
         filename = "kaya-ip-addresses.csv"
@@ -1317,7 +1472,8 @@ def custom_fields(
     db: Session = Depends(get_db),
     user=Depends(require_admin),
 ):
-    active_module = module if module in CUSTOM_FIELD_MODULES else "ip_addresses"
+    active_module = require_internal_module(request, db, user, module)
+    available_modules = permitted_internal_modules(db, user, CUSTOM_FIELD_MODULES)
 
     rows = (
         db.query(CustomField)
@@ -1331,7 +1487,7 @@ def custom_fields(
         "custom_fields.html",
         {
             "user": user,
-            "modules": CUSTOM_FIELD_MODULES,
+            "modules": available_modules,
             "active_module": active_module,
             "rows": rows,
             "field_types": FIELD_TYPES,
@@ -1356,7 +1512,8 @@ def create_custom_field(
 ):
     validate_csrf_token(request, csrf_token)
 
-    active_module = module if module in CUSTOM_FIELD_MODULES else "ip_addresses"
+    active_module = require_internal_module(request, db, user, module)
+    available_modules = permitted_internal_modules(db, user, CUSTOM_FIELD_MODULES)
     clean_label = label.strip()
     clean_type = field_type if field_type in FIELD_TYPES else "text"
     clean_options = options.strip()
@@ -1374,7 +1531,7 @@ def create_custom_field(
             "custom_fields.html",
             {
                 "user": user,
-                "modules": CUSTOM_FIELD_MODULES,
+                "modules": available_modules,
                 "active_module": active_module,
                 "rows": rows,
                 "field_types": FIELD_TYPES,
@@ -1390,7 +1547,7 @@ def create_custom_field(
             "custom_fields.html",
             {
                 "user": user,
-                "modules": CUSTOM_FIELD_MODULES,
+                "modules": available_modules,
                 "active_module": active_module,
                 "rows": rows,
                 "field_types": FIELD_TYPES,
@@ -1415,7 +1572,7 @@ def create_custom_field(
             "custom_fields.html",
             {
                 "user": user,
-                "modules": CUSTOM_FIELD_MODULES,
+                "modules": available_modules,
                 "active_module": active_module,
                 "rows": rows,
                 "field_types": FIELD_TYPES,
@@ -1474,6 +1631,7 @@ def toggle_custom_field(
             detail="Custom field not found",
         )
 
+    require_internal_module(request, db, user, row.module)
     row.is_active = not row.is_active
     db.commit()
 
@@ -1499,6 +1657,7 @@ def delete_custom_field(request: Request, field_id: int, csrf_token: str = Form(
     row = db.get(CustomField, field_id)
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Custom field not found")
+    require_internal_module(request, db, user, row.module)
     module = row.module
     label = row.label
     db.query(CustomFieldValue).filter(CustomFieldValue.field_id == row.id).delete(synchronize_session=False)
@@ -1516,7 +1675,8 @@ def categories(
     db: Session = Depends(get_db),
     user=Depends(require_admin),
 ):
-    active_module = module if module in MANAGED_LIST_MODULES else "hardware_assets"
+    active_module = require_internal_module(request, db, user, module)
+    available_modules = permitted_internal_modules(db, user, MANAGED_LIST_MODULES)
     lists = MANAGED_LISTS.get(active_module, {})
     active_list = list_key if list_key in lists else next(iter(lists))
 
@@ -1535,7 +1695,7 @@ def categories(
         "categories.html",
         {
             "user": user,
-            "modules": MANAGED_LIST_MODULES,
+            "modules": available_modules,
             "lists": lists,
             "active_module": active_module,
             "active_list": active_list,
@@ -1560,7 +1720,8 @@ def create_category(
 ):
     validate_csrf_token(request, csrf_token)
 
-    active_module = module if module in MANAGED_LIST_MODULES else "hardware_assets"
+    active_module = require_internal_module(request, db, user, module)
+    available_modules = permitted_internal_modules(db, user, MANAGED_LIST_MODULES)
     lists = MANAGED_LISTS.get(active_module, {})
     active_list = list_key if list_key in lists else next(iter(lists))
     clean_value = value.strip()
@@ -1581,7 +1742,7 @@ def create_category(
             "categories.html",
             {
                 "user": user,
-                "modules": MANAGED_LIST_MODULES,
+                "modules": available_modules,
                 "lists": lists,
                 "active_module": active_module,
                 "active_list": active_list,
@@ -1607,7 +1768,7 @@ def create_category(
             "categories.html",
             {
                 "user": user,
-                "modules": MANAGED_LIST_MODULES,
+                "modules": available_modules,
                 "lists": lists,
                 "active_module": active_module,
                 "active_list": active_list,
@@ -1664,6 +1825,7 @@ def toggle_category(
             detail="Category not found",
         )
 
+    require_internal_module(request, db, user, row.module)
     row.is_active = not row.is_active
     db.commit()
 
@@ -1703,6 +1865,7 @@ def edit_category(
             detail="Category not found",
         )
 
+    require_internal_module(request, db, user, row.module)
     clean_value = value.strip()
 
     if not clean_value:
@@ -1756,6 +1919,7 @@ def delete_category(request: Request, item_id: int, csrf_token: str = Form(...),
     row = db.get(ManagedListItem, item_id)
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Category not found")
+    require_internal_module(request, db, user, row.module)
     module = row.module
     list_key = row.list_key
     value = row.value

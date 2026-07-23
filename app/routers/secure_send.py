@@ -18,7 +18,7 @@ from app.db.session import get_db
 from app.models.models import (
     SecureSendActivity, SecureSendFile, SecureSendPackage, User, Vault, VaultAttachment, VaultItem, VaultItemVersion,
 )
-from app.routers.auth import require_user
+from app.routers.auth import require_module_access, require_user
 from app.services.audit import write_audit
 from app.services.mail import MailConfigurationError, render_email_template, send_mail
 from app.services.secure_send import (
@@ -29,7 +29,7 @@ from app.services.secure_send import (
 )
 from app.services.site_settings import get_site_setting
 
-router = APIRouter(prefix="/security/secure-send")
+router = APIRouter(prefix="/security/secure-send", dependencies=[Depends(require_module_access("secure_send"))])
 
 
 def person_name(first_name: str | None, last_name: str | None, fallback: str) -> str:

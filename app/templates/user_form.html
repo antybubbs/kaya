@@ -48,6 +48,28 @@
       </div>
     </section>
 
+    <section class="panel user-editor-card" aria-labelledby="module-access-heading">
+      <header>
+        <h2 id="module-access-heading">Module access</h2>
+        <p>Choose where this user may enter. Their role still controls what they can do inside each module.</p>
+      </header>
+      <div class="module-access-editor" data-module-access-editor>
+        <label for="module-access-search">Search modules
+          <input id="module-access-search" type="search" placeholder="Search modules..." autocomplete="off" data-module-access-search>
+        </label>
+        <div class="module-access-grid">
+          {% for module in modules %}
+          <label class="module-access-option checkbox-row" data-module-access-option>
+            <input type="checkbox" name="module_keys" value="{{ module.key }}" {{ 'checked' if module.key in selected_module_keys else '' }}>
+            <span><strong>{{ module.label }}</strong><small class="mono">{{ module.key }}</small></span>
+          </label>
+          {% endfor %}
+        </div>
+        {% if not target %}<p class="muted">New users have no module access unless you select it here.</p>{% endif %}
+        <p class="muted" data-module-access-empty hidden>No enabled modules match your search.</p>
+      </div>
+    </section>
+
     {% if target %}
     <section class="panel user-editor-card" aria-labelledby="access-authentication-heading">
       <header>

@@ -23,10 +23,32 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     external_identities = relationship("ExternalIdentity", foreign_keys="ExternalIdentity.user_id", back_populates="user")
+    module_permissions = relationship(
+        "UserModulePermission",
+        foreign_keys="UserModulePermission.user_id",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
 
     @property
     def display_name(self) -> str:
         return user_display_name(self.first_name, self.last_name, self.email)
+
+
+class UserModulePermission(Base):
+    __tablename__ = "user_module_permissions"
+    __table_args__ = (
+        UniqueConstraint("user_id", "module_key", name="uq_user_module_permissions_user_module"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    module_key: Mapped[str] = mapped_column(String(80), index=True)
+    allowed: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    user = relationship("User", foreign_keys=[user_id], back_populates="module_permissions")
+    creator = relationship("User", foreign_keys=[created_by])
 
 
 class OIDCProvider(Base):

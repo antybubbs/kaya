@@ -6,6 +6,12 @@ import re
 from pathlib import Path
 
 DB_PATH = Path("/app/data/kaya.db")
+MODULE_KEYS = (
+    "asset_manager", "backup_manager", "compute_manager", "dashboard", "dns_manager",
+    "domain_manager", "high_availability", "licence_manager", "network_monitor",
+    "rack_manager", "remote_manager", "runbooks", "secret_vault", "secure_send",
+    "vlan_ip_manager",
+)
 
 
 def column_exists(cursor, table, column):
@@ -71,6 +77,29 @@ def main():
             cur.execute("CREATE INDEX IF NOT EXISTS ix_users_is_break_glass ON users (is_break_glass)")
             cur.execute("CREATE INDEX IF NOT EXISTS ix_users_role_source ON users (role_source)")
             migrations_applied.append("users.password_hash nullable")
+
+    module_permissions_existed = table_exists(cur, "user_module_permissions")
+    if not module_permissions_existed:
+        cur.execute(
+            "CREATE TABLE user_module_permissions ("
+            "id INTEGER NOT NULL PRIMARY KEY, "
+            "user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, "
+            "module_key VARCHAR(80) NOT NULL, "
+            "allowed BOOLEAN DEFAULT 1 NOT NULL, "
+            "created_by INTEGER REFERENCES users(id) ON DELETE SET NULL, "
+            "created_at DATETIME, updated_at DATETIME, "
+            "CONSTRAINT uq_user_module_permissions_user_module UNIQUE (user_id, module_key))"
+        )
+        cur.execute("CREATE INDEX ix_user_module_permissions_user_id ON user_module_permissions (user_id)")
+        cur.execute("CREATE INDEX ix_user_module_permissions_module_key ON user_module_permissions (module_key)")
+        for module_key in MODULE_KEYS:
+            cur.execute(
+                "INSERT INTO user_module_permissions "
+                "(user_id, module_key, allowed, created_by, created_at, updated_at) "
+                "SELECT id, ?, 1, id, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP FROM users",
+                (module_key,),
+            )
+        migrations_applied.append("user_module_permissions")
 
     if table_exists(cur, "app_sessions") and not column_exists(cur, "app_sessions", "encrypted_oidc_id_token"):
         cur.execute("ALTER TABLE app_sessions ADD COLUMN encrypted_oidc_id_token TEXT")

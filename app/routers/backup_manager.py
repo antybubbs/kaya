@@ -12,11 +12,11 @@ from app.core.csrf import csrf_context, validate_csrf_token
 from app.core.security import decrypt_secret, encrypt_secret
 from app.db.session import get_db
 from app.models.models import BackupJob, BackupRecord, ComputeHost, ComputeInventoryItem, ComputeWorkload, RemoteManagerSetting
-from app.routers.auth import require_editor, require_user
+from app.routers.auth import require_editor, require_module_access, require_user
 from app.services.audit import write_audit
 from app.services.site_settings import get_site_setting
 
-router = APIRouter(prefix="/infrastructure/backup-manager")
+router = APIRouter(prefix="/infrastructure/backup-manager", dependencies=[Depends(require_module_access("backup_manager"))])
 templates = Jinja2Templates(directory="app/templates")
 
 
