@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, event
@@ -19,7 +20,7 @@ def database():
 
 def ready_pair(db, *, managed=True):
     user = User(email="failover@example.test", password_hash="x", role="admin", is_active=True)
-    cluster = HACluster(name="Test Pair", provider_key="pihole", status="HEALTHY", virtual_ip="192.168.50.53", prefix_length=24, keepalived_status="DEPLOYED", keepalived_generation=4)
+    cluster = HACluster(name="Test Pair", provider_key="pihole", deployment_mode="DNS_DHCP" if managed else "DNS_ONLY", status="HEALTHY", virtual_ip="192.168.50.53", prefix_length=24, keepalived_status="DEPLOYED", keepalived_generation=4)
     db.add_all([user, cluster]); db.flush()
     source = HANode(cluster_id=cluster.id, display_name="Primary", api_base_url="http://192.168.50.2", role="ACTIVE", desired_role="ACTIVE", vip_owned=True, dhcp_running=managed, dns_healthy=True, keepalived_status="DEPLOYED", keepalived_runtime_state="RUNNING", config_generation=4, lease_generation=7, agent_version="0.1.5", last_heartbeat_at=datetime.utcnow())
     target = HANode(cluster_id=cluster.id, display_name="Standby", api_base_url="http://192.168.50.3", role="STANDBY", desired_role="STANDBY", vip_owned=False, dhcp_running=False, dns_healthy=True, keepalived_status="DEPLOYED", keepalived_runtime_state="RUNNING", config_generation=4, lease_generation=7, agent_version="0.1.5", last_heartbeat_at=datetime.utcnow())
@@ -77,6 +78,73 @@ def test_external_dhcp_failover_never_emits_dhcp_action():
         assert run.phase == "MOVING_VIP"
         assert desired_failover_action(cluster, source) is None
         assert desired_failover_action(cluster, target) is None
+
+
+def test_legacy_dns_only_misclassification_stops_for_safe_rollback():
+    with database() as db:
+        user, cluster, source, target = ready_pair(db, managed=False)
+        cluster.deployment_mode = None
+        source.dhcp_running = True
+        run = HAFailoverRun(
+            cluster_id=cluster.id,
+            source_node_id=source.id,
+            target_node_id=target.id,
+            status="RUNNING",
+            phase="MOVING_VIP",
+            dhcp_managed=False,
+            lease_generation=0,
+            role_generation=cluster.role_generation,
+            requested_by_user_id=user.id,
+        )
+        db.add(run)
+        db.commit()
+
+        advance_failover(db, cluster)
+
+        assert run.status == "FAILED_SAFE"
+        assert run.dhcp_managed is True
+        assert "started as DNS-only" in run.error_redacted
+
+
+def test_virtual_ip_move_times_out_with_actionable_status():
+    with database() as db:
+        user, cluster, source, target = ready_pair(db, managed=False)
+        run = HAFailoverRun(
+            cluster_id=cluster.id,
+            source_node_id=source.id,
+            target_node_id=target.id,
+            status="RUNNING",
+            phase="MOVING_VIP",
+            dhcp_managed=False,
+            lease_generation=0,
+            role_generation=cluster.role_generation,
+            requested_by_user_id=user.id,
+            started_at=datetime.utcnow() - timedelta(seconds=61),
+        )
+        source.vip_owned = True
+        target.vip_owned = False
+        source.keepalived_status = "DEPLOYED"
+        target.keepalived_status = "PENDING_AGENT"
+        db.add(run)
+        db.commit()
+
+        advance_failover(db, cluster)
+
+        assert run.status == "FAILED_SAFE"
+        assert "did not converge within 60 seconds" in run.error_redacted
+        assert "Primary: deployed" in run.error_redacted
+        assert "Standby: pending agent" in run.error_redacted
+
+
+def test_live_failover_page_can_reveal_failure_and_rollback_without_reload():
+    template = Path("app/templates/high_availability_cluster_testing.html").read_text(encoding="utf-8")
+    script = Path("app/static/js/ha_live.js").read_text(encoding="utf-8")
+
+    assert "data-ha-failover-diagnostic" in template
+    assert "data-ha-failover-error" in template
+    assert "data-ha-failover-rollback" in template
+    assert 'data.failover.status !== "FAILED_SAFE"' in script
+    assert "data.failover.error" in script
 
 
 def test_unhealthy_dns_cannot_complete_promotion(monkeypatch):

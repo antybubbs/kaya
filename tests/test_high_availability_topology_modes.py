@@ -79,6 +79,10 @@ def test_explicit_dns_only_excludes_dhcp_from_sync_but_legacy_clusters_keep_disc
         db.commit()
         assert deployment_mode(cluster) == DNS_DHCP
         assert pihole_manages_dhcp(cluster) is True
+        cluster.lease_replication.status = "NOT_APPLICABLE"
+        db.commit()
+        assert deployment_mode(cluster) == DNS_DHCP
+        assert pihole_manages_dhcp(cluster) is True
 
 
 def test_guided_ui_and_documentation_cover_both_modes():

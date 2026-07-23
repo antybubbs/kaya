@@ -11,18 +11,15 @@ def deployment_mode(cluster: HACluster) -> str:
     """Use the explicit mode while preserving pre-amendment cluster behaviour."""
     if cluster.deployment_mode in {DNS_ONLY, DNS_DHCP}:
         return cluster.deployment_mode
-    state = cluster.lease_replication
     # Pre-amendment clusters discovered DHCP dynamically. Until a legacy
-    # cluster has explicitly established that DHCP is external, preserve that
-    # conservative behaviour and require the DHCP safety checks.
-    return DNS_ONLY if state is not None and state.status == "NOT_APPLICABLE" else DNS_DHCP
+    # cluster is explicitly classified, preserve the safer DNS + DHCP
+    # boundary. A temporary inactive DHCP flag during handover must never
+    # reclassify the cluster as externally managed.
+    return DNS_DHCP
 
 
 def pihole_manages_dhcp(cluster: HACluster) -> bool:
-    if cluster.deployment_mode in {DNS_ONLY, DNS_DHCP}:
-        return cluster.deployment_mode == DNS_DHCP
-    state = cluster.lease_replication
-    return bool(state is not None and state.status != "NOT_APPLICABLE")
+    return deployment_mode(cluster) == DNS_DHCP
 
 
 def requires_dhcp_validation(cluster: HACluster) -> bool:

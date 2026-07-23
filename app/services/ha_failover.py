@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.models.models import HACluster, HAEvent, HAFailoverRun, HANode, User
 from app.services.ha_leases import HALeaseError, reconcile_cluster_leases
+from app.services.ha_topology import pihole_manages_dhcp
 
 
 ACTIVE_RUN_STATUSES = {"RUNNING", "ROLLING_BACK"}
@@ -152,6 +153,12 @@ def _move_vip(db: Session, run: HAFailoverRun, target: HANode) -> None:
     cluster.keepalived_status = "PENDING_AGENT"
     cluster.keepalived_requested_at = datetime.utcnow()
     cluster.status = "DEPLOYING"
+    try:
+        report = json.loads(run.report_json or "{}")
+    except json.JSONDecodeError:
+        report = {}
+    report["vip_move_started_at"] = datetime.utcnow().isoformat()
+    run.report_json = json.dumps(report, sort_keys=True)
     db.flush()
 
 
@@ -229,6 +236,29 @@ def _verification_started_at(run: HAFailoverRun) -> datetime:
         return run.started_at
 
 
+def _vip_move_started_at(run: HAFailoverRun) -> datetime:
+    try:
+        value = json.loads(run.report_json or "{}").get("vip_move_started_at")
+        return datetime.fromisoformat(value) if value else run.started_at
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return run.started_at
+
+
+def _vip_move_failure(run: HAFailoverRun) -> str:
+    expected = run.target_node if run.phase == "MOVING_VIP" else run.source_node
+    owners = [node.display_name for node in run.cluster.nodes if node.vip_owned]
+    deployments = ", ".join(
+        f"{node.display_name}: {node.keepalived_status.replace('_', ' ').lower()}"
+        for node in run.cluster.nodes
+    )
+    owner_text = ", ".join(owners) if owners else "none reported"
+    return (
+        f"Virtual IP handover did not converge within 60 seconds. "
+        f"Expected {expected.display_name} to become the only owner; current owner reports: {owner_text}. "
+        f"Keepalived deployment reports: {deployments}. Use safe rollback after checking both agents."
+    )
+
+
 def record_failover_action_result(db: Session, node: HANode, *, action_type: str, generation: int, checksum: str | None, status: str, message: str) -> HAFailoverRun:
     run = active_failover(node.cluster)
     expected = desired_failover_action(node.cluster, node)
@@ -277,6 +307,20 @@ def advance_failover(db: Session, cluster: HACluster) -> HAFailoverRun | None:
     run = active_failover(cluster)
     if run is None:
         return None
+    if not run.dhcp_managed and pihole_manages_dhcp(cluster) and any(node.dhcp_running for node in cluster.nodes):
+        # Legacy clusters could previously be misclassified from a temporary
+        # inactive flag while DHCP was moving. Stop instead of continuing a
+        # DNS-only handover around a live DHCP owner.
+        run.dhcp_managed = True
+        _safe_failure(
+            db,
+            run,
+            "The handover was stopped because this Pi-hole cluster manages DHCP, "
+            "but the transition had been started as DNS-only. No further ownership "
+            "change was attempted. Use safe rollback to return to the last owner.",
+        )
+        db.commit()
+        return run
     state = cluster.lease_replication
     if run.phase == "WAITING_FOR_LEASES" and state and state.status == "CURRENT" and state.applied_generation >= run.lease_generation:
         run.phase = "DEMOTING_SOURCE"
@@ -288,6 +332,8 @@ def advance_failover(db: Session, cluster: HACluster) -> HAFailoverRun | None:
                 run.phase = "PROMOTING_TARGET" if run.dhcp_managed else "VERIFYING_TARGET"
             else:
                 run.phase = "ROLLBACK_PROMOTING_SOURCE" if run.dhcp_managed else "ROLLBACK_VERIFYING_SOURCE"
+        elif datetime.utcnow() - _vip_move_started_at(run) > timedelta(seconds=60):
+            _safe_failure(db, run, _vip_move_failure(run))
     if run.phase == "VERIFYING_TARGET":
         dhcp_ok = (run.target_node.dhcp_running and not run.source_node.dhcp_running) if run.dhcp_managed else not any(node.dhcp_running for node in cluster.nodes)
         if run.target_node.vip_owned and not run.source_node.vip_owned and run.target_node.dns_healthy is True and dhcp_ok:

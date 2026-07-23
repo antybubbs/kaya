@@ -140,6 +140,15 @@
       updateNodes(data.nodes);
       if (data.lease) updateFields(document, "[data-ha-lease-field]", data.lease);
       updateFields(document, "[data-ha-failover-field]", data.failover);
+      document.querySelectorAll("[data-ha-failover-diagnostic]").forEach((element) => {
+        element.hidden = !data.failover.error;
+      });
+      document.querySelectorAll("[data-ha-failover-error]").forEach((element) => {
+        element.textContent = data.failover.error || "";
+      });
+      document.querySelectorAll("[data-ha-failover-rollback]").forEach((element) => {
+        element.hidden = data.failover.status !== "FAILED_SAFE";
+      });
       if (data.sync) {
         updateFields(document, "[data-ha-sync-field]", data.sync);
         document.querySelectorAll("[data-ha-sync-state]").forEach((element) => {
