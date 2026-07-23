@@ -241,8 +241,8 @@ async def test_cluster_connection(request: Request, db: Session = Depends(get_db
             "ssl_verify": str(form.get(f"{node_key}_ssl_verify") or "") == "1",
         }
         result = test_draft_node_connection(db, HANodeDraftCreate(**draft_node), provider_key)
-    except (ValidationError, HADraftError) as exc:
-        message = str(exc) if isinstance(exc, HADraftError) else "Enter a valid Pi-hole URL and application password before testing."
+    except (ValidationError, HADraftError):
+        message = "Enter a valid Pi-hole URL and application password before testing."
         return JSONResponse({"ok": False, "message": message}, status_code=400)
     write_audit(db, user, "connection_tested", "ha_draft_node", detail=f"Ran a read-only Pi-hole connection test for the {node_key} draft node.", metadata={"provider": provider_key, "node": node_key, "passed": result.ok, "provider_changed": False, "secret_logged": False})
     return JSONResponse({"ok": result.ok, "message": result.message}, status_code=200 if result.ok else 422)
