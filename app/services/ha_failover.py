@@ -15,7 +15,7 @@ from app.services.ha_topology import pihole_manages_dhcp
 
 ACTIVE_RUN_STATUSES = {"RUNNING", "ROLLING_BACK"}
 MIN_AGENT_VERSION = (0, 1, 5)
-AUTOMATIC_AGENT_VERSION = (0, 2, 1)
+AUTOMATIC_AGENT_VERSION = (0, 2, 2)
 
 
 class HAFailoverError(ValueError):
@@ -100,7 +100,7 @@ def automatic_failover_blockers(cluster: HACluster, *, now: datetime | None = No
         blockers.append("Complete one successful controlled failover test first.")
     for node in cluster.nodes:
         if _version(node.agent_version) < AUTOMATIC_AGENT_VERSION:
-            blockers.append(f"Update {node.display_name} to agent 0.2.1 for verified offline DHCP failover.")
+            blockers.append(f"Update {node.display_name} to agent 0.2.2 for verified offline DHCP failover.")
     if cluster.maintenance_mode:
         blockers.append("Exit maintenance mode before enabling automatic failover.")
     return list(dict.fromkeys(blockers))

@@ -21,7 +21,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 
 PROTOCOL_VERSION = 1
-AGENT_VERSION = "0.2.1"
+AGENT_VERSION = "0.2.2"
 
 
 def encoded(value: bytes) -> str:

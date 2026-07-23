@@ -154,7 +154,7 @@ def test_desired_state_supplies_offline_failover_safety_context():
         primary.management_host = "192.0.2.20"
         standby.management_host = "192.0.2.21"
         standby.network_interface = "eth0"
-        standby.agent_version = "0.2.1"
+        primary.agent_version = standby.agent_version = "0.2.2"
         db.commit()
         state = desired_state(standby)
         assert state["automatic_failover"] is True
@@ -171,6 +171,18 @@ def test_desired_state_disables_automatic_failover_for_unverified_agent_runtime(
         standby.agent_version = "0.2.0"
         db.commit()
 
+        assert desired_state(standby)["automatic_failover"] is False
+
+
+def test_desired_state_keeps_automatic_failover_off_during_rolling_agent_update():
+    with database() as db:
+        cluster, primary, standby = cluster_with_nodes(db)
+        cluster.automatic_failover_enabled = True
+        primary.agent_version = "0.2.2"
+        standby.agent_version = "0.2.1"
+        db.commit()
+
+        assert desired_state(primary)["automatic_failover"] is False
         assert desired_state(standby)["automatic_failover"] is False
 
 

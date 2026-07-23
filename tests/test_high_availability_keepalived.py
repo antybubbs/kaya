@@ -234,6 +234,7 @@ def test_root_helper_independently_allows_generated_config_and_rejects_injected_
     assert helper.validate_managed_document(generated)
     assert b"nopreempt" in generated
     assert b"preempt_delay" not in generated
+    assert b"weight -60" not in generated
     assert not helper.validate_managed_document(generated.replace(b"state BACKUP", b"state BACKUP\ninclude /tmp/evil.conf"))
 
 

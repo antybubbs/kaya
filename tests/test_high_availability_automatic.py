@@ -1,8 +1,15 @@
 import json
 import sqlite3
 import subprocess
+from pathlib import Path
 
 from ha_agent import kaya_ha_transition as transition
+
+
+def test_dns_health_probe_never_controls_dhcp_directly():
+    probe = Path("ha_agent/check-pihole-dns").read_text(encoding="utf-8")
+    assert "automatic-demote" not in probe
+    assert "kaya_ha_failover_helper" not in probe
 
 
 def state_database():

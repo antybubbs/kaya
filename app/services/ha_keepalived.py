@@ -116,7 +116,11 @@ def render_keepalived_config(cluster: HACluster, node: HANode, *, allow_preempti
         "}\n\n"
         f"vrrp_script KAYA_DNS_{cluster.public_id.replace('-', '')[:8].upper()} {{\n"
         "    script \"/usr/lib/kaya-ha-agent/check-pihole-dns\"\n"
-        "    interval 2\n    timeout 2\n    fall 3\n    rise 3\n    weight -60\n}\n\n"
+        # An unweighted failed script puts this instance into FAULT. This
+        # releases the VIP before the role-change hook demotes DHCP. A negative
+        # weight combined with nopreempt could leave the unhealthy MASTER in
+        # place after DHCP had been stopped.
+        "    interval 2\n    timeout 2\n    fall 3\n    rise 3\n}\n\n"
         f"vrrp_instance {instance} {{\n"
         "    state BACKUP\n"
         f"    interface {node.network_interface}\n"

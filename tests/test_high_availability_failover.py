@@ -394,7 +394,7 @@ def test_automatic_failover_requires_current_agents_and_successful_controlled_te
     with database() as db:
         user, cluster, source, target = ready_pair(db)
         assert "successful controlled failover" in " ".join(automatic_failover_blockers(cluster))
-        source.agent_version = target.agent_version = "0.2.1"
+        source.agent_version = target.agent_version = "0.2.2"
         db.add(HAFailoverRun(cluster_id=cluster.id, source_node_id=source.id, target_node_id=target.id, status="SUCCEEDED", phase="COMPLETE", dhcp_managed=True, lease_generation=7, role_generation=2, requested_by_user_id=user.id))
         db.commit()
         assert automatic_failover_blockers(cluster) == []

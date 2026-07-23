@@ -430,7 +430,10 @@ def desired_state(node: HANode) -> dict:
         # mistake a failed DHCP listener for a successful promotion.
         "automatic_failover": bool(
             cluster.automatic_failover_enabled
-            and version_tuple(node.agent_version) >= version_tuple(CURRENT_AGENT_VERSION)
+            and all(
+                version_tuple(peer.agent_version) >= version_tuple(CURRENT_AGENT_VERSION)
+                for peer in cluster.nodes
+            )
         ),
         "automatic_failback": False,
         "automatic_hold_down_seconds": 10,

@@ -3,12 +3,10 @@ import json
 import socket
 import sqlite3
 import struct
-import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path("/var/lib/kaya-ha-agent")
-HELPER = "/usr/lib/kaya-ha-agent/kaya_ha_failover_helper.py"
 
 if sys.argv[1:] not in ([], ["--observe"]):
     raise SystemExit(2)
@@ -32,9 +30,6 @@ try:
             failures = 0 if healthy else int(get("dns_consecutive_failures", 0)) + 1
             db.execute("INSERT INTO state(key,value) VALUES('dns_consecutive_failures',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (json.dumps(failures),))
             db.commit()
-            if failures >= 3 and get("automatic_failover", False) and get("dhcp_managed", False) and get("vip_owned", False):
-                generation = int(get("keepalived_generation", 0))
-                subprocess.run(["sudo", "-n", HELPER, "automatic-demote", str(generation)], capture_output=True, timeout=20, check=False)
 except (OSError, sqlite3.Error, ValueError):
     pass
 raise SystemExit(0 if healthy else 1)
