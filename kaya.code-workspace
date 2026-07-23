@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../Pihole1"
+		},
+		{
+			"path": "../Pihole2"
+		}
+	],
+	"settings": {}
+}

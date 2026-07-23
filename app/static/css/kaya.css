@@ -630,11 +630,17 @@ html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .setup-brand-panel
 
 .dns-query-log-panel>.table-toolbar{
   align-self:center;
+  grid-column:2;
+  justify-self:end;
   margin:0;
+  width:max-content;
 }
 
-.dns-query-log-panel>table{
+.dns-query-log-panel>table,
+.dns-query-log-panel>.table-scroll{
   grid-column:1 / -1;
+  min-width:0;
+  width:100%;
 }
 
 .dns-live-toggle{
