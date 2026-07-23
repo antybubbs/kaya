@@ -2,6 +2,8 @@
 
 This document is mandatory for every change to Kaya. Kaya is a security-sensitive infrastructure-management product. A self-hosted or internal deployment is not assumed to be harmless, and secure operation must not depend on every installer being a security specialist.
 
+If you are wanting to access Kaya from outside your network, then we would suggest you make use of a proxy.
+
 ## Scope and use
 
 Before changing application code, an engineer or coding agent must:
