@@ -39,15 +39,9 @@ from app.services.site_settings import (
 )
 from app.services.version import refresh_latest_release, version_check_loop
 from app.services.modules import (
-    MODULE_ACCESS_EXEMPT_PATHS,
-    accessible_module_keys,
     enabled_modules,
     grant_all_registered_modules,
-    has_module_access,
-    module_for_path,
-    module_landing_url,
 )
-from app.services.sessions import active_user_session
 
 settings = get_settings()
 install_sensitive_authentication_log_filter()
@@ -102,35 +96,6 @@ async def permission_handler(request: Request, exc: PermissionError):
 
 
 @app.middleware("http")
-async def enforce_registered_module_access(request: Request, call_next):
-    path = request.url.path.rstrip("/") or "/"
-    module = module_for_path(path)
-    if not module or path in MODULE_ACCESS_EXEMPT_PATHS:
-        return await call_next(request)
-    session = request.scope.get("session") or {}
-    db = SessionLocal()
-    try:
-        user = db.get(User, session.get("user_id")) if session.get("user_id") else None
-        active_session = active_user_session(db, session.get("session_id"), user.id if user and user.is_active else None)
-        if not user or not user.is_active or not active_session:
-            return RedirectResponse("/login", status_code=303)
-        if not has_module_access(db, user, module.key):
-            write_audit(
-                db, user, "module_access_denied", "module_permission", module.key,
-                None if settings.demo_mode else client_ip(request),
-                detail=f"Access denied to module {module.key}",
-                status_code=403,
-                metadata={"module_key": module.key},
-            )
-            return PlainTextResponse("Forbidden", status_code=403)
-        request.state.accessible_module_keys = accessible_module_keys(db, user)
-        request.state.module_landing_url = module_landing_url(db, user)
-    finally:
-        db.close()
-    return await call_next(request)
-
-
-@app.middleware("http")
 async def protect_public_demo(request: Request, call_next):
     if demo_request_is_blocked(request.method, request.url.path):
         message = "This action is disabled in the public demo. Sample data resets daily."
@@ -165,11 +130,6 @@ async def security_headers(request: Request, call_next):
             request.state.high_availability_enabled = get_site_setting(db, "high_availability_enabled") == "1"
             request.state.backup_manager_enabled = get_site_setting(db, "backup_manager_enabled") == "1"
             request.state.enabled_modules = enabled_modules(db)
-            session_user_id = (request.scope.get("session") or {}).get("user_id")
-            session_user = db.get(User, session_user_id) if session_user_id else None
-            if session_user and session_user.is_active:
-                request.state.accessible_module_keys = accessible_module_keys(db, session_user)
-                request.state.module_landing_url = module_landing_url(db, session_user)
         finally:
             db.close()
         if security.get("trusted_hosts_enabled") == "1" or settings.allowed_hosts.strip():

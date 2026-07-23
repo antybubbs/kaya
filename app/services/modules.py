@@ -40,10 +40,6 @@ MODULES = (
 )
 MODULE_BY_KEY = {module.key: module for module in MODULES}
 MODULE_KEYS = frozenset(MODULE_BY_KEY)
-MODULE_ACCESS_EXEMPT_PATHS = frozenset({
-    # Compute agents authenticate with their own per-host token, not a browser user.
-    "/infrastructure/vm-docker-manager/api/agent/checkin",
-})
 LANDING_ORDER = (
     "dashboard", "secret_vault", "runbooks", "remote_manager", "vlan_ip_manager",
     "dns_manager", "asset_manager", "compute_manager", "rack_manager",

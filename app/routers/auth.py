@@ -24,7 +24,7 @@ from app.services.site_settings import get_site_setting
 from app.services.oidc_client import safe_return_path
 from app.services.user_names import clean_name_part, first_name_contains_last_name
 from app.services.authentication_policy import get_authentication_policy, normal_local_login_allowed
-from app.services.modules import grant_all_registered_modules, has_module_access, module_landing_url
+from app.services.modules import accessible_module_keys, grant_all_registered_modules, has_module_access, module_landing_url
 from app.services.client_ip import client_ip
 
 router = APIRouter()
@@ -172,6 +172,8 @@ def require_user(request: Request, db: Session = Depends(get_db)) -> User:
     user = current_user(request, db)
     if not user:
         raise PermissionError("Authentication required")
+    request.state.accessible_module_keys = accessible_module_keys(db, user)
+    request.state.module_landing_url = module_landing_url(db, user)
     return user
 
 

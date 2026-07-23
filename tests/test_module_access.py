@@ -1,4 +1,5 @@
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine
@@ -7,11 +8,11 @@ from sqlalchemy.pool import StaticPool
 from starlette.requests import Request
 
 from app.db.session import Base
+from app.main import app
 from app.models.models import AppSession, AuditLog, RemoteManagerSetting, User, UserModulePermission
 from app.routers.auth import require_module_access
 from app.services.modules import (
     MODULES,
-    MODULE_ACCESS_EXEMPT_PATHS,
     MODULE_KEYS,
     accessible_module_keys,
     filter_search_results,
@@ -115,4 +116,25 @@ def test_every_registered_route_prefix_maps_to_its_stable_module_key():
         for prefix in module.path_prefixes:
             assert module_for_path(prefix) == module
             assert module_for_path(f"{prefix}/api/example") == module
-    assert "/infrastructure/vm-docker-manager/api/agent/checkin" in MODULE_ACCESS_EXEMPT_PATHS
+
+
+def test_module_authorisation_runs_after_session_decoding():
+    source = Path("app/main.py").read_text(encoding="utf-8")
+    assert "enforce_registered_module_access" not in source
+
+
+def test_every_browser_module_route_has_a_post_session_module_dependency():
+    machine_route = "/infrastructure/vm-docker-manager/api/agent/checkin"
+    for route in app.routes:
+        path = getattr(route, "path", "")
+        module = module_for_path(path)
+        if not module or path == machine_route:
+            continue
+        calls = [dependency.call for dependency in route.dependant.dependencies]
+        closure_values = {
+            value
+            for call in calls
+            for cell in (getattr(call, "__closure__", None) or ())
+            if isinstance((value := cell.cell_contents), str)
+        }
+        assert module.key in closure_values, f"{path} is missing the {module.key} module gate"

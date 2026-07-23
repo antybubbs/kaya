@@ -41,7 +41,7 @@ To run without Docker, install Python dependencies and Node dependencies, then r
 7. Add module JavaScript under `app/static/js` only if needed.
 8. Add navigation in `app/templates/base.html`.
 9. Register the module's stable key, label, route prefix, and optional enabled setting in `app/services/modules.py`.
-10. Apply `require_module_access("<stable_key>")` to its router in addition to `require_user`, `require_editor`, or `require_admin`. Machine-authenticated routes must use a separate router and a narrowly documented exemption.
+10. Apply `require_module_access("<stable_key>")` to its router in addition to `require_user`, `require_editor`, or `require_admin`. Machine-authenticated routes must use a separate router so browser-user module checks are never applied to agent credentials.
 11. Associate dashboard widgets and search results with that same stable module key.
 12. Validate CSRF on mutating browser routes.
 13. Write audit events for sensitive actions.
