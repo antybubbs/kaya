@@ -129,7 +129,12 @@
       }
     });
 
-    parent.insertBefore(toolbar, table);
+    const toolbarHost = parent.querySelector(":scope > [data-table-toolbar-host]");
+    if (toolbarHost) {
+      toolbarHost.appendChild(toolbar);
+    } else {
+      parent.insertBefore(toolbar, table);
+    }
     if (!table.closest(".table-scroll")) {
       const scrollWrap = document.createElement("div");
       scrollWrap.className = "table-scroll";

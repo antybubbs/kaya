@@ -438,7 +438,7 @@
 {% elif active_tab == 'query-log' %}
 {% set rows = filtered_query_rows(queries.data if queries and queries.ok else {}, dns_query_filters.domain, dns_query_filters.client) %}
 <section class="panel dns-query-log-panel" data-dns-query-log>
-  <div class="dns-query-log-controls">
+  <div class="dns-query-log-controls" data-table-toolbar-host>
     <label class="checkbox-row dns-live-toggle">
       <input type="checkbox" data-dns-live-toggle>
       <span><strong>Live query log</strong></span>

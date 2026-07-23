@@ -587,3 +587,25 @@ def provider_for(config: DNSProviderConfig) -> DNSProvider:
             return HAPiHoleProvider(config)
         return PiHoleProvider(config)
     raise DNSProviderError(f"Unsupported DNS provider type: {config.provider_type}")
+
+
+def provider_snapshot_for_io(config: DNSProviderConfig) -> DNSProvider:
+    """Freeze provider routing before releasing the database transaction.
+
+    HA analyses make several bounded requests and must use the same validated
+    active node throughout the collection pass. Standalone providers receive
+    an equivalent detached configuration so no later attribute access can
+    reopen the database transaction during network I/O.
+    """
+    if config.provider_type != "pihole":
+        raise DNSProviderError(f"Unsupported DNS provider type: {config.provider_type}")
+    if config.ha_cluster_id is not None:
+        return HAPiHoleProvider(config)._active_provider()
+    return PiHoleProvider(SimpleNamespace(
+        id=config.id,
+        base_url=config.base_url,
+        auth_method=config.auth_method,
+        encrypted_secret=config.encrypted_secret,
+        ssl_verify=config.ssl_verify,
+        timeout_seconds=config.timeout_seconds,
+    ))

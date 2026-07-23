@@ -7,7 +7,9 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session
 
 from app.db.session import Base
-from app.models.models import DNSClientIPHistory, DNSProviderConfig, DNSRecognisedDevice, HACluster, HANode, HAProviderConnection, User
+from app.models.models import DNSClientIPHistory, DNSProviderConfig, DNSRecognisedDevice, DNSStatisticsSnapshot, HACluster, HANode, HAProviderConnection, User
+from app.services import dns_insights
+from app.services.dns_insights import analyse_provider
 from app.services.dns_providers import DNSProviderResult, HAPiHoleProvider, PiHoleProvider, provider_for
 from app.services.ha_sync import HAStaleSyncPlanError, HASyncError, create_live_sync_plan, create_sync_plan, execute_sync, sync_plan
 from app.routers.admin import DNSProviderSettingsError, save_dns_manager_settings
@@ -143,6 +145,36 @@ def test_ha_provider_routes_to_current_owner_and_ignores_offline_cached_owner():
 
         active = provider_for(provider)._active_provider()
         assert active.config.base_url == "http://two.invalid"
+
+
+def test_ha_analysis_uses_active_node_and_updates_connection_snapshot(monkeypatch):
+    with database() as db:
+        _, cluster, active_node, _ = make_cluster(db)
+        provider = DNSProviderConfig(name="HA", provider_type="pihole", base_url="http://192.0.2.53", ha_cluster_id=cluster.id)
+        db.add(provider)
+        active_node.last_heartbeat_at = datetime.utcnow()
+        db.commit()
+
+        def collect(active_provider):
+            assert active_provider.config.base_url == "http://one.invalid"
+            return {
+                "status": DNSProviderResult(True, "connected", {"blocking": "enabled"}),
+                "stats": DNSProviderResult(True, "loaded", {"queries": {"total": 10, "blocked": 2}, "clients": {"active": 1}}),
+                "history": DNSProviderResult(True, "loaded", {}),
+                "clients": DNSProviderResult(True, "loaded", {}),
+                "queries": DNSProviderResult(True, "loaded", {"queries": []}),
+                "dhcp": DNSProviderResult(True, "loaded", {}),
+                "blocklists": DNSProviderResult(True, "loaded", {}),
+            }
+
+        monkeypatch.setattr(dns_insights, "_collect_provider_data", collect)
+        result = analyse_provider(db, provider)
+
+        db.refresh(provider)
+        snapshot = db.query(DNSStatisticsSnapshot).filter_by(provider_id=provider.id).one()
+        assert provider.last_status == "online"
+        assert snapshot.provider_connected is True
+        assert snapshot.period_end == result.generated_at
 
 
 class SyncPiHole:

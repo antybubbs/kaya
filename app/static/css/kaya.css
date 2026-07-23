@@ -624,16 +624,15 @@ html:not([data-theme=light]):not([data-kaya-theme=light-ops]) .setup-brand-panel
   align-items:center;
   display:flex;
   gap:8px;
+  grid-column:1 / -1;
   justify-content:flex-start;
   min-width:0;
 }
 
-.dns-query-log-panel>.table-toolbar{
-  align-self:center;
-  grid-column:2;
-  justify-self:end;
+.dns-query-log-controls>.table-toolbar{
+  flex:0 0 auto;
   margin:0;
-  width:max-content;
+  margin-left:auto;
 }
 
 .dns-query-log-panel>table,

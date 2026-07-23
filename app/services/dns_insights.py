@@ -15,7 +15,7 @@ from urllib.parse import urlencode
 from sqlalchemy.orm import Session
 
 from app.models.models import DHCPLeaseHistory, DHCPRange, DNSClientTrafficEvent, DNSInsight, DNSProviderConfig, DNSRecognisedDevice, DNSStatisticsSnapshot
-from app.services.dns_providers import DNSProvider, DNSProviderResult, provider_for
+from app.services.dns_providers import DNSProvider, DNSProviderResult, provider_for, provider_snapshot_for_io
 from app.services.dns_clients import normalise_mac, observe_client
 from app.services.site_settings import get_site_settings
 
@@ -1147,21 +1147,11 @@ def analyse_provider(
     started = time.monotonic()
     try:
         logger.info("DNS insight analysis started", extra={"provider_id": provider.id})
-        network_config = DNSProviderConfig(
-            id=provider.id,
-            name=provider.name,
-            provider_type=provider.provider_type,
-            base_url=provider.base_url,
-            auth_method=provider.auth_method,
-            encrypted_secret=provider.encrypted_secret,
-            ssl_verify=provider.ssl_verify,
-            timeout_seconds=provider.timeout_seconds,
-            is_enabled=provider.is_enabled,
-        )
+        network_client = provider_snapshot_for_io(provider)
         # End the read transaction before bounded provider I/O so an offline
         # integration cannot retain an SQLite reader for its timeout duration.
         db.rollback()
-        payloads = _collect_provider_data(provider_for(network_config))
+        payloads = _collect_provider_data(network_client)
         provider = db.get(DNSProviderConfig, provider_id)
         if not provider or not provider.is_enabled:
             raise LookupError("DNS provider is no longer enabled.")
