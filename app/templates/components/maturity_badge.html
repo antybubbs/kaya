@@ -1,0 +1,4 @@
+{% set badge_label = maturity_label|default('Beta') %}
+{% set badge_variant = maturity_variant|default(badge_label|lower|replace(' ', '-')) %}
+{% set badge_tooltip = maturity_tooltip|default(badge_label ~ ' functionality may change as it is hardened.') %}
+<span class="maturity-badge maturity-badge--{{ badge_variant }}" tabindex="0" title="{{ badge_tooltip }}"><span class="sr-only">Maturity: </span>{{ badge_label }}</span>

@@ -32,6 +32,10 @@ def demo_request_is_blocked(method: str, path: str) -> bool:
     clean_path = path.rstrip("/") or "/"
     if clean_path.startswith("/auth/oidc"):
         return True
+    if clean_path.startswith("/api/ha/agent"):
+        return True
+    if method.upper() not in {"GET", "HEAD", "OPTIONS"} and clean_path.startswith("/high-availability"):
+        return True
     if method.upper() not in {"GET", "HEAD", "OPTIONS"} and clean_path.endswith("/delete"):
         return True
     if clean_path.startswith(("/remote-manager/", "/infrastructure/backup-manager/api/agent")):

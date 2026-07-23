@@ -65,15 +65,15 @@
           </div>
           {% endif %}
 
-          {% if oidc_provider and authentication_mode in ['local_and_oidc', 'oidc_preferred', 'oidc_required'] and not requires_2fa %}
+          {% if oidc_available and authentication_mode != 'local_only' and not requires_2fa %}
           <a class="button login-oidc-button" id="login-oidc" href="/auth/oidc/login">
             <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2"></rect><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v2"></path></svg>
             {{ oidc_button_label or 'Sign in with Authentik' }}
           </a>
-          {% if authentication_mode != 'oidc_required' %}<div class="login-divider"><span>OR</span></div>{% endif %}
+          {% if show_local_login %}<div class="login-divider"><span>OR</span></div>{% endif %}
           {% endif %}
 
-          {% if authentication_mode != 'oidc_required' or requires_2fa %}
+          {% if show_local_login or requires_2fa %}
           <form method="post" action="/login" class="login-form" data-login-form>
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             {% if requires_2fa %}
@@ -103,8 +103,6 @@
             <button class="login-submit" type="submit" data-submit-button data-loading-label="Signing in…">Sign in</button>
             {% endif %}
           </form>
-          {% else %}
-          <a class="login-emergency-link" href="/auth/local">Emergency local administrator access</a>
           {% endif %}
 
           {% if not requires_2fa %}<p class="login-account-note">Don’t have an account? <span>Contact your administrator.</span></p>{% endif %}

@@ -11,6 +11,7 @@ from app.services.client_ip import client_ip
 
 SESSION_SYNC_SECONDS = 60
 ACTIVE_WINDOW_MINUTES = 30
+SESSION_ABSOLUTE_HOURS = 8
 
 
 def request_ip(request: Request) -> str | None:
@@ -42,26 +43,54 @@ def start_user_session(db: Session, request: Request, user: User) -> AppSession:
     return row
 
 
-def touch_user_session(db: Session, request: Request, user: User) -> None:
+def active_user_session(db: Session, session_id: str | None, user_id: int | None) -> AppSession | None:
+    if not session_id or not user_id:
+        return None
+    return (
+        db.query(AppSession)
+        .filter(
+            AppSession.session_id == session_id,
+            AppSession.user_id == user_id,
+            AppSession.ended_at.is_(None),
+            AppSession.created_at >= datetime.utcnow() - timedelta(hours=SESSION_ABSOLUTE_HOURS),
+        )
+        .first()
+    )
+
+
+def touch_user_session(db: Session, request: Request, user: User, row: AppSession | None = None) -> bool:
     session_id = request.session.get("session_id")
-    if not session_id:
-        start_user_session(db, request, user)
-        return
+    row = row or active_user_session(db, session_id, user.id)
+    if row is None:
+        return False
     now = int(time.time())
     last_sync = int(request.session.get("session_last_seen_sync") or 0)
     if now - last_sync < SESSION_SYNC_SECONDS:
-        return
+        return True
     request.session["session_last_seen_sync"] = now
-    row = db.query(AppSession).filter(AppSession.session_id == session_id).first()
-    if not row:
-        start_user_session(db, request, user)
-        return
-    row.user_id = user.id
     row.ip_address = request_ip(request)
     row.user_agent = request_user_agent(request)
     row.last_seen_at = datetime.utcnow()
-    row.ended_at = None
     db.commit()
+    return True
+
+
+def revoke_user_sessions(db: Session, user_id: int, *, except_session_id: str | None = None) -> int:
+    query = db.query(AppSession).filter(
+        AppSession.user_id == user_id,
+        AppSession.ended_at.is_(None),
+    )
+    if except_session_id:
+        query = query.filter(AppSession.session_id != except_session_id)
+    now = datetime.utcnow()
+    return query.update(
+        {
+            AppSession.last_seen_at: now,
+            AppSession.ended_at: now,
+            AppSession.encrypted_oidc_id_token: None,
+        },
+        synchronize_session=False,
+    )
 
 
 def end_user_session(db: Session, request: Request) -> None:

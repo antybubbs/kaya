@@ -17,6 +17,7 @@ from app.models.models import (AppSession, AuditLog, BackupJob, BackupRecord, Co
 from app.services.compute_monitor import compute_summary
 from app.services.dns_dashboard_summary import get_dns_dashboard_summary
 from app.services.site_settings import get_site_setting, get_site_settings
+from app.services.modules import accessible_module_keys, module_for_path
 
 logger = logging.getLogger(__name__)
 VALID_SIZES = {"small", "medium", "large", "full"}
@@ -52,8 +53,24 @@ WIDGETS = (
     Widget("secret_vault", "Secret Vault", "Secret Vault", "Protected session and portable backup health without revealing vault content.", True, 11, "medium", "small", "authenticated", "/api/dashboard/snapshot", "/security/secret-vault"),
 )
 
-def permitted(widget: Widget, user: User) -> bool:
-    return widget.permission == "authenticated" or user.role == "admin"
+WIDGET_MODULE_KEYS = {
+    "infrastructure_summary": ("compute_manager",),
+    "attention_required": ("dashboard",),
+    "dns_summary": ("dns_manager",),
+    "backup_health": ("backup_manager",),
+    "networking": ("vlan_ip_manager", "domain_manager", "network_monitor"),
+    "remote_manager": ("remote_manager",),
+    "licences": ("licence_manager",),
+    "documentation": ("runbooks",),
+    "secret_vault": ("secret_vault",),
+}
+
+
+def permitted(db: Session, widget: Widget, user: User) -> bool:
+    if widget.permission != "authenticated" and user.role != "admin":
+        return False
+    required = WIDGET_MODULE_KEYS.get(widget.key)
+    return not required or bool(set(required) & set(accessible_module_keys(db, user)))
 
 def availability(db: Session, widget: Widget) -> tuple[bool, str | None]:
     if widget.key == "dns_summary" and get_site_setting(db, "dns_manager_enabled") != "1": return False, "Module disabled"
@@ -64,10 +81,19 @@ def registry(db: Session, user: User) -> list[dict]:
     disabled = set(filter(None, get_site_setting(db, "dashboard_globally_disabled_widgets").split(",")))
     result = []
     for item in WIDGETS:
-        if not permitted(item, user) or item.key in disabled: continue
+        if not permitted(db, item, user) or item.key in disabled: continue
         available, reason = availability(db, item)
         row = asdict(item); row.update(available=available, availability_reason=reason, required_permission=item.permission,
                                       default_enabled=item.enabled, default_position=item.position, default_width=item.width)
+        if item.key == "networking":
+            allowed = accessible_module_keys(db, user)
+            row["target_url"] = next((
+                path for key, path in (
+                    ("vlan_ip_manager", "/networking/vlan-ip-manager"),
+                    ("domain_manager", "/networking/domain-manager"),
+                    ("network_monitor", "/networking/ip-wan-monitor"),
+                ) if key in allowed
+            ), "/dashboard")
         result.append(row)
     return result
 
@@ -120,6 +146,7 @@ def _iso(value): return value.isoformat() + ("Z" if value and value.tzinfo is No
 
 def _build(db: Session, user: User, key: str) -> dict:
     now = datetime.utcnow()
+    allowed_modules = accessible_module_keys(db, user)
     if key == "infrastructure_summary":
         s = compute_summary(db); return {"metrics": [_metric("Compute hosts", s["hosts"]), _metric("Online hosts", s["online_hosts"]), _metric("Total workloads", s["workloads"]), _metric("Running", s["running"]), _metric("Stopped", s["stopped"]), _metric("CPU", f'{s["cpu_percent"]:.1f}%' if s["cpu_percent"] is not None else "Unavailable"), _metric("Memory", f'{s["memory_percent"]:.1f}%' if s["memory_percent"] is not None else "Unavailable"), _metric("Storage", f'{s["storage_percent"]:.1f}%' if s["storage_percent"] is not None else "Unavailable")], "source_updated_at": _iso(s["updated_at"]), "severity": "warning" if s["warnings"] else "current"}
     if key == "dns_summary":
@@ -132,8 +159,19 @@ def _build(db: Session, user: User, key: str) -> dict:
         latest = db.query(VaultBackupRecord).filter_by(vault_id=vault.id, status="verified").order_by(VaultBackupRecord.verified_at.desc()).first() if vault else None
         return {"metrics": [_metric("Status", "Locked"), _metric("Enrolment", "Complete" if vault and vault.recovery_confirmed_at else "Required"), _metric("Portable backup", "Verified" if latest else "Not verified"), _metric("Last verified", latest.verified_at.date().isoformat() if latest and latest.verified_at else "Unavailable")], "source_updated_at": _iso(latest.verified_at if latest else None), "severity": "current" if latest else "warning"}
     if key == "networking":
-        total = db.query(IPAddress).count(); assigned = db.query(IPAddress).filter(IPAddress.name.isnot(None)).count(); monitors = db.query(NetworkMonitor)
-        return {"metrics": [_metric("IP addresses", total), _metric("Assigned", assigned), _metric("Available", max(0,total-assigned)), _metric("VLANs", db.query(VLAN).count()), _metric("Domains", db.query(DomainRecord).count()), _metric("Offline targets", monitors.filter(NetworkMonitor.last_status.in_(["offline","down","failed"])).count())], "source_updated_at": _iso(monitors.with_entities(func.max(NetworkMonitor.last_checked_at)).scalar())}
+        metrics = []
+        source_updated_at = None
+        if "vlan_ip_manager" in allowed_modules:
+            total = db.query(IPAddress).count()
+            assigned = db.query(IPAddress).filter(IPAddress.name.isnot(None)).count()
+            metrics.extend([_metric("IP addresses", total), _metric("Assigned", assigned), _metric("Available", max(0,total-assigned)), _metric("VLANs", db.query(VLAN).count())])
+        if "domain_manager" in allowed_modules:
+            metrics.append(_metric("Domains", db.query(DomainRecord).count()))
+        if "network_monitor" in allowed_modules:
+            monitors = db.query(NetworkMonitor)
+            metrics.append(_metric("Offline targets", monitors.filter(NetworkMonitor.last_status.in_(["offline","down","failed"])).count()))
+            source_updated_at = _iso(monitors.with_entities(func.max(NetworkMonitor.last_checked_at)).scalar())
+        return {"metrics": metrics, "source_updated_at": source_updated_at}
     if key == "remote_manager":
         q=db.query(RemoteAccess).filter_by(is_enabled=True); return {"metrics": [_metric("Configured targets", q.count()), _metric("SSH targets", q.filter_by(protocol="ssh").count()), _metric("RDP targets", q.filter_by(protocol="rdp").count())]}
     if key == "licences":
@@ -152,6 +190,8 @@ def _build(db: Session, user: User, key: str) -> dict:
         for event in rows:
             path=(event.request_path or "").lower()
             if any(marker in path for marker in ignored_paths): continue
+            event_module = module_for_path(path) if path else None
+            if event_module and event_module.key not in allowed_modules: continue
             if event.entity in {"api","request"} and event.action.lower() in {"get","put","post","request_failed"}: continue
             entity=event.entity.replace("_"," ").strip()
             action=action_labels.get(event.action.lower(),event.action.replace("_"," ").strip().title())
@@ -162,10 +202,13 @@ def _build(db: Session, user: User, key: str) -> dict:
         return {"items":list(grouped.values())[:limit]}
     if key == "attention_required":
         items=[]
-        for h in db.query(ComputeHost).filter(ComputeHost.status != "online").limit(10): items.append({"severity":"critical","module":"Compute Manager","summary":"Host is offline","object":h.name,"detected_at":_iso(h.updated_at),"target":"/infrastructure/vm-docker-manager"})
-        for w in db.query(ComputeWorkload).filter(ComputeWorkload.status.in_(["unhealthy","restarting"])).limit(10): items.append({"severity":"warning","module":"Compute Manager","summary":f"Workload is {w.status}","object":w.name,"detected_at":_iso(w.updated_at),"target":"/infrastructure/vm-docker-manager"})
-        for x in db.query(DNSInsight).filter(DNSInsight.status=="active", DNSInsight.acknowledged_at.is_(None)).limit(10): items.append({"severity":x.severity,"module":"DNS Manager","summary":x.title,"object":x.entity_identifier,"detected_at":_iso(x.last_detected_at),"target":"/networking/dns-manager?tab=insights"})
-        for j in db.query(BackupJob).filter(BackupJob.status.in_(["failed","error"])).order_by(BackupJob.created_at.desc()).limit(5): items.append({"severity":"critical","module":"Backup Manager","summary":"Backup job failed","object":str(j.id),"detected_at":_iso(j.finished_at or j.created_at),"target":"/infrastructure/backup-manager"})
+        if "compute_manager" in allowed_modules:
+            for h in db.query(ComputeHost).filter(ComputeHost.status != "online").limit(10): items.append({"severity":"critical","module":"Compute Manager","summary":"Host is offline","object":h.name,"detected_at":_iso(h.updated_at),"target":"/infrastructure/vm-docker-manager"})
+            for w in db.query(ComputeWorkload).filter(ComputeWorkload.status.in_(["unhealthy","restarting"])).limit(10): items.append({"severity":"warning","module":"Compute Manager","summary":f"Workload is {w.status}","object":w.name,"detected_at":_iso(w.updated_at),"target":"/infrastructure/vm-docker-manager"})
+        if "dns_manager" in allowed_modules:
+            for x in db.query(DNSInsight).filter(DNSInsight.status=="active", DNSInsight.acknowledged_at.is_(None)).limit(10): items.append({"severity":x.severity,"module":"DNS Manager","summary":x.title,"object":x.entity_identifier,"detected_at":_iso(x.last_detected_at),"target":"/networking/dns-manager?tab=insights"})
+        if "backup_manager" in allowed_modules:
+            for j in db.query(BackupJob).filter(BackupJob.status.in_(["failed","error"])).order_by(BackupJob.created_at.desc()).limit(5): items.append({"severity":"critical","module":"Backup Manager","summary":"Backup job failed","object":str(j.id),"detected_at":_iso(j.finished_at or j.created_at),"target":"/infrastructure/backup-manager"})
         rank={"critical":0,"warning":1,"information":2,"info":2}
         grouped={}
         for item in items:

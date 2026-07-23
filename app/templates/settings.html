@@ -24,7 +24,13 @@
   <div class="settings-layout">
     <aside class="panel settings-internal-sidebar" aria-label="Site administration sections">
       <div class="settings-side-section">
-        <a href="/system/site-administration?tab=general" class="settings-side-link active" data-settings-parent-tab="general" data-default-child="general" aria-selected="true">General</a>
+        <details class="settings-side-group" data-settings-details="general" open>
+          <summary class="settings-side-link active" data-settings-parent-tab="general" data-default-child="general" aria-selected="true">General</summary>
+          <div class="settings-side-children">
+            <a href="/system/site-administration?tab=general" class="settings-side-child active" data-settings-child-tab="general" data-settings-parent="general" aria-selected="true">General</a>
+            <a href="/system/site-administration?tab=experimental-features" class="settings-side-child" data-settings-child-tab="experimental-features" data-settings-parent="general" aria-selected="false">Experimental Features</a>
+          </div>
+        </details>
         <a href="/system/site-administration?tab=security" class="settings-side-link" data-settings-parent-tab="security" data-default-child="security" aria-selected="false">Security</a>
         <a href="/system/site-administration?tab=uploads" class="settings-side-link" data-settings-parent-tab="uploads" data-default-child="uploads" aria-selected="false">Uploads</a>
       </div>
@@ -62,6 +68,29 @@
     </aside>
 
     <main class="settings-content-panel">
+  <section class="settings-tab-panel" data-settings-panel="experimental-features" data-settings-parent="general" role="tabpanel" hidden>
+    <div class="ha-title-line"><h2>Experimental Features</h2>{% set maturity_label='Preview' %}{% set maturity_tooltip='Experimental controls can expose unfinished modules.' %}{% include 'components/maturity_badge.html' %}</div>
+    <p class="muted">Control modules that are still being hardened. New experimental modules are disabled by default; existing modules retain their previous availability.</p>
+    {% if request.query_params.get('feature_status') %}<div class="success" role="status">{{ 'Backup Manager' if request.query_params.get('feature') == 'backup-manager' else 'High Availability' }} has been {{ request.query_params.get('feature_status') }}.</div>{% endif %}
+    {% if request.query_params.get('feature_error') == 'acknowledgement-required' %}<div class="alert" role="alert">Acknowledge that existing clusters will remain configured locally and preserved in Kaya before disabling the management interface.</div>{% endif %}
+    {% if request.query_params.get('feature_error') == 'backup-acknowledgement-required' %}<div class="alert" role="alert">Acknowledge that backup targets, records, job history, and artifacts will be preserved before disabling Backup Manager.</div>{% endif %}
+    <div class="remote-settings-card experimental-feature-card">
+      <header><span>High Availability</span>{% set maturity_label='Beta' %}{% include 'components/maturity_badge.html' %}</header>
+      <div class="experimental-feature-body"><div><strong>High Availability</strong><small>A provider and application resilience framework. The first integration supports Pi-hole clusters, shared virtual IP deployment, configuration synchronisation, DHCP continuity, live health, and controlled or local automatic failover.</small></div><span class="feature-state {% if settings.get('high_availability_enabled') == '1' %}is-enabled{% endif %}">{{ 'Enabled' if settings.get('high_availability_enabled') == '1' else 'Disabled' }}</span></div>
+      <div class="form-actions experimental-feature-actions">
+        {% if settings.get('high_availability_enabled') == '1' %}{% if ha_active_cluster_count %}<label class="ha-disable-ack"><input type="checkbox" name="acknowledge_ha_disable" value="1"><span><strong>Preserve and stop managing {{ ha_active_cluster_count }} cluster{{ '' if ha_active_cluster_count == 1 else 's' }}</strong><small>Cluster records remain in Kaya. Existing local services continue operating, but Kaya management is hidden and HA jobs are stopped.</small></span></label>{% endif %}<button class="button secondary" name="enabled" value="0" formaction="/system/site-administration/experimental-features/high-availability" formmethod="post" formnovalidate>Disable High Availability</button>
+        {% else %}<button class="button" name="enabled" value="1" formaction="/system/site-administration/experimental-features/high-availability" formmethod="post">Enable High Availability</button>{% endif %}
+      </div>
+    </div>
+    <div class="remote-settings-card experimental-feature-card">
+      <header><span>Backup Manager</span>{% set maturity_label='Beta' %}{% set maturity_tooltip='Backup Manager is a beta feature.' %}{% include 'components/maturity_badge.html' %}</header>
+      <div class="experimental-feature-body"><div><strong>Backup Manager</strong><small>Tracks Proxmox jobs and manages encrypted Docker Agent backups and restores. Disabling hides the module and pauses new job dispatch without deleting targets, records, history, or artifacts.</small></div><span class="feature-state {% if settings.get('backup_manager_enabled', '1') == '1' %}is-enabled{% endif %}">{{ 'Enabled' if settings.get('backup_manager_enabled', '1') == '1' else 'Disabled' }}</span></div>
+      <div class="form-actions experimental-feature-actions">
+        {% if settings.get('backup_manager_enabled', '1') == '1' %}{% if backup_preserved_item_count %}<label class="ha-disable-ack"><input type="checkbox" name="acknowledge_backup_disable" value="1"><span><strong>Preserve {{ backup_preserved_item_count }} backup record{{ '' if backup_preserved_item_count == 1 else 's' }}</strong><small>All targets, records, job history and artifacts remain. New agent jobs stop dispatching; {{ backup_inflight_job_count }} queued or in-flight job{{ '' if backup_inflight_job_count == 1 else 's' }} may still report final status.</small></span></label>{% endif %}<button class="button secondary" name="enabled" value="0" formaction="/system/site-administration/experimental-features/backup-manager" formmethod="post" formnovalidate>Disable Backup Manager</button>
+        {% else %}<button class="button" name="enabled" value="1" formaction="/system/site-administration/experimental-features/backup-manager" formmethod="post">Enable Backup Manager</button>{% endif %}
+      </div>
+    </div>
+  </section>
   <section class="settings-tab-panel" data-settings-panel="module-secure-send" data-settings-parent="modules" role="tabpanel" hidden>
     <h2>Secure Send</h2>
     <div class="remote-settings-card">
@@ -393,6 +422,7 @@
 
   <section class="settings-tab-panel" data-settings-panel="module-dns-manager" data-settings-parent="modules" role="tabpanel" hidden>
     <h2>DNS Manager</h2>
+    {% if request.query_params.get('provider_saved') %}<div class="success"><strong>Pi-hole provider saved</strong><span>DNS Manager will treat the selected HA cluster as one logical Pi-hole through its virtual IP. Existing provider history and linked IP records were retained.</span></div>{% endif %}
     {% set dns_default_id = settings.get('dns_default_provider_id', '') %}
     {% set dns_ns = namespace(provider=none) %}
     {% for item in dns_providers or [] %}
@@ -453,7 +483,8 @@
 
     <div class="remote-settings-card">
       <header><span>Pi-hole connection</span></header>
-      <div class="remote-settings-grid two">
+      <p class="muted">A standalone Pi-hole keeps the existing DNS Manager behaviour. A Kaya HA cluster remains one logical provider and keeps this provider's stored history and IP links.</p>
+      <div class="remote-settings-grid two" data-dns-provider-settings>
         <input name="dns_provider_id" type="hidden" value="{{ dns_provider.id if dns_provider else '' }}">
         <label>
           <strong>Display name</strong>
@@ -461,18 +492,28 @@
           <input name="dns_provider_name" value="{{ dns_provider.name if dns_provider else '' }}" placeholder="Home Pi-hole">
         </label>
         <label>
-          <strong>Provider type</strong>
-          <small>Pi-hole is the first supported provider.</small>
-          <select name="dns_provider_type">
-            <option value="pihole" selected>Pi-hole</option>
+          <strong>Connection source</strong>
+          <small>Choose a direct Pi-hole or a healthy Kaya HA Pi-hole cluster.</small>
+          <select name="dns_provider_connection_mode" data-dns-connection-mode>
+            <option value="standalone" {% if not dns_provider or not dns_provider.ha_cluster_id %}selected{% endif %}>Pi-hole (standalone)</option>
+            <option value="ha_cluster" {% if dns_provider and dns_provider.ha_cluster_id %}selected{% endif %} {% if not ha_dns_clusters and not (dns_provider and dns_provider.ha_cluster_id) %}disabled{% endif %}>Kaya HA Pi-hole Cluster</option>
+          </select>
+          <input name="dns_provider_type" type="hidden" value="pihole">
+        </label>
+        <label data-dns-ha-field>
+          <strong>HA cluster</strong>
+          <small>Only deployed, healthy clusters with one current VIP owner are selectable.</small>
+          <select name="dns_provider_ha_cluster_id" data-dns-ha-cluster>
+            <option value="">Choose a cluster</option>
+            {% for cluster in ha_dns_clusters or [] %}{% set current_link = dns_provider and dns_provider.ha_cluster_id == cluster.id %}<option value="{{ cluster.id }}" {% if current_link %}selected{% endif %} {% if not current_link and (cluster.status != 'HEALTHY' or not cluster.current_active_node_id) %}disabled{% endif %}>{{ cluster.name }} — {{ cluster.virtual_ip }}{% if cluster.status != 'HEALTHY' or not cluster.current_active_node_id %} (currently unavailable){% endif %}</option>{% endfor %}
           </select>
         </label>
-        <label>
+        <label data-dns-standalone-field>
           <strong>Base URL</strong>
           <small>Pi-hole URL Kaya should connect to.</small>
           <input name="dns_provider_base_url" type="url" value="{{ dns_provider.base_url if dns_provider else '' }}" placeholder="https://pihole.example.local">
         </label>
-        <label>
+        <label data-dns-standalone-field>
           <strong>Authentication method</strong>
           <small>Use an application password or API credential supported by your Pi-hole version.</small>
           <select name="dns_provider_auth_method">
@@ -481,17 +522,17 @@
             <option value="api_token" {% if auth_method == 'api_token' %}selected{% endif %}>API credential</option>
           </select>
         </label>
-        <label>
+        <label data-dns-standalone-field>
           <strong>Application password/API credential</strong>
           <small>{% if dns_provider and dns_provider.encrypted_secret %}A credential is saved. Enter a new one to replace it.{% else %}Stored encrypted by Kaya.{% endif %}</small>
           <input name="dns_provider_secret" type="password" value="" autocomplete="new-password" placeholder="{% if dns_provider and dns_provider.encrypted_secret %}Saved credential{% endif %}">
         </label>
-        <label>
+        <label data-dns-standalone-field>
           <strong>Connection timeout</strong>
           <small>Seconds before Kaya gives up on a provider request.</small>
           <input name="dns_provider_timeout_seconds" type="number" min="1" max="60" value="{{ dns_provider.timeout_seconds if dns_provider else 10 }}">
         </label>
-        <label class="remote-setting-row">
+        <label class="remote-setting-row" data-dns-standalone-field>
           <span><strong>Verify SSL certificate</strong><small>Disable only for trusted internal endpoints with self-signed certificates.</small></span>
           <input class="remote-switch" name="dns_provider_ssl_verify" type="checkbox" value="1" {% if not dns_provider or dns_provider.ssl_verify %}checked{% endif %}>
         </label>
@@ -506,7 +547,8 @@
         </label>
       </div>
       <div class="remote-settings-actions">
-        <button class="button secondary" type="submit" formaction="/system/site-administration/test-dns-provider" formmethod="post">Test Pi-hole connection</button>
+        <button class="button" type="submit" formaction="/system/site-administration/save-dns-provider" formmethod="post" formnovalidate>Save Pi-hole provider</button>
+        <button class="button secondary" type="submit" formaction="/system/site-administration/test-dns-provider" formmethod="post" formnovalidate>Test Pi-hole connection</button>
       </div>
     </div>
   </section>
@@ -796,4 +838,5 @@
 {% block extra_scripts %}
 <script src="/static/js/settings_tabs.js?v={{ asset_version }}"></script>
 <script src="/static/js/remote_settings.js?v={{ asset_version }}"></script>
+<script src="/static/js/dns_provider_settings.js?v={{ asset_version }}"></script>
 {% endblock %}

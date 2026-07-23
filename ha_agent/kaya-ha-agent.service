@@ -1,0 +1,19 @@
+[Unit]
+Description=Kaya High Availability Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kaya-ha
+Group=kaya-ha
+ExecStart=/usr/bin/python3 /usr/lib/kaya-ha-agent/kaya_ha_agent.py run
+Restart=on-failure
+RestartSec=5
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/kaya-ha-agent /etc/keepalived /etc/pihole
+
+[Install]
+WantedBy=multi-user.target

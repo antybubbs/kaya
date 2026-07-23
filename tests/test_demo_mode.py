@@ -61,6 +61,31 @@ class DemoModeSafetyTests(unittest.TestCase):
         self.assertTrue(self.blocked("GET", "/auth/oidc/login"))
         self.assertTrue(self.blocked("GET", "/auth/oidc/callback"))
 
+    def test_blocks_high_availability_network_and_mutating_paths(self):
+        paths = (
+            "/high-availability/clusters/test-connection",
+            "/high-availability/clusters",
+            "/high-availability/clusters/demo/validate",
+            "/high-availability/clusters/demo/deployment",
+            "/high-availability/clusters/demo/synchronisation/plan",
+            "/high-availability/clusters/demo/synchronisation/automatic",
+            "/high-availability/clusters/demo/synchronisation/apply",
+            "/high-availability/clusters/demo/testing/start",
+            "/high-availability/clusters/demo/nodes/node/agent/bootstrap",
+            "/high-availability/clusters/demo/nodes/node/agent/revoke",
+        )
+        for path in paths:
+            with self.subTest(path=path):
+                self.assertTrue(self.blocked("POST", path))
+        self.assertFalse(self.blocked("GET", "/high-availability/clusters/demo"))
+        self.assertFalse(self.blocked("GET", "/high-availability/clusters/demo/live"))
+
+    def test_blocks_all_high_availability_agent_api_paths(self):
+        self.assertTrue(self.blocked("GET", "/api/ha/agent/v1/install.sh"))
+        self.assertTrue(self.blocked("GET", "/api/ha/agent/v1/files/update.sh"))
+        self.assertTrue(self.blocked("POST", "/api/ha/agent/v1/register"))
+        self.assertTrue(self.blocked("POST", "/api/ha/agent/v1/heartbeat"))
+
     def test_allows_read_only_module_pages(self):
         self.assertFalse(self.blocked("GET", "/networking/dns-manager"))
         self.assertFalse(self.blocked("GET", "/infrastructure/backup-manager"))

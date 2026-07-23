@@ -12,7 +12,7 @@ from starlette import status
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.db.session import get_db
 from app.models.models import DomainRecord, DomainRecordHistory
-from app.routers.auth import require_editor, require_user
+from app.routers.auth import require_editor, require_module_access, require_user
 from app.services.audit import write_audit
 from app.services.domain_lookup import lookup_domain, normalize_domain
 from app.services.domain_polling import (
@@ -21,7 +21,7 @@ from app.services.domain_polling import (
     set_poll_cadence,
 )
 
-router = APIRouter(prefix="/networking/domain-manager")
+router = APIRouter(prefix="/networking/domain-manager", dependencies=[Depends(require_module_access("domain_manager"))])
 templates = Jinja2Templates(directory="app/templates")
 
 

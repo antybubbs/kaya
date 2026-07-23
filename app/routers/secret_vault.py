@@ -22,7 +22,7 @@ from app.models.models import (
     AuditLog, ExternalIdentity, OIDCProvider, User, Vault, VaultAttachment, VaultBackupRecord, VaultCollection,
     VaultCollectionMember, VaultItem, VaultItemVersion,
 )
-from app.routers.auth import require_user
+from app.routers.auth import require_module_access, require_user
 from app.services.audit import write_audit
 from app.services.oidc_client import safe_return_path
 from app.services.secret_vault import (
@@ -35,7 +35,7 @@ from app.services.secret_vault import (
 )
 from app.services.site_settings import get_site_setting
 
-router = APIRouter(prefix="/security/secret-vault")
+router = APIRouter(prefix="/security/secret-vault", dependencies=[Depends(require_module_access("secret_vault"))])
 templates = Jinja2Templates(directory="app/templates")
 settings = get_settings()
 ITEM_TYPES = {

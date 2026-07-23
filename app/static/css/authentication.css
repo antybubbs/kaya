@@ -157,6 +157,24 @@
   margin: 0;
 }
 
+.authentication-readiness,
+.authentication-emergency-url {
+  border: 1px solid rgba(245, 158, 11, 0.42);
+  border-radius: 8px;
+  padding: 13px;
+}
+
+.authentication-readiness.is-ready { border-color: rgba(52, 211, 153, 0.5); }
+.authentication-readiness h3,
+.authentication-emergency-url h3 { margin: 0 0 8px; }
+.authentication-readiness ul { display: grid; gap: 7px; list-style: none; margin: 0 0 10px; padding: 0; }
+.authentication-readiness li { display: grid; gap: 2px; }
+.authentication-readiness li.passed strong { color: #6ee7b7; }
+.authentication-readiness li.failed strong { color: #fca5a5; }
+.authentication-readiness p,
+.authentication-emergency-url p { margin: 0; }
+.copy-field { align-items: center; display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr) auto; margin-top: 10px; }
+
 .authentication-card.danger-zone {
   border-color: rgba(248, 113, 113, 0.44);
 }

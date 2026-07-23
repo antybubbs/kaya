@@ -166,7 +166,7 @@ def test_provider_logout_uses_id_token_hint_and_safe_local_return(monkeypatch):
 
         assert redirect.startswith("https://id.example.com/logout?")
         assert "id_token_hint=header.payload.signature" in redirect
-        assert "post_logout_redirect_uri=https%3A%2F%2Fkaya.example.com%2Flogin" in redirect
+        assert "post_logout_redirect_uri=https%3A%2F%2Fkaya.example.com%2Flogin%3Flogged_out%3D1" in redirect
 
 
 def test_csp_form_action_allows_only_enabled_provider_authorization_origin():

@@ -1,5 +1,8 @@
 import asyncio
+import base64
+import hashlib
 import json
+import secrets
 import shutil
 import subprocess
 import time
@@ -22,12 +25,13 @@ from app.core.csrf import csrf_context, validate_csrf_token
 from app.core.security import encrypt_secret
 from app.db.session import SessionLocal, get_db
 from app.models.models import RemoteAccess, RemoteManagerSetting, RemoteSessionRecording, User
-from app.routers.auth import require_admin, require_editor, require_user
+from app.routers.auth import require_admin, require_editor, require_module_access, require_user
 from app.services.audit import write_audit
 from app.services.guacamole_bridge import restart_guacamole_bridge, start_guacamole_bridge
 from app.services.site_settings import get_site_setting
+from app.services.sessions import active_user_session
 
-router = APIRouter(prefix="/remote-manager")
+router = APIRouter(prefix="/remote-manager", dependencies=[Depends(require_module_access("remote_manager"))])
 templates = Jinja2Templates(directory="app/templates")
 PROTOCOLS = {"ssh", "rdp"}
 SETTINGS = {
@@ -166,22 +170,42 @@ def recording_extension(content_type: str, protocol: str) -> str:
     return ".txt"
 
 
-def ensure_recording_storage_available(size_bytes: int) -> None:
+async def stream_recording_upload(file: UploadFile, path: Path) -> int:
     app_settings = get_settings()
     max_bytes = max(1, int(app_settings.max_recording_upload_mb)) * 1024 * 1024
     min_free_bytes = max(0, int(app_settings.min_recording_free_mb)) * 1024 * 1024
-    if size_bytes > max_bytes:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"Recording is larger than the {app_settings.max_recording_upload_mb} MB limit",
-        )
     probe_path = RECORDING_ROOT if RECORDING_ROOT.exists() else RECORDING_ROOT.parent
-    free_bytes = shutil.disk_usage(probe_path).free
-    if free_bytes - size_bytes < min_free_bytes:
-        raise HTTPException(
-            status_code=status.HTTP_507_INSUFFICIENT_STORAGE,
-            detail="Not enough free storage to save this recording",
-        )
+    available_bytes = max(0, shutil.disk_usage(probe_path).free - min_free_bytes)
+    partial_path = path.with_suffix(f"{path.suffix}.part")
+    total = 0
+    try:
+        with partial_path.open("xb") as handle:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    raise HTTPException(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        detail=f"Recording is larger than the {app_settings.max_recording_upload_mb} MB limit",
+                    )
+                if total > available_bytes:
+                    raise HTTPException(
+                        status_code=status.HTTP_507_INSUFFICIENT_STORAGE,
+                        detail="Not enough free storage to save this recording",
+                    )
+                handle.write(chunk)
+        if total == 0:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Recording is empty")
+        partial_path.replace(path)
+        return total
+    except Exception:
+        try:
+            partial_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 def recording_path(recording: RemoteSessionRecording) -> Path:
@@ -514,6 +538,55 @@ def require_remote_session(db: Session, remote_id: int) -> RemoteAccess:
     return row
 
 
+def authenticated_websocket_user(db: Session, websocket: WebSocket) -> User | None:
+    if not hasattr(websocket, "session"):
+        return None
+    user_id = websocket.session.get("user_id")
+    session_id = websocket.session.get("session_id")
+    user = db.query(User).filter(User.id == user_id, User.is_active == True).first() if user_id else None
+    app_session = active_user_session(db, session_id, user.id if user else None)
+    if not user or not app_session:
+        return None
+    app_session.last_seen_at = datetime.utcnow()
+    db.commit()
+    return user
+
+
+def scan_ssh_host_key(row: RemoteAccess) -> str:
+    if row.protocol != "ssh":
+        raise ValueError("SSH host-key enrolment is only available for SSH connections.")
+    scanner = shutil.which("ssh-keyscan")
+    if not scanner:
+        raise ValueError("SSH host-key scanning is unavailable in this Kaya image.")
+    try:
+        result = subprocess.run(
+            [scanner, "-T", "5", "-p", str(row.port), row.ip_address.address],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValueError("Kaya could not retrieve the SSH host key. Confirm the address, port, and SSH service.") from exc
+    candidates: list[tuple[int, str]] = []
+    preference = {"ssh-ed25519": 0, "ecdsa-sha2-nistp256": 1, "ecdsa-sha2-nistp384": 2, "ecdsa-sha2-nistp521": 3, "ssh-rsa": 4}
+    for line in result.stdout.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) < 3 or parts[1] not in preference:
+            continue
+        try:
+            key_bytes = base64.b64decode(parts[2], validate=True)
+        except (ValueError, TypeError):
+            continue
+        digest = base64.b64encode(hashlib.sha256(key_bytes).digest()).decode("ascii").rstrip("=")
+        candidates.append((preference[parts[1]], f"{parts[1]} SHA256:{digest}"))
+    if not candidates:
+        raise ValueError("The SSH service did not provide a supported host key.")
+    return min(candidates, key=lambda item: item[0])[1]
+
+
 def websocket_origin_allowed(websocket: WebSocket) -> bool:
     origin = websocket.headers.get("origin")
     if not origin:
@@ -711,14 +784,97 @@ async def save_remote_host_settings(request: Request, remote_id: int, csrf_token
     form = await request.form()
     row.display_name = remote_display_name.strip() or None
     row.is_enabled = bool(form.get("remote_enabled"))
+    previous_protocol = row.protocol
+    previous_port = row.port
     row.protocol = clean_protocol(remote_protocol)
     row.port = clean_port(remote_port, row.protocol)
+    if row.protocol != previous_protocol or row.port != previous_port:
+        row.host_key_fingerprint = None
     row.username = remote_username.strip() or None
     row.terminal_settings = encode_settings_blob(remote_override_settings(form, TERMINAL_SETTING_KEYS))
     row.rdp_settings = encode_settings_blob(remote_override_settings(form, RDP_SETTING_KEYS))
     db.commit()
     write_audit(db, user, "update", "remote_access", entity_id=str(row.id), ip_address=request.client.host if request.client else None, detail=f"Updated Remote Manager settings for {remote_label(row)}")
     return RedirectResponse("/remote-manager", status_code=303)
+
+
+@router.post("/{remote_id}/ssh/host-key/scan")
+async def scan_remote_host_key(request: Request, remote_id: int, db: Session = Depends(get_db), user=Depends(require_editor)):
+    form = await request.form()
+    validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    row = db.get(RemoteAccess, remote_id)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Remote access entry not found")
+    try:
+        candidate = scan_ssh_host_key(row)
+        error = None
+    except ValueError as exc:
+        candidate = None
+        error = str(exc)
+    write_audit(
+        db,
+        user,
+        "scan_host_key",
+        "remote_access",
+        entity_id=str(row.id),
+        ip_address=request.client.host if request.client else None,
+        detail=f"Scanned SSH host key for {remote_label(row)}; key was not trusted automatically",
+        severity="warning" if error else "info",
+    )
+    return templates.TemplateResponse(
+        request,
+        "remote_host_settings.html",
+        {
+            "user": user,
+            **remote_host_settings_context(row, db),
+            "host_key_candidate": candidate,
+            "host_key_error": error,
+            **csrf_context(request),
+        },
+        status_code=400 if error else 200,
+    )
+
+
+@router.post("/{remote_id}/ssh/host-key/trust")
+async def trust_remote_host_key(request: Request, remote_id: int, db: Session = Depends(get_db), user=Depends(require_editor)):
+    form = await request.form()
+    validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    row = db.get(RemoteAccess, remote_id)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Remote access entry not found")
+    candidate = str(form.get("host_key_candidate") or "").strip()
+    if str(form.get("confirm_host_key") or "") != "1":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Confirm that you verified the SSH fingerprint.")
+    try:
+        current = scan_ssh_host_key(row)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    if not candidate or not secrets.compare_digest(candidate, current):
+        write_audit(
+            db,
+            user,
+            "host_key_changed_during_enrolment",
+            "remote_access",
+            entity_id=str(row.id),
+            ip_address=request.client.host if request.client else None,
+            detail=f"SSH host key changed while enrolling {remote_label(row)}",
+            severity="critical",
+        )
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="The SSH host key changed after it was scanned. Nothing was trusted.")
+    previous = row.host_key_fingerprint
+    row.host_key_fingerprint = current
+    db.commit()
+    write_audit(
+        db,
+        user,
+        "trust_host_key",
+        "remote_access",
+        entity_id=str(row.id),
+        ip_address=request.client.host if request.client else None,
+        detail=f"{'Replaced' if previous else 'Enrolled'} verified SSH host key for {remote_label(row)}",
+        severity="warning" if previous and previous != current else "info",
+    )
+    return RedirectResponse(f"/remote-manager/{row.id}/settings?host_key_trusted=1", status_code=303)
 
 
 @router.post("/{remote_id}/delete")
@@ -786,11 +942,7 @@ async def upload_recording(
     extension = recording_extension(content_type, row.protocol)
     stored_name = str(folder / f"{uuid4().hex}{extension}").replace("\\", "/")
     path = RECORDING_ROOT / stored_name
-    data = await file.read()
-    if not data:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Recording is empty")
-    ensure_recording_storage_available(len(data))
-    path.write_bytes(data)
+    size_bytes = await stream_recording_upload(file, path)
 
     recording = RemoteSessionRecording(
         remote_access_id=row.id,
@@ -802,9 +954,9 @@ async def upload_recording(
         trigger=clean_trigger,
         status="complete",
         stored_filename=stored_name,
-        original_filename=file.filename,
+        original_filename=(file.filename or "")[:255] or None,
         content_type="video/webm" if row.protocol == "rdp" else "text/plain",
-        size_bytes=len(data),
+        size_bytes=size_bytes,
         duration_seconds=max(0, float(duration_seconds or 0)),
         started_at=parse_client_datetime(started_at),
         ended_at=parse_client_datetime(ended_at),
@@ -915,19 +1067,23 @@ async def ssh_websocket(websocket: WebSocket, remote_id: int):
     if not websocket_origin_allowed(websocket):
         await websocket.close(code=1008)
         return
-    user_id = websocket.session.get("user_id") if hasattr(websocket, "session") else None
-    if not user_id:
-        await websocket.close(code=1008)
-        return
     db = SessionLocal()
     try:
+        user = authenticated_websocket_user(db, websocket)
+        if not user:
+            await websocket.close(code=1008)
+            return
         remote = db.get(RemoteAccess, remote_id)
         if not remote or not remote.is_enabled or remote.protocol != "ssh" or not remote.username:
             await websocket.close(code=1008)
             return
+        if not remote.host_key_fingerprint or " " not in remote.host_key_fingerprint:
+            await websocket.close(code=1008, reason="SSH host key is not enrolled")
+            return
         host = remote.ip_address.address
         port = remote.port
         username = remote.username
+        host_key_algorithm, host_key_fingerprint = remote.host_key_fingerprint.split(" ", 1)
     finally:
         db.close()
     await websocket.accept()
@@ -958,6 +1114,8 @@ async def ssh_websocket(websocket: WebSocket, remote_id: int):
                     "password": password,
                     "cols": cols,
                     "rows": rows,
+                    "hostKeyAlgorithm": host_key_algorithm,
+                    "hostKeyFingerprint": host_key_fingerprint,
                 },
             }))
         except Exception as exc:
@@ -1002,21 +1160,21 @@ async def rdp_websocket(websocket: WebSocket, remote_id: int):
     if not websocket_origin_allowed(websocket):
         await websocket.close(code=1008)
         return
-    user_id = websocket.session.get("user_id") if hasattr(websocket, "session") else None
-    if not user_id:
-        await websocket.close(code=1008)
-        return
     token = websocket.query_params.get("token", "")
-    cleanup_rdp_tokens()
-    session = rdp_tokens.get(token)
-    if not session or session.user_id != user_id or session.remote_id != remote_id:
-        await websocket.close(code=1008)
-        return
     db = SessionLocal()
     remote_label_text = "Remote host"
     remote_address = ""
     remote_port = 3389
     try:
+        user = authenticated_websocket_user(db, websocket)
+        if not user:
+            await websocket.close(code=1008)
+            return
+        cleanup_rdp_tokens()
+        session = rdp_tokens.get(token)
+        if not session or session.user_id != user.id or session.remote_id != remote_id:
+            await websocket.close(code=1008)
+            return
         remote = db.get(RemoteAccess, remote_id)
         if not remote or not remote.is_enabled or remote.protocol != "rdp":
             await websocket.close(code=1008)
@@ -1048,7 +1206,7 @@ async def rdp_websocket(websocket: WebSocket, remote_id: int):
         except Exception as exc:
             audit_db = SessionLocal()
             try:
-                audit_user = audit_db.get(User, user_id)
+                audit_user = audit_db.get(User, user.id)
                 write_audit(
                     audit_db,
                     audit_user,
@@ -1065,7 +1223,7 @@ async def rdp_websocket(websocket: WebSocket, remote_id: int):
             return
         audit_db = SessionLocal()
         try:
-            audit_user = audit_db.get(User, user_id)
+            audit_user = audit_db.get(User, user.id)
             write_audit(
                 audit_db,
                 audit_user,
@@ -1118,7 +1276,7 @@ async def rdp_websocket(websocket: WebSocket, remote_id: int):
         if connected:
             audit_db = SessionLocal()
             try:
-                audit_user = audit_db.get(User, user_id)
+                audit_user = audit_db.get(User, user.id)
                 write_audit(
                     audit_db,
                     audit_user,

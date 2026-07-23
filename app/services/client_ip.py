@@ -38,6 +38,7 @@ def validate_trusted_proxies(value: str) -> list[str]:
     errors = []
     for entry in split_trusted_proxies(value):
         if entry == "*":
+            errors.append(entry)
             continue
         try:
             ip_network(entry, strict=False)

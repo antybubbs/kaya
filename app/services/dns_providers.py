@@ -7,6 +7,8 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
@@ -77,6 +79,14 @@ class DNSProvider(ABC):
 
     @abstractmethod
     def get_blocklists(self) -> DNSProviderResult:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_version(self) -> DNSProviderResult:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_ha_configuration(self) -> DNSProviderResult:
         raise NotImplementedError
 
     @abstractmethod
@@ -206,13 +216,13 @@ class PiHoleProvider(DNSProvider):
             _PIHOLE_SESSION_CACHE.pop(self._session_cache_key(secret), None)
         self._sid = None
 
-    def _v6_request_json(self, path: str) -> dict[str, Any]:
+    def _v6_request_json(self, path: str, *, method: str = "GET", payload: dict[str, Any] | None = None) -> dict[str, Any]:
         try:
-            return self._request_json(path, headers=self._v6_auth_headers())
+            return self._request_json(path, method=method, payload=payload, headers=self._v6_auth_headers())
         except PiHoleHTTPError as exc:
             if exc.status_code in {401, 403} and self._sid:
                 self._clear_cached_sid()
-                return self._request_json(path, headers=self._v6_auth_headers())
+                return self._request_json(path, method=method, payload=payload, headers=self._v6_auth_headers())
             raise
 
     def _legacy_api(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -328,6 +338,177 @@ class PiHoleProvider(DNSProvider):
 
         return self._safe("Blocklists", run)
 
+    def get_version(self) -> DNSProviderResult:
+        def run():
+            data = self._v6_or_legacy("/api/info/version", {"versions": ""})
+            return DNSProviderResult(True, "Pi-hole version loaded.", data)
+
+        return self._safe("Version", run)
+
+    def get_ha_configuration(self) -> DNSProviderResult:
+        """Load only read-only configuration surfaces used by HA comparison."""
+        endpoints = {
+            "groups": "/api/groups",
+            "clients": "/api/clients",
+            "local_dns": "/api/config/dns/hosts",
+            "cname": "/api/config/dns/cnameRecords",
+            "upstream_dns": "/api/config/dns",
+            "dhcp": "/api/config/dhcp",
+        }
+
+        def run():
+            configuration: dict[str, Any] = {}
+            unavailable: dict[str, str] = {}
+            filtering: dict[str, Any] = {}
+            for name, path in {"lists": "/api/lists", "domains": "/api/domains"}.items():
+                try:
+                    filtering[name] = self._v6_request_json(path)
+                except DNSProviderError as exc:
+                    unavailable[f"filtering_{name}"] = str(exc)
+            if filtering:
+                configuration["filtering"] = filtering
+            for group, path in endpoints.items():
+                try:
+                    configuration[group] = self._v6_request_json(path)
+                except DNSProviderError as exc:
+                    unavailable[group] = str(exc)
+            if not configuration:
+                raise DNSProviderError("Pi-hole configuration endpoints are unavailable or authentication failed.")
+            return DNSProviderResult(
+                True,
+                "Pi-hole configuration loaded for read-only comparison.",
+                {"configuration": configuration, "unavailable": unavailable},
+            )
+
+        return self._safe("Configuration", run)
+
+    def apply_ha_configuration_group(self, group: str, value: Any) -> DNSProviderResult:
+        """Apply one allowlisted Pi-hole v6 configuration group.
+
+        Collection resources need item-by-item conflict handling and are therefore
+        deliberately not accepted by this configuration-patch method.
+        """
+        paths = {
+            "local_dns": "/api/config/dns/hosts",
+            "cname": "/api/config/dns/cnameRecords",
+            "upstream_dns": "/api/config/dns",
+            "dhcp": "/api/config/dhcp",
+        }
+        path = paths.get(group)
+        if path is None:
+            return DNSProviderResult(False, f"{group} requires collection reconciliation and cannot be patched safely.", None)
+
+        def run():
+            if not isinstance(value, dict) or not isinstance(value.get("config"), dict):
+                raise DNSProviderError(f"The {group} snapshot has no writable Pi-hole configuration payload.")
+            payload = {"config": value["config"]}
+            data = self._request_json(path, method="PATCH", payload=payload, headers=self._v6_auth_headers())
+            return DNSProviderResult(True, f"Pi-hole {group.replace('_', ' ')} configuration applied.", data)
+
+        return self._safe("Configuration update", run)
+
+    @staticmethod
+    def _collection(value: Any, key: str) -> list[dict[str, Any]]:
+        if isinstance(value, dict):
+            rows = value.get(key)
+            if isinstance(rows, list):
+                return [row for row in rows if isinstance(row, dict)]
+        return []
+
+    def reconcile_ha_collections(self, source: dict[str, Any], *, allow_deletions: bool) -> DNSProviderResult:
+        """Reconcile Pi-hole v6 groups, subscribed lists, domains, and clients."""
+        def run():
+            current_result = self.get_ha_configuration()
+            if not current_result.ok or not isinstance(current_result.data, dict):
+                raise DNSProviderError(current_result.message)
+            current = current_result.data.get("configuration")
+            if not isinstance(current, dict):
+                raise DNSProviderError("Pi-hole returned no collection configuration.")
+
+            source_groups = self._collection(source.get("groups"), "groups")
+            target_groups = self._collection(current.get("groups"), "groups")
+            source_group_names = {int(row.get("id")): str(row.get("name")) for row in source_groups if row.get("id") is not None and row.get("name")}
+
+            def mutate(path: str, method: str, payload: dict[str, Any] | None = None):
+                return self._v6_request_json(path, method=method, payload=payload)
+
+            source_by_name = {str(row.get("name")): row for row in source_groups if row.get("name")}
+            target_by_name = {str(row.get("name")): row for row in target_groups if row.get("name")}
+            for name, row in source_by_name.items():
+                payload = {"name": name, "comment": row.get("comment") or "", "enabled": bool(row.get("enabled", True))}
+                if name in target_by_name:
+                    mutate(f"/api/groups/{quote(name, safe='')}", "PUT", payload)
+                else:
+                    mutate("/api/groups", "POST", {**payload, "name": [name]})
+            extras = sorted(set(target_by_name) - set(source_by_name) - {"Default"})
+            if extras and not allow_deletions:
+                raise DNSProviderError("The plan contains group deletions which were not explicitly confirmed.")
+            for name in extras:
+                mutate(f"/api/groups/{quote(name, safe='')}", "DELETE")
+
+            refreshed_groups = self._v6_request_json("/api/groups")
+            target_group_ids = {str(row.get("name")): int(row.get("id")) for row in self._collection(refreshed_groups, "groups") if row.get("id") is not None and row.get("name")}
+
+            def mapped_groups(row: dict[str, Any]) -> list[int]:
+                names = [source_group_names.get(int(group_id)) for group_id in row.get("groups", []) if str(group_id).isdigit()]
+                return sorted(target_group_ids[name] for name in names if name in target_group_ids)
+
+            source_filtering = source.get("filtering") if isinstance(source.get("filtering"), dict) else {}
+            target_filtering = current.get("filtering") if isinstance(current.get("filtering"), dict) else {}
+            source_lists = self._collection(source_filtering.get("lists"), "lists")
+            target_lists = self._collection(target_filtering.get("lists"), "lists")
+            list_key = lambda row: (str(row.get("address") or ""), str(row.get("type") or "block"))
+            source_lists_by_key = {list_key(row): row for row in source_lists if row.get("address")}
+            target_lists_by_key = {list_key(row): row for row in target_lists if row.get("address")}
+            for (address, list_type), row in source_lists_by_key.items():
+                payload = {"comment": row.get("comment") or "", "enabled": bool(row.get("enabled", True)), "groups": mapped_groups(row), "type": list_type}
+                if (address, list_type) in target_lists_by_key:
+                    mutate(f"/api/lists/{quote(address, safe='')}?type={quote(list_type, safe='')}", "PUT", payload)
+                else:
+                    mutate(f"/api/lists?type={quote(list_type, safe='')}", "POST", {"address": [address], "comment": payload["comment"], "groups": payload["groups"]})
+            list_extras = sorted(set(target_lists_by_key) - set(source_lists_by_key))
+            if list_extras and not allow_deletions:
+                raise DNSProviderError("The plan contains subscribed-list deletions which were not explicitly confirmed.")
+            for address, list_type in list_extras:
+                mutate(f"/api/lists/{quote(address, safe='')}?type={quote(list_type, safe='')}", "DELETE")
+
+            source_domains = self._collection(source_filtering.get("domains"), "domains")
+            target_domains = self._collection(target_filtering.get("domains"), "domains")
+            domain_key = lambda row: (str(row.get("domain") or ""), str(row.get("type") or "allow"), str(row.get("kind") or "exact"))
+            source_domains_by_key = {domain_key(row): row for row in source_domains if row.get("domain")}
+            target_domains_by_key = {domain_key(row): row for row in target_domains if row.get("domain")}
+            for (domain, domain_type, kind), row in source_domains_by_key.items():
+                payload = {"comment": row.get("comment") or "", "enabled": bool(row.get("enabled", True)), "groups": mapped_groups(row), "type": domain_type, "kind": kind}
+                path = f"/api/domains/{quote(domain_type, safe='')}/{quote(kind, safe='')}/{quote(domain, safe='')}"
+                if (domain, domain_type, kind) in target_domains_by_key:
+                    mutate(path, "PUT", payload)
+                else:
+                    mutate(f"/api/domains/{quote(domain_type, safe='')}/{quote(kind, safe='')}", "POST", {**payload, "domain": [domain]})
+            domain_extras = sorted(set(target_domains_by_key) - set(source_domains_by_key))
+            if domain_extras and not allow_deletions:
+                raise DNSProviderError("The plan contains domain deletions which were not explicitly confirmed.")
+            for domain, domain_type, kind in domain_extras:
+                mutate(f"/api/domains/{quote(domain_type, safe='')}/{quote(kind, safe='')}/{quote(domain, safe='')}", "DELETE")
+
+            source_clients = self._collection(source.get("clients"), "clients")
+            target_clients = self._collection(current.get("clients"), "clients")
+            source_clients_by_key = {str(row.get("client")): row for row in source_clients if row.get("client")}
+            target_clients_by_key = {str(row.get("client")): row for row in target_clients if row.get("client")}
+            for client, row in source_clients_by_key.items():
+                payload = {"comment": row.get("comment") or "", "groups": mapped_groups(row)}
+                if client in target_clients_by_key:
+                    mutate(f"/api/clients/{quote(client, safe='')}", "PUT", payload)
+                else:
+                    mutate("/api/clients", "POST", {**payload, "client": [client]})
+            client_extras = sorted(set(target_clients_by_key) - set(source_clients_by_key))
+            if client_extras and not allow_deletions:
+                raise DNSProviderError("The plan contains client deletions which were not explicitly confirmed.")
+            for client in client_extras:
+                mutate(f"/api/clients/{quote(client, safe='')}", "DELETE")
+            return DNSProviderResult(True, "Pi-hole collection configuration reconciled.", {})
+
+        return self._safe("Collection reconciliation", run)
+
     def update_blocklists(self) -> DNSProviderResult:
         def run():
             data = self._request_json(
@@ -343,7 +524,88 @@ class PiHoleProvider(DNSProvider):
         return self._safe("Blocklist update", run)
 
 
+class HAPiHoleProvider(DNSProvider):
+    """Expose a Pi-hole HA cluster as one logical DNS Manager provider.
+
+    Provider history remains attached to ``self.config.id``. Only live API calls are
+    routed to the node which currently owns the VIP; Kaya is never in the DNS or
+    DHCP packet path.
+    """
+
+    def _active_provider(self) -> PiHoleProvider:
+        cluster = self.config.ha_cluster
+        if cluster is None or cluster.deleted_at is not None:
+            raise DNSProviderError("The linked Kaya HA Pi-hole cluster is unavailable.")
+        now = datetime.utcnow()
+        owners = [
+            node for node in cluster.nodes
+            if node.vip_owned
+            and node.last_heartbeat_at is not None
+            and node.last_heartbeat_at >= now - timedelta(seconds=45)
+            and node.keepalived_runtime_state == "RUNNING"
+            and node.dns_healthy is True
+        ]
+        if len(owners) != 1 or cluster.current_active_node_id != owners[0].id:
+            raise DNSProviderError("Kaya cannot safely identify one live Pi-hole VIP owner. Check the HA cluster before retrying.")
+        node = owners[0]
+        source = node.integration if node.integration is not None else node.ha_connection
+        if source is None or getattr(source, "deleted_at", None) is not None:
+            raise DNSProviderError("The active HA node has no usable management connection.")
+        node_config = SimpleNamespace(
+            id=f"ha-dns-{self.config.id}-node-{node.id}",
+            base_url=source.base_url if node.integration is not None else source.api_base_url,
+            auth_method=source.auth_method,
+            encrypted_secret=source.encrypted_secret,
+            ssl_verify=source.ssl_verify,
+            timeout_seconds=source.timeout_seconds,
+        )
+        return PiHoleProvider(node_config)
+
+    def _call(self, method: str, *args, **kwargs) -> DNSProviderResult:
+        try:
+            return getattr(self._active_provider(), method)(*args, **kwargs)
+        except DNSProviderError as exc:
+            return DNSProviderResult(False, str(exc), None)
+
+    def test_connection(self): return self._call("test_connection")
+    def get_status(self): return self._call("get_status")
+    def get_statistics(self): return self._call("get_statistics")
+    def get_history(self): return self._call("get_history")
+    def get_clients(self): return self._call("get_clients")
+    def get_query_log(self, *, limit: int = 100): return self._call("get_query_log", limit=limit)
+    def get_local_dns_records(self): return self._call("get_local_dns_records")
+    def get_dhcp_leases(self): return self._call("get_dhcp_leases")
+    def get_blocklists(self): return self._call("get_blocklists")
+    def get_version(self): return self._call("get_version")
+    def get_ha_configuration(self): return self._call("get_ha_configuration")
+    def update_blocklists(self): return self._call("update_blocklists")
+
+
 def provider_for(config: DNSProviderConfig) -> DNSProvider:
     if config.provider_type == "pihole":
+        if config.ha_cluster_id is not None:
+            return HAPiHoleProvider(config)
         return PiHoleProvider(config)
     raise DNSProviderError(f"Unsupported DNS provider type: {config.provider_type}")
+
+
+def provider_snapshot_for_io(config: DNSProviderConfig) -> DNSProvider:
+    """Freeze provider routing before releasing the database transaction.
+
+    HA analyses make several bounded requests and must use the same validated
+    active node throughout the collection pass. Standalone providers receive
+    an equivalent detached configuration so no later attribute access can
+    reopen the database transaction during network I/O.
+    """
+    if config.provider_type != "pihole":
+        raise DNSProviderError(f"Unsupported DNS provider type: {config.provider_type}")
+    if config.ha_cluster_id is not None:
+        return HAPiHoleProvider(config)._active_provider()
+    return PiHoleProvider(SimpleNamespace(
+        id=config.id,
+        base_url=config.base_url,
+        auth_method=config.auth_method,
+        encrypted_secret=config.encrypted_secret,
+        ssl_verify=config.ssl_verify,
+        timeout_seconds=config.timeout_seconds,
+    ))

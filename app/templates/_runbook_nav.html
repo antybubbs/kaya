@@ -1,0 +1,8 @@
+<nav class="runbook-module-nav" aria-label="Runbook Manager">
+  <a class="{% if runbook_active == 'overview' %}active{% endif %}" href="/documentation/runbook-manager"><span aria-hidden="true">&#9638;</span> Overview</a>
+  <a class="{% if runbook_active == 'runbooks' %}active{% endif %}" href="/documentation/runbook-manager/runbooks"><span aria-hidden="true">&#128196;</span> Runbooks</a>
+  <a class="{% if runbook_active == 'spaces' %}active{% endif %}" href="/documentation/runbook-manager/spaces"><span aria-hidden="true">&#128193;</span> Spaces</a>
+  <a class="{% if runbook_active == 'tags' %}active{% endif %}" href="/documentation/runbook-manager/tags"><span aria-hidden="true">#</span> Tags</a>
+  <a class="{% if runbook_active == 'templates' %}active{% endif %}" href="/documentation/runbook-manager/templates"><span aria-hidden="true">&#9634;</span> Templates</a>
+  {% if user.role in ['admin','editor'] %}<span class="runbook-nav-label">Manage</span><a class="{% if runbook_active == 'import' %}active{% endif %}" href="/documentation/runbook-manager/import"><span aria-hidden="true">&#8679;</span> Import</a>{% endif %}
+</nav>

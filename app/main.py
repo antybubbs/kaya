@@ -7,7 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.demo import demo_request_is_blocked
@@ -16,7 +16,7 @@ from app.core.performance import begin_request_metrics, end_request_metrics, ins
 from app.core.security import decrypt_secret, hash_password
 from app.db.session import Base, engine, SessionLocal
 from app.models.models import AuditLog, User, VLAN, VaultSession
-from app.routers import auth, oidc, dashboard, licences, admin, ip_addresses, hardware_assets, network_monitor, remote_manager, runbooks, domain_manager, compute_manager, rack_manager, backup_manager, dns_manager, secret_vault, secure_send
+from app.routers import auth, oidc, dashboard, licences, admin, ip_addresses, hardware_assets, network_monitor, remote_manager, runbooks, domain_manager, compute_manager, rack_manager, backup_manager, dns_manager, secret_vault, secure_send, high_availability, ha_agent_api
 from app.services.secure_send import cleanup_loop as secure_send_cleanup_loop
 from app.services.guacamole_bridge import stop_guacamole_bridge
 from app.services.kaya_remote_service import start_kaya_remote_service, stop_kaya_remote_service
@@ -24,6 +24,8 @@ from app.services.network_monitor import monitor_loop
 from app.services.domain_polling import domain_poll_loop
 from app.services.compute_monitor import compute_monitor_loop
 from app.services.dns_collector import dns_collector_loop
+from app.services.ha_lease_monitor import ha_lease_reconciliation_loop
+from app.services.ha_sync_monitor import ha_sync_monitor_loop
 from app.services.audit import begin_request_context, end_request_context, request_event_written, write_audit
 from app.services.client_ip import TrustedProxyMiddleware, client_ip
 from app.services.site_settings import (
@@ -36,6 +38,10 @@ from app.services.site_settings import (
     get_site_setting,
 )
 from app.services.version import refresh_latest_release, version_check_loop
+from app.services.modules import (
+    enabled_modules,
+    grant_all_registered_modules,
+)
 
 settings = get_settings()
 install_sensitive_authentication_log_filter()
@@ -51,6 +57,8 @@ compute_monitor_task = None
 dns_collector_task = None
 version_check_task = None
 secure_send_cleanup_task = None
+ha_lease_reconciliation_task = None
+ha_sync_monitor_task = None
 app.state.demo_mode = settings.demo_mode
 app.state.demo_reset_schedule = settings.demo_reset_schedule
 
@@ -109,11 +117,19 @@ async def protect_public_demo(request: Request, call_next):
 async def security_headers(request: Request, call_next):
     security = {}
     oidc_form_source = None
+    request.state.high_availability_enabled = False
+    request.state.backup_manager_enabled = True
+    request.state.accessible_module_keys = frozenset()
+    request.state.module_landing_url = "/profile"
+    request.state.enabled_modules = ()
     if not request.url.path.startswith("/static/"):
         db = SessionLocal()
         try:
             security = load_security_settings(db)
             oidc_form_source = oidc_form_action_source(db)
+            request.state.high_availability_enabled = get_site_setting(db, "high_availability_enabled") == "1"
+            request.state.backup_manager_enabled = get_site_setting(db, "backup_manager_enabled") == "1"
+            request.state.enabled_modules = enabled_modules(db)
         finally:
             db.close()
         if security.get("trusted_hosts_enabled") == "1" or settings.allowed_hosts.strip():
@@ -286,11 +302,15 @@ def pwa_service_worker():
 
 
 def bootstrap():
+    module_permissions_existed = inspect(engine).has_table("user_module_permissions")
     Base.metadata.create_all(bind=engine)
     migrate_existing_database()
     # Vault unlocks are process-bound by policy. A restart never resurrects an
     # authenticated vault session from the database.
     with SessionLocal() as db:
+        if not module_permissions_existed:
+            for existing_user in db.query(User).all():
+                grant_all_registered_modules(db, existing_user)
         db.query(VaultSession).filter(VaultSession.revoked_at.is_(None)).update(
             {VaultSession.revoked_at: datetime.utcnow()}, synchronize_session=False
         )
@@ -487,15 +507,22 @@ def migrate_existing_database():
             conn.execute(text("CREATE INDEX ix_runbook_spaces_name ON runbook_spaces (name)"))
         runbook_page_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(runbook_pages)"))}
         if not runbook_page_columns:
-            conn.execute(text("CREATE TABLE runbook_pages (id INTEGER NOT NULL PRIMARY KEY, space_id INTEGER REFERENCES runbook_spaces(id), parent_id INTEGER REFERENCES runbook_pages(id), title VARCHAR(255) NOT NULL, slug VARCHAR(255) NOT NULL UNIQUE, summary VARCHAR(500), body TEXT, tags VARCHAR(500), is_pinned BOOLEAN DEFAULT 0 NOT NULL, created_by_id INTEGER REFERENCES users(id), updated_by_id INTEGER REFERENCES users(id), created_at DATETIME, updated_at DATETIME)"))
+            conn.execute(text("CREATE TABLE runbook_pages (id INTEGER NOT NULL PRIMARY KEY, space_id INTEGER REFERENCES runbook_spaces(id), parent_id INTEGER REFERENCES runbook_pages(id), title VARCHAR(255) NOT NULL, slug VARCHAR(255) NOT NULL UNIQUE, summary VARCHAR(500), body TEXT, tags VARCHAR(500), is_pinned BOOLEAN DEFAULT 0 NOT NULL, view_count INTEGER DEFAULT 0 NOT NULL, last_viewed_at DATETIME, created_by_id INTEGER REFERENCES users(id), updated_by_id INTEGER REFERENCES users(id), created_at DATETIME, updated_at DATETIME)"))
             conn.execute(text("CREATE INDEX ix_runbook_pages_space_id ON runbook_pages (space_id)"))
             conn.execute(text("CREATE INDEX ix_runbook_pages_parent_id ON runbook_pages (parent_id)"))
             conn.execute(text("CREATE INDEX ix_runbook_pages_title ON runbook_pages (title)"))
             conn.execute(text("CREATE INDEX ix_runbook_pages_slug ON runbook_pages (slug)"))
             conn.execute(text("CREATE INDEX ix_runbook_pages_tags ON runbook_pages (tags)"))
             conn.execute(text("CREATE INDEX ix_runbook_pages_is_pinned ON runbook_pages (is_pinned)"))
+            conn.execute(text("CREATE INDEX ix_runbook_pages_view_count ON runbook_pages (view_count)"))
             conn.execute(text("CREATE INDEX ix_runbook_pages_created_by_id ON runbook_pages (created_by_id)"))
             conn.execute(text("CREATE INDEX ix_runbook_pages_updated_by_id ON runbook_pages (updated_by_id)"))
+        else:
+            if "view_count" not in runbook_page_columns:
+                conn.execute(text("ALTER TABLE runbook_pages ADD COLUMN view_count INTEGER DEFAULT 0 NOT NULL"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_runbook_pages_view_count ON runbook_pages (view_count)"))
+            if "last_viewed_at" not in runbook_page_columns:
+                conn.execute(text("ALTER TABLE runbook_pages ADD COLUMN last_viewed_at DATETIME"))
         runbook_history_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(runbook_page_history)"))}
         if not runbook_history_columns:
             conn.execute(text("CREATE TABLE runbook_page_history (id INTEGER NOT NULL PRIMARY KEY, page_id INTEGER NOT NULL REFERENCES runbook_pages(id), title VARCHAR(255) NOT NULL, summary VARCHAR(500), body TEXT, tags VARCHAR(500), saved_by_id INTEGER REFERENCES users(id), saved_at DATETIME)"))
@@ -674,6 +701,77 @@ def migrate_existing_database():
             for column in ["host_id", "workload_id", "operation", "status", "encryption_enabled", "requested_by_id", "created_at", "dispatched_at", "started_at", "finished_at"]:
                 conn.execute(text(f"CREATE INDEX ix_backup_jobs_{column} ON backup_jobs ({column})"))
 
+        conn.execute(text("CREATE TABLE IF NOT EXISTS ha_provider_connections (id INTEGER NOT NULL PRIMARY KEY, public_id VARCHAR(36) NOT NULL UNIQUE, provider_key VARCHAR(40) NOT NULL, name VARCHAR(255) NOT NULL, api_base_url VARCHAR(500) NOT NULL, auth_method VARCHAR(40) DEFAULT 'password' NOT NULL, encrypted_secret TEXT, ssl_verify BOOLEAN DEFAULT 1 NOT NULL, timeout_seconds INTEGER DEFAULT 10 NOT NULL, created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)"))
+        conn.execute(text("CREATE TABLE IF NOT EXISTS ha_clusters (id INTEGER NOT NULL PRIMARY KEY, public_id VARCHAR(36) NOT NULL UNIQUE, name VARCHAR(120) NOT NULL, description TEXT, provider_key VARCHAR(40) DEFAULT 'pihole' NOT NULL, status VARCHAR(40) DEFAULT 'DRAFT' NOT NULL, virtual_ip VARCHAR(80), prefix_length INTEGER, authoritative_node_id INTEGER REFERENCES ha_nodes(id) ON DELETE SET NULL, current_active_node_id INTEGER REFERENCES ha_nodes(id) ON DELETE SET NULL, automatic_failover_enabled BOOLEAN DEFAULT 0 NOT NULL, automatic_failback_enabled BOOLEAN DEFAULT 0 NOT NULL, automatic_sync_enabled BOOLEAN DEFAULT 0 NOT NULL, automatic_sync_allow_deletions BOOLEAN DEFAULT 0 NOT NULL, sync_mode VARCHAR(40) DEFAULT 'active_authoritative' NOT NULL, sync_interval_seconds INTEGER DEFAULT 300 NOT NULL, drift_check_interval_seconds INTEGER DEFAULT 300 NOT NULL, maintenance_mode BOOLEAN DEFAULT 0 NOT NULL, cluster_generation INTEGER DEFAULT 1 NOT NULL, role_generation INTEGER DEFAULT 1 NOT NULL, desired_sync_generation INTEGER DEFAULT 0 NOT NULL, last_healthy_at DATETIME, last_failover_at DATETIME, created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)"))
+        conn.execute(text("CREATE TABLE IF NOT EXISTS ha_nodes (id INTEGER NOT NULL PRIMARY KEY, cluster_id INTEGER NOT NULL REFERENCES ha_clusters(id) ON DELETE CASCADE, public_id VARCHAR(36) NOT NULL UNIQUE, display_name VARCHAR(255) NOT NULL, management_host VARCHAR(255), api_base_url VARCHAR(500) NOT NULL, integration_reference_id INTEGER REFERENCES dns_providers(id) ON DELETE SET NULL, ha_connection_id INTEGER REFERENCES ha_provider_connections(id) ON DELETE SET NULL, role VARCHAR(30) NOT NULL, desired_role VARCHAR(30) NOT NULL, status VARCHAR(40) DEFAULT 'UNVALIDATED' NOT NULL, network_interface VARCHAR(80), vrrp_priority INTEGER, agent_id VARCHAR(120), agent_version VARCHAR(80), provider_version VARCHAR(80), capabilities_json TEXT, configuration_snapshot_json TEXT, configuration_checksum VARCHAR(64), last_heartbeat_at DATETIME, last_health_at DATETIME, last_sync_at DATETIME, observed_role VARCHAR(30), observed_generation INTEGER DEFAULT 0 NOT NULL, vip_owned BOOLEAN DEFAULT 0 NOT NULL, dhcp_running BOOLEAN DEFAULT 0 NOT NULL, dns_healthy BOOLEAN, peer_reachable BOOLEAN, lease_generation INTEGER DEFAULT 0 NOT NULL, config_generation INTEGER DEFAULT 0 NOT NULL, created_at DATETIME, updated_at DATETIME, CONSTRAINT uq_ha_nodes_cluster_integration UNIQUE (cluster_id, integration_reference_id), CONSTRAINT uq_ha_nodes_cluster_connection UNIQUE (cluster_id, ha_connection_id))"))
+        conn.execute(text("CREATE TABLE IF NOT EXISTS ha_health_checks (id INTEGER NOT NULL PRIMARY KEY, cluster_id INTEGER NOT NULL REFERENCES ha_clusters(id) ON DELETE CASCADE, node_id INTEGER REFERENCES ha_nodes(id) ON DELETE CASCADE, check_key VARCHAR(120) NOT NULL, status VARCHAR(30) NOT NULL, severity VARCHAR(20) NOT NULL, latency_ms INTEGER, summary VARCHAR(1000) NOT NULL, technical_detail_redacted TEXT, remediation TEXT, observed_at DATETIME)"))
+        conn.execute(text("CREATE TABLE IF NOT EXISTS ha_agent_credentials (id INTEGER NOT NULL PRIMARY KEY, node_id INTEGER NOT NULL UNIQUE REFERENCES ha_nodes(id) ON DELETE CASCADE, agent_id VARCHAR(120) NOT NULL UNIQUE, public_key TEXT UNIQUE, bootstrap_token_hash VARCHAR(64) UNIQUE, bootstrap_expires_at DATETIME, registered_at DATETIME, revoked_at DATETIME, last_rotated_at DATETIME, created_at DATETIME, updated_at DATETIME)"))
+        conn.execute(text("CREATE TABLE IF NOT EXISTS ha_agent_requests (id INTEGER NOT NULL PRIMARY KEY, credential_id INTEGER NOT NULL REFERENCES ha_agent_credentials(id) ON DELETE CASCADE, request_id VARCHAR(80) NOT NULL, request_timestamp DATETIME NOT NULL, received_at DATETIME, CONSTRAINT uq_ha_agent_request_replay UNIQUE (credential_id, request_id))"))
+        conn.execute(text("CREATE TABLE IF NOT EXISTS ha_events (id INTEGER NOT NULL PRIMARY KEY, cluster_id INTEGER NOT NULL REFERENCES ha_clusters(id) ON DELETE CASCADE, node_id INTEGER REFERENCES ha_nodes(id) ON DELETE CASCADE, event_type VARCHAR(80) NOT NULL, severity VARCHAR(20) NOT NULL, source VARCHAR(40) NOT NULL, message VARCHAR(1000) NOT NULL, details_json_redacted TEXT, agent_event_id VARCHAR(80) UNIQUE, occurred_at DATETIME NOT NULL, received_at DATETIME, acknowledged_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, acknowledged_at DATETIME)"))
+        conn.execute(text("CREATE TABLE IF NOT EXISTS ha_agent_action_results (id INTEGER NOT NULL PRIMARY KEY, action_id VARCHAR(180) NOT NULL UNIQUE, cluster_id INTEGER NOT NULL REFERENCES ha_clusters(id) ON DELETE CASCADE, node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, action_type VARCHAR(60) NOT NULL, generation INTEGER NOT NULL, status VARCHAR(30) NOT NULL, checksum VARCHAR(64), backup_reference VARCHAR(255), message_redacted VARCHAR(1000) NOT NULL, received_at DATETIME)"))
+        conn.execute(text("CREATE TABLE IF NOT EXISTS ha_sync_runs (id INTEGER NOT NULL PRIMARY KEY, public_id VARCHAR(36) NOT NULL UNIQUE, cluster_id INTEGER NOT NULL REFERENCES ha_clusters(id) ON DELETE CASCADE, source_node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, target_node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, status VARCHAR(30) DEFAULT 'PLANNED' NOT NULL, plan_json TEXT NOT NULL, error_redacted VARCHAR(1000), created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, started_at DATETIME, completed_at DATETIME, created_at DATETIME)"))
+        conn.execute(text("CREATE TABLE IF NOT EXISTS ha_backups (id INTEGER NOT NULL PRIMARY KEY, sync_run_id INTEGER NOT NULL REFERENCES ha_sync_runs(id) ON DELETE CASCADE, node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, encrypted_snapshot TEXT NOT NULL, checksum VARCHAR(64) NOT NULL, created_at DATETIME)"))
+        conn.execute(text("CREATE TABLE IF NOT EXISTS ha_drift_items (id INTEGER NOT NULL PRIMARY KEY, sync_run_id INTEGER NOT NULL REFERENCES ha_sync_runs(id) ON DELETE CASCADE, group_key VARCHAR(80) NOT NULL, risk VARCHAR(20) NOT NULL, status VARCHAR(30) DEFAULT 'DRIFT' NOT NULL, source_checksum VARCHAR(64) NOT NULL, target_checksum VARCHAR(64) NOT NULL, message VARCHAR(1000) NOT NULL)"))
+        conn.execute(text("CREATE TABLE IF NOT EXISTS ha_lease_replication_states (id INTEGER NOT NULL PRIMARY KEY, cluster_id INTEGER NOT NULL UNIQUE REFERENCES ha_clusters(id) ON DELETE CASCADE, source_node_id INTEGER REFERENCES ha_nodes(id) ON DELETE SET NULL, target_node_id INTEGER REFERENCES ha_nodes(id) ON DELETE SET NULL, status VARCHAR(30) DEFAULT 'NOT_APPLICABLE' NOT NULL, desired_generation INTEGER DEFAULT 0 NOT NULL, applied_generation INTEGER DEFAULT 0 NOT NULL, lease_count INTEGER DEFAULT 0 NOT NULL, difference_count INTEGER DEFAULT 0 NOT NULL, conflict_count INTEGER DEFAULT 0 NOT NULL, last_event_at DATETIME, last_full_reconciliation_at DATETIME, last_applied_at DATETIME, last_error_redacted VARCHAR(1000), created_at DATETIME, updated_at DATETIME)"))
+        conn.execute(text("CREATE TABLE IF NOT EXISTS ha_lease_snapshots (id INTEGER NOT NULL PRIMARY KEY, public_id VARCHAR(36) NOT NULL UNIQUE, cluster_id INTEGER NOT NULL REFERENCES ha_clusters(id) ON DELETE CASCADE, source_node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, target_node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, generation INTEGER NOT NULL, checksum VARCHAR(64) NOT NULL, encrypted_payload TEXT NOT NULL, lease_count INTEGER DEFAULT 0 NOT NULL, status VARCHAR(30) DEFAULT 'PENDING' NOT NULL, validation_summary_json TEXT DEFAULT '{}' NOT NULL, created_at DATETIME, staged_at DATETIME, CONSTRAINT uq_ha_lease_snapshot_generation UNIQUE (cluster_id, generation))"))
+        conn.execute(text("CREATE TABLE IF NOT EXISTS ha_failover_runs (id INTEGER NOT NULL PRIMARY KEY, public_id VARCHAR(36) NOT NULL UNIQUE, cluster_id INTEGER NOT NULL REFERENCES ha_clusters(id) ON DELETE CASCADE, source_node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, target_node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, status VARCHAR(30) DEFAULT 'RUNNING' NOT NULL, phase VARCHAR(50) DEFAULT 'PREFLIGHT' NOT NULL, dhcp_managed BOOLEAN DEFAULT 0 NOT NULL, lease_generation INTEGER DEFAULT 0 NOT NULL, role_generation INTEGER NOT NULL, error_redacted VARCHAR(1000), report_json TEXT DEFAULT '{}' NOT NULL, requested_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, started_at DATETIME, completed_at DATETIME, created_at DATETIME)"))
+        ha_cluster_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(ha_clusters)"))}
+        for column, definition in {"cluster_generation": "INTEGER DEFAULT 1 NOT NULL", "role_generation": "INTEGER DEFAULT 1 NOT NULL", "desired_sync_generation": "INTEGER DEFAULT 0 NOT NULL", "automatic_sync_enabled": "BOOLEAN DEFAULT 0 NOT NULL", "automatic_sync_allow_deletions": "BOOLEAN DEFAULT 0 NOT NULL", "vrrp_router_id": "INTEGER", "keepalived_generation": "INTEGER DEFAULT 0 NOT NULL", "keepalived_status": "VARCHAR(40) DEFAULT 'NOT_CONFIGURED' NOT NULL", "keepalived_requested_at": "DATETIME", "keepalived_deployed_at": "DATETIME"}.items():
+            if column not in ha_cluster_columns:
+                conn.execute(text(f"ALTER TABLE ha_clusters ADD COLUMN {column} {definition}"))
+        dns_provider_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(dns_providers)"))}
+        if "ha_cluster_id" not in dns_provider_columns:
+            conn.execute(text("ALTER TABLE dns_providers ADD COLUMN ha_cluster_id INTEGER REFERENCES ha_clusters(id) ON DELETE SET NULL"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_dns_providers_ha_cluster_id ON dns_providers (ha_cluster_id)"))
+        conn.execute(text("UPDATE ha_clusters SET authoritative_node_id = (SELECT id FROM ha_nodes WHERE ha_nodes.cluster_id = ha_clusters.id AND role = 'ACTIVE' ORDER BY id LIMIT 1) WHERE authoritative_node_id IS NULL"))
+        ha_node_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(ha_nodes)"))}
+        for column, definition in {
+            "ha_connection_id": "INTEGER REFERENCES ha_provider_connections(id) ON DELETE SET NULL",
+            "capabilities_json": "TEXT",
+            "configuration_snapshot_json": "TEXT",
+            "configuration_checksum": "VARCHAR(64)",
+            "observed_role": "VARCHAR(30)",
+            "observed_generation": "INTEGER DEFAULT 0 NOT NULL",
+            "vip_owned": "BOOLEAN DEFAULT 0 NOT NULL",
+            "dhcp_running": "BOOLEAN DEFAULT 0 NOT NULL",
+            "dns_healthy": "BOOLEAN",
+            "peer_reachable": "BOOLEAN",
+            "lease_generation": "INTEGER DEFAULT 0 NOT NULL",
+            "config_generation": "INTEGER DEFAULT 0 NOT NULL",
+            "keepalived_status": "VARCHAR(40) DEFAULT 'NOT_CONFIGURED' NOT NULL",
+            "keepalived_config_checksum": "VARCHAR(64)",
+            "keepalived_backup_reference": "VARCHAR(255)",
+            "keepalived_last_error": "VARCHAR(1000)",
+            "keepalived_reported_at": "DATETIME",
+            "keepalived_runtime_state": "VARCHAR(30) DEFAULT 'UNKNOWN' NOT NULL",
+        }.items():
+            if column not in ha_node_columns:
+                conn.execute(text(f"ALTER TABLE ha_nodes ADD COLUMN {column} {definition}"))
+        ha_check_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(ha_health_checks)"))}
+        if "remediation" not in ha_check_columns:
+            conn.execute(text("ALTER TABLE ha_health_checks ADD COLUMN remediation TEXT"))
+        for table, columns in {
+            "ha_provider_connections": ["public_id", "provider_key", "name", "created_by_user_id", "created_at", "deleted_at"],
+            "ha_clusters": ["public_id", "name", "provider_key", "status", "created_by_user_id", "created_at", "deleted_at"],
+            "ha_nodes": ["cluster_id", "public_id", "integration_reference_id", "ha_connection_id", "role", "desired_role", "status", "agent_id"],
+            "ha_health_checks": ["cluster_id", "node_id", "check_key", "status", "severity", "observed_at"],
+            "ha_agent_credentials": ["node_id", "agent_id", "bootstrap_token_hash", "bootstrap_expires_at", "revoked_at"],
+            "ha_agent_requests": ["credential_id", "request_id", "request_timestamp", "received_at"],
+            "ha_events": ["cluster_id", "node_id", "event_type", "severity", "source", "agent_event_id", "occurred_at", "received_at"],
+            "ha_agent_action_results": ["action_id", "cluster_id", "node_id", "action_type", "generation", "status", "received_at"],
+            "ha_sync_runs": ["public_id", "cluster_id", "source_node_id", "target_node_id", "status", "created_by_user_id", "created_at"],
+            "ha_backups": ["sync_run_id", "node_id", "checksum", "created_at"],
+            "ha_drift_items": ["sync_run_id", "group_key", "risk", "status"],
+            "ha_lease_replication_states": ["cluster_id", "source_node_id", "target_node_id", "status", "last_full_reconciliation_at"],
+            "ha_lease_snapshots": ["public_id", "cluster_id", "source_node_id", "target_node_id", "generation", "checksum", "status", "created_at"],
+            "ha_failover_runs": ["public_id", "cluster_id", "source_node_id", "target_node_id", "status", "phase", "role_generation", "requested_by_user_id", "created_at"],
+        }.items():
+            for column in columns:
+                conn.execute(text(f"CREATE INDEX IF NOT EXISTS ix_{table}_{column} ON {table} ({column})"))
+        conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_ha_clusters_active_virtual_ip ON ha_clusters (virtual_ip) WHERE virtual_ip IS NOT NULL AND deleted_at IS NULL"))
+        conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_ha_nodes_cluster_connection ON ha_nodes (cluster_id, ha_connection_id) WHERE ha_connection_id IS NOT NULL"))
+        conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_ha_agent_credentials_public_key ON ha_agent_credentials (public_key) WHERE public_key IS NOT NULL"))
+
 
 @app.on_event("startup")
 async def on_startup():
@@ -684,12 +782,14 @@ async def on_startup():
     if settings.demo_mode:
         return
     start_kaya_remote_service()
-    global monitor_task, domain_poll_task, compute_monitor_task, dns_collector_task, secure_send_cleanup_task
+    global monitor_task, domain_poll_task, compute_monitor_task, dns_collector_task, secure_send_cleanup_task, ha_lease_reconciliation_task, ha_sync_monitor_task
     monitor_task = asyncio.create_task(monitor_loop())
     domain_poll_task = asyncio.create_task(domain_poll_loop())
     compute_monitor_task = asyncio.create_task(compute_monitor_loop())
     dns_collector_task = asyncio.create_task(dns_collector_loop())
     secure_send_cleanup_task = asyncio.create_task(secure_send_cleanup_loop())
+    ha_lease_reconciliation_task = asyncio.create_task(ha_lease_reconciliation_loop())
+    ha_sync_monitor_task = asyncio.create_task(ha_sync_monitor_loop())
 
 
 @app.on_event("shutdown")
@@ -706,6 +806,10 @@ async def on_shutdown():
         dns_collector_task.cancel()
     if secure_send_cleanup_task:
         secure_send_cleanup_task.cancel()
+    if ha_lease_reconciliation_task:
+        ha_lease_reconciliation_task.cancel()
+    if ha_sync_monitor_task:
+        ha_sync_monitor_task.cancel()
     stop_kaya_remote_service()
     stop_guacamole_bridge()
 
@@ -721,11 +825,14 @@ app.include_router(remote_manager.router)
 app.include_router(runbooks.router)
 app.include_router(domain_manager.router)
 app.include_router(compute_manager.router)
+app.include_router(compute_manager.agent_router)
 app.include_router(rack_manager.router)
 app.include_router(backup_manager.router)
 app.include_router(dns_manager.router)
 app.include_router(secret_vault.router)
 app.include_router(secure_send.router)
+app.include_router(high_availability.router)
+app.include_router(ha_agent_api.router)
 app.include_router(admin.router)
 
 @app.get("/healthz", include_in_schema=False)

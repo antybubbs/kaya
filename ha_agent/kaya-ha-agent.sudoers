@@ -1,0 +1,7 @@
+kaya-ha ALL=(root) NOPASSWD: /usr/lib/kaya-ha-agent/kaya_ha_keepalived_helper.py apply /var/lib/kaya-ha-agent/pending-keepalived.conf
+kaya-ha ALL=(root) NOPASSWD: /usr/lib/kaya-ha-agent/kaya_ha_keepalived_helper.py status *
+kaya-ha ALL=(root) NOPASSWD: /usr/lib/kaya-ha-agent/kaya_ha_failover_helper.py status
+kaya-ha ALL=(root) NOPASSWD: /usr/lib/kaya-ha-agent/kaya_ha_failover_helper.py demote [0-9]*
+kaya-ha ALL=(root) NOPASSWD: /usr/lib/kaya-ha-agent/kaya_ha_failover_helper.py promote [0-9]*
+kaya-ha ALL=(root) NOPASSWD: /usr/lib/kaya-ha-agent/kaya_ha_failover_helper.py automatic-demote [0-9]*
+kaya-ha ALL=(root) NOPASSWD: /usr/lib/kaya-ha-agent/kaya_ha_failover_helper.py automatic-promote [0-9]*

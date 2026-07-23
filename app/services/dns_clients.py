@@ -8,6 +8,7 @@ import re
 from typing import Any
 
 from sqlalchemy import or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from app.models.models import (
@@ -106,7 +107,7 @@ def match_client(db: Session, provider_id: int, *, provider_client_id: str | Non
         if row:
             return row, "provider_client_identifier"
     if mac:
-        row = db.query(DNSRecognisedDevice).filter(DNSRecognisedDevice.normalised_mac == mac).order_by(DNSRecognisedDevice.last_seen_at.desc()).first()
+        row = db.query(DNSRecognisedDevice).filter(DNSRecognisedDevice.provider_id == provider_id, DNSRecognisedDevice.normalised_mac == mac).order_by(DNSRecognisedDevice.last_seen_at.desc()).first()
         if row:
             return row, "mac_address"
     # Inside a configured DHCP range, an address is temporary evidence rather
@@ -134,16 +135,16 @@ def match_client(db: Session, provider_id: int, *, provider_client_id: str | Non
                 return rows[0], "recent_dhcp_ip_hostname"
         return None, None
     if ip and hostname_key:
-        rows = db.query(DNSRecognisedDevice).filter(DNSRecognisedDevice.current_ip == ip, DNSRecognisedDevice.normalised_hostname == hostname_key).all()
+        rows = db.query(DNSRecognisedDevice).filter(DNSRecognisedDevice.provider_id == provider_id, DNSRecognisedDevice.current_ip == ip, DNSRecognisedDevice.normalised_hostname == hostname_key).all()
         rows = [row for row in rows if _compatible_mac(row, mac)]
         if len(rows) == 1:
             return rows[0], "ip_and_hostname"
     if ip:
-        rows = [row for row in db.query(DNSRecognisedDevice).filter_by(current_ip=ip).all() if _compatible_mac(row, mac)]
+        rows = [row for row in db.query(DNSRecognisedDevice).filter_by(provider_id=provider_id, current_ip=ip).all() if _compatible_mac(row, mac)]
         if len(rows) == 1:
             return rows[0], "ip_address"
     if hostname_key and not mac:
-        rows = db.query(DNSRecognisedDevice).filter_by(normalised_hostname=hostname_key).all()
+        rows = db.query(DNSRecognisedDevice).filter_by(provider_id=provider_id, normalised_hostname=hostname_key).all()
         if len(rows) == 1 and not rows[0].normalised_mac:
             return rows[0], "hostname"
     return None, None
@@ -208,12 +209,16 @@ def observe_client(db: Session, provider: DNSProviderConfig, observation: Any, g
     source = str(getattr(observation, "source", "") or "Pi-hole sync")
     observed_at = getattr(observation, "last_seen", None) or generated_at
     first_seen = getattr(observation, "first_seen", None) or observed_at
-    client, match_method = match_client(db, provider.id, provider_client_id=provider_client_id, mac=mac, ip=ip, hostname=hostname)
+    in_dhcp_range = bool(dhcp_range_for_ip(db, ip))
+    identity_type = "provider_client" if provider_client_id else "mac" if mac else "dhcp_observation" if in_dhcp_range else "ip" if ip else "hostname"
+    identity_value = provider_client_id or mac or (f"{provider.id}:{ip}:{hostname_key or '-'}:{int(generated_at.timestamp())}" if in_dhcp_range else ip) or hostname_key
+    client = db.query(DNSRecognisedDevice).filter_by(provider_id=provider.id, identity_type=identity_type, identity_value=str(identity_value)).first()
+    match_method = "provider_identity" if client else None
     if not client:
-        in_dhcp_range = bool(dhcp_range_for_ip(db, ip))
-        identity_type = "provider_client" if provider_client_id else "mac" if mac else "dhcp_observation" if in_dhcp_range else "ip" if ip else "hostname"
-        identity_value = provider_client_id or mac or (f"{provider.id}:{ip}:{hostname_key or '-'}:{int(generated_at.timestamp())}" if in_dhcp_range else ip) or hostname_key
-        client = DNSRecognisedDevice(
+        client, match_method = match_client(db, provider.id, provider_client_id=provider_client_id, mac=mac, ip=ip, hostname=hostname)
+    created = False
+    if not client:
+        candidate = DNSRecognisedDevice(
             provider_id=provider.id,
             provider_type=provider.provider_type,
             identity_type=identity_type,
@@ -229,8 +234,18 @@ def observe_client(db: Session, provider: DNSProviderConfig, observation: Any, g
             last_synced_at=generated_at,
             observation_source=source,
         )
-        db.add(client)
-        db.flush()
+        try:
+            with db.begin_nested():
+                db.add(candidate)
+                db.flush()
+            client = candidate
+            created = True
+        except IntegrityError:
+            client = db.query(DNSRecognisedDevice).filter_by(provider_id=provider.id, identity_type=identity_type, identity_value=str(identity_value)).first()
+            if client is None:
+                raise
+            match_method = "provider_identity_race"
+    if created:
         _event(db, client, "client_discovered", "DNS client discovered", new=hostname or ip or mac, source=source)
     else:
         if ip and client.current_ip and client.current_ip != ip:

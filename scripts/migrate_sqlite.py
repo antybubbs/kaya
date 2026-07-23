@@ -6,6 +6,12 @@ import re
 from pathlib import Path
 
 DB_PATH = Path("/app/data/kaya.db")
+MODULE_KEYS = (
+    "asset_manager", "backup_manager", "compute_manager", "dashboard", "dns_manager",
+    "domain_manager", "high_availability", "licence_manager", "network_monitor",
+    "rack_manager", "remote_manager", "runbooks", "secret_vault", "secure_send",
+    "vlan_ip_manager",
+)
 
 
 def column_exists(cursor, table, column):
@@ -71,6 +77,29 @@ def main():
             cur.execute("CREATE INDEX IF NOT EXISTS ix_users_is_break_glass ON users (is_break_glass)")
             cur.execute("CREATE INDEX IF NOT EXISTS ix_users_role_source ON users (role_source)")
             migrations_applied.append("users.password_hash nullable")
+
+    module_permissions_existed = table_exists(cur, "user_module_permissions")
+    if not module_permissions_existed:
+        cur.execute(
+            "CREATE TABLE user_module_permissions ("
+            "id INTEGER NOT NULL PRIMARY KEY, "
+            "user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, "
+            "module_key VARCHAR(80) NOT NULL, "
+            "allowed BOOLEAN DEFAULT 1 NOT NULL, "
+            "created_by INTEGER REFERENCES users(id) ON DELETE SET NULL, "
+            "created_at DATETIME, updated_at DATETIME, "
+            "CONSTRAINT uq_user_module_permissions_user_module UNIQUE (user_id, module_key))"
+        )
+        cur.execute("CREATE INDEX ix_user_module_permissions_user_id ON user_module_permissions (user_id)")
+        cur.execute("CREATE INDEX ix_user_module_permissions_module_key ON user_module_permissions (module_key)")
+        for module_key in MODULE_KEYS:
+            cur.execute(
+                "INSERT INTO user_module_permissions "
+                "(user_id, module_key, allowed, created_by, created_at, updated_at) "
+                "SELECT id, ?, 1, id, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP FROM users",
+                (module_key,),
+            )
+        migrations_applied.append("user_module_permissions")
 
     if table_exists(cur, "app_sessions") and not column_exists(cur, "app_sessions", "encrypted_oidc_id_token"):
         cur.execute("ALTER TABLE app_sessions ADD COLUMN encrypted_oidc_id_token TEXT")
@@ -298,6 +327,97 @@ def main():
         )
         if cur.rowcount:
             migrations_applied.append("secure_send_gateway_default_port_8999")
+
+    ha_schema = [
+        "CREATE TABLE IF NOT EXISTS ha_provider_connections (id INTEGER NOT NULL PRIMARY KEY, public_id VARCHAR(36) NOT NULL UNIQUE, provider_key VARCHAR(40) NOT NULL, name VARCHAR(255) NOT NULL, api_base_url VARCHAR(500) NOT NULL, auth_method VARCHAR(40) DEFAULT 'password' NOT NULL, encrypted_secret TEXT, ssl_verify BOOLEAN DEFAULT 1 NOT NULL, timeout_seconds INTEGER DEFAULT 10 NOT NULL, created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)",
+        "CREATE TABLE IF NOT EXISTS ha_clusters (id INTEGER NOT NULL PRIMARY KEY, public_id VARCHAR(36) NOT NULL UNIQUE, name VARCHAR(120) NOT NULL, description TEXT, provider_key VARCHAR(40) DEFAULT 'pihole' NOT NULL, status VARCHAR(40) DEFAULT 'DRAFT' NOT NULL, virtual_ip VARCHAR(80), prefix_length INTEGER, authoritative_node_id INTEGER REFERENCES ha_nodes(id) ON DELETE SET NULL, current_active_node_id INTEGER REFERENCES ha_nodes(id) ON DELETE SET NULL, automatic_failover_enabled BOOLEAN DEFAULT 0 NOT NULL, automatic_failback_enabled BOOLEAN DEFAULT 0 NOT NULL, sync_mode VARCHAR(40) DEFAULT 'active_authoritative' NOT NULL, sync_interval_seconds INTEGER DEFAULT 300 NOT NULL, drift_check_interval_seconds INTEGER DEFAULT 300 NOT NULL, maintenance_mode BOOLEAN DEFAULT 0 NOT NULL, cluster_generation INTEGER DEFAULT 1 NOT NULL, role_generation INTEGER DEFAULT 1 NOT NULL, desired_sync_generation INTEGER DEFAULT 0 NOT NULL, last_healthy_at DATETIME, last_failover_at DATETIME, created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)",
+        "CREATE TABLE IF NOT EXISTS ha_nodes (id INTEGER NOT NULL PRIMARY KEY, cluster_id INTEGER NOT NULL REFERENCES ha_clusters(id) ON DELETE CASCADE, public_id VARCHAR(36) NOT NULL UNIQUE, display_name VARCHAR(255) NOT NULL, management_host VARCHAR(255), api_base_url VARCHAR(500) NOT NULL, integration_reference_id INTEGER REFERENCES dns_providers(id) ON DELETE SET NULL, ha_connection_id INTEGER REFERENCES ha_provider_connections(id) ON DELETE SET NULL, role VARCHAR(30) NOT NULL, desired_role VARCHAR(30) NOT NULL, status VARCHAR(40) DEFAULT 'UNVALIDATED' NOT NULL, network_interface VARCHAR(80), vrrp_priority INTEGER, agent_id VARCHAR(120), agent_version VARCHAR(80), provider_version VARCHAR(80), capabilities_json TEXT, configuration_snapshot_json TEXT, configuration_checksum VARCHAR(64), last_heartbeat_at DATETIME, last_health_at DATETIME, last_sync_at DATETIME, observed_role VARCHAR(30), observed_generation INTEGER DEFAULT 0 NOT NULL, vip_owned BOOLEAN DEFAULT 0 NOT NULL, dhcp_running BOOLEAN DEFAULT 0 NOT NULL, dns_healthy BOOLEAN, peer_reachable BOOLEAN, lease_generation INTEGER DEFAULT 0 NOT NULL, config_generation INTEGER DEFAULT 0 NOT NULL, created_at DATETIME, updated_at DATETIME, CONSTRAINT uq_ha_nodes_cluster_integration UNIQUE (cluster_id, integration_reference_id), CONSTRAINT uq_ha_nodes_cluster_connection UNIQUE (cluster_id, ha_connection_id))",
+        "CREATE TABLE IF NOT EXISTS ha_health_checks (id INTEGER NOT NULL PRIMARY KEY, cluster_id INTEGER NOT NULL REFERENCES ha_clusters(id) ON DELETE CASCADE, node_id INTEGER REFERENCES ha_nodes(id) ON DELETE CASCADE, check_key VARCHAR(120) NOT NULL, status VARCHAR(30) NOT NULL, severity VARCHAR(20) NOT NULL, latency_ms INTEGER, summary VARCHAR(1000) NOT NULL, technical_detail_redacted TEXT, remediation TEXT, observed_at DATETIME)",
+        "CREATE TABLE IF NOT EXISTS ha_agent_credentials (id INTEGER NOT NULL PRIMARY KEY, node_id INTEGER NOT NULL UNIQUE REFERENCES ha_nodes(id) ON DELETE CASCADE, agent_id VARCHAR(120) NOT NULL UNIQUE, public_key TEXT UNIQUE, bootstrap_token_hash VARCHAR(64) UNIQUE, bootstrap_expires_at DATETIME, registered_at DATETIME, revoked_at DATETIME, last_rotated_at DATETIME, created_at DATETIME, updated_at DATETIME)",
+        "CREATE TABLE IF NOT EXISTS ha_agent_requests (id INTEGER NOT NULL PRIMARY KEY, credential_id INTEGER NOT NULL REFERENCES ha_agent_credentials(id) ON DELETE CASCADE, request_id VARCHAR(80) NOT NULL, request_timestamp DATETIME NOT NULL, received_at DATETIME, CONSTRAINT uq_ha_agent_request_replay UNIQUE (credential_id, request_id))",
+        "CREATE TABLE IF NOT EXISTS ha_events (id INTEGER NOT NULL PRIMARY KEY, cluster_id INTEGER NOT NULL REFERENCES ha_clusters(id) ON DELETE CASCADE, node_id INTEGER REFERENCES ha_nodes(id) ON DELETE CASCADE, event_type VARCHAR(80) NOT NULL, severity VARCHAR(20) NOT NULL, source VARCHAR(40) NOT NULL, message VARCHAR(1000) NOT NULL, details_json_redacted TEXT, agent_event_id VARCHAR(80) UNIQUE, occurred_at DATETIME NOT NULL, received_at DATETIME, acknowledged_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, acknowledged_at DATETIME)",
+        "CREATE TABLE IF NOT EXISTS ha_agent_action_results (id INTEGER NOT NULL PRIMARY KEY, action_id VARCHAR(180) NOT NULL UNIQUE, cluster_id INTEGER NOT NULL REFERENCES ha_clusters(id) ON DELETE CASCADE, node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, action_type VARCHAR(60) NOT NULL, generation INTEGER NOT NULL, status VARCHAR(30) NOT NULL, checksum VARCHAR(64), backup_reference VARCHAR(255), message_redacted VARCHAR(1000) NOT NULL, received_at DATETIME)",
+        "CREATE TABLE IF NOT EXISTS ha_sync_runs (id INTEGER NOT NULL PRIMARY KEY, public_id VARCHAR(36) NOT NULL UNIQUE, cluster_id INTEGER NOT NULL REFERENCES ha_clusters(id) ON DELETE CASCADE, source_node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, target_node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, status VARCHAR(30) DEFAULT 'PLANNED' NOT NULL, plan_json TEXT NOT NULL, error_redacted VARCHAR(1000), created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, started_at DATETIME, completed_at DATETIME, created_at DATETIME)",
+        "CREATE TABLE IF NOT EXISTS ha_backups (id INTEGER NOT NULL PRIMARY KEY, sync_run_id INTEGER NOT NULL REFERENCES ha_sync_runs(id) ON DELETE CASCADE, node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, encrypted_snapshot TEXT NOT NULL, checksum VARCHAR(64) NOT NULL, created_at DATETIME)",
+        "CREATE TABLE IF NOT EXISTS ha_drift_items (id INTEGER NOT NULL PRIMARY KEY, sync_run_id INTEGER NOT NULL REFERENCES ha_sync_runs(id) ON DELETE CASCADE, group_key VARCHAR(80) NOT NULL, risk VARCHAR(20) NOT NULL, status VARCHAR(30) DEFAULT 'DRIFT' NOT NULL, source_checksum VARCHAR(64) NOT NULL, target_checksum VARCHAR(64) NOT NULL, message VARCHAR(1000) NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS ha_lease_replication_states (id INTEGER NOT NULL PRIMARY KEY, cluster_id INTEGER NOT NULL UNIQUE REFERENCES ha_clusters(id) ON DELETE CASCADE, source_node_id INTEGER REFERENCES ha_nodes(id) ON DELETE SET NULL, target_node_id INTEGER REFERENCES ha_nodes(id) ON DELETE SET NULL, status VARCHAR(30) DEFAULT 'NOT_APPLICABLE' NOT NULL, desired_generation INTEGER DEFAULT 0 NOT NULL, applied_generation INTEGER DEFAULT 0 NOT NULL, lease_count INTEGER DEFAULT 0 NOT NULL, difference_count INTEGER DEFAULT 0 NOT NULL, conflict_count INTEGER DEFAULT 0 NOT NULL, last_event_at DATETIME, last_full_reconciliation_at DATETIME, last_applied_at DATETIME, last_error_redacted VARCHAR(1000), created_at DATETIME, updated_at DATETIME)",
+        "CREATE TABLE IF NOT EXISTS ha_lease_snapshots (id INTEGER NOT NULL PRIMARY KEY, public_id VARCHAR(36) NOT NULL UNIQUE, cluster_id INTEGER NOT NULL REFERENCES ha_clusters(id) ON DELETE CASCADE, source_node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, target_node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, generation INTEGER NOT NULL, checksum VARCHAR(64) NOT NULL, encrypted_payload TEXT NOT NULL, lease_count INTEGER DEFAULT 0 NOT NULL, status VARCHAR(30) DEFAULT 'PENDING' NOT NULL, validation_summary_json TEXT DEFAULT '{}' NOT NULL, created_at DATETIME, staged_at DATETIME, CONSTRAINT uq_ha_lease_snapshot_generation UNIQUE (cluster_id, generation))",
+        "CREATE TABLE IF NOT EXISTS ha_failover_runs (id INTEGER NOT NULL PRIMARY KEY, public_id VARCHAR(36) NOT NULL UNIQUE, cluster_id INTEGER NOT NULL REFERENCES ha_clusters(id) ON DELETE CASCADE, source_node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, target_node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, status VARCHAR(30) DEFAULT 'RUNNING' NOT NULL, phase VARCHAR(50) DEFAULT 'PREFLIGHT' NOT NULL, dhcp_managed BOOLEAN DEFAULT 0 NOT NULL, lease_generation INTEGER DEFAULT 0 NOT NULL, role_generation INTEGER NOT NULL, error_redacted VARCHAR(1000), report_json TEXT DEFAULT '{}' NOT NULL, requested_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, started_at DATETIME, completed_at DATETIME, created_at DATETIME)",
+    ]
+    ha_existed = table_exists(cur, "ha_clusters")
+    for statement in ha_schema:
+        cur.execute(statement)
+    if not column_exists(cur, "dns_providers", "ha_cluster_id"):
+        cur.execute("ALTER TABLE dns_providers ADD COLUMN ha_cluster_id INTEGER REFERENCES ha_clusters(id) ON DELETE SET NULL")
+        migrations_applied.append("dns_provider_ha_cluster_link_v1")
+    cur.execute("CREATE INDEX IF NOT EXISTS ix_dns_providers_ha_cluster_id ON dns_providers (ha_cluster_id)")
+    cur.execute("UPDATE ha_clusters SET authoritative_node_id = (SELECT id FROM ha_nodes WHERE ha_nodes.cluster_id = ha_clusters.id AND role = 'ACTIVE' ORDER BY id LIMIT 1) WHERE authoritative_node_id IS NULL")
+    ha_v5_changed = False
+    for column, definition in {
+        "cluster_generation": "INTEGER DEFAULT 1 NOT NULL",
+        "role_generation": "INTEGER DEFAULT 1 NOT NULL",
+        "desired_sync_generation": "INTEGER DEFAULT 0 NOT NULL",
+        "vrrp_router_id": "INTEGER",
+        "keepalived_generation": "INTEGER DEFAULT 0 NOT NULL",
+        "keepalived_status": "VARCHAR(40) DEFAULT 'NOT_CONFIGURED' NOT NULL",
+        "keepalived_requested_at": "DATETIME",
+        "keepalived_deployed_at": "DATETIME",
+    }.items():
+        if not column_exists(cur, "ha_clusters", column):
+            cur.execute(f"ALTER TABLE ha_clusters ADD COLUMN {column} {definition}")
+            ha_v5_changed = True
+    for column, definition in {
+        "ha_connection_id": "INTEGER REFERENCES ha_provider_connections(id) ON DELETE SET NULL",
+        "capabilities_json": "TEXT",
+        "configuration_snapshot_json": "TEXT",
+        "configuration_checksum": "VARCHAR(64)",
+        "observed_role": "VARCHAR(30)",
+        "observed_generation": "INTEGER DEFAULT 0 NOT NULL",
+        "vip_owned": "BOOLEAN DEFAULT 0 NOT NULL",
+        "dhcp_running": "BOOLEAN DEFAULT 0 NOT NULL",
+        "dns_healthy": "BOOLEAN",
+        "peer_reachable": "BOOLEAN",
+        "lease_generation": "INTEGER DEFAULT 0 NOT NULL",
+        "config_generation": "INTEGER DEFAULT 0 NOT NULL",
+        "keepalived_status": "VARCHAR(40) DEFAULT 'NOT_CONFIGURED' NOT NULL",
+        "keepalived_config_checksum": "VARCHAR(64)",
+        "keepalived_backup_reference": "VARCHAR(255)",
+        "keepalived_last_error": "VARCHAR(1000)",
+        "keepalived_reported_at": "DATETIME",
+        "keepalived_runtime_state": "VARCHAR(30) DEFAULT 'UNKNOWN' NOT NULL",
+    }.items():
+        if not column_exists(cur, "ha_nodes", column):
+            cur.execute(f"ALTER TABLE ha_nodes ADD COLUMN {column} {definition}")
+            ha_v5_changed = True
+    if not column_exists(cur, "ha_health_checks", "remediation"):
+        cur.execute("ALTER TABLE ha_health_checks ADD COLUMN remediation TEXT")
+        ha_v5_changed = True
+    if ha_v5_changed:
+        migrations_applied.append("high_availability_keepalived_schema_v5")
+    ha_indexes = {
+        "ha_provider_connections": ["public_id", "provider_key", "name", "created_by_user_id", "created_at", "deleted_at"],
+        "ha_clusters": ["public_id", "name", "provider_key", "status", "created_by_user_id", "created_at", "deleted_at"],
+        "ha_nodes": ["cluster_id", "public_id", "integration_reference_id", "ha_connection_id", "role", "desired_role", "status", "agent_id"],
+        "ha_health_checks": ["cluster_id", "node_id", "check_key", "status", "severity", "observed_at"],
+        "ha_agent_credentials": ["node_id", "agent_id", "bootstrap_token_hash", "bootstrap_expires_at", "revoked_at"],
+        "ha_agent_requests": ["credential_id", "request_id", "request_timestamp", "received_at"],
+        "ha_events": ["cluster_id", "node_id", "event_type", "severity", "source", "agent_event_id", "occurred_at", "received_at"],
+        "ha_agent_action_results": ["action_id", "cluster_id", "node_id", "action_type", "generation", "status", "received_at"],
+        "ha_sync_runs": ["public_id", "cluster_id", "source_node_id", "target_node_id", "status", "created_by_user_id", "created_at"],
+        "ha_backups": ["sync_run_id", "node_id", "checksum", "created_at"],
+        "ha_drift_items": ["sync_run_id", "group_key", "risk", "status"],
+        "ha_lease_replication_states": ["cluster_id", "source_node_id", "target_node_id", "status", "last_full_reconciliation_at"],
+        "ha_lease_snapshots": ["public_id", "cluster_id", "source_node_id", "target_node_id", "generation", "checksum", "status", "created_at"],
+        "ha_failover_runs": ["public_id", "cluster_id", "source_node_id", "target_node_id", "status", "phase", "role_generation", "requested_by_user_id", "created_at"],
+    }
+    for table, columns in ha_indexes.items():
+        for column in columns:
+            cur.execute(f"CREATE INDEX IF NOT EXISTS ix_{table}_{column} ON {table} ({column})")
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_ha_clusters_active_virtual_ip ON ha_clusters (virtual_ip) WHERE virtual_ip IS NOT NULL AND deleted_at IS NULL")
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_ha_nodes_cluster_connection ON ha_nodes (cluster_id, ha_connection_id) WHERE ha_connection_id IS NOT NULL")
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_ha_agent_credentials_public_key ON ha_agent_credentials (public_key) WHERE public_key IS NOT NULL")
+    if not ha_existed:
+        migrations_applied.append("high_availability_draft_schema_v1")
 
     conn.commit()
     cur.execute("PRAGMA foreign_keys = ON")

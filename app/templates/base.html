@@ -29,6 +29,7 @@
   <script src="/static/js/sidebar.js?v={{ asset_version }}" defer></script>
   <script src="/static/js/tables.js?v={{ asset_version }}" defer></script>
   <script src="/static/js/inline_edit.js?v={{ asset_version }}" defer></script>
+  <script src="/static/js/module_access.js?v={{ asset_version }}" defer></script>
   <script src="{{ request.url_for('static', path='js/pwa.js') }}?v={{ asset_version }}" defer></script>
 </head>
 <body data-app-root="{{ request.scope.get('root_path', '') }}">
@@ -48,7 +49,7 @@
     <button class="mobile-menu-button" type="button" data-mobile-nav-toggle aria-label="Open navigation" aria-controls="app-navigation" aria-expanded="false">
       <span aria-hidden="true"></span><span aria-hidden="true"></span><span aria-hidden="true"></span>
     </button>
-    <a class="app-brand-link" href="/dashboard" data-reset-sidebar>
+    <a class="app-brand-link" href="{{ request.state.module_landing_url|default('/profile', true) }}" data-reset-sidebar>
       <img class="brand-logo" src="{{ brand.icon }}" alt="" width="38" height="38">
       <span class="app-brand-name">{{ brand.name }}</span>
     </a>
@@ -75,14 +76,14 @@
         </summary>
         <div class="account-popover">
           <div class="account-heading">
-            <strong>{{ ((user.first_name or '') ~ ' ' ~ (user.last_name or ''))|trim or user.email }}</strong>
+            <strong>{{ user.display_name }}</strong>
             <span>{{ user.email }}</span>
           </div>
           <a class="account-link" href="/profile">Profile Settings</a>
-          <button class="account-link" type="button" data-install-kaya hidden>Install Kaya</button>
+          <button class="account-link ghost" type="button" data-install-kaya hidden>Install Kaya</button>
           <form method="post" action="/logout">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <button class="account-link logout-link" type="submit">Log out</button>
+            <button class="account-link ghost logout-link" type="submit">Log out</button>
           </form>
         </div>
       </details>
@@ -90,17 +91,23 @@
   </div>
 </header>
 <aside class="sidebar" id="app-navigation" aria-label="Primary navigation">
+  {% set module_access = request.state.accessible_module_keys|default([], true) %}
   <nav class="nav-tree">
+    {% if 'dashboard' in module_access %}
     <a class="nav-link" href="/dashboard" data-reset-sidebar><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="8" rx="1.5"></rect><rect x="14" y="3" width="7" height="5" rx="1.5"></rect><rect x="14" y="12" width="7" height="9" rx="1.5"></rect><rect x="3" y="15" width="7" height="6" rx="1.5"></rect></svg></span><span class="nav-label">Dashboard</span></a>
+    {% endif %}
+    {% if 'rack_manager' in module_access or 'backup_manager' in module_access or 'asset_manager' in module_access or 'compute_manager' in module_access %}
     <details class="nav-group" data-sidebar-menu="infrastructure">
       <summary><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="11" rx="2"></rect><path d="M8 20h8M12 16v4"></path></svg></span><span class="nav-label">Infrastructure</span></summary>
       <div class="nav-children">
-        <a class="nav-link" href="/infrastructure/rack-manager"><span class="nav-label">Rack Manager</span></a>
-        <a class="nav-link" href="/infrastructure/backup-manager"><span class="nav-label">Backup Manager</span></a>
-        <a class="nav-link" href="/infrastructure/asset-manager"><span class="nav-label">Asset Manager</span></a>
-        <a class="nav-link" href="/infrastructure/vm-docker-manager"><span class="nav-label">VM/Docker Manager</span></a>
+        {% if 'rack_manager' in module_access %}<a class="nav-link" href="/infrastructure/rack-manager"><span class="nav-label">Rack Manager</span></a>{% endif %}
+        {% if 'backup_manager' in module_access and request.state.backup_manager_enabled|default(true) %}<a class="nav-link" href="/infrastructure/backup-manager"><span class="nav-label">Backup Manager</span>{% set maturity_label='Beta' %}{% set maturity_tooltip='Backup Manager is a beta feature.' %}{% include 'components/maturity_badge.html' %}</a>{% endif %}
+        {% if 'asset_manager' in module_access %}<a class="nav-link" href="/infrastructure/asset-manager"><span class="nav-label">Asset Manager</span></a>{% endif %}
+        {% if 'compute_manager' in module_access %}<a class="nav-link" href="/infrastructure/vm-docker-manager"><span class="nav-label">VM/Docker Manager</span></a>{% endif %}
       </div>
     </details>
+    {% endif %}
+    {% if 'remote_manager' in module_access %}
     <details class="nav-group" data-sidebar-menu="remote-manager">
       <summary><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"></rect><path d="M8 20h8M12 16v4M8 9h4M8 12h8"></path></svg></span><span class="nav-label">Remote Manager</span></summary>
       <div class="nav-children">
@@ -110,34 +117,57 @@
         {% endif %}
       </div>
     </details>
+    {% endif %}
+    {% if 'vlan_ip_manager' in module_access or 'dns_manager' in module_access or 'domain_manager' in module_access %}
     <details class="nav-group" data-sidebar-menu="networking">
       <summary><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 12.5a10 10 0 0 1 14 0"></path><path d="M8.5 16a5 5 0 0 1 7 0"></path><path d="M12 20h.01"></path></svg></span><span class="nav-label">Networking</span></summary>
       <div class="nav-children">
-        <a class="nav-link" href="/networking/vlan-ip-manager"><span class="nav-label">VLAN/IP Manager</span></a>
-        <a class="nav-link" href="/networking/dns-manager"><span class="nav-label">DNS Manager</span></a>
-        <a class="nav-link" href="/networking/domain-manager"><span class="nav-label">Domain Manager</span></a>
+        {% if 'vlan_ip_manager' in module_access %}<a class="nav-link" href="/networking/vlan-ip-manager"><span class="nav-label">VLAN/IP Manager</span></a>{% endif %}
+        {% if 'dns_manager' in module_access %}<a class="nav-link" href="/networking/dns-manager"><span class="nav-label">DNS Manager</span></a>{% endif %}
+        {% if 'domain_manager' in module_access %}<a class="nav-link" href="/networking/domain-manager"><span class="nav-label">Domain Manager</span></a>{% endif %}
       </div>
     </details>
+    {% endif %}
+    {% if 'high_availability' in module_access and request.state.high_availability_enabled|default(false) %}
+    <details class="nav-group" data-sidebar-menu="high-availability">
+      <summary><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 12h5l2-6 3 12 2-6h4"></path><circle cx="12" cy="12" r="9"></circle></svg></span><span class="nav-label">High Availability</span>{% set maturity_label='Beta' %}{% set maturity_tooltip='High Availability is a beta feature.' %}{% include 'components/maturity_badge.html' %}</summary>
+      <div class="nav-children">
+        <a class="nav-link" href="/high-availability"><span class="nav-label">Overview</span></a>
+        <a class="nav-link" href="/high-availability/clusters"><span class="nav-label">Clusters</span></a>
+        <a class="nav-link" href="/high-availability/supported-services"><span class="nav-label">Providers/Apps</span></a>
+      </div>
+    </details>
+    {% endif %}
+    {% if 'secret_vault' in module_access or 'secure_send' in module_access or 'licence_manager' in module_access %}
     <details class="nav-group" data-sidebar-menu="security">
       <summary><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 20 7v5c0 5-3.4 8.4-8 9-4.6-.6-8-4-8-9V7l8-4Z"></path><path d="M9.5 12.5 11 14l3.5-4"></path></svg></span><span class="nav-label">Security</span></summary>
       <div class="nav-children">
-        <a class="nav-link" href="/security/secret-vault"><span class="nav-label">Secret Vault</span></a>
-        <a class="nav-link" href="/security/secure-send"><span class="nav-label">Secure Send</span></a>
-        <a class="nav-link" href="/security/license-keys"><span class="nav-label">License Keys</span></a>
+        {% if 'secret_vault' in module_access %}<a class="nav-link" href="/security/secret-vault"><span class="nav-label">Secret Vault</span></a>{% endif %}
+        {% if 'secure_send' in module_access %}<a class="nav-link" href="/security/secure-send"><span class="nav-label">Secure Send</span></a>{% endif %}
+        {% if 'licence_manager' in module_access %}<a class="nav-link" href="/security/license-keys"><span class="nav-label">License Keys</span></a>{% endif %}
       </div>
     </details>
+    {% endif %}
+    {% if 'network_monitor' in module_access %}
     <details class="nav-group" data-sidebar-menu="monitoring">
       <summary><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="5" rx="1.5"></rect><rect x="4" y="10" width="16" height="5" rx="1.5"></rect><rect x="4" y="16" width="16" height="4" rx="1.5"></rect><path d="M10 7h4M10 13h4M10 18h4"></path></svg></span><span class="nav-label">Monitoring</span></summary>
       <div class="nav-children">
         <a class="nav-link" href="/networking/ip-wan-monitor"><span class="nav-label">IP/WAN Monitor</span></a>
       </div>
     </details>
+    {% endif %}
+    {% if 'runbooks' in module_access %}
     <details class="nav-group" data-sidebar-menu="documentation">
       <summary><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 19.5V5.8A2.8 2.8 0 0 1 6.8 3H20v16H6.8A2.8 2.8 0 0 0 4 21.8"></path><path d="M8 7h8M8 11h8M8 15h5"></path></svg></span><span class="nav-label">Documentation</span></summary>
       <div class="nav-children">
         <a class="nav-link" href="/documentation/runbook-manager"><span class="nav-label">Runbook Manager</span></a>
       </div>
     </details>
+    {% endif %}
+    {% set known_module_keys = ['dashboard', 'rack_manager', 'backup_manager', 'asset_manager', 'compute_manager', 'remote_manager', 'vlan_ip_manager', 'dns_manager', 'domain_manager', 'high_availability', 'secret_vault', 'secure_send', 'licence_manager', 'network_monitor', 'runbooks'] %}
+    {% for module in request.state.enabled_modules|default([], true) if module.key in module_access and module.key not in known_module_keys %}
+    <a class="nav-link" href="{{ module.path_prefixes[0] }}"><span class="nav-label">{{ module.label }}</span></a>
+    {% endfor %}
     {% if user.role == 'admin' %}
     <details class="nav-group admin-group" data-sidebar-menu="team">
       <summary><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2"></path><circle cx="9.5" cy="7" r="4"></circle><path d="M22 21v-2a4 4 0 0 0-3-3.8M16 3.2a4 4 0 0 1 0 7.6"></path></svg></span><span class="nav-label">Team</span></summary>
@@ -145,14 +175,16 @@
         <a class="nav-link" href="/team/users"><span class="nav-label">Users</span></a>
       </div>
     </details>
+    {% if 'licence_manager' in module_access or 'vlan_ip_manager' in module_access or 'asset_manager' in module_access %}
     <details class="nav-group" data-sidebar-menu="data-management">
       <summary><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="7" ry="3"></ellipse><path d="M5 5v6c0 1.7 3.1 3 7 3s7-1.3 7-3V5"></path><path d="M5 11v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"></path></svg></span><span class="nav-label">Data Management</span></summary>
       <div class="nav-children">
-        <a class="nav-link" href="/data/import-export"><span class="nav-label">Import/Export</span></a>
-        <a class="nav-link" href="/data/custom-fields"><span class="nav-label">Custom Fields</span></a>
-        <a class="nav-link" href="/data/categories"><span class="nav-label">Categories</span></a>
+        {% if 'licence_manager' in module_access or 'vlan_ip_manager' in module_access %}<a class="nav-link" href="/data/import-export{% if 'licence_manager' not in module_access %}?module=ip-addresses{% endif %}"><span class="nav-label">Import/Export</span></a>{% endif %}
+        <a class="nav-link" href="/data/custom-fields{% if 'vlan_ip_manager' not in module_access %}?module={{ 'hardware_assets' if 'asset_manager' in module_access else 'licences' }}{% endif %}"><span class="nav-label">Custom Fields</span></a>
+        {% if 'asset_manager' in module_access or 'licence_manager' in module_access %}<a class="nav-link" href="/data/categories{% if 'asset_manager' not in module_access %}?module=licences{% endif %}"><span class="nav-label">Categories</span></a>{% endif %}
       </div>
     </details>
+    {% endif %}
     <details class="nav-group" data-sidebar-menu="system-settings">
       <summary><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"></path><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 0 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6V21a2 2 0 0 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1A2 2 0 0 1 4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1H3a2 2 0 0 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.3 7A2 2 0 0 1 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.6V3a2 2 0 0 1 4 0v.1a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1A2 2 0 0 1 19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.1a2 2 0 0 1 0 4H21a1.7 1.7 0 0 0-1.6 1Z"></path></svg></span><span class="nav-label">System Settings</span></summary>
       <div class="nav-children">

@@ -1,16 +1,17 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="topbar"><div><h1>User Management</h1><p class="muted">Control local accounts and access roles.</p></div><div><a class="button" href="/team/users/new">Add user</a></div></div>
+<div class="topbar"><div><h1>User Management</h1><p class="muted">Control local accounts, roles and module access.</p></div><div><a class="button" href="/team/users/new">Add user</a></div></div>
 <section class="panel">
-<table><thead><tr><th>Name</th><th>Email</th><th>Login method</th><th>OIDC provider</th><th>Last OIDC login</th><th>Role</th><th>Role source</th><th>Status</th><th>Break glass</th><th>2FA</th><th>Created</th><th></th></tr></thead><tbody>
+<div class="table-scroll"><table><thead><tr><th>Name</th><th>Email</th><th>Login method</th><th>OIDC provider</th><th>Last OIDC login</th><th>Role</th><th>Modules</th><th>Role source</th><th>Status</th><th>Break glass</th><th>2FA</th><th>Created</th><th></th></tr></thead><tbody>
 {% for row in rows %}
 <tr>
-  <td>{{ ((row.first_name or '') ~ ' ' ~ (row.last_name or ''))|trim or '-' }}</td>
+  <td>{{ row.display_name }}</td>
   <td>{{ row.email }}</td>
   <td>{{ row.authentication_type.replace('_', ' ')|title }}</td>
   <td>{{ row.external_identities[0].provider.name if row.external_identities else '-' }}</td>
   <td>{{ local_time(row.external_identities[0].last_login_at) if row.external_identities and row.external_identities[0].last_login_at else 'Never' }}</td>
   <td>{{ row.role }}</td>
+  <td>{{ 'All' if enabled_module_count and module_counts.get(row.id, 0) == enabled_module_count else module_counts.get(row.id, 0) }}</td>
   <td>{{ row.role_source|title }}</td>
   <td>{{ 'Active' if row.is_active else 'Disabled' }}</td>
   <td>{{ 'Yes' if row.is_break_glass else 'No' }}</td>
@@ -19,6 +20,6 @@
   <td><a href="/team/users/{{ row.id }}/edit">Edit</a></td>
 </tr>
 {% endfor %}
-</tbody></table>
+</tbody></table></div>
 </section>
 {% endblock %}

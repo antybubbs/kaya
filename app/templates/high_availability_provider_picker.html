@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="module-header ha-header">
+  <div><div class="ha-title-line"><h1>Create HA Cluster</h1>{% set maturity_label='Beta' %}{% include 'components/maturity_badge.html' %}</div><p class="muted">Choose the provider or application this cluster will protect.</p></div>
+  <a class="button secondary" href="/high-availability/clusters">Cancel</a>
+</section>
+{% include '_high_availability_nav.html' %}
+<section class="ha-provider-picker" aria-labelledby="ha-provider-picker-heading">
+  <div class="ha-section-heading"><div><h2 id="ha-provider-picker-heading">Provider or application</h2><p class="muted">Only integrations that are implemented and tested can be selected.</p></div></div>
+  <div class="ha-provider-grid">
+    {% for provider in providers if provider.selectable %}
+    <article class="panel ha-provider-card ha-provider-choice">
+      <div class="ha-provider-heading"><div><span class="ha-provider-kicker">{{ provider.category }}</span><h2>{{ provider.name }}</h2></div>{% set maturity_label=provider.maturity %}{% include 'components/maturity_badge.html' %}</div>
+      <p>{{ provider.description }}</p>
+      <ul>{% for capability in provider.capabilities %}<li>{{ capability }}</li>{% endfor %}</ul>
+      <a class="button" href="/high-availability/clusters/new/{{ provider.key }}">Configure {{ provider.name }}</a>
+    </article>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

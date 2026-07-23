@@ -284,6 +284,9 @@
       if (errors) errors.replaceChildren();
     });
     root.addEventListener("submit", (event) => {
+      // Panel-specific actions validate their own fields server-side. Do not let
+      // an unrelated hidden settings panel prevent those requests from running.
+      if (event.submitter?.formNoValidate) return;
       const value = String(field?.value || "");
       const entryErrors = [];
       value.split(/\r?\n/).forEach((line, index) => {
@@ -488,7 +491,7 @@
             <select data-edit-field="type">
               <option value="local">Local path</option>
               <option value="smb">SMB</option>
-              <option value="ftp">FTP</option>
+              ${source.type === "ftp" ? '<option value="ftp" disabled>FTP (disabled — migrate this target)</option>' : ""}
               <option value="sftp">SFTP</option>
             </select>
           </label>

@@ -8,12 +8,22 @@ def test_oidc_secret_is_never_rendered_back_to_browser():
     assert 'type="password"' in template
 
 
-def test_login_template_supports_all_modes_and_emergency_route():
+def test_login_template_uses_policy_and_never_advertises_emergency_route():
     template = Path("app/templates/login.html").read_text(encoding="utf-8")
-    assert "local_and_oidc" in template
-    assert "oidc_preferred" in template
-    assert "oidc_required" in template
-    assert "/auth/local" in template
+    assert "oidc_available" in template
+    assert "show_local_login" in template
+    assert "/auth/local" not in template
+
+
+def test_admin_authentication_ui_explains_oidc_only_readiness_and_emergency_url():
+    template = Path("app/templates/authentication_settings.html").read_text(encoding="utf-8")
+    script = Path("app/static/js/authentication.js").read_text(encoding="utf-8")
+    assert "OIDC-only readiness" in template
+    assert "Current administrator linked" not in template  # supplied by the server-side checklist
+    assert "Show the email/password sign-in option on the main login page" in template
+    assert "It will not be displayed on the normal OIDC-only login page" in template
+    assert "data-emergency-url" in template
+    assert "oidc_required" in script
 
 
 def test_authentication_uses_site_administration_sidebar_pages():

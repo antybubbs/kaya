@@ -1,78 +1,92 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="topbar"><div><h1>User Profile</h1><p class="muted">{{ user.email }}</p></div></div>
-{% if error %}<div class="alert">{{ error }}</div>{% endif %}
-{% if success %}<div class="success">{{ success }}</div>{% endif %}
-<div class="settings-grid">
-  <section class="panel stack wide">
-    <h2>Sign-in methods</h2>
-    <dl class="detail-grid">
-      <div><dt>Local password</dt><dd>{{ 'Available' if user.password_hash else 'Unavailable' }}</dd></div>
-      <div><dt>Local 2FA</dt><dd>{{ 'Enabled' if user.totp_enabled else 'Disabled' }}</dd></div>
-      <div><dt>OpenID Connect</dt><dd>{{ identity.provider.name if identity else 'Not linked' }}</dd></div>
-      {% if identity %}<div><dt>OIDC email</dt><dd>{{ identity.current_email }}</dd></div><div><dt>Last OIDC login</dt><dd>{{ identity.last_login_at or 'Never' }}</dd></div>{% endif %}
-    </dl>
+<div class="profile-page-shell">
+  <header class="profile-page-hero">
+    <div class="profile-page-avatar" aria-hidden="true">{{ (user.first_name[:1] if user.first_name else user.email[:1])|upper }}</div>
+    <div>
+      <p class="eyebrow">Account settings</p>
+      <h1>User Profile</h1>
+      <p class="muted">{{ user.display_name }} <span aria-hidden="true">·</span> {{ user.email }}</p>
+    </div>
+  </header>
+
+  {% if error %}<div class="alert" role="alert">{{ error }}</div>{% endif %}
+  {% if success %}<div class="success" role="status">{{ success }}</div>{% endif %}
+
+  <section class="panel profile-page-card profile-signin-card" aria-labelledby="profile-signin-heading">
+    <header class="profile-card-heading">
+      <div><h2 id="profile-signin-heading">Sign-in methods</h2><p>Review the authentication methods available to this account.</p></div>
+    </header>
+    <div class="profile-signin-grid">
+      <article><span>Local password</span><strong>{{ 'Available' if user.password_hash else 'Unavailable' }}</strong><small>{{ 'Can be used for local sign-in.' if user.password_hash else 'No local password is configured.' }}</small></article>
+      <article><span>Local 2FA</span><strong>{{ 'Enabled' if user.totp_enabled else 'Disabled' }}</strong><small>{{ 'Authenticator verification is required.' if user.totp_enabled else 'No local second factor is configured.' }}</small></article>
+      <article><span>OpenID Connect</span><strong>{{ identity.provider.name if identity else 'Not linked' }}</strong><small>{% if identity %}Last used {{ local_time(identity.last_login_at, 'friendly', 'Never') }}{% else %}No external identity is linked.{% endif %}</small></article>
+    </div>
     {% if identity %}
-    <form method="post" action="/profile/identity/unlink" data-danger-zone-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="danger" type="submit">Unlink OIDC identity</button></form>
+    <div class="profile-identity-summary">
+      <dl><div><dt>Linked email</dt><dd>{{ identity.current_email or 'Not supplied' }}</dd></div><div><dt>Provider</dt><dd>{{ identity.provider.name }}</dd></div></dl>
+      <form method="post" action="/profile/identity/unlink" data-danger-zone-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="danger" type="submit">Unlink OIDC identity</button></form>
+    </div>
     {% elif oidc_provider %}
-    <form method="post" action="/profile/identity/link" data-oidc-link-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit">Link OIDC account</button><span class="muted" data-oidc-link-status role="status" aria-live="polite"></span></form>
+    <form method="post" action="/profile/identity/link" class="profile-inline-action" data-oidc-link-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit">Link OIDC account</button><span class="muted" data-oidc-link-status role="status" aria-live="polite"></span></form>
     {% endif %}
   </section>
-  <section class="panel stack">
-    <h2>Profile</h2>
-    <form method="post" action="/profile/name" class="form-grid">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <label>First name<input name="first_name" value="{{ user.first_name or '' }}"></label>
-      <label>Last name<input name="last_name" value="{{ user.last_name or '' }}"></label>
-      <div class="form-actions wide"><button type="submit">Save profile</button></div>
-    </form>
-  </section>
-  <section class="panel stack">
-    <h2>Password</h2>
-    {% if user.password_hash %}
-    <form method="post" action="/profile/password" class="form-grid">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <label>Current password<input name="current_password" type="password" autocomplete="current-password" required></label>
-      <label>New password<input name="new_password" type="password" autocomplete="new-password" required></label>
-      <label>Confirm password<input name="confirm_password" type="password" autocomplete="new-password" required></label>
-      <div class="form-actions wide"><button type="submit">Reset password</button></div>
-    </form>
-    {% else %}<p class="muted">This OIDC-only account does not have a local password. Contact an administrator before unlinking your identity.</p>{% endif %}
-  </section>
-  <section class="panel stack wide">
-    <h2>2FA</h2>
-    {% if not user.password_hash %}<p class="muted">Local 2FA is unavailable for OIDC-only accounts. Multi-factor authentication is managed by your identity provider.</p>
+
+  <div class="profile-settings-grid">
+    <section class="panel profile-page-card" aria-labelledby="profile-details-heading">
+      <header class="profile-card-heading"><div><h2 id="profile-details-heading">Profile details</h2><p>Keep your personal details accurate across Kaya.</p></div></header>
+      <form method="post" action="/profile/name" class="profile-card-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="profile-form-grid">
+          <label for="profile-first-name">First name<input id="profile-first-name" name="first_name" autocomplete="given-name" value="{{ user.first_name or '' }}" {% if profile_field_errors and profile_field_errors.first_name %}aria-invalid="true" aria-describedby="profile-first-name-error"{% endif %}>{% if profile_field_errors and profile_field_errors.first_name %}<small id="profile-first-name-error" class="field-error">{{ profile_field_errors.first_name }}</small>{% else %}<small>Enter given names only.</small>{% endif %}</label>
+          <label for="profile-last-name">Last name<input id="profile-last-name" name="last_name" autocomplete="family-name" value="{{ user.last_name or '' }}"></label>
+        </div>
+        <div class="profile-card-actions"><button type="submit">Save profile</button></div>
+      </form>
+    </section>
+
+    <section class="panel profile-page-card" aria-labelledby="profile-password-heading">
+      <header class="profile-card-heading"><div><h2 id="profile-password-heading">Password</h2><p>Change the password used for local Kaya sign-in.</p></div></header>
+      {% if user.password_hash %}
+      <form method="post" action="/profile/password" class="profile-card-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="profile-form-grid">
+          <label class="wide" for="profile-current-password">Current password<input id="profile-current-password" name="current_password" type="password" autocomplete="current-password" required></label>
+          <label for="profile-new-password">New password<input id="profile-new-password" name="new_password" type="password" autocomplete="new-password" minlength="12" required><small>Use at least 12 characters.</small></label>
+          <label for="profile-confirm-password">Confirm password<input id="profile-confirm-password" name="confirm_password" type="password" autocomplete="new-password" required></label>
+        </div>
+        <div class="profile-card-actions"><button type="submit">Reset password</button></div>
+      </form>
+      {% else %}<div class="profile-card-message"><p>This OIDC-only account does not have a local password. Contact an administrator before unlinking your identity.</p></div>{% endif %}
+    </section>
+  </div>
+
+  <section class="panel profile-page-card profile-twofa-card" aria-labelledby="profile-twofa-heading">
+    <header class="profile-card-heading"><div><h2 id="profile-twofa-heading">Two-factor authentication</h2><p>Add or manage an authenticator verification step for local sign-in.</p></div><span class="profile-status-pill {{ 'enabled' if user.totp_enabled else 'disabled' }}">{{ 'Enabled' if user.totp_enabled else 'Disabled' }}</span></header>
+    {% if not user.password_hash %}<div class="profile-card-message"><p>Local 2FA is unavailable for OIDC-only accounts. Multi-factor authentication is managed by your identity provider.</p></div>
     {% elif user.totp_enabled %}
-    <div class="success">Two-factor authentication is enabled.</div>
-    <form method="post" action="/profile/2fa/disable" class="form-grid">
+    <div class="profile-twofa-enabled"><div><strong>Two-factor authentication is active</strong><span>Your current password is required before it can be disabled.</span></div></div>
+    <form method="post" action="/profile/2fa/disable" class="profile-twofa-form">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <label>Current password<input name="current_password" type="password" autocomplete="current-password" required></label>
-      <div class="form-actions"><button class="ghost" type="submit">Disable 2FA</button></div>
+      <label for="profile-twofa-password">Current password<input id="profile-twofa-password" name="current_password" type="password" autocomplete="current-password" required></label>
+      <button class="button secondary profile-warning-action" type="submit">Disable 2FA</button>
     </form>
     {% elif setup_secret %}
-    <p class="muted">Scan this QR code in Google Authenticator, Microsoft Authenticator, 1Password, Bitwarden, or another authenticator app. Then enter the 6-digit code.</p>
-    <div class="twofa-setup">
-      {% if setup_qr_code %}
-      <div class="qr-card"><img src="{{ setup_qr_code }}" alt="2FA setup QR code"></div>
-      {% endif %}
+    <div class="profile-card-message"><p>Scan this QR code in your authenticator app, then enter the six-digit code.</p></div>
+    <div class="twofa-setup profile-twofa-setup">
+      {% if setup_qr_code %}<div class="qr-card"><img src="{{ setup_qr_code }}" alt="2FA setup QR code"></div>{% endif %}
       <div class="stack">
-        <div>
-          <span class="field-label">Manual setup key</span>
-          <div class="secret mono">{{ setup_secret }}</div>
-        </div>
+        <div><span class="field-label">Manual setup key</span><div class="secret mono">{{ setup_secret }}</div></div>
         <form method="post" action="/profile/2fa/enable" class="stack compact-form">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <label>Authentication code<input name="code" inputmode="numeric" pattern="[0-9]{6}" autocomplete="one-time-code" required></label>
+          <label for="profile-twofa-code">Authentication code<input id="profile-twofa-code" name="code" inputmode="numeric" pattern="[0-9]{6}" autocomplete="one-time-code" required></label>
           <div class="form-actions"><button type="submit">Enable 2FA</button></div>
         </form>
       </div>
     </div>
     {% else %}
-    <p class="muted">Set up an authenticator app to add a second sign-in step to your account.</p>
-    <form method="post" action="/profile/2fa/start" class="form-actions">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <button type="submit">Start 2FA setup</button>
-    </form>
+    <div class="profile-card-message"><p>Set up an authenticator app to add a second sign-in step to your account.</p></div>
+    <form method="post" action="/profile/2fa/start" class="profile-card-actions"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label>Current password<input type="password" name="current_password" autocomplete="current-password" required></label><button type="submit">Start 2FA setup</button></form>
     {% endif %}
   </section>
 </div>

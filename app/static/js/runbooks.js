@@ -221,6 +221,14 @@
         return;
       }
 
+      if (/^(?:-{3,}|\*{3,}|_{3,})$/.test(stripped)) {
+        flushParagraph(); closeList(); output.push("<hr>"); return;
+      }
+      const quote = stripped.match(/^>\s?(.+)$/);
+      if (quote) {
+        flushParagraph(); closeList(); output.push(`<blockquote>${inline(quote[1])}</blockquote>`); return;
+      }
+
       const listItem = stripped.match(/^([-*]|\d+\.)\s+(.+)$/);
       if (listItem) {
         flushParagraph();
@@ -231,7 +239,8 @@
           output.push(nextType === "ol" && start > 1 ? `<ol start="${start}">` : `<${nextType}>`);
           listType = nextType;
         }
-        output.push(`<li>${inline(listItem[2])}</li>`);
+        const checkbox = listItem[2].match(/^\[([ xX])\]\s+(.+)$/);
+        output.push(checkbox ? `<li class="runbook-task"><input type="checkbox" disabled${checkbox[1].toLowerCase() === "x" ? " checked" : ""}> ${inline(checkbox[2])}</li>` : `<li>${inline(listItem[2])}</li>`);
         return;
       }
 
@@ -292,6 +301,8 @@
   }
 
   function runAction(action) {
+    if (action === "undo") document.execCommand("undo");
+    if (action === "redo") document.execCommand("redo");
     if (action === "heading") replaceSelectedLines((lines) => lines.map((line) => `# ${line.replace(/^#{1,3}\s+/, "")}`), "Section heading");
     if (action === "bold") replaceSelection("**", "**", "bold text");
     if (action === "italic") replaceSelection("*", "*", "italic text");
@@ -299,6 +310,10 @@
     if (action === "inline-code") replaceSelection("`", "`", "code");
     if (action === "bullet-list") replaceSelectedLines((lines) => lines.map((line) => `- ${line.replace(/^[-*]\s+/, "")}`));
     if (action === "numbered-list") replaceSelectedLines((lines) => lines.map((line, index) => `${index + 1}. ${line.replace(/^\d+\.\s+/, "")}`));
+    if (action === "checkbox-list") replaceSelectedLines((lines) => lines.map((line) => `- [ ] ${line.replace(/^[-*]\s+(?:\[[ xX]\]\s+)?/, "")}`));
+    if (action === "quote") replaceSelectedLines((lines) => lines.map((line) => `> ${line.replace(/^>\s+/, "")}`), "Quoted text");
+    if (action === "table") insertMarkdownAtCursor("| Column | Column |\n| --- | --- |\n| Value | Value |");
+    if (action === "rule") insertMarkdownAtCursor("---");
     if (action === "code-block") insertCodeBlock();
   }
 
@@ -535,12 +550,131 @@
   textarea.addEventListener("keydown", (event) => {
     if (!(event.ctrlKey || event.metaKey)) return;
     const key = event.key.toLowerCase();
+    if (key === "s") {
+      event.preventDefault();
+      textarea.form?.requestSubmit();
+      return;
+    }
+    if (key === "p" && event.shiftKey) {
+      event.preventDefault();
+      const current = document.querySelector("[data-runbook-workspace]")?.dataset.mode || "split";
+      setEditorMode(current === "preview" ? "editor" : "preview");
+      return;
+    }
     const actions = { b: "bold", i: "italic", k: "link" };
     if (!actions[key]) return;
     event.preventDefault();
     runAction(actions[key]);
   });
   textarea.addEventListener("input", update);
+  const editorForm = textarea.form;
+  const workspace = document.querySelector("[data-runbook-workspace]");
+  const modeButtons = Array.from(document.querySelectorAll("[data-editor-mode]"));
+  const layoutKey = "kaya.runbook.editor.mode";
+  function setEditorMode(mode) {
+    const allowed = ["editor", "split", "preview"];
+    const next = allowed.includes(mode) ? mode : "split";
+    if (workspace) workspace.dataset.mode = next;
+    modeButtons.forEach((button) => {
+      const active = button.dataset.editorMode === next;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+    localStorage.setItem(layoutKey, next);
+  }
+  if (workspace) {
+    const smallScreen = window.matchMedia("(max-width: 760px)").matches;
+    setEditorMode(localStorage.getItem(layoutKey) || (smallScreen ? "editor" : "split"));
+    modeButtons.forEach((button) => button.addEventListener("click", () => setEditorMode(button.dataset.editorMode)));
+  }
+
+  const titleInput = editorForm?.querySelector("[data-runbook-title]");
+  const documentTitle = document.querySelector("[data-editor-document-title]");
+  const wordCount = document.querySelector("[data-runbook-word-count]");
+  const saveStates = Array.from(document.querySelectorAll("[data-runbook-save-state]"));
+  const draftKey = editorForm?.dataset.draftKey;
+  let dirty = false;
+  let draftTimer = 0;
+  const setSaveState = (value) => saveStates.forEach((item) => { item.textContent = value; });
+  const fieldsForDraft = () => Array.from(editorForm?.querySelectorAll("input[name], textarea[name], select[name]") || []).filter((field) => field.name !== "csrf_token");
+  const draftRecovery = document.querySelector("[data-runbook-draft-recovery]");
+  let storedDraft = null;
+  try { storedDraft = draftKey ? JSON.parse(localStorage.getItem(draftKey) || "null") : null; } catch (_error) { storedDraft = null; }
+  if (storedDraft?.values && draftRecovery) draftRecovery.hidden = false;
+  draftRecovery?.addEventListener("click", (event) => {
+    const action = event.target.closest("[data-draft-action]")?.dataset.draftAction;
+    if (!action) return;
+    if (action === "restore" && storedDraft?.values) {
+      fieldsForDraft().forEach((field) => {
+        if (!(field.name in storedDraft.values)) return;
+        if (field.type === "checkbox") field.checked = Boolean(storedDraft.values[field.name]);
+        else field.value = storedDraft.values[field.name];
+      });
+      editorTags = (tagsValue?.value || "").split(",").map((item) => item.trim()).filter(Boolean);
+      renderTags(); filterParents(); update(); editorChanged();
+    } else if (draftKey) localStorage.removeItem(draftKey);
+    draftRecovery.hidden = true;
+  });
+  function saveLocalDraft() {
+    if (!draftKey) return;
+    const draft = {};
+    fieldsForDraft().forEach((field) => { draft[field.name] = field.type === "checkbox" ? field.checked : field.value; });
+    localStorage.setItem(draftKey, JSON.stringify({ savedAt: Date.now(), values: draft }));
+    setSaveState(`Draft saved locally at ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`);
+  }
+  function editorChanged() {
+    dirty = true;
+    setSaveState("Unsaved changes");
+    if (documentTitle && titleInput) documentTitle.textContent = titleInput.value.trim() || "Untitled runbook";
+    if (wordCount) wordCount.textContent = String((textarea.value.trim().match(/\S+/g) || []).length);
+    window.clearTimeout(draftTimer);
+    draftTimer = window.setTimeout(saveLocalDraft, 900);
+  }
+  editorForm?.addEventListener("input", editorChanged);
+  editorForm?.addEventListener("change", editorChanged);
+  editorForm?.addEventListener("submit", () => { dirty = false; if (draftKey) localStorage.removeItem(draftKey); setSaveState("Saving..."); });
+  window.addEventListener("beforeunload", (event) => { if (!dirty) return; event.preventDefault(); event.returnValue = ""; });
+
+  const tagControl = document.querySelector("[data-runbook-tag-control]");
+  const tagInput = document.querySelector("[data-runbook-tag-input]");
+  const tagsValue = document.querySelector("[data-runbook-tags-value]");
+  const tagPills = document.querySelector("[data-runbook-tag-pills]");
+  let editorTags = (tagsValue?.value || "").split(",").map((item) => item.trim()).filter(Boolean);
+  function renderTags() {
+    const unique = [];
+    const seen = new Set();
+    editorTags.forEach((tag) => { const key = tag.toLocaleLowerCase(); if (!seen.has(key)) { seen.add(key); unique.push(tag.slice(0, 40)); } });
+    editorTags = unique;
+    if (tagsValue) tagsValue.value = editorTags.join(", ");
+    if (tagPills) tagPills.innerHTML = editorTags.map((tag, index) => `<span class="table-chip">${escapeHtml(tag)} <button type="button" data-remove-tag="${index}" aria-label="Remove ${escapeHtml(tag)}">&times;</button></span>`).join("");
+  }
+  function addTag() {
+    const value = tagInput?.value.trim().replace(/^,+|,+$/g, "");
+    if (!value) return;
+    editorTags.push(value);
+    if (tagInput) tagInput.value = "";
+    renderTags(); editorChanged();
+  }
+  tagInput?.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === ",") { event.preventDefault(); addTag(); } else if (event.key === "Backspace" && !tagInput.value && editorTags.length) { editorTags.pop(); renderTags(); editorChanged(); } });
+  tagInput?.addEventListener("blur", addTag);
+  tagPills?.addEventListener("click", (event) => { const button = event.target.closest("[data-remove-tag]"); if (!button) return; editorTags.splice(Number(button.dataset.removeTag), 1); renderTags(); editorChanged(); });
+  renderTags();
+
+  const spaceSelect = document.querySelector("[data-runbook-space]");
+  const parentSelect = document.querySelector("[data-runbook-parent]");
+  const parentOptions = Array.from(parentSelect?.querySelectorAll("option[data-space-id]") || []);
+  function filterParents() {
+    const selectedSpace = spaceSelect?.value || "";
+    parentOptions.forEach((option) => { option.hidden = option.dataset.spaceId !== selectedSpace; option.disabled = option.hidden; });
+    if (parentSelect?.selectedOptions[0]?.disabled) parentSelect.value = "";
+  }
+  spaceSelect?.addEventListener("change", filterParents); filterParents();
+
+  const imagePicker = document.querySelector("[data-runbook-image-picker]");
+  imagePicker?.addEventListener("change", () => { const files = Array.from(imagePicker.files || []); if (files.length) pasteImages(files).catch((error) => setPasteStatus(error.message || "Image upload failed.", "error")); imagePicker.value = ""; });
+  editorChanged();
+  dirty = false;
+  setSaveState("All changes saved");
   textarea.form?.addEventListener("reset", () => window.setTimeout(update, 0));
   update();
 })();

@@ -9,6 +9,7 @@ from sqlalchemy.pool import StaticPool
 from app.db.session import Base
 from app.models.models import AuditLog, DashboardPreference, RemoteManagerSetting, User
 from app.services.dashboard import config, default_layout, normalise_layout, preferences, reset_preferences, save_preferences, snapshot
+from app.services.modules import grant_all_registered_modules
 import app.services.dashboard as dashboard_service
 
 @pytest.fixture()
@@ -20,7 +21,8 @@ def db():
     session.close()
 
 def user(db, email="viewer@example.test", role="viewer"):
-    item=User(email=email,password_hash="x",role=role,is_active=True,created_at=datetime.utcnow());db.add(item);db.commit();return item
+    item=User(email=email,password_hash="x",role=role,is_active=True,created_at=datetime.utcnow());db.add(item);db.flush()
+    grant_all_registered_modules(db,item);db.commit();return item
 
 def test_preferences_are_per_user_and_persist(db):
     first=user(db); second=user(db,"second@example.test")
@@ -57,9 +59,9 @@ def test_disabled_widget_is_excluded_from_snapshot(db):
     assert key not in snapshot(db,account)["widgets"]
 
 def test_module_disabled_is_available_with_reason_but_not_enabled(db):
-    account=user(db); dns=next(item for item in config(db,account)["widgets"] if item["key"]=="dns_summary")
-    assert dns["available"] is False and dns["availability_reason"] == "Module disabled"
-    assert next(item for item in preferences(db,account)["widgets"] if item["key"]=="dns_summary")["enabled"] is False
+    account=user(db)
+    assert "dns_summary" not in {item["key"] for item in config(db,account)["widgets"]}
+    assert "dns_summary" not in {item["key"] for item in preferences(db,account)["widgets"]}
 
 @pytest.mark.parametrize(("stored", "expected"), [("10", 10), ("30", 30), ("60", 60), ("300", 300), ("1", 10), ("broken", 10)])
 def test_polling_interval_is_one_of_the_supported_choices(db, stored, expected):

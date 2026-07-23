@@ -12,12 +12,24 @@ from app.core.csrf import csrf_context, validate_csrf_token
 from app.core.security import decrypt_secret, encrypt_secret
 from app.db.session import get_db
 from app.models.models import BackupJob, BackupRecord, ComputeHost, ComputeInventoryItem, ComputeWorkload, RemoteManagerSetting
-from app.routers.auth import require_editor, require_user
+from app.routers.auth import require_editor, require_module_access, require_user
 from app.services.audit import write_audit
 from app.services.site_settings import get_site_setting
 
-router = APIRouter(prefix="/infrastructure/backup-manager")
+router = APIRouter(prefix="/infrastructure/backup-manager", dependencies=[Depends(require_module_access("backup_manager"))])
 templates = Jinja2Templates(directory="app/templates")
+
+
+def require_backup_user(request: Request, db: Session = Depends(get_db), user=Depends(require_user)):
+    if get_site_setting(db, "backup_manager_enabled") != "1":
+        raise HTTPException(status_code=404, detail="Not found")
+    return user
+
+
+def require_backup_editor(request: Request, db: Session = Depends(get_db), user=Depends(require_editor)):
+    if get_site_setting(db, "backup_manager_enabled") != "1":
+        raise HTTPException(status_code=404, detail="Not found")
+    return user
 
 
 def metadata(value: str | None) -> dict:
@@ -153,6 +165,8 @@ def default_backup_target(db: Session) -> dict[str, str]:
 
 def backup_target_payload(db: Session, target_name: str | None = None) -> dict:
     target = backup_target_by_name(db, target_name)
+    if target["type"] == "ftp":
+        raise ValueError("Plaintext FTP backup targets are disabled. Migrate this retained target before running a backup.")
     remote_password = decrypt_secret(target.get("remote_password_enc") or "").strip()
     if not remote_password:
         # Backward-compatible fallback for older single-target installs.
@@ -335,6 +349,9 @@ def proxmox_backup_jobs(db: Session) -> list[dict]:
     jobs = []
     for item, host in rows:
         data = metadata(item.metadata_json)
+        raw_comment = data.get("comment")
+        comment = " ".join(raw_comment.split())[:255] if isinstance(raw_comment, str) else ""
+        job_id = str(data.get("id") or item.external_id or item.name)[:500]
         last_task = data.get("last_task") if isinstance(data.get("last_task"), dict) else {}
         last_run_at = None
         if last_task.get("starttime"):
@@ -345,7 +362,8 @@ def proxmox_backup_jobs(db: Session) -> list[dict]:
         jobs.append(
             {
                 "host": host,
-                "name": item.name,
+                "name": comment or item.name,
+                "job_id": job_id if comment else None,
                 "status": item.status or "unknown",
                 "last_status": data.get("last_status") or "unknown",
                 "last_run_at": last_run_at,
@@ -362,7 +380,7 @@ def proxmox_backup_jobs(db: Session) -> list[dict]:
 def backup_home(
     request: Request,
     db: Session = Depends(get_db),
-    user=Depends(require_user),
+    user=Depends(require_backup_user),
 ):
     manual_backups = db.query(BackupRecord).order_by(BackupRecord.name.asc()).all()
     docker_workloads = (
@@ -421,7 +439,7 @@ def create_manual_backup(
     is_enabled: str = Form(""),
     csrf_token: str = Form(...),
     db: Session = Depends(get_db),
-    user=Depends(require_editor),
+    user=Depends(require_backup_editor),
 ):
     validate_csrf_token(request, csrf_token)
     clean_name = name.strip()
@@ -451,7 +469,7 @@ def create_manual_backup(
 
 
 @router.post("/manual/{record_id}/delete")
-def delete_manual_backup(request: Request, record_id: int, csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_editor)):
+def delete_manual_backup(request: Request, record_id: int, csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_backup_editor)):
     validate_csrf_token(request, csrf_token)
     row = db.get(BackupRecord, record_id)
     if not row or row.source_type != "manual":
@@ -474,7 +492,7 @@ def update_docker_backup_policy(
     owner: str = Form("", max_length=255),
     csrf_token: str = Form(...),
     db: Session = Depends(get_db),
-    user=Depends(require_editor),
+    user=Depends(require_backup_editor),
 ):
     validate_csrf_token(request, csrf_token)
     row = db.get(ComputeWorkload, workload_id)
@@ -504,7 +522,7 @@ def queue_docker_backup(
     workload_id: int,
     csrf_token: str = Form(...),
     db: Session = Depends(get_db),
-    user=Depends(require_editor),
+    user=Depends(require_backup_editor),
 ):
     validate_csrf_token(request, csrf_token)
     row = db.get(ComputeWorkload, workload_id)
@@ -524,7 +542,7 @@ def queue_docker_restore(
     workload_id: int,
     csrf_token: str = Form(...),
     db: Session = Depends(get_db),
-    user=Depends(require_editor),
+    user=Depends(require_backup_editor),
 ):
     validate_csrf_token(request, csrf_token)
     row = db.get(ComputeWorkload, workload_id)
@@ -549,6 +567,9 @@ def queue_docker_restore(
 @router.get("/api/agent/jobs")
 def agent_jobs(request: Request, db: Session = Depends(get_db)):
     host = require_agent_host(request, db)
+    if get_site_setting(db, "backup_manager_enabled") != "1":
+        db.commit()
+        return {"ok": True, "jobs": []}
     jobs = (
         db.query(BackupJob)
         .filter(BackupJob.host_id == host.id, BackupJob.status == "queued")
@@ -560,10 +581,26 @@ def agent_jobs(request: Request, db: Session = Depends(get_db)):
     response = []
     audit_events = []
     for job in jobs:
+        job_metadata = metadata(job.metadata_json)
+        try:
+            target_payload = backup_target_payload(db, job_metadata.get("target_name"))
+        except ValueError as exc:
+            job.status = "failed"
+            job.error = str(exc)
+            job.finished_at = now
+            job.updated_at = now
+            audit_events.append(
+                {
+                    "action": "dispatch_blocked",
+                    "job_id": str(job.id),
+                    "detail": "Blocked dispatch to an insecure plaintext FTP backup target",
+                    "metadata": {"host_id": host.id, "operation": job.operation, "target_name": job_metadata.get("target_name")},
+                }
+            )
+            continue
         job.status = "dispatched"
         job.dispatched_at = now
         job.updated_at = now
-        job_metadata = metadata(job.metadata_json)
         response.append(
             {
                 "id": job.id,
@@ -571,7 +608,7 @@ def agent_jobs(request: Request, db: Session = Depends(get_db)):
                 "container": job.workload.name if job.workload else job_metadata.get("container"),
                 "external_id": job.workload.external_id if job.workload else job_metadata.get("external_id"),
                 "policy": job_metadata.get("policy"),
-                "target": backup_target_payload(db, job_metadata.get("target_name")),
+                "target": target_payload,
                 "encryption": {
                     "enabled": job.encryption_enabled,
                     "mode": "agent-aes-256-gcm",
@@ -583,6 +620,7 @@ def agent_jobs(request: Request, db: Session = Depends(get_db)):
         )
         audit_events.append(
             {
+                "action": "dispatch",
                 "job_id": str(job.id),
                 "detail": f"Dispatched {job.operation} job to agent host {host.name}",
                 "metadata": {
@@ -598,7 +636,7 @@ def agent_jobs(request: Request, db: Session = Depends(get_db)):
         write_audit(
             db,
             None,
-            "dispatch",
+            event["action"],
             "backup_job",
             event["job_id"],
             request.client.host if request.client else None,

@@ -282,7 +282,10 @@ def provider_logout_redirect(db: Session, id_token_hint: str | None = None) -> s
         endpoint = validate_outbound_url(metadata.get("end_session_endpoint"))
     except (TypeError, ValueError, OIDCDiscoveryError):
         return None
-    redirect_uri = f"{get_site_setting(db, 'base_url').rstrip('/')}{safe_return_path(get_site_setting(db, 'oidc_post_logout_path'), '/login')}"
+    post_logout_path = safe_return_path(get_site_setting(db, "oidc_post_logout_path"), "/login")
+    if post_logout_path == "/login":
+        post_logout_path = "/login?logged_out=1"
+    redirect_uri = f"{get_site_setting(db, 'base_url').rstrip('/')}{post_logout_path}"
     params = {"client_id": provider.client_id, "post_logout_redirect_uri": redirect_uri}
     if id_token_hint:
         params["id_token_hint"] = id_token_hint

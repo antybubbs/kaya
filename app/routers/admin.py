@@ -5,7 +5,6 @@ import json
 import re
 import socket
 import smtplib
-from ftplib import FTP
 from datetime import datetime, timedelta
 from ipaddress import ip_address, ip_network
 from urllib.request import urlopen
@@ -38,9 +37,12 @@ from app.db.session import get_db
 from app.models.models import (
     AppSession,
     AuditLog,
+    BackupJob,
+    BackupRecord,
     CustomField,
     CustomFieldValue,
     DNSProviderConfig,
+    HACluster,
     DHCPRange,
     ExternalIdentity,
     ManagedListItem,
@@ -53,12 +55,21 @@ from app.models.models import (
 from app.routers.auth import require_admin
 from app.services.about import collect_about
 from app.services.audit import write_audit
-from app.services.client_ip import client_ip_details, validate_trusted_proxies
+from app.services.user_names import clean_name_part, first_name_contains_last_name
+from app.services.client_ip import client_ip as trusted_client_ip, client_ip_details, validate_trusted_proxies
 from app.services.custom_fields import FIELD_TYPES, make_field_key
 from app.services.exporter import export_ip_addresses_csv, export_licences_csv
 from app.services.importer import ImportCSVError, import_csv, import_ip_addresses_csv
 from app.services.managed_lists import MANAGED_LIST_MODULES, MANAGED_LISTS, list_label
 from app.services.mail import MailConfigurationError, render_email_template, send_mail
+from app.services.modules import (
+    MODULE_KEYS,
+    accessible_module_keys,
+    enabled_modules,
+    has_module_access,
+    module_access_counts,
+    replace_module_access,
+)
 from app.services.sessions import active_since
 from app.services.dns_providers import provider_for
 from app.services.guacamole_bridge import restart_guacamole_bridge
@@ -73,6 +84,7 @@ from app.services.site_settings import (
     split_hosts,
     validate_allowed_hosts,
 )
+from app.services.sessions import revoke_user_sessions
 from app.routers.remote_manager import (
     RDP_SETTING_KEYS,
     SETTINGS as REMOTE_MANAGER_SETTINGS,
@@ -90,6 +102,75 @@ CUSTOM_FIELD_MODULES = {
     "hardware_assets": "Asset Manager",
     "licences": "License Keys",
 }
+INTERNAL_MODULE_KEYS = {
+    "ip_addresses": "vlan_ip_manager",
+    "hardware_assets": "asset_manager",
+    "licences": "licence_manager",
+}
+
+
+def module_form_context(db: Session, target: User | None, selected: set[str] | None = None) -> dict:
+    return {
+        "modules": enabled_modules(db),
+        "selected_module_keys": selected if selected is not None else (
+            set(accessible_module_keys(db, target)) if target else set()
+        ),
+    }
+
+
+def selected_module_keys(values) -> set[str]:
+    if not isinstance(values, list):
+        return set()
+    if len(values) > len(MODULE_KEYS) or any(not isinstance(value, str) or len(value) > 80 for value in values):
+        raise ValueError("One or more selected modules are invalid.")
+    selected = set(values)
+    if selected - MODULE_KEYS:
+        raise ValueError("One or more selected modules are invalid.")
+    return selected
+
+
+def require_data_module(request: Request, db: Session, user: User, module: str) -> tuple[str, str]:
+    mapping = {
+        "licences": ("licences", "licence_manager"),
+        "ip-addresses": ("ip-addresses", "vlan_ip_manager"),
+    }
+    resolved = mapping.get(module)
+    if not resolved:
+        raise HTTPException(status_code=404, detail="Module not found")
+    if not has_module_access(db, user, resolved[1]):
+        write_audit(
+            db, user, "module_access_denied", "module_permission", resolved[1],
+            trusted_client_ip(request),
+            detail=f"Access denied to module {resolved[1]}",
+            status_code=403,
+            metadata={"module_key": resolved[1]},
+        )
+        raise PermissionError("Module access required")
+    return resolved
+
+
+def require_internal_module(request: Request, db: Session, user: User, module: str) -> str:
+    module_key = INTERNAL_MODULE_KEYS.get(module)
+    if not module_key:
+        raise HTTPException(status_code=404, detail="Module not found")
+    if not has_module_access(db, user, module_key):
+        write_audit(
+            db, user, "module_access_denied", "module_permission", module_key,
+            trusted_client_ip(request),
+            detail=f"Access denied to module {module_key}",
+            status_code=403,
+            metadata={"module_key": module_key},
+        )
+        raise PermissionError("Module access required")
+    return module
+
+
+def permitted_internal_modules(db: Session, user: User, choices: dict[str, str]) -> dict[str, str]:
+    return {
+        module: label
+        for module, label in choices.items()
+        if has_module_access(db, user, INTERNAL_MODULE_KEYS[module])
+    }
 
 SITE_SETTING_KEYS = {
     "app_name": APP_BRAND_NAME,
@@ -119,6 +200,8 @@ SITE_SETTING_KEYS = {
     "dashboard_show_source_age": "1",
     "dashboard_attention_required": "1",
     "dashboard_globally_disabled_widgets": "",
+    "high_availability_enabled": "",
+    "backup_manager_enabled": "1",
     "dns_manager_enabled": "",
     "dns_collector_enabled": "1",
     "dns_default_provider_id": "",
@@ -240,6 +323,23 @@ def dns_providers_for_admin(db: Session) -> list[DNSProviderConfig]:
     return db.query(DNSProviderConfig).order_by(DNSProviderConfig.name.asc()).all()
 
 
+def ha_dns_clusters_for_admin(db: Session) -> list[HACluster]:
+    return (
+        db.query(HACluster)
+        .filter(
+            HACluster.provider_key == "pihole",
+            HACluster.deleted_at.is_(None),
+            HACluster.keepalived_status == "DEPLOYED",
+        )
+        .order_by(HACluster.name.asc())
+        .all()
+    )
+
+
+class DNSProviderSettingsError(ValueError):
+    pass
+
+
 def vlan_ip_admin_context(db: Session) -> dict:
     return {
         "vlan_options": db.query(VLAN).order_by(VLAN.name.asc()).all(),
@@ -269,6 +369,7 @@ def save_dns_manager_settings(
     dns_provider_id: str,
     dns_provider_name: str,
     dns_provider_type: str,
+    dns_provider_ha_cluster_id: str,
     dns_provider_base_url: str,
     dns_provider_auth_method: str,
     dns_provider_secret: str,
@@ -276,7 +377,8 @@ def save_dns_manager_settings(
     dns_provider_timeout_seconds: str,
     dns_provider_enabled: str,
     dns_provider_description: str,
-) -> None:
+    dns_provider_connection_mode: str = "standalone",
+) -> DNSProviderConfig | None:
     save_site_setting(db, "dns_manager_enabled", "1" if dns_manager_enabled else "")
     save_site_setting(db, "dns_collector_enabled", "1" if dns_collector_enabled else "")
     save_site_setting(db, "dns_cache_enabled", "1" if dns_cache_enabled else "")
@@ -311,15 +413,40 @@ def save_dns_manager_settings(
         refresh = 300
     save_site_setting(db, "dns_refresh_interval_seconds", str(refresh))
 
-    name = dns_provider_name.strip()
-    base_url = dns_provider_base_url.strip().rstrip("/")
-    if not name or not base_url:
-        save_site_setting(db, "dns_default_provider_id", dns_default_provider_id.strip())
-        return
-
     provider = None
     if dns_provider_id.strip().isdigit():
         provider = db.get(DNSProviderConfig, int(dns_provider_id.strip()))
+    name = dns_provider_name.strip()
+    connection_mode = dns_provider_connection_mode.strip()
+    if connection_mode not in {"standalone", "ha_cluster"}:
+        raise DNSProviderSettingsError("Choose a valid Pi-hole connection source.")
+    requested_cluster = None
+    if connection_mode == "ha_cluster" and not dns_provider_ha_cluster_id.strip().isdigit():
+        raise DNSProviderSettingsError("Choose a healthy Kaya HA Pi-hole cluster before saving.")
+    if connection_mode == "ha_cluster":
+        requested_cluster = (
+            db.query(HACluster)
+            .filter(
+                HACluster.id == int(dns_provider_ha_cluster_id),
+                HACluster.provider_key == "pihole",
+                HACluster.deleted_at.is_(None),
+                HACluster.keepalived_status == "DEPLOYED",
+                HACluster.status == "HEALTHY",
+                HACluster.current_active_node_id.isnot(None),
+            )
+            .first()
+        )
+        if requested_cluster is None:
+            raise DNSProviderSettingsError("That HA cluster is not currently ready for DNS Manager. Confirm it is healthy, deployed, and has exactly one virtual-IP owner.")
+    base_url = dns_provider_base_url.strip().rstrip("/")
+    if requested_cluster is not None:
+        base_url = f"http://{requested_cluster.virtual_ip}" if requested_cluster.virtual_ip else ""
+    if not name or not base_url:
+        save_site_setting(db, "dns_default_provider_id", dns_default_provider_id.strip())
+        if connection_mode == "ha_cluster":
+            raise DNSProviderSettingsError("Enter a display name and choose a cluster with a virtual IP.")
+        return None
+
     if not provider:
         provider = DNSProviderConfig(name=name, provider_type="pihole", base_url=base_url)
         db.add(provider)
@@ -327,19 +454,22 @@ def save_dns_manager_settings(
 
     provider.name = name
     provider.provider_type = dns_provider_type if dns_provider_type in {"pihole"} else "pihole"
+    provider.ha_cluster_id = requested_cluster.id if requested_cluster is not None else None
     provider.base_url = base_url
-    provider.auth_method = dns_provider_auth_method if dns_provider_auth_method in {"password", "api_token"} else "password"
-    if dns_provider_secret.strip():
-        provider.encrypted_secret = encrypt_secret(dns_provider_secret.strip())
-    provider.ssl_verify = bool(dns_provider_ssl_verify)
-    try:
-        provider.timeout_seconds = max(1, min(int(dns_provider_timeout_seconds or "10"), 60))
-    except ValueError:
-        provider.timeout_seconds = 10
+    if requested_cluster is None:
+        provider.auth_method = dns_provider_auth_method if dns_provider_auth_method in {"password", "api_token"} else "password"
+        if dns_provider_secret.strip():
+            provider.encrypted_secret = encrypt_secret(dns_provider_secret.strip())
+        provider.ssl_verify = bool(dns_provider_ssl_verify)
+        try:
+            provider.timeout_seconds = max(1, min(int(dns_provider_timeout_seconds or "10"), 60))
+        except ValueError:
+            provider.timeout_seconds = 10
     provider.is_enabled = bool(dns_provider_enabled)
     provider.description = dns_provider_description.strip() or None
     provider.updated_at = datetime.utcnow()
     save_site_setting(db, "dns_default_provider_id", str(provider.id))
+    return provider
 
 
 def save_remote_manager_settings(db: Session, form) -> bool:
@@ -521,44 +651,6 @@ def test_tcp_connection(host: str, port: int) -> tuple[bool, str]:
         return False, f"Kaya cannot reach {host.strip()} on port {port}: {exc}"
 
 
-def test_ftp_storage(
-    *,
-    host: str,
-    remote_path: str,
-    username: str,
-    password: str,
-) -> tuple[bool, str]:
-    host = host.strip()
-    if not host:
-        return False, "Remote host is required for FTP storage."
-
-    marker = ".kaya-storage-test.txt"
-    payload = b"kaya storage test"
-    ftp = FTP()
-    try:
-        ftp.connect(host, 21, timeout=8)
-        ftp.login(username.strip() or "anonymous", password or "anonymous@")
-        if remote_path.strip():
-            ftp.cwd(remote_path.strip())
-        ftp.storbinary(f"STOR {marker}", io.BytesIO(payload))
-        downloaded = io.BytesIO()
-        ftp.retrbinary(f"RETR {marker}", downloaded.write)
-        ftp.delete(marker)
-        ftp.quit()
-    except OSError as exc:
-        return False, f"Kaya could not reach the FTP server: {exc}"
-    except Exception as exc:
-        try:
-            ftp.quit()
-        except Exception:
-            pass
-        return False, f"Kaya could not write, read and delete a test file over FTP: {exc}"
-
-    if downloaded.getvalue() != payload:
-        return False, "Kaya uploaded a test file over FTP, but the downloaded data did not match."
-    return True, f"Kaya can write, read and delete files on FTP storage at {host}."
-
-
 def smb_unc_path(host: str, remote_share: str, *children: str) -> str:
     host = host.strip().strip("\\/")
     share_path = remote_share.strip().strip("\\/")
@@ -625,18 +717,16 @@ def test_backup_storage_target(
     if storage_type == "local":
         return test_directory_read_write(storage_path)
 
+    if storage_type == "ftp":
+        return (
+            False,
+            "Plaintext FTP is disabled because it exposes backup credentials and data. "
+            "Edit this retained target and migrate it to SFTP, SMB, or a securely mounted local path.",
+        )
+
     mounted_ok, mounted_detail = test_directory_read_write(storage_path)
     if mounted_ok:
         return True, f"{mounted_detail} This is the path Kaya will use for {storage_type.upper()} storage."
-
-    if storage_type == "ftp":
-        password = read_saved_backup_password(db, remote_password)
-        return test_ftp_storage(
-            host=remote_host,
-            remote_path=remote_share,
-            username=remote_username,
-            password=password,
-        )
 
     if storage_type == "smb":
         password = read_saved_backup_password(db, remote_password)
@@ -854,6 +944,8 @@ def users(
     user=Depends(require_admin),
 ):
     rows = db.query(User).order_by(User.email.asc()).all()
+    module_counts = module_access_counts(db, rows)
+    enabled_module_count = len(enabled_modules(db))
 
     return templates.TemplateResponse(
         request,
@@ -861,6 +953,8 @@ def users(
         {
             "user": user,
             "rows": rows,
+            "module_counts": module_counts,
+            "enabled_module_count": enabled_module_count,
             **csrf_context(request),
         },
     )
@@ -869,6 +963,7 @@ def users(
 @router.get("/team/users/new")
 def new_user(
     request: Request,
+    db: Session = Depends(get_db),
     user=Depends(require_admin),
 ):
     return templates.TemplateResponse(
@@ -879,6 +974,9 @@ def new_user(
             "target": None,
             "roles": sorted(ROLES),
             "error": None,
+            "field_errors": {},
+            "form_values": {},
+            **module_form_context(db, None),
             **csrf_context(request),
         },
     )
@@ -892,6 +990,7 @@ def create_user(
     last_name: str = Form("", max_length=120),
     password: str = Form(..., min_length=12, max_length=255),
     role: str = Form("viewer"),
+    module_keys: list[str] = Form(default=[]),
     csrf_token: str = Form(...),
     db: Session = Depends(get_db),
     user=Depends(require_admin),
@@ -899,7 +998,36 @@ def create_user(
     validate_csrf_token(request, csrf_token)
 
     role = role if role in ROLES else "viewer"
+    try:
+        selected_modules = selected_module_keys(module_keys)
+    except ValueError as exc:
+        return templates.TemplateResponse(
+            request,
+            "user_form.html",
+            {
+                "user": user, "target": None, "roles": sorted(ROLES), "error": str(exc),
+                "field_errors": {}, "form_values": {},
+                **module_form_context(db, None),
+                **csrf_context(request),
+            },
+            status_code=400,
+        )
     email = email.strip().lower()
+    first_name = clean_name_part(first_name)
+    last_name = clean_name_part(last_name)
+
+    if first_name_contains_last_name(first_name, last_name):
+        return templates.TemplateResponse(
+            request, "user_form.html",
+            {
+                "user": user, "target": None, "roles": sorted(ROLES), "error": None,
+                "field_errors": {"first_name": "Enter only the given name here; the surname is already in the last name field."},
+                "form_values": {"email": email, "first_name": first_name, "last_name": last_name, "role": role},
+                **module_form_context(db, None, selected_modules),
+                **csrf_context(request),
+            },
+            status_code=400,
+        )
 
     if db.query(User).filter(User.email == email).first():
         return templates.TemplateResponse(
@@ -910,6 +1038,9 @@ def create_user(
                 "target": None,
                 "roles": sorted(ROLES),
                 "error": "A user with that email already exists.",
+                "field_errors": {"email": "This email address is already in use."},
+                "form_values": {"email": email, "first_name": first_name, "last_name": last_name, "role": role},
+                **module_form_context(db, None, selected_modules),
                 **csrf_context(request),
             },
             status_code=400,
@@ -917,14 +1048,16 @@ def create_user(
 
     row = User(
         email=email,
-        first_name=first_name.strip() or None,
-        last_name=last_name.strip() or None,
+        first_name=first_name,
+        last_name=last_name,
         password_hash=hash_password(password),
         role=role,
         is_active=True,
     )
 
     db.add(row)
+    db.flush()
+    added_modules, _ = replace_module_access(db, row, selected_modules, user)
     db.commit()
 
     write_audit(
@@ -935,7 +1068,15 @@ def create_user(
         str(row.id),
         request.client.host if request.client else None,
         detail=email,
+        metadata={"module_keys": sorted(added_modules)},
     )
+    for module_key in sorted(added_modules):
+        write_audit(
+            db, user, "module_access_granted", "module_permission", f"{row.id}:{module_key}",
+            trusted_client_ip(request),
+            detail=f"Granted {module_key} to user {row.id}",
+            metadata={"target_user_id": row.id, "module_key": module_key},
+        )
 
     return RedirectResponse("/team/users", status_code=303)
 
@@ -963,6 +1104,9 @@ def edit_user(
             "target": target,
             "roles": sorted(ROLES),
             "error": None,
+            "field_errors": {},
+            "form_values": {},
+            **module_form_context(db, target),
             **csrf_context(request),
         },
     )
@@ -977,6 +1121,7 @@ def update_user(
     last_name: str = Form("", max_length=120),
     password: str = Form("", max_length=255),
     role: str = Form("viewer"),
+    module_keys: list[str] = Form(default=[]),
     is_active: str = Form(""),
     is_break_glass: str = Form(""),
     role_source: str = Form("local"),
@@ -994,6 +1139,21 @@ def update_user(
             detail="User not found",
         )
 
+    try:
+        selected_modules = selected_module_keys(module_keys)
+    except ValueError as exc:
+        return templates.TemplateResponse(
+            request,
+            "user_form.html",
+            {
+                "user": user, "target": target, "roles": sorted(ROLES), "error": str(exc),
+                "field_errors": {}, "form_values": {},
+                **module_form_context(db, target),
+                **csrf_context(request),
+            },
+            status_code=400,
+        )
+
     if target.id == user.id and (role != "admin" or not is_active):
         return templates.TemplateResponse(
             request,
@@ -1003,23 +1163,46 @@ def update_user(
                 "target": target,
                 "roles": sorted(ROLES),
                 "error": "You cannot remove your own admin access or deactivate yourself.",
+                **module_form_context(db, target, selected_modules),
                 **csrf_context(request),
             },
             status_code=400,
         )
 
     role = role if role in ROLES else "viewer"
+    clean_first_name = clean_name_part(first_name)
+    clean_last_name = clean_name_part(last_name)
+    if first_name_contains_last_name(clean_first_name, clean_last_name):
+        return templates.TemplateResponse(
+            request, "user_form.html",
+            {
+                "user": user, "target": target, "roles": sorted(ROLES), "error": None,
+                "field_errors": {"first_name": "Enter only the given name here; the surname is already in the last name field."},
+                "form_values": {
+                    "email": email.strip().lower(), "first_name": clean_first_name, "last_name": clean_last_name,
+                    "role": role, "is_active": bool(is_active), "is_break_glass": is_break_glass == "1", "role_source": role_source,
+                },
+                **module_form_context(db, target, selected_modules),
+                **csrf_context(request),
+            },
+            status_code=400,
+        )
 
     target.email = email.strip().lower()
-    target.first_name = first_name.strip() or None
-    target.last_name = last_name.strip() or None
+    target.first_name = clean_first_name
+    target.last_name = clean_last_name
     target.role = role
     target.is_active = bool(is_active)
     requested_break_glass = is_break_glass == "1"
     if requested_break_glass and (role != "admin" or not target.is_active or not (password or target.password_hash)):
         return templates.TemplateResponse(
             request, "user_form.html",
-            {"user": user, "target": target, "roles": sorted(ROLES), "error": "Break-glass access requires an active administrator with a local password.", **csrf_context(request)},
+            {
+                "user": user, "target": target, "roles": sorted(ROLES),
+                "error": "Break-glass access requires an active administrator with a local password.",
+                **module_form_context(db, target, selected_modules),
+                **csrf_context(request),
+            },
             status_code=400,
         )
     target.is_break_glass = requested_break_glass
@@ -1038,6 +1221,7 @@ def update_user(
                     "target": target,
                     "roles": sorted(ROLES),
                     "error": "New passwords must be at least 12 characters.",
+                    **module_form_context(db, target, selected_modules),
                     **csrf_context(request),
                 },
                 status_code=400,
@@ -1046,7 +1230,13 @@ def update_user(
         target.password_hash = hash_password(password)
         target.authentication_type = "local_and_oidc" if identity else "local"
 
+    granted_modules, removed_modules = replace_module_access(db, target, selected_modules, user)
     db.query(VaultSession).filter(VaultSession.user_id == target.id, VaultSession.revoked_at.is_(None)).update({VaultSession.revoked_at: datetime.utcnow()}, synchronize_session=False)
+    revoke_user_sessions(
+        db,
+        target.id,
+        except_session_id=request.session.get("session_id") if target.id == user.id else None,
+    )
     db.commit()
 
     write_audit(
@@ -1057,7 +1247,23 @@ def update_user(
         str(target.id),
         request.client.host if request.client else None,
         detail=target.email,
+        metadata={"modules_granted": sorted(granted_modules), "modules_removed": sorted(removed_modules)},
     )
+
+    for module_key in sorted(granted_modules):
+        write_audit(
+            db, user, "module_access_granted", "module_permission", f"{target.id}:{module_key}",
+            trusted_client_ip(request),
+            detail=f"Granted {module_key} to user {target.id}",
+            metadata={"target_user_id": target.id, "module_key": module_key},
+        )
+    for module_key in sorted(removed_modules):
+        write_audit(
+            db, user, "module_access_removed", "module_permission", f"{target.id}:{module_key}",
+            trusted_client_ip(request),
+            detail=f"Removed {module_key} from user {target.id}",
+            metadata={"target_user_id": target.id, "module_key": module_key},
+        )
 
     return RedirectResponse("/team/users", status_code=303)
 
@@ -1083,6 +1289,11 @@ def reset_user_2fa(
     target.totp_secret = None
     target.totp_enabled = False
     db.query(VaultSession).filter(VaultSession.user_id == target.id, VaultSession.revoked_at.is_(None)).update({VaultSession.revoked_at: datetime.utcnow()}, synchronize_session=False)
+    revoke_user_sessions(
+        db,
+        target.id,
+        except_session_id=request.session.get("session_id") if target.id == user.id else None,
+    )
     db.commit()
 
     write_audit(
@@ -1102,14 +1313,16 @@ def reset_user_2fa(
 def import_page(
     request: Request,
     module: str = "licences",
+    db: Session = Depends(get_db),
     user=Depends(require_admin),
 ):
+    active_module, _ = require_data_module(request, db, user, module)
     return templates.TemplateResponse(
         request,
         "import.html",
         {
             "user": user,
-            "active_module": module if module in {"licences", "ip-addresses"} else "licences",
+            "active_module": active_module,
             "message": None,
             "error": None,
             **csrf_context(request),
@@ -1128,7 +1341,7 @@ async def import_upload(
 ):
     validate_csrf_token(request, csrf_token)
 
-    active_module = module if module in {"licences", "ip-addresses"} else "licences"
+    active_module, _ = require_data_module(request, db, user, module)
     filename = file.filename or ""
 
     if not filename.lower().endswith(".csv"):
@@ -1222,8 +1435,9 @@ def export_csv(
     user=Depends(require_admin),
 ):
     validate_csrf_token(request, csrf_token)
+    active_module, _ = require_data_module(request, db, user, module)
 
-    if module == "ip-addresses":
+    if active_module == "ip-addresses":
         csv_data = export_ip_addresses_csv(db)
         entity = "ip_address"
         filename = "kaya-ip-addresses.csv"
@@ -1258,7 +1472,8 @@ def custom_fields(
     db: Session = Depends(get_db),
     user=Depends(require_admin),
 ):
-    active_module = module if module in CUSTOM_FIELD_MODULES else "ip_addresses"
+    active_module = require_internal_module(request, db, user, module)
+    available_modules = permitted_internal_modules(db, user, CUSTOM_FIELD_MODULES)
 
     rows = (
         db.query(CustomField)
@@ -1272,7 +1487,7 @@ def custom_fields(
         "custom_fields.html",
         {
             "user": user,
-            "modules": CUSTOM_FIELD_MODULES,
+            "modules": available_modules,
             "active_module": active_module,
             "rows": rows,
             "field_types": FIELD_TYPES,
@@ -1297,7 +1512,8 @@ def create_custom_field(
 ):
     validate_csrf_token(request, csrf_token)
 
-    active_module = module if module in CUSTOM_FIELD_MODULES else "ip_addresses"
+    active_module = require_internal_module(request, db, user, module)
+    available_modules = permitted_internal_modules(db, user, CUSTOM_FIELD_MODULES)
     clean_label = label.strip()
     clean_type = field_type if field_type in FIELD_TYPES else "text"
     clean_options = options.strip()
@@ -1315,7 +1531,7 @@ def create_custom_field(
             "custom_fields.html",
             {
                 "user": user,
-                "modules": CUSTOM_FIELD_MODULES,
+                "modules": available_modules,
                 "active_module": active_module,
                 "rows": rows,
                 "field_types": FIELD_TYPES,
@@ -1331,7 +1547,7 @@ def create_custom_field(
             "custom_fields.html",
             {
                 "user": user,
-                "modules": CUSTOM_FIELD_MODULES,
+                "modules": available_modules,
                 "active_module": active_module,
                 "rows": rows,
                 "field_types": FIELD_TYPES,
@@ -1356,7 +1572,7 @@ def create_custom_field(
             "custom_fields.html",
             {
                 "user": user,
-                "modules": CUSTOM_FIELD_MODULES,
+                "modules": available_modules,
                 "active_module": active_module,
                 "rows": rows,
                 "field_types": FIELD_TYPES,
@@ -1415,6 +1631,7 @@ def toggle_custom_field(
             detail="Custom field not found",
         )
 
+    require_internal_module(request, db, user, row.module)
     row.is_active = not row.is_active
     db.commit()
 
@@ -1440,6 +1657,7 @@ def delete_custom_field(request: Request, field_id: int, csrf_token: str = Form(
     row = db.get(CustomField, field_id)
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Custom field not found")
+    require_internal_module(request, db, user, row.module)
     module = row.module
     label = row.label
     db.query(CustomFieldValue).filter(CustomFieldValue.field_id == row.id).delete(synchronize_session=False)
@@ -1457,7 +1675,8 @@ def categories(
     db: Session = Depends(get_db),
     user=Depends(require_admin),
 ):
-    active_module = module if module in MANAGED_LIST_MODULES else "hardware_assets"
+    active_module = require_internal_module(request, db, user, module)
+    available_modules = permitted_internal_modules(db, user, MANAGED_LIST_MODULES)
     lists = MANAGED_LISTS.get(active_module, {})
     active_list = list_key if list_key in lists else next(iter(lists))
 
@@ -1476,7 +1695,7 @@ def categories(
         "categories.html",
         {
             "user": user,
-            "modules": MANAGED_LIST_MODULES,
+            "modules": available_modules,
             "lists": lists,
             "active_module": active_module,
             "active_list": active_list,
@@ -1501,7 +1720,8 @@ def create_category(
 ):
     validate_csrf_token(request, csrf_token)
 
-    active_module = module if module in MANAGED_LIST_MODULES else "hardware_assets"
+    active_module = require_internal_module(request, db, user, module)
+    available_modules = permitted_internal_modules(db, user, MANAGED_LIST_MODULES)
     lists = MANAGED_LISTS.get(active_module, {})
     active_list = list_key if list_key in lists else next(iter(lists))
     clean_value = value.strip()
@@ -1522,7 +1742,7 @@ def create_category(
             "categories.html",
             {
                 "user": user,
-                "modules": MANAGED_LIST_MODULES,
+                "modules": available_modules,
                 "lists": lists,
                 "active_module": active_module,
                 "active_list": active_list,
@@ -1548,7 +1768,7 @@ def create_category(
             "categories.html",
             {
                 "user": user,
-                "modules": MANAGED_LIST_MODULES,
+                "modules": available_modules,
                 "lists": lists,
                 "active_module": active_module,
                 "active_list": active_list,
@@ -1605,6 +1825,7 @@ def toggle_category(
             detail="Category not found",
         )
 
+    require_internal_module(request, db, user, row.module)
     row.is_active = not row.is_active
     db.commit()
 
@@ -1644,6 +1865,7 @@ def edit_category(
             detail="Category not found",
         )
 
+    require_internal_module(request, db, user, row.module)
     clean_value = value.strip()
 
     if not clean_value:
@@ -1697,6 +1919,7 @@ def delete_category(request: Request, item_id: int, csrf_token: str = Form(...),
     row = db.get(ManagedListItem, item_id)
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Category not found")
+    require_internal_module(request, db, user, row.module)
     module = row.module
     list_key = row.list_key
     value = row.value
@@ -2030,13 +2253,88 @@ def settings_page(
         {
             "user": user,
             "settings": load_site_settings(db),
+            "ha_active_cluster_count": db.query(HACluster).filter(HACluster.deleted_at.is_(None)).count(),
+            "backup_preserved_item_count": db.query(BackupRecord).count() + db.query(BackupJob).count(),
+            "backup_inflight_job_count": db.query(BackupJob).filter(BackupJob.status.in_(["queued", "dispatched", "running"])).count(),
             "dns_providers": dns_providers_for_admin(db),
+            "ha_dns_clusters": ha_dns_clusters_for_admin(db),
             **vlan_ip_admin_context(db),
             "security_check": security_check_context(request, db),
             "message": None,
             "error": None,
             **csrf_context(request),
         },
+    )
+
+
+@router.post("/system/site-administration/experimental-features/high-availability")
+async def set_high_availability_feature(
+    request: Request,
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    form = await request.form()
+    validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    enabled = str(form.get("enabled") or "") == "1"
+    previous = get_site_setting(db, "high_availability_enabled") == "1"
+    active_clusters = db.query(HACluster).filter(HACluster.deleted_at.is_(None)).count()
+    acknowledged = str(form.get("acknowledge_ha_disable") or "") == "1"
+    if not enabled and active_clusters and not acknowledged:
+        return RedirectResponse(
+            "/system/site-administration?tab=experimental-features&feature_error=acknowledgement-required",
+            status_code=303,
+        )
+    save_site_setting(db, "high_availability_enabled", "1" if enabled else "")
+    db.commit()
+    write_audit(
+        db,
+        user,
+        "feature_enabled" if enabled else "feature_disabled",
+        "experimental_feature",
+        entity_id="high_availability",
+        detail=f"High Availability {'enabled' if enabled else 'disabled'}.",
+        metadata={"feature": "high_availability", "previous_enabled": previous, "enabled": enabled, "preserved_cluster_count": active_clusters},
+    )
+    state = "enabled" if enabled else "disabled"
+    return RedirectResponse(
+        f"/system/site-administration?tab=experimental-features&feature_status={state}",
+        status_code=303,
+    )
+
+
+@router.post("/system/site-administration/experimental-features/backup-manager")
+async def set_backup_manager_feature(
+    request: Request,
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    form = await request.form()
+    validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    enabled = str(form.get("enabled") or "") == "1"
+    previous = get_site_setting(db, "backup_manager_enabled") == "1"
+    preserved_items = db.query(BackupRecord).count() + db.query(BackupJob).count()
+    inflight_jobs = db.query(BackupJob).filter(BackupJob.status.in_(["queued", "dispatched", "running"])).count()
+    acknowledged = str(form.get("acknowledge_backup_disable") or "") == "1"
+    if not enabled and preserved_items and not acknowledged:
+        return RedirectResponse(
+            "/system/site-administration?tab=experimental-features&feature_error=backup-acknowledgement-required",
+            status_code=303,
+        )
+    save_site_setting(db, "backup_manager_enabled", "1" if enabled else "")
+    db.commit()
+    write_audit(
+        db,
+        user,
+        "feature_enabled" if enabled else "feature_disabled",
+        "experimental_feature",
+        entity_id="backup_manager",
+        detail=f"Backup Manager {'enabled' if enabled else 'disabled'}.",
+        metadata={"feature": "backup_manager", "previous_enabled": previous, "enabled": enabled, "preserved_item_count": preserved_items, "inflight_job_count": inflight_jobs},
+    )
+    state = "enabled" if enabled else "disabled"
+    return RedirectResponse(
+        f"/system/site-administration?tab=experimental-features&feature=backup-manager&feature_status={state}",
+        status_code=303,
     )
 
 
@@ -2288,6 +2586,8 @@ async def save_settings(
     dns_provider_id: str = Form(""),
     dns_provider_name: str = Form(""),
     dns_provider_type: str = Form("pihole"),
+    dns_provider_connection_mode: str = Form("standalone"),
+    dns_provider_ha_cluster_id: str = Form(""),
     dns_provider_base_url: str = Form(""),
     dns_provider_auth_method: str = Form("password"),
     dns_provider_secret: str = Form(""),
@@ -2347,6 +2647,7 @@ async def save_settings(
                 "user": user,
                 "settings": submitted_settings,
                 "dns_providers": dns_providers_for_admin(db),
+                "ha_dns_clusters": ha_dns_clusters_for_admin(db),
                 **vlan_ip_admin_context(db),
                 "security_check": security_check_context(request, db),
                 "allowed_host_errors": allowed_host_errors,
@@ -2458,34 +2759,40 @@ async def save_settings(
     if not re.fullmatch(r"https?://[^\s/]+(?::\d+)?", gateway_hostname):
         gateway_hostname = "http://localhost:8999"
     save_site_setting(db, "secure_send_gateway_hostname", gateway_hostname)
-    save_dns_manager_settings(
-        db,
-        dns_manager_enabled=dns_manager_enabled,
-        dns_collector_enabled=dns_collector_enabled,
-        dns_default_provider_id=dns_default_provider_id,
-        dns_refresh_interval_seconds=dns_refresh_interval_seconds,
-        dns_cache_enabled=dns_cache_enabled,
-        dns_vlan_integration_enabled=dns_vlan_integration_enabled,
-        dns_match_suggestions_enabled=dns_match_suggestions_enabled,
-        dns_auto_link_exact_mac=dns_auto_link_exact_mac,
-        dns_auto_update_dynamic_ip=dns_auto_update_dynamic_ip,
-        dns_stale_client_days=dns_stale_client_days,
-        dns_retain_client_history=dns_retain_client_history,
-        dns_client_history_days=dns_client_history_days,
-        dns_traffic_history_days=dns_traffic_history_days,
-        dns_vlan_enrichment_enabled=dns_vlan_enrichment_enabled,
-        dns_update_empty_managed_hostname=dns_update_empty_managed_hostname,
-        dns_provider_id=dns_provider_id,
-        dns_provider_name=dns_provider_name,
-        dns_provider_type=dns_provider_type,
-        dns_provider_base_url=dns_provider_base_url,
-        dns_provider_auth_method=dns_provider_auth_method,
-        dns_provider_secret=dns_provider_secret,
-        dns_provider_ssl_verify=dns_provider_ssl_verify,
-        dns_provider_timeout_seconds=dns_provider_timeout_seconds,
-        dns_provider_enabled=dns_provider_enabled,
-        dns_provider_description=dns_provider_description,
-    )
+    try:
+        save_dns_manager_settings(
+            db,
+            dns_manager_enabled=dns_manager_enabled,
+            dns_collector_enabled=dns_collector_enabled,
+            dns_default_provider_id=dns_default_provider_id,
+            dns_refresh_interval_seconds=dns_refresh_interval_seconds,
+            dns_cache_enabled=dns_cache_enabled,
+            dns_vlan_integration_enabled=dns_vlan_integration_enabled,
+            dns_match_suggestions_enabled=dns_match_suggestions_enabled,
+            dns_auto_link_exact_mac=dns_auto_link_exact_mac,
+            dns_auto_update_dynamic_ip=dns_auto_update_dynamic_ip,
+            dns_stale_client_days=dns_stale_client_days,
+            dns_retain_client_history=dns_retain_client_history,
+            dns_client_history_days=dns_client_history_days,
+            dns_traffic_history_days=dns_traffic_history_days,
+            dns_vlan_enrichment_enabled=dns_vlan_enrichment_enabled,
+            dns_update_empty_managed_hostname=dns_update_empty_managed_hostname,
+            dns_provider_id=dns_provider_id,
+            dns_provider_name=dns_provider_name,
+            dns_provider_type=dns_provider_type,
+            dns_provider_connection_mode=dns_provider_connection_mode,
+            dns_provider_ha_cluster_id=dns_provider_ha_cluster_id,
+            dns_provider_base_url=dns_provider_base_url,
+            dns_provider_auth_method=dns_provider_auth_method,
+            dns_provider_secret=dns_provider_secret,
+            dns_provider_ssl_verify=dns_provider_ssl_verify,
+            dns_provider_timeout_seconds=dns_provider_timeout_seconds,
+            dns_provider_enabled=dns_provider_enabled,
+            dns_provider_description=dns_provider_description,
+        )
+    except DNSProviderSettingsError as exc:
+        db.rollback()
+        return templates.TemplateResponse(request, "settings.html", {"user": user, "settings": load_site_settings(db), "dns_providers": dns_providers_for_admin(db), "ha_dns_clusters": ha_dns_clusters_for_admin(db), **vlan_ip_admin_context(db), "security_check": security_check_context(request, db), "message": None, "error": str(exc), **csrf_context(request)}, status_code=422)
     guacamole_bridge_changed = save_remote_manager_settings(db, form)
 
     db.commit()
@@ -2509,6 +2816,7 @@ async def save_settings(
             "user": user,
             "settings": load_site_settings(db),
             "dns_providers": dns_providers_for_admin(db),
+            "ha_dns_clusters": ha_dns_clusters_for_admin(db),
             **vlan_ip_admin_context(db),
             "security_check": security_check_context(request, db),
             "message": "Settings saved successfully.",
@@ -2581,6 +2889,7 @@ def test_backup_storage(
             "user": user,
             "settings": load_site_settings(db),
             "dns_providers": dns_providers_for_admin(db),
+            "ha_dns_clusters": ha_dns_clusters_for_admin(db),
             **vlan_ip_admin_context(db),
             "security_check": security_check_context(request, db),
             "message": f"Backup storage test passed: {detail}" if passed else None,
@@ -2611,6 +2920,8 @@ def test_dns_provider(
     dns_provider_id: str = Form(""),
     dns_provider_name: str = Form(""),
     dns_provider_type: str = Form("pihole"),
+    dns_provider_connection_mode: str = Form("standalone"),
+    dns_provider_ha_cluster_id: str = Form(""),
     dns_provider_base_url: str = Form(""),
     dns_provider_auth_method: str = Form("password"),
     dns_provider_secret: str = Form(""),
@@ -2623,34 +2934,40 @@ def test_dns_provider(
     user=Depends(require_admin),
 ):
     validate_csrf_token(request, csrf_token)
-    save_dns_manager_settings(
-        db,
-        dns_manager_enabled=dns_manager_enabled,
-        dns_collector_enabled=dns_collector_enabled,
-        dns_default_provider_id=dns_default_provider_id,
-        dns_refresh_interval_seconds=dns_refresh_interval_seconds,
-        dns_cache_enabled=dns_cache_enabled,
-        dns_vlan_integration_enabled=dns_vlan_integration_enabled,
-        dns_match_suggestions_enabled=dns_match_suggestions_enabled,
-        dns_auto_link_exact_mac=dns_auto_link_exact_mac,
-        dns_auto_update_dynamic_ip=dns_auto_update_dynamic_ip,
-        dns_stale_client_days=dns_stale_client_days,
-        dns_retain_client_history=dns_retain_client_history,
-        dns_client_history_days=dns_client_history_days,
-        dns_traffic_history_days=dns_traffic_history_days,
-        dns_vlan_enrichment_enabled=dns_vlan_enrichment_enabled,
-        dns_update_empty_managed_hostname=dns_update_empty_managed_hostname,
-        dns_provider_id=dns_provider_id,
-        dns_provider_name=dns_provider_name,
-        dns_provider_type=dns_provider_type,
-        dns_provider_base_url=dns_provider_base_url,
-        dns_provider_auth_method=dns_provider_auth_method,
-        dns_provider_secret=dns_provider_secret,
-        dns_provider_ssl_verify=dns_provider_ssl_verify,
-        dns_provider_timeout_seconds=dns_provider_timeout_seconds,
-        dns_provider_enabled=dns_provider_enabled,
-        dns_provider_description=dns_provider_description,
-    )
+    try:
+        save_dns_manager_settings(
+            db,
+            dns_manager_enabled=dns_manager_enabled,
+            dns_collector_enabled=dns_collector_enabled,
+            dns_default_provider_id=dns_default_provider_id,
+            dns_refresh_interval_seconds=dns_refresh_interval_seconds,
+            dns_cache_enabled=dns_cache_enabled,
+            dns_vlan_integration_enabled=dns_vlan_integration_enabled,
+            dns_match_suggestions_enabled=dns_match_suggestions_enabled,
+            dns_auto_link_exact_mac=dns_auto_link_exact_mac,
+            dns_auto_update_dynamic_ip=dns_auto_update_dynamic_ip,
+            dns_stale_client_days=dns_stale_client_days,
+            dns_retain_client_history=dns_retain_client_history,
+            dns_client_history_days=dns_client_history_days,
+            dns_traffic_history_days=dns_traffic_history_days,
+            dns_vlan_enrichment_enabled=dns_vlan_enrichment_enabled,
+            dns_update_empty_managed_hostname=dns_update_empty_managed_hostname,
+            dns_provider_id=dns_provider_id,
+            dns_provider_name=dns_provider_name,
+            dns_provider_type=dns_provider_type,
+            dns_provider_connection_mode=dns_provider_connection_mode,
+            dns_provider_ha_cluster_id=dns_provider_ha_cluster_id,
+            dns_provider_base_url=dns_provider_base_url,
+            dns_provider_auth_method=dns_provider_auth_method,
+            dns_provider_secret=dns_provider_secret,
+            dns_provider_ssl_verify=dns_provider_ssl_verify,
+            dns_provider_timeout_seconds=dns_provider_timeout_seconds,
+            dns_provider_enabled=dns_provider_enabled,
+            dns_provider_description=dns_provider_description,
+        )
+    except DNSProviderSettingsError as exc:
+        db.rollback()
+        return templates.TemplateResponse(request, "settings.html", {"user": user, "settings": load_site_settings(db), "dns_providers": dns_providers_for_admin(db), "ha_dns_clusters": ha_dns_clusters_for_admin(db), **vlan_ip_admin_context(db), "security_check": security_check_context(request, db), "message": None, "error": str(exc), **csrf_context(request)}, status_code=422)
     db.commit()
 
     provider_id = (get_site_setting(db, "dns_default_provider_id") or "").strip()
@@ -2685,6 +3002,7 @@ def test_dns_provider(
             "user": user,
             "settings": load_site_settings(db),
             "dns_providers": dns_providers_for_admin(db),
+            "ha_dns_clusters": ha_dns_clusters_for_admin(db),
             **vlan_ip_admin_context(db),
             "security_check": security_check_context(request, db),
             "message": detail if passed else None,
@@ -2692,6 +3010,68 @@ def test_dns_provider(
             **csrf_context(request),
         },
     )
+
+
+@router.post("/system/site-administration/save-dns-provider")
+def save_dns_provider(
+    request: Request,
+    dns_provider_id: str = Form(""),
+    dns_provider_name: str = Form(""),
+    dns_provider_type: str = Form("pihole"),
+    dns_provider_connection_mode: str = Form("standalone"),
+    dns_provider_ha_cluster_id: str = Form(""),
+    dns_provider_base_url: str = Form(""),
+    dns_provider_auth_method: str = Form("password"),
+    dns_provider_secret: str = Form(""),
+    dns_provider_ssl_verify: str = Form(""),
+    dns_provider_timeout_seconds: str = Form("10"),
+    dns_provider_enabled: str = Form(""),
+    dns_provider_description: str = Form(""),
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    validate_csrf_token(request, csrf_token)
+    current = load_site_settings(db)
+    try:
+        provider = save_dns_manager_settings(
+            db,
+            dns_manager_enabled=current.get("dns_manager_enabled", ""),
+            dns_collector_enabled=current.get("dns_collector_enabled", ""),
+            dns_default_provider_id=current.get("dns_default_provider_id", ""),
+            dns_refresh_interval_seconds=current.get("dns_refresh_interval_seconds", "300"),
+            dns_cache_enabled=current.get("dns_cache_enabled", ""),
+            dns_vlan_integration_enabled=current.get("dns_vlan_integration_enabled", ""),
+            dns_match_suggestions_enabled=current.get("dns_match_suggestions_enabled", ""),
+            dns_auto_link_exact_mac=current.get("dns_auto_link_exact_mac", ""),
+            dns_auto_update_dynamic_ip=current.get("dns_auto_update_dynamic_ip", ""),
+            dns_stale_client_days=current.get("dns_stale_client_days", "30"),
+            dns_retain_client_history=current.get("dns_retain_client_history", ""),
+            dns_client_history_days=current.get("dns_client_history_days", "365"),
+            dns_traffic_history_days=current.get("dns_traffic_history_days", "30"),
+            dns_vlan_enrichment_enabled=current.get("dns_vlan_enrichment_enabled", ""),
+            dns_update_empty_managed_hostname=current.get("dns_update_empty_managed_hostname", ""),
+            dns_provider_id=dns_provider_id,
+            dns_provider_name=dns_provider_name,
+            dns_provider_type=dns_provider_type,
+            dns_provider_connection_mode=dns_provider_connection_mode,
+            dns_provider_ha_cluster_id=dns_provider_ha_cluster_id,
+            dns_provider_base_url=dns_provider_base_url,
+            dns_provider_auth_method=dns_provider_auth_method,
+            dns_provider_secret=dns_provider_secret,
+            dns_provider_ssl_verify=dns_provider_ssl_verify,
+            dns_provider_timeout_seconds=dns_provider_timeout_seconds,
+            dns_provider_enabled=dns_provider_enabled,
+            dns_provider_description=dns_provider_description,
+        )
+        if provider is None:
+            raise DNSProviderSettingsError("Enter a display name and Pi-hole connection details before saving.")
+        db.commit()
+    except DNSProviderSettingsError as exc:
+        db.rollback()
+        return templates.TemplateResponse(request, "settings.html", {"user": user, "settings": load_site_settings(db), "dns_providers": dns_providers_for_admin(db), "ha_dns_clusters": ha_dns_clusters_for_admin(db), **vlan_ip_admin_context(db), "security_check": security_check_context(request, db), "message": None, "error": str(exc), **csrf_context(request)}, status_code=422)
+    write_audit(db, user, "update", "dns_provider", str(provider.id), request.client.host if request.client else None, detail=f"Saved DNS provider {provider.name}.", metadata={"ha_cluster_id": provider.ha_cluster.public_id if provider.ha_cluster else None, "history_preserved": True})
+    return RedirectResponse("/system/site-administration?tab=module-dns-manager&provider_saved=1", status_code=303)
 
 @router.post("/system/site-administration/test-email")
 def send_test_email(
@@ -2815,6 +3195,7 @@ def send_test_email(
             "user": user,
             "settings": load_site_settings(db),
             "dns_providers": dns_providers_for_admin(db),
+            "ha_dns_clusters": ha_dns_clusters_for_admin(db),
             **vlan_ip_admin_context(db),
             "security_check": security_check_context(request, db),
             "message": message,

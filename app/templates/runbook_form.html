@@ -1,60 +1,36 @@
 {% extends "base.html" %}
-{% block extra_head %}
-<link rel="stylesheet" href="/static/vendor/highlight/github-dark.min.css?v=11.11.1">
-{% endblock %}
+{% block extra_head %}<link rel="stylesheet" href="/static/vendor/highlight/github-dark.min.css?v=11.11.1">{% endblock %}
 {% block content %}
-<div class="topbar">
-  <div>
-    <h1>{% if page %}Edit Runbook Page{% else %}New Runbook Page{% endif %}</h1>
-    <p class="muted">Write with the toolbar or Markdown. Add language-aware code boxes, links, lists and inline formatting.</p>
-  </div>
-  <a class="button secondary" href="{% if page %}/documentation/runbook-manager/{{ page.slug }}{% else %}/documentation/runbook-manager{% endif %}">Cancel</a>
-</div>
-{% if error %}<div class="alert">{{ error }}</div>{% endif %}
-<form method="post" class="runbook-editor-form">
+<form method="post" class="runbook-editor-form" data-runbook-editor-form data-draft-key="kaya.runbook.draft.{{ page.id if page else 'new' }}">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <section class="panel runbook-editor-meta">
-    <label>Title<input name="title" value="{{ page.title if page else '' }}" placeholder="How to restore the media stack" required></label>
-    <label>Space<select name="space_id"><option value=""></option>{% for space in spaces %}<option value="{{ space.id }}" {% if page and page.space_id == space.id %}selected{% endif %}>{{ space.name }}</option>{% endfor %}</select></label>
-    <label>Parent Page<select name="parent_id"><option value=""></option>{% for parent in parents %}<option value="{{ parent.id }}" {% if page and page.parent_id == parent.id %}selected{% endif %}>{{ parent.title }}</option>{% endfor %}</select></label>
-    <label>Tags<input name="tags" value="{{ page.tags if page and page.tags else '' }}" placeholder="backup, proxmox, docker"></label>
-    <label class="wide">Summary<input name="summary" value="{{ page.summary if page and page.summary else '' }}" placeholder="Short one-line description"></label>
-    <label class="runbook-check"><input name="is_pinned" type="checkbox" value="on" {% if page and page.is_pinned %}checked{% endif %}> Pin this page</label>
+  <header class="runbook-workspace-header">
+    <a class="button secondary" href="{% if page %}/documentation/runbook-manager/{{ page.slug }}{% else %}/documentation/runbook-manager{% endif %}">&larr; Runbooks</a>
+    <div><span class="table-chip">{{ 'Existing page' if page else 'New runbook' }}</span><strong data-editor-document-title>{{ page.title if page else initial_title or 'Untitled runbook' }}</strong></div>
+    <div class="runbook-workspace-actions"><span class="runbook-save-state" data-runbook-save-state>All changes saved</span><div class="runbook-layout-toggle" role="group" aria-label="Editor layout"><button class="button secondary" type="button" data-editor-mode="editor">Editor</button><button class="button secondary" type="button" data-editor-mode="split">Split</button><button class="button secondary" type="button" data-editor-mode="preview">Preview</button></div><a class="button secondary" href="{% if page %}/documentation/runbook-manager/{{ page.slug }}{% else %}/documentation/runbook-manager{% endif %}">Cancel</a><button type="submit">Save Page</button></div>
+  </header>
+  {% if error %}<div class="alert" role="alert">{{ error }}</div>{% endif %}
+  <div class="alert runbook-draft-recovery" data-runbook-draft-recovery hidden><span>A newer local draft is available from this browser.</span><button class="button secondary" type="button" data-draft-action="restore">Restore draft</button><button class="button ghost" type="button" data-draft-action="discard">Discard</button></div>
+  <section class="panel runbook-document-meta">
+    <label class="wide">Title<input name="title" data-runbook-title value="{{ page.title if page else initial_title }}" maxlength="255" placeholder="How to restore the media stack" required></label>
+    <label class="wide">Summary <span>Concise context for search and lists</span><input name="summary" value="{{ page.summary if page and page.summary else '' }}" maxlength="500" placeholder="Short one-line description"></label>
+    <label>Space<select name="space_id" data-runbook-space><option value="">Unassigned</option>{% for space in spaces %}<option value="{{ space.id }}" {% if (page and page.space_id == space.id) or (not page and initial_space_id == space.id) %}selected{% endif %}>{{ space.name }}</option>{% endfor %}</select></label>
+    <label>Parent Page <span>Optional</span><select name="parent_id" data-runbook-parent><option value="">No parent</option>{% for parent in parents %}<option value="{{ parent.id }}" data-space-id="{{ parent.space_id or '' }}" {% if page and page.parent_id == parent.id %}selected{% endif %}>{{ parent.title }}</option>{% endfor %}</select></label>
+    <label class="wide">Tags <span>Enter or comma adds a tag</span><div class="runbook-tag-control" data-runbook-tag-control><div data-runbook-tag-pills></div><input type="text" data-runbook-tag-input list="runbook-existing-tags" placeholder="Add a tag"></div><input type="hidden" name="tags" data-runbook-tags-value value="{{ page.tags if page and page.tags else '' }}"><datalist id="runbook-existing-tags">{% for tag in existing_tags %}<option value="{{ tag }}">{% endfor %}</datalist></label>
+    <details class="wide runbook-page-options" data-runbook-options><summary>Page options</summary><label class="runbook-check"><input name="is_pinned" type="checkbox" value="on" {% if page and page.is_pinned %}checked{% endif %}> Pin this page to make it easier to find</label></details>
   </section>
-  <section class="runbook-editor-layout">
-    <section class="panel runbook-editor-pane runbook-write-pane">
-      <div class="runbook-editor-pane-heading"><label for="runbook-markdown">Markdown</label><span>Ctrl+B &middot; Ctrl+I &middot; Ctrl+K</span></div>
+  <section class="runbook-authoring-workspace" data-runbook-workspace data-mode="split">
+    <section class="panel runbook-editor-pane runbook-write-pane" data-editor-pane="editor">
+      <div class="runbook-editor-pane-heading"><label for="runbook-markdown">Markdown editor</label><span>Ctrl+S save &middot; Ctrl+B bold &middot; Ctrl+I italic &middot; Ctrl+K link</span></div>
       <div class="runbook-editor-toolbar" role="toolbar" aria-label="Markdown formatting" data-runbook-image-upload-url="/documentation/runbook-manager/images">
-        <button type="button" data-markdown-action="heading" title="Heading">H</button>
-        <button type="button" data-markdown-action="bold" title="Bold"><strong>B</strong></button>
-        <button type="button" data-markdown-action="italic" title="Italic"><em>I</em></button>
-        <button type="button" data-markdown-action="link" title="Link">Link</button>
-        <button type="button" data-markdown-action="bullet-list" title="Bulleted list">&bull; List</button>
-        <button type="button" data-markdown-action="numbered-list" title="Numbered list">1. List</button>
-        <button type="button" data-markdown-action="inline-code" title="Inline code">&lt;/&gt;</button>
-        <span class="runbook-toolbar-divider" aria-hidden="true"></span>
-        <label class="runbook-toolbar-language">Language
-          <select data-runbook-code-language aria-label="New code block language">
-            <option value="">Auto</option><option value="plaintext">Plain text</option><option value="bash">Bash</option><option value="powershell">PowerShell</option><option value="dockerfile">Dockerfile</option><option value="yaml">YAML</option><option value="json">JSON</option><option value="python">Python</option><option value="javascript">JavaScript</option><option value="typescript">TypeScript</option><option value="html">HTML</option><option value="css">CSS</option><option value="sql">SQL</option><option value="nginx">Nginx</option><option value="ini">INI</option><option value="markdown">Markdown</option><option value="csharp">C#</option><option value="java">Java</option><option value="go">Go</option><option value="rust">Rust</option>
-          </select>
-        </label>
-        <button class="runbook-code-insert" type="button" data-markdown-action="code-block">Code box</button>
-        <span class="runbook-paste-status" data-runbook-paste-status aria-live="polite"></span>
+        <button type="button" data-markdown-action="undo" title="Undo" aria-label="Undo">&#8630;</button><button type="button" data-markdown-action="redo" title="Redo" aria-label="Redo">&#8631;</button><span class="runbook-toolbar-divider"></span>
+        <button type="button" data-markdown-action="heading" title="Heading" aria-label="Heading">H</button><button type="button" data-markdown-action="bold" title="Bold" aria-label="Bold"><strong>B</strong></button><button type="button" data-markdown-action="italic" title="Italic" aria-label="Italic"><em>I</em></button><button type="button" data-markdown-action="link" title="Link" aria-label="Link">Link</button><button type="button" data-markdown-action="bullet-list" title="Bulleted list" aria-label="Bulleted list">&bull; List</button><button type="button" data-markdown-action="numbered-list" title="Numbered list" aria-label="Numbered list">1. List</button><button type="button" data-markdown-action="checkbox-list" title="Checkbox list" aria-label="Checkbox list">&#9745; List</button><button type="button" data-markdown-action="quote" title="Quote" aria-label="Quote">&ldquo;</button><button type="button" data-markdown-action="inline-code" title="Inline code" aria-label="Inline code">&lt;/&gt;</button><button type="button" data-markdown-action="table" title="Table" aria-label="Table">Table</button><button type="button" data-markdown-action="rule" title="Horizontal rule" aria-label="Horizontal rule">&mdash;</button>
+        <label class="runbook-toolbar-language">Code<select data-runbook-code-language aria-label="New code block language"><option value="">Auto</option><option value="plaintext">Plain text</option><option value="bash">Bash</option><option value="powershell">PowerShell</option><option value="dockerfile">Dockerfile</option><option value="yaml">YAML</option><option value="json">JSON</option><option value="python">Python</option><option value="javascript">JavaScript</option><option value="sql">SQL</option></select></label><button class="runbook-code-insert" type="button" data-markdown-action="code-block">Code block</button><label class="button secondary runbook-image-picker" title="Upload image">Image<input type="file" accept="image/png,image/jpeg,image/gif,image/webp" data-runbook-image-picker></label><span class="runbook-paste-status" data-runbook-paste-status aria-live="polite"></span>
       </div>
-      <textarea id="runbook-markdown" name="body" data-runbook-markdown spellcheck="true" placeholder="# Recovery steps&#10;&#10;- Check service health&#10;- Restore the latest backup&#10;&#10;Paste screenshots directly here, or add code:&#10;&#10;```bash&#10;docker compose ps&#10;```">{{ page.body if page and page.body else '' }}</textarea>
+      <textarea id="runbook-markdown" name="body" data-runbook-markdown spellcheck="true" placeholder="# Recovery steps">{{ page.body if page and page.body else initial_body }}</textarea>
     </section>
-    <section class="panel runbook-editor-pane">
-      <div class="runbook-editor-pane-heading"><h2>Preview</h2><span>Live Markdown preview</span></div>
-      <div class="runbook-content" data-runbook-preview></div>
-    </section>
+    <section class="panel runbook-editor-pane runbook-preview-pane" data-editor-pane="preview"><div class="runbook-editor-pane-heading"><h2>Preview</h2><span>Live Markdown preview</span></div><div class="runbook-content" data-runbook-preview></div></section>
   </section>
-  <div class="form-actions">
-    <button class="button secondary" type="reset">Reset</button>
-    <button type="submit">Save Page</button>
-  </div>
+  <footer class="runbook-editor-footer"><span data-runbook-save-state>All changes saved</span><span><strong data-runbook-word-count>0</strong> words &middot; <a href="https://www.markdownguide.org/basic-syntax/" target="_blank" rel="noopener noreferrer">Markdown help</a></span></footer>
 </form>
 {% endblock %}
-{% block extra_scripts %}
-<script src="/static/vendor/highlight/highlight.min.js?v=11.11.1" defer></script>
-<script src="/static/js/runbooks.js?v={{ asset_version }}&runbook-editor=image-paste-1" defer></script>
-{% endblock %}
+{% block extra_scripts %}<script src="/static/vendor/highlight/highlight.min.js?v=11.11.1" defer></script><script src="/static/js/runbooks.js?v={{ asset_version }}&runbook-editor=workspace-1" defer></script>{% endblock %}

@@ -3,7 +3,7 @@
 <section class="module-header backup-hero">
   <div class="module-title-row">
     <div class="module-heading">
-      <h1>Backup Manager</h1>
+      <div class="ha-title-line"><h1>Backup Manager</h1>{% set maturity_label='Beta' %}{% set maturity_tooltip='Backup Manager is a beta feature.' %}{% include 'components/maturity_badge.html' %}</div>
       <p class="muted">Track Proxmox backup jobs, Run Docker container backups and track manual backups.</p>
     </div>
     <a class="button secondary" href="/system/site-administration?tab=module-backup-manager">Storage settings</a>
@@ -19,7 +19,10 @@
     <tbody>
       {% for job in proxmox_jobs %}
       <tr>
-        <td><strong>{{ job.name }}</strong></td>
+        <td>
+          <strong>{{ job.name }}</strong>
+          {% if job.job_id %}<br><small class="muted mono">{{ job.job_id }}</small>{% endif %}
+        </td>
         <td>{{ job.host.name }}</td>
         <td><span class="compute-state {{ job.status }}">{{ job.status }}</span></td>
         <td>{{ local_time(job.last_run_at, 'minute') }}</td>

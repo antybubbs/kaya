@@ -3,7 +3,7 @@
 <div class="login-wrap"><div class="login-card"><section class="login-form-panel stack">
   <p class="login-kicker">Authentication</p>
   <h1>Single sign-on could not be completed</h1>
-  <div class="alert">{{ message }}</div>
-  <div class="form-actions"><a class="button" href="{{ return_url or '/login' }}">{{ return_label or 'Return to sign in' }}</a><a class="button secondary" href="/auth/local">Emergency administrator access</a></div>
+  <div class="alert">{{ message }}{% if authentication_mode == 'oidc_required' %} Please contact your Kaya administrator.{% endif %}</div>
+  <div class="form-actions"><a class="button" href="{{ return_url or '/login' }}">{{ return_label or 'Return to sign in' }}</a></div>
 </section></div></div>
 {% endblock %}

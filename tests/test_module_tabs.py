@@ -42,3 +42,16 @@ def test_shared_tables_are_compact_without_clipping_data():
     assert "text-overflow:clip" in compact
     assert "overflow-x:auto" in compact
     assert "overflow:hidden" not in compact
+
+
+def test_dns_query_log_table_settings_aligns_to_panel_right_edge():
+    css = (ROOT / "app" / "static" / "css" / "kaya.css").read_text(encoding="utf-8")
+    template = (ROOT / "app" / "templates" / "dns_manager.html").read_text(encoding="utf-8")
+    script = (ROOT / "app" / "static" / "js" / "tables.js").read_text(encoding="utf-8")
+    query_log = css[css.index("/* DNS Manager query log interactions */"):]
+    assert 'class="dns-query-log-controls" data-table-toolbar-host' in template
+    assert 'parent.querySelector(":scope > [data-table-toolbar-host]")' in script
+    assert ".dns-query-log-controls>.table-toolbar{" in query_log
+    assert "margin-left:auto;" in query_log
+    assert ".dns-query-log-panel>.table-scroll{" in query_log
+    assert "grid-column:1 / -1;" in query_log

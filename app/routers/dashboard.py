@@ -4,10 +4,10 @@ from sqlalchemy.orm import Session
 
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.db.session import get_db
-from app.routers.auth import require_user
+from app.routers.auth import require_module_access, require_user
 from app.services.dashboard import config, reset_preferences, save_preferences, snapshot
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_module_access("dashboard"))])
 templates = Jinja2Templates(directory="app/templates")
 
 @router.get("/dashboard")
