@@ -7,7 +7,8 @@ from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
-from sqlalchemy import or_
+from sqlalchemy import or_, text
+from sqlalchemy.exc import OperationalError
 from app.core.config import get_settings
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.core.demo import DEMO_ACCOUNTS, demo_generation, demo_login_email
@@ -17,7 +18,7 @@ from app.db.session import get_db
 from app.models.models import AppSession, AuditLog, ExternalIdentity, OIDCProvider, PasswordResetToken, User, VaultSession
 from app.services.audit import write_audit
 from app.services.mail import MailConfigurationError, render_email_template, send_mail
-from app.services.sessions import end_user_session, start_user_session, touch_user_session
+from app.services.sessions import active_user_session, end_user_session, revoke_user_sessions, start_user_session, touch_user_session
 from app.services.site_settings import get_site_setting
 from app.services.oidc_client import safe_return_path
 from app.services.user_names import clean_name_part, first_name_contains_last_name
@@ -149,14 +150,18 @@ def login_template_context(request: Request, db: Session, **overrides) -> dict:
 
 def current_user(request: Request, db: Session = Depends(get_db)) -> User | None:
     user_id = request.session.get("user_id")
-    if not user_id:
+    session_id = request.session.get("session_id")
+    if not user_id or not session_id:
         return None
     if settings.demo_mode and request.session.get("demo_generation") != demo_generation():
         request.session.clear()
         return None
     user = db.query(User).filter(User.id == user_id, User.is_active == True).first()
-    if user:
-        touch_user_session(db, request, user)
+    app_session = active_user_session(db, session_id, user.id if user else None)
+    if not user or not app_session:
+        request.session.clear()
+        return None
+    touch_user_session(db, request, user, app_session)
     return user
 
 
@@ -416,6 +421,7 @@ def reset_password_submit(
     user = row.user
     user.password_hash = hash_password(password)
     db.query(VaultSession).filter(VaultSession.user_id == user.id, VaultSession.revoked_at.is_(None)).update({VaultSession.revoked_at: datetime.utcnow()}, synchronize_session=False)
+    revoke_user_sessions(db, user.id)
     row.used_at = datetime.utcnow()
     db.commit()
     write_audit(
@@ -442,15 +448,33 @@ def setup_submit(
     email: str = Form(""),
     password: str = Form(""),
     confirm_password: str = Form(""),
+    setup_token: str = Form("", max_length=512),
     csrf_token: str = Form(...),
     db: Session = Depends(get_db)
 ):
     validate_csrf_token(request, csrf_token)
 
-    admin = db.query(User).filter(User.role == "admin").first()
-
-    if admin:
-        return RedirectResponse("/login", status_code=303)
+    expected_setup_token = settings.setup_token
+    if not expected_setup_token or not secrets.compare_digest(setup_token, expected_setup_token):
+        write_audit(
+            db,
+            None,
+            "initial_setup_rejected",
+            "user",
+            ip_address=request.client.host if request.client else None,
+            detail="Initial administrator setup rejected because the deployment setup token was missing or invalid",
+            severity="warning",
+            status_code=403,
+        )
+        return templates.TemplateResponse(
+            request,
+            "setup.html",
+            {
+                "error": "The setup token is invalid. Copy the current token from the Kaya container logs.",
+                **csrf_context(request, include_version=False),
+            },
+            status_code=403,
+        )
 
     email = email.strip().lower()
 
@@ -487,17 +511,35 @@ def setup_submit(
             status_code=400
         )
 
-    user = User(
-        email=email,
-        first_name=first_name.strip() or None,
-        last_name=last_name.strip() or None,
-        password_hash=hash_password(password),
-        role="admin",
-        is_active=True
-    )
-
-    db.add(user)
-    db.commit()
+    try:
+        # Kaya uses SQLite. An immediate write transaction makes concurrent
+        # first-run submissions single-winner instead of check-then-create.
+        db.execute(text("BEGIN IMMEDIATE"))
+        admin = db.query(User).filter(User.role == "admin").first()
+        if admin:
+            db.rollback()
+            return RedirectResponse("/login", status_code=303)
+        user = User(
+            email=email,
+            first_name=first_name.strip() or None,
+            last_name=last_name.strip() or None,
+            password_hash=hash_password(password),
+            role="admin",
+            is_active=True
+        )
+        db.add(user)
+        db.commit()
+    except OperationalError:
+        db.rollback()
+        return templates.TemplateResponse(
+            request,
+            "setup.html",
+            {
+                "error": "Setup is already being completed by another request. Reload the page and try again if no administrator was created.",
+                **csrf_context(request, include_version=False),
+            },
+            status_code=409,
+        )
     write_audit(
         db,
         user,
@@ -719,15 +761,29 @@ def update_profile_password(request: Request, current_password: str = Form("", m
         return templates.TemplateResponse(request, "profile.html", {"user": user, "setup_secret": None, "setup_uri": None, "setup_qr_code": None, "error": "New passwords do not match.", "success": None, **csrf_context(request)}, status_code=400)
     user.password_hash = hash_password(new_password)
     db.query(VaultSession).filter(VaultSession.user_id == user.id, VaultSession.revoked_at.is_(None)).update({VaultSession.revoked_at: datetime.utcnow()}, synchronize_session=False)
+    revoke_user_sessions(db, user.id, except_session_id=request.session.get("session_id"))
     db.commit()
     write_audit(db, user, "change_password", "user", str(user.id), request.client.host if request.client else None)
     return templates.TemplateResponse(request, "profile.html", {"user": user, "setup_secret": None, "setup_uri": None, "setup_qr_code": None, "error": None, "success": "Password updated.", **csrf_context(request)})
 
 
 @router.post("/profile/2fa/start")
-def start_profile_2fa(request: Request, csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_user)):
+def start_profile_2fa(request: Request, current_password: str = Form("", max_length=255), csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_user)):
     validate_csrf_token(request, csrf_token)
     if not user.password_hash or user.authentication_type == "oidc":
+        return RedirectResponse("/profile?identity_error=local_password_required", status_code=303)
+    if not verify_password(current_password, user.password_hash):
+        write_audit(
+            db,
+            user,
+            "start_2fa_rejected",
+            "user",
+            str(user.id),
+            request.client.host if request.client else None,
+            detail="Current password verification failed before 2FA enrolment",
+            severity="warning",
+            status_code=403,
+        )
         return RedirectResponse("/profile?identity_error=local_password_required", status_code=303)
     secret = generate_totp_secret()
     user.totp_secret = encrypted_totp_secret(secret)
@@ -748,6 +804,7 @@ def enable_profile_2fa(request: Request, code: str = Form(...), csrf_token: str 
         qr_code = qr_code_data_uri(uri) if uri else None
         return templates.TemplateResponse(request, "profile.html", {"user": user, "setup_secret": secret, "setup_uri": uri, "setup_qr_code": qr_code, "error": "Invalid authentication code.", "success": None, **csrf_context(request)}, status_code=400)
     user.totp_enabled = True
+    revoke_user_sessions(db, user.id, except_session_id=request.session.get("session_id"))
     db.commit()
     write_audit(db, user, "enable_2fa", "user", str(user.id), request.client.host if request.client else None)
     return RedirectResponse("/profile", status_code=303)
@@ -761,6 +818,7 @@ def disable_profile_2fa(request: Request, current_password: str = Form("", max_l
     user.totp_secret = None
     user.totp_enabled = False
     db.query(VaultSession).filter(VaultSession.user_id == user.id, VaultSession.revoked_at.is_(None)).update({VaultSession.revoked_at: datetime.utcnow()}, synchronize_session=False)
+    revoke_user_sessions(db, user.id, except_session_id=request.session.get("session_id"))
     db.commit()
     write_audit(db, user, "disable_2fa", "user", str(user.id), request.client.host if request.client else None)
     return RedirectResponse("/profile", status_code=303)

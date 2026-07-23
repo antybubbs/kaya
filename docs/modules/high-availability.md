@@ -1,50 +1,42 @@
 # High Availability (BETA)
 
-Kaya High Availability manages a pair of Pi-hole v6 servers behind one virtual IP. Kaya is the management plane only: DNS, DHCP, Keepalived and local failover continue on the Pi-holes when Kaya is unavailable.
+Kaya High Availability is a provider and application resilience framework. Supported integrations can define their own node topology, validation, agent actions, deployment, synchronisation, failover, recovery, and safety controls.
 
-## Before enabling automatic failover
+Pi-hole is the first supported integration. Its current Beta implementation protects a two-node Pi-hole v6 service with a shared virtual IP, Keepalived, guarded configuration synchronisation, optional DHCP continuity, live health, and controlled or local automatic failover. Those are Pi-hole integration capabilities, not permanent assumptions of the High Availability module.
 
-1. Validate both Pi-holes.
-2. Install the current agent on both nodes.
-3. Deploy Keepalived and confirm one virtual-IP owner.
-4. Synchronise supported configuration.
-5. Confirm DHCP continuity is current, or that DHCP is external.
-6. Complete one controlled failover successfully.
-7. Review the generated Keepalived configuration and restricted sudo policy.
+For the complete user and operator workflow, see:
 
-Automatic failover is opt-in and automatic failback is always disabled. A recovered node joins as standby.
+- [High Availability guide](../guides/high-availability.mdx)
 
-## What happens during local failover
+## Framework principles
 
-Keepalived requires repeated DNS-health failures before changing ownership. The standby waits through a hold-down, verifies its own DNS service and performs a duplicate-address probe for the virtual IP. If ownership is ambiguous, DHCP remains disabled and a `split_brain_prevented` event is retained locally. If checks pass, the latest validated lease snapshot is installed with Pi-hole ownership, DHCP is enabled, and DNS is verified again. Failure disables DHCP and restores the previous lease file.
+- Kaya is the management plane, not the application or network traffic path.
+- Provider and application connections are created and managed inside High Availability.
+- Integrations expose only the pages and actions supported by their declared capabilities.
+- Unknown or ambiguous high-risk state fails closed.
+- Writes are validated, audited, and recoverable where the integration supports rollback.
+- Removing a cluster does not implicitly delete history or data owned by another Kaya module.
+- Local services continue using their last deployed state if Kaya is unavailable.
 
-Kaya adopts the safe active node when agent connectivity returns. It does not force the former active node back into service.
+## Current provider/app support
 
-## Day-to-day use
+| Provider or application | Maturity | Current topology and capabilities |
+|---|---|---|
+| Pi-hole v6 | Beta | Two nodes, Layer 2 IPv4 virtual IP, Keepalived, configuration sync, optional DHCP continuity, controlled and automatic failover |
 
-The cluster Overview is the operational dashboard. It updates once per second and provides current ownership, DNS/DHCP status, heartbeat age, alerts, controlled failover and automatic-failover controls. Setup and maintenance pages remain under the cluster navigation.
+Future integrations may use different node counts, service-address mechanisms, deployment tools, configuration models, health checks, consuming modules, and failover strategies.
 
-Download a redacted JSON report from the cluster header. Activity records privileged actions and replays agent events created while Kaya was offline.
+## Pi-hole safety summary
 
-## Backups and data retention
-
-Kaya creates encrypted Pi-hole configuration backups before synchronisation writes and local lease-file backups before DHCP promotion. Removing a cluster is a soft deletion: DNS Manager links, IP associations, validation records and history remain preserved unless the user explicitly deletes them through their owning module.
-
-## Recovery
-
-If controlled failover stops, use **Roll back safely**. If the promoted node later stops answering DNS, use **Return safely**. Never enable DHCP manually on both Pi-holes.
-
-To repair a Pi-hole lease file left by an older beta agent:
-
-```bash
-sudo chown pihole:pihole /etc/pihole/dhcp.leases
-sudo chmod u+rw /etc/pihole/dhcp.leases
-sudo systemctl restart pihole-FTL
-```
-
-## Known beta limits
-
-- Pi-hole v6 on Debian, Ubuntu or Raspberry Pi OS is the only supported provider.
 - Both nodes and the virtual IP must share a Layer 2 IPv4 network.
-- Two-node clusters do not provide full distributed consensus. Unsafe or ambiguous partitions fail closed and require operator recovery.
-- Dynamic leases are staged for continuity; Kaya never becomes the DHCP server or network gateway.
+- Exactly one node may own the virtual IP.
+- If Pi-hole provides DHCP, only the current virtual-IP owner may run DHCP.
+- Automatic failover is opt-in and automatic failback is disabled.
+- A recovered node returns as standby.
+- Ambiguous ownership, stale continuity data, or split-brain evidence blocks DHCP activation.
+- DNS, DHCP, Keepalived, and local agent operation do not depend on Kaya remaining online.
+- DNS Manager consumes a healthy HA Pi-hole cluster as one logical provider through its virtual IP.
+
+## Data retention
+
+Cluster removal is a soft deletion. Stored nodes, connection references, validation records, DNS Manager links, linked IP details, and history remain preserved unless the user explicitly deletes them through the module that owns the data.

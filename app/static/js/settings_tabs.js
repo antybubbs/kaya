@@ -491,7 +491,7 @@
             <select data-edit-field="type">
               <option value="local">Local path</option>
               <option value="smb">SMB</option>
-              <option value="ftp">FTP</option>
+              ${source.type === "ftp" ? '<option value="ftp" disabled>FTP (disabled — migrate this target)</option>' : ""}
               <option value="sftp">SFTP</option>
             </select>
           </label>

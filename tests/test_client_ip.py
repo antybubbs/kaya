@@ -1,7 +1,7 @@
 from starlette.requests import Request
 
 from app.services.audit import begin_request_context, end_request_context, write_audit
-from app.services.client_ip import client_ip, inspect_client_ip
+from app.services.client_ip import client_ip, inspect_client_ip, validate_trusted_proxies
 from app.services.sessions import request_ip as session_request_ip, request_user_agent as session_request_user_agent
 import app.services.sessions as session_service
 
@@ -48,6 +48,10 @@ def test_untrusted_proxy_request_uses_immediate_proxy_ip():
 
     assert client_ip(request) == "172.21.0.4"
     assert request.state.client_ip_details.trusted_proxy is False
+
+
+def test_trust_all_proxy_configuration_is_reported_as_unsafe():
+    assert validate_trusted_proxies("*") == ["*"]
 
 
 class RecordingSession:

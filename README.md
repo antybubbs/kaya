@@ -105,7 +105,7 @@ Kaya is more than a homelab inventory. It is a self-hosted operations hub for th
 - See backup-capable workloads and configure a policy and target per workload.
 - Queue encrypted backup jobs and restore the latest successful backup through the Kaya Docker Agent.
 - Track queued, dispatched, running, successful and failed jobs with logs, artifact paths and sizes.
-- Configure multiple backup targets, including local, SMB, FTP and SFTP-style storage.
+- Configure multiple backup targets, including local, SMB and SFTP-style storage. Legacy plaintext FTP targets are retained for migration but cannot be tested or dispatched.
 - Encrypt remote target passwords and per-job backup encryption keys at rest.
 - Test backup storage from Site Administration before relying on it.
 

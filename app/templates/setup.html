@@ -28,8 +28,8 @@
       {% endif %}
 
       <div class="setup-security-note">
-        <strong>Review security before exposing Kaya.</strong>
-        <span>Kaya keeps first-run setup simple so you do not get locked out. Before publishing this service outside your private network, sign in and review Site Administration &gt; Security.</span>
+        <strong>Confirm access to the Kaya host.</strong>
+        <span>Copy the one-time setup token from the Kaya container logs. This prevents another network client from claiming the first administrator account.</span>
       </div>
 
       <form class="setup-form" method="post" action="/setup">
@@ -41,6 +41,7 @@
         </div>
 
         <label>Email<input type="email" name="email" autocomplete="email" required></label>
+        <label>Setup token<input type="password" name="setup_token" autocomplete="one-time-code" required></label>
         <label>Password<input type="password" name="password" autocomplete="new-password" required minlength="12"></label>
         <label>Confirm password<input type="password" name="confirm_password" autocomplete="new-password" required minlength="12"></label>
 

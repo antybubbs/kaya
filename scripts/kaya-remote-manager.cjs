@@ -1,5 +1,6 @@
 const { WebSocket, WebSocketServer } = require("ws");
 const { Client } = require("ssh2");
+const crypto = require("crypto");
 
 const port = Number.parseInt(process.env.KAYA_REMOTE_WS_PORT || process.env.HOMELAB_REMOTE_WS_PORT || "30009", 10);
 const bindHost = process.env.KAYA_REMOTE_WS_HOST || process.env.HOMELAB_REMOTE_WS_HOST || "127.0.0.1";
@@ -109,6 +110,20 @@ server.on("connection", (ws) => {
     }
 
     const data = message.data;
+    const expectedAlgorithm = String(data.hostKeyAlgorithm || "");
+    const expectedFingerprint = String(data.hostKeyFingerprint || "");
+    if (!expectedAlgorithm || !expectedFingerprint.startsWith("SHA256:")) {
+      send(ws, { type: "error", message: "SSH host identity is not enrolled" });
+      ws.close();
+      return;
+    }
+    const verifyHostKey = (key) => {
+      const actual = `SHA256:${crypto.createHash("sha256").update(key).digest("base64").replace(/=+$/, "")}`;
+      const actualBuffer = Buffer.from(actual, "utf8");
+      const expectedBuffer = Buffer.from(expectedFingerprint, "utf8");
+      return actualBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(actualBuffer, expectedBuffer);
+    };
+    const algorithms = { ...(data.algorithms || {}), serverHostKey: [expectedAlgorithm] };
     conn = new Client();
     conn
       .on("ready", () => startShell(ws, conn, data))
@@ -131,7 +146,8 @@ server.on("connection", (ws) => {
         keepaliveCountMax: 3,
         readyTimeout: 15000,
         tryKeyboard: true,
-        algorithms: data.algorithms || undefined,
+        algorithms,
+        hostVerifier: verifyHostKey,
       });
   });
 

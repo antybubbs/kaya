@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 <section class="module-header ha-header">
-  <div><div class="ha-title-line"><h1>High Availability</h1>{% set maturity_label='Beta' %}{% include 'components/maturity_badge.html' %}</div><p class="muted">Monitor resilient services, keep paired nodes aligned, and manage controlled failover.</p></div>
+  <div><div class="ha-title-line"><h1>High Availability</h1>{% set maturity_label='Beta' %}{% include 'components/maturity_badge.html' %}</div><p class="muted">Monitor resilient provider and application services, keep their nodes aligned, and manage controlled failover.</p></div>
   {% if user.role == 'admin' %}<a class="button" href="/high-availability/clusters/new">Create Cluster</a>{% endif %}
 </section>
 {% include '_high_availability_nav.html' %}

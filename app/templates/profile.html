@@ -86,7 +86,7 @@
     </div>
     {% else %}
     <div class="profile-card-message"><p>Set up an authenticator app to add a second sign-in step to your account.</p></div>
-    <form method="post" action="/profile/2fa/start" class="profile-card-actions"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit">Start 2FA setup</button></form>
+    <form method="post" action="/profile/2fa/start" class="profile-card-actions"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label>Current password<input type="password" name="current_password" autocomplete="current-password" required></label><button type="submit">Start 2FA setup</button></form>
     {% endif %}
   </section>
 </div>

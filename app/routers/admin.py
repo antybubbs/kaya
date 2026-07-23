@@ -5,7 +5,6 @@ import json
 import re
 import socket
 import smtplib
-from ftplib import FTP
 from datetime import datetime, timedelta
 from ipaddress import ip_address, ip_network
 from urllib.request import urlopen
@@ -77,6 +76,7 @@ from app.services.site_settings import (
     split_hosts,
     validate_allowed_hosts,
 )
+from app.services.sessions import revoke_user_sessions
 from app.routers.remote_manager import (
     RDP_SETTING_KEYS,
     SETTINGS as REMOTE_MANAGER_SETTINGS,
@@ -574,44 +574,6 @@ def test_tcp_connection(host: str, port: int) -> tuple[bool, str]:
         return False, f"Kaya cannot reach {host.strip()} on port {port}: {exc}"
 
 
-def test_ftp_storage(
-    *,
-    host: str,
-    remote_path: str,
-    username: str,
-    password: str,
-) -> tuple[bool, str]:
-    host = host.strip()
-    if not host:
-        return False, "Remote host is required for FTP storage."
-
-    marker = ".kaya-storage-test.txt"
-    payload = b"kaya storage test"
-    ftp = FTP()
-    try:
-        ftp.connect(host, 21, timeout=8)
-        ftp.login(username.strip() or "anonymous", password or "anonymous@")
-        if remote_path.strip():
-            ftp.cwd(remote_path.strip())
-        ftp.storbinary(f"STOR {marker}", io.BytesIO(payload))
-        downloaded = io.BytesIO()
-        ftp.retrbinary(f"RETR {marker}", downloaded.write)
-        ftp.delete(marker)
-        ftp.quit()
-    except OSError as exc:
-        return False, f"Kaya could not reach the FTP server: {exc}"
-    except Exception as exc:
-        try:
-            ftp.quit()
-        except Exception:
-            pass
-        return False, f"Kaya could not write, read and delete a test file over FTP: {exc}"
-
-    if downloaded.getvalue() != payload:
-        return False, "Kaya uploaded a test file over FTP, but the downloaded data did not match."
-    return True, f"Kaya can write, read and delete files on FTP storage at {host}."
-
-
 def smb_unc_path(host: str, remote_share: str, *children: str) -> str:
     host = host.strip().strip("\\/")
     share_path = remote_share.strip().strip("\\/")
@@ -678,18 +640,16 @@ def test_backup_storage_target(
     if storage_type == "local":
         return test_directory_read_write(storage_path)
 
+    if storage_type == "ftp":
+        return (
+            False,
+            "Plaintext FTP is disabled because it exposes backup credentials and data. "
+            "Edit this retained target and migrate it to SFTP, SMB, or a securely mounted local path.",
+        )
+
     mounted_ok, mounted_detail = test_directory_read_write(storage_path)
     if mounted_ok:
         return True, f"{mounted_detail} This is the path Kaya will use for {storage_type.upper()} storage."
-
-    if storage_type == "ftp":
-        password = read_saved_backup_password(db, remote_password)
-        return test_ftp_storage(
-            host=remote_host,
-            remote_path=remote_share,
-            username=remote_username,
-            password=password,
-        )
 
     if storage_type == "smb":
         password = read_saved_backup_password(db, remote_password)
@@ -1136,6 +1096,11 @@ def update_user(
         target.authentication_type = "local_and_oidc" if identity else "local"
 
     db.query(VaultSession).filter(VaultSession.user_id == target.id, VaultSession.revoked_at.is_(None)).update({VaultSession.revoked_at: datetime.utcnow()}, synchronize_session=False)
+    revoke_user_sessions(
+        db,
+        target.id,
+        except_session_id=request.session.get("session_id") if target.id == user.id else None,
+    )
     db.commit()
 
     write_audit(
@@ -1172,6 +1137,11 @@ def reset_user_2fa(
     target.totp_secret = None
     target.totp_enabled = False
     db.query(VaultSession).filter(VaultSession.user_id == target.id, VaultSession.revoked_at.is_(None)).update({VaultSession.revoked_at: datetime.utcnow()}, synchronize_session=False)
+    revoke_user_sessions(
+        db,
+        target.id,
+        except_session_id=request.session.get("session_id") if target.id == user.id else None,
+    )
     db.commit()
 
     write_audit(

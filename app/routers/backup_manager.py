@@ -165,6 +165,8 @@ def default_backup_target(db: Session) -> dict[str, str]:
 
 def backup_target_payload(db: Session, target_name: str | None = None) -> dict:
     target = backup_target_by_name(db, target_name)
+    if target["type"] == "ftp":
+        raise ValueError("Plaintext FTP backup targets are disabled. Migrate this retained target before running a backup.")
     remote_password = decrypt_secret(target.get("remote_password_enc") or "").strip()
     if not remote_password:
         # Backward-compatible fallback for older single-target installs.
@@ -575,10 +577,26 @@ def agent_jobs(request: Request, db: Session = Depends(get_db)):
     response = []
     audit_events = []
     for job in jobs:
+        job_metadata = metadata(job.metadata_json)
+        try:
+            target_payload = backup_target_payload(db, job_metadata.get("target_name"))
+        except ValueError as exc:
+            job.status = "failed"
+            job.error = str(exc)
+            job.finished_at = now
+            job.updated_at = now
+            audit_events.append(
+                {
+                    "action": "dispatch_blocked",
+                    "job_id": str(job.id),
+                    "detail": "Blocked dispatch to an insecure plaintext FTP backup target",
+                    "metadata": {"host_id": host.id, "operation": job.operation, "target_name": job_metadata.get("target_name")},
+                }
+            )
+            continue
         job.status = "dispatched"
         job.dispatched_at = now
         job.updated_at = now
-        job_metadata = metadata(job.metadata_json)
         response.append(
             {
                 "id": job.id,
@@ -586,7 +604,7 @@ def agent_jobs(request: Request, db: Session = Depends(get_db)):
                 "container": job.workload.name if job.workload else job_metadata.get("container"),
                 "external_id": job.workload.external_id if job.workload else job_metadata.get("external_id"),
                 "policy": job_metadata.get("policy"),
-                "target": backup_target_payload(db, job_metadata.get("target_name")),
+                "target": target_payload,
                 "encryption": {
                     "enabled": job.encryption_enabled,
                     "mode": "agent-aes-256-gcm",
@@ -598,6 +616,7 @@ def agent_jobs(request: Request, db: Session = Depends(get_db)):
         )
         audit_events.append(
             {
+                "action": "dispatch",
                 "job_id": str(job.id),
                 "detail": f"Dispatched {job.operation} job to agent host {host.name}",
                 "metadata": {
@@ -613,7 +632,7 @@ def agent_jobs(request: Request, db: Session = Depends(get_db)):
         write_audit(
             db,
             None,
-            "dispatch",
+            event["action"],
             "backup_job",
             event["job_id"],
             request.client.host if request.client else None,

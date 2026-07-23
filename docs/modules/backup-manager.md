@@ -41,7 +41,7 @@ Backup Manager tracks manual backup records and coordinates Docker workload back
 ## Settings
 
 - Backup targets are stored in settings JSON.
-- Target types include local, SMB, FTP, and SFTP-style configuration.
+- Target types include local, SMB, and SFTP-style configuration. Legacy plaintext FTP targets remain visible so their metadata is not lost, but Kaya blocks tests and job dispatch until they are migrated.
 - Remote passwords are encrypted.
 - Backup job encryption keys are encrypted before storage and decrypted for agent dispatch.
 
