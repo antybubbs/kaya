@@ -269,6 +269,47 @@ html[data-kaya-theme=light-ops] .remote-recordings-table td a:not(.button){color
 html[data-kaya-theme=light-ops] .recording-pill{background:#eef4ff;border-color:#c6d8ff;color:#1e3a8a!important}
 html[data-kaya-theme=light-ops] .recording-actions form,html[data-kaya-theme=light-ops] .recording-actions input[type=hidden]{background:transparent!important;border:0!important;box-shadow:none!important;padding:0}
 
+/* SSH host identity verification */
+.remote-identity-page{background:#080b10;overflow:auto}
+.ssh-identity-focus{align-items:start;display:flex;justify-content:center;min-height:100%;padding:clamp(22px,5vh,56px) 20px}
+.ssh-identity-card{background:#14171d;border:1px solid var(--line);border-radius:14px;box-shadow:0 22px 60px rgba(0,0,0,.34);display:grid;gap:18px;max-width:820px;overflow:hidden;padding:24px;width:100%}
+.ssh-identity-heading{align-items:center;display:grid;gap:14px;grid-template-columns:auto minmax(0,1fr) auto}
+.ssh-identity-heading h1{font-size:23px;line-height:1.15;margin:2px 0 4px}
+.ssh-identity-heading p{color:var(--muted);font-size:12px;margin:0}
+.ssh-identity-mark{align-items:center;background:rgba(255,138,0,.12);border:1px solid rgba(255,138,0,.38);border-radius:11px;color:#ffd08a;display:flex;font-family:"Caskaydia Cove Nerd Font Mono",Consolas,monospace;font-size:11px;font-weight:900;height:44px;justify-content:center;width:52px}
+.ssh-identity-eyebrow{color:#ffad42!important;font-size:10px!important;font-weight:900;letter-spacing:.08em;text-transform:uppercase}
+.ssh-identity-status{border:1px solid;border-radius:999px;font-size:10px;font-weight:900;line-height:1;padding:7px 10px;white-space:nowrap}
+.ssh-identity-status.is-trusted{background:rgba(34,197,94,.1);border-color:rgba(34,197,94,.4);color:#86efac}
+.ssh-identity-status.is-blocked{background:rgba(239,68,68,.09);border-color:rgba(239,68,68,.4);color:#fca5a5}
+.ssh-identity-explainer{background:rgba(59,130,246,.07);border:1px solid rgba(96,165,250,.2);border-radius:10px;padding:13px 14px}
+.ssh-identity-explainer strong{color:var(--text);display:block;font-size:13px}
+.ssh-identity-explainer p{color:var(--muted);font-size:12px;line-height:1.55;margin:4px 0 0}
+.ssh-identity-fingerprint{background:#0b1016;border:1px solid var(--line);border-radius:10px;display:grid;gap:12px;padding:14px}
+.ssh-identity-fingerprint>div{align-items:start;display:flex;gap:10px;justify-content:space-between}
+.ssh-identity-fingerprint span{color:var(--muted);font-size:11px;font-weight:800;text-transform:uppercase}
+.ssh-identity-fingerprint strong{color:var(--text);font-size:11px;text-align:right}
+.ssh-identity-fingerprint code{background:#070a0f;border:1px solid rgba(148,163,184,.16);border-radius:8px;color:#dbeafe;display:block;font-family:"Caskaydia Cove Nerd Font Mono",Consolas,monospace;font-size:13px;line-height:1.5;overflow-wrap:anywhere;padding:12px;user-select:all}
+.ssh-identity-steps{align-items:start;display:grid;gap:11px;grid-template-columns:28px minmax(0,1fr)}
+.ssh-identity-steps>span{align-items:center;background:rgba(255,138,0,.13);border:1px solid rgba(255,138,0,.36);border-radius:50%;color:#ffd08a;display:flex;font-size:11px;font-weight:900;height:28px;justify-content:center}
+.ssh-identity-steps strong{display:block;font-size:13px}
+.ssh-identity-steps p{color:var(--muted);font-size:12px;line-height:1.5;margin:3px 0 0}
+.ssh-identity-form{display:grid;gap:14px}
+.ssh-identity-confirm{align-items:start;background:rgba(255,255,255,.025);border:1px solid var(--line);border-radius:10px;color:var(--text);display:grid;font-size:13px;gap:11px;grid-template-columns:auto minmax(0,1fr);padding:13px 14px;text-transform:none}
+.ssh-identity-confirm input{accent-color:var(--accent);height:17px;margin:1px 0 0;min-height:17px;width:17px}
+.ssh-identity-confirm strong,.ssh-identity-confirm small{display:block}
+.ssh-identity-confirm small{color:var(--muted);font-size:11px;line-height:1.45;margin-top:3px}
+.ssh-identity-actions{align-items:center;display:flex;flex-wrap:wrap;gap:9px;margin:0}
+.ssh-identity-actions .button,.ssh-identity-actions button{margin:0}
+.ssh-identity-settings>header{justify-content:space-between}
+.ssh-identity-settings-body{display:grid;gap:14px;margin:0!important;padding:14px}
+.ssh-identity-settings-body .ssh-identity-actions{padding-top:2px}
+html[data-kaya-theme=light-ops] .remote-identity-page{background:#eef2f6}
+html[data-kaya-theme=light-ops] .ssh-identity-card,html[data-kaya-theme=light-ops] .ssh-identity-settings{background:#fff;border-color:#d8dee8;color:#111827}
+html[data-kaya-theme=light-ops] .ssh-identity-fingerprint{background:#f7f9fc;border-color:#d8dee8}
+html[data-kaya-theme=light-ops] .ssh-identity-fingerprint code{background:#fff;border-color:#d8dee8;color:#172033}
+html[data-kaya-theme=light-ops] .ssh-identity-confirm{background:#f8fafc;border-color:#d8dee8;color:#111827}
+@media(max-width:620px){.ssh-identity-focus{padding:12px}.ssh-identity-card{border-radius:10px;padding:16px}.ssh-identity-heading{grid-template-columns:auto minmax(0,1fr)}.ssh-identity-heading .ssh-identity-status{grid-column:1/-1;justify-self:start}.ssh-identity-fingerprint>div{display:grid}.ssh-identity-fingerprint strong{text-align:left}}
+
 /* Kaya Light Ops remote search and form controls */
 html[data-kaya-theme=light-ops] .remote-host-search{background:#f2eee8;border-bottom-color:#cfd7e3}
 html[data-kaya-theme=light-ops] .remote-host-search label{background:#fff!important;border:1px solid #b8c2cf!important;color:#334155!important;box-shadow:inset 0 1px 0 rgba(17,24,39,.03)}

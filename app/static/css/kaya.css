@@ -1238,3 +1238,14 @@ html[data-kaya-theme=light-ops] .ha-sync-intro{background:linear-gradient(135deg
 .ha-failover-form { display:grid; gap:1rem; max-width:760px; margin-top:1.25rem; }
 .ha-failover-form label:not(.checkbox-row) { display:grid; gap:.45rem; }
 .ha-failover-form .button { justify-self:start; }
+
+/* Core fallback when a stale install has not loaded the illustrated sidebar layer. */
+.sidebar {
+  background-color: #090d14;
+  background-image:
+    linear-gradient(180deg, rgba(8, 13, 22, .9) 0%, rgba(8, 13, 22, .72) 38%, rgba(8, 13, 22, .42) 74%, rgba(8, 13, 22, .7) 100%),
+    url("../images/sidebar/sidebar-infrastructure-bg.webp");
+  background-position: center, 77% 100%;
+  background-repeat: no-repeat;
+  background-size: cover, auto 78%;
+}

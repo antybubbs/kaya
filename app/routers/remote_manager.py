@@ -384,6 +384,49 @@ def remote_host_settings_context(row: RemoteAccess, db: Session) -> dict:
     }
 
 
+def ssh_host_identity_view(value: object) -> str:
+    """Allow only known post-action destinations; never accept a return URL."""
+    candidate = str(value or "").strip().casefold()
+    return candidate if candidate in {"panel", "session"} else "settings"
+
+
+def ssh_host_identity_destination(row_id: int, view: str, *, trusted: bool = False) -> str:
+    view = ssh_host_identity_view(view)
+    suffix = "?host_key_trusted=1" if trusted else ""
+    if view == "panel":
+        return f"/remote-manager/{row_id}/panel{suffix}"
+    if view == "session":
+        return f"/remote-manager/{row_id}/session{suffix}"
+    return f"/remote-manager/{row_id}/settings{suffix}#ssh-host-identity"
+
+
+def ssh_host_identity_response(
+    request: Request,
+    row: RemoteAccess,
+    user,
+    *,
+    view: str = "panel",
+    candidate: str | None = None,
+    error: str | None = None,
+    status_code: int = 200,
+):
+    return templates.TemplateResponse(
+        request,
+        "remote_ssh_host_identity.html",
+        {
+            "user": user,
+            "remote": row,
+            "remote_label": remote_label(row),
+            "host_key_candidate": candidate,
+            "host_key_error": error,
+            "host_key_view": view,
+            "host_key_return_path": ssh_host_identity_destination(row.id, view),
+            **csrf_context(request),
+        },
+        status_code=status_code,
+    )
+
+
 def settings_map(db: Session) -> dict[str, str]:
     values = SETTINGS.copy()
     for row in db.query(RemoteManagerSetting).all():
@@ -780,7 +823,7 @@ def remote_session(request: Request, remote_id: int, db: Session = Depends(get_d
     settings = settings_map(db)
     remote_settings = effective_remote_settings(row, settings)
     title = remote_label(row)
-    return templates.TemplateResponse(request, "remote_session.html", {"user": user, "remote": row, "rows": rows, "remote_label": title, "remote_label_fn": remote_label, "settings": settings, "remote_settings": remote_settings, "ssh_host_key_ready": trusted_ssh_host_key(row) is not None, "recording_enabled": recording_controls_enabled(settings), "recording_auto_enabled": recording_auto_enabled(row, settings), "remote_category": remote_category(row), **csrf_context(request)})
+    return templates.TemplateResponse(request, "remote_session.html", {"user": user, "remote": row, "rows": rows, "remote_label": title, "remote_label_fn": remote_label, "settings": settings, "remote_settings": remote_settings, "ssh_host_key_ready": trusted_ssh_host_key(row) is not None, "ssh_host_identity_view": "session", "recording_enabled": recording_controls_enabled(settings), "recording_auto_enabled": recording_auto_enabled(row, settings), "remote_category": remote_category(row), **csrf_context(request)})
 
 
 @router.get("/{remote_id}/settings")
@@ -793,6 +836,17 @@ def remote_host_settings(request: Request, remote_id: int, db: Session = Depends
         "remote_host_settings.html",
         {"user": user, **remote_host_settings_context(row, db), **csrf_context(request)},
     )
+
+
+@router.get("/{remote_id}/ssh/host-key")
+def remote_ssh_host_identity(request: Request, remote_id: int, db: Session = Depends(get_db), user=Depends(require_editor)):
+    row = db.get(RemoteAccess, remote_id)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Remote access entry not found")
+    if row.protocol != "ssh":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Host-key verification is only available for SSH connections.")
+    view = ssh_host_identity_view(request.query_params.get("view"))
+    return ssh_host_identity_response(request, row, user, view=view)
 
 
 @router.post("/{remote_id}/settings")
@@ -822,6 +876,7 @@ async def save_remote_host_settings(request: Request, remote_id: int, csrf_token
 async def scan_remote_host_key(request: Request, remote_id: int, db: Session = Depends(get_db), user=Depends(require_editor)):
     form = await request.form()
     validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    view = ssh_host_identity_view(form.get("host_key_view"))
     row = db.get(RemoteAccess, remote_id)
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Remote access entry not found")
@@ -841,6 +896,16 @@ async def scan_remote_host_key(request: Request, remote_id: int, db: Session = D
         detail=f"Scanned SSH host key for {remote_label(row)}; key was not trusted automatically",
         severity="warning" if error else "info",
     )
+    if view == "panel":
+        return ssh_host_identity_response(
+            request,
+            row,
+            user,
+            view=view,
+            candidate=candidate,
+            error=error,
+            status_code=400 if error else 200,
+        )
     return templates.TemplateResponse(
         request,
         "remote_host_settings.html",
@@ -859,6 +924,7 @@ async def scan_remote_host_key(request: Request, remote_id: int, db: Session = D
 async def trust_remote_host_key(request: Request, remote_id: int, db: Session = Depends(get_db), user=Depends(require_editor)):
     form = await request.form()
     validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    view = ssh_host_identity_view(form.get("host_key_view"))
     row = db.get(RemoteAccess, remote_id)
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Remote access entry not found")
@@ -894,7 +960,7 @@ async def trust_remote_host_key(request: Request, remote_id: int, db: Session = 
         detail=f"{'Replaced' if previous else 'Enrolled'} verified SSH host key for {remote_label(row)}",
         severity="warning" if previous and previous != current else "info",
     )
-    return RedirectResponse(f"/remote-manager/{row.id}/settings?host_key_trusted=1", status_code=303)
+    return RedirectResponse(ssh_host_identity_destination(row.id, view, trusted=True), status_code=303)
 
 
 @router.post("/{remote_id}/delete")
@@ -919,7 +985,7 @@ def remote_session_panel(request: Request, remote_id: int, db: Session = Depends
     settings = settings_map(db)
     remote_settings = effective_remote_settings(row, settings)
     title = remote_label(row)
-    return templates.TemplateResponse(request, "remote_session_panel.html", {"user": user, "remote": row, "remote_label": title, "settings": settings, "remote_settings": remote_settings, "ssh_host_key_ready": trusted_ssh_host_key(row) is not None, "recording_enabled": recording_controls_enabled(settings), "recording_auto_enabled": recording_auto_enabled(row, settings), "remote_category": remote_category(row), **csrf_context(request)})
+    return templates.TemplateResponse(request, "remote_session_panel.html", {"user": user, "remote": row, "remote_label": title, "settings": settings, "remote_settings": remote_settings, "ssh_host_key_ready": trusted_ssh_host_key(row) is not None, "ssh_host_identity_view": "panel", "recording_enabled": recording_controls_enabled(settings), "recording_auto_enabled": recording_auto_enabled(row, settings), "remote_category": remote_category(row), **csrf_context(request)})
 
 
 @router.post("/{remote_id}/recordings/upload")
@@ -1102,7 +1168,7 @@ async def ssh_websocket(websocket: WebSocket, remote_id: int):
             await websocket.accept()
             await websocket.send_json({
                 "type": "error",
-                "message": "SSH host verification is required. Open this host's settings, scan the key, verify its fingerprint, and trust it before connecting.",
+                "message": "SSH host verification is required. Use Verify SSH host, compare the scanned fingerprint with the server console, and trust it before connecting.",
             })
             await websocket.close(code=1008, reason="SSH host verification required")
             return

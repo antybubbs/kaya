@@ -168,6 +168,26 @@ def test_ssh_panel_blocks_password_entry_until_host_identity_is_enrolled():
     assert "SSH host verification required" in panel
     assert "ssh_host_key_ready" in panel
     assert "Verify SSH host" in panel
+    assert 'href="/remote-manager/{{ remote.id }}/ssh/host-key?view=' in panel
+    assert 'href="/remote-manager/{{ remote.id }}/settings"' not in panel
+
+
+def test_ssh_identity_panel_is_focused_and_preserves_explicit_trust():
+    identity = Path("app/templates/remote_ssh_host_identity.html").read_text(encoding="utf-8")
+    assert '{% extends "base.html" %}' not in identity
+    assert "Server identity check" in identity
+    assert 'name="host_key_view" value="{{ host_key_view }}"' in identity
+    assert 'name="confirm_host_key"' in identity
+    assert "Trust identity and continue" in identity
+
+
+def test_ssh_identity_post_action_destination_is_allowlisted():
+    assert remote_manager.ssh_host_identity_view("panel") == "panel"
+    assert remote_manager.ssh_host_identity_view("session") == "session"
+    assert remote_manager.ssh_host_identity_view("settings") == "settings"
+    assert remote_manager.ssh_host_identity_view("https://attacker.invalid/") == "settings"
+    assert remote_manager.ssh_host_identity_destination(7, "panel", trusted=True) == "/remote-manager/7/panel?host_key_trusted=1"
+    assert remote_manager.ssh_host_identity_destination(7, "session") == "/remote-manager/7/session"
 
 
 def test_plaintext_ftp_is_blocked_even_when_its_legacy_path_is_writable(tmp_path):

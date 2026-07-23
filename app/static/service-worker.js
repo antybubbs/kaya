@@ -1,4 +1,4 @@
-const CACHE_VERSION = "kaya-static-v1";
+const CACHE_VERSION = "kaya-static-v2";
 const scopePath = new URL(self.registration.scope).pathname.replace(/\/$/, "");
 const staticPath = `${scopePath}/static`;
 const OFFLINE_URL = `${staticPath}/offline.html`;
@@ -6,7 +6,9 @@ const PRECACHE_URLS = [
   OFFLINE_URL,
   `${staticPath}/brand/kaya-favicon-192.png`,
   `${staticPath}/brand/kaya-favicon-512.png`,
-  `${staticPath}/brand/kaya-apple-touch-icon-180.png`
+  `${staticPath}/brand/kaya-apple-touch-icon-180.png`,
+  `${staticPath}/css/sidebar.css`,
+  `${staticPath}/images/sidebar/sidebar-infrastructure-bg.webp`
 ];
 
 self.addEventListener("install", (event) => {

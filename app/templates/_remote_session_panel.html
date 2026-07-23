@@ -26,7 +26,7 @@
       <strong>SSH host verification required</strong>
       <p>Kaya now verifies the server identity before sending your password. This existing connection has not enrolled a trusted host key yet.</p>
       {% if user.role in ['admin', 'editor'] %}
-      <a class="button" href="/remote-manager/{{ remote.id }}/settings">Verify SSH host</a>
+      <a class="button" href="/remote-manager/{{ remote.id }}/ssh/host-key?view={{ ssh_host_identity_view|default('panel') }}">Verify SSH host</a>
       {% else %}
       <p class="muted">Ask an administrator or editor to verify this SSH host in its settings.</p>
       {% endif %}
