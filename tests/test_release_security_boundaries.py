@@ -155,24 +155,14 @@ def test_trusted_ssh_host_key_rejects_missing_or_malformed_values():
     assert remote_manager.trusted_ssh_host_key(row) is None
     row.host_key_fingerprint = f"unknown-key SHA256:{'A' * 43}"
     assert remote_manager.trusted_ssh_host_key(row) is None
+    row.host_key_fingerprint = "ssh-ed25519 " + ("A" * 129)
+    assert remote_manager.trusted_ssh_host_key(row) is None
 
 
 def test_trusted_ssh_host_key_accepts_enrolled_supported_identity():
     fingerprint = f"SHA256:{'A' * 43}"
     row = SimpleNamespace(host_key_fingerprint=f"ssh-ed25519 {fingerprint}")
     assert remote_manager.trusted_ssh_host_key(row) == ("ssh-ed25519", fingerprint)
-
-
-def test_ssh_console_verification_uses_key_specific_command_and_bounded_fingerprint():
-    fingerprint = f"SHA256:{'A' * 43}"
-    candidate = f"ssh-ed25519 {fingerprint}"
-    assert remote_manager.ssh_host_console_command(candidate) == (
-        "sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256"
-    )
-    assert remote_manager.verified_console_fingerprint(f"256 {fingerprint} root@test (ED25519)") == fingerprint
-    assert remote_manager.verified_console_fingerprint(f"{fingerprint} {fingerprint}") is None
-    assert remote_manager.verified_console_fingerprint("x" * 501) is None
-    assert remote_manager.ssh_host_console_command(f"unsupported {fingerprint}") is None
 
 
 def test_ssh_panel_blocks_password_entry_until_host_identity_is_enrolled():
@@ -189,9 +179,9 @@ def test_ssh_identity_panel_is_focused_and_preserves_explicit_trust():
     assert '{% extends "base.html" %}' not in identity
     assert "Server identity check" in identity
     assert 'name="host_key_view" value="{{ host_key_view }}"' in identity
-    assert 'name="verified_host_fingerprint"' in identity
-    assert "host_key_console_command" in identity
-    assert "Trust matching identity and continue" in identity
+    assert 'name="host_key_candidate"' in identity
+    assert "Trust this server and continue" in identity
+    assert "block future connections if the key changes" in identity
 
 
 def test_ssh_identity_post_action_destination_is_allowlisted():

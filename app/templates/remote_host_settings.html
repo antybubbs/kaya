@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block extra_head %}<link rel="stylesheet" href="/static/css/remote.css?v={{ asset_version }}"><script src="/static/js/ssh_host_identity.js?v={{ asset_version }}" defer></script>{% endblock %}
+{% block extra_head %}<link rel="stylesheet" href="/static/css/remote.css?v={{ asset_version }}">{% endblock %}
 {% macro override_select(key, label, options, overrides) %}
 <label>{{ label }}
   {% set current = overrides.get(key, '') %}
@@ -40,7 +40,7 @@
     <div class="ssh-identity-settings-body">
     <div class="ssh-identity-explainer">
       <strong>Passwords stay blocked until the server is verified</strong>
-      <p>Kaya compares this public fingerprint on every connection. Scan the server, compare the result with its trusted console, then explicitly approve it.</p>
+      <p>Kaya scans the public identity, checks it again when you approve, then requires the same key for every future connection.</p>
     </div>
     {% if request.query_params.get('host_key_trusted') == '1' %}<div class="alert success"><strong>SSH identity trusted</strong><p>Future sessions must present this exact host key.</p></div>{% endif %}
     {% if host_key_error %}<div class="alert danger"><strong>Key scan failed</strong><p>{{ host_key_error }}</p></div>{% endif %}
@@ -49,19 +49,12 @@
       <code>{{ remote.host_key_fingerprint or 'SSH connections are blocked until an identity is trusted.' }}</code>
     </div>
     {% if host_key_candidate %}
-    <div class="ssh-identity-fingerprint"><div><span>Fingerprint found on the server</span><strong>Verify before approving</strong></div><code>{{ host_key_candidate }}</code></div>
+    <div class="ssh-identity-fingerprint"><div><span>Identity found by Kaya</span><strong>Checked again before it is saved</strong></div><code>{{ host_key_candidate }}</code></div>
     <input type="hidden" name="host_key_view" value="settings">
     <input type="hidden" name="host_key_candidate" value="{{ host_key_candidate }}">
-    <div class="ssh-identity-console-check" data-ssh-identity-verify data-candidate-fingerprint="{{ host_key_candidate }}">
-      <div><span>Run on the server console</span><strong>Independent source</strong></div>
-      <code>{{ host_key_console_command }}</code>
-      <label>Paste the fingerprint shown by that command
-        <input type="text" name="verified_host_fingerprint" maxlength="500" autocomplete="off" spellcheck="false" placeholder="SHA256:..." data-server-fingerprint>
-      </label>
-      <p class="ssh-identity-match" role="status" aria-live="polite" data-fingerprint-match>Waiting for the server-console fingerprint.</p>
-    </div>
+    <p class="ssh-identity-first-use-note">Approve this once if this is the server and address you expected. Any future key change will block SSH until it is reviewed.</p>
     <div class="ssh-identity-actions">
-      <button type="submit" formaction="/remote-manager/{{ remote.id }}/ssh/host-key/trust" formmethod="post" data-trust-button disabled>Trust matching identity</button>
+      <button type="submit" formaction="/remote-manager/{{ remote.id }}/ssh/host-key/trust" formmethod="post">Trust this server</button>
       <button class="button secondary" type="submit" formaction="/remote-manager/{{ remote.id }}/ssh/host-key/scan" formmethod="post">Scan again</button>
     </div>
     {% else %}

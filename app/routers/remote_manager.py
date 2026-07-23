@@ -43,14 +43,6 @@ SSH_HOST_KEY_ALGORITHMS = {
     "ssh-rsa",
 }
 SSH_SHA256_FINGERPRINT = re.compile(r"^SHA256:[A-Za-z0-9+/]{43}$")
-SSH_SHA256_FINGERPRINT_SEARCH = re.compile(r"(?<![A-Za-z0-9+/])SHA256:[A-Za-z0-9+/]{43}(?![A-Za-z0-9+/])")
-SSH_HOST_PUBLIC_KEY_PATHS = {
-    "ssh-ed25519": "/etc/ssh/ssh_host_ed25519_key.pub",
-    "ecdsa-sha2-nistp256": "/etc/ssh/ssh_host_ecdsa_key.pub",
-    "ecdsa-sha2-nistp384": "/etc/ssh/ssh_host_ecdsa_key.pub",
-    "ecdsa-sha2-nistp521": "/etc/ssh/ssh_host_ecdsa_key.pub",
-    "ssh-rsa": "/etc/ssh/ssh_host_rsa_key.pub",
-}
 SETTINGS = {
     "guacamole_enabled": "0",
     "split_screen_enabled": "1",
@@ -426,7 +418,6 @@ def ssh_host_identity_response(
             "remote": row,
             "remote_label": remote_label(row),
             "host_key_candidate": candidate,
-            "host_key_console_command": ssh_host_console_command(candidate),
             "host_key_error": error,
             "host_key_view": view,
             "host_key_return_path": ssh_host_identity_destination(row.id, view),
@@ -650,32 +641,18 @@ def scan_ssh_host_key(row: RemoteAccess) -> str:
 
 def trusted_ssh_host_key(row: RemoteAccess) -> tuple[str, str] | None:
     """Return a strictly validated enrolled key without contacting the host."""
-    stored = (row.host_key_fingerprint or "").strip()
-    if " " not in stored:
+    return parsed_ssh_host_key(row.host_key_fingerprint)
+
+
+def parsed_ssh_host_key(value: str | None) -> tuple[str, str] | None:
+    """Parse Kaya's bounded algorithm-and-SHA256 host-key representation."""
+    stored = (value or "").strip()
+    if len(stored) > 128 or " " not in stored:
         return None
     algorithm, fingerprint = stored.split(" ", 1)
     if algorithm not in SSH_HOST_KEY_ALGORITHMS or not SSH_SHA256_FINGERPRINT.fullmatch(fingerprint):
         return None
     return algorithm, fingerprint
-
-
-def ssh_host_console_command(candidate: str | None) -> str | None:
-    """Return a fixed, non-shell-generated command for the scanned key type."""
-    if not candidate or " " not in candidate:
-        return None
-    algorithm, fingerprint = candidate.split(" ", 1)
-    key_path = SSH_HOST_PUBLIC_KEY_PATHS.get(algorithm)
-    if not key_path or not SSH_SHA256_FINGERPRINT.fullmatch(fingerprint):
-        return None
-    return f"sudo ssh-keygen -lf {key_path} -E sha256"
-
-
-def verified_console_fingerprint(value: str) -> str | None:
-    """Extract one SHA-256 fingerprint from bounded ssh-keygen output."""
-    if not value or len(value) > 500:
-        return None
-    matches = SSH_SHA256_FINGERPRINT_SEARCH.findall(value)
-    return matches[0] if len(matches) == 1 else None
 
 
 def websocket_origin_allowed(websocket: WebSocket) -> bool:
@@ -941,7 +918,6 @@ async def scan_remote_host_key(request: Request, remote_id: int, db: Session = D
             "user": user,
             **remote_host_settings_context(row, db),
             "host_key_candidate": candidate,
-            "host_key_console_command": ssh_host_console_command(candidate),
             "host_key_error": error,
             **csrf_context(request),
         },
@@ -958,24 +934,18 @@ async def trust_remote_host_key(request: Request, remote_id: int, db: Session = 
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Remote access entry not found")
     candidate = str(form.get("host_key_candidate") or "").strip()
-    console_fingerprint = verified_console_fingerprint(str(form.get("verified_host_fingerprint") or "").strip())
-    candidate_parts = candidate.split(" ", 1)
-    candidate_fingerprint = candidate_parts[1] if len(candidate_parts) == 2 and candidate_parts[0] in SSH_HOST_KEY_ALGORITHMS else ""
-    if not console_fingerprint or not candidate_fingerprint or not secrets.compare_digest(console_fingerprint, candidate_fingerprint):
+    if parsed_ssh_host_key(candidate) is None:
         write_audit(
             db,
             user,
-            "host_key_verification_failed",
+            "host_key_enrolment_rejected",
             "remote_access",
             entity_id=str(row.id),
             ip_address=request.client.host if request.client else None,
-            detail=f"Independent SSH host-key verification failed for {remote_label(row)}",
+            detail=f"Rejected invalid SSH host-key approval for {remote_label(row)}",
             severity="warning",
         )
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="The server-console fingerprint does not match Kaya's scan. Nothing was trusted.",
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="The scanned SSH identity is invalid. Nothing was trusted.")
     try:
         current = scan_ssh_host_key(row)
     except ValueError as exc:
