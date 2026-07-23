@@ -25,12 +25,19 @@ Configure that DHCP service—and any statically configured clients—to use the
 
 Choose this when Pi-hole provides IP addresses as well as DNS.
 
-Clients use:
-
-- **Primary DNS:** the DNS Virtual IP
-- **Secondary DNS:** the physical address of the standby Pi-hole
+DHCP clients must receive the **DNS Virtual IP** as their DNS server. Do not
+advertise either Pi-hole node’s physical address as primary or secondary DNS:
+clients may select either address and bypass the shared service. If a DHCP
+interface requires a second DNS entry, leave it empty rather than entering a
+node address.
 
 When roles change, the DNS Virtual IP moves to the new active node. DHCP may run only on the node that owns that address. Lease snapshots and reservations are prepared on the standby so that failover does not depend on Kaya being online.
+
+After changing the advertised DNS address, existing DHCP clients retain their
+old option until their next renewal. Renew each client once, or allow the
+existing lease period to expire. Kaya’s logical HA provider reads recent query
+activity from both reachable nodes during this transition and stores it under
+the same DNS Manager provider history.
 
 ## Guided setup
 

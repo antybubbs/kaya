@@ -532,10 +532,29 @@ class HAPiHoleProvider(DNSProvider):
     DHCP packet path.
     """
 
-    def _active_provider(self) -> PiHoleProvider:
+    @staticmethod
+    def _provider_for_node(node, provider_id) -> PiHoleProvider:
+        source = node.integration if node.integration is not None else node.ha_connection
+        if source is None or getattr(source, "deleted_at", None) is not None:
+            raise DNSProviderError(f"{node.display_name} has no usable management connection.")
+        node_config = SimpleNamespace(
+            id=f"ha-dns-{provider_id}-node-{node.id}",
+            base_url=source.base_url if node.integration is not None else source.api_base_url,
+            auth_method=source.auth_method,
+            encrypted_secret=source.encrypted_secret,
+            ssl_verify=source.ssl_verify,
+            timeout_seconds=source.timeout_seconds,
+        )
+        return PiHoleProvider(node_config)
+
+    def _cluster(self):
         cluster = self.config.ha_cluster
         if cluster is None or cluster.deleted_at is not None:
             raise DNSProviderError("The linked Kaya HA Pi-hole cluster is unavailable.")
+        return cluster
+
+    def _active_provider(self) -> PiHoleProvider:
+        cluster = self._cluster()
         now = datetime.utcnow()
         owners = [
             node for node in cluster.nodes
@@ -547,19 +566,18 @@ class HAPiHoleProvider(DNSProvider):
         ]
         if len(owners) != 1 or cluster.current_active_node_id != owners[0].id:
             raise DNSProviderError("Kaya cannot safely identify one live Pi-hole VIP owner. Check the HA cluster before retrying.")
-        node = owners[0]
-        source = node.integration if node.integration is not None else node.ha_connection
-        if source is None or getattr(source, "deleted_at", None) is not None:
-            raise DNSProviderError("The active HA node has no usable management connection.")
-        node_config = SimpleNamespace(
-            id=f"ha-dns-{self.config.id}-node-{node.id}",
-            base_url=source.base_url if node.integration is not None else source.api_base_url,
-            auth_method=source.auth_method,
-            encrypted_secret=source.encrypted_secret,
-            ssl_verify=source.ssl_verify,
-            timeout_seconds=source.timeout_seconds,
-        )
-        return PiHoleProvider(node_config)
+        return self._provider_for_node(owners[0], self.config.id)
+
+    def _query_providers(self) -> list[tuple[str, PiHoleProvider]]:
+        providers = []
+        for node in self._cluster().nodes:
+            try:
+                providers.append((str(node.public_id), self._provider_for_node(node, self.config.id)))
+            except DNSProviderError:
+                continue
+        if not providers:
+            raise DNSProviderError("The HA cluster has no usable node management connections.")
+        return providers
 
     def _call(self, method: str, *args, **kwargs) -> DNSProviderResult:
         try:
@@ -581,6 +599,56 @@ class HAPiHoleProvider(DNSProvider):
     def update_blocklists(self): return self._call("update_blocklists")
 
 
+class HAPiHoleCollectionProvider(DNSProvider):
+    """Detached HA collector.
+
+    Operational and configuration calls use the validated active node. Query
+    activity is read from both node APIs because clients may retain a node DNS
+    address until their DHCP lease is renewed.
+    """
+
+    def __init__(self, active: PiHoleProvider, query_providers: list[tuple[str, PiHoleProvider]]):
+        self.active = active
+        self.config = active.config
+        self.query_providers = query_providers
+
+    def get_query_log(self, *, limit: int = 100) -> DNSProviderResult:
+        bounded_limit = max(1, min(limit, 500))
+        rows: list[dict[str, Any]] = []
+        errors: list[str] = []
+        for node_id, provider in self.query_providers:
+            result = provider.get_query_log(limit=bounded_limit)
+            if not result.ok:
+                errors.append(result.message)
+                continue
+            data = result.data
+            candidates = data.get("queries") or data.get("data") or [] if isinstance(data, dict) else data
+            if not isinstance(candidates, list):
+                continue
+            for row in candidates:
+                if isinstance(row, dict):
+                    rows.append({**row, "_kaya_ha_node_id": node_id})
+        if not rows and errors:
+            return DNSProviderResult(False, "Query logs are unavailable from both HA nodes.", None)
+        return DNSProviderResult(
+            True,
+            "Pi-hole HA query logs loaded from all reachable nodes.",
+            {"queries": rows},
+        )
+
+    def test_connection(self): return self.active.test_connection()
+    def get_status(self): return self.active.get_status()
+    def get_statistics(self): return self.active.get_statistics()
+    def get_history(self): return self.active.get_history()
+    def get_clients(self): return self.active.get_clients()
+    def get_local_dns_records(self): return self.active.get_local_dns_records()
+    def get_dhcp_leases(self): return self.active.get_dhcp_leases()
+    def get_blocklists(self): return self.active.get_blocklists()
+    def get_version(self): return self.active.get_version()
+    def get_ha_configuration(self): return self.active.get_ha_configuration()
+    def update_blocklists(self): return self.active.update_blocklists()
+
+
 def provider_for(config: DNSProviderConfig) -> DNSProvider:
     if config.provider_type == "pihole":
         if config.ha_cluster_id is not None:
@@ -600,7 +668,11 @@ def provider_snapshot_for_io(config: DNSProviderConfig) -> DNSProvider:
     if config.provider_type != "pihole":
         raise DNSProviderError(f"Unsupported DNS provider type: {config.provider_type}")
     if config.ha_cluster_id is not None:
-        return HAPiHoleProvider(config)._active_provider()
+        ha_provider = HAPiHoleProvider(config)
+        return HAPiHoleCollectionProvider(
+            ha_provider._active_provider(),
+            ha_provider._query_providers(),
+        )
     return PiHoleProvider(SimpleNamespace(
         id=config.id,
         base_url=config.base_url,
