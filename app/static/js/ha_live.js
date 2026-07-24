@@ -43,6 +43,7 @@
         const current = node.heartbeat_current === true;
         updateFields(card, "[data-ha-node-field]", node);
         card.querySelectorAll("[data-ha-node-role]").forEach((element) => { element.textContent = title(node.desired_role); });
+        card.querySelectorAll("[data-ha-deployment-role]").forEach((element) => { element.textContent = node.desired_role === "ACTIVE" ? "Preferred" : "Backup"; });
         card.querySelectorAll("[data-ha-agent-version-status]").forEach((element) => {
           element.textContent = node.agent_version_status;
           element.classList.toggle("is-current", node.agent_version_status === "Up to date");
@@ -72,6 +73,24 @@
           setStateClass(state, current, !current);
         }
       });
+    });
+  }
+
+  function updateDeploymentLiveStatus(nodes) {
+    const heartbeatTimes = nodes.map((node) => node.last_heartbeat_at ? new Date(node.last_heartbeat_at).getTime() : Number.NaN);
+    const validTimes = heartbeatTimes.filter(Number.isFinite);
+    const oldestAgeSeconds = validTimes.length === nodes.length && validTimes.length
+      ? Math.max(...validTimes.map((time) => Math.max(0, Math.floor((Date.now() - time) / 1000))))
+      : null;
+    const live = oldestAgeSeconds !== null && oldestAgeSeconds <= 30;
+    document.querySelectorAll("[data-ha-live-status]").forEach((element) => {
+      element.classList.remove("is-connecting", "is-live", "is-delayed", "is-error");
+      element.classList.add(live ? "is-live" : "is-delayed");
+    });
+    document.querySelectorAll("[data-ha-live-label]").forEach((element) => {
+      element.textContent = live
+        ? `Live · latest reports within ${Math.max(1, oldestAgeSeconds)}s`
+        : oldestAgeSeconds === null ? "Waiting for node reports" : `Delayed · oldest report ${oldestAgeSeconds}s ago`;
     });
   }
 
@@ -149,6 +168,7 @@
       const vipSummary = data.nodes.filter((node) => node.vip_owned);
       document.querySelectorAll("[data-ha-vip-summary]").forEach((element) => { element.textContent = vipSummary.length === 1 ? vipSummary[0].name : vipSummary.length > 1 ? "Unsafe: multiple owners" : "No owner reported"; });
       updateNodes(data.nodes);
+      updateDeploymentLiveStatus(data.nodes);
       if (data.lease) updateFields(document, "[data-ha-lease-field]", data.lease);
       updateFields(document, "[data-ha-failover-field]", data.failover);
       document.querySelectorAll("[data-ha-failover-diagnostic]").forEach((element) => {
@@ -173,6 +193,11 @@
       document.dispatchEvent(new CustomEvent("ha:live", {detail: data}));
     } catch (_) {
       document.querySelectorAll("[data-ha-live-indicator]").forEach((element) => { element.textContent = "Updates delayed"; setStateClass(element, false, true); });
+      document.querySelectorAll("[data-ha-live-status]").forEach((element) => {
+        element.classList.remove("is-connecting", "is-live", "is-delayed");
+        element.classList.add("is-error");
+      });
+      document.querySelectorAll("[data-ha-live-label]").forEach((element) => { element.textContent = "Live updates unavailable"; });
     } finally { root.dataset.loading = "0"; }
   }
 

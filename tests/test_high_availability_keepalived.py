@@ -240,6 +240,8 @@ def test_root_helper_independently_allows_generated_config_and_rejects_injected_
 
 def test_deployment_ui_and_agent_protocol_keep_dhcp_outside_keepalived_setup():
     template = Path("app/templates/high_availability_cluster_deployment.html").read_text(encoding="utf-8")
+    stylesheet = Path("app/static/css/kaya.css").read_text(encoding="utf-8")
+    shared_live_script = Path("app/static/js/ha_live.js").read_text(encoding="utf-8")
     router = Path("app/routers/high_availability.py").read_text(encoding="utf-8")
     agent_router = Path("app/routers/ha_agent_api.py").read_text(encoding="utf-8")
     helper = Path("ha_agent/kaya_ha_keepalived_helper.py").read_text(encoding="utf-8")
@@ -251,6 +253,12 @@ def test_deployment_ui_and_agent_protocol_keep_dhcp_outside_keepalived_setup():
     assert "Resolve blockers to deploy" in template
     assert "Edit node settings" in template
     assert "Deployment error reported by this node" in template
+    assert "data-ha-deployment-role" in template
+    assert "Preferred and Backup show the configured priority" in template
+    assert "Node configuration fingerprint" in template
+    assert ".ha-agent-diagnostic[hidden]{display:none!important}" in stylesheet
+    assert "updateDeploymentLiveStatus(data.nodes)" in shared_live_script
+    assert '"[data-ha-deployment-role]"' in shared_live_script
     assert "data-ha-deployment-live" in template
     assert "ha_deployment.js" in template
     live_script = Path("app/static/js/ha_deployment.js").read_text(encoding="utf-8")
