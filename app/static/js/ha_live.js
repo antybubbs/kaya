@@ -42,7 +42,7 @@
       document.querySelectorAll(`[data-ha-node-id="${CSS.escape(node.id)}"]`).forEach((card) => {
         const current = node.heartbeat_current === true;
         updateFields(card, "[data-ha-node-field]", node);
-        card.querySelectorAll("[data-ha-node-role]").forEach((element) => { element.textContent = title(node.desired_role); });
+        card.querySelectorAll("[data-ha-node-role]").forEach((element) => { element.textContent = node.is_preferred ? "Preferred" : title(node.desired_role); });
         card.querySelectorAll("[data-ha-deployment-role]").forEach((element) => { element.textContent = node.desired_role === "ACTIVE" ? "Preferred" : "Backup"; });
         card.querySelectorAll("[data-ha-agent-version-status]").forEach((element) => {
           element.textContent = node.agent_version_status;
@@ -56,6 +56,30 @@
         card.querySelectorAll('[data-ha-node-field="dns_healthy"]').forEach((element) => { element.textContent = current ? yesNo(node.dns_healthy, "Healthy", "Unhealthy") : "Unknown — node offline"; });
         card.querySelectorAll('[data-ha-node-field="dhcp_running"]').forEach((element) => { element.textContent = current ? (node.dhcp_running ? "Running" : "Stopped") : "Unknown — node offline"; });
         card.querySelectorAll('[data-ha-node-field="peer_reachable"]').forEach((element) => { element.textContent = current ? yesNo(node.peer_reachable, "Reachable", "Not reachable") : "Unknown — node offline"; });
+        card.querySelectorAll("[data-ha-kaya-connection]").forEach((element) => { element.textContent = current ? "Reporting" : "Not reporting"; });
+        card.querySelectorAll("[data-ha-peer-status]").forEach((element) => { element.textContent = title(node.peer_diagnostic?.status); });
+        card.querySelectorAll("[data-ha-peer-explanation]").forEach((element) => { element.textContent = node.peer_diagnostic?.explanation || "No peer-host reachability result has been reported yet."; });
+        card.querySelectorAll("[data-ha-peer-attempt]").forEach((element) => { element.textContent = localDate(node.peer_diagnostic?.last_attempt_at); });
+        card.querySelectorAll("[data-ha-peer-success]").forEach((element) => { element.textContent = localDate(node.peer_diagnostic?.last_success_at); });
+        const recoveryChecks = card.querySelector("[data-ha-recovery-checks]");
+        if (recoveryChecks) {
+          recoveryChecks.replaceChildren(...node.recovery_checks.filter((check) => check.required).map((check) => {
+            const row = document.createElement("div");
+            row.className = `ha-recovery-check ${check.passed ? "is-pass" : "is-waiting"}`;
+            row.dataset.haRecoveryCheck = check.key;
+            const icon = document.createElement("span");
+            icon.setAttribute("aria-hidden", "true");
+            icon.textContent = check.passed ? "✓" : "•";
+            const body = document.createElement("span");
+            const label = document.createElement("strong");
+            label.textContent = check.label;
+            const detail = document.createElement("small");
+            detail.textContent = check.detail;
+            body.append(label, detail);
+            row.append(icon, body);
+            return row;
+          }));
+        }
         card.querySelectorAll("[data-ha-runtime]").forEach((element) => { element.textContent = title(node.keepalived_runtime_state); });
         card.querySelectorAll("[data-ha-interface]").forEach((element) => { element.textContent = node.network_interface || "Not set"; });
         card.querySelectorAll("[data-ha-priority]").forEach((element) => { element.textContent = node.vrrp_priority || "Not assigned"; });
@@ -122,7 +146,7 @@
     });
     document.querySelectorAll("[data-ha-failover-submit]").forEach((button) => {
       button.disabled = !readiness.ready;
-      button.textContent = readiness.ready ? "Start safe failover" : "Failover unavailable";
+      button.textContent = readiness.ready ? readiness.action_label : "Handover unavailable";
     });
     document.querySelectorAll("[data-ha-failover-help]").forEach((message) => { message.hidden = readiness.ready; });
     document.querySelectorAll("[data-ha-failover-summary]").forEach((summary) => {
@@ -130,7 +154,7 @@
       summary.setAttribute("aria-disabled", readiness.ready ? "false" : "true");
     });
     document.querySelectorAll("[data-ha-failover-summary-label]").forEach((label) => {
-      label.textContent = readiness.ready ? "Fail over to" : "Failover unavailable";
+      label.textContent = readiness.ready ? `${readiness.action_label} to` : "Handover unavailable";
     });
     document.querySelectorAll("[data-ha-failover-target]").forEach((input) => { input.value = readiness.target_id || ""; });
     document.querySelectorAll("[data-ha-failover-target-name]").forEach((element) => { element.textContent = readiness.target_name || "standby node"; });

@@ -10,6 +10,8 @@ from sqlalchemy.orm import Session
 
 from app.models.models import HACluster, HAEvent, HAFailoverRun, HANode, User
 from app.services.ha_leases import HALeaseError, reconcile_cluster_leases
+from app.services.ha_recovery import failback_target
+from app.services.ha_sync import HASyncError, create_live_sync_plan, execute_sync
 from app.services.ha_topology import pihole_manages_dhcp
 
 
@@ -170,6 +172,26 @@ def start_controlled_failover(db: Session, cluster: HACluster, target: HANode, u
         raise HAFailoverError(" ".join(readiness.blockers) or "The cluster is not ready for controlled failover.")
     if target.id != readiness.target.id:
         raise HAFailoverError("Choose the standby node as the failover target.")
+    is_failback = bool(
+        cluster.preferred_node_id
+        and target.id == cluster.preferred_node_id
+        and readiness.source.id != cluster.preferred_node_id
+    )
+    if is_failback:
+        recovery = failback_target(db, cluster)
+        if recovery is None or not recovery.ready:
+            blockers = [check.label for check in recovery.checks if check.required and not check.passed] if recovery else []
+            detail = ", ".join(blockers) if blockers else "the preferred node has not completed recovery"
+            raise HAFailoverError(f"Controlled failback is not ready: {detail}.")
+        try:
+            final_plan = create_live_sync_plan(db, cluster, user)
+            if final_plan.status == "PLANNED":
+                plan = json.loads(final_plan.plan_json)
+                if plan.get("blocked_groups") or plan.get("deletion_count"):
+                    raise HAFailoverError("Final configuration changed and needs review before failback.")
+                execute_sync(db, cluster, final_plan, allow_deletions=False)
+        except HASyncError as exc:
+            raise HAFailoverError(f"Final failback synchronisation stopped safely: {exc}") from exc
     state = cluster.lease_replication
     if readiness.dhcp_managed:
         try:
@@ -180,12 +202,12 @@ def start_controlled_failover(db: Session, cluster: HACluster, target: HANode, u
     cluster.cluster_generation += 1
     cluster.maintenance_mode = True
     phase = "WAITING_FOR_LEASES" if readiness.dhcp_managed and state and state.status != "CURRENT" else ("DEMOTING_SOURCE" if readiness.dhcp_managed else "MOVING_VIP")
-    run = HAFailoverRun(cluster_id=cluster.id, source_node_id=readiness.source.id, target_node_id=target.id, status="RUNNING", phase=phase, dhcp_managed=readiness.dhcp_managed, lease_generation=state.desired_generation if state else 0, role_generation=cluster.role_generation, requested_by_user_id=user.id, report_json=json.dumps({"starting_vip_owner": readiness.source.public_id, "target": target.public_id, "automatic": False}, sort_keys=True))
+    run = HAFailoverRun(cluster_id=cluster.id, source_node_id=readiness.source.id, target_node_id=target.id, status="RUNNING", phase=phase, dhcp_managed=readiness.dhcp_managed, lease_generation=state.desired_generation if state else 0, role_generation=cluster.role_generation, requested_by_user_id=user.id, report_json=json.dumps({"starting_vip_owner": readiness.source.public_id, "target": target.public_id, "automatic": False, "transition_kind": "FAILBACK" if is_failback else "FAILOVER"}, sort_keys=True))
     db.add(run)
     db.flush()
     if phase == "MOVING_VIP":
         _move_vip(db, run, target)
-    _event(db, run, "controlled_failover_started", "warning", f"Controlled failover started from {readiness.source.display_name} to {target.display_name}.")
+    _event(db, run, "controlled_failback_started" if is_failback else "controlled_failover_started", "warning", f"Controlled {'failback' if is_failback else 'failover'} started from {readiness.source.display_name} to {target.display_name}.")
     db.commit()
     db.refresh(run)
     return run
@@ -252,6 +274,14 @@ def _verification_started_at(run: HAFailoverRun) -> datetime:
         return datetime.fromisoformat(value) if value else run.started_at
     except (ValueError, TypeError, json.JSONDecodeError):
         return run.started_at
+
+
+def _transition_kind(run: HAFailoverRun) -> str:
+    try:
+        value = str(json.loads(run.report_json or "{}").get("transition_kind") or "FAILOVER").upper()
+    except (TypeError, json.JSONDecodeError):
+        value = "FAILOVER"
+    return "FAILBACK" if value == "FAILBACK" else "FAILOVER"
 
 
 def _vip_move_started_at(run: HAFailoverRun) -> datetime:
@@ -330,7 +360,11 @@ def _complete(db: Session, run: HAFailoverRun, *, rolled_back: bool) -> None:
     for node in run.cluster.nodes:
         node.keepalived_status = "PENDING_AGENT"
         node.keepalived_last_error = None
-    _event(db, run, "controlled_failover_rolled_back" if rolled_back else "controlled_failover_completed", "warning" if rolled_back else "info", f"Controlled transition completed with {active.display_name} active. Automatic failback remains disabled.")
+    kind = _transition_kind(run)
+    event_type = "controlled_failover_rolled_back" if rolled_back else (
+        "controlled_failback_completed" if kind == "FAILBACK" else "controlled_failover_completed"
+    )
+    _event(db, run, event_type, "warning" if rolled_back else "info", f"Controlled {kind.lower()} completed with {active.display_name} active. Automatic failback remains disabled.")
 
 
 def advance_failover(db: Session, cluster: HACluster) -> HAFailoverRun | None:
@@ -433,4 +467,4 @@ def failover_status(run: HAFailoverRun | None) -> dict[str, Any]:
     if run is None:
         return {"running": False, "status": "NOT_STARTED", "phase": "READY", "message": "No controlled failover has been run."}
     labels = {"WAITING_FOR_LEASES": "Capturing the final lease snapshot", "DEMOTING_SOURCE": "Stopping DHCP on the current active node", "MOVING_VIP": "Moving the virtual IP", "PROMOTING_TARGET": "Importing leases and starting DHCP on the target", "VERIFYING_TARGET": "Verifying DNS, DHCP and VIP ownership", "COMPLETE": "Controlled failover completed", "FAILED_SAFE": "Transition stopped safely", "ROLLBACK_DEMOTING_TARGET": "Ensuring DHCP is stopped on the target", "ROLLBACK_MOVING_VIP": "Returning the virtual IP", "ROLLBACK_PROMOTING_SOURCE": "Restoring DHCP on the original node", "ROLLBACK_VERIFYING_SOURCE": "Verifying the restored active node", "ROLLED_BACK": "Original node restored"}
-    return {"running": run.status in ACTIVE_RUN_STATUSES, "run_id": run.public_id, "status": run.status, "phase": run.phase, "message": labels.get(run.phase, run.phase.replace("_", " ").title()), "error": run.error_redacted, "source": run.source_node.display_name, "target": run.target_node.display_name, "dhcp_managed": run.dhcp_managed, "started_at": run.started_at.isoformat() if run.started_at else None, "completed_at": run.completed_at.isoformat() if run.completed_at else None}
+    return {"running": run.status in ACTIVE_RUN_STATUSES, "run_id": run.public_id, "status": run.status, "phase": run.phase, "message": labels.get(run.phase, run.phase.replace("_", " ").title()), "error": run.error_redacted, "source": run.source_node.display_name, "target": run.target_node.display_name, "dhcp_managed": run.dhcp_managed, "transition_kind": _transition_kind(run), "started_at": run.started_at.isoformat() if run.started_at else None, "completed_at": run.completed_at.isoformat() if run.completed_at else None}

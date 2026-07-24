@@ -716,7 +716,7 @@ def migrate_existing_database():
         conn.execute(text("CREATE TABLE IF NOT EXISTS ha_lease_snapshots (id INTEGER NOT NULL PRIMARY KEY, public_id VARCHAR(36) NOT NULL UNIQUE, cluster_id INTEGER NOT NULL REFERENCES ha_clusters(id) ON DELETE CASCADE, source_node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, target_node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, generation INTEGER NOT NULL, checksum VARCHAR(64) NOT NULL, encrypted_payload TEXT NOT NULL, lease_count INTEGER DEFAULT 0 NOT NULL, status VARCHAR(30) DEFAULT 'PENDING' NOT NULL, validation_summary_json TEXT DEFAULT '{}' NOT NULL, created_at DATETIME, staged_at DATETIME, CONSTRAINT uq_ha_lease_snapshot_generation UNIQUE (cluster_id, generation))"))
         conn.execute(text("CREATE TABLE IF NOT EXISTS ha_failover_runs (id INTEGER NOT NULL PRIMARY KEY, public_id VARCHAR(36) NOT NULL UNIQUE, cluster_id INTEGER NOT NULL REFERENCES ha_clusters(id) ON DELETE CASCADE, source_node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, target_node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, status VARCHAR(30) DEFAULT 'RUNNING' NOT NULL, phase VARCHAR(50) DEFAULT 'PREFLIGHT' NOT NULL, dhcp_managed BOOLEAN DEFAULT 0 NOT NULL, lease_generation INTEGER DEFAULT 0 NOT NULL, role_generation INTEGER NOT NULL, error_redacted VARCHAR(1000), report_json TEXT DEFAULT '{}' NOT NULL, requested_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, started_at DATETIME, completed_at DATETIME, created_at DATETIME)"))
         ha_cluster_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(ha_clusters)"))}
-        for column, definition in {"cluster_generation": "INTEGER DEFAULT 1 NOT NULL", "role_generation": "INTEGER DEFAULT 1 NOT NULL", "desired_sync_generation": "INTEGER DEFAULT 0 NOT NULL", "automatic_sync_enabled": "BOOLEAN DEFAULT 0 NOT NULL", "automatic_sync_allow_deletions": "BOOLEAN DEFAULT 0 NOT NULL", "deployment_mode": "VARCHAR(30)", "external_dhcp_provider": "VARCHAR(40)", "gateway_address": "VARCHAR(80)", "vrrp_router_id": "INTEGER", "keepalived_generation": "INTEGER DEFAULT 0 NOT NULL", "keepalived_status": "VARCHAR(40) DEFAULT 'NOT_CONFIGURED' NOT NULL", "keepalived_requested_at": "DATETIME", "keepalived_deployed_at": "DATETIME"}.items():
+        for column, definition in {"cluster_generation": "INTEGER DEFAULT 1 NOT NULL", "role_generation": "INTEGER DEFAULT 1 NOT NULL", "desired_sync_generation": "INTEGER DEFAULT 0 NOT NULL", "automatic_sync_enabled": "BOOLEAN DEFAULT 0 NOT NULL", "automatic_sync_allow_deletions": "BOOLEAN DEFAULT 0 NOT NULL", "deployment_mode": "VARCHAR(30)", "external_dhcp_provider": "VARCHAR(40)", "gateway_address": "VARCHAR(80)", "preferred_node_id": "INTEGER REFERENCES ha_nodes(id) ON DELETE SET NULL", "vrrp_router_id": "INTEGER", "keepalived_generation": "INTEGER DEFAULT 0 NOT NULL", "keepalived_status": "VARCHAR(40) DEFAULT 'NOT_CONFIGURED' NOT NULL", "keepalived_requested_at": "DATETIME", "keepalived_deployed_at": "DATETIME"}.items():
             if column not in ha_cluster_columns:
                 conn.execute(text(f"ALTER TABLE ha_clusters ADD COLUMN {column} {definition}"))
         dns_provider_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(dns_providers)"))}
@@ -736,8 +736,13 @@ def migrate_existing_database():
             "dhcp_running": "BOOLEAN DEFAULT 0 NOT NULL",
             "dns_healthy": "BOOLEAN",
             "peer_reachable": "BOOLEAN",
+            "last_peer_attempt_at": "DATETIME",
+            "last_peer_success_at": "DATETIME",
             "lease_generation": "INTEGER DEFAULT 0 NOT NULL",
             "config_generation": "INTEGER DEFAULT 0 NOT NULL",
+            "recovery_state": "VARCHAR(30) DEFAULT 'STANDBY' NOT NULL",
+            "recovery_started_at": "DATETIME",
+            "recovery_stable_since": "DATETIME",
             "keepalived_status": "VARCHAR(40) DEFAULT 'NOT_CONFIGURED' NOT NULL",
             "keepalived_config_checksum": "VARCHAR(64)",
             "keepalived_backup_reference": "VARCHAR(255)",
@@ -747,6 +752,9 @@ def migrate_existing_database():
         }.items():
             if column not in ha_node_columns:
                 conn.execute(text(f"ALTER TABLE ha_nodes ADD COLUMN {column} {definition}"))
+        conn.execute(text("UPDATE ha_clusters SET preferred_node_id = (SELECT source_node_id FROM ha_failover_runs WHERE ha_failover_runs.cluster_id = ha_clusters.id ORDER BY created_at LIMIT 1) WHERE preferred_node_id IS NULL"))
+        conn.execute(text("UPDATE ha_clusters SET preferred_node_id = (SELECT id FROM ha_nodes WHERE ha_nodes.cluster_id = ha_clusters.id AND ha_nodes.id != (SELECT node_id FROM ha_events WHERE ha_events.cluster_id = ha_clusters.id AND event_type = 'automatic_failover_reconciled' ORDER BY occurred_at LIMIT 1) ORDER BY id LIMIT 1) WHERE preferred_node_id IS NULL AND EXISTS (SELECT 1 FROM ha_events WHERE ha_events.cluster_id = ha_clusters.id AND event_type = 'automatic_failover_reconciled')"))
+        conn.execute(text("UPDATE ha_clusters SET preferred_node_id = authoritative_node_id WHERE preferred_node_id IS NULL"))
         ha_check_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(ha_health_checks)"))}
         if "remediation" not in ha_check_columns:
             conn.execute(text("ALTER TABLE ha_health_checks ADD COLUMN remediation TEXT"))

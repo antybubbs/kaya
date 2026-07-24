@@ -299,6 +299,7 @@ def create_cluster_draft(db: Session, draft: HAClusterDraftCreate, user: User) -
         db.flush()
         created_nodes.append(created_node)
     cluster.authoritative_node_id = created_nodes[0].id
+    cluster.preferred_node_id = created_nodes[0].id
     db.commit()
     db.refresh(cluster)
     return cluster

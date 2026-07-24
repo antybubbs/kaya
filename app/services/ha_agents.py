@@ -17,6 +17,7 @@ from app.services.ha_keepalived import desired_keepalived_action
 from app.services.ha_leases import HALeaseError, desired_lease_action, record_lease_stage_result
 from app.services.ha_failover import AUTOMATIC_AGENT_VERSION, HAFailoverError, advance_failover, desired_failover_action, record_failover_action_result
 from app.services.ha_agent_installer import CURRENT_AGENT_VERSION, version_tuple
+from app.services.audit import write_audit
 from app.services.ha_topology import pihole_manages_dhcp
 
 
@@ -154,6 +155,8 @@ async def authenticate_agent_request(request: Request, db: Session) -> Authentic
 
 
 def record_heartbeat(db: Session, node: HANode, heartbeat: HAAgentHeartbeat) -> HANode:
+    previous_peer = node.peer_reachable
+    had_peer_result = node.last_peer_attempt_at is not None
     node.agent_version = heartbeat.agent_version
     node.last_heartbeat_at = datetime.utcnow()
     node.observed_role = heartbeat.observed_role
@@ -162,14 +165,49 @@ def record_heartbeat(db: Session, node: HANode, heartbeat: HAAgentHeartbeat) -> 
     node.dhcp_running = heartbeat.dhcp_running
     node.dns_healthy = heartbeat.dns_healthy
     node.peer_reachable = heartbeat.peer_reachable
+    node.last_peer_attempt_at = node.last_heartbeat_at
+    if heartbeat.peer_reachable:
+        node.last_peer_success_at = node.last_heartbeat_at
     node.lease_generation = heartbeat.lease_generation
     node.config_generation = heartbeat.config_generation
     node.keepalived_runtime_state = heartbeat.keepalived_runtime_state
     node.keepalived_reported_at = datetime.utcnow()
+    peer_changed = had_peer_result and previous_peer is not heartbeat.peer_reachable
+    if peer_changed:
+        restored = heartbeat.peer_reachable is True
+        db.add(
+            HAEvent(
+                cluster_id=node.cluster_id,
+                node_id=node.id,
+                event_type="peer_reachability_restored" if restored else "peer_reachability_warning",
+                severity="info" if restored else "warning",
+                source="agent",
+                message=(
+                    f"{node.display_name} can reach its peer host using the configured ICMP probe."
+                    if restored
+                    else f"{node.display_name} cannot currently reach its peer host using the configured ICMP probe. Kaya heartbeat and service health remain separate."
+                ),
+                details_json_redacted=json.dumps({"probe": "icmp", "reachable": restored}, sort_keys=True),
+                occurred_at=node.last_heartbeat_at,
+            )
+        )
     db.commit()
     db.refresh(node)
     reconcile_vip_ownership(db, node.cluster, reporting_node=node)
     advance_failover(db, node.cluster)
+    from app.services.ha_recovery import evaluate_recovery
+    evaluate_recovery(db, node.cluster)
+    if peer_changed:
+        write_audit(
+            db,
+            None,
+            "restored" if heartbeat.peer_reachable else "warning",
+            "ha_peer_reachability",
+            entity_id=node.public_id,
+            detail=f"Peer host ICMP reachability {'was restored' if heartbeat.peer_reachable else 'became unavailable'} for {node.display_name}.",
+            severity="info" if heartbeat.peer_reachable else "warning",
+            metadata={"cluster_id": node.cluster.public_id, "probe": "icmp", "reachable": bool(heartbeat.peer_reachable)},
+        )
     return node
 
 

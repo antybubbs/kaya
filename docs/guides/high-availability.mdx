@@ -65,6 +65,23 @@ Use **Overview** for current ownership, node health, synchronisation state, aler
 - **Failover** shows controlled and automatic transition history.
 - **Setup & maintenance** contains validation, agents and shared-address deployment details.
 
+## Recovery and controlled failback
+
+Kaya follows: **fail over quickly, recover carefully, fail back deliberately**.
+
+After an automatic failover, the surviving node remains the current active node. The original preferred node progresses through **Offline**, **Recovering**, **Synchronising**, **Verifying**, and **Standby — Ready**. It cannot be offered for failback until:
+
+- its signed HA Agent heartbeat, local DNS, failover service, interface, identity, and cluster generations are current;
+- a post-recovery comparison or synchronisation from the current active node has completed without supported drift;
+- DHCP configuration, lease staging, and generation checks pass for DNS + DHCP clusters; and
+- those checks remain healthy for the stability window.
+
+Kaya never performs automatic failback by default. When the recovered preferred node is ready, an administrator can approve a controlled failback. Kaya performs one final sync, reuses the same guarded handover and rollback engine, and keeps or restores the known-good active node if a safety check fails.
+
+The node diagnostics distinguish the signed **Kaya heartbeat** from the optional **peer host reachability** check. The current Pi-hole agent reports peer-host reachability using ICMP; it is not an authenticated agent-to-agent session. A blocked ping can therefore produce an HA warning while DNS and the Kaya connection remain healthy.
+
+Existing clients may temporarily display the previous DHCP server until they acquire a new lease. This does not mean that the previous Pi-hole is still serving DHCP; Kaya determines ownership from current HA service state.
+
 ## Safety and data retention
 
 - Unknown or ambiguous high-risk state blocks deployment or DHCP activation.

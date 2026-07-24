@@ -25,6 +25,7 @@ from app.services.ha_keepalived import HAKeepalivedError, deployment_blockers, p
 from app.services.ha_sync import HAStaleSyncPlanError, HASyncError, create_live_sync_plan, execute_sync, sync_plan
 from app.services.ha_leases import HALeaseError, latest_snapshot_summary, reconcile_cluster_leases
 from app.services.ha_failover import HAFailoverError, active_failover, automatic_failover_blockers, failover_readiness, failover_status, latest_failover, request_failover_rollback, set_automatic_failover, start_controlled_failover
+from app.services.ha_recovery import current_active_node, peer_diagnostic, preferred_node, recovery_snapshot
 from app.services.site_settings import get_site_setting
 from app.services.ha_topology import deployment_mode, pihole_manages_dhcp
 
@@ -329,7 +330,35 @@ async def save_cluster(request: Request, db: Session = Depends(get_db), user=Dep
 @router.get("/clusters/{public_id}")
 def cluster_detail(public_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_high_availability)):
     cluster = cluster_or_404(db, public_id)
-    return templates.TemplateResponse(request, "high_availability_cluster_detail.html", ha_context(request, user, "clusters", cluster=cluster, cluster_section="overview", failover_readiness=failover_readiness(cluster), failover_run=latest_failover(cluster), automatic_blockers=automatic_failover_blockers(cluster), sync_summary=sync_operational_summary(db, cluster)))
+    readiness = failover_readiness(cluster)
+    recovery = recovery_snapshot(db, cluster)
+    preferred = preferred_node(cluster)
+    active = current_active_node(cluster)
+    failback_recovery = recovery.get(preferred.id) if preferred and active and preferred.id != active.id else None
+    return templates.TemplateResponse(
+        request,
+        "high_availability_cluster_detail.html",
+        ha_context(
+            request,
+            user,
+            "clusters",
+            cluster=cluster,
+            cluster_section="overview",
+            failover_readiness=readiness,
+            failover_run=latest_failover(cluster),
+            automatic_blockers=automatic_failover_blockers(cluster),
+            sync_summary=sync_operational_summary(db, cluster),
+            recovery=recovery,
+            peer_diagnostics={
+                node.id: peer_diagnostic(node, next((peer for peer in cluster.nodes if peer.id != node.id), None))
+                for node in cluster.nodes
+            },
+            preferred_node=preferred,
+            active_node=active,
+            failback_recovery=failback_recovery,
+            action_ready=readiness.ready and (failback_recovery is None or failback_recovery.ready),
+        ),
+    )
 
 
 def topology_page_context(request: Request, user, cluster: HACluster, error: str | None = None):
@@ -423,6 +452,21 @@ def cluster_live_status(public_id: str, db: Session = Depends(get_db), user=Depe
     current_nodes = [node for node in cluster.nodes if node.last_heartbeat_at and node.last_heartbeat_at >= now - timedelta(seconds=HEARTBEAT_FRESH_SECONDS)]
     active_node = next((node for node in cluster.nodes if node.id == cluster.current_active_node_id), None)
     readiness = failover_readiness(cluster)
+    recovery = recovery_snapshot(db, cluster, now=now)
+    preferred = preferred_node(cluster)
+    failback_recovery = recovery.get(preferred.id) if preferred and active_node and preferred.id != active_node.id else None
+    action_blockers = list(readiness.blockers)
+    if failback_recovery and not failback_recovery.ready:
+        action_blockers.extend(
+            check.detail
+            for check in failback_recovery.checks
+            if check.required and not check.passed
+        )
+        if failback_recovery.state == "VERIFYING":
+            remaining = max(0, failback_recovery.stability_required_seconds - failback_recovery.stability_seconds)
+            action_blockers.append(f"Wait {remaining} more seconds for the recovered node stability check.")
+    action_ready = readiness.ready and (failback_recovery is None or failback_recovery.ready)
+    action_kind = "FAILBACK" if failback_recovery is not None else "FAILOVER"
     lease = cluster.lease_replication
     run = latest_failover(cluster)
     events = db.query(HAEvent).filter(HAEvent.cluster_id == cluster.id).order_by(HAEvent.occurred_at.desc()).limit(20).all()
@@ -433,6 +477,14 @@ def cluster_live_status(public_id: str, db: Session = Depends(get_db), user=Depe
     for key in ("last_checked_at", "last_applied_at", "next_check_at"):
         value = sync_json[key]
         sync_json[key] = value.isoformat() + "Z" if value else None
+    services_healthy = bool(
+        active_node
+        and len([node for node in current_nodes if node.vip_owned]) == 1
+        and active_node.dns_healthy is True
+        and (not pihole_manages_dhcp(cluster) or active_node.dhcp_running is True)
+    )
+    peer_warnings = sum(1 for node in current_nodes if node.peer_reachable is False)
+    recovering_nodes = [item.node.display_name for item in recovery.values() if item.state in {"RECOVERING", "SYNCHRONISING", "VERIFYING"}]
     return JSONResponse({
         "server_time": datetime.utcnow().isoformat() + "Z",
         "cluster": {
@@ -445,13 +497,19 @@ def cluster_live_status(public_id: str, db: Session = Depends(get_db), user=Depe
             "deployment_mode_label": "DNS + DHCP" if pihole_manages_dhcp(cluster) else "DNS only",
             "current_agent_version": CURRENT_AGENT_VERSION,
             "active_node": active_node.display_name if active_node else None,
+            "preferred_node": preferred.display_name if preferred else None,
             "standby_node": readiness.target.display_name if readiness.target else None,
             "vip_owner_count": len([node for node in current_nodes if node.vip_owned]),
             "last_failover_at": cluster.last_failover_at.isoformat() + "Z" if cluster.last_failover_at else None,
             "unacknowledged_alerts": unacknowledged_alerts,
+            "service_availability": "HEALTHY" if services_healthy else "UNAVAILABLE" if active_node is None else "DEGRADED",
+            "ha_readiness": "READY" if action_ready else "RECOVERING" if failback_recovery else "NEEDS_ATTENTION",
+            "peer_warning_count": peer_warnings,
+            "recovering_nodes": recovering_nodes,
         },
         "nodes": [{
             "id": node.public_id, "name": node.display_name, "desired_role": node.desired_role,
+            "is_preferred": bool(preferred and node.id == preferred.id),
             "observed_role": node.observed_role, "agent_version": node.agent_version,
             "agent_version_status": agent_version_status(node.agent_version),
             "last_heartbeat_at": node.last_heartbeat_at.isoformat() + "Z" if node.last_heartbeat_at else None,
@@ -462,10 +520,23 @@ def cluster_live_status(public_id: str, db: Session = Depends(get_db), user=Depe
             "network_interface": node.network_interface, "vrrp_priority": node.vrrp_priority,
             "keepalived_config_checksum": node.keepalived_config_checksum, "keepalived_last_error": node.keepalived_last_error,
             "lease_generation": node.lease_generation, "config_generation": node.config_generation,
+            "recovery_state": recovery[node.id].state,
+            "recovery_ready": recovery[node.id].ready,
+            "recovery_stability_seconds": recovery[node.id].stability_seconds,
+            "recovery_stability_required_seconds": recovery[node.id].stability_required_seconds,
+            "recovery_checks": [{"key": check.key, "label": check.label, "passed": check.passed, "detail": check.detail, "required": check.required} for check in recovery[node.id].checks],
+            "peer_diagnostic": peer_diagnostic(node, next((peer for peer in cluster.nodes if peer.id != node.id), None), now=now),
         } for node in cluster.nodes],
         "lease": None if lease is None else {"status": lease.status, "lease_count": lease.lease_count, "conflict_count": lease.conflict_count, "desired_generation": lease.desired_generation, "applied_generation": lease.applied_generation, "last_applied_at": lease.last_applied_at.isoformat() + "Z" if lease.last_applied_at else None},
         "failover": failover_status(run),
-        "readiness": {"ready": readiness.ready, "blockers": readiness.blockers, "target_id": readiness.target.public_id if readiness.target else None, "target_name": readiness.target.display_name if readiness.target else None},
+        "readiness": {
+            "ready": action_ready,
+            "blockers": action_blockers,
+            "target_id": readiness.target.public_id if readiness.target else None,
+            "target_name": readiness.target.display_name if readiness.target else None,
+            "action_kind": action_kind,
+            "action_label": "Fail back safely" if action_kind == "FAILBACK" else "Fail over safely",
+        },
         "deployment": {"ready": not deployment_items, "blockers": deployment_items},
         "sync": sync_json,
         "events": [{"id": event.id, "type": event.event_type, "severity": event.severity, "message": event.message, "node": event.node.display_name if event.node else "Cluster", "occurred_at": event.occurred_at.isoformat() + "Z", "acknowledged": event.acknowledged_at is not None} for event in events[:20]],
@@ -532,15 +603,35 @@ def cluster_events(public_id: str, request: Request, db: Session = Depends(get_d
     return cluster_page(request, user, db, public_id, "events", "high_availability_cluster_events.html")
 
 
-def failover_page_context(request: Request, user, cluster: HACluster, error: str | None = None):
+def failover_page_context(request: Request, user, cluster: HACluster, db: Session, error: str | None = None):
     run = latest_failover(cluster)
-    return ha_context(request, user, "clusters", cluster=cluster, cluster_section="testing", failover_readiness=failover_readiness(cluster), failover_run=run, failover_state=failover_status(run), failover_error=error)
+    readiness = failover_readiness(cluster)
+    recovery = recovery_snapshot(db, cluster)
+    preferred = preferred_node(cluster)
+    active = current_active_node(cluster)
+    failback_recovery = recovery.get(preferred.id) if preferred and active and preferred.id != active.id else None
+    return ha_context(
+        request,
+        user,
+        "clusters",
+        cluster=cluster,
+        cluster_section="testing",
+        failover_readiness=readiness,
+        failover_run=run,
+        failover_state=failover_status(run),
+        failover_error=error,
+        recovery=recovery,
+        preferred_node=preferred,
+        active_node=active,
+        failback_recovery=failback_recovery,
+        action_ready=readiness.ready and (failback_recovery is None or failback_recovery.ready),
+    )
 
 
 @router.get("/clusters/{public_id}/testing")
 def cluster_testing(public_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_high_availability)):
     cluster = cluster_or_404(db, public_id)
-    return templates.TemplateResponse(request, "high_availability_cluster_testing.html", failover_page_context(request, user, cluster))
+    return templates.TemplateResponse(request, "high_availability_cluster_testing.html", failover_page_context(request, user, cluster, db))
 
 
 @router.post("/clusters/{public_id}/testing/start")
@@ -554,8 +645,9 @@ async def start_cluster_failover(public_id: str, request: Request, db: Session =
     except HAFailoverError as exc:
         db.rollback()
         cluster = cluster_or_404(db, public_id)
-        return templates.TemplateResponse(request, "high_availability_cluster_testing.html", failover_page_context(request, user, cluster, str(exc)), status_code=409)
-    write_audit(db, user, "started", "ha_controlled_failover", entity_id=run.public_id, detail=f"Started controlled failover for {cluster.name} to {target.display_name}.", severity="warning", metadata={"cluster_id": cluster.public_id, "target_node_id": target.public_id, "automatic": False, "dhcp_managed": run.dhcp_managed})
+        return templates.TemplateResponse(request, "high_availability_cluster_testing.html", failover_page_context(request, user, cluster, db, str(exc)), status_code=409)
+    transition_kind = failover_status(run).get("transition_kind", "FAILOVER")
+    write_audit(db, user, "started", "ha_controlled_failback" if transition_kind == "FAILBACK" else "ha_controlled_failover", entity_id=run.public_id, detail=f"Started controlled {str(transition_kind).lower()} for {cluster.name} to {target.display_name}.", severity="warning", metadata={"cluster_id": cluster.public_id, "target_node_id": target.public_id, "automatic": False, "dhcp_managed": run.dhcp_managed})
     return RedirectResponse(f"/high-availability/clusters/{cluster.public_id}/testing?started=1", status_code=303)
 
 
@@ -568,7 +660,7 @@ async def rollback_cluster_failover(public_id: str, run_id: str, request: Reques
     if run is None: raise HTTPException(404, "Failover run not found")
     try: request_failover_rollback(db, run, acknowledged=str(form.get("acknowledge_rollback") or "") == "1")
     except HAFailoverError as exc:
-        return templates.TemplateResponse(request, "high_availability_cluster_testing.html", failover_page_context(request, user, cluster, str(exc)), status_code=409)
+        return templates.TemplateResponse(request, "high_availability_cluster_testing.html", failover_page_context(request, user, cluster, db, str(exc)), status_code=409)
     write_audit(db, user, "rollback_requested", "ha_controlled_failover", entity_id=run.public_id, detail=f"Requested safe rollback for {cluster.name}.", severity="warning", metadata={"automatic": False})
     return RedirectResponse(f"/high-availability/clusters/{cluster.public_id}/testing?rollback=1", status_code=303)
 

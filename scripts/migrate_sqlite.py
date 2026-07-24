@@ -360,6 +360,7 @@ def main():
         "deployment_mode": "VARCHAR(30)",
         "external_dhcp_provider": "VARCHAR(40)",
         "gateway_address": "VARCHAR(80)",
+        "preferred_node_id": "INTEGER REFERENCES ha_nodes(id) ON DELETE SET NULL",
         "vrrp_router_id": "INTEGER",
         "keepalived_generation": "INTEGER DEFAULT 0 NOT NULL",
         "keepalived_status": "VARCHAR(40) DEFAULT 'NOT_CONFIGURED' NOT NULL",
@@ -380,8 +381,13 @@ def main():
         "dhcp_running": "BOOLEAN DEFAULT 0 NOT NULL",
         "dns_healthy": "BOOLEAN",
         "peer_reachable": "BOOLEAN",
+        "last_peer_attempt_at": "DATETIME",
+        "last_peer_success_at": "DATETIME",
         "lease_generation": "INTEGER DEFAULT 0 NOT NULL",
         "config_generation": "INTEGER DEFAULT 0 NOT NULL",
+        "recovery_state": "VARCHAR(30) DEFAULT 'STANDBY' NOT NULL",
+        "recovery_started_at": "DATETIME",
+        "recovery_stable_since": "DATETIME",
         "keepalived_status": "VARCHAR(40) DEFAULT 'NOT_CONFIGURED' NOT NULL",
         "keepalived_config_checksum": "VARCHAR(64)",
         "keepalived_backup_reference": "VARCHAR(255)",
@@ -395,6 +401,9 @@ def main():
     if not column_exists(cur, "ha_health_checks", "remediation"):
         cur.execute("ALTER TABLE ha_health_checks ADD COLUMN remediation TEXT")
         ha_v5_changed = True
+    cur.execute("UPDATE ha_clusters SET preferred_node_id = (SELECT source_node_id FROM ha_failover_runs WHERE ha_failover_runs.cluster_id = ha_clusters.id ORDER BY created_at LIMIT 1) WHERE preferred_node_id IS NULL")
+    cur.execute("UPDATE ha_clusters SET preferred_node_id = (SELECT id FROM ha_nodes WHERE ha_nodes.cluster_id = ha_clusters.id AND ha_nodes.id != (SELECT node_id FROM ha_events WHERE ha_events.cluster_id = ha_clusters.id AND event_type = 'automatic_failover_reconciled' ORDER BY occurred_at LIMIT 1) ORDER BY id LIMIT 1) WHERE preferred_node_id IS NULL AND EXISTS (SELECT 1 FROM ha_events WHERE ha_events.cluster_id = ha_clusters.id AND event_type = 'automatic_failover_reconciled')")
+    cur.execute("UPDATE ha_clusters SET preferred_node_id = authoritative_node_id WHERE preferred_node_id IS NULL")
     if ha_v5_changed:
         migrations_applied.append("high_availability_keepalived_schema_v5")
     ha_indexes = {
