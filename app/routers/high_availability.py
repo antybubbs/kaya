@@ -93,6 +93,7 @@ def agent_management_context(request: Request, cluster: HACluster) -> dict[str, 
     return {
         "current_agent_version": CURRENT_AGENT_VERSION,
         "agent_version_statuses": {node.public_id: agent_version_status(node.agent_version) for node in cluster.nodes},
+        "agent_command_origin": kaya_url,
         "agent_update_command": verified_command("update.sh", updater_checksum(), f"--kaya-url {shlex.quote(kaya_url)}"),
         "agent_uninstall_command": verified_command("uninstall.sh", uninstaller_checksum(), "--remove-kaya-ha-config"),
     }

@@ -1,4 +1,13 @@
 (() => {
+  const rootPath = String(document.body.dataset.appRoot || "").replace(/\/+$/, "");
+  const browserBaseUrl = `${window.location.origin}${rootPath}`;
+
+  document.querySelectorAll("[data-ha-command]").forEach((command) => {
+    const generatedOrigin = command.closest("[data-ha-command-origin]")?.dataset.haCommandOrigin?.replace(/\/+$/, "");
+    if (!generatedOrigin || !/^https?:\/\//i.test(generatedOrigin)) return;
+    command.textContent = command.textContent.split(generatedOrigin).join(browserBaseUrl);
+  });
+
   document.querySelectorAll("[data-copy-ha-command]").forEach((button) => button.addEventListener("click", async () => {
     const command = button.closest(".ha-install-command")?.querySelector("[data-ha-command]");
     if (!command) return;

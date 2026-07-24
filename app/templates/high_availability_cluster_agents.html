@@ -4,7 +4,7 @@
 {% include '_high_availability_cluster_header.html' %}
 {% if request.query_params.get('agent_revoked') %}<div class="success" role="status"><strong>Agent identity revoked in Kaya</strong><span>The software is still installed on the Pi-hole. Use the removal guide below if you also want to uninstall it.</span></div>{% endif %}
 
-<section class="panel">
+<section class="panel" data-ha-command-origin="{{ agent_command_origin }}">
   <div class="ha-section-heading"><div><h2>Agent software</h2><p class="muted">Kaya currently provides agent version <strong>{{ current_agent_version }}</strong>. Normal updates preserve the node identity, existing link, local state, and HA configuration.</p></div><span class="table-chip">Available {{ current_agent_version }}</span></div>
   {% if agent_error|default(false) %}<div class="alert" role="alert">{{ agent_error }}</div>{% endif %}
   {% if bootstrap_token|default(false) %}<div class="ha-bootstrap-token" role="status"><strong>Link the agent on {{ bootstrap_node.display_name }}</strong><ol><li>Copy the command below into an SSH terminal on this Pi-hole.</li><li>When prompted, paste the one-time token shown below. Token input is hidden.</li><li>Return here; live status changes automatically after registration.</li></ol><div class="ha-install-command"><code data-ha-command>{{ install_command }}</code><button class="button secondary" type="button" data-copy-ha-command>Copy command</button></div><p><strong>One-time token</strong> — expires at {{ local_time(bootstrap_expires_at, 'friendly') }} and cannot be displayed again.</p><code>{{ bootstrap_token }}</code></div>{% endif %}

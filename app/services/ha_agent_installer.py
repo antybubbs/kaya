@@ -3,7 +3,7 @@ from pathlib import Path
 
 
 AGENT_ROOT = Path(__file__).resolve().parents[2] / "ha_agent"
-CURRENT_AGENT_VERSION = "0.2.2"
+CURRENT_AGENT_VERSION = "0.2.3"
 PUBLIC_AGENT_FILES = frozenset({
     "install.sh",
     "update.sh",

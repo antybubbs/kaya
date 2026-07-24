@@ -320,6 +320,14 @@ def test_agent_routes_expose_only_fixed_protocol_operations():
     assert "Revoke identity in Kaya" in template
     assert "Completely remove the Kaya HA agents" in template
     assert "standby node first" in template
+    assert 'data-ha-command-origin="{{ agent_command_origin }}"' in template
+
+
+def test_agent_commands_use_the_browser_origin_without_trusting_forwarded_headers():
+    script = open("app/static/js/ha_agents.js", encoding="utf-8").read()
+    assert "window.location.origin" in script
+    assert "document.body.dataset.appRoot" in script
+    assert "data-ha-command-origin" in open("app/templates/high_availability_cluster_agents.html", encoding="utf-8").read()
 
 
 def test_guided_installer_is_fixed_checksum_verified_and_keeps_token_off_command_line():
@@ -350,6 +358,7 @@ def test_guided_installer_is_fixed_checksum_verified_and_keeps_token_off_command
     assert agent_version_status("0.1.9") == "Update available"
     assert agent_version_status(None) == "Not reported"
     assert f'AGENT_VERSION = "{CURRENT_AGENT_VERSION}"' in agent_file("kaya_ha_agent.py").decode()
+    assert "Generate a new command from the HTTPS Kaya page" in agent_file("kaya_ha_agent.py").decode()
     assert "NoNewPrivileges=true" not in service
     assert "ReadWritePaths=/var/lib/kaya-ha-agent /etc/keepalived" in service
     assert b"apt-get install" in install_script().body

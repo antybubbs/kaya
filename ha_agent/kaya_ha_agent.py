@@ -21,7 +21,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 
 PROTOCOL_VERSION = 1
-AGENT_VERSION = "0.2.2"
+AGENT_VERSION = "0.2.3"
 
 
 def encoded(value: bytes) -> str:
@@ -96,8 +96,13 @@ class State:
 def json_request(url: str, method: str, payload: dict | None, headers: dict[str, str] | None = None) -> dict:
     body = json.dumps(payload, separators=(",", ":")).encode() if payload is not None else b""
     req = request.Request(url, data=body if method != "GET" else None, method=method, headers={"Content-Type": "application/json", **(headers or {})})
-    with request.urlopen(req, timeout=15) as response:
-        return json.loads(response.read() or b"{}")
+    try:
+        with request.urlopen(req, timeout=15) as response:
+            return json.loads(response.read() or b"{}")
+    except error.HTTPError as exc:
+        if exc.code in {307, 308}:
+            raise ValueError("Kaya redirected the agent request. Generate a new command from the HTTPS Kaya page and try again.") from None
+        raise ValueError(f"Kaya rejected the agent request with HTTP {exc.code}.") from None
 
 
 def private_key(state: State) -> Ed25519PrivateKey:
@@ -279,7 +284,10 @@ def main() -> None:
     args = parser.parse_args()
     state = State(Path(args.state_dir))
     if args.command == "register":
-        register(state, args)
+        try:
+            register(state, args)
+        except (error.URLError, TimeoutError, ValueError, KeyError) as exc:
+            raise SystemExit(f"Kaya HA agent registration failed: {exc}") from None
     elif args.command == "event":
         print(state.queue_event(args.event_type, args.severity, args.message))
     elif args.command == "once":
