@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import secrets
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -21,7 +22,11 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 
 PROTOCOL_VERSION = 1
-AGENT_VERSION = "0.2.3"
+AGENT_VERSION = "0.2.5"
+
+ICMP_AVAILABLE = "AVAILABLE"
+ICMP_NO_REPLY = "NO_REPLY"
+ICMP_UNAVAILABLE = "UNAVAILABLE"
 
 
 def encoded(value: bytes) -> str:
@@ -123,6 +128,24 @@ def signed_request(state: State, method: str, path: str, payload: dict | None = 
         "X-Kaya-Agent-Protocol": str(PROTOCOL_VERSION),
     }
     return json_request(config["kaya_url"].rstrip("/") + path, method, payload, headers)
+
+
+def probe_icmp(peer_host: str, *, runner=subprocess.run) -> tuple[bool | None, str]:
+    """Run the fixed ICMP probe without treating local execution failure as peer failure."""
+    try:
+        result = runner(
+            ["/usr/bin/ping", "-c", "1", "-W", "1", peer_host],
+            capture_output=True,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None, ICMP_UNAVAILABLE
+    if result.returncode == 0:
+        return True, ICMP_AVAILABLE
+    if result.returncode == 1:
+        return False, ICMP_NO_REPLY
+    return None, ICMP_UNAVAILABLE
 
 
 def register(state: State, args) -> None:
@@ -236,12 +259,19 @@ def run_once(state: State) -> None:
         state.set("dns_healthy", False)
     peer_host = str(state.get("peer_host", "") or "").strip()
     if peer_host:
+        peer_reachable, icmp_probe_status = probe_icmp(peer_host)
+        state.set("peer_reachable", peer_reachable)
+        state.set("peer_icmp_probe_status", icmp_probe_status)
         try:
-            peer = subprocess.run(["/usr/bin/ping", "-c", "1", "-W", "1", peer_host], capture_output=True, timeout=3, check=False)
-            state.set("peer_reachable", peer.returncode == 0)
-        except (OSError, subprocess.SubprocessError):
-            state.set("peer_reachable", False)
-    heartbeat = {"observed_role": state.get("observed_role", "STANDBY"), "observed_generation": int(state.get("observed_generation", 0)), "vip_owned": bool(state.get("vip_owned", False)), "dhcp_running": bool(state.get("dhcp_running", False)), "dns_healthy": bool(state.get("dns_healthy", False)), "peer_reachable": bool(state.get("peer_reachable", False)), "lease_generation": int(state.get("lease_generation", 0)), "config_generation": int(state.get("config_generation", 0)), "agent_version": AGENT_VERSION, "keepalived_runtime_state": state.get("keepalived_runtime_state", "UNKNOWN")}
+            with socket.create_connection((peer_host, 53), timeout=2):
+                state.set("peer_dns_reachable", True)
+        except OSError:
+            state.set("peer_dns_reachable", False)
+    else:
+        state.set("peer_reachable", None)
+        state.set("peer_icmp_probe_status", None)
+        state.set("peer_dns_reachable", None)
+    heartbeat = {"observed_role": state.get("observed_role", "STANDBY"), "observed_generation": int(state.get("observed_generation", 0)), "vip_owned": bool(state.get("vip_owned", False)), "dhcp_running": bool(state.get("dhcp_running", False)), "dns_healthy": bool(state.get("dns_healthy", False)), "peer_reachable": state.get("peer_reachable"), "peer_icmp_probe_status": state.get("peer_icmp_probe_status"), "peer_dns_reachable": state.get("peer_dns_reachable"), "lease_generation": int(state.get("lease_generation", 0)), "config_generation": int(state.get("config_generation", 0)), "agent_version": AGENT_VERSION, "keepalived_runtime_state": state.get("keepalived_runtime_state", "UNKNOWN")}
     response = signed_request(state, "POST", "/api/ha/agent/v1/heartbeat", heartbeat)
     reconcile_desired(state, response["desired"])
     action_result = state.get("pending_action_result")

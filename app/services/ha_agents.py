@@ -165,27 +165,41 @@ def record_heartbeat(db: Session, node: HANode, heartbeat: HAAgentHeartbeat) -> 
     node.dhcp_running = heartbeat.dhcp_running
     node.dns_healthy = heartbeat.dns_healthy
     node.peer_reachable = heartbeat.peer_reachable
-    node.last_peer_attempt_at = node.last_heartbeat_at
-    if heartbeat.peer_reachable:
-        node.last_peer_success_at = node.last_heartbeat_at
+    icmp_probe_status = heartbeat.peer_icmp_probe_status
+    if icmp_probe_status is None and heartbeat.peer_reachable is not None:
+        icmp_probe_status = "AVAILABLE" if heartbeat.peer_reachable else "NO_REPLY"
+    node.peer_icmp_probe_status = icmp_probe_status
+    node.peer_dns_reachable = heartbeat.peer_dns_reachable
+    if icmp_probe_status is not None:
+        node.last_peer_attempt_at = node.last_heartbeat_at
+        if icmp_probe_status == "AVAILABLE":
+            node.last_peer_success_at = node.last_heartbeat_at
+    if heartbeat.peer_dns_reachable is not None:
+        node.last_peer_dns_attempt_at = node.last_heartbeat_at
+        if heartbeat.peer_dns_reachable:
+            node.last_peer_dns_success_at = node.last_heartbeat_at
     node.lease_generation = heartbeat.lease_generation
     node.config_generation = heartbeat.config_generation
     node.keepalived_runtime_state = heartbeat.keepalived_runtime_state
     node.keepalived_reported_at = datetime.utcnow()
-    peer_changed = had_peer_result and previous_peer is not heartbeat.peer_reachable
+    peer_changed = (
+        heartbeat.peer_reachable is not None
+        and had_peer_result
+        and previous_peer is not heartbeat.peer_reachable
+    )
     if peer_changed:
         restored = heartbeat.peer_reachable is True
         db.add(
             HAEvent(
                 cluster_id=node.cluster_id,
                 node_id=node.id,
-                event_type="peer_reachability_restored" if restored else "peer_reachability_warning",
-                severity="info" if restored else "warning",
+                event_type="peer_network_reachability_restored" if restored else "peer_network_reachability_unavailable",
+                severity="info",
                 source="agent",
                 message=(
-                    f"{node.display_name} can reach its peer host using the configured ICMP probe."
+                    f"{node.display_name} can ping its peer host."
                     if restored
-                    else f"{node.display_name} cannot currently reach its peer host using the configured ICMP probe. Kaya heartbeat and service health remain separate."
+                    else f"Ping from {node.display_name} to its peer is unavailable. This informational result does not affect DNS, Kaya heartbeats, or failover readiness."
                 ),
                 details_json_redacted=json.dumps({"probe": "icmp", "reachable": restored}, sort_keys=True),
                 occurred_at=node.last_heartbeat_at,
@@ -201,11 +215,11 @@ def record_heartbeat(db: Session, node: HANode, heartbeat: HAAgentHeartbeat) -> 
         write_audit(
             db,
             None,
-            "restored" if heartbeat.peer_reachable else "warning",
-            "ha_peer_reachability",
+            "available" if heartbeat.peer_reachable else "unavailable",
+            "ha_peer_network_reachability",
             entity_id=node.public_id,
-            detail=f"Peer host ICMP reachability {'was restored' if heartbeat.peer_reachable else 'became unavailable'} for {node.display_name}.",
-            severity="info" if heartbeat.peer_reachable else "warning",
+            detail=f"Peer network ping {'became available' if heartbeat.peer_reachable else 'became unavailable'} for {node.display_name}. This result is informational.",
+            severity="info",
             metadata={"cluster_id": node.cluster.public_id, "probe": "icmp", "reachable": bool(heartbeat.peer_reachable)},
         )
     return node

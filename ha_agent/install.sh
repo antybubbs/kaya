@@ -3,6 +3,14 @@ set -eu
 
 fail() { printf 'Kaya HA agent installation failed: %s\n' "$1" >&2; exit 1; }
 usage() { printf 'Usage: sudo sh install.sh --kaya-url URL --cluster-id UUID --node-id UUID\n' >&2; exit 2; }
+validate_service_unit() {
+    grep -qx 'User=kaya-ha' "$1" || fail "the service unit must run as kaya-ha"
+    grep -qx 'AmbientCapabilities=CAP_NET_RAW' "$1" || fail "the service unit is missing its required ICMP capability"
+}
+verify_running_service() {
+    [ "$(systemctl show kaya-ha-agent.service --property=User --value)" = "kaya-ha" ] || fail "the agent service is not running as kaya-ha"
+    systemctl show kaya-ha-agent.service --property=AmbientCapabilities --value | grep -qi 'cap_net_raw' || fail "the running agent service does not have CAP_NET_RAW"
+}
 
 [ "$(id -u)" -eq 0 ] || fail "run this installer with sudo"
 
@@ -52,6 +60,7 @@ done
 
 python3 -m py_compile "$TEMP_DIR/kaya_ha_agent.py" "$TEMP_DIR/keepalived_runtime.py" "$TEMP_DIR/failover_runtime.py" "$TEMP_DIR/kaya_ha_keepalived_helper.py" "$TEMP_DIR/kaya_ha_failover_helper.py" "$TEMP_DIR/kaya_ha_transition.py" || fail "downloaded Python files did not validate"
 visudo -cf "$TEMP_DIR/kaya-ha-agent.sudoers" >/dev/null || fail "the restricted sudo policy did not validate"
+validate_service_unit "$TEMP_DIR/kaya-ha-agent.service"
 install -m 0755 -o root -g root "$TEMP_DIR/kaya_ha_agent.py" "$TEMP_DIR/keepalived_runtime.py" "$TEMP_DIR/failover_runtime.py" "$TEMP_DIR/kaya_ha_keepalived_helper.py" "$TEMP_DIR/kaya_ha_failover_helper.py" "$TEMP_DIR/kaya_ha_transition.py" "$TEMP_DIR/check-pihole-dns" /usr/lib/kaya-ha-agent/
 install -m 0440 -o root -g root "$TEMP_DIR/kaya-ha-agent.sudoers" /etc/sudoers.d/kaya-ha-agent
 install -m 0644 -o root -g root "$TEMP_DIR/kaya-ha-agent.service" /etc/systemd/system/kaya-ha-agent.service
@@ -74,5 +83,6 @@ systemctl daemon-reload
 systemctl enable keepalived.service >/dev/null
 systemctl enable --now kaya-ha-agent.service
 systemctl is-active --quiet kaya-ha-agent.service || fail "the agent service did not start"
+verify_running_service
 INSTALL_OK=1
 printf 'Kaya HA agent registered and running. Return to the Agents page and wait for its first heartbeat.\n'

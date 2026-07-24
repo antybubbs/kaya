@@ -22,7 +22,9 @@ class HAAgentHeartbeat(HAAgentMessage):
     vip_owned: bool
     dhcp_running: bool
     dns_healthy: bool
-    peer_reachable: bool
+    peer_reachable: bool | None = None
+    peer_icmp_probe_status: str | None = Field(default=None, pattern="^(AVAILABLE|NO_REPLY|UNAVAILABLE)$")
+    peer_dns_reachable: bool | None = None
     lease_generation: int = Field(default=0, ge=0)
     config_generation: int = Field(default=0, ge=0)
     agent_version: str = Field(min_length=1, max_length=80)

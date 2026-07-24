@@ -241,13 +241,67 @@ def test_preferred_node_does_not_follow_current_active_role():
         assert preferred_node(cluster).id == preferred.id
 
 
-def test_peer_diagnostic_describes_actual_icmp_probe_without_overstating_security():
+def test_peer_diagnostic_reports_ping_dns_and_signed_heartbeat_independently():
     now = datetime.utcnow()
     with database() as db:
         _, _, node, peer = recovered_pair(db, now)
         node.last_peer_attempt_at = now
         node.peer_reachable = False
+        node.last_peer_dns_attempt_at = now
+        node.peer_dns_reachable = True
         diagnostic = peer_diagnostic(node, peer, now=now)
-        assert diagnostic["status"] == "UNREACHABLE"
-        assert diagnostic["probe"] == "ICMP host reachability"
-        assert "Kaya heartbeat" in diagnostic["explanation"]
+        assert diagnostic["status"] == "PING_UNAVAILABLE"
+        assert diagnostic["display_label"] == "Ping unavailable"
+        assert diagnostic["severity"] == "info"
+        assert diagnostic["probe"] == "Optional ICMP ping"
+        assert "informational" in diagnostic["explanation"]
+        assert diagnostic["dns_status"] == "REACHABLE"
+        assert diagnostic["dns_display_label"] == "DNS port 53 reachable"
+        assert diagnostic["peer_kaya_status"] == "REPORTING"
+        assert diagnostic["peer_kaya_display_label"] == "Reporting to Kaya"
+
+
+def test_peer_diagnostic_reports_local_icmp_permission_failure_without_blaming_peer():
+    now = datetime.utcnow()
+    with database() as db:
+        _, _, node, peer = recovered_pair(db, now)
+        node.last_peer_attempt_at = now
+        node.peer_reachable = None
+        node.peer_icmp_probe_status = "UNAVAILABLE"
+
+        diagnostic = peer_diagnostic(node, peer, now=now)
+
+        assert diagnostic["status"] == "ICMP_PROBE_UNAVAILABLE"
+        assert diagnostic["display_label"] == "ICMP probe unavailable"
+        assert diagnostic["severity"] == "info"
+        assert "local ICMP probe" in diagnostic["explanation"]
+        assert "does not mean the peer is unreachable" in diagnostic["explanation"]
+
+
+def test_unavailable_ping_does_not_block_recovery_or_failback_readiness():
+    now = datetime.utcnow()
+    with database() as db:
+        _, cluster, standby, active = recovered_pair(db, now)
+        standby.peer_reachable = False
+        standby.last_peer_attempt_at = now
+        standby.last_heartbeat_at = now
+        standby.recovery_stable_since = now - timedelta(seconds=61)
+        db.add(
+            HASyncRun(
+                cluster_id=cluster.id,
+                source_node_id=active.id,
+                target_node_id=standby.id,
+                status="IN_SYNC",
+                plan_json="{}",
+                completed_at=now,
+            )
+        )
+        db.commit()
+
+        recovery = evaluate_recovery(db, cluster, now=now)[standby.id]
+
+        peer_check = next(check for check in recovery.checks if check.key == "peer_reachability")
+        assert peer_check.passed is False
+        assert peer_check.required is False
+        assert recovery.ready is True
+        assert recovery.state == "STANDBY_READY"

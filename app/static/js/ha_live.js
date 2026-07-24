@@ -55,12 +55,21 @@
         card.querySelectorAll('[data-ha-node-field="vip_owned"]').forEach((element) => { element.textContent = current ? (node.vip_owned ? "Owned" : "Not owned") : "Unknown — node offline"; });
         card.querySelectorAll('[data-ha-node-field="dns_healthy"]').forEach((element) => { element.textContent = current ? yesNo(node.dns_healthy, "Healthy", "Unhealthy") : "Unknown — node offline"; });
         card.querySelectorAll('[data-ha-node-field="dhcp_running"]').forEach((element) => { element.textContent = current ? (node.dhcp_running ? "Running" : "Stopped") : "Unknown — node offline"; });
-        card.querySelectorAll('[data-ha-node-field="peer_reachable"]').forEach((element) => { element.textContent = current ? yesNo(node.peer_reachable, "Reachable", "Not reachable") : "Unknown — node offline"; });
+        card.querySelectorAll('[data-ha-node-field="peer_reachable"]').forEach((element) => {
+          element.textContent = node.peer_icmp_probe_status === "UNAVAILABLE" ? "ICMP probe unavailable" : node.peer_reachable === true ? "Ping available" : node.peer_reachable === false ? "Ping unavailable" : "Not tested";
+        });
         card.querySelectorAll("[data-ha-kaya-connection]").forEach((element) => { element.textContent = current ? "Reporting" : "Not reporting"; });
-        card.querySelectorAll("[data-ha-peer-status]").forEach((element) => { element.textContent = title(node.peer_diagnostic?.status); });
-        card.querySelectorAll("[data-ha-peer-explanation]").forEach((element) => { element.textContent = node.peer_diagnostic?.explanation || "No peer-host reachability result has been reported yet."; });
+        card.querySelectorAll("[data-ha-peer-status]").forEach((element) => { element.textContent = node.peer_diagnostic?.display_label || "Not tested"; });
+        card.querySelectorAll("[data-ha-peer-explanation]").forEach((element) => { element.textContent = node.peer_diagnostic?.explanation || "No ICMP ping result has been reported yet."; });
         card.querySelectorAll("[data-ha-peer-attempt]").forEach((element) => { element.textContent = localDate(node.peer_diagnostic?.last_attempt_at); });
         card.querySelectorAll("[data-ha-peer-success]").forEach((element) => { element.textContent = localDate(node.peer_diagnostic?.last_success_at); });
+        card.querySelectorAll("[data-ha-peer-dns-status]").forEach((element) => { element.textContent = node.peer_diagnostic?.dns_display_label || "Not tested"; });
+        card.querySelectorAll("[data-ha-peer-dns-explanation]").forEach((element) => { element.textContent = node.peer_diagnostic?.dns_explanation || "No peer DNS port result has been reported yet."; });
+        card.querySelectorAll("[data-ha-peer-dns-attempt]").forEach((element) => { element.textContent = localDate(node.peer_diagnostic?.dns_last_attempt_at); });
+        card.querySelectorAll("[data-ha-peer-dns-success]").forEach((element) => { element.textContent = localDate(node.peer_diagnostic?.dns_last_success_at); });
+        card.querySelectorAll("[data-ha-peer-kaya-status]").forEach((element) => { element.textContent = node.peer_diagnostic?.peer_kaya_display_label || "Not reported"; });
+        card.querySelectorAll("[data-ha-peer-kaya-explanation]").forEach((element) => { element.textContent = node.peer_diagnostic?.peer_kaya_explanation || "No signed peer heartbeat has been reported."; });
+        card.querySelectorAll("[data-ha-peer-kaya-heartbeat]").forEach((element) => { element.textContent = localDate(node.peer_diagnostic?.peer_kaya_last_heartbeat_at); });
         const recoveryChecks = card.querySelector("[data-ha-recovery-checks]");
         if (recoveryChecks) {
           recoveryChecks.replaceChildren(...node.recovery_checks.filter((check) => check.required).map((check) => {

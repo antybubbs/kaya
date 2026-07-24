@@ -78,7 +78,15 @@ After an automatic failover, the surviving node remains the current active node.
 
 Kaya never performs automatic failback by default. When the recovered preferred node is ready, an administrator can approve a controlled failback. Kaya performs one final sync, reuses the same guarded handover and rollback engine, and keeps or restores the known-good active node if a safety check fails.
 
-The node diagnostics distinguish the signed **Kaya heartbeat** from the optional **peer host reachability** check. The current Pi-hole agent reports peer-host reachability using ICMP; it is not an authenticated agent-to-agent session. A blocked ping can therefore produce an HA warning while DNS and the Kaya connection remain healthy.
+Connection Diagnostics reports three independent signals:
+
+- **Peer Kaya heartbeat** confirms whether the peer has recently sent a signed heartbeat to Kaya.
+- **Peer DNS service** tests whether the peer accepts a TCP connection on DNS port 53.
+- **Peer Network Reachability** is an optional ICMP ping only.
+
+**Ping unavailable** is informational. ICMP is commonly blocked by a host firewall or network, so this result never marks a node offline, degrades an otherwise healthy cluster, blocks failover or failback, or implies that DNS or an HA Agent has failed.
+
+**ICMP probe unavailable** means the node could not execute the local ping probe, usually because the installed agent service capability or ping package needs repair. Update or reinstall the agent to reconcile its non-root systemd service. Kaya still evaluates signed heartbeats, DNS health, and failover independently.
 
 Existing clients may temporarily display the previous DHCP server until they acquire a new lease. This does not mean that the previous Pi-hole is still serving DHCP; Kaya determines ownership from current HA service state.
 

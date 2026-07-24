@@ -56,7 +56,7 @@
         <div><dt>Recovery state</dt><dd data-ha-node-field="recovery_state">{{ node_recovery.state|replace('_', ' ')|title }}</dd></div>
         <div><dt>Kaya connection</dt><dd data-ha-kaya-connection>{{ 'Reporting' if node.last_heartbeat_at else 'Waiting' }}</dd></div>
         <div><dt>Last Kaya heartbeat</dt><dd data-ha-node-field="last_heartbeat_at">{{ local_time(node.last_heartbeat_at, 'friendly') if node.last_heartbeat_at else 'Never' }}</dd></div>
-        <div><dt>Peer host reachability</dt><dd data-ha-peer-status>{{ peer.status|replace('_', ' ')|title }}</dd></div>
+        <div><dt>Peer Network Reachability</dt><dd data-ha-peer-status>{{ peer.display_label }}</dd></div>
       </dl>
       <div class="ha-recovery-checks" data-ha-recovery-checks>
         {% for check in node_recovery.checks if check.required %}
@@ -65,14 +65,25 @@
       </div>
       <details class="ha-node-diagnostics">
         <summary>Connection diagnostics</summary>
-        <p data-ha-peer-explanation>{{ peer.explanation }}</p>
+        <p class="muted">These checks are independent. A blocked ping does not imply that DNS, the peer node, or its Kaya Agent is offline.</p>
         <dl class="ha-node-facts">
-          <div><dt>Check used</dt><dd>{{ peer.probe }}</dd></div>
           <div><dt>Peer</dt><dd>{{ peer.peer_name or 'Not configured' }}{% if peer.peer_address %} · <span class="mono">{{ peer.peer_address }}</span>{% endif %}</dd></div>
-          <div><dt>Last attempt</dt><dd data-ha-peer-attempt>{{ local_time(node.last_peer_attempt_at, 'friendly') if node.last_peer_attempt_at else 'Not reported' }}</dd></div>
-          <div><dt>Last success</dt><dd data-ha-peer-success>{{ local_time(node.last_peer_success_at, 'friendly') if node.last_peer_success_at else 'Not reported' }}</dd></div>
+          <div><dt>Peer Kaya heartbeat</dt><dd data-ha-peer-kaya-status>{{ peer.peer_kaya_display_label }}</dd></div>
+          <div><dt>Peer DNS service</dt><dd data-ha-peer-dns-status>{{ peer.dns_display_label }}</dd></div>
+          <div><dt>Peer Network Reachability</dt><dd data-ha-peer-status>{{ peer.display_label }}</dd></div>
         </dl>
-        <p class="muted">This is an ICMP host-reachability check, not an authenticated agent-to-agent connection. A blocked ping does not by itself mean DNS or Kaya connectivity has failed.</p>
+        <div class="ha-diagnostic-notes">
+          <p data-ha-peer-kaya-explanation>{{ peer.peer_kaya_explanation }}</p>
+          <p data-ha-peer-dns-explanation>{{ peer.dns_explanation }}</p>
+          <p data-ha-peer-explanation>{{ peer.explanation }}</p>
+        </div>
+        <dl class="ha-node-facts">
+          <div><dt>Last signed peer heartbeat</dt><dd data-ha-peer-kaya-heartbeat>{% if peer.peer_kaya_last_heartbeat_at %}<time data-utc-time="{{ peer.peer_kaya_last_heartbeat_at }}" data-time-format="friendly">{{ peer.peer_kaya_last_heartbeat_at }}</time>{% else %}Not reported{% endif %}</dd></div>
+          <div><dt>Last DNS port check</dt><dd data-ha-peer-dns-attempt>{{ local_time(node.last_peer_dns_attempt_at, 'friendly') if node.last_peer_dns_attempt_at else 'Not reported' }}</dd></div>
+          <div><dt>Last successful DNS port check</dt><dd data-ha-peer-dns-success>{{ local_time(node.last_peer_dns_success_at, 'friendly') if node.last_peer_dns_success_at else 'Not reported' }}</dd></div>
+          <div><dt>Last optional ping</dt><dd data-ha-peer-attempt>{{ local_time(node.last_peer_attempt_at, 'friendly') if node.last_peer_attempt_at else 'Not reported' }}</dd></div>
+          <div><dt>Last successful ping</dt><dd data-ha-peer-success>{{ local_time(node.last_peer_success_at, 'friendly') if node.last_peer_success_at else 'Not reported' }}</dd></div>
+        </dl>
       </details>
     </article>
     {% endfor %}

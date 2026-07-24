@@ -483,7 +483,7 @@ def cluster_live_status(public_id: str, db: Session = Depends(get_db), user=Depe
         and active_node.dns_healthy is True
         and (not pihole_manages_dhcp(cluster) or active_node.dhcp_running is True)
     )
-    peer_warnings = sum(1 for node in current_nodes if node.peer_reachable is False)
+    ping_unavailable = sum(1 for node in current_nodes if node.peer_reachable is False)
     recovering_nodes = [item.node.display_name for item in recovery.values() if item.state in {"RECOVERING", "SYNCHRONISING", "VERIFYING"}]
     return JSONResponse({
         "server_time": datetime.utcnow().isoformat() + "Z",
@@ -504,7 +504,7 @@ def cluster_live_status(public_id: str, db: Session = Depends(get_db), user=Depe
             "unacknowledged_alerts": unacknowledged_alerts,
             "service_availability": "HEALTHY" if services_healthy else "UNAVAILABLE" if active_node is None else "DEGRADED",
             "ha_readiness": "READY" if action_ready else "RECOVERING" if failback_recovery else "NEEDS_ATTENTION",
-            "peer_warning_count": peer_warnings,
+            "ping_unavailable_count": ping_unavailable,
             "recovering_nodes": recovering_nodes,
         },
         "nodes": [{
@@ -516,6 +516,8 @@ def cluster_live_status(public_id: str, db: Session = Depends(get_db), user=Depe
             "heartbeat_current": node in current_nodes,
             "dns_healthy": node.dns_healthy, "dhcp_running": node.dhcp_running,
             "vip_owned": node.vip_owned, "peer_reachable": node.peer_reachable,
+            "peer_icmp_probe_status": node.peer_icmp_probe_status,
+            "peer_dns_reachable": node.peer_dns_reachable,
             "keepalived_status": node.keepalived_status, "keepalived_runtime_state": node.keepalived_runtime_state,
             "network_interface": node.network_interface, "vrrp_priority": node.vrrp_priority,
             "keepalived_config_checksum": node.keepalived_config_checksum, "keepalived_last_error": node.keepalived_last_error,

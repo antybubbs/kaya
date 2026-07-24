@@ -117,7 +117,7 @@ def recovery_checks(db: Session, cluster: HACluster, node: HANode, *, now: datet
             and node.lease_generation >= lease.desired_generation
         )
     )
-    peer_label = "Peer host reachability"
+    peer_label = "Peer Network Reachability (optional)"
     return (
         RecoveryCheck("kaya_heartbeat", "Kaya heartbeat", heartbeat, "The HA Agent has reported to Kaya recently."),
         RecoveryCheck("agent_identity", "HA Agent identity", agent, "The registered, non-revoked agent identity is reporting."),
@@ -133,7 +133,7 @@ def recovery_checks(db: Session, cluster: HACluster, node: HANode, *, now: datet
             "peer_reachability",
             peer_label,
             node.peer_reachable is True,
-            "The agent can reach the peer host using its current ICMP probe. This is not an authenticated agent-to-agent session.",
+            "Optional ICMP ping only. An unavailable ping does not affect recovery, failover, failback, DNS health, or Kaya heartbeat status.",
             False,
         ),
     )
@@ -253,29 +253,67 @@ def recovery_snapshot(db: Session, cluster: HACluster, *, now: datetime | None =
 
 def peer_diagnostic(node: HANode, peer: HANode | None, *, now: datetime | None = None) -> dict[str, object | None]:
     current = now or datetime.utcnow()
-    if not node.last_peer_attempt_at:
-        status, severity = "UNKNOWN", "info"
-        explanation = "No peer-host reachability result has been reported yet."
-    elif node.peer_reachable is True:
-        status, severity = "CONNECTED", "healthy"
-        explanation = f"{node.display_name} can reach {peer.display_name if peer else 'the peer host'} using the configured ICMP probe."
-    elif node.last_peer_success_at and node.last_peer_success_at >= current - timedelta(seconds=60):
-        status, severity = "RECENTLY_CONNECTED", "warning"
-        explanation = "The latest ICMP probe failed, but a successful peer-host response was received within the last minute."
+    if peer is None:
+        status, display_label = "NOT_CONFIGURED", "Not configured"
+        explanation = "No peer node is configured."
+    elif node.peer_icmp_probe_status == "UNAVAILABLE":
+        status, display_label = "ICMP_PROBE_UNAVAILABLE", "ICMP probe unavailable"
+        explanation = "The node could not run its local ICMP probe. Check the installed HA Agent service capability and ping package. This does not mean the peer is unreachable."
+    elif not node.last_peer_attempt_at:
+        status, display_label = "NOT_TESTED", "Not tested"
+        explanation = "No ICMP ping result has been reported yet."
+    elif node.peer_icmp_probe_status == "AVAILABLE" or node.peer_reachable is True:
+        status, display_label = "PING_AVAILABLE", "Ping available"
+        explanation = f"{node.display_name} received an ICMP response from {peer.display_name}."
     else:
-        status, severity = "UNREACHABLE", "warning"
-        explanation = f"{node.display_name} cannot currently reach {peer.display_name if peer else 'the peer host'} using its ICMP probe. Kaya heartbeat and service health are reported separately."
+        status, display_label = "PING_UNAVAILABLE", "Ping unavailable"
+        explanation = "ICMP may be blocked by the host firewall or network. This is informational and does not mean the peer, DNS, or HA Agent is offline."
+
+    if node.peer_dns_reachable is True:
+        dns_status, dns_label = "REACHABLE", "DNS port 53 reachable"
+        dns_explanation = f"{node.display_name} opened a TCP connection to port 53 on {peer.display_name if peer else 'the peer'}."
+    elif node.peer_dns_reachable is False:
+        dns_status, dns_label = "UNREACHABLE", "DNS port 53 unavailable"
+        dns_explanation = "The peer did not accept a TCP connection on port 53. This service result is separate from ICMP ping."
+    else:
+        dns_status, dns_label = "NOT_TESTED", "Not tested"
+        dns_explanation = "This agent version has not reported the peer DNS port test yet."
+
+    peer_heartbeat_current = bool(
+        peer
+        and peer.last_heartbeat_at
+        and peer.last_heartbeat_at >= current - timedelta(seconds=RECOVERY_HEARTBEAT_SECONDS)
+    )
+    if peer_heartbeat_current:
+        kaya_status, kaya_label = "REPORTING", "Reporting to Kaya"
+        kaya_explanation = f"{peer.display_name} has a current, signed Kaya heartbeat."
+    elif peer and peer.last_heartbeat_at:
+        kaya_status, kaya_label = "DELAYED", "Heartbeat delayed"
+        kaya_explanation = f"{peer.display_name} has not sent a current signed heartbeat to Kaya."
+    else:
+        kaya_status, kaya_label = "NOT_REPORTED", "Not reported"
+        kaya_explanation = "The peer has not sent a signed heartbeat to Kaya."
+
     return {
         "status": status,
-        "severity": severity,
+        "display_label": display_label,
+        "severity": "info",
         "explanation": explanation,
-        "probe": "ICMP host reachability",
+        "probe": "Optional ICMP ping",
         "peer_name": peer.display_name if peer else None,
         "peer_address": peer.management_host if peer else None,
         "last_attempt_at": node.last_peer_attempt_at.isoformat() + "Z" if node.last_peer_attempt_at else None,
         "last_success_at": node.last_peer_success_at.isoformat() + "Z" if node.last_peer_success_at else None,
+        "dns_status": dns_status,
+        "dns_display_label": dns_label,
+        "dns_explanation": dns_explanation,
+        "dns_last_attempt_at": node.last_peer_dns_attempt_at.isoformat() + "Z" if node.last_peer_dns_attempt_at else None,
+        "dns_last_success_at": node.last_peer_dns_success_at.isoformat() + "Z" if node.last_peer_dns_success_at else None,
+        "peer_kaya_status": kaya_status,
+        "peer_kaya_display_label": kaya_label,
+        "peer_kaya_explanation": kaya_explanation,
+        "peer_kaya_last_heartbeat_at": peer.last_heartbeat_at.isoformat() + "Z" if peer and peer.last_heartbeat_at else None,
         "possible_causes": [
-            "The peer node is powered off or restarting.",
             "ICMP echo is blocked by a host or network firewall.",
             "The configured peer address is unreachable from this node.",
             "A routing or Layer 2 connectivity problem exists.",
