@@ -5,7 +5,7 @@ HELPER = "/usr/lib/kaya-ha-agent/kaya_ha_failover_helper.py"
 
 class FailoverRuntimeError(ValueError): pass
 
-def _run(command): return subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
+def _run(command): return subprocess.run(command, capture_output=True, text=True, timeout=60, check=False)
 
 def refresh_dhcp_state(state, *, runner=_run):
     result = runner(["sudo", "-n", HELPER, "status"])

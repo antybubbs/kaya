@@ -85,12 +85,28 @@ def deployment_blockers(cluster: HACluster, *, now: datetime | None = None, rout
     return list(dict.fromkeys(blockers))
 
 
-def render_keepalived_config(cluster: HACluster, node: HANode) -> KeepalivedConfig:
+def _controlled_preemption_target(cluster: HACluster) -> int | None:
+    run = next((
+        item
+        for item in sorted(cluster.failover_runs, key=lambda value: value.created_at, reverse=True)
+        if item.status in {"RUNNING", "ROLLING_BACK"}
+    ), None)
+    if run is None:
+        return None
+    if run.phase == "MOVING_VIP":
+        return run.target_node_id
+    if run.phase == "ROLLBACK_MOVING_VIP":
+        return run.source_node_id
+    return None
+
+
+def render_keepalived_config(cluster: HACluster, node: HANode, *, allow_preemption: bool = False) -> KeepalivedConfig:
     validate_network(cluster)
     if node not in cluster.nodes or node.vrrp_priority not in range(1, 255):
         raise HAKeepalivedError("Each node requires a Keepalived priority between 1 and 254.")
     instance = f"KAYA_HA_{cluster.public_id.replace('-', '')[:8].upper()}"
     generation = cluster.keepalived_generation
+    election_policy = "    preempt_delay 3\n" if allow_preemption else "    nopreempt\n"
     content = (
         "# Managed by Kaya High Availability. Do not edit.\n"
         f"# cluster={cluster.public_id} generation={generation}\n"
@@ -100,13 +116,17 @@ def render_keepalived_config(cluster: HACluster, node: HANode) -> KeepalivedConf
         "}\n\n"
         f"vrrp_script KAYA_DNS_{cluster.public_id.replace('-', '')[:8].upper()} {{\n"
         "    script \"/usr/lib/kaya-ha-agent/check-pihole-dns\"\n"
-        "    interval 2\n    timeout 2\n    fall 3\n    rise 3\n    weight -60\n}\n\n"
+        # An unweighted failed script puts this instance into FAULT. This
+        # releases the VIP before the role-change hook demotes DHCP. A negative
+        # weight combined with nopreempt could leave the unhealthy MASTER in
+        # place after DHCP had been stopped.
+        "    interval 2\n    timeout 2\n    fall 3\n    rise 3\n}\n\n"
         f"vrrp_instance {instance} {{\n"
         "    state BACKUP\n"
         f"    interface {node.network_interface}\n"
         f"    virtual_router_id {cluster.vrrp_router_id}\n"
         f"    priority {node.vrrp_priority}\n"
-        "    advert_int 1\n    nopreempt\n\n"
+        f"    advert_int 1\n{election_policy}\n"
         "    virtual_ipaddress {\n"
         f"        {cluster.virtual_ip}/{cluster.prefix_length}\n"
         "    }\n\n"
@@ -177,7 +197,15 @@ def request_manual_vip_move(db: Session, cluster: HACluster, target: HANode, ack
 def desired_keepalived_action(cluster: HACluster, node: HANode) -> dict | None:
     if cluster.keepalived_status not in {"PENDING_AGENT", "DEPLOYING"} or node.keepalived_status != "PENDING_AGENT":
         return None
-    generated = render_keepalived_config(cluster, node)
+    # Stable configurations always use nopreempt so a recovered node cannot
+    # take service back unexpectedly. During a controlled move only the
+    # intended destination may preempt, otherwise changing priorities cannot
+    # dislodge the existing MASTER.
+    generated = render_keepalived_config(
+        cluster,
+        node,
+        allow_preemption=_controlled_preemption_target(cluster) == node.id,
+    )
     return {
         "action_id": f"keepalived:{cluster.public_id}:{cluster.keepalived_generation}:{node.public_id}",
         "action_type": "KEEPALIVED_APPLY",

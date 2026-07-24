@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.models.models import HACluster, HAHealthCheck, HANode
 from app.services.dns_providers import DNSProviderResult, PiHoleProvider
+from app.services.ha_topology import pihole_manages_dhcp, requires_dhcp_validation
 
 
 GROUP_LABELS = {
@@ -182,6 +183,7 @@ def _collect_node(
     connection: PiHoleConnectionAdapter | None,
     client_factory: Callable[[PiHoleConnectionAdapter], PiHoleProvider],
     dns_probe: Callable[[str], tuple[bool, str]],
+    require_dhcp: bool,
 ) -> tuple[list[ValidationFinding], str | None, list[str], dict[str, Any]]:
     if connection is None:
         return [ValidationFinding(node_id, "connection", "FAIL", "blocking", "The provider connection is no longer available.", "No usable HA or DNS integration reference remains.", "Edit the node connection before validating again.")], None, [], {}
@@ -190,7 +192,7 @@ def _collect_node(
     version_result = client.get_version()
     status_result = client.get_status()
     configuration_result = client.get_ha_configuration()
-    leases_result = client.get_dhcp_leases()
+    leases_result = client.get_dhcp_leases() if require_dhcp else None
     findings = [
         _result_finding(node_id, "api_authentication", authentication, "Pi-hole API authentication succeeded.", "Check the node URL and application password."),
         _result_finding(node_id, "ftl_service", status_result, "Pi-hole FTL status is readable.", "Confirm Pi-hole FTL is running and the API is reachable."),
@@ -220,8 +222,11 @@ def _collect_node(
     else:
         findings.append(ValidationFinding(node_id, "api_capabilities", "FAIL", "blocking", "No supported configuration capability could be read.", configuration_result.message, "Check Pi-hole version, API permissions, and authentication."))
     dhcp_available = "dhcp" in configuration
-    findings.append(ValidationFinding(node_id, "dhcp_configuration", "PASS" if dhcp_available else "UNKNOWN", "info" if dhcp_available else "blocking", "DHCP configuration is readable." if dhcp_available else "DHCP configuration could not be read.", unavailable.get("dhcp", configuration_result.message), None if dhcp_available else "Grant read access to the DHCP configuration endpoint before deployment."))
-    findings.append(_result_finding(node_id, "dhcp_lease_access", leases_result, "DHCP lease data is readable.", "Confirm the DHCP lease endpoint is available to the Pi-hole application password."))
+    if require_dhcp:
+        findings.append(ValidationFinding(node_id, "dhcp_configuration", "PASS" if dhcp_available else "UNKNOWN", "info" if dhcp_available else "blocking", "DHCP configuration is readable." if dhcp_available else "DHCP configuration could not be read.", unavailable.get("dhcp", configuration_result.message), None if dhcp_available else "Grant read access to the DHCP configuration endpoint before deployment."))
+        findings.append(_result_finding(node_id, "dhcp_lease_access", leases_result, "DHCP lease data is readable.", "Confirm the DHCP lease endpoint is available to the Pi-hole application password."))
+    else:
+        findings.append(ValidationFinding(node_id, "dhcp_boundary", "PASS", "info", "DHCP checks are not required in DNS-only mode.", "Another platform provides DHCP; Kaya will not read or alter DHCP leases."))
     return findings, version, capabilities, configuration
 
 
@@ -235,8 +240,9 @@ def run_live_validation(
     node_inputs = [(node.id, node.management_host or "", connection_for_node(node)) for node in cluster.nodes]
     cluster_id = cluster.id
     db.rollback()  # End the read transaction before contacting either provider.
+    require_dhcp = requires_dhcp_validation(cluster)
     collected = [
-        (node_id, *_collect_node(node_id, host, connection, client_factory, dns_probe))
+        (node_id, *_collect_node(node_id, host, connection, client_factory, dns_probe, require_dhcp))
         for node_id, host, connection in node_inputs
     ]
     db.query(HAHealthCheck).filter(HAHealthCheck.cluster_id == cluster_id).delete(synchronize_session=False)
@@ -256,6 +262,10 @@ def run_live_validation(
     cluster_row = db.get(HACluster, cluster_id)
     if len(collected) != 2:
         findings.append(ValidationFinding(None, "node_count", "FAIL", "blocking", "Exactly two nodes are required.", f"Found {len(collected)} nodes.", "Return the cluster to draft configuration and add two unique nodes."))
+    versions = [version for _, _, version, _, _ in collected if version]
+    if len(versions) == 2 and cluster.deployment_mode in {"DNS_ONLY", "DNS_DHCP"}:
+        same_version = versions[0] == versions[1]
+        findings.append(ValidationFinding(None, "matching_provider_versions", "PASS" if same_version else "FAIL", "info" if same_version else "blocking", "Both Pi-hole nodes run the same version." if same_version else "The Pi-hole versions do not match.", " / ".join(versions), None if same_version else "Upgrade both nodes to the same supported Pi-hole version before deployment."))
     blocking = any(item.severity == "blocking" and item.status != "PASS" for item in findings)
     warning = any(item.status == "WARNING" for item in findings)
     if cluster_row is not None:
@@ -288,6 +298,9 @@ def configuration_differences(cluster: HACluster) -> list[ConfigurationDifferenc
         secondary = json.loads(nodes[1].configuration_snapshot_json or "{}")
     except (TypeError, json.JSONDecodeError):
         return []
+    if not pihole_manages_dhcp(cluster):
+        primary.pop("dhcp", None)
+        secondary.pop("dhcp", None)
     differences = []
     for group in sorted(set(primary) | set(secondary)):
         if primary.get(group) == secondary.get(group):

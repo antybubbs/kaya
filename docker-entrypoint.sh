@@ -105,6 +105,11 @@ fi
 
 echo "Starting Kaya with ENCRYPTION_KEY length: ${#ENCRYPTION_KEY}"
 
+if [ "${KAYA_GATEWAY_MODE:-false}" != "true" ] && [ ! -s /app/data/kaya.db ]; then
+    echo "Initialising new Kaya database schema..."
+    gosu kaya python -c "from app.db.session import Base, engine; import app.models.models; Base.metadata.create_all(bind=engine)"
+fi
+
 if [ "${SKIP_DATABASE_MIGRATIONS:-false}" != "true" ]; then
     echo "Running database migrations..."
     if [ "${SQLITE_PRE_MIGRATION_BACKUP:-true}" = "true" ] && [ -f /app/data/kaya.db ]; then

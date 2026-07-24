@@ -997,7 +997,7 @@
         window.setTimeout(() => term.focus(), 0);
       }
     });
-    socket.addEventListener("close", () => {
+    socket.addEventListener("close", (event) => {
       connected = false;
       sessionPassword = "";
       clearIdleTimer();
@@ -1005,7 +1005,8 @@
       syncRecordingButton();
 
       if (!closeHandled) {
-        writeTerminal("\r\nSession closed.\r\n");
+        const reason = String(event.reason || "").trim();
+        writeTerminal(`\r\n${reason || "Session closed."}\r\n`);
       }
 
       passwordForm.hidden = false;

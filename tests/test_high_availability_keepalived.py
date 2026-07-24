@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session
 
 from app.db.session import Base
-from app.models.models import HAAgentCredential, HACluster, HANode, User
+from app.models.models import HAAgentCredential, HACluster, HAFailoverRun, HANode, User
 from app.schemas.high_availability import HAAgentActionResult, HAAgentHeartbeat
 from app.services.ha_agents import HAAgentError, desired_state, record_action_result, record_heartbeat
 from app.services.ha_keepalived import HAKeepalivedError, deployment_blockers, desired_keepalived_action, prepare_deployment, render_keepalived_config, request_manual_vip_move, validate_network
@@ -83,6 +83,42 @@ def test_deployment_requires_agents_and_builds_node_bound_desired_actions():
         assert actions[0]["action_id"] != actions[1]["action_id"]
         assert {action["checksum"] for action in actions} == {render_keepalived_config(prepared, node).checksum for node in prepared.nodes}
         assert desired_state(prepared.nodes[0])["allowed_actions"] == ["KEEPALIVED_APPLY"]
+
+
+def test_controlled_move_temporarily_allows_only_the_destination_to_preempt():
+    with database() as db:
+        cluster = prepare_deployment(db, ready_cluster(db), 51, True)
+        source = next(node for node in cluster.nodes if node.desired_role == "ACTIVE")
+        target = next(node for node in cluster.nodes if node.id != source.id)
+        source.role = source.desired_role = "ACTIVE"
+        target.role = target.desired_role = "STANDBY"
+        source.vrrp_priority = 100
+        target.vrrp_priority = 150
+        run = HAFailoverRun(
+            cluster_id=cluster.id,
+            source_node_id=source.id,
+            target_node_id=target.id,
+            status="RUNNING",
+            phase="MOVING_VIP",
+            dhcp_managed=True,
+            role_generation=2,
+        )
+        db.add(run)
+        db.flush()
+        for node in cluster.nodes:
+            node.keepalived_status = "PENDING_AGENT"
+
+        source_config = desired_keepalived_action(cluster, source)["configuration"]
+        target_config = desired_keepalived_action(cluster, target)["configuration"]
+
+        assert "nopreempt" in source_config
+        assert "preempt_delay 3" not in source_config
+        assert "nopreempt" not in target_config
+        assert "preempt_delay 3" in target_config
+        target_action = desired_keepalived_action(cluster, target)
+        assert validate_desired_configuration(target_action) == target_config.encode()
+        from ha_agent.kaya_ha_keepalived_helper import validate_managed_document
+        assert validate_managed_document(target_config.encode())
 
 
 def test_deployment_blockers_report_every_node_with_an_invalid_interface():
@@ -198,22 +234,31 @@ def test_root_helper_independently_allows_generated_config_and_rejects_injected_
     assert helper.validate_managed_document(generated)
     assert b"nopreempt" in generated
     assert b"preempt_delay" not in generated
+    assert b"weight -60" not in generated
     assert not helper.validate_managed_document(generated.replace(b"state BACKUP", b"state BACKUP\ninclude /tmp/evil.conf"))
 
 
 def test_deployment_ui_and_agent_protocol_keep_dhcp_outside_keepalived_setup():
     template = Path("app/templates/high_availability_cluster_deployment.html").read_text(encoding="utf-8")
+    stylesheet = Path("app/static/css/kaya.css").read_text(encoding="utf-8")
+    shared_live_script = Path("app/static/js/ha_live.js").read_text(encoding="utf-8")
     router = Path("app/routers/high_availability.py").read_text(encoding="utf-8")
     agent_router = Path("app/routers/ha_agent_api.py").read_text(encoding="utf-8")
     helper = Path("ha_agent/kaya_ha_keepalived_helper.py").read_text(encoding="utf-8")
     transition = Path("ha_agent/kaya_ha_transition.py").read_text(encoding="utf-8")
     assert "DHCP is not changed here" in template
     assert "This setup deploys Keepalived only" in template
-    assert "Move Virtual IP" in template
+    assert "Move DNS Virtual IP" in template
     assert "Deployment blocked" in template
     assert "Resolve blockers to deploy" in template
     assert "Edit node settings" in template
     assert "Deployment error reported by this node" in template
+    assert "data-ha-deployment-role" in template
+    assert "Preferred and Backup show the configured priority" in template
+    assert "Node configuration fingerprint" in template
+    assert ".ha-agent-diagnostic[hidden]{display:none!important}" in stylesheet
+    assert "updateDeploymentLiveStatus(data.nodes)" in shared_live_script
+    assert '"[data-ha-deployment-role]"' in shared_live_script
     assert "data-ha-deployment-live" in template
     assert "ha_deployment.js" in template
     live_script = Path("app/static/js/ha_deployment.js").read_text(encoding="utf-8")

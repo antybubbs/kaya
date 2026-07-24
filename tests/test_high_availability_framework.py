@@ -26,7 +26,7 @@ from app.models.models import (
     User,
 )
 from app.routers.admin import set_high_availability_feature
-from app.routers.high_availability import active_clusters, cluster_or_404, require_ha_admin, require_high_availability, test_cluster_connection as connection_route
+from app.routers.high_availability import active_clusters, cluster_or_404, require_ha_admin, require_high_availability, test_cluster_connection as connection_route, update_cluster_topology
 from app.schemas.high_availability import HAClusterDraftCreate, HAClusterRead
 from app.services.ha_clusters import HADraftError, create_cluster_draft, soft_delete_cluster, validate_cluster_draft
 from app.services.ha_registry import SUPPORTED_HA_PROVIDERS
@@ -392,3 +392,79 @@ def test_cluster_danger_zone_is_admin_only_audited_and_explains_preservation():
     assert '"soft_delete": True' in routes
     assert '"provider_contacted": False' in routes
     assert "connections, validation records, DNS links, and history were preserved" in clusters
+
+
+def test_service_responsibilities_can_correct_managed_dhcp_without_controlling_nodes():
+    with database() as db:
+        admin = User(email="topology-admin@example.invalid", password_hash="x", role="admin", is_active=True)
+        cluster = HACluster(
+            name="Managed DHCP",
+            provider_key="pihole",
+            deployment_mode="DNS_ONLY",
+            external_dhcp_provider="router",
+            status="HEALTHY",
+            virtual_ip="192.0.2.53",
+            prefix_length=24,
+            automatic_failover_enabled=True,
+            created_by=admin,
+        )
+        db.add_all([admin, cluster])
+        db.flush()
+        db.add_all([
+            HANode(cluster_id=cluster.id, display_name="Primary", api_base_url="https://primary.invalid", role="ACTIVE", desired_role="ACTIVE", dhcp_running=True),
+            HANode(cluster_id=cluster.id, display_name="Standby", api_base_url="https://standby.invalid", role="STANDBY", desired_role="STANDBY", dhcp_running=False),
+        ])
+        db.commit()
+
+        response = asyncio.run(update_cluster_topology(
+            cluster.public_id,
+            form_request(
+                f"/high-availability/clusters/{cluster.public_id}/topology",
+                {
+                    "csrf_token": "csrf",
+                    "deployment_mode": "DNS_DHCP",
+                    "acknowledge_managed_dhcp": "1",
+                    "cluster_name": cluster.name,
+                },
+            ),
+            db=db,
+            user=admin,
+        ))
+
+        db.refresh(cluster)
+        assert response.status_code == 303
+        assert cluster.deployment_mode == "DNS_DHCP"
+        assert cluster.external_dhcp_provider is None
+        assert cluster.automatic_failover_enabled is False
+        assert [node.dhcp_running for node in cluster.nodes] == [True, False]
+        audit = db.query(AuditLog).filter_by(entity="ha_service_responsibilities", entity_id=cluster.public_id).one()
+        assert audit.metadata_json is not None
+
+
+def test_service_responsibilities_refuse_external_mode_while_pihole_dhcp_is_live():
+    with database() as db:
+        admin = User(email="topology-block@example.invalid", password_hash="x", role="admin", is_active=True)
+        cluster = HACluster(name="Managed DHCP", provider_key="pihole", deployment_mode="DNS_DHCP", status="HEALTHY", created_by=admin)
+        db.add_all([admin, cluster])
+        db.flush()
+        db.add(HANode(cluster_id=cluster.id, display_name="Primary", api_base_url="https://primary.invalid", role="ACTIVE", desired_role="ACTIVE", dhcp_running=True))
+        db.commit()
+
+        response = asyncio.run(update_cluster_topology(
+            cluster.public_id,
+            form_request(
+                f"/high-availability/clusters/{cluster.public_id}/topology",
+                {
+                    "csrf_token": "csrf",
+                    "deployment_mode": "DNS_ONLY",
+                    "external_dhcp_provider": "router",
+                    "cluster_name": cluster.name,
+                },
+            ),
+            db=db,
+            user=admin,
+        ))
+
+        db.refresh(cluster)
+        assert response.status_code == 409
+        assert cluster.deployment_mode == "DNS_DHCP"

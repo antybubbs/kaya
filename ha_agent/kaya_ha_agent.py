@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import secrets
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -21,6 +22,11 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 
 PROTOCOL_VERSION = 1
+AGENT_VERSION = "0.2.5"
+
+ICMP_AVAILABLE = "AVAILABLE"
+ICMP_NO_REPLY = "NO_REPLY"
+ICMP_UNAVAILABLE = "UNAVAILABLE"
 
 
 def encoded(value: bytes) -> str:
@@ -95,8 +101,13 @@ class State:
 def json_request(url: str, method: str, payload: dict | None, headers: dict[str, str] | None = None) -> dict:
     body = json.dumps(payload, separators=(",", ":")).encode() if payload is not None else b""
     req = request.Request(url, data=body if method != "GET" else None, method=method, headers={"Content-Type": "application/json", **(headers or {})})
-    with request.urlopen(req, timeout=15) as response:
-        return json.loads(response.read() or b"{}")
+    try:
+        with request.urlopen(req, timeout=15) as response:
+            return json.loads(response.read() or b"{}")
+    except error.HTTPError as exc:
+        if exc.code in {307, 308}:
+            raise ValueError("Kaya redirected the agent request. Generate a new command from the HTTPS Kaya page and try again.") from None
+        raise ValueError(f"Kaya rejected the agent request with HTTP {exc.code}.") from None
 
 
 def private_key(state: State) -> Ed25519PrivateKey:
@@ -117,6 +128,24 @@ def signed_request(state: State, method: str, path: str, payload: dict | None = 
         "X-Kaya-Agent-Protocol": str(PROTOCOL_VERSION),
     }
     return json_request(config["kaya_url"].rstrip("/") + path, method, payload, headers)
+
+
+def probe_icmp(peer_host: str, *, runner=subprocess.run) -> tuple[bool | None, str]:
+    """Run the fixed ICMP probe without treating local execution failure as peer failure."""
+    try:
+        result = runner(
+            ["/usr/bin/ping", "-c", "1", "-W", "1", peer_host],
+            capture_output=True,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None, ICMP_UNAVAILABLE
+    if result.returncode == 0:
+        return True, ICMP_AVAILABLE
+    if result.returncode == 1:
+        return False, ICMP_NO_REPLY
+    return None, ICMP_UNAVAILABLE
 
 
 def register(state: State, args) -> None:
@@ -230,12 +259,19 @@ def run_once(state: State) -> None:
         state.set("dns_healthy", False)
     peer_host = str(state.get("peer_host", "") or "").strip()
     if peer_host:
+        peer_reachable, icmp_probe_status = probe_icmp(peer_host)
+        state.set("peer_reachable", peer_reachable)
+        state.set("peer_icmp_probe_status", icmp_probe_status)
         try:
-            peer = subprocess.run(["/usr/bin/ping", "-c", "1", "-W", "1", peer_host], capture_output=True, timeout=3, check=False)
-            state.set("peer_reachable", peer.returncode == 0)
-        except (OSError, subprocess.SubprocessError):
-            state.set("peer_reachable", False)
-    heartbeat = {"observed_role": state.get("observed_role", "STANDBY"), "observed_generation": int(state.get("observed_generation", 0)), "vip_owned": bool(state.get("vip_owned", False)), "dhcp_running": bool(state.get("dhcp_running", False)), "dns_healthy": bool(state.get("dns_healthy", False)), "peer_reachable": bool(state.get("peer_reachable", False)), "lease_generation": int(state.get("lease_generation", 0)), "config_generation": int(state.get("config_generation", 0)), "agent_version": config["agent_version"], "keepalived_runtime_state": state.get("keepalived_runtime_state", "UNKNOWN")}
+            with socket.create_connection((peer_host, 53), timeout=2):
+                state.set("peer_dns_reachable", True)
+        except OSError:
+            state.set("peer_dns_reachable", False)
+    else:
+        state.set("peer_reachable", None)
+        state.set("peer_icmp_probe_status", None)
+        state.set("peer_dns_reachable", None)
+    heartbeat = {"observed_role": state.get("observed_role", "STANDBY"), "observed_generation": int(state.get("observed_generation", 0)), "vip_owned": bool(state.get("vip_owned", False)), "dhcp_running": bool(state.get("dhcp_running", False)), "dns_healthy": bool(state.get("dns_healthy", False)), "peer_reachable": state.get("peer_reachable"), "peer_icmp_probe_status": state.get("peer_icmp_probe_status"), "peer_dns_reachable": state.get("peer_dns_reachable"), "lease_generation": int(state.get("lease_generation", 0)), "config_generation": int(state.get("config_generation", 0)), "agent_version": AGENT_VERSION, "keepalived_runtime_state": state.get("keepalived_runtime_state", "UNKNOWN")}
     response = signed_request(state, "POST", "/api/ha/agent/v1/heartbeat", heartbeat)
     reconcile_desired(state, response["desired"])
     action_result = state.get("pending_action_result")
@@ -267,7 +303,7 @@ def main() -> None:
     token_source = registration.add_mutually_exclusive_group(required=True)
     token_source.add_argument("--token")
     token_source.add_argument("--token-stdin", action="store_true")
-    registration.add_argument("--agent-version", default="0.2.0")
+    registration.add_argument("--agent-version", default=AGENT_VERSION)
     event_parser = commands.add_parser("event")
     event_parser.add_argument("event_type")
     event_parser.add_argument("message")
@@ -278,7 +314,10 @@ def main() -> None:
     args = parser.parse_args()
     state = State(Path(args.state_dir))
     if args.command == "register":
-        register(state, args)
+        try:
+            register(state, args)
+        except (error.URLError, TimeoutError, ValueError, KeyError) as exc:
+            raise SystemExit(f"Kaya HA agent registration failed: {exc}") from None
     elif args.command == "event":
         print(state.queue_event(args.event_type, args.severity, args.message))
     elif args.command == "once":

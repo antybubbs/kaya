@@ -28,7 +28,7 @@ SAFE_LINES = (
     re.compile(r"vrrp_instance KAYA_HA_[A-F0-9]{8} \{"),
     re.compile(r"script \"/usr/lib/kaya-ha-agent/check-pihole-dns\""),
     re.compile(r"(?:interval|timeout|fall|rise|advert_int|preempt_delay) [1-9][0-9]*"),
-    re.compile(r"weight -60"), re.compile(r"state BACKUP"), re.compile(r"nopreempt"),
+    re.compile(r"state BACKUP"), re.compile(r"nopreempt"),
     re.compile(r"interface [A-Za-z0-9_.:-]{1,80}"),
     re.compile(r"virtual_router_id (?:[1-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])"),
     re.compile(r"priority (?:[1-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-4])"),

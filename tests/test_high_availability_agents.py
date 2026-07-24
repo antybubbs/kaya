@@ -2,6 +2,7 @@ import asyncio
 import base64
 import hashlib
 import json
+from types import SimpleNamespace
 import time
 from datetime import datetime, timedelta
 
@@ -18,7 +19,7 @@ from app.models.models import HAAgentCredential, HAAgentRequest, HACluster, HAEv
 from app.schemas.high_availability import HAAgentEventItem, HAAgentHeartbeat, HAAgentRegister
 from app.services.ha_agents import HAAgentError, authenticate_agent_request, create_bootstrap_token, desired_state, ingest_events, reconcile_vip_ownership, record_heartbeat, register_agent, revoke_agent
 from app.services.ha_clusters import soft_delete_cluster
-from ha_agent.kaya_ha_agent import State, reconcile_desired
+from ha_agent.kaya_ha_agent import ICMP_AVAILABLE, ICMP_NO_REPLY, ICMP_UNAVAILABLE, State, probe_icmp, reconcile_desired
 
 
 def database():
@@ -136,14 +137,67 @@ def test_heartbeat_tracks_divergence_and_desired_state_has_no_commands():
         cluster.cluster_generation = 7
         cluster.role_generation = 3
         db.commit()
-        heartbeat = HAAgentHeartbeat(observed_role="ACTIVE", observed_generation=5, vip_owned=True, dhcp_running=False, dns_healthy=True, peer_reachable=True, lease_generation=9, config_generation=4, agent_version="0.1.0")
+        heartbeat = HAAgentHeartbeat(observed_role="ACTIVE", observed_generation=5, vip_owned=True, dhcp_running=False, dns_healthy=True, peer_reachable=False, peer_dns_reachable=True, lease_generation=9, config_generation=4, agent_version="0.2.4")
         record_heartbeat(db, standby, heartbeat)
         state = desired_state(standby)
         assert standby.observed_role == "ACTIVE"
         assert standby.observed_generation != state["cluster_generation"]
+        assert standby.peer_reachable is False
+        assert standby.peer_dns_reachable is True
+        assert standby.last_peer_attempt_at is not None
+        assert standby.last_peer_dns_success_at is not None
         assert state["desired_role"] == "STANDBY"
         assert state["automatic_failover"] is False
         assert state["allowed_actions"] == []
+
+
+def test_icmp_transition_is_informational_and_does_not_degrade_cluster():
+    with database() as db:
+        cluster, primary, standby = cluster_with_nodes(db)
+        cluster.status = "HEALTHY"
+        for node in (primary, standby):
+            node.last_heartbeat_at = datetime.utcnow()
+            node.dns_healthy = True
+            node.keepalived_status = "DEPLOYED"
+            node.keepalived_runtime_state = "RUNNING"
+            node.agent_version = "0.2.4"
+        primary.vip_owned = True
+        primary.observed_role = "ACTIVE"
+        standby.vip_owned = False
+        standby.observed_role = "STANDBY"
+        db.commit()
+
+        common = dict(
+            observed_role="ACTIVE",
+            observed_generation=0,
+            vip_owned=True,
+            dhcp_running=False,
+            dns_healthy=True,
+            lease_generation=0,
+            config_generation=0,
+            agent_version="0.2.4",
+            keepalived_runtime_state="RUNNING",
+        )
+        record_heartbeat(db, primary, HAAgentHeartbeat(**common, peer_reachable=True, peer_dns_reachable=True))
+        record_heartbeat(db, primary, HAAgentHeartbeat(**common, peer_reachable=False, peer_dns_reachable=True))
+
+        event_row = db.query(HAEvent).filter_by(event_type="peer_network_reachability_unavailable").one()
+        assert event_row.severity == "info"
+        assert cluster.status == "HEALTHY"
+
+        record_heartbeat(
+            db,
+            primary,
+            HAAgentHeartbeat(
+                **common,
+                peer_reachable=None,
+                peer_icmp_probe_status="UNAVAILABLE",
+                peer_dns_reachable=True,
+            ),
+        )
+        assert primary.peer_reachable is None
+        assert primary.peer_icmp_probe_status == "UNAVAILABLE"
+        assert cluster.status == "HEALTHY"
 
 
 def test_desired_state_supplies_offline_failover_safety_context():
@@ -154,6 +208,7 @@ def test_desired_state_supplies_offline_failover_safety_context():
         primary.management_host = "192.0.2.20"
         standby.management_host = "192.0.2.21"
         standby.network_interface = "eth0"
+        primary.agent_version = standby.agent_version = "0.2.2"
         db.commit()
         state = desired_state(standby)
         assert state["automatic_failover"] is True
@@ -161,6 +216,40 @@ def test_desired_state_supplies_offline_failover_safety_context():
         assert state["peer_host"] == "192.0.2.20"
         assert state["network_interface"] == "eth0"
         assert state["automatic_hold_down_seconds"] >= 5
+
+
+def test_desired_state_disables_automatic_failover_for_unverified_agent_runtime():
+    with database() as db:
+        cluster, _, standby = cluster_with_nodes(db)
+        cluster.automatic_failover_enabled = True
+        standby.agent_version = "0.2.0"
+        db.commit()
+
+        assert desired_state(standby)["automatic_failover"] is False
+
+
+def test_desired_state_keeps_automatic_failover_off_during_rolling_agent_update():
+    with database() as db:
+        cluster, primary, standby = cluster_with_nodes(db)
+        cluster.automatic_failover_enabled = True
+        primary.agent_version = "0.2.2"
+        standby.agent_version = "0.2.1"
+        db.commit()
+
+        assert desired_state(primary)["automatic_failover"] is False
+        assert desired_state(standby)["automatic_failover"] is False
+
+
+def test_non_safety_agent_update_does_not_disable_automatic_failover():
+    with database() as db:
+        cluster, primary, standby = cluster_with_nodes(db)
+        cluster.automatic_failover_enabled = True
+        primary.agent_version = "0.2.2"
+        standby.agent_version = "0.2.3"
+        db.commit()
+
+        assert desired_state(primary)["automatic_failover"] is True
+        assert desired_state(standby)["automatic_failover"] is True
 
 
 def test_agent_events_are_deduplicated_and_sensitive_details_are_removed():
@@ -192,8 +281,10 @@ def test_verified_automatic_failover_event_immediately_adopts_the_surviving_owne
         primary.vip_owned = True
         db.commit()
 
-        record_heartbeat(db, standby, HAAgentHeartbeat(observed_role="ACTIVE", observed_generation=8, vip_owned=True, dhcp_running=False, dns_healthy=True, peer_reachable=False, lease_generation=0, config_generation=8, agent_version="0.2.0", keepalived_runtime_state="RUNNING"))
-        assert cluster.status == "ERROR"
+        record_heartbeat(db, standby, HAAgentHeartbeat(observed_role="ACTIVE", observed_generation=8, vip_owned=True, dhcp_running=True, dns_healthy=True, peer_reachable=False, lease_generation=0, config_generation=8, agent_version="0.2.2", keepalived_runtime_state="RUNNING"))
+        assert cluster.status == "DEGRADED"
+        assert db.query(HAEvent).filter_by(event_type="ownership_transition_pending", severity="warning").one()
+        assert db.query(HAEvent).filter_by(event_type="split_brain_detected").count() == 0
 
         completed = HAAgentEventItem(event_id="automatic-completed-001", event_type="automatic_failover_completed", severity="warning", message="Local failover completed without requiring Kaya.", occurred_at=datetime.utcnow(), details={"generation": 8, "automatic": True})
         assert ingest_events(db, standby, [completed]) == (1, 0)
@@ -207,6 +298,30 @@ def test_verified_automatic_failover_event_immediately_adopts_the_surviving_owne
         reconciled = db.query(HAEvent).filter_by(event_type="ownership_reconciled").one()
         assert reconciled.severity == "info"
         assert db.query(HAEvent).filter_by(event_type="automatic_failover_completed").one()
+
+
+def test_both_nodes_reporting_vip_confirms_split_brain_after_transition_window():
+    with database() as db:
+        cluster, primary, standby = cluster_with_nodes(db)
+        cluster.keepalived_status = "DEPLOYED"
+        cluster.keepalived_generation = 8
+        cluster.automatic_failover_enabled = True
+        cluster.current_active_node_id = primary.id
+        cluster.status = "HEALTHY"
+        for node in (primary, standby):
+            node.keepalived_status = "DEPLOYED"
+            node.keepalived_runtime_state = "RUNNING"
+            node.config_generation = 8
+            node.last_heartbeat_at = datetime.utcnow()
+            node.dns_healthy = True
+            node.vip_owned = True
+        db.commit()
+
+        record_heartbeat(db, standby, HAAgentHeartbeat(observed_role="ACTIVE", observed_generation=8, vip_owned=True, dhcp_running=False, dns_healthy=True, peer_reachable=False, lease_generation=0, config_generation=8, agent_version="0.2.3", keepalived_runtime_state="RUNNING"))
+        record_heartbeat(db, primary, HAAgentHeartbeat(observed_role="ACTIVE", observed_generation=8, vip_owned=True, dhcp_running=True, dns_healthy=True, peer_reachable=True, lease_generation=0, config_generation=8, agent_version="0.2.3", keepalived_runtime_state="RUNNING"))
+
+        assert cluster.status == "ERROR"
+        assert db.query(HAEvent).filter_by(event_type="split_brain_detected", severity="critical").one()
 
 
 def test_stale_cached_owner_recovers_on_the_next_surviving_heartbeat():
@@ -284,6 +399,26 @@ def test_local_event_queue_survives_restart_and_rejects_stale_desired_state(tmp_
     second.db.close()
 
 
+def test_agent_icmp_probe_distinguishes_no_reply_from_local_probe_unavailability():
+    calls = []
+
+    def result(returncode):
+        def runner(command, **kwargs):
+            calls.append((command, kwargs))
+            return SimpleNamespace(returncode=returncode, stdout=b"", stderr=b"")
+        return runner
+
+    assert probe_icmp("192.0.2.20", runner=result(0)) == (True, ICMP_AVAILABLE)
+    assert probe_icmp("192.0.2.20", runner=result(1)) == (False, ICMP_NO_REPLY)
+    assert probe_icmp("192.0.2.20", runner=result(2)) == (None, ICMP_UNAVAILABLE)
+
+    def denied(command, **kwargs):
+        raise PermissionError("synthetic operation not permitted")
+
+    assert probe_icmp("192.0.2.20", runner=denied) == (None, ICMP_UNAVAILABLE)
+    assert all(command == ["/usr/bin/ping", "-c", "1", "-W", "1", "192.0.2.20"] for command, _ in calls)
+
+
 def test_agent_routes_expose_only_fixed_protocol_operations():
     from app.routers.ha_agent_api import router
 
@@ -297,6 +432,14 @@ def test_agent_routes_expose_only_fixed_protocol_operations():
     assert "Revoke identity in Kaya" in template
     assert "Completely remove the Kaya HA agents" in template
     assert "standby node first" in template
+    assert 'data-ha-command-origin="{{ agent_command_origin }}"' in template
+
+
+def test_agent_commands_use_the_browser_origin_without_trusting_forwarded_headers():
+    script = open("app/static/js/ha_agents.js", encoding="utf-8").read()
+    assert "window.location.origin" in script
+    assert "document.body.dataset.appRoot" in script
+    assert "data-ha-command-origin" in open("app/templates/high_availability_cluster_agents.html", encoding="utf-8").read()
 
 
 def test_guided_installer_is_fixed_checksum_verified_and_keeps_token_off_command_line():
@@ -320,13 +463,22 @@ def test_guided_installer_is_fixed_checksum_verified_and_keeps_token_off_command
     assert "registration token" not in updater.lower()
     assert "/var/lib/kaya-ha-agent/config.json" in updater
     assert "existing node identity and Kaya link were preserved" in updater
+    assert "validate_service_unit" in installer and "validate_service_unit" in updater
+    assert "verify_running_service" in installer and "verify_running_service" in updater
+    assert 'install -m 0644 -o root -g root "$TEMP_DIR/kaya-ha-agent.service"' in updater
     assert "--remove-kaya-ha-config" in uninstaller
     assert "rm -rf /usr/lib/kaya-ha-agent /var/lib/kaya-ha-agent" in uninstaller
     assert "Keepalived package were not uninstalled" in uninstaller
     assert agent_version_status(CURRENT_AGENT_VERSION) == "Up to date"
     assert agent_version_status("0.1.9") == "Update available"
     assert agent_version_status(None) == "Not reported"
+    assert f'AGENT_VERSION = "{CURRENT_AGENT_VERSION}"' in agent_file("kaya_ha_agent.py").decode()
+    assert "Generate a new command from the HTTPS Kaya page" in agent_file("kaya_ha_agent.py").decode()
     assert "NoNewPrivileges=true" not in service
+    assert "User=kaya-ha" in service
+    assert "User=root" not in service
+    assert "AmbientCapabilities=CAP_NET_RAW" in service
+    assert "CapabilityBoundingSet=" not in service
     assert "ReadWritePaths=/var/lib/kaya-ha-agent /etc/keepalived" in service
     assert b"apt-get install" in install_script().body
     assert b"Ed25519PrivateKey" in install_file("kaya_ha_agent.py").body

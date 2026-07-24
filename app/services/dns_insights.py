@@ -509,6 +509,7 @@ def _persist_client_traffic(
         provider_event_id = row.get("id") or row.get("query_id")
         signature = {
             "provider_event_id": str(provider_event_id or ""),
+            "ha_source_node_id": str(row.get("_kaya_ha_node_id") or ""),
             "client": client_ip if client_ip != "-" else _normalise_hostname(client_name),
             "domain": domain,
             "query_type": str(row.get("type") or row.get("query_type") or ""),

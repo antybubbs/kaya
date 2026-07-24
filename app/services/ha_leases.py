@@ -14,6 +14,7 @@ from app.core.security import decrypt_secret, encrypt_secret
 from app.models.models import HACluster, HALeaseReplicationState, HALeaseSnapshot, HANode
 from app.services.dns_providers import PiHoleProvider
 from app.services.ha_validation import connection_for_node
+from app.services.ha_topology import lease_continuity_enabled
 
 
 MAX_LEASES = 10000
@@ -163,6 +164,8 @@ def normalise_leases(
 
 def inspect_cluster_leases(cluster: HACluster, *, client_factory: Callable = PiHoleProvider) -> LeasePlan:
     source, target = _nodes(cluster)
+    if not lease_continuity_enabled(cluster):
+        return LeasePlan(False, source, target, [], set(), None, None)
     connection = connection_for_node(source)
     if connection is None:
         raise HALeaseError("The main Pi-hole connection is unavailable.")

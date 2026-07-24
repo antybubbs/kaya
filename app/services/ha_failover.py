@@ -10,11 +10,14 @@ from sqlalchemy.orm import Session
 
 from app.models.models import HACluster, HAEvent, HAFailoverRun, HANode, User
 from app.services.ha_leases import HALeaseError, reconcile_cluster_leases
+from app.services.ha_recovery import failback_target
+from app.services.ha_sync import HASyncError, create_live_sync_plan, execute_sync
+from app.services.ha_topology import pihole_manages_dhcp
 
 
 ACTIVE_RUN_STATUSES = {"RUNNING", "ROLLING_BACK"}
 MIN_AGENT_VERSION = (0, 1, 5)
-AUTOMATIC_AGENT_VERSION = (0, 2, 0)
+AUTOMATIC_AGENT_VERSION = (0, 2, 2)
 
 
 class HAFailoverError(ValueError):
@@ -99,7 +102,7 @@ def automatic_failover_blockers(cluster: HACluster, *, now: datetime | None = No
         blockers.append("Complete one successful controlled failover test first.")
     for node in cluster.nodes:
         if _version(node.agent_version) < AUTOMATIC_AGENT_VERSION:
-            blockers.append(f"Update {node.display_name} to agent 0.2.0 for offline automatic failover.")
+            blockers.append(f"Update {node.display_name} to agent 0.2.2 for verified offline DHCP failover.")
     if cluster.maintenance_mode:
         blockers.append("Exit maintenance mode before enabling automatic failover.")
     return list(dict.fromkeys(blockers))
@@ -152,6 +155,12 @@ def _move_vip(db: Session, run: HAFailoverRun, target: HANode) -> None:
     cluster.keepalived_status = "PENDING_AGENT"
     cluster.keepalived_requested_at = datetime.utcnow()
     cluster.status = "DEPLOYING"
+    try:
+        report = json.loads(run.report_json or "{}")
+    except json.JSONDecodeError:
+        report = {}
+    report["vip_move_started_at"] = datetime.utcnow().isoformat()
+    run.report_json = json.dumps(report, sort_keys=True)
     db.flush()
 
 
@@ -163,6 +172,26 @@ def start_controlled_failover(db: Session, cluster: HACluster, target: HANode, u
         raise HAFailoverError(" ".join(readiness.blockers) or "The cluster is not ready for controlled failover.")
     if target.id != readiness.target.id:
         raise HAFailoverError("Choose the standby node as the failover target.")
+    is_failback = bool(
+        cluster.preferred_node_id
+        and target.id == cluster.preferred_node_id
+        and readiness.source.id != cluster.preferred_node_id
+    )
+    if is_failback:
+        recovery = failback_target(db, cluster)
+        if recovery is None or not recovery.ready:
+            blockers = [check.label for check in recovery.checks if check.required and not check.passed] if recovery else []
+            detail = ", ".join(blockers) if blockers else "the preferred node has not completed recovery"
+            raise HAFailoverError(f"Controlled failback is not ready: {detail}.")
+        try:
+            final_plan = create_live_sync_plan(db, cluster, user)
+            if final_plan.status == "PLANNED":
+                plan = json.loads(final_plan.plan_json)
+                if plan.get("blocked_groups") or plan.get("deletion_count"):
+                    raise HAFailoverError("Final configuration changed and needs review before failback.")
+                execute_sync(db, cluster, final_plan, allow_deletions=False)
+        except HASyncError as exc:
+            raise HAFailoverError(f"Final failback synchronisation stopped safely: {exc}") from exc
     state = cluster.lease_replication
     if readiness.dhcp_managed:
         try:
@@ -173,12 +202,12 @@ def start_controlled_failover(db: Session, cluster: HACluster, target: HANode, u
     cluster.cluster_generation += 1
     cluster.maintenance_mode = True
     phase = "WAITING_FOR_LEASES" if readiness.dhcp_managed and state and state.status != "CURRENT" else ("DEMOTING_SOURCE" if readiness.dhcp_managed else "MOVING_VIP")
-    run = HAFailoverRun(cluster_id=cluster.id, source_node_id=readiness.source.id, target_node_id=target.id, status="RUNNING", phase=phase, dhcp_managed=readiness.dhcp_managed, lease_generation=state.desired_generation if state else 0, role_generation=cluster.role_generation, requested_by_user_id=user.id, report_json=json.dumps({"starting_vip_owner": readiness.source.public_id, "target": target.public_id, "automatic": False}, sort_keys=True))
+    run = HAFailoverRun(cluster_id=cluster.id, source_node_id=readiness.source.id, target_node_id=target.id, status="RUNNING", phase=phase, dhcp_managed=readiness.dhcp_managed, lease_generation=state.desired_generation if state else 0, role_generation=cluster.role_generation, requested_by_user_id=user.id, report_json=json.dumps({"starting_vip_owner": readiness.source.public_id, "target": target.public_id, "automatic": False, "transition_kind": "FAILBACK" if is_failback else "FAILOVER"}, sort_keys=True))
     db.add(run)
     db.flush()
     if phase == "MOVING_VIP":
         _move_vip(db, run, target)
-    _event(db, run, "controlled_failover_started", "warning", f"Controlled failover started from {readiness.source.display_name} to {target.display_name}.")
+    _event(db, run, "controlled_failback_started" if is_failback else "controlled_failover_started", "warning", f"Controlled {'failback' if is_failback else 'failover'} started from {readiness.source.display_name} to {target.display_name}.")
     db.commit()
     db.refresh(run)
     return run
@@ -212,6 +241,24 @@ def _safe_failure(db: Session, run: HAFailoverRun, message: str) -> None:
     _event(db, run, "controlled_failover_failed_safe", "critical", message[:1000])
 
 
+def _restore_dhcp_after_failed_vip_move(db: Session, run: HAFailoverRun, message: str) -> None:
+    run.status = "ROLLING_BACK"
+    run.phase = "ROLLBACK_PROMOTING_SOURCE"
+    run.error_redacted = message[:1000]
+    run.cluster.status = "DEGRADED"
+    run.cluster.maintenance_mode = True
+    run.cluster.role_generation += 1
+    run.cluster.cluster_generation += 1
+    run.role_generation = run.cluster.role_generation
+    _event(
+        db,
+        run,
+        "controlled_failover_auto_recovery_started",
+        "critical",
+        f"The virtual IP did not move. {run.source_node.display_name} retained exclusive ownership, so Kaya is restoring DHCP there automatically.",
+    )
+
+
 def _mark_verification_started(run: HAFailoverRun) -> None:
     try:
         report = json.loads(run.report_json or "{}")
@@ -227,6 +274,37 @@ def _verification_started_at(run: HAFailoverRun) -> datetime:
         return datetime.fromisoformat(value) if value else run.started_at
     except (ValueError, TypeError, json.JSONDecodeError):
         return run.started_at
+
+
+def _transition_kind(run: HAFailoverRun) -> str:
+    try:
+        value = str(json.loads(run.report_json or "{}").get("transition_kind") or "FAILOVER").upper()
+    except (TypeError, json.JSONDecodeError):
+        value = "FAILOVER"
+    return "FAILBACK" if value == "FAILBACK" else "FAILOVER"
+
+
+def _vip_move_started_at(run: HAFailoverRun) -> datetime:
+    try:
+        value = json.loads(run.report_json or "{}").get("vip_move_started_at")
+        return datetime.fromisoformat(value) if value else run.started_at
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return run.started_at
+
+
+def _vip_move_failure(run: HAFailoverRun) -> str:
+    expected = run.target_node if run.phase == "MOVING_VIP" else run.source_node
+    owners = [node.display_name for node in run.cluster.nodes if node.vip_owned]
+    deployments = ", ".join(
+        f"{node.display_name}: {node.keepalived_status.replace('_', ' ').lower()}"
+        for node in run.cluster.nodes
+    )
+    owner_text = ", ".join(owners) if owners else "none reported"
+    return (
+        f"Virtual IP handover did not converge within 60 seconds. "
+        f"Expected {expected.display_name} to become the only owner; current owner reports: {owner_text}. "
+        f"Keepalived deployment reports: {deployments}. Use safe rollback after checking both agents."
+    )
 
 
 def record_failover_action_result(db: Session, node: HANode, *, action_type: str, generation: int, checksum: str | None, status: str, message: str) -> HAFailoverRun:
@@ -270,16 +348,55 @@ def _complete(db: Session, run: HAFailoverRun, *, rolled_back: bool) -> None:
     run.phase = "ROLLED_BACK" if rolled_back else "COMPLETE"
     run.completed_at = datetime.utcnow()
     run.error_redacted = None if not rolled_back else run.error_redacted
-    _event(db, run, "controlled_failover_rolled_back" if rolled_back else "controlled_failover_completed", "warning" if rolled_back else "info", f"Controlled transition completed with {active.display_name} active. Automatic failback remains disabled.")
+    # The destination temporarily receives a preempt-capable configuration so
+    # it can take the VIP from a nopreempt MASTER. Once ownership and services
+    # are verified, immediately restore nopreempt on both nodes to retain the
+    # no-automatic-failback safety boundary.
+    run.cluster.cluster_generation += 1
+    run.cluster.keepalived_generation += 1
+    run.cluster.keepalived_status = "PENDING_AGENT"
+    run.cluster.keepalived_requested_at = datetime.utcnow()
+    run.cluster.status = "DEPLOYING"
+    for node in run.cluster.nodes:
+        node.keepalived_status = "PENDING_AGENT"
+        node.keepalived_last_error = None
+    kind = _transition_kind(run)
+    event_type = "controlled_failover_rolled_back" if rolled_back else (
+        "controlled_failback_completed" if kind == "FAILBACK" else "controlled_failover_completed"
+    )
+    _event(db, run, event_type, "warning" if rolled_back else "info", f"Controlled {kind.lower()} completed with {active.display_name} active. Automatic failback remains disabled.")
 
 
 def advance_failover(db: Session, cluster: HACluster) -> HAFailoverRun | None:
     run = active_failover(cluster)
     if run is None:
         return None
+    if not run.dhcp_managed and pihole_manages_dhcp(cluster) and any(node.dhcp_running for node in cluster.nodes):
+        # Legacy clusters could previously be misclassified from a temporary
+        # inactive flag while DHCP was moving. Stop instead of continuing a
+        # DNS-only handover around a live DHCP owner.
+        run.dhcp_managed = True
+        _safe_failure(
+            db,
+            run,
+            "The handover was stopped because this Pi-hole cluster manages DHCP, "
+            "but the transition had been started as DNS-only. No further ownership "
+            "change was attempted. Use safe rollback to return to the last owner.",
+        )
+        db.commit()
+        return run
     state = cluster.lease_replication
     if run.phase == "WAITING_FOR_LEASES" and state and state.status == "CURRENT" and state.applied_generation >= run.lease_generation:
         run.phase = "DEMOTING_SOURCE"
+    elif (
+        run.phase == "ROLLBACK_DEMOTING_TARGET"
+        and run.source_node.vip_owned
+        and not run.target_node.vip_owned
+        and not run.target_node.dhcp_running
+    ):
+        # The failed forward move never left the original VIP owner. Restore
+        # DHCP there directly instead of needlessly redeploying Keepalived.
+        run.phase = "ROLLBACK_PROMOTING_SOURCE"
     elif run.phase in {"MOVING_VIP", "ROLLBACK_MOVING_VIP"}:
         expected = run.target_node if run.phase == "MOVING_VIP" else run.source_node
         other = run.source_node if run.phase == "MOVING_VIP" else run.target_node
@@ -288,6 +405,18 @@ def advance_failover(db: Session, cluster: HACluster) -> HAFailoverRun | None:
                 run.phase = "PROMOTING_TARGET" if run.dhcp_managed else "VERIFYING_TARGET"
             else:
                 run.phase = "ROLLBACK_PROMOTING_SOURCE" if run.dhcp_managed else "ROLLBACK_VERIFYING_SOURCE"
+        elif datetime.utcnow() - _vip_move_started_at(run) > timedelta(seconds=60):
+            failure = _vip_move_failure(run)
+            if (
+                run.phase == "MOVING_VIP"
+                and run.dhcp_managed
+                and run.source_node.vip_owned
+                and not run.target_node.vip_owned
+                and not run.target_node.dhcp_running
+            ):
+                _restore_dhcp_after_failed_vip_move(db, run, failure)
+            else:
+                _safe_failure(db, run, failure)
     if run.phase == "VERIFYING_TARGET":
         dhcp_ok = (run.target_node.dhcp_running and not run.source_node.dhcp_running) if run.dhcp_managed else not any(node.dhcp_running for node in cluster.nodes)
         if run.target_node.vip_owned and not run.source_node.vip_owned and run.target_node.dns_healthy is True and dhcp_ok:
@@ -318,8 +447,13 @@ def request_failover_rollback(db: Session, run: HAFailoverRun, *, acknowledged: 
     run.cluster.cluster_generation += 1
     run.cluster.role_generation += 1
     run.role_generation = run.cluster.role_generation
-    if run.source_node.vip_owned and (not run.dhcp_managed or run.source_node.dhcp_running):
+    source_still_owns_vip = run.source_node.vip_owned and not run.target_node.vip_owned
+    if source_still_owns_vip and (not run.dhcp_managed or run.source_node.dhcp_running):
         _complete(db, run, rolled_back=True)
+    elif source_still_owns_vip and run.dhcp_managed and not run.target_node.dhcp_running:
+        run.phase = "ROLLBACK_PROMOTING_SOURCE"
+        run.error_redacted = run.error_redacted or "The original node retained the virtual IP and DHCP is being restored there."
+        _event(db, run, "controlled_failover_rollback_started", "warning", f"Direct DHCP recovery on {run.source_node.display_name} started because it retained exclusive virtual-IP ownership.")
     else:
         run.phase = "ROLLBACK_DEMOTING_TARGET"
         run.error_redacted = run.error_redacted or ("The promoted node reported unhealthy DNS after handover." if recover_unhealthy_active else "Operator requested rollback.")
@@ -333,4 +467,4 @@ def failover_status(run: HAFailoverRun | None) -> dict[str, Any]:
     if run is None:
         return {"running": False, "status": "NOT_STARTED", "phase": "READY", "message": "No controlled failover has been run."}
     labels = {"WAITING_FOR_LEASES": "Capturing the final lease snapshot", "DEMOTING_SOURCE": "Stopping DHCP on the current active node", "MOVING_VIP": "Moving the virtual IP", "PROMOTING_TARGET": "Importing leases and starting DHCP on the target", "VERIFYING_TARGET": "Verifying DNS, DHCP and VIP ownership", "COMPLETE": "Controlled failover completed", "FAILED_SAFE": "Transition stopped safely", "ROLLBACK_DEMOTING_TARGET": "Ensuring DHCP is stopped on the target", "ROLLBACK_MOVING_VIP": "Returning the virtual IP", "ROLLBACK_PROMOTING_SOURCE": "Restoring DHCP on the original node", "ROLLBACK_VERIFYING_SOURCE": "Verifying the restored active node", "ROLLED_BACK": "Original node restored"}
-    return {"running": run.status in ACTIVE_RUN_STATUSES, "run_id": run.public_id, "status": run.status, "phase": run.phase, "message": labels.get(run.phase, run.phase.replace("_", " ").title()), "error": run.error_redacted, "source": run.source_node.display_name, "target": run.target_node.display_name, "dhcp_managed": run.dhcp_managed, "started_at": run.started_at.isoformat() if run.started_at else None, "completed_at": run.completed_at.isoformat() if run.completed_at else None}
+    return {"running": run.status in ACTIVE_RUN_STATUSES, "run_id": run.public_id, "status": run.status, "phase": run.phase, "message": labels.get(run.phase, run.phase.replace("_", " ").title()), "error": run.error_redacted, "source": run.source_node.display_name, "target": run.target_node.display_name, "dhcp_managed": run.dhcp_managed, "transition_kind": _transition_kind(run), "started_at": run.started_at.isoformat() if run.started_at else None, "completed_at": run.completed_at.isoformat() if run.completed_at else None}

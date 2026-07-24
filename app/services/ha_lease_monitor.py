@@ -32,7 +32,8 @@ def run_ha_lease_reconciliation_pass(session_factory=SessionLocal) -> int:
             clusters = db.query(HACluster).filter(HACluster.deleted_at.is_(None), HACluster.provider_key == "pihole").all()
             for cluster in clusters:
                 state = cluster.lease_replication
-                interval = max(30, min(int(cluster.sync_interval_seconds or 300), 86400))
+                recovering = any(node.recovery_state in {"RECOVERING", "SYNCHRONISING", "VERIFYING"} for node in cluster.nodes)
+                interval = 30 if recovering else max(30, min(int(cluster.sync_interval_seconds or 300), 86400))
                 if state and state.last_full_reconciliation_at and state.last_full_reconciliation_at > now - timedelta(seconds=interval):
                     continue
                 try:

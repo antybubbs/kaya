@@ -27,22 +27,41 @@
       <label>IP/WAN record<input value="{{ remote.ip_address.address }} · {{ remote.ip_address.category or 'Uncategorised' }}" disabled></label>
     </div>
   </section>
-  <section class="remote-settings-card">
-    <header><span>SSH host identity</span></header>
+  <section class="remote-settings-card ssh-identity-settings" id="ssh-host-identity">
+    <header>
+      <span>SSH host identity</span>
+      <span class="ssh-identity-status {{ 'is-trusted' if remote.host_key_fingerprint else 'is-blocked' }}">{{ 'Trusted' if remote.host_key_fingerprint else 'Not verified' }}</span>
+    </header>
     {% if remote.protocol != 'ssh' %}
-    <p class="muted">Host-key verification applies to SSH connections. Save this connection as SSH to enrol a key.</p>
+    <div class="ssh-identity-settings-body">
+      <p class="muted">Host-key verification applies to SSH connections. Save this connection as SSH to enrol a key.</p>
+    </div>
     {% else %}
-    <p class="muted">Kaya will refuse the SSH connection unless the server presents the trusted key below. Verify a new fingerprint from the server console before trusting it.</p>
-    {% if host_key_error %}<div class="alert">{{ host_key_error }}</div>{% endif %}
-    <dl class="record-kv-list"><div><dt>Trusted fingerprint</dt><dd class="mono">{{ remote.host_key_fingerprint or 'Not enrolled — SSH connections are blocked' }}</dd></div></dl>
+    <div class="ssh-identity-settings-body">
+    <div class="ssh-identity-explainer">
+      <strong>Passwords stay blocked until the server is verified</strong>
+      <p>Kaya scans the public identity, checks it again when you approve, then requires the same key for every future connection.</p>
+    </div>
+    {% if request.query_params.get('host_key_trusted') == '1' %}<div class="alert success"><strong>SSH identity trusted</strong><p>Future sessions must present this exact host key.</p></div>{% endif %}
+    {% if host_key_error %}<div class="alert danger"><strong>Key scan failed</strong><p>{{ host_key_error }}</p></div>{% endif %}
+    <div class="ssh-identity-fingerprint ssh-identity-trusted-fingerprint">
+      <div><span>Trusted fingerprint</span><strong>{{ 'Enrolled and enforced' if remote.host_key_fingerprint else 'Not enrolled' }}</strong></div>
+      <code>{{ remote.host_key_fingerprint or 'SSH connections are blocked until an identity is trusted.' }}</code>
+    </div>
     {% if host_key_candidate %}
-    <div class="alert warning"><strong>Verify this fingerprint independently</strong><div class="mono">{{ host_key_candidate }}</div></div>
+    <div class="ssh-identity-fingerprint"><div><span>Identity found by Kaya</span><strong>Checked again before it is saved</strong></div><code>{{ host_key_candidate }}</code></div>
+    <input type="hidden" name="host_key_view" value="settings">
     <input type="hidden" name="host_key_candidate" value="{{ host_key_candidate }}">
-    <label class="checkbox-label"><input type="checkbox" name="confirm_host_key" value="1"> I compared this fingerprint with the SSH server console.</label>
-    <button class="button" type="submit" formaction="/remote-manager/{{ remote.id }}/ssh/host-key/trust" formmethod="post">Trust verified key</button>
+    <p class="ssh-identity-first-use-note">Approve this once if this is the server and address you expected. Any future key change will block SSH until it is reviewed.</p>
+    <div class="ssh-identity-actions">
+      <button type="submit" formaction="/remote-manager/{{ remote.id }}/ssh/host-key/trust" formmethod="post">Trust this server</button>
+      <button class="button secondary" type="submit" formaction="/remote-manager/{{ remote.id }}/ssh/host-key/scan" formmethod="post">Scan again</button>
+    </div>
     {% else %}
-    <button class="button secondary" type="submit" formaction="/remote-manager/{{ remote.id }}/ssh/host-key/scan" formmethod="post">Scan current host key</button>
+    <input type="hidden" name="host_key_view" value="settings">
+    <div class="ssh-identity-actions"><button class="button secondary" type="submit" formaction="/remote-manager/{{ remote.id }}/ssh/host-key/scan" formmethod="post">Scan server identity</button></div>
     {% endif %}
+    </div>
     {% endif %}
   </section>
   <section class="remote-settings-card">

@@ -1225,7 +1225,7 @@ html[data-kaya-theme=light-ops] .profile-warning-action{color:#92400e!important}
 .ha-version-status{display:inline-flex;margin-left:8px;border:1px solid var(--line);border-radius:999px;padding:2px 7px;font-size:11px;white-space:nowrap}.ha-version-status.is-current{color:#86efac;border-color:rgba(74,222,128,.42)}.ha-version-status.is-update{color:#fbbf24;border-color:rgba(251,191,36,.42)}.ha-command-disclosure{width:100%}.ha-command-disclosure>summary{cursor:pointer}.ha-command-disclosure[open]{border:1px solid var(--line);border-radius:8px;padding:12px}.ha-command-disclosure[open]>summary{margin-bottom:10px}.ha-command-disclosure p{color:var(--muted);margin:0 0 10px}.ha-command-disclosure form+form{margin-top:10px}.ha-agent-removal>summary{cursor:pointer;display:flex}.ha-agent-removal>summary>span{display:grid;gap:4px}.ha-agent-removal[open]>summary{margin-bottom:16px}.ha-agent-removal ol{margin:14px 0;padding-left:22px}.ha-agent-removal li+li{margin-top:7px}html[data-kaya-theme=light-ops] .ha-version-status.is-current{color:#166534}html[data-kaya-theme=light-ops] .ha-version-status.is-update{color:#92400e}
 .ha-page-actions{display:flex;flex-wrap:wrap;gap:9px;margin-top:16px}.ha-connection-test{align-items:flex-start;border-top:1px solid var(--line);display:grid;gap:8px;margin-top:2px;padding-top:14px}.ha-connection-test .button{justify-self:start}.ha-connection-test p{margin:0}.ha-test-result{border-radius:7px;margin:0;padding:9px 10px}.ha-test-result.is-success{background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.38);color:#86efac}.ha-test-result.is-error{background:rgba(248,113,113,.1);border:1px solid rgba(248,113,113,.4);color:#fca5a5}html[data-kaya-theme=light-ops] .ha-test-result.is-success{color:#166534}html[data-kaya-theme=light-ops] .ha-test-result.is-error{color:#991b1b}@media(max-width:700px){.ha-page-actions{display:grid}.ha-page-actions .button{width:100%}}
 .ha-deployment-blocked{background:rgba(248,113,113,.08);border:1px solid rgba(248,113,113,.38);border-radius:9px;display:grid;gap:3px;margin-top:14px;padding:11px 13px}.ha-deployment-blocked strong{color:#fca5a5}.ha-deployment-blocked span{color:var(--muted)}.ha-blocker-list{display:grid;gap:7px;margin:14px 0;padding-left:22px}.ha-blocker-list li{color:var(--muted)}.ha-blocker-actions,.ha-node-card-actions{display:flex;flex-wrap:wrap;gap:8px}.ha-blocker-actions .button,.ha-node-card-actions .button{min-height:30px;padding:5px 9px;width:auto}.ha-node-card-actions{border-top:1px solid var(--line);margin-top:12px;padding-top:12px}.ha-deployment-form{align-items:end;border-top:1px solid var(--line);display:grid;gap:14px;grid-template-columns:minmax(180px,.45fr) minmax(320px,1fr) max-content;margin-top:16px;padding-top:16px}.ha-deployment-form>label{display:grid;gap:7px}.ha-deployment-form .ha-danger-ack{align-items:flex-start;display:flex;gap:9px}.ha-deployment-form .ha-danger-ack input{flex:0 0 auto;margin-top:2px;width:auto}.ha-deployment-submit{display:grid;gap:5px;justify-items:end}.ha-deployment-submit small{color:var(--muted);max-width:230px;text-align:right}.ha-deployment-submit .button:disabled{background:var(--panel-2)!important;border-color:var(--line);color:var(--muted)!important;cursor:not-allowed;opacity:1}.ha-deployment-form input:disabled{cursor:not-allowed;opacity:.55}html[data-kaya-theme=light-ops] .ha-deployment-blocked strong{color:#991b1b}@media(max-width:850px){.ha-deployment-form{align-items:stretch;grid-template-columns:1fr}.ha-deployment-form .button{width:100%}.ha-deployment-submit{justify-items:stretch}.ha-deployment-submit small{max-width:none;text-align:left}}
-.ha-agent-diagnostic{background:rgba(248,113,113,.08);border:1px solid rgba(248,113,113,.4);border-radius:8px;display:grid;gap:7px;margin-top:12px;padding:11px}.ha-agent-diagnostic strong{color:#fca5a5}.ha-agent-diagnostic pre{background:var(--input-bg);border:1px solid var(--line);border-radius:6px;color:var(--text);font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;margin:0;max-height:180px;overflow:auto;padding:9px;white-space:pre-wrap;word-break:break-word}.ha-agent-diagnostic small{color:var(--muted)}html[data-kaya-theme=light-ops] .ha-agent-diagnostic strong{color:#991b1b}
+.ha-agent-diagnostic{background:rgba(248,113,113,.08);border:1px solid rgba(248,113,113,.4);border-radius:8px;display:grid;gap:7px;margin-top:12px;padding:11px}.ha-agent-diagnostic[hidden]{display:none!important}.ha-agent-diagnostic strong{color:#fca5a5}.ha-agent-diagnostic pre{background:var(--input-bg);border:1px solid var(--line);border-radius:6px;color:var(--text);font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;margin:0;max-height:180px;overflow:auto;padding:9px;white-space:pre-wrap;word-break:break-word}.ha-agent-diagnostic small{color:var(--muted)}html[data-kaya-theme=light-ops] .ha-agent-diagnostic strong{color:#991b1b}
 .ha-live-status{align-items:center;border:1px solid var(--line);border-radius:999px;color:var(--muted);display:inline-flex;font-size:11px;font-weight:800;gap:7px;padding:6px 10px;white-space:nowrap}.ha-live-dot{background:var(--muted);border-radius:50%;height:7px;width:7px}.ha-live-status.is-live{border-color:rgba(34,197,94,.38);color:#86efac}.ha-live-status.is-live .ha-live-dot{background:#22c55e;box-shadow:0 0 0 3px rgba(34,197,94,.12)}.ha-live-status.is-delayed{border-color:rgba(245,158,11,.4);color:#fbbf24}.ha-live-status.is-delayed .ha-live-dot{background:#f59e0b}.ha-live-status.is-error{border-color:rgba(248,113,113,.4);color:#fca5a5}.ha-live-status.is-error .ha-live-dot{background:#f87171}html[data-kaya-theme=light-ops] .ha-live-status.is-live{color:#166534}html[data-kaya-theme=light-ops] .ha-live-status.is-delayed{color:#92400e}html[data-kaya-theme=light-ops] .ha-live-status.is-error{color:#991b1b}@media(max-width:700px){.ha-section-heading{align-items:stretch;flex-direction:column}.ha-live-status{align-self:flex-start;white-space:normal}}
 
 /* High Availability synchronisation: guided review and apply flow */
@@ -1238,3 +1238,78 @@ html[data-kaya-theme=light-ops] .ha-sync-intro{background:linear-gradient(135deg
 .ha-failover-form { display:grid; gap:1rem; max-width:760px; margin-top:1.25rem; }
 .ha-failover-form label:not(.checkbox-row) { display:grid; gap:.45rem; }
 .ha-failover-form .button { justify-self:start; }
+
+/* Core fallback when a stale install has not loaded the illustrated sidebar layer. */
+.sidebar {
+  background-color: #090d14;
+  background-image:
+    linear-gradient(180deg, rgba(8, 13, 22, .9) 0%, rgba(8, 13, 22, .72) 38%, rgba(8, 13, 22, .42) 74%, rgba(8, 13, 22, .7) 100%),
+    url("../images/sidebar/sidebar-infrastructure-bg.webp");
+  background-position: center, 77% 100%;
+  background-repeat: no-repeat;
+  background-size: cover, auto 78%;
+}
+
+.ha-node-card h4 {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: .07em;
+  margin: 18px 0 6px;
+  text-transform: uppercase;
+}
+.ha-recovery-checks {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 14px;
+}
+.ha-recovery-check {
+  align-items: flex-start;
+  display: grid;
+  gap: 9px;
+  grid-template-columns: 18px minmax(0, 1fr);
+}
+.ha-recovery-check > span:first-child {
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  display: flex;
+  font-size: 11px;
+  height: 18px;
+  justify-content: center;
+  width: 18px;
+}
+.ha-recovery-check > span:last-child {
+  display: grid;
+  gap: 2px;
+}
+.ha-recovery-check small {
+  color: var(--muted);
+}
+.ha-recovery-check.is-pass > span:first-child {
+  background: rgba(34, 197, 94, .1);
+  border-color: rgba(34, 197, 94, .4);
+  color: #86efac;
+}
+.ha-recovery-check.is-waiting > span:first-child {
+  background: rgba(245, 158, 11, .1);
+  border-color: rgba(245, 158, 11, .4);
+  color: #fbbf24;
+}
+.ha-node-diagnostics {
+  border-top: 1px solid var(--line);
+  margin-top: 14px;
+  padding-top: 12px;
+}
+.ha-node-diagnostics summary {
+  color: var(--accent);
+  cursor: pointer;
+  font-weight: 800;
+}
+.ha-node-diagnostics[open] summary {
+  margin-bottom: 10px;
+}
+.ha-node-diagnostics .ha-node-facts {
+  margin-top: 8px;
+}

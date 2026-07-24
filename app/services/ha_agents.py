@@ -15,8 +15,10 @@ from app.models.models import HAAgentActionResult as HAAgentActionResultRow, HAA
 from app.schemas.high_availability import HAAgentActionResult, HAAgentEventItem, HAAgentHeartbeat, HAAgentRegister
 from app.services.ha_keepalived import desired_keepalived_action
 from app.services.ha_leases import HALeaseError, desired_lease_action, record_lease_stage_result
-from app.services.ha_failover import HAFailoverError, advance_failover, desired_failover_action, record_failover_action_result
-from app.services.ha_agent_installer import CURRENT_AGENT_VERSION
+from app.services.ha_failover import AUTOMATIC_AGENT_VERSION, HAFailoverError, advance_failover, desired_failover_action, record_failover_action_result
+from app.services.ha_agent_installer import CURRENT_AGENT_VERSION, version_tuple
+from app.services.audit import write_audit
+from app.services.ha_topology import pihole_manages_dhcp
 
 
 AGENT_PROTOCOL_VERSION = 1
@@ -153,6 +155,8 @@ async def authenticate_agent_request(request: Request, db: Session) -> Authentic
 
 
 def record_heartbeat(db: Session, node: HANode, heartbeat: HAAgentHeartbeat) -> HANode:
+    previous_peer = node.peer_reachable
+    had_peer_result = node.last_peer_attempt_at is not None
     node.agent_version = heartbeat.agent_version
     node.last_heartbeat_at = datetime.utcnow()
     node.observed_role = heartbeat.observed_role
@@ -161,14 +165,63 @@ def record_heartbeat(db: Session, node: HANode, heartbeat: HAAgentHeartbeat) -> 
     node.dhcp_running = heartbeat.dhcp_running
     node.dns_healthy = heartbeat.dns_healthy
     node.peer_reachable = heartbeat.peer_reachable
+    icmp_probe_status = heartbeat.peer_icmp_probe_status
+    if icmp_probe_status is None and heartbeat.peer_reachable is not None:
+        icmp_probe_status = "AVAILABLE" if heartbeat.peer_reachable else "NO_REPLY"
+    node.peer_icmp_probe_status = icmp_probe_status
+    node.peer_dns_reachable = heartbeat.peer_dns_reachable
+    if icmp_probe_status is not None:
+        node.last_peer_attempt_at = node.last_heartbeat_at
+        if icmp_probe_status == "AVAILABLE":
+            node.last_peer_success_at = node.last_heartbeat_at
+    if heartbeat.peer_dns_reachable is not None:
+        node.last_peer_dns_attempt_at = node.last_heartbeat_at
+        if heartbeat.peer_dns_reachable:
+            node.last_peer_dns_success_at = node.last_heartbeat_at
     node.lease_generation = heartbeat.lease_generation
     node.config_generation = heartbeat.config_generation
     node.keepalived_runtime_state = heartbeat.keepalived_runtime_state
     node.keepalived_reported_at = datetime.utcnow()
+    peer_changed = (
+        heartbeat.peer_reachable is not None
+        and had_peer_result
+        and previous_peer is not heartbeat.peer_reachable
+    )
+    if peer_changed:
+        restored = heartbeat.peer_reachable is True
+        db.add(
+            HAEvent(
+                cluster_id=node.cluster_id,
+                node_id=node.id,
+                event_type="peer_network_reachability_restored" if restored else "peer_network_reachability_unavailable",
+                severity="info",
+                source="agent",
+                message=(
+                    f"{node.display_name} can ping its peer host."
+                    if restored
+                    else f"Ping from {node.display_name} to its peer is unavailable. This informational result does not affect DNS, Kaya heartbeats, or failover readiness."
+                ),
+                details_json_redacted=json.dumps({"probe": "icmp", "reachable": restored}, sort_keys=True),
+                occurred_at=node.last_heartbeat_at,
+            )
+        )
     db.commit()
     db.refresh(node)
-    reconcile_vip_ownership(db, node.cluster)
+    reconcile_vip_ownership(db, node.cluster, reporting_node=node)
     advance_failover(db, node.cluster)
+    from app.services.ha_recovery import evaluate_recovery
+    evaluate_recovery(db, node.cluster)
+    if peer_changed:
+        write_audit(
+            db,
+            None,
+            "available" if heartbeat.peer_reachable else "unavailable",
+            "ha_peer_network_reachability",
+            entity_id=node.public_id,
+            detail=f"Peer network ping {'became available' if heartbeat.peer_reachable else 'became unavailable'} for {node.display_name}. This result is informational.",
+            severity="info",
+            metadata={"cluster_id": node.cluster.public_id, "probe": "icmp", "reachable": bool(heartbeat.peer_reachable)},
+        )
     return node
 
 
@@ -201,7 +254,7 @@ def _automatic_completion_for_generation(db: Session, cluster: HACluster, node: 
     return None
 
 
-def reconcile_vip_ownership(db: Session, cluster: HACluster) -> None:
+def reconcile_vip_ownership(db: Session, cluster: HACluster, reporting_node: HANode | None = None) -> None:
     if cluster.keepalived_status != "DEPLOYED" or any(node.keepalived_status != "DEPLOYED" for node in cluster.nodes):
         return
     now = datetime.utcnow()
@@ -210,6 +263,18 @@ def reconcile_vip_ownership(db: Session, cluster: HACluster) -> None:
     current_nodes = [node for node in cluster.nodes if _heartbeat_is_fresh(node, now)]
     owners = [node for node in current_nodes if node.vip_owned]
     current = owners[0] if len(owners) == 1 else None
+    previous_owner = next((node for node in owners if node.id == previous_active_id), None)
+    transition_pending = bool(
+        len(owners) > 1
+        and cluster.automatic_failover_enabled
+        and reporting_node
+        and reporting_node.vip_owned
+        and reporting_node.id != previous_active_id
+        and previous_owner
+        and previous_owner.last_heartbeat_at
+        and reporting_node.last_heartbeat_at
+        and previous_owner.last_heartbeat_at < reporting_node.last_heartbeat_at
+    )
     completed = _automatic_completion_for_generation(db, cluster, current) if current else None
     cluster.current_active_node_id = current.id if current else None
     fully_healthy = (
@@ -220,11 +285,23 @@ def reconcile_vip_ownership(db: Session, cluster: HACluster) -> None:
     )
     if len(owners) == 1 and fully_healthy:
         cluster.status = "HEALTHY"
-    elif len(owners) > 1:
+    elif len(owners) > 1 and not transition_pending:
         cluster.status = "ERROR"
     else:
         cluster.status = "DEGRADED"
-    if len(owners) > 1 and previous_status != "ERROR":
+    if transition_pending:
+        recent_pending = (
+            db.query(HAEvent.id)
+            .filter(
+                HAEvent.cluster_id == cluster.id,
+                HAEvent.event_type == "ownership_transition_pending",
+                HAEvent.received_at >= now - timedelta(minutes=1),
+            )
+            .first()
+        )
+        if recent_pending is None:
+            db.add(HAEvent(cluster_id=cluster.id, node_id=reporting_node.id, event_type="ownership_transition_pending", severity="warning", source="kaya", message=f"{reporting_node.display_name} reported the virtual IP. Kaya is waiting for the local safety checks before confirming failover.", details_json_redacted="{}", occurred_at=now))
+    elif len(owners) > 1 and previous_status != "ERROR":
         db.add(HAEvent(cluster_id=cluster.id, node_id=None, event_type="split_brain_detected", severity="critical", source="kaya", message="Multiple virtual-IP owners were reported. Automatic DHCP activation remains blocked.", details_json_redacted="{}", occurred_at=datetime.utcnow()))
     needs_adoption = bool(
         current
@@ -237,7 +314,7 @@ def reconcile_vip_ownership(db: Session, cluster: HACluster) -> None:
     )
     if cluster.automatic_failover_enabled and current and needs_adoption:
         peers = [node for node in cluster.nodes if node.id != current.id]
-        dhcp_managed = bool(cluster.lease_replication and cluster.lease_replication.status != "NOT_APPLICABLE")
+        dhcp_managed = pihole_manages_dhcp(cluster)
         current_peers = [peer for peer in peers if _heartbeat_is_fresh(peer, now)]
         safe_dhcp = not dhcp_managed or (
             current.dhcp_running
@@ -265,7 +342,7 @@ def reconcile_vip_ownership(db: Session, cluster: HACluster) -> None:
             db.query(HAEvent)
             .filter(
                 HAEvent.cluster_id == cluster.id,
-                HAEvent.event_type == "split_brain_detected",
+                HAEvent.event_type.in_({"split_brain_detected", "ownership_transition_pending"}),
                 HAEvent.source == "kaya",
                 HAEvent.received_at >= completed.received_at - timedelta(minutes=1),
                 HAEvent.received_at <= completed.received_at + timedelta(minutes=1),
@@ -295,7 +372,7 @@ def _adopt_verified_automatic_owner(db: Session, node: HANode, event: HAAgentEve
         or node.dns_healthy is not True
     ):
         return
-    dhcp_managed = bool(cluster.lease_replication and cluster.lease_replication.status != "NOT_APPLICABLE")
+    dhcp_managed = pihole_manages_dhcp(cluster)
     if dhcp_managed and node.dhcp_running is not True:
         return
     previous_active_id = cluster.current_active_node_id
@@ -319,7 +396,7 @@ def _adopt_verified_automatic_owner(db: Session, node: HANode, event: HAAgentEve
         db.query(HAEvent)
         .filter(
             HAEvent.cluster_id == cluster.id,
-            HAEvent.event_type == "split_brain_detected",
+            HAEvent.event_type.in_({"split_brain_detected", "ownership_transition_pending"}),
             HAEvent.source == "kaya",
             HAEvent.received_at >= datetime.utcnow() - timedelta(minutes=1),
         )
@@ -413,7 +490,7 @@ def desired_state(node: HANode) -> dict:
     leases = desired_lease_action(cluster, node)
     failover = desired_failover_action(cluster, node)
     peer = next((item for item in cluster.nodes if item.id != node.id), None)
-    dhcp_managed = bool(cluster.lease_replication and cluster.lease_replication.status != "NOT_APPLICABLE")
+    dhcp_managed = pihole_manages_dhcp(cluster)
     return {
         "protocol_version": AGENT_PROTOCOL_VERSION,
         "cluster_id": cluster.public_id,
@@ -425,7 +502,15 @@ def desired_state(node: HANode) -> dict:
         "desired_agent_version": CURRENT_AGENT_VERSION,
         "virtual_ip": f"{cluster.virtual_ip}/{cluster.prefix_length}" if cluster.virtual_ip else None,
         "maintenance_mode": cluster.maintenance_mode,
-        "automatic_failover": bool(cluster.automatic_failover_enabled),
+        # Old agents only checked the Pi-hole configuration flag and could
+        # mistake a failed DHCP listener for a successful promotion.
+        "automatic_failover": bool(
+            cluster.automatic_failover_enabled
+            and all(
+                version_tuple(peer.agent_version) >= AUTOMATIC_AGENT_VERSION
+                for peer in cluster.nodes
+            )
+        ),
         "automatic_failback": False,
         "automatic_hold_down_seconds": 10,
         "dhcp_managed": dhcp_managed,

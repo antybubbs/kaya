@@ -51,7 +51,7 @@ def automatic_transition(db, transition, generation):
             queue_event(db, "automatic_failover_blocked", "critical", "Automatic promotion was blocked because local ownership or DNS health was not safe after the hold-down.", generation)
             return
         command = "automatic-promote"
-    result = subprocess.run(["sudo", "-n", HELPER, command, str(generation)], capture_output=True, text=True, timeout=30, check=False)
+    result = subprocess.run(["sudo", "-n", HELPER, command, str(generation)], capture_output=True, text=True, timeout=60, check=False)
     try:
         output = json.loads(result.stdout or "{}")
     except json.JSONDecodeError:

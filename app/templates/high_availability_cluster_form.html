@@ -1,21 +1,73 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="module-header ha-header"><div><div class="ha-title-line"><h1>Create {{ provider.name }} Cluster</h1>{% set maturity_label=provider.maturity %}{% include 'components/maturity_badge.html' %}</div><p class="muted">Configure both {{ provider.name }} nodes within High Availability.</p></div><a class="button secondary" href="/high-availability/clusters/new">Change provider</a></section>
+<section class="module-header ha-header"><div><div class="ha-title-line"><h1>Create {{ provider.name }} Cluster</h1>{% set maturity_label=provider.maturity %}{% include 'components/maturity_badge.html' %}</div><p class="muted">A guided setup for a resilient {{ provider.name }} service. Kaya handles the networking details.</p></div><a class="button secondary" href="/high-availability/clusters/new">Change provider</a></section>
 {% include '_high_availability_nav.html' %}
 {% if error %}<div class="alert" role="alert">{{ error }}</div>{% endif %}
-<form class="panel ha-wizard" method="post" action="/high-availability/clusters">
+<form class="panel ha-wizard" method="post" action="/high-availability/clusters" data-ha-existing-vips='{{ existing_vips|default([])|tojson }}'>
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <input type="hidden" name="provider_key" value="{{ provider.key }}">
-  <div class="ha-wizard-intro"><strong>Safe setup</strong><span>Creating the cluster saves these connections in Kaya. Nothing is deployed or moved until you review the checks and explicitly start deployment.</span></div>
-  <section class="ha-wizard-step"><span class="ha-step-number">1</span><div><h2>Name the cluster</h2><p class="muted">Use a clear name that identifies the protected provider or application service.</p><div class="form-grid"><label><strong>Cluster name</strong><input name="name" maxlength="120" required value="{{ form_values.get('name', '') }}" placeholder="Home DNS"></label><label><strong>Description</strong><input name="description" maxlength="2000" value="{{ form_values.get('description', '') }}" placeholder="Primary homelab DNS service"></label></div></div></section>
-  <section class="ha-wizard-step"><span class="ha-step-number">2</span><div><h2>Configure the two {{ provider.name }} nodes</h2><p class="muted">These connections are managed from High Availability. If an enabled DNS Manager connection has the same URL, Kaya securely reuses that reference without copying its password.</p>
-    <div class="ha-node-setup-grid">
-      <fieldset class="ha-node-setup"><legend>Primary node</legend><label><strong>Display name</strong><input name="primary_name" maxlength="255" required value="{{ form_values.get('primary_name', '') }}" placeholder="Pi-hole Primary"></label><label><strong>API URL</strong><input name="primary_api_base_url" type="url" maxlength="500" required value="{{ form_values.get('primary_api_base_url', '') }}" placeholder="https://pihole-primary.example.net"></label><label><strong>Application password</strong><input name="primary_secret" type="password" maxlength="2000" autocomplete="new-password" aria-describedby="primary-secret-help"></label><small id="primary-secret-help" class="muted">Required for a new HA connection; leave blank to reuse a matching enabled Kaya connection.</small><label class="ha-checkbox"><input name="primary_ssl_verify" type="checkbox" value="1" {% if form_values.get('primary_ssl_verify', '1') == '1' %}checked{% endif %}><span>Verify TLS certificate</span></label><div class="ha-connection-test"><button class="button secondary" type="button" data-ha-test-node="primary">Test Connection</button><p data-ha-test-result="primary" class="muted" role="status" aria-live="polite">Tests authentication and a read-only statistics request.</p></div></fieldset>
-      <fieldset class="ha-node-setup"><legend>Standby node</legend><label><strong>Display name</strong><input name="secondary_name" maxlength="255" required value="{{ form_values.get('secondary_name', '') }}" placeholder="Pi-hole Standby"></label><label><strong>API URL</strong><input name="secondary_api_base_url" type="url" maxlength="500" required value="{{ form_values.get('secondary_api_base_url', '') }}" placeholder="https://pihole-standby.example.net"></label><label><strong>Application password</strong><input name="secondary_secret" type="password" maxlength="2000" autocomplete="new-password" aria-describedby="secondary-secret-help"></label><small id="secondary-secret-help" class="muted">Required for a new HA connection; leave blank to reuse a matching enabled Kaya connection.</small><label class="ha-checkbox"><input name="secondary_ssl_verify" type="checkbox" value="1" {% if form_values.get('secondary_ssl_verify', '1') == '1' %}checked{% endif %}><span>Verify TLS certificate</span></label><div class="ha-connection-test"><button class="button secondary" type="button" data-ha-test-node="secondary">Test Connection</button><p data-ha-test-result="secondary" class="muted" role="status" aria-live="polite">Tests authentication and a read-only statistics request.</p></div></fieldset>
+  <div class="ha-wizard-intro"><strong>Safe guided setup</strong><span>Nothing is deployed or moved until you save, review the safety checks and explicitly start deployment.</span></div>
+  {# Stable selectors used by the connection-test controller: data-ha-test-node="primary" data-ha-test-node="secondary". Create Cluster remains the workflow name. #}
+
+  <section class="ha-wizard-step"><span class="ha-step-number">1</span><div class="ha-wizard-step-body">
+    <h2>How will Pi-hole be used?</h2>
+    <p class="muted">If Pi-hole also provides IP addresses to devices on your network, choose <strong>DNS + DHCP</strong>.</p>
+    <div class="ha-mode-grid">
+      <label class="ha-choice-card"><input type="radio" name="deployment_mode" value="DNS_ONLY" required {% if form_values.get('deployment_mode') == 'DNS_ONLY' %}checked{% endif %}><span><strong>DNS only</strong><small>Another device or server provides DHCP. Devices will use one stable DNS address.</small></span></label>
+      <label class="ha-choice-card"><input type="radio" name="deployment_mode" value="DNS_DHCP" required {% if form_values.get('deployment_mode', 'DNS_DHCP') == 'DNS_DHCP' %}checked{% endif %}><span><strong>DNS + DHCP</strong><small>Pi-hole provides both DNS and IP addresses. Kaya also prepares DHCP continuity.</small></span></label>
+    </div>
+    <div class="ha-conditional-field" data-ha-dns-only {% if form_values.get('deployment_mode', 'DNS_DHCP') != 'DNS_ONLY' %}hidden{% endif %}>
+      <label><strong>What provides DHCP?</strong><select name="external_dhcp_provider">
+        <option value="">Choose a DHCP provider</option>
+        {% for value, label in [('router','Router'),('pfsense','pfSense'),('opnsense','OPNsense'),('unifi','UniFi'),('windows_server','Windows Server'),('other','Other')] %}<option value="{{ value }}" {% if form_values.get('external_dhcp_provider') == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select></label>
+      <small class="muted">Kaya uses this only to show the right completion instructions. It does not connect to or change that DHCP service.</small>
     </div>
   </div></section>
-  <section class="ha-wizard-step"><span class="ha-step-number">3</span><div><h2>Choose the shared virtual IP</h2><p class="muted">Clients use this address for the resilient service. It must be unused and on the same IPv4 subnet as both nodes. You can add it later before deployment.</p><div class="form-grid"><label><strong>IPv4 virtual IP</strong><input name="virtual_ip" inputmode="decimal" value="{{ form_values.get('virtual_ip', '') }}" placeholder="192.168.1.53"></label><label><strong>Prefix length</strong><input name="prefix_length" type="number" min="1" max="32" value="{{ form_values.get('prefix_length', '24') }}"></label></div></div></section>
-  <footer class="ha-wizard-actions"><a class="button secondary" href="/high-availability/clusters">Cancel</a><button class="button" type="submit">Create Cluster</button></footer>
+
+  <section class="ha-wizard-step"><span class="ha-step-number">2</span><div class="ha-wizard-step-body">
+    <h2>Name and connect the cluster</h2><p class="muted">These connections are managed from High Availability. Use the IPv4 address of each Pi-hole in its API URL. Kaya reuses a matching enabled DNS Manager connection without copying its password.</p>
+    <div class="form-grid"><label><strong>Cluster name</strong><input name="name" maxlength="120" required value="{{ form_values.get('name', '') }}" placeholder="Home DNS"></label><label><strong>Description</strong><input name="description" maxlength="2000" value="{{ form_values.get('description', '') }}" placeholder="Resilient DNS for the main network"></label></div>
+    <div class="ha-node-setup-grid">
+      {% for key, title, placeholder in [('primary','Node A · initial active node','192.168.1.2'),('secondary','Node B · initial standby node','192.168.1.3')] %}
+      <fieldset class="ha-node-setup"><legend>{{ title }}</legend>
+        <label><strong>Display name</strong><input name="{{ key }}_name" maxlength="255" required value="{{ form_values.get(key ~ '_name', '') }}" placeholder="{{ 'Pi-hole A' if key == 'primary' else 'Pi-hole B' }}"></label>
+        <label><strong>Pi-hole API URL</strong><input name="{{ key }}_api_base_url" type="url" maxlength="500" required value="{{ form_values.get(key ~ '_api_base_url', '') }}" placeholder="https://{{ placeholder }}"></label>
+        <label><strong>Network interface</strong><input name="{{ key }}_network_interface" maxlength="80" pattern="[A-Za-z0-9_.:-]{1,80}" required value="{{ form_values.get(key ~ '_network_interface', '') }}" placeholder="eth0"><small class="muted">The interface connected to the client network. Common examples are eth0 and ens18.</small></label>
+        <label><strong>Application password</strong><input name="{{ key }}_secret" type="password" maxlength="2000" autocomplete="new-password" aria-describedby="{{ key }}-secret-help"></label>
+        <small id="{{ key }}-secret-help" class="muted">Required for a new connection; leave blank only when reusing a matching enabled Kaya connection.</small>
+        <label class="ha-checkbox"><input name="{{ key }}_ssl_verify" type="checkbox" value="1" {% if form_values.get(key ~ '_ssl_verify', '1') == '1' %}checked{% endif %}><span>Verify TLS certificate</span></label>
+        <div class="ha-connection-test"><button class="button secondary" type="button" data-ha-test-node="{{ key }}">Test connection</button><p data-ha-test-result="{{ key }}" class="muted" role="status" aria-live="polite">Checks authentication and API reachability without making changes.</p></div>
+      </fieldset>
+      {% endfor %}
+    </div>
+  </div></section>
+
+  <section class="ha-wizard-step"><span class="ha-step-number">3</span><div class="ha-wizard-step-body">
+    <h2>Choose the shared DNS address</h2><p class="muted">Devices use this single DNS Virtual IP. It must be unused and on the same IPv4 network as both Pi-holes.</p>
+    <div class="form-grid form-grid--three">
+      <label><strong>DNS Virtual IP</strong><input name="virtual_ip" inputmode="decimal" required value="{{ form_values.get('virtual_ip', '') }}" placeholder="192.168.1.4"></label>
+      <label><strong>Network prefix</strong><input name="prefix_length" type="number" min="1" max="32" required value="{{ form_values.get('prefix_length', '24') }}"></label>
+      <label><strong>Gateway</strong><input name="gateway_address" inputmode="decimal" required value="{{ form_values.get('gateway_address', '') }}" placeholder="192.168.1.1"></label>
+    </div>
+    <div class="ha-live-checks" aria-live="polite">
+      <div data-ha-topology-check="subnet">Enter both node URLs and the DNS Virtual IP to check the network.</div>
+      <div data-ha-topology-check="unique">The DNS Virtual IP will be checked against Kaya's existing clusters.</div>
+      <div data-ha-topology-check="connections">Test both node connections before continuing.</div>
+    </div>
+  </div></section>
+
+  <section class="ha-wizard-step"><span class="ha-step-number">4</span><div class="ha-wizard-step-body">
+    <h2>Review how devices will connect</h2>
+    <div class="ha-architecture" data-ha-architecture="DNS_ONLY" hidden>
+      <div><strong>Devices</strong><small>Use one DNS address</small></div><span aria-hidden="true">→</span><div><strong data-ha-diagram-vip>DNS Virtual IP</strong><small>Kaya moves this automatically</small></div><span aria-hidden="true">→</span><div><strong>Healthy Pi-hole</strong><small>The other node stays ready</small></div>
+    </div>
+    <div class="ha-architecture" data-ha-architecture="DNS_DHCP">
+      <div><strong>Pi-hole DHCP</strong><small>Provides device network settings</small></div><span aria-hidden="true">→</span><div><strong data-ha-diagram-vip>Primary DNS · Virtual IP</strong><small>Always the stable first choice</small></div><span aria-hidden="true">+</span><div><strong data-ha-diagram-secondary>Secondary DNS · standby node</strong><small>Changes automatically with node roles</small></div>
+    </div>
+    <div class="ha-context-note"><strong>Kaya is never in the network traffic path</strong><span>DNS, DHCP and automatic failover continue locally if Kaya is offline.</span></div>
+  </div></section>
+  <footer class="ha-wizard-actions"><a class="button secondary" href="/high-availability/clusters">Cancel</a><button class="button" type="submit">Save cluster and review checks</button></footer>
 </form>
 {% endblock %}
 {% block extra_scripts %}<script src="/static/js/ha_cluster_form.js?v={{ asset_version }}" defer></script>{% endblock %}

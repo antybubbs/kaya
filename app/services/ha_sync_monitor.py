@@ -13,6 +13,7 @@ from app.db.session import SessionLocal
 from app.models.models import HACluster, HAEvent, HASyncRun
 from app.services.audit import write_audit
 from app.services.ha_sync import HASyncError, authority_and_target, create_live_sync_plan, execute_sync
+from app.services.ha_recovery import evaluate_recovery
 from app.services.site_settings import get_site_setting
 
 
@@ -69,9 +70,22 @@ def run_ha_sync_monitor_pass(session_factory=SessionLocal) -> int:
                 HACluster.status.in_(["HEALTHY", "DEGRADED", "ERROR"]),
             ).all()
             for cluster in clusters:
+                recovery = evaluate_recovery(db, cluster, now=now)
                 interval = max(30, min(int(cluster.drift_check_interval_seconds or 300), 86400))
                 latest = db.query(HASyncRun).filter(HASyncRun.cluster_id == cluster.id).order_by(HASyncRun.created_at.desc()).first()
-                if latest and latest.created_at > now - timedelta(seconds=interval):
+                recovery_needing_sync = next((item for item in recovery.values() if item.state == "SYNCHRONISING"), None)
+                recovery_check_due = bool(
+                    recovery_needing_sync
+                    and (
+                        latest is None
+                        or latest.target_node_id != recovery_needing_sync.node.id
+                        or (
+                            recovery_needing_sync.node.recovery_started_at
+                            and latest.created_at < recovery_needing_sync.node.recovery_started_at
+                        )
+                    )
+                )
+                if latest and latest.created_at > now - timedelta(seconds=interval) and not recovery_check_due:
                     continue
                 try:
                     run = create_live_sync_plan(db, cluster)
@@ -85,7 +99,18 @@ def run_ha_sync_monitor_pass(session_factory=SessionLocal) -> int:
                     _record_failed_check(db, cluster, "Configuration check could not be completed.")
                     logger.exception("HA configuration drift check failed", extra={"cluster_id": cluster.public_id})
                     continue
-                if not cluster.automatic_sync_enabled or run.status != "PLANNED" or cluster.maintenance_mode:
+                recovering_target = next(
+                    (
+                        item
+                        for item in recovery.values()
+                        if item.state == "SYNCHRONISING"
+                        and item.node.id == run.target_node_id
+                        and cluster.current_active_node_id == run.source_node_id
+                    ),
+                    None,
+                )
+                recovery_sync = recovering_target is not None
+                if (not cluster.automatic_sync_enabled and not recovery_sync) or run.status != "PLANNED" or cluster.maintenance_mode:
                     continue
                 plan = json.loads(run.plan_json)
                 safe_authority = bool(
@@ -93,16 +118,16 @@ def run_ha_sync_monitor_pass(session_factory=SessionLocal) -> int:
                     and cluster.current_active_node_id
                     and cluster.current_active_node_id == cluster.authoritative_node_id == run.source_node_id
                 )
-                deletions_allowed = not plan.get("deletion_count") or cluster.automatic_sync_allow_deletions
+                deletions_allowed = not plan.get("deletion_count") or (cluster.automatic_sync_allow_deletions and not recovery_sync)
                 if not safe_authority or plan.get("blocked_groups") or not deletions_allowed:
                     continue
                 try:
-                    execute_sync(db, cluster, run, allow_deletions=cluster.automatic_sync_allow_deletions)
+                    execute_sync(db, cluster, run, allow_deletions=cluster.automatic_sync_allow_deletions and not recovery_sync)
                     _record_automation_event(db, cluster, succeeded=True, message=f"Automatically synchronised configuration from {run.source_node.display_name} to {run.target_node.display_name}; backup and verification completed.", run=run)
-                    write_audit(db, None, "completed", "ha_automatic_configuration_sync", entity_id=run.public_id, detail=f"Automatically synchronised allowlisted Pi-hole configuration for {cluster.name}.", metadata={"cluster_id": cluster.public_id, "backup_created": True, "verified": True, "lease_replication": False})
+                    write_audit(db, None, "completed", "ha_recovery_configuration_sync" if recovery_sync else "ha_automatic_configuration_sync", entity_id=run.public_id, detail=f"Automatically synchronised allowlisted Pi-hole configuration for {cluster.name}.", metadata={"cluster_id": cluster.public_id, "backup_created": True, "verified": True, "lease_replication": False, "recovery": recovery_sync})
                 except HASyncError as exc:
                     _record_automation_event(db, cluster, succeeded=False, message=f"Automatic configuration synchronisation stopped safely: {exc}", run=run)
-                    write_audit(db, None, "failed", "ha_automatic_configuration_sync", entity_id=run.public_id, detail=f"Automatic configuration synchronisation for {cluster.name} did not complete.", severity="warning", metadata={"cluster_id": cluster.public_id, "error": str(exc)[:300], "backup_preserved": bool(run.backups), "lease_replication": False})
+                    write_audit(db, None, "failed", "ha_recovery_configuration_sync" if recovery_sync else "ha_automatic_configuration_sync", entity_id=run.public_id, detail=f"Automatic configuration synchronisation for {cluster.name} did not complete.", severity="warning", metadata={"cluster_id": cluster.public_id, "error": str(exc)[:300], "backup_preserved": bool(run.backups), "lease_replication": False, "recovery": recovery_sync})
         finally:
             db.close()
         return CHECK_INTERVAL_SECONDS

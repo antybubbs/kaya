@@ -10,7 +10,7 @@ from app.db.session import Base
 from app.models.models import DNSClientIPHistory, DNSProviderConfig, DNSRecognisedDevice, DNSStatisticsSnapshot, HACluster, HANode, HAProviderConnection, User
 from app.services import dns_insights
 from app.services.dns_insights import analyse_provider
-from app.services.dns_providers import DNSProviderResult, HAPiHoleProvider, PiHoleProvider, provider_for
+from app.services.dns_providers import DNSProviderResult, HAPiHoleCollectionProvider, HAPiHoleProvider, PiHoleProvider, provider_for, provider_snapshot_for_io
 from app.services.ha_sync import HAStaleSyncPlanError, HASyncError, create_live_sync_plan, create_sync_plan, execute_sync, sync_plan
 from app.routers.admin import DNSProviderSettingsError, save_dns_manager_settings
 
@@ -145,6 +145,34 @@ def test_ha_provider_routes_to_current_owner_and_ignores_offline_cached_owner():
 
         active = provider_for(provider)._active_provider()
         assert active.config.base_url == "http://two.invalid"
+
+
+def test_ha_collection_reads_queries_from_both_nodes_without_event_id_collisions(monkeypatch):
+    with database() as db:
+        _, cluster, first, second = make_cluster(db)
+        provider = DNSProviderConfig(name="HA", provider_type="pihole", base_url="http://192.0.2.53", ha_cluster_id=cluster.id)
+        db.add(provider)
+        first.last_heartbeat_at = second.last_heartbeat_at = datetime.utcnow()
+        db.commit()
+
+        def query_log(client, *, limit=100):
+            return DNSProviderResult(True, "loaded", {"queries": [{
+                "id": 7,
+                "time": 1_900_000_000,
+                "client": {"ip": "192.0.2.20"},
+                "domain": client.config.base_url,
+                "status": "OK",
+            }]})
+
+        monkeypatch.setattr(PiHoleProvider, "get_query_log", query_log)
+        snapshot = provider_snapshot_for_io(provider)
+        assert isinstance(snapshot, HAPiHoleCollectionProvider)
+
+        result = snapshot.get_query_log(limit=500)
+
+        assert result.ok
+        assert {row["domain"] for row in result.data["queries"]} == {"http://one.invalid", "http://two.invalid"}
+        assert len({row["_kaya_ha_node_id"] for row in result.data["queries"]}) == 2
 
 
 def test_ha_analysis_uses_active_node_and_updates_connection_snapshot(monkeypatch):

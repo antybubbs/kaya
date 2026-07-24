@@ -45,7 +45,9 @@ def test_existing_user_migration_preserves_local_account_and_makes_password_null
     assert "ha_cluster_id" in dns_provider_columns
     assert "ha_connection_id" in ha_node_columns
     assert {"capabilities_json", "configuration_snapshot_json", "configuration_checksum"} <= ha_node_columns
-    assert {"observed_role", "observed_generation", "vip_owned", "dhcp_running", "dns_healthy", "peer_reachable", "lease_generation", "config_generation"} <= ha_node_columns
+    assert {"observed_role", "observed_generation", "vip_owned", "dhcp_running", "dns_healthy", "peer_reachable", "peer_icmp_probe_status", "peer_dns_reachable", "lease_generation", "config_generation"} <= ha_node_columns
+    assert {"last_peer_attempt_at", "last_peer_success_at", "last_peer_dns_attempt_at", "last_peer_dns_success_at", "recovery_state", "recovery_started_at", "recovery_stable_since"} <= ha_node_columns
     assert {"keepalived_status", "keepalived_config_checksum", "keepalived_backup_reference", "keepalived_last_error", "keepalived_reported_at", "keepalived_runtime_state"} <= ha_node_columns
     assert {"vrrp_router_id", "keepalived_generation", "keepalived_status", "keepalived_requested_at", "keepalived_deployed_at"} <= ha_cluster_columns
+    assert "preferred_node_id" in ha_cluster_columns
     assert "remediation" in ha_check_columns

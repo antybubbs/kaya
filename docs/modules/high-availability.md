@@ -22,13 +22,15 @@ For the complete user and operator workflow, see:
 
 | Provider or application | Maturity | Current topology and capabilities |
 |---|---|---|
-| Pi-hole v6 | Beta | Two nodes, Layer 2 IPv4 virtual IP, Keepalived, configuration sync, optional DHCP continuity, controlled and automatic failover |
+| Pi-hole v6 | Beta | Two nodes, DNS-only or DNS+DHCP topology, Layer 2 IPv4 DNS Virtual IP, configuration sync, optional DHCP continuity, controlled and automatic failover |
 
 Future integrations may use different node counts, service-address mechanisms, deployment tools, configuration models, health checks, consuming modules, and failover strategies.
 
 ## Pi-hole safety summary
 
 - Both nodes and the virtual IP must share a Layer 2 IPv4 network.
+- DNS-only deployments leave the external DHCP service untouched and direct clients to the DNS Virtual IP.
+- DNS+DHCP deployments use the DNS Virtual IP as primary DNS and the standby node address as secondary DNS.
 - Exactly one node may own the virtual IP.
 - If Pi-hole provides DHCP, only the current virtual-IP owner may run DHCP.
 - Automatic failover is opt-in and automatic failback is disabled.

@@ -42,7 +42,8 @@
       document.querySelectorAll(`[data-ha-node-id="${CSS.escape(node.id)}"]`).forEach((card) => {
         const current = node.heartbeat_current === true;
         updateFields(card, "[data-ha-node-field]", node);
-        card.querySelectorAll("[data-ha-node-role]").forEach((element) => { element.textContent = title(node.desired_role); });
+        card.querySelectorAll("[data-ha-node-role]").forEach((element) => { element.textContent = node.is_preferred ? "Preferred" : title(node.desired_role); });
+        card.querySelectorAll("[data-ha-deployment-role]").forEach((element) => { element.textContent = node.desired_role === "ACTIVE" ? "Preferred" : "Backup"; });
         card.querySelectorAll("[data-ha-agent-version-status]").forEach((element) => {
           element.textContent = node.agent_version_status;
           element.classList.toggle("is-current", node.agent_version_status === "Up to date");
@@ -54,7 +55,40 @@
         card.querySelectorAll('[data-ha-node-field="vip_owned"]').forEach((element) => { element.textContent = current ? (node.vip_owned ? "Owned" : "Not owned") : "Unknown — node offline"; });
         card.querySelectorAll('[data-ha-node-field="dns_healthy"]').forEach((element) => { element.textContent = current ? yesNo(node.dns_healthy, "Healthy", "Unhealthy") : "Unknown — node offline"; });
         card.querySelectorAll('[data-ha-node-field="dhcp_running"]').forEach((element) => { element.textContent = current ? (node.dhcp_running ? "Running" : "Stopped") : "Unknown — node offline"; });
-        card.querySelectorAll('[data-ha-node-field="peer_reachable"]').forEach((element) => { element.textContent = current ? yesNo(node.peer_reachable, "Reachable", "Not reachable") : "Unknown — node offline"; });
+        card.querySelectorAll('[data-ha-node-field="peer_reachable"]').forEach((element) => {
+          element.textContent = node.peer_icmp_probe_status === "UNAVAILABLE" ? "ICMP probe unavailable" : node.peer_reachable === true ? "Ping available" : node.peer_reachable === false ? "Ping unavailable" : "Not tested";
+        });
+        card.querySelectorAll("[data-ha-kaya-connection]").forEach((element) => { element.textContent = current ? "Reporting" : "Not reporting"; });
+        card.querySelectorAll("[data-ha-peer-status]").forEach((element) => { element.textContent = node.peer_diagnostic?.display_label || "Not tested"; });
+        card.querySelectorAll("[data-ha-peer-explanation]").forEach((element) => { element.textContent = node.peer_diagnostic?.explanation || "No ICMP ping result has been reported yet."; });
+        card.querySelectorAll("[data-ha-peer-attempt]").forEach((element) => { element.textContent = localDate(node.peer_diagnostic?.last_attempt_at); });
+        card.querySelectorAll("[data-ha-peer-success]").forEach((element) => { element.textContent = localDate(node.peer_diagnostic?.last_success_at); });
+        card.querySelectorAll("[data-ha-peer-dns-status]").forEach((element) => { element.textContent = node.peer_diagnostic?.dns_display_label || "Not tested"; });
+        card.querySelectorAll("[data-ha-peer-dns-explanation]").forEach((element) => { element.textContent = node.peer_diagnostic?.dns_explanation || "No peer DNS port result has been reported yet."; });
+        card.querySelectorAll("[data-ha-peer-dns-attempt]").forEach((element) => { element.textContent = localDate(node.peer_diagnostic?.dns_last_attempt_at); });
+        card.querySelectorAll("[data-ha-peer-dns-success]").forEach((element) => { element.textContent = localDate(node.peer_diagnostic?.dns_last_success_at); });
+        card.querySelectorAll("[data-ha-peer-kaya-status]").forEach((element) => { element.textContent = node.peer_diagnostic?.peer_kaya_display_label || "Not reported"; });
+        card.querySelectorAll("[data-ha-peer-kaya-explanation]").forEach((element) => { element.textContent = node.peer_diagnostic?.peer_kaya_explanation || "No signed peer heartbeat has been reported."; });
+        card.querySelectorAll("[data-ha-peer-kaya-heartbeat]").forEach((element) => { element.textContent = localDate(node.peer_diagnostic?.peer_kaya_last_heartbeat_at); });
+        const recoveryChecks = card.querySelector("[data-ha-recovery-checks]");
+        if (recoveryChecks) {
+          recoveryChecks.replaceChildren(...node.recovery_checks.filter((check) => check.required).map((check) => {
+            const row = document.createElement("div");
+            row.className = `ha-recovery-check ${check.passed ? "is-pass" : "is-waiting"}`;
+            row.dataset.haRecoveryCheck = check.key;
+            const icon = document.createElement("span");
+            icon.setAttribute("aria-hidden", "true");
+            icon.textContent = check.passed ? "✓" : "•";
+            const body = document.createElement("span");
+            const label = document.createElement("strong");
+            label.textContent = check.label;
+            const detail = document.createElement("small");
+            detail.textContent = check.detail;
+            body.append(label, detail);
+            row.append(icon, body);
+            return row;
+          }));
+        }
         card.querySelectorAll("[data-ha-runtime]").forEach((element) => { element.textContent = title(node.keepalived_runtime_state); });
         card.querySelectorAll("[data-ha-interface]").forEach((element) => { element.textContent = node.network_interface || "Not set"; });
         card.querySelectorAll("[data-ha-priority]").forEach((element) => { element.textContent = node.vrrp_priority || "Not assigned"; });
@@ -72,6 +106,24 @@
           setStateClass(state, current, !current);
         }
       });
+    });
+  }
+
+  function updateDeploymentLiveStatus(nodes) {
+    const heartbeatTimes = nodes.map((node) => node.last_heartbeat_at ? new Date(node.last_heartbeat_at).getTime() : Number.NaN);
+    const validTimes = heartbeatTimes.filter(Number.isFinite);
+    const oldestAgeSeconds = validTimes.length === nodes.length && validTimes.length
+      ? Math.max(...validTimes.map((time) => Math.max(0, Math.floor((Date.now() - time) / 1000))))
+      : null;
+    const live = oldestAgeSeconds !== null && oldestAgeSeconds <= 30;
+    document.querySelectorAll("[data-ha-live-status]").forEach((element) => {
+      element.classList.remove("is-connecting", "is-live", "is-delayed", "is-error");
+      element.classList.add(live ? "is-live" : "is-delayed");
+    });
+    document.querySelectorAll("[data-ha-live-label]").forEach((element) => {
+      element.textContent = live
+        ? `Live · latest reports within ${Math.max(1, oldestAgeSeconds)}s`
+        : oldestAgeSeconds === null ? "Waiting for node reports" : `Delayed · oldest report ${oldestAgeSeconds}s ago`;
     });
   }
 
@@ -101,7 +153,18 @@
       list.replaceChildren(...readiness.blockers.map((message) => { const item = document.createElement("li"); item.textContent = message; return item; }));
       list.hidden = readiness.ready;
     });
-    document.querySelectorAll("[data-ha-failover-submit]").forEach((button) => { button.disabled = !readiness.ready; });
+    document.querySelectorAll("[data-ha-failover-submit]").forEach((button) => {
+      button.disabled = !readiness.ready;
+      button.textContent = readiness.ready ? readiness.action_label : "Handover unavailable";
+    });
+    document.querySelectorAll("[data-ha-failover-help]").forEach((message) => { message.hidden = readiness.ready; });
+    document.querySelectorAll("[data-ha-failover-summary]").forEach((summary) => {
+      summary.classList.toggle("is-disabled", !readiness.ready);
+      summary.setAttribute("aria-disabled", readiness.ready ? "false" : "true");
+    });
+    document.querySelectorAll("[data-ha-failover-summary-label]").forEach((label) => {
+      label.textContent = readiness.ready ? `${readiness.action_label} to` : "Handover unavailable";
+    });
     document.querySelectorAll("[data-ha-failover-target]").forEach((input) => { input.value = readiness.target_id || ""; });
     document.querySelectorAll("[data-ha-failover-target-name]").forEach((element) => { element.textContent = readiness.target_name || "standby node"; });
   }
@@ -138,8 +201,18 @@
       const vipSummary = data.nodes.filter((node) => node.vip_owned);
       document.querySelectorAll("[data-ha-vip-summary]").forEach((element) => { element.textContent = vipSummary.length === 1 ? vipSummary[0].name : vipSummary.length > 1 ? "Unsafe: multiple owners" : "No owner reported"; });
       updateNodes(data.nodes);
+      updateDeploymentLiveStatus(data.nodes);
       if (data.lease) updateFields(document, "[data-ha-lease-field]", data.lease);
       updateFields(document, "[data-ha-failover-field]", data.failover);
+      document.querySelectorAll("[data-ha-failover-diagnostic]").forEach((element) => {
+        element.hidden = !data.failover.error;
+      });
+      document.querySelectorAll("[data-ha-failover-error]").forEach((element) => {
+        element.textContent = data.failover.error || "";
+      });
+      document.querySelectorAll("[data-ha-failover-rollback]").forEach((element) => {
+        element.hidden = data.failover.status !== "FAILED_SAFE";
+      });
       if (data.sync) {
         updateFields(document, "[data-ha-sync-field]", data.sync);
         document.querySelectorAll("[data-ha-sync-state]").forEach((element) => {
@@ -153,6 +226,11 @@
       document.dispatchEvent(new CustomEvent("ha:live", {detail: data}));
     } catch (_) {
       document.querySelectorAll("[data-ha-live-indicator]").forEach((element) => { element.textContent = "Updates delayed"; setStateClass(element, false, true); });
+      document.querySelectorAll("[data-ha-live-status]").forEach((element) => {
+        element.classList.remove("is-connecting", "is-live", "is-delayed");
+        element.classList.add("is-error");
+      });
+      document.querySelectorAll("[data-ha-live-label]").forEach((element) => { element.textContent = "Live updates unavailable"; });
     } finally { root.dataset.loading = "0"; }
   }
 

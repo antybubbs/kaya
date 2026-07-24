@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=simple
 User=kaya-ha
 Group=kaya-ha
+AmbientCapabilities=CAP_NET_RAW
 ExecStart=/usr/bin/python3 /usr/lib/kaya-ha-agent/kaya_ha_agent.py run
 Restart=on-failure
 RestartSec=5

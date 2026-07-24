@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from datetime import datetime
-from ipaddress import IPv4Address
+from ipaddress import IPv4Address, IPv4Interface
 from urllib.parse import urlsplit
 from types import SimpleNamespace
 from typing import Callable
@@ -212,6 +212,19 @@ def _normalise_virtual_ip(value: str | None, prefix_length: int | None) -> tuple
     return str(address), prefix_length if prefix_length is not None else 24
 
 
+def _normalise_gateway(value: str | None, virtual_ip: str | None, prefix_length: int | None) -> str | None:
+    clean = (value or "").strip()
+    if not clean:
+        return None
+    try:
+        gateway = IPv4Address(clean)
+    except ValueError as exc:
+        raise HADraftError("Gateway must be a valid IPv4 address.") from exc
+    if virtual_ip and prefix_length and gateway not in IPv4Interface(f"{virtual_ip}/{prefix_length}").network:
+        raise HADraftError("Gateway, nodes and DNS Virtual IP must use the same IPv4 network.")
+    return str(gateway)
+
+
 def create_cluster_draft(db: Session, draft: HAClusterDraftCreate, user: User) -> HACluster:
     name = " ".join(draft.name.split())
     if not name:
@@ -224,13 +237,31 @@ def create_cluster_draft(db: Session, draft: HAClusterDraftCreate, user: User) -
     if primary.api_base_url.casefold() == secondary.api_base_url.casefold():
         raise HADraftError("Choose two different provider nodes.")
     virtual_ip, prefix_length = _normalise_virtual_ip(draft.virtual_ip, draft.prefix_length)
+    gateway_address = _normalise_gateway(draft.gateway_address, virtual_ip, prefix_length)
     if virtual_ip and db.query(HACluster).filter(HACluster.virtual_ip == virtual_ip, HACluster.deleted_at.is_(None)).first():
         raise HADraftError("That virtual IP is already assigned to another HA cluster.")
+    if draft.deployment_mode == "DNS_ONLY" and not draft.external_dhcp_provider:
+        raise HADraftError("Choose what provides DHCP for this DNS-only deployment.")
+    if draft.deployment_mode == "DNS_DHCP" and draft.external_dhcp_provider:
+        raise HADraftError("An external DHCP provider is only valid for DNS-only deployment.")
+
+    if virtual_ip and prefix_length:
+        network = IPv4Interface(f"{virtual_ip}/{prefix_length}").network
+        for node in (primary, secondary):
+            try:
+                address = IPv4Address(node.management_host)
+            except ValueError:
+                continue
+            if address not in network:
+                raise HADraftError("Both Pi-hole nodes and the DNS Virtual IP must use the same IPv4 network.")
 
     cluster = HACluster(
         name=name,
         description=(draft.description or "").strip() or None,
         provider_key=draft.provider_key,
+        deployment_mode=draft.deployment_mode,
+        external_dhcp_provider=draft.external_dhcp_provider if draft.deployment_mode == "DNS_ONLY" else None,
+        gateway_address=gateway_address,
         status="DRAFT",
         virtual_ip=virtual_ip,
         prefix_length=prefix_length,
@@ -262,11 +293,13 @@ def create_cluster_draft(db: Session, draft: HAClusterDraftCreate, user: User) -
                 role=role,
                 desired_role=role,
                 status="UNVALIDATED",
+                network_interface=(draft.primary.network_interface if role == "ACTIVE" else draft.secondary.network_interface),
             )
         db.add(created_node)
         db.flush()
         created_nodes.append(created_node)
     cluster.authoritative_node_id = created_nodes[0].id
+    cluster.preferred_node_id = created_nodes[0].id
     db.commit()
     db.refresh(cluster)
     return cluster

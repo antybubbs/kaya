@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Verify {{ remote_label }}</title>
+  <link rel="stylesheet" href="/static/css/app.css?v={{ asset_version }}">
+  <link rel="stylesheet" href="/static/css/kaya.css?v={{ asset_version }}">
+  <link rel="stylesheet" href="/static/css/remote.css?v={{ asset_version }}">
+  <link rel="stylesheet" href="/static/css/responsive.css?v={{ asset_version }}">
+  <script>
+    (function () {
+      var theme = localStorage.getItem("kaya.ui.theme") === "light-ops" ? "light-ops" : "command";
+      document.documentElement.dataset.kayaTheme = theme;
+      document.documentElement.dataset.theme = theme === "light-ops" ? "light" : "dark";
+    })();
+  </script>
+</head>
+<body class="remote-panel-body remote-identity-page">
+  <main class="ssh-identity-focus">
+    <section class="ssh-identity-card" id="ssh-host-identity">
+      <header class="ssh-identity-heading">
+        <div class="ssh-identity-mark" aria-hidden="true">SSH</div>
+        <div>
+          <p class="ssh-identity-eyebrow">Server identity check</p>
+          <h1>Verify {{ remote_label }}</h1>
+          <p>{{ remote.username or 'SSH user' }}@{{ remote.ip_address.address }}:{{ remote.port }}</p>
+        </div>
+        <span class="ssh-identity-status {{ 'is-trusted' if remote.host_key_fingerprint else 'is-blocked' }}">
+          {{ 'Trusted' if remote.host_key_fingerprint else 'Connection blocked' }}
+        </span>
+      </header>
+
+      <div class="ssh-identity-explainer">
+        <strong>Why Kaya is asking</strong>
+        <p>Kaya checks the server fingerprint before it sends your password. This protects the session from being redirected to a different machine.</p>
+      </div>
+
+      {% if host_key_error %}
+      <div class="alert danger" role="alert"><strong>Key scan failed</strong><p>{{ host_key_error }}</p></div>
+      {% endif %}
+
+      <div class="ssh-identity-fingerprint">
+        <div>
+          <span>{{ 'Identity found by Kaya' if host_key_candidate else 'Trusted fingerprint' }}</span>
+          <strong>{{ 'Checked again before it is saved' if host_key_candidate else ('This identity is enrolled' if remote.host_key_fingerprint else 'No identity has been enrolled') }}</strong>
+        </div>
+        <code>{{ host_key_candidate or remote.host_key_fingerprint or 'Scan the server to retrieve its public fingerprint.' }}</code>
+      </div>
+
+      {% if host_key_candidate %}
+      <div class="ssh-identity-steps">
+        <span>1</span>
+        <div><strong>Approve this server</strong><p>If this is the server and address you expected, approve it once. Kaya will re-scan now, save the identity, and block future connections if the key changes.</p></div>
+      </div>
+      <form method="post" action="/remote-manager/{{ remote.id }}/ssh/host-key/trust" class="ssh-identity-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="host_key_view" value="{{ host_key_view }}">
+        <input type="hidden" name="host_key_candidate" value="{{ host_key_candidate }}">
+        <p class="ssh-identity-first-use-note">This is first-use approval. Kaya can confirm the key is stable during enrolment, but only an independent console can prove the first key was not intercepted.</p>
+        <div class="ssh-identity-actions">
+          <button type="submit">Trust this server and continue</button>
+          <a class="button secondary" href="{{ host_key_return_path }}">Cancel</a>
+        </div>
+      </form>
+      {% else %}
+      <div class="ssh-identity-steps">
+        <span>1</span>
+        <div><strong>Scan the server</strong><p>This reads the server's public host key only. Kaya will not trust it automatically.</p></div>
+      </div>
+      <form method="post" action="/remote-manager/{{ remote.id }}/ssh/host-key/scan" class="ssh-identity-actions">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="host_key_view" value="{{ host_key_view }}">
+        <button type="submit">Scan server identity</button>
+        <a class="button secondary" href="{{ host_key_return_path }}">Back to session</a>
+      </form>
+      {% endif %}
+    </section>
+  </main>
+</body>
+</html>

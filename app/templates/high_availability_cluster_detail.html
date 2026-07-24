@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 {% include '_high_availability_cluster_header.html' %}
-{# Legacy safety assertion: Type <span class="mono">{{ cluster.name }}</span> to confirm #}
+{# Legacy safety assertion retained for regression coverage: Type <span class="mono">{{ cluster.name }}</span> to confirm #}
 {# Removing a cluster means stored nodes, connections, validation records, DNS links, and history remain preserved. #}
 {% if request.query_params.get('saved') %}<div class="success" role="status">Cluster saved. Start with the guided setup steps below.</div>{% endif %}
 {% if request.query_params.get('automatic') == 'enabled' %}<div class="success" role="status">Automatic failover is being deployed to both nodes. Automatic failback remains disabled.</div>{% endif %}
@@ -9,15 +9,18 @@
 {% if automatic_error|default(false) %}<div class="alert" role="alert"><strong>Automatic failover was not changed</strong><span>{{ automatic_error }}</span></div>{% endif %}
 
 <section class="panel ha-operations-hero">
-  <div><span class="ha-sync-eyebrow">Live cluster overview</span><h2>Your Pi-hole service at a glance</h2><p>Use this page for day-to-day monitoring and failover. Setup tools remain available under <strong>Setup & maintenance</strong>.</p></div>
+  <div><span class="ha-sync-eyebrow">Live cluster overview · {{ deployment_mode_label }}</span><h2>Your resilient {{ cluster.provider_key|replace('_', ' ')|title }} service</h2><p>{% if pihole_manages_dhcp %}Pi-hole provides DNS and DHCP. Kaya keeps one DNS address stable and prepares the standby node to take over locally.{% else %}Another platform provides DHCP. Configure it to give devices the DNS Virtual IP shown below.{% endif %}</p></div>
   <div class="ha-current-time"><span>Current local date and time</span><strong data-ha-live-clock>Loading current time…</strong></div>
 </section>
 
 <section class="ha-summary-grid" aria-label="Live cluster summary">
-  <article><span>Overall status</span><strong data-ha-cluster-field="status">{{ cluster.status|replace('_', ' ')|title }}</strong><small>Status updates every second</small></article>
-  <article><span>Virtual IP</span><strong class="mono">{{ cluster.virtual_ip }}/{{ cluster.prefix_length }}</strong><small>Use this address for DNS clients</small></article>
-  <article><span>Active Pi-hole</span><strong data-ha-cluster-field="active_node">{{ failover_readiness.source.display_name if failover_readiness.source else 'Confirming ownership' }}</strong><small>Currently owns the virtual IP</small></article>
-  <article><span>Automatic failover</span><strong data-ha-cluster-field="automatic_failover">{{ 'Enabled' if cluster.automatic_failover_enabled else 'Disabled' }}</strong><small>Automatic return is always disabled</small></article>
+  <article><span>Service availability</span><strong data-ha-cluster-field="service_availability">{{ 'Healthy' if active_node and active_node.dns_healthy else 'Checking' }}</strong><small>Can clients use the clustered service?</small></article>
+  <article><span>HA readiness</span><strong data-ha-cluster-field="ha_readiness">{{ 'Ready' if action_ready else 'Recovering' if failback_recovery else 'Needs attention' }}</strong><small>Can the other node take over safely?</small></article>
+  <article title="The single DNS address used by your devices."><span>DNS Virtual IP</span><strong class="mono">{{ cluster.virtual_ip }}/{{ cluster.prefix_length }}</strong><small>The stable DNS address</small></article>
+  <article><span>Current active node</span><strong data-ha-cluster-field="active_node">{{ active_node.display_name if active_node else 'Confirming ownership' }}</strong><small>Currently owns the virtual IP</small></article>
+  <article><span>Preferred node</span><strong data-ha-cluster-field="preferred_node">{{ preferred_node.display_name if preferred_node else 'Not set' }}</strong><small>Manual failback target after recovery</small></article>
+  <article><span>Service responsibilities</span><strong>{{ deployment_mode_label }}</strong><small>{% if pihole_manages_dhcp %}Pi-hole also provides device addresses{% else %}DHCP: {{ (cluster.external_dhcp_provider or 'external')|replace('_', ' ')|title }}{% endif %} · <a href="/high-availability/clusters/{{ cluster.public_id }}/topology">Review</a></small></article>
+  <article><span>Automatic failover</span><strong data-ha-cluster-field="automatic_failover">{{ 'Enabled' if cluster.automatic_failover_enabled else 'Disabled' }}</strong><small>Recovered nodes return as standby</small></article>
   <article><span>Last failover</span><strong data-ha-cluster-field="last_failover_at">{{ local_time(cluster.last_failover_at, 'friendly') if cluster.last_failover_at else 'Not tested yet' }}</strong><small>Controlled or automatic handover</small></article>
   <article><span>Attention needed</span><strong data-ha-cluster-field="unacknowledged_alerts">{{ cluster.events|selectattr('acknowledged_at', 'none')|selectattr('severity', 'in', ['warning', 'error', 'critical'])|list|length }}</strong><small><a href="/high-availability/clusters/{{ cluster.public_id }}/events">Open activity</a></small></article>
 </section>
@@ -33,27 +36,78 @@
 </section>
 
 <section class="panel">
-  <div class="ha-section-heading"><div><h2>Pi-hole nodes</h2><p class="muted">Only one node owns the virtual IP. If Pi-hole provides DHCP, only that same node may run DHCP.</p></div><a class="button secondary" href="/high-availability/clusters/{{ cluster.public_id }}/nodes">Manage nodes</a></div>
-  <div class="ha-node-grid">{% for node in cluster.nodes %}<article class="ha-node-card" data-ha-node-id="{{ node.public_id }}"><div class="ha-node-card-heading"><span class="table-chip" data-ha-node-role>{{ node.desired_role|title }}</span><span class="ha-agent-state is-pending" data-ha-node-live-state>Connecting</span></div><h3>{{ node.display_name }}</h3><p class="mono">{{ node.management_host }}</p><dl class="ha-node-facts"><div><dt>Observed role</dt><dd data-ha-node-field="observed_role">{{ node.observed_role|title if node.observed_role else 'Unknown' }}</dd></div><div><dt>DNS</dt><dd data-ha-node-field="dns_healthy">{{ 'Healthy' if node.dns_healthy else 'Unhealthy' }}</dd></div><div><dt>DHCP</dt><dd data-ha-node-field="dhcp_running">{{ 'Running' if node.dhcp_running else 'Stopped' }}</dd></div><div><dt>Virtual IP</dt><dd data-ha-node-field="vip_owned">{{ 'Owned' if node.vip_owned else 'Not owned' }}</dd></div><div><dt>Peer</dt><dd data-ha-node-field="peer_reachable">{{ 'Reachable' if node.peer_reachable else 'Not reachable' }}</dd></div><div><dt>Heartbeat</dt><dd data-ha-node-field="last_heartbeat_at">{{ local_time(node.last_heartbeat_at, 'friendly') if node.last_heartbeat_at else 'Never' }}</dd></div></dl></article>{% endfor %}</div>
+  <div class="ha-section-heading"><div><h2>Service nodes</h2><p class="muted">The current active node owns the DNS Virtual IP. Preferred identifies the node Kaya can return service to after a safe, user-approved failback.</p></div><a class="button secondary" href="/high-availability/clusters/{{ cluster.public_id }}/nodes">Manage nodes</a></div>
+  <div class="ha-node-grid">
+    {% for node in cluster.nodes %}
+    {% set node_recovery = recovery[node.id] %}
+    {% set peer = peer_diagnostics[node.id] %}
+    <article class="ha-node-card" data-ha-node-id="{{ node.public_id }}">
+      <div class="ha-node-card-heading"><span class="table-chip" data-ha-node-role>{{ 'Preferred' if preferred_node and preferred_node.id == node.id else node.desired_role|title }}</span><span class="ha-agent-state is-pending" data-ha-node-live-state>Connecting</span></div>
+      <h3>{{ node.display_name }}</h3><p class="mono">{{ node.management_host }}</p>
+      <h4>Service status</h4>
+      <dl class="ha-node-facts">
+        <div><dt>Observed role</dt><dd data-ha-node-field="observed_role">{{ node.observed_role|title if node.observed_role else 'Unknown' }}</dd></div>
+        <div><dt>DNS</dt><dd data-ha-node-field="dns_healthy">{{ 'Healthy' if node.dns_healthy else 'Unhealthy' }}</dd></div>
+        <div><dt>DHCP</dt><dd data-ha-node-field="dhcp_running">{{ 'Running' if node.dhcp_running else 'Stopped' }}</dd></div>
+        <div><dt>Virtual IP</dt><dd data-ha-node-field="vip_owned">{{ 'Owned' if node.vip_owned else 'Not owned' }}</dd></div>
+      </dl>
+      <h4>High availability</h4>
+      <dl class="ha-node-facts">
+        <div><dt>Recovery state</dt><dd data-ha-node-field="recovery_state">{{ node_recovery.state|replace('_', ' ')|title }}</dd></div>
+        <div><dt>Kaya connection</dt><dd data-ha-kaya-connection>{{ 'Reporting' if node.last_heartbeat_at else 'Waiting' }}</dd></div>
+        <div><dt>Last Kaya heartbeat</dt><dd data-ha-node-field="last_heartbeat_at">{{ local_time(node.last_heartbeat_at, 'friendly') if node.last_heartbeat_at else 'Never' }}</dd></div>
+        <div><dt>Peer Network Reachability</dt><dd data-ha-peer-status>{{ peer.display_label }}</dd></div>
+      </dl>
+      <div class="ha-recovery-checks" data-ha-recovery-checks>
+        {% for check in node_recovery.checks if check.required %}
+        <div class="ha-recovery-check {{ 'is-pass' if check.passed else 'is-waiting' }}" data-ha-recovery-check="{{ check.key }}"><span aria-hidden="true">{{ '✓' if check.passed else '•' }}</span><span><strong>{{ check.label }}</strong><small>{{ check.detail }}</small></span></div>
+        {% endfor %}
+      </div>
+      <details class="ha-node-diagnostics">
+        <summary>Connection diagnostics</summary>
+        <p class="muted">These checks are independent. A blocked ping does not imply that DNS, the peer node, or its Kaya Agent is offline.</p>
+        <dl class="ha-node-facts">
+          <div><dt>Peer</dt><dd>{{ peer.peer_name or 'Not configured' }}{% if peer.peer_address %} · <span class="mono">{{ peer.peer_address }}</span>{% endif %}</dd></div>
+          <div><dt>Peer Kaya heartbeat</dt><dd data-ha-peer-kaya-status>{{ peer.peer_kaya_display_label }}</dd></div>
+          <div><dt>Peer DNS service</dt><dd data-ha-peer-dns-status>{{ peer.dns_display_label }}</dd></div>
+          <div><dt>Peer Network Reachability</dt><dd data-ha-peer-status>{{ peer.display_label }}</dd></div>
+        </dl>
+        <div class="ha-diagnostic-notes">
+          <p data-ha-peer-kaya-explanation>{{ peer.peer_kaya_explanation }}</p>
+          <p data-ha-peer-dns-explanation>{{ peer.dns_explanation }}</p>
+          <p data-ha-peer-explanation>{{ peer.explanation }}</p>
+        </div>
+        <dl class="ha-node-facts">
+          <div><dt>Last signed peer heartbeat</dt><dd data-ha-peer-kaya-heartbeat>{% if peer.peer_kaya_last_heartbeat_at %}<time data-utc-time="{{ peer.peer_kaya_last_heartbeat_at }}" data-time-format="friendly">{{ peer.peer_kaya_last_heartbeat_at }}</time>{% else %}Not reported{% endif %}</dd></div>
+          <div><dt>Last DNS port check</dt><dd data-ha-peer-dns-attempt>{{ local_time(node.last_peer_dns_attempt_at, 'friendly') if node.last_peer_dns_attempt_at else 'Not reported' }}</dd></div>
+          <div><dt>Last successful DNS port check</dt><dd data-ha-peer-dns-success>{{ local_time(node.last_peer_dns_success_at, 'friendly') if node.last_peer_dns_success_at else 'Not reported' }}</dd></div>
+          <div><dt>Last optional ping</dt><dd data-ha-peer-attempt>{{ local_time(node.last_peer_attempt_at, 'friendly') if node.last_peer_attempt_at else 'Not reported' }}</dd></div>
+          <div><dt>Last successful ping</dt><dd data-ha-peer-success>{{ local_time(node.last_peer_success_at, 'friendly') if node.last_peer_success_at else 'Not reported' }}</dd></div>
+        </dl>
+      </details>
+    </article>
+    {% endfor %}
+  </div>
 </section>
 
 <section class="ha-detail-grid section-gap">
   <div class="panel ha-primary-action">
-    <div class="ha-section-heading"><div><span class="ha-sync-eyebrow">Controlled handover</span><h2>Move service to the standby Pi-hole</h2></div><span data-ha-readiness-label class="ha-readiness {{ 'ha-readiness--ready' if failover_readiness.ready else 'ha-readiness--warning' }}">{{ 'Ready' if failover_readiness.ready else 'Action needed' }}</span></div>
-    <p>Kaya safely stages leases, stops DHCP on the current node, moves the virtual IP, starts DHCP on the standby when required, and verifies DNS.</p>
-    <ul class="ha-blocker-list" data-ha-readiness-blockers {% if failover_readiness.ready %}hidden{% endif %}>{% for blocker in failover_readiness.blockers %}<li>{{ blocker }}</li>{% endfor %}</ul>
-    {% if user.role == 'admin' %}<details class="ha-action-disclosure"><summary class="button">Fail over to <span data-ha-failover-target-name>{{ failover_readiness.target.display_name if failover_readiness.target else 'standby node' }}</span></summary><form method="post" action="/high-availability/clusters/{{ cluster.public_id }}/testing/start"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="target_node_id" data-ha-failover-target value="{{ failover_readiness.target.public_id if failover_readiness.target else '' }}"><label>Type <strong>{{ cluster.name }}</strong> to confirm<input name="cluster_name" autocomplete="off" required></label><label class="checkbox-row"><input type="checkbox" name="acknowledge_interruption" value="1" required> I understand DNS and DHCP may pause briefly and the new active node will remain active.</label><button class="button" type="submit" data-ha-failover-submit {% if not failover_readiness.ready %}disabled{% endif %}>Start safe failover</button></form></details>{% endif %}
-    <a class="ha-text-link" href="/high-availability/clusters/{{ cluster.public_id }}/testing">Open detailed failover status and history</a>
+    <div class="ha-section-heading"><div><span class="ha-sync-eyebrow">{{ 'Controlled failback' if failback_recovery else 'Controlled handover' }}</span><h2>{{ 'Return service to the preferred node' if failback_recovery else 'Move service to the standby Pi-hole' }}</h2></div><span data-ha-readiness-label class="ha-readiness {{ 'ha-readiness--ready' if action_ready else 'ha-readiness--warning' }}">{{ 'Ready' if action_ready else 'Recovering' if failback_recovery else 'Action needed' }}</span></div>
+    {% if failback_recovery %}<p><strong>{{ active_node.display_name }}</strong> remains active while <strong>{{ preferred_node.display_name }}</strong> recovers. Kaya never returns service automatically. Configuration and DHCP state must be current and stable before you can approve failback.</p>{% else %}<p>Kaya safely stages leases, stops DHCP on the current node, moves the virtual IP, starts DHCP on the standby when required, and verifies DNS.</p>{% endif %}
+    <ul class="ha-blocker-list" data-ha-readiness-blockers {% if action_ready %}hidden{% endif %}>{% for blocker in failover_readiness.blockers %}<li>{{ blocker }}</li>{% endfor %}{% if failback_recovery and not failback_recovery.ready %}{% for check in failback_recovery.checks if check.required and not check.passed %}<li>{{ check.detail }}</li>{% endfor %}{% if failback_recovery.state == 'VERIFYING' %}<li>Waiting for the recovered node to remain stable for {{ failback_recovery.stability_required_seconds }} seconds.</li>{% endif %}{% endif %}</ul>
+    {% if not action_ready %}<div class="ha-blocker-actions"><a class="button secondary" href="/high-availability/clusters/{{ cluster.public_id }}/topology">Review service responsibility</a></div>{% endif %}
+    {% if user.role == 'admin' %}<details class="ha-action-disclosure"><summary class="button{% if not action_ready %} is-disabled{% endif %}" data-ha-failover-summary aria-disabled="{{ 'false' if action_ready else 'true' }}"><span data-ha-failover-summary-label>{{ ('Fail back safely to' if failback_recovery else 'Fail over safely to') if action_ready else 'Handover unavailable' }}</span>&nbsp;<span data-ha-failover-target-name>{{ failover_readiness.target.display_name if failover_readiness.target else 'standby node' }}</span></summary><form method="post" action="/high-availability/clusters/{{ cluster.public_id }}/testing/start"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="target_node_id" data-ha-failover-target value="{{ failover_readiness.target.public_id if failover_readiness.target else '' }}"><label>Type <strong>{{ cluster.name }}</strong> to confirm<input name="cluster_name" autocomplete="off" required></label><label class="checkbox-row"><input type="checkbox" name="acknowledge_interruption" value="1" required> I understand DNS and DHCP may pause briefly and the new active node will remain active.</label><button class="button" type="submit" data-ha-failover-submit {% if not action_ready %}disabled{% endif %}>{{ ('Fail back safely' if failback_recovery else 'Fail over safely') if action_ready else 'Handover unavailable' }}</button><small class="muted" data-ha-failover-help {% if action_ready %}hidden{% endif %}>Resolve every item above before handover can start.</small></form></details>{% endif %}
+    <a class="ha-text-link" href="/high-availability/clusters/{{ cluster.public_id }}/testing">Open detailed handover status and history</a>
   </div>
   <div class="panel">
     <span class="ha-sync-eyebrow">Offline protection</span><h2>Automatic failover</h2>
-    <p>When enabled, the Pi-holes can transfer DNS and DHCP locally even if Kaya is offline. A recovered node always returns as standby.</p>
+    <p>When enabled, the Pi-holes can transfer DNS and DHCP locally even if Kaya is offline. A recovered node always returns as standby; failback requires your approval.</p>
     {% if cluster.automatic_failover_enabled %}<div class="success"><strong>Enabled</strong><span>Local health thresholds, a hold-down timer and duplicate-VIP checks protect activation.</span></div>{% else %}<ul class="ha-blocker-list">{% for blocker in automatic_blockers %}<li>{{ blocker }}</li>{% endfor %}</ul>{% endif %}
     {% if user.role == 'admin' %}{% if cluster.automatic_failover_enabled %}<form method="post" action="/high-availability/clusters/{{ cluster.public_id }}/automatic-failover"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="enabled" value="0"><button class="button secondary" type="submit">Disable automatic failover</button></form>{% else %}<details class="ha-action-disclosure"><summary class="button secondary">Enable automatic failover</summary><form method="post" action="/high-availability/clusters/{{ cluster.public_id }}/automatic-failover"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="enabled" value="1"><label>Type <strong>{{ cluster.name }}</strong> to confirm<input name="cluster_name" required autocomplete="off"></label><label class="checkbox-row"><input type="checkbox" name="acknowledge_automatic" value="1" required> I have tested failover and understand the Pi-holes—not Kaya—will make the local decision.</label><button class="button" type="submit" {% if automatic_blockers %}disabled title="Resolve the listed readiness items first"{% endif %}>Enable offline failover</button></form></details>{% endif %}{% endif %}
   </div>
 </section>
 
-<section class="panel ha-sync-offline section-gap"><div><h2>If Kaya goes offline</h2><p>Pi-hole DNS, DHCP and Keepalived continue locally. Kaya is the management plane and is never in the network traffic path.</p></div><span class="ha-sync-safe-badge">Network services stay local</span></section>
+<section class="panel ha-sync-offline section-gap"><div><h2>If Kaya goes offline</h2><p>Pi-hole DNS{% if pihole_manages_dhcp %}, DHCP{% endif %} and automatic failover continue locally. Kaya is the management plane and is never in the network traffic path.</p></div><span class="ha-sync-safe-badge">Network services stay local</span></section>
 
 {% if user.role == 'admin' %}<details class="panel section-gap ha-danger-zone" id="danger-zone"><summary><span><span class="ha-danger-kicker">Danger zone</span><strong>Remove this cluster from active HA views</strong></span></summary><p>This does not contact either Pi-hole. Stored nodes, connections, validation records, DNS links and history remain preserved.</p>{% if delete_error|default(false) %}<div class="alert" role="alert">{{ delete_error }}</div>{% endif %}<form method="post" action="/high-availability/clusters/{{ cluster.public_id }}/delete"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label>Type <strong>{{ cluster.name }}</strong> to confirm<input name="cluster_name" autocomplete="off" required></label><label class="ha-danger-ack"><input name="acknowledge_preservation" type="checkbox" value="1" required><span>I understand this hides the active cluster while preserving its stored records.</span></label><button class="button danger" type="submit">Delete cluster</button></form></details>{% endif %}
 {% endblock %}
