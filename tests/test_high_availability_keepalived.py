@@ -246,7 +246,7 @@ def test_deployment_ui_and_agent_protocol_keep_dhcp_outside_keepalived_setup():
     transition = Path("ha_agent/kaya_ha_transition.py").read_text(encoding="utf-8")
     assert "DHCP is not changed here" in template
     assert "This setup deploys Keepalived only" in template
-    assert "Move Virtual IP" in template
+    assert "Move DNS Virtual IP" in template
     assert "Deployment blocked" in template
     assert "Resolve blockers to deploy" in template
     assert "Edit node settings" in template

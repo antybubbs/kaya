@@ -186,6 +186,18 @@ def test_desired_state_keeps_automatic_failover_off_during_rolling_agent_update(
         assert desired_state(standby)["automatic_failover"] is False
 
 
+def test_non_safety_agent_update_does_not_disable_automatic_failover():
+    with database() as db:
+        cluster, primary, standby = cluster_with_nodes(db)
+        cluster.automatic_failover_enabled = True
+        primary.agent_version = "0.2.2"
+        standby.agent_version = "0.2.3"
+        db.commit()
+
+        assert desired_state(primary)["automatic_failover"] is True
+        assert desired_state(standby)["automatic_failover"] is True
+
+
 def test_agent_events_are_deduplicated_and_sensitive_details_are_removed():
     with database() as db:
         _, primary, _ = cluster_with_nodes(db)
@@ -215,8 +227,10 @@ def test_verified_automatic_failover_event_immediately_adopts_the_surviving_owne
         primary.vip_owned = True
         db.commit()
 
-        record_heartbeat(db, standby, HAAgentHeartbeat(observed_role="ACTIVE", observed_generation=8, vip_owned=True, dhcp_running=False, dns_healthy=True, peer_reachable=False, lease_generation=0, config_generation=8, agent_version="0.2.1", keepalived_runtime_state="RUNNING"))
-        assert cluster.status == "ERROR"
+        record_heartbeat(db, standby, HAAgentHeartbeat(observed_role="ACTIVE", observed_generation=8, vip_owned=True, dhcp_running=True, dns_healthy=True, peer_reachable=False, lease_generation=0, config_generation=8, agent_version="0.2.2", keepalived_runtime_state="RUNNING"))
+        assert cluster.status == "DEGRADED"
+        assert db.query(HAEvent).filter_by(event_type="ownership_transition_pending", severity="warning").one()
+        assert db.query(HAEvent).filter_by(event_type="split_brain_detected").count() == 0
 
         completed = HAAgentEventItem(event_id="automatic-completed-001", event_type="automatic_failover_completed", severity="warning", message="Local failover completed without requiring Kaya.", occurred_at=datetime.utcnow(), details={"generation": 8, "automatic": True})
         assert ingest_events(db, standby, [completed]) == (1, 0)
@@ -230,6 +244,30 @@ def test_verified_automatic_failover_event_immediately_adopts_the_surviving_owne
         reconciled = db.query(HAEvent).filter_by(event_type="ownership_reconciled").one()
         assert reconciled.severity == "info"
         assert db.query(HAEvent).filter_by(event_type="automatic_failover_completed").one()
+
+
+def test_both_nodes_reporting_vip_confirms_split_brain_after_transition_window():
+    with database() as db:
+        cluster, primary, standby = cluster_with_nodes(db)
+        cluster.keepalived_status = "DEPLOYED"
+        cluster.keepalived_generation = 8
+        cluster.automatic_failover_enabled = True
+        cluster.current_active_node_id = primary.id
+        cluster.status = "HEALTHY"
+        for node in (primary, standby):
+            node.keepalived_status = "DEPLOYED"
+            node.keepalived_runtime_state = "RUNNING"
+            node.config_generation = 8
+            node.last_heartbeat_at = datetime.utcnow()
+            node.dns_healthy = True
+            node.vip_owned = True
+        db.commit()
+
+        record_heartbeat(db, standby, HAAgentHeartbeat(observed_role="ACTIVE", observed_generation=8, vip_owned=True, dhcp_running=False, dns_healthy=True, peer_reachable=False, lease_generation=0, config_generation=8, agent_version="0.2.3", keepalived_runtime_state="RUNNING"))
+        record_heartbeat(db, primary, HAAgentHeartbeat(observed_role="ACTIVE", observed_generation=8, vip_owned=True, dhcp_running=True, dns_healthy=True, peer_reachable=True, lease_generation=0, config_generation=8, agent_version="0.2.3", keepalived_runtime_state="RUNNING"))
+
+        assert cluster.status == "ERROR"
+        assert db.query(HAEvent).filter_by(event_type="split_brain_detected", severity="critical").one()
 
 
 def test_stale_cached_owner_recovers_on_the_next_surviving_heartbeat():
