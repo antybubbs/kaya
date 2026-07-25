@@ -312,6 +312,36 @@ def test_collection_deletions_require_explicit_confirmation_and_leases_are_exclu
         assert not run.backups
 
 
+def test_renamed_pihole_default_group_is_a_change_not_a_deletion():
+    with database() as db:
+        _, cluster, source, target = make_cluster(db)
+        source.configuration_snapshot_json = json.dumps(
+            {
+                "groups": {
+                    "groups": [
+                        {"id": 0, "name": "Main Clients", "comment": "Primary clients", "enabled": True},
+                    ]
+                }
+            }
+        )
+        target.configuration_snapshot_json = json.dumps(
+            {
+                "groups": {
+                    "groups": [
+                        {"id": 0, "name": "Default", "comment": "", "enabled": True},
+                    ]
+                }
+            }
+        )
+        db.commit()
+
+        plan = sync_plan(cluster)
+
+        assert [item["key"] for item in plan["groups"]] == ["groups"]
+        assert plan["groups"][0]["deletion_count"] == 0
+        assert plan["deletion_count"] == 0
+
+
 def test_dhcp_runtime_activation_is_not_a_sync_change():
     with database() as db:
         _, cluster, source, target = make_cluster(db)

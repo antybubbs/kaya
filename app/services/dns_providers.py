@@ -432,8 +432,44 @@ class PiHoleProvider(DNSProvider):
             def mutate(path: str, method: str, payload: dict[str, Any] | None = None):
                 return self._v6_request_json(path, method=method, payload=payload)
 
-            source_by_name = {str(row.get("name")): row for row in source_groups if row.get("name")}
-            target_by_name = {str(row.get("name")): row for row in target_groups if row.get("name")}
+            source_default = next((row for row in source_groups if str(row.get("id")) == "0" and row.get("name")), None)
+            target_default = next((row for row in target_groups if str(row.get("id")) == "0" and row.get("name")), None)
+            if source_default and target_default:
+                source_default_name = str(source_default["name"])
+                target_default_name = str(target_default["name"])
+                conflicting_target = next(
+                    (
+                        row
+                        for row in target_groups
+                        if str(row.get("id")) != "0" and str(row.get("name") or "") == source_default_name
+                    ),
+                    None,
+                )
+                if conflicting_target is not None:
+                    raise DNSProviderError(
+                        "The standby has a separate group using the primary default group's name. "
+                        "Rename or remove that conflicting standby group before synchronising."
+                    )
+                mutate(
+                    f"/api/groups/{quote(target_default_name, safe='')}",
+                    "PUT",
+                    {
+                        "name": source_default_name,
+                        "comment": source_default.get("comment") or "",
+                        "enabled": bool(source_default.get("enabled", True)),
+                    },
+                )
+
+            source_by_name = {
+                str(row.get("name")): row
+                for row in source_groups
+                if str(row.get("id")) != "0" and row.get("name")
+            }
+            target_by_name = {
+                str(row.get("name")): row
+                for row in target_groups
+                if str(row.get("id")) != "0" and row.get("name")
+            }
             for name, row in source_by_name.items():
                 payload = {"name": name, "comment": row.get("comment") or "", "enabled": bool(row.get("enabled", True))}
                 if name in target_by_name:
@@ -445,7 +481,7 @@ class PiHoleProvider(DNSProvider):
                     # representation after creation so verification sees the
                     # source comment/enabled state on a fresh peer.
                     mutate(f"/api/groups/{quote(name, safe='')}", "PUT", payload)
-            extras = sorted(set(target_by_name) - set(source_by_name) - {"Default"})
+            extras = sorted(set(target_by_name) - set(source_by_name))
             if extras and not allow_deletions:
                 raise DNSProviderError("The plan contains group deletions which were not explicitly confirmed.")
             for name in extras:
