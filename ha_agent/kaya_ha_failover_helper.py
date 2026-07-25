@@ -62,20 +62,12 @@ def _dhcp_status():
     # reporting that real listener as stopped can make a second promotion look
     # safe and is therefore more dangerous than reporting the inconsistency.
     running = bool(service_active and listening) if available else None
-    consistency = (
-        "CONSISTENT"
-        if available and configured is running
-        else "DRIFT"
-        if available
-        else "UNKNOWN"
-    )
     return {
         "configured": configured,
         "service_active": service_active,
         "listening": listening,
         "runtime_state": "RUNNING" if running is True else "STOPPED" if running is False else "UNKNOWN",
         "observation_status": "FRESH" if available else "UNAVAILABLE",
-        "configuration_consistency": consistency,
         "dhcp_running": running,
     }
 
@@ -87,7 +79,19 @@ def _wait_for_dhcp(enabled):
         if latest.get("observation_status") != "FRESH":
             time.sleep(1)
             continue
-        ready = latest["dhcp_running"] if enabled else latest["configured"] is False and latest["listening"] is False
+        # Promotion and demotion have deliberately opposite post-conditions.
+        # In particular, an already-running listener must never let promotion
+        # succeed while Pi-hole still reports dhcp.active=false.
+        ready = (
+            latest.get("configured") is True
+            and latest.get("service_active") is True
+            and latest.get("listening") is True
+            and latest.get("runtime_state") == "RUNNING"
+            if enabled
+            else latest.get("configured") is False
+            and latest.get("listening") is False
+            and latest.get("runtime_state") == "STOPPED"
+        )
         if ready:
             return latest
         time.sleep(1)

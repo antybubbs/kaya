@@ -21,6 +21,7 @@ from app.services.ha_maintenance import (
     advance_reinitialisation,
     desired_maintenance_action,
     inspect_cluster,
+    maintenance_status,
     reconcile_cluster_state,
     record_maintenance_action_result,
     start_reconciliation,
@@ -69,7 +70,7 @@ def pair(db: Session, *, split: bool = False):
         desired_role="ACTIVE",
         observed_role="STANDBY" if split else "ACTIVE",
         observed_generation=4,
-        agent_version="0.2.8",
+        agent_version="0.2.10",
         vip_owned=not split,
         dhcp_running=True,
         dhcp_configured=True,
@@ -96,7 +97,7 @@ def pair(db: Session, *, split: bool = False):
         desired_role="STANDBY",
         observed_role="ACTIVE" if split else "STANDBY",
         observed_generation=4,
-        agent_version="0.2.8",
+        agent_version="0.2.10",
         vip_owned=split,
         dhcp_running=False,
         dhcp_configured=False,
@@ -504,8 +505,13 @@ def test_active_configuration_drift_is_repaired_without_moving_vip():
         advance_dhcp_self_heal(db, run)
 
         assert run.status == "SUCCEEDED"
+        assert run.phase == "COMPLETE"
         assert first.vip_owned is True and second.vip_owned is False
+        assert first.dhcp_configured is True and first.dhcp_listener_active is True
+        assert second.dhcp_configured is False and second.dhcp_listener_active is False
         assert cluster.maintenance_mode is False
+        assert cluster.status == "HEALTHY"
+        assert maintenance_status(run)["progress_percent"] == 100
 
 
 def test_self_heal_refuses_ambiguous_dual_dhcp_runtime():

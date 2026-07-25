@@ -398,7 +398,6 @@ def test_dhcp_status_requires_the_service_and_udp_67_listener(tmp_path, monkeypa
         "listening": True,
         "runtime_state": "RUNNING",
         "observation_status": "FRESH",
-        "configuration_consistency": "CONSISTENT",
         "dhcp_running": True,
     }
 
@@ -450,7 +449,7 @@ def test_dhcp_status_reports_real_runtime_when_configuration_flag_drifted_false(
     assert status["configured"] is False
     assert status["dhcp_running"] is True
     assert status["runtime_state"] == "RUNNING"
-    assert status["configuration_consistency"] == "DRIFT"
+    assert "configuration_consistency" not in status
 
 
 def test_agent_reports_dhcp_configuration_listener_and_ftl_separately():
@@ -515,6 +514,96 @@ def test_dhcp_promotion_fails_closed_when_udp_67_never_starts(monkeypatch):
 
     with pytest.raises(RuntimeError, match="UDP port 67"):
         helper._wait_for_dhcp(True)
+
+
+def test_dhcp_promotion_requires_configured_true_even_when_udp_67_is_already_listening(monkeypatch):
+    from ha_agent import kaya_ha_failover_helper as helper
+
+    monkeypatch.setattr(helper.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(
+        helper,
+        "_dhcp_status",
+        lambda: {
+            "configured": False,
+            "service_active": True,
+            "listening": True,
+            "runtime_state": "RUNNING",
+            "observation_status": "FRESH",
+            "dhcp_running": True,
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="did not start serving"):
+        helper._wait_for_dhcp(True)
+
+
+def test_dhcp_promotion_succeeds_only_with_enabled_running_postconditions(monkeypatch):
+    from ha_agent import kaya_ha_failover_helper as helper
+
+    expected = {
+        "configured": True,
+        "service_active": True,
+        "listening": True,
+        "runtime_state": "RUNNING",
+        "observation_status": "FRESH",
+        "dhcp_running": True,
+    }
+    monkeypatch.setattr(helper, "_dhcp_status", lambda: expected)
+
+    assert helper._wait_for_dhcp(True) == expected
+
+
+def test_dhcp_demotion_succeeds_only_when_configuration_and_udp_67_are_stopped(monkeypatch):
+    from ha_agent import kaya_ha_failover_helper as helper
+
+    expected = {
+        "configured": False,
+        "service_active": True,
+        "listening": False,
+        "runtime_state": "STOPPED",
+        "observation_status": "FRESH",
+        "dhcp_running": False,
+    }
+    monkeypatch.setattr(helper, "_dhcp_status", lambda: expected)
+
+    assert helper._wait_for_dhcp(False) == expected
+
+
+def test_dhcp_demotion_rejects_udp_67_still_listening(monkeypatch):
+    from ha_agent import kaya_ha_failover_helper as helper
+
+    monkeypatch.setattr(helper.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(helper, "_dhcp_status", lambda: {
+        "configured": False,
+        "service_active": True,
+        "listening": True,
+        "runtime_state": "RUNNING",
+        "observation_status": "FRESH",
+        "dhcp_running": True,
+    })
+
+    with pytest.raises(RuntimeError, match="still in use"):
+        helper._wait_for_dhcp(False)
+
+
+def test_standby_disabled_and_not_listening_is_reported_as_factual_safe_state(tmp_path, monkeypatch):
+    from ha_agent import kaya_ha_failover_helper as helper
+
+    udp = tmp_path / "udp"
+    udp.write_text("  sl  local_address rem_address st\n", encoding="ascii")
+    monkeypatch.setattr(helper, "PROC_UDP", (udp,))
+    monkeypatch.setattr(helper, "_run", lambda command: type("Result", (), {
+        "returncode": 0,
+        "stdout": "dhcp.active = false" if command[0] == helper.FTL else "active\n",
+    })())
+
+    status = helper._dhcp_status()
+
+    assert status["configured"] is False
+    assert status["listening"] is False
+    assert status["runtime_state"] == "STOPPED"
+    assert status["dhcp_running"] is False
+    assert "configuration_consistency" not in status
 
 
 def test_completed_failover_can_return_safely_if_promoted_dns_later_fails(monkeypatch):

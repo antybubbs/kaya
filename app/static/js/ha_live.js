@@ -115,8 +115,8 @@
         if (diagnosticMessage) diagnosticMessage.textContent = node.keepalived_last_error || "";
         const state = card.querySelector("[data-ha-node-live-state]");
         if (state) {
-          state.textContent = current ? "Live" : "Delayed";
-          setStateClass(state, current, !current);
+          state.textContent = node.service_state === "ACTIVE" ? "Active" : node.service_state === "OFFLINE" ? "Offline" : current ? "Live" : "Delayed";
+          setStateClass(state, current, !current && node.service_state !== "OFFLINE");
         }
       });
     });
@@ -268,6 +268,9 @@
       if (!response.ok) throw new Error("Live status unavailable");
       const data = await response.json();
       updateFields(document, "[data-ha-cluster-field]", data.cluster);
+      document.querySelectorAll("[data-ha-single-node-service]").forEach((element) => {
+        element.hidden = data.cluster.single_node_service !== true;
+      });
       document.querySelectorAll("[data-ha-current-agent-version]").forEach((element) => { element.textContent = data.cluster.current_agent_version; });
       updateStatusChips(data.cluster.status);
       document.querySelectorAll("[data-ha-cluster-status]").forEach((element) => { element.textContent = title(data.cluster.keepalived_status); });

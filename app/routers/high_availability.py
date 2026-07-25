@@ -718,6 +718,44 @@ def cluster_live_status(public_id: str, db: Session = Depends(get_db), user=Depe
     recovering_nodes = [item.node.display_name for item in recovery.values() if item.state in {"RECOVERING", "SYNCHRONISING", "VERIFYING"}]
     redundancy = "AVAILABLE" if len(current_nodes) == 2 and all(node.dns_healthy is True for node in current_nodes) else "REDUCED"
     control_plane = "HEALTHY" if len(current_nodes) == len(cluster.nodes) else "DEGRADED"
+    single_node_service = bool(
+        consistency.service_availability == "HEALTHY"
+        and len(current_nodes) == 1
+        and active_node in current_nodes
+    )
+    unavailable_nodes = [node for node in cluster.nodes if node not in current_nodes]
+    verified_automatic_completion = False
+    for event in events:
+        if event.source != "agent" or event.event_type != "automatic_failover_completed" or not active_node or event.node_id != active_node.id:
+            continue
+        try:
+            verified_automatic_completion = int(json.loads(event.details_json_redacted or "{}").get("generation", -1)) == cluster.keepalived_generation
+        except (TypeError, ValueError, json.JSONDecodeError):
+            verified_automatic_completion = False
+        if verified_automatic_completion:
+            break
+    automatic_hard_failover = bool(
+        single_node_service
+        and preferred
+        and active_node
+        and active_node.id != preferred.id
+        and verified_automatic_completion
+    )
+    if automatic_hard_failover:
+        unavailable_name = unavailable_nodes[0].display_name if len(unavailable_nodes) == 1 else "The preferred node"
+        service_message = (
+            f"Service has automatically failed over to {active_node.display_name}. "
+            f"{unavailable_name} is unavailable. DNS"
+            f"{' and DHCP' if pihole_manages_dhcp(cluster) else ''} remain operational."
+        )
+    elif single_node_service:
+        unavailable_name = unavailable_nodes[0].display_name if len(unavailable_nodes) == 1 else "The other node"
+        service_message = (
+            f"Clients are currently being served by {active_node.display_name}. "
+            f"{unavailable_name} is unavailable. The cluster is operating on one node."
+        )
+    else:
+        service_message = ""
     return JSONResponse({
         "server_time": datetime.utcnow().isoformat() + "Z",
         "cluster": {
@@ -738,6 +776,9 @@ def cluster_live_status(public_id: str, db: Session = Depends(get_db), user=Depe
             "service_availability": consistency.service_availability,
             "redundancy": redundancy,
             "control_plane": control_plane,
+            "single_node_service": single_node_service,
+            "service_status_title": "Service remains available" if single_node_service else "",
+            "service_status_message": service_message,
             "ha_configuration": consistency.configuration_state,
             "consistency_issue_count": len(consistency.issues),
             "ha_readiness": "READY" if action_ready else "RECOVERING" if failback_recovery else "NEEDS_ATTENTION",
@@ -755,6 +796,15 @@ def cluster_live_status(public_id: str, db: Session = Depends(get_db), user=Depe
             "agent_version_status": agent_version_status(node.agent_version),
             "last_heartbeat_at": node.last_heartbeat_at.isoformat() + "Z" if node.last_heartbeat_at else None,
             "heartbeat_current": node in current_nodes,
+            "service_state": (
+                "ACTIVE"
+                if active_node and node.id == active_node.id and node in current_nodes
+                else "OFFLINE"
+                if automatic_hard_failover and node not in current_nodes
+                else "STANDBY"
+                if node in current_nodes
+                else "UNKNOWN"
+            ),
             "dns_healthy": node.dns_healthy, "dhcp_running": node.dhcp_running,
             "dhcp_runtime_state": node.dhcp_runtime_state,
             "dhcp_observation_status": node.dhcp_observation_status,

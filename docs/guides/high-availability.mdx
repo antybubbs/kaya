@@ -136,7 +136,7 @@ configuration on the sole Virtual IP owner without moving the Virtual IP.
 
 Use non-production nodes and an unused Virtual IP for this test. Replace the example values with addresses from your test network.
 
-1. Confirm both agents show version **0.2.8** or newer, are live, and report fresh DNS and DHCP observations.
+1. Confirm both agents show version **0.2.10** or newer, are live, and report fresh DNS and DHCP observations.
 2. On each node, confirm Keepalived is running and only one node owns the Virtual IP: `ip -4 address show dev <interface>`.
 3. Query the shared address directly: `dig @<virtual-ip> example.com` or `nslookup example.com <virtual-ip>`.
 4. For DNS + DHCP, renew a test client lease and confirm its DNS server is the Virtual IP—not a physical Pi-hole address.

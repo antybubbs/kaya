@@ -20,6 +20,11 @@
   <div class="ha-blocker-actions"><a class="button secondary" href="/high-availability/clusters/{{ cluster.public_id }}/maintenance">Diagnose and repair</a></div>
 </section>
 
+<section class="success" role="status" data-ha-single-node-service hidden>
+  <strong data-ha-cluster-field="service_status_title">Service remains available</strong>
+  <span data-ha-cluster-field="service_status_message"></span>
+</section>
+
 <section class="ha-summary-grid" aria-label="Live cluster summary">
   <article><span>Service availability</span><strong data-ha-cluster-field="service_availability">{{ 'Healthy' if active_node and active_node.dns_healthy else 'Checking' }}</strong><small>Can clients use the clustered service?</small></article>
   <article><span>Redundancy</span><strong data-ha-cluster-field="redundancy">Checking</strong><small>Can another node failure be tolerated?</small></article>
@@ -89,6 +94,7 @@
       <h3>{{ node.display_name }}</h3><p class="mono">{{ node.management_host }}</p>
       <h4>Service status</h4>
       <dl class="ha-node-facts">
+        <div><dt>Node state</dt><dd data-ha-node-field="service_state">Checking</dd></div>
         <div><dt>Observed role</dt><dd data-ha-node-field="observed_role">{{ node.observed_role|title if node.observed_role else 'Unknown' }}</dd></div>
         <div><dt>DNS</dt><dd data-ha-node-field="dns_healthy">{{ 'Healthy' if node.dns_healthy else 'Unhealthy' }}</dd></div>
         <div><dt>DHCP service</dt><dd data-ha-node-field="dhcp_running">{{ 'Running' if node.dhcp_running else 'Stopped' }}</dd></div>

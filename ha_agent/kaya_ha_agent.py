@@ -5,6 +5,7 @@ import argparse
 import base64
 import hashlib
 import json
+import ssl
 import os
 import secrets
 import socket
@@ -22,11 +23,20 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 
 PROTOCOL_VERSION = 1
-AGENT_VERSION = "0.2.8"
+AGENT_VERSION = "0.2.10"
 
 ICMP_AVAILABLE = "AVAILABLE"
 ICMP_NO_REPLY = "NO_REPLY"
 ICMP_UNAVAILABLE = "UNAVAILABLE"
+
+
+class AgentRequestError(ValueError):
+    """A safely reportable agent transport failure without request secrets."""
+
+    def __init__(self, reason: str, message: str, *, status: int | None = None):
+        super().__init__(message)
+        self.reason = reason
+        self.status = status
 
 
 def encoded(value: bytes) -> str:
@@ -106,8 +116,56 @@ def json_request(url: str, method: str, payload: dict | None, headers: dict[str,
             return json.loads(response.read() or b"{}")
     except error.HTTPError as exc:
         if exc.code in {307, 308}:
-            raise ValueError("Kaya redirected the agent request. Generate a new command from the HTTPS Kaya page and try again.") from None
-        raise ValueError(f"Kaya rejected the agent request with HTTP {exc.code}.") from None
+            raise AgentRequestError(
+                "redirect_rejected",
+                "Kaya redirected the signed agent request. Generate a new command from the HTTPS Kaya page and try again.",
+                status=exc.code,
+            ) from None
+        reason = {
+            400: "request_invalid",
+            401: "authentication_rejected",
+            404: "endpoint_not_found",
+            409: "request_conflict",
+            413: "payload_rejected",
+            426: "protocol_rejected",
+            429: "rate_limited",
+        }.get(exc.code, "server_error" if exc.code >= 500 else "http_rejected")
+        raise AgentRequestError(reason, f"Kaya rejected the agent request with HTTP {exc.code}.", status=exc.code) from None
+    except error.URLError as exc:
+        cause = exc.reason
+        if isinstance(cause, ssl.SSLCertVerificationError):
+            reason, message = "tls_verification_failed", "Kaya's TLS certificate could not be verified."
+        elif isinstance(cause, socket.gaierror):
+            reason, message = "name_resolution_failed", "The Kaya host name could not be resolved."
+        elif isinstance(cause, ConnectionRefusedError):
+            reason, message = "connection_refused", "Kaya refused the agent connection."
+        elif isinstance(cause, TimeoutError):
+            reason, message = "connection_timeout", "The Kaya agent request timed out."
+        else:
+            reason, message = "connection_unavailable", "Kaya could not be reached."
+        raise AgentRequestError(reason, message) from None
+
+
+def report_transport_failure(state: State, operation: str, exc: Exception) -> None:
+    reason = exc.reason if isinstance(exc, AgentRequestError) else type(exc).__name__.lower()
+    safe = {"operation": operation, "reason": reason, "at": datetime.now(timezone.utc).isoformat()}
+    if isinstance(exc, AgentRequestError) and exc.status is not None:
+        safe["http_status"] = exc.status
+    state.set("last_error", safe)
+    print(f"Kaya HA agent {operation} failed: {reason}", file=sys.stderr, flush=True)
+
+
+def submit_pending(state: State, key: str, operation: str) -> bool:
+    payload = state.get(key)
+    if not payload:
+        return True
+    try:
+        signed_request(state, "POST", "/api/ha/agent/v1/action-result", payload)
+    except (AgentRequestError, TimeoutError, ValueError, KeyError) as exc:
+        report_transport_failure(state, operation, exc)
+        return False
+    state.set(key, None)
+    return True
 
 
 def private_key(state: State) -> Ed25519PrivateKey:
@@ -280,23 +338,26 @@ def run_once(state: State) -> None:
     state.set("report_sequence", report_sequence)
     heartbeat = {"report_sequence": report_sequence, "reported_at": datetime.now(timezone.utc).isoformat(), "observed_role": state.get("observed_role", "STANDBY"), "observed_generation": int(state.get("observed_generation", 0)), "vip_owned": bool(state.get("vip_owned", False)), "dhcp_running": bool(state.get("dhcp_running", False)), "dhcp_configured": state.get("dhcp_configured"), "dhcp_listener_active": state.get("dhcp_listener_active"), "ftl_active": state.get("ftl_active"), "dhcp_runtime_state": state.get("dhcp_runtime_state", "UNKNOWN"), "dhcp_observation_status": state.get("dhcp_observation_status", "UNAVAILABLE"), "dhcp_observed_at": state.get("dhcp_observed_at"), "dns_healthy": bool(state.get("dns_healthy", False)), "peer_reachable": state.get("peer_reachable"), "peer_icmp_probe_status": state.get("peer_icmp_probe_status"), "peer_dns_reachable": state.get("peer_dns_reachable"), "lease_generation": int(state.get("lease_generation", 0)), "config_generation": int(state.get("config_generation", 0)), "agent_version": AGENT_VERSION, "keepalived_runtime_state": state.get("keepalived_runtime_state", "UNKNOWN")}
     response = signed_request(state, "POST", "/api/ha/agent/v1/heartbeat", heartbeat)
-    reconcile_desired(state, response["desired"])
-    action_result = state.get("pending_action_result")
-    if action_result:
-        signed_request(state, "POST", "/api/ha/agent/v1/action-result", action_result)
-        state.set("pending_action_result", None)
-    lease_action_result = state.get("pending_lease_action_result")
-    if lease_action_result:
-        signed_request(state, "POST", "/api/ha/agent/v1/action-result", lease_action_result)
-        state.set("pending_lease_action_result", None)
-    failover_action_result = state.get("pending_failover_action_result")
-    if failover_action_result:
-        signed_request(state, "POST", "/api/ha/agent/v1/action-result", failover_action_result)
-        state.set("pending_failover_action_result", None)
+    if response.get("accepted") is False:
+        reason = str(response.get("reason") or "report_rejected")[:80]
+        report_transport_failure(state, "heartbeat acceptance", AgentRequestError(f"report_{reason}", "Kaya did not accept the runtime observation."))
+
+    # Local failover evidence is authoritative, generation-bound safety proof.
+    # Deliver it before optional action results so one obsolete/rejected result
+    # cannot indefinitely hide a successful failover from Kaya.
     queued = state.queued_events()
     if queued:
-        signed_request(state, "POST", "/api/ha/agent/v1/events", {"events": queued})
-        state.acknowledge_events([item["event_id"] for item in queued])
+        try:
+            signed_request(state, "POST", "/api/ha/agent/v1/events", {"events": queued})
+        except (AgentRequestError, TimeoutError, ValueError, KeyError) as exc:
+            report_transport_failure(state, "event delivery", exc)
+        else:
+            state.acknowledge_events([item["event_id"] for item in queued])
+
+    reconcile_desired(state, response["desired"])
+    submit_pending(state, "pending_action_result", "Keepalived result delivery")
+    submit_pending(state, "pending_lease_action_result", "lease result delivery")
+    submit_pending(state, "pending_failover_action_result", "failover result delivery")
 
 
 def main() -> None:
@@ -334,7 +395,7 @@ def main() -> None:
             try:
                 run_once(state)
             except (error.URLError, TimeoutError, ValueError, KeyError) as exc:
-                state.set("last_error", type(exc).__name__)
+                report_transport_failure(state, "heartbeat", exc)
             time.sleep(max(5, args.interval))
 
 

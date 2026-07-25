@@ -62,8 +62,13 @@ def register(payload: HAAgentRegister, request: Request, db: Session = Depends(g
 
 @router.post("/heartbeat")
 def heartbeat(payload: HAAgentHeartbeat, db: Session = Depends(get_db), agent: AuthenticatedAgent = Depends(require_agent)):
-    node = record_heartbeat(db, agent.node, payload)
-    return {"accepted": True, "received_generation": node.observed_generation, "desired": desired_state(node)}
+    node, accepted, reason = record_heartbeat(db, agent.node, payload, return_status=True)
+    return {
+        "accepted": accepted,
+        "reason": reason,
+        "received_generation": node.observed_generation,
+        "desired": desired_state(node),
+    }
 
 
 @router.post("/events")

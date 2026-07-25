@@ -20,7 +20,7 @@ from app.schemas.high_availability import HAAgentEventItem, HAAgentHeartbeat, HA
 from app.services.ha_agents import HAAgentError, authenticate_agent_request, create_bootstrap_token, desired_state, ingest_events, reconcile_vip_ownership, record_heartbeat, register_agent, revoke_agent
 from app.services.ha_clusters import soft_delete_cluster
 from app.services.ha_topology import reconcile_topology
-from ha_agent.kaya_ha_agent import ICMP_AVAILABLE, ICMP_NO_REPLY, ICMP_UNAVAILABLE, State, probe_icmp, reconcile_desired
+from ha_agent.kaya_ha_agent import AgentRequestError, ICMP_AVAILABLE, ICMP_NO_REPLY, ICMP_UNAVAILABLE, State, probe_icmp, reconcile_desired
 
 
 def database():
@@ -132,6 +132,25 @@ def test_signed_requests_expire_reject_replay_and_stop_after_revocation():
         assert revoked.value.status_code == 401
 
 
+def test_rejected_agent_report_logs_reason_without_signature_or_payload(caplog):
+    with database() as db:
+        cluster, primary, _ = cluster_with_nodes(db)
+        credential, token = create_bootstrap_token(db, primary)
+        registered_key = Ed25519PrivateKey.generate()
+        register_agent(db, registration_payload(cluster, primary, token, registered_key))
+        forged_key = Ed25519PrivateKey.generate()
+        payload = {"observed_role": "ACTIVE", "sensitive_marker": "must-not-appear-in-log"}
+        caplog.set_level("WARNING", logger="app.services.ha_agents")
+
+        with pytest.raises(HTTPException) as rejected:
+            asyncio.run(authenticate_agent_request(signed_request(credential.agent_id, forged_key, "/api/ha/agent/v1/heartbeat", payload, "request-safe-log"), db))
+
+        assert rejected.value.status_code == 401
+        assert "reason=signature_invalid" in caplog.text
+        assert "must-not-appear-in-log" not in caplog.text
+        assert "x-kaya-agent-signature" not in caplog.text.lower()
+
+
 def test_heartbeat_tracks_divergence_and_desired_state_has_no_commands():
     with database() as db:
         cluster, _, standby = cluster_with_nodes(db)
@@ -220,13 +239,48 @@ def test_out_of_order_heartbeat_cannot_replace_newer_runtime_truth():
 
         record_heartbeat(db, primary, current)
         accepted_at = primary.last_heartbeat_at
-        record_heartbeat(db, primary, stale)
+        _, accepted, reason = record_heartbeat(db, primary, stale, return_status=True)
 
+        assert accepted is False
+        assert reason == "out_of_order"
         assert primary.last_report_sequence == 2
         assert primary.last_heartbeat_at == accepted_at
         assert primary.vip_owned is True
         assert primary.dhcp_runtime_state == "RUNNING"
         assert primary.dns_healthy is True
+
+
+def test_stale_signed_identity_can_safely_rebase_a_lost_local_report_sequence():
+    with database() as db:
+        _, primary, _ = cluster_with_nodes(db)
+        primary.last_report_sequence = 900
+        primary.last_heartbeat_at = datetime.utcnow() - timedelta(minutes=2)
+        primary.last_agent_reported_at = datetime.utcnow() - timedelta(minutes=2)
+        db.commit()
+
+        heartbeat = HAAgentHeartbeat(
+            report_sequence=1,
+            reported_at=datetime.utcnow(),
+            observed_role="ACTIVE",
+            observed_generation=4,
+            vip_owned=True,
+            dhcp_running=True,
+            dhcp_configured=True,
+            dhcp_listener_active=True,
+            ftl_active=True,
+            dhcp_runtime_state="RUNNING",
+            dhcp_observation_status="FRESH",
+            dns_healthy=True,
+            agent_version="0.2.9",
+        )
+        node, accepted, reason = record_heartbeat(db, primary, heartbeat, return_status=True)
+
+        assert accepted is True
+        assert reason == "sequence_rebased"
+        assert node.last_report_sequence == 1
+        assert node.last_heartbeat_at >= datetime.utcnow() - timedelta(seconds=2)
+        assert node.vip_owned is True
+        assert node.dns_healthy is True
 
 
 def test_hard_peer_failure_keeps_service_health_separate_from_redundancy():
@@ -505,6 +559,59 @@ def test_local_event_queue_survives_restart_and_rejects_stale_desired_state(tmp_
     second.db.close()
 
 
+def test_rejected_old_action_result_cannot_starve_failover_proof_or_heartbeats(tmp_path, monkeypatch):
+    from ha_agent import failover_runtime, kaya_ha_agent as transport, keepalived_runtime
+
+    state = State(tmp_path)
+    state.config_path.write_text('{"agent_id":"fake-agent","kaya_url":"https://kaya.invalid"}', encoding="utf-8")
+    state.set("pending_action_result", {"action_id": "obsolete", "action_type": "KEEPALIVED_APPLY", "generation": 1, "status": "FAILED", "message": "fake"})
+    event_id = state.queue_event("automatic_failover_completed", "warning", "Local failover completed without requiring Kaya.")
+    monkeypatch.setattr(keepalived_runtime, "refresh_vip_state", lambda value: None)
+    monkeypatch.setattr(failover_runtime, "refresh_dhcp_state", lambda value: None)
+    monkeypatch.setattr(transport.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0))
+    calls = []
+    desired = {
+        "cluster_generation": 4,
+        "desired_role": "ACTIVE",
+        "role_generation": 2,
+        "automatic_failover": True,
+        "maintenance_mode": False,
+        "dhcp_managed": True,
+        "automatic_hold_down_seconds": 10,
+        "keepalived": None,
+        "lease_snapshot": None,
+        "failover": None,
+    }
+
+    def signed_request(_state, method, path, payload=None):
+        calls.append(path)
+        if path == "/api/ha/agent/v1/heartbeat":
+            return {"accepted": True, "desired": desired}
+        if path == "/api/ha/agent/v1/action-result":
+            raise AgentRequestError("request_conflict", "Synthetic stale result.", status=409)
+        return {"accepted": 1}
+
+    monkeypatch.setattr(transport, "signed_request", signed_request)
+    transport.run_once(state)
+
+    assert calls[:3] == [
+        "/api/ha/agent/v1/heartbeat",
+        "/api/ha/agent/v1/events",
+        "/api/ha/agent/v1/action-result",
+    ]
+    assert state.queued_events() == []
+    assert state.get("pending_action_result")["action_id"] == "obsolete"
+    assert state.get("last_error")["reason"] == "request_conflict"
+
+    calls.clear()
+    transport.run_once(state)
+    assert calls[0] == "/api/ha/agent/v1/heartbeat"
+    assert "/api/ha/agent/v1/events" not in calls
+    assert state.get("report_sequence") == 2
+    assert event_id not in {item["event_id"] for item in state.queued_events()}
+    state.db.close()
+
+
 def test_agent_icmp_probe_distinguishes_no_reply_from_local_probe_unavailability():
     calls = []
 
@@ -539,6 +646,12 @@ def test_agent_routes_expose_only_fixed_protocol_operations():
     assert "Completely remove the Kaya HA agents" in template
     assert "standby node first" in template
     assert 'data-ha-command-origin="{{ agent_command_origin }}"' in template
+    overview = open("app/templates/high_availability_cluster_detail.html", encoding="utf-8").read()
+    live_script = open("app/static/js/ha_live.js", encoding="utf-8").read()
+    assert "Service remains available" in overview
+    assert 'data-ha-node-field="service_state"' in overview
+    assert "single_node_service" in live_script
+    assert 'node.service_state === "OFFLINE"' in live_script
 
 
 def test_agent_commands_use_the_browser_origin_without_trusting_forwarded_headers():
