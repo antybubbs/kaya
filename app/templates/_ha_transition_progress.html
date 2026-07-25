@@ -23,13 +23,13 @@
 </section>
 {% endif %}
 
-{% set maintenance_visible = maintenance_state is defined and maintenance_state and maintenance_state.status in ['RUNNING', 'FAILED_SAFE'] %}
+{% set maintenance_visible = maintenance_state is defined and maintenance_state and maintenance_state.visible %}
 <section class="panel ha-transition-progress" data-ha-maintenance-panel aria-live="polite"{% if not maintenance_visible %} hidden{% endif %}>
   <div class="ha-section-heading">
     <div>
       <span class="ha-sync-eyebrow">Self-healing HA configuration</span>
       <h2 data-ha-maintenance-title>{{ maintenance_state.message if maintenance_visible else 'Checking HA configuration' }}</h2>
-      <p class="muted">Kaya repairs only unambiguous DHCP configuration drift. Virtual IP ownership is not changed by this repair.</p>
+      <p class="muted" data-ha-maintenance-detail>{{ maintenance_state.detail if maintenance_visible else 'Kaya repairs only unambiguous DHCP configuration drift. Virtual IP ownership is not changed by this repair.' }}</p>
     </div>
     <span class="ha-agent-state is-pending" data-ha-maintenance-status>{{ maintenance_state.status|replace('_', ' ')|title if maintenance_visible else 'Observing' }}</span>
   </div>

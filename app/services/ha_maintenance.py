@@ -21,7 +21,7 @@ from app.models.models import (
     User,
 )
 from app.services.ha_leases import HALeaseError, reconcile_cluster_leases
-from app.services.ha_agent_installer import CURRENT_AGENT_VERSION, version_tuple
+from app.services.ha_agent_installer import version_tuple
 from app.services.ha_recovery import evaluate_recovery
 from app.services.ha_sync import (
     HASyncError,
@@ -65,6 +65,10 @@ DHCP_SELF_HEAL_PHASES = (
     "COMPLETE",
 )
 DHCP_SELF_HEAL_COOLDOWN_SECONDS = 300
+# This bounded action and its independent DHCP telemetry were introduced in
+# 0.2.8. Requiring Kaya's latest release here silently disables safe repair
+# during an otherwise supported rolling agent upgrade.
+DHCP_SELF_HEAL_AGENT_VERSION = (0, 2, 8)
 
 
 class HAMaintenanceError(ValueError):
@@ -272,7 +276,7 @@ def start_dhcp_self_heal(db: Session, cluster: HACluster, *, now: datetime | Non
         return None
     owner = next(node for node in cluster.nodes if node.id == topology.vip_owner_ids[0])
     standby = next(node for node in cluster.nodes if node.id != owner.id)
-    if any(version_tuple(node.agent_version) < version_tuple(CURRENT_AGENT_VERSION) for node in cluster.nodes):
+    if any(version_tuple(node.agent_version) < DHCP_SELF_HEAL_AGENT_VERSION for node in cluster.nodes):
         return None
     owner_observation = dhcp_observation(owner, current)
     standby_observation = dhcp_observation(standby, current)
@@ -311,10 +315,13 @@ def start_dhcp_self_heal(db: Session, cluster: HACluster, *, now: datetime | Non
             "attempt": 1,
             "phase_attempts": {"REPAIRING_DHCP": 1},
             "hard_failure_proven": hard_failure_proven,
+            "classification": "SAFE_ACTIVE_DHCP_CONFIGURATION_DRIFT" if action_type == "DHCP_PROMOTE" else "SAFE_STANDBY_DHCP_CONFIGURATION_DRIFT",
             "progress": [
-                "Fresh signed reports confirmed one Virtual IP owner",
-                "Standby DHCP runtime verified safe",
-                f"Repairing Pi-hole DHCP configuration on {repair_node.display_name}",
+                "Active node confirmed",
+                "Sole Virtual IP owner confirmed",
+                "DHCP runtime owner confirmed",
+                "Standby confirmed safe",
+                f"Correcting DHCP configuration on {repair_node.display_name}",
             ],
         }, sort_keys=True),
     )
@@ -1103,6 +1110,31 @@ def maintenance_status(run: HAMaintenanceRun | None) -> dict[str, Any] | None:
     current_index = phases.index(run.phase) if run.phase in phases else 0
     attempts = dict(result.get("phase_attempts") or {})
     elapsed = max(0, int((datetime.utcnow() - (run.started_at or run.created_at)).total_seconds()))
+    repair_node = next((node for node in run.cluster.nodes if node.id == result.get("repair_node_id")), None)
+    recently_completed = bool(
+        run.status == "SUCCEEDED"
+        and run.completed_at
+        and datetime.utcnow() - run.completed_at <= timedelta(seconds=15)
+    )
+    if run.operation == "DHCP_SELF_HEAL" and run.status == "SUCCEEDED":
+        display_message = "HA configuration repaired"
+        detail = (
+            f"Kaya corrected DHCP configuration drift on {repair_node.display_name}. Network service was not interrupted."
+            if repair_node
+            else "Kaya corrected DHCP configuration drift. Network service was not interrupted."
+        )
+    elif run.operation == "DHCP_SELF_HEAL" and repair_node:
+        display_message = (
+            f"Correcting DHCP configuration on {repair_node.display_name}"
+            if run.phase == "REPAIRING_DHCP"
+            else "Waiting for a fresh signed report"
+            if run.phase == "VERIFYING_DHCP_REPAIR"
+            else labels.get(run.phase, run.phase.replace("_", " ").title())
+        )
+        detail = "Network services remain available. No user action is required."
+    else:
+        display_message = labels.get(run.phase, run.phase.replace("_", " ").title())
+        detail = "Kaya advances only after persisted safety checks and fresh signed node reports."
     return {
         "id": run.public_id,
         "operation": run.operation,
@@ -1116,7 +1148,9 @@ def maintenance_status(run: HAMaintenanceRun | None) -> dict[str, Any] | None:
         "inspection": result,
         "started_at": run.started_at.isoformat() + "Z" if run.started_at else None,
         "completed_at": run.completed_at.isoformat() + "Z" if run.completed_at else None,
-        "message": labels.get(run.phase, run.phase.replace("_", " ").title()),
+        "message": display_message,
+        "detail": detail,
+        "visible": run.status in {"RUNNING", "FAILED_SAFE"} or recently_completed,
         "elapsed_seconds": elapsed,
         "phase_attempt": int(attempts.get(run.phase, 0)),
         "progress_percent": 100 if run.status == "SUCCEEDED" else round((current_index / max(1, len(phases) - 1)) * 100),

@@ -17,6 +17,7 @@ from app.models.models import (
     User,
 )
 from app.services.ha_maintenance import (
+    active_maintenance,
     advance_dhcp_self_heal,
     advance_reinitialisation,
     desired_maintenance_action,
@@ -28,6 +29,7 @@ from app.services.ha_maintenance import (
     start_dhcp_self_heal,
     start_reinitialisation,
 )
+from app.services.ha_watchdog import reconcile_cluster as watchdog_reconcile_cluster
 
 
 def database():
@@ -476,18 +478,23 @@ def test_process_restart_rewinds_incomplete_repair_to_fresh_inspection(monkeypat
         assert ownership_before == (first.vip_owned, first.dhcp_running, second.vip_owned, second.dhcp_running)
 
 
-def test_active_configuration_drift_is_repaired_without_moving_vip():
+def test_watchdog_automatically_repairs_active_configuration_drift_without_moving_vip():
     with database() as db:
         user, cluster, first, second = pair(db)
+        # A compatible agent must remain eligible during a rolling upgrade;
+        # self-heal must not be silently tied to Kaya's latest patch version.
+        first.agent_version = second.agent_version = "0.2.9"
         first.dhcp_configured = False
         first.dhcp_running = True
         first.dhcp_listener_active = True
         first.dhcp_runtime_state = "RUNNING"
         db.commit()
 
-        run = start_dhcp_self_heal(db, cluster)
+        watchdog_reconcile_cluster(db, cluster)
+        run = active_maintenance(cluster)
 
         assert run is not None
+        assert json.loads(run.result_json)["classification"] == "SAFE_ACTIVE_DHCP_CONFIGURATION_DRIFT"
         assert run.desired_active_node_id == first.id
         assert desired_maintenance_action(cluster, first)["action_type"] == "DHCP_PROMOTE"
         action = desired_maintenance_action(cluster, first)
@@ -511,7 +518,11 @@ def test_active_configuration_drift_is_repaired_without_moving_vip():
         assert second.dhcp_configured is False and second.dhcp_listener_active is False
         assert cluster.maintenance_mode is False
         assert cluster.status == "HEALTHY"
-        assert maintenance_status(run)["progress_percent"] == 100
+        completed_status = maintenance_status(run)
+        assert completed_status["progress_percent"] == 100
+        assert completed_status["visible"] is True
+        assert completed_status["message"] == "HA configuration repaired"
+        assert "Network service was not interrupted" in completed_status["detail"]
 
 
 def test_self_heal_refuses_ambiguous_dual_dhcp_runtime():
@@ -526,6 +537,23 @@ def test_self_heal_refuses_ambiguous_dual_dhcp_runtime():
 
         assert start_dhcp_self_heal(db, cluster) is None
         assert not cluster.maintenance_mode
+
+
+def test_self_heal_refuses_agents_without_bounded_dhcp_repair_capability():
+    with database() as db:
+        user, cluster, first, second = pair(db)
+        first.agent_version = "0.2.7"
+        first.dhcp_configured = False
+        first.dhcp_running = True
+        first.dhcp_listener_active = True
+        first.dhcp_runtime_state = "RUNNING"
+        db.commit()
+
+        watchdog_reconcile_cluster(db, cluster)
+
+        assert active_maintenance(cluster) is None
+        assert first.vip_owned is True and second.vip_owned is False
+        assert cluster.maintenance_mode is False
 
 
 def test_proven_hard_failover_can_repair_surviving_owner_with_peer_offline():

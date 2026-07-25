@@ -229,7 +229,7 @@
   function updateMaintenanceProgress(maintenance) {
     const panel = document.querySelector("[data-ha-maintenance-panel]");
     if (!panel) return;
-    const visible = maintenance && ["RUNNING", "FAILED_SAFE"].includes(maintenance.status);
+    const visible = maintenance && maintenance.visible === true;
     panel.hidden = !visible;
     if (!visible) return;
     const percent = Math.max(0, Math.min(100, Number(maintenance.progress_percent) || 0));
@@ -239,6 +239,8 @@
     if (bar) bar.style.width = `${percent}%`;
     const titleElement = panel.querySelector("[data-ha-maintenance-title]");
     if (titleElement) titleElement.textContent = maintenance.message || "Cluster maintenance in progress";
+    const detail = panel.querySelector("[data-ha-maintenance-detail]");
+    if (detail) detail.textContent = maintenance.detail || "Kaya advances only after persisted safety checks and fresh signed node reports.";
     const status = panel.querySelector("[data-ha-maintenance-status]");
     if (status) status.textContent = title(maintenance.status);
     const elapsed = panel.querySelector("[data-ha-maintenance-elapsed]");
