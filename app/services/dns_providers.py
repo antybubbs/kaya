@@ -382,6 +382,34 @@ class PiHoleProvider(DNSProvider):
 
         return self._safe("Configuration", run)
 
+    def get_ha_dhcp_dns_advertisement(self) -> DNSProviderResult:
+        """Read Pi-hole v6 custom dnsmasq lines used for HA DHCP Option 6."""
+        def run():
+            data = self._v6_request_json("/api/config/misc/dnsmasq_lines")
+            return DNSProviderResult(True, "Pi-hole DHCP DNS advertisement loaded.", data)
+
+        return self._safe("DHCP DNS advertisement", run)
+
+    def apply_ha_dhcp_dns_advertisement(self, dnsmasq_lines: list[str]) -> DNSProviderResult:
+        """Replace Pi-hole v6 custom dnsmasq lines through its supported API."""
+        def run():
+            if (
+                not isinstance(dnsmasq_lines, list)
+                or len(dnsmasq_lines) > 256
+                or any(not isinstance(line, str) or not line or len(line) > 512 or "\n" in line or "\r" in line for line in dnsmasq_lines)
+            ):
+                raise DNSProviderError("The generated dnsmasq configuration is invalid.")
+            payload = {"config": {"misc": {"dnsmasq_lines": dnsmasq_lines}}}
+            data = self._request_json(
+                "/api/config/misc/dnsmasq_lines",
+                method="PATCH",
+                payload=payload,
+                headers=self._v6_auth_headers(),
+            )
+            return DNSProviderResult(True, "Pi-hole DHCP DNS advertisement applied.", data)
+
+        return self._safe("DHCP DNS advertisement update", run)
+
     def apply_ha_configuration_group(self, group: str, value: Any) -> DNSProviderResult:
         """Apply one allowlisted Pi-hole v6 configuration group.
 

@@ -245,6 +245,11 @@ def run_live_validation(
         (node_id, *_collect_node(node_id, host, connection, client_factory, dns_probe, require_dhcp))
         for node_id, host, connection in node_inputs
     ]
+    advertisement_states = []
+    if pihole_manages_dhcp(cluster) and cluster.virtual_ip and len(cluster.nodes) == 2:
+        from app.services.ha_dns_advertisement import inspect_dns_advertisement
+
+        advertisement_states = inspect_dns_advertisement(cluster, client_factory=client_factory)
     db.query(HAHealthCheck).filter(HAHealthCheck.cluster_id == cluster_id).delete(synchronize_session=False)
     findings: list[ValidationFinding] = []
     for node_id, node_findings, version, capabilities, configuration in collected:
@@ -259,6 +264,25 @@ def run_live_validation(
         node.configuration_checksum = hashlib.sha256(snapshot.encode()).hexdigest() if configuration else None
         node.last_health_at = datetime.utcnow()
         node.status = "VALIDATED" if not any(item.severity == "blocking" and item.status != "PASS" for item in node_findings) else "VALIDATION_FAILED"
+    if advertisement_states:
+        from app.services.ha_dns_advertisement import WARNING_MESSAGE, cache_dns_advertisement
+
+        for state in advertisement_states:
+            node = db.get(HANode, state.node_id)
+            if node is None:
+                continue
+            cache_dns_advertisement(node, state)
+            expected = ", ".join(state.expected or ()) or "Not available"
+            observed = ", ".join(state.observed) or "No explicit DHCP Option 6"
+            findings.append(ValidationFinding(
+                state.node_id,
+                "dhcp_dns_advertisement",
+                "PASS" if state.matches else "WARNING",
+                "info" if state.matches else "warning",
+                "DHCP advertises the HA DNS addresses in the correct order." if state.matches else WARNING_MESSAGE,
+                f"Expected: {expected}. Observed: {observed}." if not state.error else f"Expected: {expected}. Check unavailable: {state.error}",
+                None if state.matches else "Use Repair DHCP DNS Advertisement from the cluster overview.",
+            ))
     cluster_row = db.get(HACluster, cluster_id)
     if len(collected) != 2:
         findings.append(ValidationFinding(None, "node_count", "FAIL", "blocking", "Exactly two nodes are required.", f"Found {len(collected)} nodes.", "Return the cluster to draft configuration and add two unique nodes."))

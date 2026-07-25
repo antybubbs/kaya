@@ -474,7 +474,13 @@ def _create_two_node_backups(db: Session, run: HAMaintenanceRun) -> HASyncRun:
     for node in cluster.nodes:
         _, configuration = _live_configuration(node)
         safe = {key: _safe_configuration(value) for key, value in configuration.items()}
-        snapshot_text = json.dumps(safe, sort_keys=True, separators=(",", ":"))
+        from app.services.ha_dns_advertisement import preserve_cached_dns_advertisement
+
+        snapshot_text = json.dumps(
+            preserve_cached_dns_advertisement(node, safe),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
         node.configuration_snapshot_json = snapshot_text
         node.configuration_checksum = hashlib.sha256(snapshot_text.encode()).hexdigest()
         raw_snapshots[node.id] = safe

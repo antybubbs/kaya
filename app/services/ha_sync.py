@@ -68,6 +68,7 @@ def _sync_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     return {
         key: _without_dhcp_activation(value) if key == "dhcp" else value
         for key, value in snapshot.items()
+        if not key.startswith("_ha_")
     }
 
 
@@ -254,6 +255,9 @@ def create_live_sync_plan(
     source, target = authority_and_target(cluster)
     for node in (source, target):
         _, configuration = _live_configuration(node, client_factory)
+        from app.services.ha_dns_advertisement import preserve_cached_dns_advertisement
+
+        configuration = preserve_cached_dns_advertisement(node, configuration)
         snapshot = json.dumps(configuration, sort_keys=True, separators=(",", ":"))
         node.configuration_snapshot_json = snapshot
         node.configuration_checksum = hashlib.sha256(snapshot.encode()).hexdigest()
@@ -338,6 +342,9 @@ def execute_sync(
         if failed:
             raise HASyncError("Verification failed for: " + ", ".join(sorted(failed)))
 
+        from app.services.ha_dns_advertisement import preserve_cached_dns_advertisement
+
+        verified_raw = preserve_cached_dns_advertisement(target, verified_raw)
         snapshot = json.dumps(verified_raw, sort_keys=True, separators=(",", ":"))
         target.configuration_snapshot_json = snapshot
         target.configuration_checksum = hashlib.sha256(snapshot.encode()).hexdigest()

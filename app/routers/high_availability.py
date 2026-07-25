@@ -28,6 +28,12 @@ from app.services.ha_failover import HAFailoverError, active_failover, automatic
 from app.services.ha_recovery import current_active_node, peer_diagnostic, preferred_node, recovery_snapshot
 from app.services.site_settings import get_site_setting
 from app.services.ha_topology import deployment_mode, pihole_manages_dhcp
+from app.services.ha_dns_advertisement import (
+    HADNSAdvertisementError,
+    WARNING_MESSAGE as DNS_ADVERTISEMENT_WARNING,
+    cached_dns_advertisement,
+    repair_dns_advertisement,
+)
 from app.services.ha_maintenance import (
     HAMaintenanceError,
     active_maintenance,
@@ -351,39 +357,106 @@ async def save_cluster(request: Request, db: Session = Depends(get_db), user=Dep
 @router.get("/clusters/{public_id}")
 def cluster_detail(public_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_high_availability)):
     cluster = cluster_or_404(db, public_id)
+    return templates.TemplateResponse(
+        request,
+        "high_availability_cluster_detail.html",
+        cluster_detail_context(request, user, db, cluster),
+    )
+
+
+def cluster_detail_context(request: Request, user, db: Session, cluster: HACluster, **extra):
     readiness = failover_readiness(cluster)
     recovery = recovery_snapshot(db, cluster)
     preferred = preferred_node(cluster)
     active = current_active_node(cluster)
     consistency = inspect_cluster(cluster)
     failback_recovery = recovery.get(preferred.id) if preferred and active and preferred.id != active.id else None
-    return templates.TemplateResponse(
+    advertisement_states = cached_dns_advertisement(cluster) if pihole_manages_dhcp(cluster) else []
+    active_advertisement = next((state for state in advertisement_states if active and state.node_id == active.id), None)
+    return ha_context(
         request,
-        "high_availability_cluster_detail.html",
-        ha_context(
-            request,
-            user,
-            "clusters",
-            cluster=cluster,
-            cluster_section="overview",
-            failover_readiness=readiness,
-            failover_run=latest_failover(cluster),
-            automatic_blockers=automatic_failover_blockers(cluster),
-            sync_summary=sync_operational_summary(db, cluster),
-            recovery=recovery,
-            peer_diagnostics={
-                node.id: peer_diagnostic(node, next((peer for peer in cluster.nodes if peer.id != node.id), None))
-                for node in cluster.nodes
-            },
-            preferred_node=preferred,
-            active_node=active,
-            failback_recovery=failback_recovery,
-            action_ready=readiness.ready and (failback_recovery is None or failback_recovery.ready),
-            consistency=consistency,
-            consistency_json=inspection_json(cluster, consistency),
-            maintenance_run=latest_maintenance(cluster),
-        ),
+        user,
+        "clusters",
+        cluster=cluster,
+        cluster_section="overview",
+        failover_readiness=readiness,
+        failover_run=latest_failover(cluster),
+        automatic_blockers=automatic_failover_blockers(cluster),
+        sync_summary=sync_operational_summary(db, cluster),
+        recovery=recovery,
+        peer_diagnostics={
+            node.id: peer_diagnostic(node, next((peer for peer in cluster.nodes if peer.id != node.id), None))
+            for node in cluster.nodes
+        },
+        preferred_node=preferred,
+        active_node=active,
+        failback_recovery=failback_recovery,
+        action_ready=readiness.ready and (failback_recovery is None or failback_recovery.ready),
+        consistency=consistency,
+        consistency_json=inspection_json(cluster, consistency),
+        maintenance_run=latest_maintenance(cluster),
+        dns_advertisement_states=advertisement_states,
+        dns_advertisement=active_advertisement,
+        dns_advertisement_warning=DNS_ADVERTISEMENT_WARNING,
+        **extra,
     )
+
+
+@router.post("/clusters/{public_id}/dhcp-dns-advertisement/repair")
+async def repair_cluster_dhcp_dns_advertisement(
+    public_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    user=Depends(require_ha_admin),
+):
+    cluster = cluster_or_404(db, public_id)
+    require_no_cluster_maintenance(cluster)
+    form = await request.form()
+    validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    if str(form.get("acknowledge_reload") or "") != "1":
+        return templates.TemplateResponse(
+            request,
+            "high_availability_cluster_detail.html",
+            cluster_detail_context(
+                request,
+                user,
+                db,
+                cluster,
+                dns_advertisement_error="Confirm that Pi-hole may briefly reload its generated configuration.",
+            ),
+            status_code=400,
+        )
+    try:
+        repair_dns_advertisement(db, cluster)
+    except HADNSAdvertisementError as exc:
+        db.rollback()
+        write_audit(
+            db,
+            user,
+            "failed",
+            "ha_dhcp_dns_advertisement",
+            entity_id=cluster.public_id,
+            detail=f"DHCP DNS advertisement repair for {cluster.name} did not complete.",
+            severity="warning",
+            metadata={"cluster_id": cluster.public_id, "error": str(exc)[:300], "secret_logged": False},
+        )
+        cluster = cluster_or_404(db, public_id)
+        return templates.TemplateResponse(
+            request,
+            "high_availability_cluster_detail.html",
+            cluster_detail_context(request, user, db, cluster, dns_advertisement_error=str(exc)),
+            status_code=409,
+        )
+    write_audit(
+        db,
+        user,
+        "repaired",
+        "ha_dhcp_dns_advertisement",
+        entity_id=cluster.public_id,
+        detail=f"Repaired and verified VIP-first DHCP DNS advertisement for {cluster.name}.",
+        metadata={"cluster_id": cluster.public_id, "primary": "virtual_ip", "secondary": "peer_node", "verified": True, "secret_logged": False},
+    )
+    return RedirectResponse(f"/high-availability/clusters/{cluster.public_id}?dns_advertisement=repaired", status_code=303)
 
 
 def maintenance_page_context(
@@ -632,6 +705,8 @@ def cluster_live_status(public_id: str, db: Session = Depends(get_db), user=Depe
     deployment_items = deployment_blockers(cluster, router_id=cluster.vrrp_router_id or 51)
     sync_summary = sync_operational_summary(db, cluster)
     consistency = inspect_cluster(cluster, now=now)
+    advertisement_states = cached_dns_advertisement(cluster) if pihole_manages_dhcp(cluster) else []
+    active_advertisement = next((state for state in advertisement_states if active_node and state.node_id == active_node.id), None)
     sync_json = {**sync_summary}
     for key in ("last_checked_at", "last_applied_at", "next_check_at"):
         value = sync_json[key]
@@ -661,6 +736,10 @@ def cluster_live_status(public_id: str, db: Session = Depends(get_db), user=Depe
             "ha_readiness": "READY" if action_ready else "RECOVERING" if failback_recovery else "NEEDS_ATTENTION",
             "ping_unavailable_count": ping_unavailable,
             "recovering_nodes": recovering_nodes,
+            "dns_advertisement_primary": active_advertisement.expected[0] if active_advertisement and active_advertisement.expected else None,
+            "dns_advertisement_secondary": active_advertisement.expected[1] if active_advertisement and active_advertisement.expected else None,
+            "dns_advertisement_observed": ", ".join(active_advertisement.observed) if active_advertisement and active_advertisement.observed else "Not checked",
+            "dns_advertisement_status": "CORRECT" if active_advertisement and active_advertisement.matches else "NEEDS_ATTENTION" if pihole_manages_dhcp(cluster) else "NOT_APPLICABLE",
         },
         "nodes": [{
             "id": node.public_id, "name": node.display_name, "desired_role": node.desired_role,

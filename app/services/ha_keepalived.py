@@ -7,6 +7,7 @@ from ipaddress import IPv4Address, IPv4Interface
 from sqlalchemy.orm import Session
 
 from app.models.models import HACluster, HANode
+from app.services.ha_topology import pihole_manages_dhcp
 
 
 INTERFACE_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
@@ -75,6 +76,11 @@ def deployment_blockers(cluster: HACluster, *, now: datetime | None = None, rout
             blockers.append(str(exc))
     if cluster.status not in {"VALIDATED", "VALIDATED_WITH_WARNINGS", "READY_TO_DEPLOY", "DEPLOYING", "HEALTHY"}:
         blockers.append("Complete read-only validation without blocking failures before deployment.")
+    if pihole_manages_dhcp(cluster):
+        from app.services.ha_dns_advertisement import cached_dns_advertisement
+
+        if any(state.checked and not state.matches for state in cached_dns_advertisement(cluster)):
+            blockers.append("Repair DHCP DNS Advertisement so the DNS Virtual IP is advertised first.")
     current = now or datetime.utcnow()
     for node in cluster.nodes:
         credential = node.agent_credential

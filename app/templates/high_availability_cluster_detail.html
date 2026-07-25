@@ -6,6 +6,7 @@
 {% if request.query_params.get('saved') %}<div class="success" role="status">Cluster saved. Start with the guided setup steps below.</div>{% endif %}
 {% if request.query_params.get('automatic') == 'enabled' %}<div class="success" role="status">Automatic failover is being deployed to both nodes. Automatic failback remains disabled.</div>{% endif %}
 {% if request.query_params.get('automatic') == 'disabled' %}<div class="success" role="status">Automatic failover is disabled. DNS and DHCP were not interrupted.</div>{% endif %}
+{% if request.query_params.get('dns_advertisement') == 'repaired' %}<div class="success" role="status">DHCP DNS advertisement repaired and verified on both Pi-holes.</div>{% endif %}
 {% if automatic_error|default(false) %}<div class="alert" role="alert"><strong>Automatic failover was not changed</strong><span>{{ automatic_error }}</span></div>{% endif %}
 
 <section class="panel ha-operations-hero">
@@ -40,6 +41,39 @@
     <div><span>Next automatic check</span><strong data-ha-sync-field="next_check_at">{{ local_time(sync_summary.next_check_at, 'friendly') }}</strong></div>
   </div>
 </section>
+
+{% if pihole_manages_dhcp %}
+<section class="panel section-gap">
+  <div class="ha-section-heading">
+    <div>
+      <span class="ha-sync-eyebrow">DHCP DNS advertisement</span>
+      <h2>Stable DNS for every client</h2>
+      <p class="muted">The DNS Virtual IP is always advertised as the primary DNS server. During failover the Virtual IP moves to the active Pi-hole, so existing clients do not need to renew their DHCP lease.</p>
+    </div>
+    <span class="ha-readiness {{ 'ha-readiness--ready' if dns_advertisement and dns_advertisement.matches else 'ha-readiness--warning' }}" data-ha-cluster-field="dns_advertisement_status">{{ 'Correct' if dns_advertisement and dns_advertisement.matches else 'Needs attention' }}</span>
+  </div>
+  <div class="ha-summary-grid ha-dns-advertisement-grid">
+    <article><span>Primary DNS</span><strong class="mono" data-ha-cluster-field="dns_advertisement_primary">{{ dns_advertisement.expected[0] if dns_advertisement and dns_advertisement.expected else cluster.virtual_ip }}</strong><small>DNS Virtual IP · never changes during failover</small></article>
+    <article><span>Secondary DNS</span><strong class="mono" data-ha-cluster-field="dns_advertisement_secondary">{{ dns_advertisement.expected[1] if dns_advertisement and dns_advertisement.expected else 'Waiting for active node' }}</strong><small>Current standby Pi-hole</small></article>
+    <article><span>Observed Option 6</span><strong class="mono" data-ha-cluster-field="dns_advertisement_observed">{{ dns_advertisement.observed|join(', ') if dns_advertisement and dns_advertisement.observed else 'Not checked' }}</strong><small>Last read from the active Pi-hole</small></article>
+  </div>
+  {% if not dns_advertisement or not dns_advertisement.matches %}
+  <div class="alert" role="alert"><strong>DHCP DNS advertisement needs repair</strong><span>{{ dns_advertisement_warning }}</span>{% if dns_advertisement and dns_advertisement.error %}<small>{{ dns_advertisement.error }}</small>{% endif %}</div>
+  {% if user.role == 'admin' %}
+  <details class="ha-action-disclosure">
+    <summary class="button secondary">Repair DHCP DNS Advertisement</summary>
+    <form method="post" action="/high-availability/clusters/{{ cluster.public_id }}/dhcp-dns-advertisement/repair">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <p>Kaya will preserve unrelated dnsmasq settings, remove conflicting IPv4 Option 6 lines, configure each node with the Virtual IP first, and verify both nodes. Pi-hole may briefly reload its generated configuration.</p>
+      <label class="checkbox-row"><input type="checkbox" name="acknowledge_reload" value="1" required> I understand Pi-hole may briefly reload its generated configuration.</label>
+      <button class="button" type="submit">Repair and verify</button>
+    </form>
+  </details>
+  {% endif %}
+  {% endif %}
+  {% if dns_advertisement_error|default(false) %}<div class="alert" role="alert"><strong>Repair did not complete</strong><span>{{ dns_advertisement_error }}</span></div>{% endif %}
+</section>
+{% endif %}
 
 <section class="panel">
   <div class="ha-section-heading"><div><h2>Service nodes</h2><p class="muted">The current active node owns the DNS Virtual IP. Preferred identifies the node Kaya can return service to after a safe, user-approved failback.</p></div><a class="button secondary" href="/high-availability/clusters/{{ cluster.public_id }}/nodes">Manage nodes</a></div>
