@@ -373,6 +373,15 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: sqlite:////app/data/kaya.db
+      # Controls which immediate connecting IPs may supply client forwarding
+      # headers. This is separate from ALLOWED_HOSTS, which checks browser
+      # hostnames. Keep the default for direct/LAN access without a proxy.
+      #
+      # No reverse proxy:       127.0.0.1
+      # Docker reverse proxy:   proxy container IP or Docker network CIDR
+      # NetBird reverse proxy:  100.64.0.0/10
+      # Cloudflare Tunnel:      local cloudflared container/IP only; do not
+      #                         trust all Cloudflare address ranges here.
       FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
     ports:
       - "${KAYA_PORT:-8080}:8080"
@@ -426,6 +435,10 @@ networks:
   default:
     driver: bridge
     driver_opts:
+      # Match default WireGuard MTU so large RDP graphics packets do, this helps if you are running kaya in a VPN container and the VPN is using WireGuard. 
+      # Otherwise, you may experience issues with RDP graphics when using kaya through a VPN. 
+      # This is because WireGuard uses a 1420-byte MTU, which is smaller than the default Docker bridge MTU of 1500 bytes. 
+      # By setting the MTU to 1280 bytes, we can avoid fragmentation and ensure that large packets are transmitted correctly. If you are not using a VPN, you can remove this option or set it to 1500 bytes.
       com.docker.network.driver.mtu: "1280"
 
 ```
