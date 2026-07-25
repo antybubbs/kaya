@@ -93,6 +93,8 @@ def failover_readiness(cluster: HACluster, *, now: datetime | None = None) -> Fa
             blockers.append("Pi-hole DHCP is configured as external, but an agent reports DHCP active.")
     if active_failover(cluster):
         blockers.append("A controlled transition is already running.")
+    if cluster.maintenance_mode and not active_failover(cluster):
+        blockers.append("Cluster maintenance is in progress.")
     return FailoverReadiness(source, target, dhcp_managed, list(dict.fromkeys(blockers)), warnings)
 
 

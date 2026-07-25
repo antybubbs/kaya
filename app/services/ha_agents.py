@@ -19,6 +19,14 @@ from app.services.ha_failover import AUTOMATIC_AGENT_VERSION, HAFailoverError, a
 from app.services.ha_agent_installer import CURRENT_AGENT_VERSION, version_tuple
 from app.services.audit import write_audit
 from app.services.ha_topology import pihole_manages_dhcp
+from app.services.ha_maintenance import (
+    HAMaintenanceError,
+    active_maintenance,
+    advance_reinitialisation,
+    desired_maintenance_action,
+    reconcile_cluster_state,
+    record_maintenance_action_result,
+)
 
 
 AGENT_PROTOCOL_VERSION = 1
@@ -211,6 +219,11 @@ def record_heartbeat(db: Session, node: HANode, heartbeat: HAAgentHeartbeat) -> 
     advance_failover(db, node.cluster)
     from app.services.ha_recovery import evaluate_recovery
     evaluate_recovery(db, node.cluster)
+    maintenance = active_maintenance(node.cluster)
+    if maintenance and maintenance.operation == "RECONCILE":
+        reconcile_cluster_state(db, maintenance)
+    elif maintenance and maintenance.operation == "REINITIALISE" and maintenance.phase == "WAITING_FOR_REPORTS":
+        advance_reinitialisation(db, maintenance)
     if peer_changed:
         write_audit(
             db,
@@ -282,6 +295,17 @@ def reconcile_vip_ownership(db: Session, cluster: HACluster, reporting_node: HAN
         and all(node.dns_healthy is True for node in current_nodes)
         and all(node.keepalived_runtime_state == "RUNNING" for node in current_nodes)
         and all(node.config_generation >= cluster.keepalived_generation for node in cluster.nodes)
+        and (
+            not pihole_manages_dhcp(cluster)
+            or (
+                len([node for node in current_nodes if node.dhcp_running]) == 0
+                or (
+                    len([node for node in current_nodes if node.dhcp_running]) == 1
+                    and current is not None
+                    and current.dhcp_running is True
+                )
+            )
+        )
     )
     if len(owners) == 1 and fully_healthy:
         cluster.status = "HEALTHY"
@@ -415,10 +439,13 @@ def record_action_result(db: Session, node: HANode, result: HAAgentActionResult)
         if existing.node_id != node.id:
             raise HAAgentError("The action result belongs to a different node.")
         return existing
+    maintenance_action = desired_maintenance_action(node.cluster, node)
     if result.action_type == "KEEPALIVED_APPLY":
         expected = desired_keepalived_action(node.cluster, node)
     elif result.action_type == "LEASE_SNAPSHOT_STAGE":
         expected = desired_lease_action(node.cluster, node)
+    elif maintenance_action and result.action_type == maintenance_action["action_type"]:
+        expected = maintenance_action
     else:
         expected = desired_failover_action(node.cluster, node)
     if not expected or result.action_id != expected["action_id"] or result.generation != expected["generation"]:
@@ -432,6 +459,19 @@ def record_action_result(db: Session, node: HANode, result: HAAgentActionResult)
         try:
             record_lease_stage_result(db, node, generation=result.generation, checksum=result.checksum, status=result.status, message=result.message)
         except HALeaseError as exc:
+            raise HAAgentError(str(exc)) from exc
+    elif result.action_type in {"DHCP_DEMOTE", "DHCP_PROMOTE"} and maintenance_action:
+        try:
+            record_maintenance_action_result(
+                db,
+                node,
+                action_type=result.action_type,
+                generation=result.generation,
+                checksum=result.checksum,
+                status=result.status,
+                message=result.message,
+            )
+        except HAMaintenanceError as exc:
             raise HAAgentError(str(exc)) from exc
     elif result.action_type in {"DHCP_DEMOTE", "DHCP_PROMOTE"}:
         try:
@@ -489,6 +529,7 @@ def desired_state(node: HANode) -> dict:
     keepalived = desired_keepalived_action(cluster, node)
     leases = desired_lease_action(cluster, node)
     failover = desired_failover_action(cluster, node)
+    maintenance = desired_maintenance_action(cluster, node)
     peer = next((item for item in cluster.nodes if item.id != node.id), None)
     dhcp_managed = pihole_manages_dhcp(cluster)
     return {
@@ -516,8 +557,8 @@ def desired_state(node: HANode) -> dict:
         "dhcp_managed": dhcp_managed,
         "peer_host": peer.management_host if peer else None,
         "network_interface": node.network_interface,
-        "allowed_actions": (["KEEPALIVED_APPLY"] if keepalived else []) + (["LEASE_SNAPSHOT_STAGE"] if leases else []) + ([failover["action_type"]] if failover else []),
+        "allowed_actions": (["KEEPALIVED_APPLY"] if keepalived else []) + (["LEASE_SNAPSHOT_STAGE"] if leases else []) + ([maintenance["action_type"]] if maintenance else []) + ([failover["action_type"]] if failover else []),
         "keepalived": keepalived,
         "lease_snapshot": leases,
-        "failover": failover,
+        "failover": maintenance or failover,
     }

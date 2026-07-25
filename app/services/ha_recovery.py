@@ -118,6 +118,24 @@ def recovery_checks(db: Session, cluster: HACluster, node: HANode, *, now: datet
         )
     )
     peer_label = "Peer Network Reachability (optional)"
+    if active and node.id == active.id:
+        return (
+            RecoveryCheck("kaya_heartbeat", "Kaya heartbeat", heartbeat, "The HA Agent has reported to Kaya recently."),
+            RecoveryCheck("agent_identity", "HA Agent identity", agent, "The registered, non-revoked agent identity is reporting."),
+            RecoveryCheck("dns", "Local DNS and Pi-hole FTL", node.dns_healthy is True, "Pi-hole answered the agent's local DNS probe."),
+            RecoveryCheck("network_interface", "Expected network interface", bool(node.network_interface), "The node has the configured HA network interface."),
+            RecoveryCheck("keepalived", "Local failover service", keepalived, "Keepalived is deployed and running."),
+            RecoveryCheck("cluster_generation", "Cluster generation", generation, "The node recognises the current configuration and role generations."),
+            RecoveryCheck("active_runtime", "Virtual IP ownership", node.vip_owned is True, "The Active node is the exclusive DNS Virtual IP owner."),
+            RecoveryCheck("dhcp_active", "DHCP active state", not pihole_manages_dhcp(cluster) or node.dhcp_running is True, "DHCP is running on the Active node.", pihole_manages_dhcp(cluster)),
+            RecoveryCheck(
+                "peer_reachability",
+                peer_label,
+                node.peer_reachable is True,
+                "Optional ICMP ping only. An unavailable ping does not affect recovery, failover, failback, DNS health, or Kaya heartbeat status.",
+                False,
+            ),
+        )
     return (
         RecoveryCheck("kaya_heartbeat", "Kaya heartbeat", heartbeat, "The HA Agent has reported to Kaya recently."),
         RecoveryCheck("agent_identity", "HA Agent identity", agent, "The registered, non-revoked agent identity is reporting."),

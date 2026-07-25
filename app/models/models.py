@@ -676,6 +676,7 @@ class HACluster(Base):
     lease_replication = relationship("HALeaseReplicationState", uselist=False, cascade="all, delete-orphan", back_populates="cluster")
     lease_snapshots = relationship("HALeaseSnapshot", cascade="all, delete-orphan", back_populates="cluster")
     failover_runs = relationship("HAFailoverRun", cascade="all, delete-orphan", back_populates="cluster")
+    maintenance_runs = relationship("HAMaintenanceRun", cascade="all, delete-orphan", back_populates="cluster")
     created_by = relationship("User", foreign_keys=[created_by_user_id])
 
 
@@ -874,6 +875,35 @@ class HAFailoverRun(Base):
     cluster = relationship("HACluster", back_populates="failover_runs")
     source_node = relationship("HANode", foreign_keys=[source_node_id])
     target_node = relationship("HANode", foreign_keys=[target_node_id])
+    requested_by = relationship("User", foreign_keys=[requested_by_user_id])
+
+
+class HAMaintenanceRun(Base):
+    """Auditable reconciliation/reinitialisation state without replacing HA history."""
+
+    __tablename__ = "ha_maintenance_runs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(36), default=lambda: str(uuid4()), unique=True, index=True)
+    cluster_id: Mapped[int] = mapped_column(ForeignKey("ha_clusters.id", ondelete="CASCADE"), index=True)
+    operation: Mapped[str] = mapped_column(String(30), index=True)
+    status: Mapped[str] = mapped_column(String(30), default="RUNNING", index=True)
+    phase: Mapped[str] = mapped_column(String(60), default="WAITING_FOR_REPORTS", index=True)
+    desired_active_node_id: Mapped[int | None] = mapped_column(ForeignKey("ha_nodes.id", ondelete="SET NULL"), nullable=True, index=True)
+    authoritative_node_id: Mapped[int | None] = mapped_column(ForeignKey("ha_nodes.id", ondelete="SET NULL"), nullable=True, index=True)
+    sync_run_id: Mapped[int | None] = mapped_column(ForeignKey("ha_sync_runs.id", ondelete="SET NULL"), nullable=True, index=True)
+    previous_state_json: Mapped[str] = mapped_column(Text, default="{}")
+    result_json: Mapped[str] = mapped_column(Text, default="{}")
+    error_redacted: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    requested_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    phase_started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    cluster = relationship("HACluster", back_populates="maintenance_runs")
+    desired_active_node = relationship("HANode", foreign_keys=[desired_active_node_id])
+    authoritative_node = relationship("HANode", foreign_keys=[authoritative_node_id])
+    sync_run = relationship("HASyncRun", foreign_keys=[sync_run_id])
     requested_by = relationship("User", foreign_keys=[requested_by_user_id])
 
 

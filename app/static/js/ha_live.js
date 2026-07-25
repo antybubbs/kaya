@@ -219,6 +219,10 @@
           element.dataset.haSyncState = String(data.sync.state || "waiting").toLowerCase();
         });
       }
+      const issue = data.consistency?.issues?.[0];
+      document.querySelectorAll("[data-ha-consistency-alert]").forEach((element) => { element.hidden = !issue; });
+      document.querySelectorAll("[data-ha-consistency-title]").forEach((element) => { element.textContent = issue?.title || ""; });
+      document.querySelectorAll("[data-ha-consistency-message]").forEach((element) => { element.textContent = issue?.message || ""; });
       updateReadiness(data.readiness);
       updateDeployment(data.deployment);
       updateEvents(data.events);

@@ -13,9 +13,15 @@
   <div class="ha-current-time"><span>Current local date and time</span><strong data-ha-live-clock>Loading current time…</strong></div>
 </section>
 
+<section class="alert ha-cluster-consistency-alert" role="alert" data-ha-consistency-alert {% if not consistency.issues %}hidden{% endif %}>
+  <div><strong data-ha-consistency-title>{{ consistency.issues[0].title if consistency.issues else 'HA configuration needs attention' }}</strong><span data-ha-consistency-message>{{ consistency.issues[0].message if consistency.issues else '' }}</span></div>
+  <div class="ha-blocker-actions"><a class="button secondary" href="/high-availability/clusters/{{ cluster.public_id }}/maintenance">Diagnose and repair</a></div>
+</section>
+
 <section class="ha-summary-grid" aria-label="Live cluster summary">
   <article><span>Service availability</span><strong data-ha-cluster-field="service_availability">{{ 'Healthy' if active_node and active_node.dns_healthy else 'Checking' }}</strong><small>Can clients use the clustered service?</small></article>
   <article><span>HA readiness</span><strong data-ha-cluster-field="ha_readiness">{{ 'Ready' if action_ready else 'Recovering' if failback_recovery else 'Needs attention' }}</strong><small>Can the other node take over safely?</small></article>
+  <article><span>HA configuration</span><strong data-ha-cluster-field="ha_configuration">{{ consistency.configuration_state|replace('_', ' ')|title }}</strong><small>Do VIP, DHCP, and stored roles agree?</small></article>
   <article title="The single DNS address used by your devices."><span>DNS Virtual IP</span><strong class="mono">{{ cluster.virtual_ip }}/{{ cluster.prefix_length }}</strong><small>The stable DNS address</small></article>
   <article><span>Current active node</span><strong data-ha-cluster-field="active_node">{{ active_node.display_name if active_node else 'Confirming ownership' }}</strong><small>Currently owns the virtual IP</small></article>
   <article><span>Preferred node</span><strong data-ha-cluster-field="preferred_node">{{ preferred_node.display_name if preferred_node else 'Not set' }}</strong><small>Manual failback target after recovery</small></article>

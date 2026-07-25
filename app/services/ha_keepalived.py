@@ -91,12 +91,20 @@ def _controlled_preemption_target(cluster: HACluster) -> int | None:
         for item in sorted(cluster.failover_runs, key=lambda value: value.created_at, reverse=True)
         if item.status in {"RUNNING", "ROLLING_BACK"}
     ), None)
-    if run is None:
-        return None
-    if run.phase == "MOVING_VIP":
-        return run.target_node_id
-    if run.phase == "ROLLBACK_MOVING_VIP":
-        return run.source_node_id
+    if run is not None:
+        if run.phase == "MOVING_VIP":
+            return run.target_node_id
+        if run.phase == "ROLLBACK_MOVING_VIP":
+            return run.source_node_id
+    maintenance = next((
+        item
+        for item in sorted(cluster.maintenance_runs, key=lambda value: value.created_at, reverse=True)
+        if item.operation == "REINITIALISE"
+        and item.status == "RUNNING"
+        and item.phase == "WAITING_FOR_VIP"
+    ), None)
+    if maintenance is not None:
+        return maintenance.desired_active_node_id
     return None
 
 

@@ -261,10 +261,21 @@ def create_live_sync_plan(
     return create_sync_plan(db, cluster, user)
 
 
-def execute_sync(db: Session, cluster: HACluster, run: HASyncRun, *, allow_deletions: bool = False, client_factory: Callable = PiHoleProvider) -> HASyncRun:
+def execute_sync(
+    db: Session,
+    cluster: HACluster,
+    run: HASyncRun,
+    *,
+    allow_deletions: bool = False,
+    client_factory: Callable = PiHoleProvider,
+    maintenance_authorised: bool = False,
+) -> HASyncRun:
     if run.cluster_id != cluster.id or run.status != "PLANNED":
         raise HASyncError("This synchronisation plan is no longer executable.")
-    if cluster.status != "HEALTHY" or cluster.keepalived_status != "DEPLOYED":
+    maintenance_safe = maintenance_authorised and cluster.maintenance_mode and cluster.keepalived_status == "DEPLOYED"
+    if cluster.maintenance_mode and not maintenance_authorised:
+        raise HASyncError("Cluster maintenance is in progress.")
+    if not maintenance_safe and (cluster.status != "HEALTHY" or cluster.keepalived_status != "DEPLOYED"):
         raise HASyncError("The cluster must be healthy and Keepalived deployed before synchronisation.")
     plan = json.loads(run.plan_json)
     if plan.get("blocked_groups"):
