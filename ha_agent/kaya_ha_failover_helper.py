@@ -26,17 +26,19 @@ def _dhcp_active():
     result = _run([FTL, "--config", "dhcp.active"])
     matches = re.findall(r"\b(true|false)\b", result.stdout.lower())
     if result.returncode or not matches:
-        raise RuntimeError("Pi-hole DHCP state could not be read.")
+        return None
     return matches[-1] == "true"
 
 
 def _udp_port_bound(port, paths=None):
     """Read the kernel socket table without invoking a shell or a broad helper."""
+    inspected = False
     for path in paths or PROC_UDP:
         try:
             lines = path.read_text(encoding="ascii", errors="strict").splitlines()[1:]
         except (FileNotFoundError, OSError, UnicodeError):
             continue
+        inspected = True
         for line in lines:
             fields = line.split()
             if len(fields) < 2:
@@ -46,18 +48,23 @@ def _udp_port_bound(port, paths=None):
                     return True
             except (IndexError, ValueError):
                 continue
-    return False
+    return False if inspected else None
 
 
 def _dhcp_status():
     configured = _dhcp_active()
     service = _run(["systemctl", "is-active", "pihole-FTL"])
+    service_active = True if service.returncode == 0 else False if service.returncode == 3 else None
     listening = _udp_port_bound(67)
+    available = configured is not None and service_active is not None and listening is not None
+    running = bool(configured and service_active and listening) if available else None
     return {
         "configured": configured,
-        "service_active": service.returncode == 0,
+        "service_active": service_active,
         "listening": listening,
-        "dhcp_running": configured and service.returncode == 0 and listening,
+        "runtime_state": "RUNNING" if running is True else "STOPPED" if running is False else "UNKNOWN",
+        "observation_status": "FRESH" if available else "UNAVAILABLE",
+        "dhcp_running": running,
     }
 
 
@@ -65,7 +72,10 @@ def _wait_for_dhcp(enabled):
     latest = {}
     for _ in range(20):
         latest = _dhcp_status()
-        ready = latest["dhcp_running"] if enabled else not latest["configured"] and not latest["listening"]
+        if latest.get("observation_status") != "FRESH":
+            time.sleep(1)
+            continue
+        ready = latest["dhcp_running"] if enabled else latest["configured"] is False and latest["listening"] is False
         if ready:
             return latest
         time.sleep(1)

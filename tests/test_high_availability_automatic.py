@@ -41,7 +41,12 @@ def test_local_promotion_waits_checks_duplicate_vip_and_enables_dhcp(monkeypatch
         commands.append(command)
         if command[0].endswith("check-pihole-dns") or command[0].endswith("arping"):
             return subprocess.CompletedProcess(command, 0, "", "")
-        return subprocess.CompletedProcess(command, 0, '{"status":"applied"}', "")
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            '{"status":"applied","configured":true,"service_active":true,"listening":true,"runtime_state":"RUNNING","observation_status":"FRESH","dhcp_running":true}',
+            "",
+        )
 
     monkeypatch.setattr(transition.subprocess, "run", run)
     transition.automatic_transition(db, "master", 8)

@@ -22,7 +22,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 
 PROTOCOL_VERSION = 1
-AGENT_VERSION = "0.2.6"
+AGENT_VERSION = "0.2.7"
 
 ICMP_AVAILABLE = "AVAILABLE"
 ICMP_NO_REPLY = "NO_REPLY"
@@ -251,7 +251,12 @@ def run_once(state: State) -> None:
             from failover_runtime import refresh_dhcp_state
         refresh_dhcp_state(state)
     except Exception:
-        pass
+        state.set("dhcp_configured", None)
+        state.set("dhcp_listener_active", None)
+        state.set("ftl_active", None)
+        state.set("dhcp_runtime_state", "UNKNOWN")
+        state.set("dhcp_observation_status", "UNAVAILABLE")
+        state.set("dhcp_observed_at", datetime.now(timezone.utc).isoformat())
     try:
         check = subprocess.run(["/usr/lib/kaya-ha-agent/check-pihole-dns", "--observe"], capture_output=True, timeout=10, check=False)
         state.set("dns_healthy", check.returncode == 0)
@@ -271,7 +276,9 @@ def run_once(state: State) -> None:
         state.set("peer_reachable", None)
         state.set("peer_icmp_probe_status", None)
         state.set("peer_dns_reachable", None)
-    heartbeat = {"observed_role": state.get("observed_role", "STANDBY"), "observed_generation": int(state.get("observed_generation", 0)), "vip_owned": bool(state.get("vip_owned", False)), "dhcp_running": bool(state.get("dhcp_running", False)), "dhcp_configured": state.get("dhcp_configured"), "dhcp_listener_active": state.get("dhcp_listener_active"), "ftl_active": state.get("ftl_active"), "dns_healthy": bool(state.get("dns_healthy", False)), "peer_reachable": state.get("peer_reachable"), "peer_icmp_probe_status": state.get("peer_icmp_probe_status"), "peer_dns_reachable": state.get("peer_dns_reachable"), "lease_generation": int(state.get("lease_generation", 0)), "config_generation": int(state.get("config_generation", 0)), "agent_version": AGENT_VERSION, "keepalived_runtime_state": state.get("keepalived_runtime_state", "UNKNOWN")}
+    report_sequence = int(state.get("report_sequence", 0)) + 1
+    state.set("report_sequence", report_sequence)
+    heartbeat = {"report_sequence": report_sequence, "reported_at": datetime.now(timezone.utc).isoformat(), "observed_role": state.get("observed_role", "STANDBY"), "observed_generation": int(state.get("observed_generation", 0)), "vip_owned": bool(state.get("vip_owned", False)), "dhcp_running": bool(state.get("dhcp_running", False)), "dhcp_configured": state.get("dhcp_configured"), "dhcp_listener_active": state.get("dhcp_listener_active"), "ftl_active": state.get("ftl_active"), "dhcp_runtime_state": state.get("dhcp_runtime_state", "UNKNOWN"), "dhcp_observation_status": state.get("dhcp_observation_status", "UNAVAILABLE"), "dhcp_observed_at": state.get("dhcp_observed_at"), "dns_healthy": bool(state.get("dns_healthy", False)), "peer_reachable": state.get("peer_reachable"), "peer_icmp_probe_status": state.get("peer_icmp_probe_status"), "peer_dns_reachable": state.get("peer_dns_reachable"), "lease_generation": int(state.get("lease_generation", 0)), "config_generation": int(state.get("config_generation", 0)), "agent_version": AGENT_VERSION, "keepalived_runtime_state": state.get("keepalived_runtime_state", "UNKNOWN")}
     response = signed_request(state, "POST", "/api/ha/agent/v1/heartbeat", heartbeat)
     reconcile_desired(state, response["desired"])
     action_result = state.get("pending_action_result")

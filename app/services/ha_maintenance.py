@@ -28,7 +28,12 @@ from app.services.ha_sync import (
     create_sync_plan,
     execute_sync,
 )
-from app.services.ha_topology import pihole_manages_dhcp
+from app.services.ha_topology import (
+    dhcp_observation,
+    heartbeat_is_fresh,
+    pihole_manages_dhcp,
+    reconcile_topology,
+)
 from app.services.ha_validation import _safe_configuration
 from app.services.audit import write_audit
 
@@ -37,6 +42,22 @@ FRESH_SECONDS = 45
 PROCESS_STARTED_AT = datetime.utcnow()
 ACTIVE_STATUSES = {"RUNNING", "PAUSED"}
 TERMINAL_STATUSES = {"SUCCEEDED", "FAILED_SAFE", "CANCELLED"}
+REINITIALISATION_PHASES = (
+    "WAITING_FOR_REPORTS",
+    "BACKING_UP",
+    "SYNCHRONISING",
+    "STAGING_DHCP",
+    "WAITING_FOR_DHCP_STAGE",
+    "NORMALISING_STANDBY",
+    "DEMOTING_STANDBY",
+    "VERIFYING_DHCP_RELEASE",
+    "REBUILDING_HA",
+    "WAITING_FOR_VIP",
+    "PROMOTING_ACTIVE",
+    "VERIFYING_DHCP_ACTIVATION",
+    "VERIFYING",
+    "COMPLETE",
+)
 
 
 class HAMaintenanceError(ValueError):
@@ -72,11 +93,7 @@ class ClusterInspection:
 
 
 def _fresh(node: HANode, now: datetime, *, since: datetime | None = None) -> bool:
-    return bool(
-        node.last_heartbeat_at
-        and node.last_heartbeat_at >= now - timedelta(seconds=FRESH_SECONDS)
-        and (since is None or node.last_heartbeat_at >= since)
-    )
+    return heartbeat_is_fresh(node, now, since=since, freshness_seconds=FRESH_SECONDS)
 
 
 def _registered(node: HANode) -> bool:
@@ -85,83 +102,20 @@ def _registered(node: HANode) -> bool:
 
 
 def _dhcp_active(node: HANode) -> bool:
-    configured = node.dhcp_configured if node.dhcp_configured is not None else node.dhcp_running
-    listening = node.dhcp_listener_active if node.dhcp_listener_active is not None else node.dhcp_running
-    ftl_active = node.ftl_active if node.ftl_active is not None else True
-    return bool(configured and listening and ftl_active and node.dhcp_running)
+    return dhcp_observation(node, datetime.utcnow(), freshness_seconds=FRESH_SECONDS).active
 
 
 def _dhcp_released(node: HANode) -> bool:
-    configured = node.dhcp_configured if node.dhcp_configured is not None else node.dhcp_running
-    listening = node.dhcp_listener_active if node.dhcp_listener_active is not None else node.dhcp_running
-    return configured is False and listening is False and node.dhcp_running is False
+    return dhcp_observation(node, datetime.utcnow(), freshness_seconds=FRESH_SECONDS).released
 
 
 def inspect_cluster(cluster: HACluster, *, now: datetime | None = None, since: datetime | None = None) -> ClusterInspection:
     current = now or datetime.utcnow()
-    fresh_nodes = [node for node in cluster.nodes if _fresh(node, current, since=since)]
-    vip_owners = [node for node in fresh_nodes if node.vip_owned]
-    dhcp_owners = [node for node in fresh_nodes if _dhcp_active(node)]
     managed = pihole_manages_dhcp(cluster)
-    issues: list[ConsistencyIssue] = []
-
-    if len(cluster.nodes) != 2:
-        issues.append(ConsistencyIssue(
-            "NODE_COUNT",
-            "Cluster node configuration is incomplete",
-            "A Pi-hole HA cluster requires exactly two existing nodes.",
-            "critical",
-        ))
-    if len(fresh_nodes) != len(cluster.nodes):
-        missing = ", ".join(node.display_name for node in cluster.nodes if node not in fresh_nodes)
-        issues.append(ConsistencyIssue(
-            "STALE_AGENT_STATE",
-            "Fresh node inspection is incomplete",
-            f"Waiting for a new signed HA Agent report from {missing or 'both nodes'}.",
-            "warning",
-        ))
-    if len(vip_owners) > 1:
-        issues.append(ConsistencyIssue(
-            "DUPLICATE_VIP",
-            "Virtual IP ownership conflict detected",
-            "More than one node reports ownership of the DNS Virtual IP.",
-            "critical",
-            True,
-        ))
-    elif fresh_nodes and len(vip_owners) == 0:
-        issues.append(ConsistencyIssue(
-            "NO_VIP_OWNER",
-            "No Virtual IP owner reported",
-            "Neither current node report shows ownership of the DNS Virtual IP.",
-            "critical",
-            True,
-        ))
-    if managed and len(dhcp_owners) > 1:
-        issues.append(ConsistencyIssue(
-            "MULTIPLE_DHCP",
-            "Multiple DHCP servers detected",
-            "More than one Pi-hole reports DHCP running. Kaya will not start another DHCP service.",
-            "critical",
-            True,
-        ))
-    if managed and len(vip_owners) == 1 and len(dhcp_owners) == 1 and vip_owners[0].id != dhcp_owners[0].id:
-        issues.append(ConsistencyIssue(
-            "OWNERSHIP_MISMATCH",
-            "Cluster ownership mismatch",
-            "The DNS Virtual IP and DHCP service are currently owned by different nodes. This can occur after an interrupted setup or HA transition.",
-            "critical",
-            True,
-        ))
-    if managed and fresh_nodes and len(dhcp_owners) == 0:
-        issues.append(ConsistencyIssue(
-            "NO_DHCP_OWNER",
-            "No DHCP service owner reported",
-            "This cluster is configured to provide DHCP, but neither node reports DHCP running.",
-            "critical",
-            True,
-        ))
-
-    observed_owner = vip_owners[0] if len(vip_owners) == 1 else None
+    topology = reconcile_topology(cluster, now=current, since=since, freshness_seconds=FRESH_SECONDS)
+    fresh_nodes = [node for node in cluster.nodes if node.id in topology.fresh_node_ids]
+    issues = [ConsistencyIssue(issue.code, issue.title, issue.message, issue.severity, issue.requires_service_movement) for issue in topology.issues]
+    observed_owner = next((node for node in cluster.nodes if node.id == topology.active_node_id), None)
     if observed_owner and (
         cluster.current_active_node_id != observed_owner.id
         or observed_owner.role != "ACTIVE"
@@ -182,7 +136,7 @@ def inspect_cluster(cluster: HACluster, *, now: datetime | None = None, since: d
             and node.keepalived_runtime_state == "RUNNING"
             and (
                 node.vip_owned
-                or (node.observed_role == "STANDBY" and not node.vip_owned and (not managed or not node.dhcp_running))
+                or (node.observed_role == "STANDBY" and not node.vip_owned and (not managed or _dhcp_released(node)))
             )
         ):
             issues.append(ConsistencyIssue(
@@ -192,22 +146,14 @@ def inspect_cluster(cluster: HACluster, *, now: datetime | None = None, since: d
                 "warning",
             ))
 
-    if observed_owner:
-        service_ok = observed_owner.dns_healthy is True and (
-            not managed or (len(dhcp_owners) == 1 and dhcp_owners[0].id == observed_owner.id)
-        )
-        availability = "HEALTHY" if service_ok else "AVAILABLE_WITH_RISK" if observed_owner.dns_healthy is True else "DEGRADED"
-    else:
-        availability = "DEGRADED"
-    configuration = "CONSISTENT" if fresh_nodes and not issues else "INCONSISTENT"
     return ClusterInspection(
         observed_at=current,
-        fresh_node_ids=tuple(node.id for node in fresh_nodes),
-        vip_owner_ids=tuple(node.id for node in vip_owners),
-        dhcp_owner_ids=tuple(node.id for node in dhcp_owners),
+        fresh_node_ids=topology.fresh_node_ids,
+        vip_owner_ids=topology.vip_owner_ids,
+        dhcp_owner_ids=topology.dhcp_owner_ids,
         issues=tuple(issues),
-        service_availability=availability,
-        configuration_state=configuration,
+        service_availability=topology.service_availability,
+        configuration_state=topology.configuration_state,
     )
 
 
@@ -233,6 +179,9 @@ def inspection_json(cluster: HACluster, inspection: ClusterInspection) -> dict[s
             "dhcp_configured": node.dhcp_configured,
             "dhcp_listener_active": node.dhcp_listener_active,
             "ftl_active": node.ftl_active,
+            "dhcp_runtime_state": node.dhcp_runtime_state,
+            "dhcp_observation_status": node.dhcp_observation_status,
+            "dhcp_observed_at": node.dhcp_observed_at.isoformat() + "Z" if node.dhcp_observed_at else None,
             "vip_owned": node.vip_owned,
             "keepalived_running": node.keepalived_runtime_state == "RUNNING",
             "network_interface": node.network_interface,
@@ -527,9 +476,9 @@ def desired_maintenance_action(cluster: HACluster, node: HANode) -> dict[str, An
     if target is None:
         return None
     action_type = None
-    if run.phase == "DEMOTING_STANDBY" and node.id != target.id and node.dhcp_running:
+    if run.phase == "DEMOTING_STANDBY" and node.id != target.id and not _dhcp_released(node):
         action_type = "DHCP_DEMOTE"
-    elif run.phase == "PROMOTING_ACTIVE" and node.id == target.id and not node.dhcp_running:
+    elif run.phase == "PROMOTING_ACTIVE" and node.id == target.id and not _dhcp_active(node):
         action_type = "DHCP_PROMOTE"
     if action_type is None:
         return None
@@ -579,11 +528,9 @@ def record_maintenance_action_result(
         db.commit()
         return run
     if run.phase == "DEMOTING_STANDBY":
-        node.dhcp_running = False
-        _set_phase(run, "REBUILDING_HA", f"DHCP stopped and verified on {node.display_name}")
+        _set_phase(run, "VERIFYING_DHCP_RELEASE", f"DHCP disable was accepted on {node.display_name}; waiting for a fresh configuration and UDP/67 observation")
     elif run.phase == "PROMOTING_ACTIVE":
-        node.dhcp_running = True
-        _set_phase(run, "VERIFYING", f"DHCP started and verified on {node.display_name}")
+        _set_phase(run, "VERIFYING_DHCP_ACTIVATION", f"DHCP enable was accepted on {node.display_name}; verifying the final two-node topology")
     db.commit()
     return run
 
@@ -664,11 +611,77 @@ def advance_reinitialisation(db: Session, run: HAMaintenanceRun) -> HAMaintenanc
             run.result_json = json.dumps(resumed_result, sort_keys=True)
             db.commit()
             return run
+        try:
+            attempt_result = json.loads(run.result_json or "{}")
+        except json.JSONDecodeError:
+            attempt_result = {}
+        phase_attempts = dict(attempt_result.get("phase_attempts") or {})
+        phase_attempts[run.phase] = int(phase_attempts.get(run.phase, 0)) + 1
+        attempt_result["phase_attempts"] = phase_attempts
+        run.result_json = json.dumps(attempt_result, sort_keys=True)
         if run.phase == "WAITING_FOR_REPORTS":
             inspection = inspect_cluster(cluster, since=run.phase_started_at)
-            run.result_json = json.dumps({**inspection_json(cluster, inspection), "progress": ["Waiting for fresh signed node reports"]}, sort_keys=True)
+            run.result_json = json.dumps({
+                **inspection_json(cluster, inspection),
+                "progress": ["Waiting for fresh signed node reports"],
+                "phase_attempts": phase_attempts,
+            }, sort_keys=True)
             if not inspection.fresh:
                 db.commit()
+                return run
+            already_correct = (
+                inspection.vip_owner_ids == (target.id,)
+                and (
+                    not pihole_manages_dhcp(cluster)
+                    or inspection.dhcp_owner_ids == (target.id,)
+                )
+                and not any(issue.requires_service_movement for issue in inspection.issues)
+            )
+            if already_correct:
+                for node in cluster.nodes:
+                    active = node.id == target.id
+                    node.role = node.desired_role = "ACTIVE" if active else "STANDBY"
+                    node.recovery_state = "ACTIVE" if active else "STANDBY_READY"
+                    node.recovery_started_at = None
+                    node.recovery_stable_since = datetime.utcnow() if not active else None
+                cluster.current_active_node_id = target.id
+                cluster.authoritative_node_id = run.authoritative_node_id
+                previous = json.loads(run.previous_state_json or "{}")
+                cluster.automatic_failover_enabled = bool(previous.get("automatic_failover_enabled"))
+                cluster.automatic_sync_enabled = bool(previous.get("automatic_sync_enabled"))
+                cluster.automatic_sync_allow_deletions = bool(previous.get("automatic_sync_allow_deletions"))
+                cluster.status = "HEALTHY"
+                cluster.maintenance_mode = False
+                run.status = "SUCCEEDED"
+                run.phase = "COMPLETE"
+                run.completed_at = datetime.utcnow()
+                run.error_redacted = None
+                final_inspection = inspect_cluster(cluster)
+                run.result_json = json.dumps({
+                    **inspection_json(cluster, final_inspection),
+                    "progress": [
+                        "Fresh signed reports received from both nodes",
+                        "Observed topology already matches the requested Active and Standby assignment",
+                        "Kaya stored state reconciled without moving DNS, DHCP or the Virtual IP",
+                    ],
+                    "service_movement_performed": False,
+                }, sort_keys=True)
+                _event(db, run, "cluster_reinitialisation_reconciled", "info", f"The observed topology already had {target.display_name} as the exclusive service owner. Kaya repaired stored state without moving services.")
+                db.commit()
+                write_audit(
+                    db,
+                    run.requested_by,
+                    "complete",
+                    "ha_cluster_reinitialisation",
+                    cluster.public_id,
+                    detail=f"Cluster state reconciled with {target.display_name} already active; no service movement was issued.",
+                    metadata={
+                        "maintenance_run_id": run.public_id,
+                        "desired_active_node_id": target.public_id,
+                        "authoritative_node_id": run.authoritative_node.public_id if run.authoritative_node else None,
+                        "service_movement_performed": False,
+                    },
+                )
                 return run
             _set_phase(run, "BACKING_UP", "Fresh signed reports received from both nodes")
         elif run.phase == "BACKING_UP":
@@ -699,7 +712,7 @@ def advance_reinitialisation(db: Session, run: HAMaintenanceRun) -> HAMaintenanc
                 return run
             _set_phase(run, "NORMALISING_STANDBY", "Current DHCP generation staged on the selected standby")
         elif run.phase == "NORMALISING_STANDBY":
-            if pihole_manages_dhcp(cluster) and standby.dhcp_running:
+            if pihole_manages_dhcp(cluster) and not _dhcp_released(standby):
                 _set_phase(run, "DEMOTING_STANDBY", f"Stopping DHCP on {standby.display_name} before changing Virtual IP ownership")
             else:
                 _set_phase(run, "REBUILDING_HA", f"{standby.display_name} is safe as standby")
@@ -731,7 +744,7 @@ def advance_reinitialisation(db: Session, run: HAMaintenanceRun) -> HAMaintenanc
                     return _fail_safe(db, run, f"Kaya could not confirm that {target.display_name} became the only Virtual IP owner. No additional DHCP service was started.")
                 db.commit()
                 return run
-            if pihole_manages_dhcp(cluster) and not target.dhcp_running:
+            if pihole_manages_dhcp(cluster) and not _dhcp_active(target):
                 _set_phase(run, "PROMOTING_ACTIVE", f"{target.display_name} exclusively owns the Virtual IP; starting DHCP there")
             else:
                 _set_phase(run, "VERIFYING", f"{target.display_name} exclusively owns the Virtual IP")
@@ -817,6 +830,27 @@ def maintenance_status(run: HAMaintenanceRun | None) -> dict[str, Any] | None:
         result = json.loads(run.result_json or "{}")
     except json.JSONDecodeError:
         result = {}
+    labels = {
+        "WAITING_FOR_REPORTS": "Waiting for fresh signed reports",
+        "BACKING_UP": "Creating encrypted configuration backups",
+        "SYNCHRONISING": "Synchronising supported configuration",
+        "STAGING_DHCP": "Validating the DHCP snapshot",
+        "WAITING_FOR_DHCP_STAGE": "Waiting for standby lease staging",
+        "NORMALISING_STANDBY": "Confirming the standby is safe",
+        "DEMOTING_STANDBY": "Stopping DHCP on the standby",
+        "VERIFYING_DHCP_RELEASE": "Verifying UDP port 67 is released",
+        "REBUILDING_HA": "Rebuilding HA runtime state",
+        "WAITING_FOR_VIP": "Waiting for exclusive Virtual IP ownership",
+        "PROMOTING_ACTIVE": "Starting DHCP on the selected active node",
+        "VERIFYING_DHCP_ACTIVATION": "Verifying DHCP activation",
+        "VERIFYING": "Checking final topology invariants",
+        "COMPLETE": "Maintenance completed",
+        "PAUSED": "Maintenance stopped safely",
+    }
+    phases = REINITIALISATION_PHASES if run.operation == "REINITIALISE" else ("WAITING_FOR_REPORTS", "RECONCILING", "COMPLETE")
+    current_index = phases.index(run.phase) if run.phase in phases else 0
+    attempts = dict(result.get("phase_attempts") or {})
+    elapsed = max(0, int((datetime.utcnow() - (run.started_at or run.created_at)).total_seconds()))
     return {
         "id": run.public_id,
         "operation": run.operation,
@@ -830,4 +864,13 @@ def maintenance_status(run: HAMaintenanceRun | None) -> dict[str, Any] | None:
         "inspection": result,
         "started_at": run.started_at.isoformat() + "Z" if run.started_at else None,
         "completed_at": run.completed_at.isoformat() + "Z" if run.completed_at else None,
+        "message": labels.get(run.phase, run.phase.replace("_", " ").title()),
+        "elapsed_seconds": elapsed,
+        "phase_attempt": int(attempts.get(run.phase, 0)),
+        "progress_percent": 100 if run.status == "SUCCEEDED" else round((current_index / max(1, len(phases) - 1)) * 100),
+        "steps": [{
+            "phase": phase,
+            "label": labels.get(phase, phase.replace("_", " ").title()),
+            "state": "complete" if index < current_index or run.status == "SUCCEEDED" else "current" if index == current_index else "pending",
+        } for index, phase in enumerate(phases)],
     }

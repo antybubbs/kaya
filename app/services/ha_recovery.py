@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.models.models import HACluster, HAEvent, HAFailoverRun, HANode, HASyncRun
 from app.services.audit import write_audit
-from app.services.ha_topology import pihole_manages_dhcp
+from app.services.ha_topology import dhcp_observation, pihole_manages_dhcp
 
 
 RECOVERY_HEARTBEAT_SECONDS = 45
@@ -96,7 +96,8 @@ def recovery_checks(db: Session, cluster: HACluster, node: HANode, *, now: datet
         and node.observed_generation >= cluster.role_generation
     )
     standby_runtime = bool(node.vip_owned is False and node.observed_role == "STANDBY")
-    dhcp_safe = not pihole_manages_dhcp(cluster) or node.dhcp_running is False
+    observation = dhcp_observation(node, current, freshness_seconds=RECOVERY_HEARTBEAT_SECONDS)
+    dhcp_safe = not pihole_manages_dhcp(cluster) or observation.released
     latest_sync = _latest_sync(db, cluster, active, node) if active and active.id != node.id else None
     configuration_sync = bool(
         latest_sync
@@ -127,7 +128,7 @@ def recovery_checks(db: Session, cluster: HACluster, node: HANode, *, now: datet
             RecoveryCheck("keepalived", "Local failover service", keepalived, "Keepalived is deployed and running."),
             RecoveryCheck("cluster_generation", "Cluster generation", generation, "The node recognises the current configuration and role generations."),
             RecoveryCheck("active_runtime", "Virtual IP ownership", node.vip_owned is True, "The Active node is the exclusive DNS Virtual IP owner."),
-            RecoveryCheck("dhcp_active", "DHCP active state", not pihole_manages_dhcp(cluster) or node.dhcp_running is True, "DHCP is running on the Active node.", pihole_manages_dhcp(cluster)),
+            RecoveryCheck("dhcp_active", "DHCP active state", not pihole_manages_dhcp(cluster) or observation.active, "A fresh Pi-hole configuration, FTL and UDP/67 observation confirms DHCP on the Active node.", pihole_manages_dhcp(cluster)),
             RecoveryCheck(
                 "peer_reachability",
                 peer_label,
@@ -144,7 +145,7 @@ def recovery_checks(db: Session, cluster: HACluster, node: HANode, *, now: datet
         RecoveryCheck("keepalived", "Local failover service", keepalived, "Keepalived is deployed and running."),
         RecoveryCheck("cluster_generation", "Cluster generation", generation, "The node recognises the current configuration and role generations."),
         RecoveryCheck("standby_runtime", "Standby ownership", standby_runtime, "The recovered node is not claiming the DNS Virtual IP."),
-        RecoveryCheck("dhcp_safe", "DHCP standby state", dhcp_safe, "DHCP is safely stopped on the recovered node.", pihole_manages_dhcp(cluster)),
+        RecoveryCheck("dhcp_safe", "DHCP standby state", dhcp_safe, "A fresh Pi-hole configuration and UDP/67 observation confirms DHCP is released on the recovered node.", pihole_manages_dhcp(cluster)),
         RecoveryCheck("configuration_sync", "Pi-hole API, configuration and drift", configuration_sync, "A post-recovery active-to-standby API comparison or synchronisation completed without supported drift."),
         RecoveryCheck("lease_sync", "DHCP generation and lease staging", lease_sync, "The standby has staged the current validated DHCP generation.", pihole_manages_dhcp(cluster)),
         RecoveryCheck(

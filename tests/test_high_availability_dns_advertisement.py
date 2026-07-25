@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 
 import pytest
 from sqlalchemy import create_engine, event
@@ -29,6 +30,7 @@ def database():
 
 
 def cluster_fixture(db: Session):
+    observed_at = datetime.utcnow()
     user = User(email="ha-option6@example.invalid", password_hash="x", role="admin", is_active=True)
     cluster = HACluster(
         name="DNS HA",
@@ -54,6 +56,13 @@ def cluster_fixture(db: Session):
         desired_role="ACTIVE",
         vip_owned=True,
         dhcp_running=True,
+        dhcp_configured=True,
+        dhcp_listener_active=True,
+        ftl_active=True,
+        dhcp_runtime_state="RUNNING",
+        dhcp_observation_status="FRESH",
+        dhcp_observed_at=observed_at,
+        last_heartbeat_at=observed_at,
         dns_healthy=True,
     )
     second = HANode(
@@ -66,6 +75,13 @@ def cluster_fixture(db: Session):
         desired_role="STANDBY",
         vip_owned=False,
         dhcp_running=False,
+        dhcp_configured=False,
+        dhcp_listener_active=False,
+        ftl_active=True,
+        dhcp_runtime_state="STOPPED",
+        dhcp_observation_status="FRESH",
+        dhcp_observed_at=observed_at,
+        last_heartbeat_at=observed_at,
         dns_healthy=True,
     )
     db.add_all([first, second])

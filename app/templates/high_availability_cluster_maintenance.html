@@ -30,7 +30,7 @@
       <p class="mono">{{ node.address or 'Address not reported' }}</p>
       <dl class="ha-node-facts">
         <div><dt>DNS</dt><dd data-ha-node-field="dns_healthy">{{ 'Healthy' if node.dns_healthy else 'Unhealthy' }}</dd></div>
-        <div><dt>DHCP</dt><dd data-ha-node-field="dhcp_running">{{ 'Running' if node.dhcp_running else 'Stopped' }}</dd></div>
+        <div><dt>DHCP</dt><dd data-ha-node-field="dhcp_running">{{ 'Running' if node.dhcp_observation_status == 'FRESH' and node.dhcp_runtime_state == 'RUNNING' else 'Stopped' if node.dhcp_observation_status == 'FRESH' and node.dhcp_runtime_state == 'STOPPED' else 'Unknown — probe unavailable' }}</dd></div>
         <div><dt>Virtual IP</dt><dd data-ha-node-field="vip_owned">{{ 'Owned' if node.vip_owned else 'Not owned' }}</dd></div>
         <div><dt>Keepalived</dt><dd>{{ 'Running' if node.keepalived_running else 'Not running' }}</dd></div>
         <div><dt>Recovery</dt><dd>{{ node.recovery_state|replace('_', ' ')|title }}</dd></div>
@@ -50,6 +50,7 @@
     {% for item in maintenance_status.progress %}<li class="is-complete">{{ item }}</li>{% else %}<li>Waiting for the first fresh node reports</li>{% endfor %}
     {% if maintenance_run.status == 'RUNNING' %}<li class="is-current">{{ maintenance_run.phase|replace('_', ' ')|title }}</li>{% endif %}
   </ol>
+  <p class="muted">Elapsed <strong data-ha-maintenance-elapsed>{{ maintenance_status.elapsed_seconds }}s</strong> · Current-stage checks <strong data-ha-maintenance-attempt>{{ maintenance_status.phase_attempt }}</strong></p>
   {% if maintenance_run.status == 'RUNNING' %}
   <form method="post" action="/high-availability/clusters/{{ cluster.public_id }}/maintenance/{{ maintenance_run.public_id }}/advance" data-ha-maintenance-advance>
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

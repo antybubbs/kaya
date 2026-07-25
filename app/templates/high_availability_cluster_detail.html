@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 {% include '_high_availability_cluster_header.html' %}
+{% include '_ha_transition_progress.html' %}
 {# Legacy safety assertion retained for regression coverage: Type <span class="mono">{{ cluster.name }}</span> to confirm #}
 {# Removing a cluster means stored nodes, connections, validation records, DNS links, and history remain preserved. #}
 {% if request.query_params.get('saved') %}<div class="success" role="status">Cluster saved. Start with the guided setup steps below.</div>{% endif %}

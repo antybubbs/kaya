@@ -61,7 +61,14 @@ def automatic_transition(db, transition, generation):
             subprocess.run(["sudo", "-n", HELPER, "automatic-demote", str(generation)], capture_output=True, timeout=20, check=False)
         queue_event(db, "automatic_failover_blocked", "critical", str(output.get("message") or "The local DHCP safety transition failed.")[:500], generation)
         return
-    put_value(db, "dhcp_running", transition == "master")
+    if output.get("observation_status") == "FRESH":
+        put_value(db, "dhcp_configured", output.get("configured"))
+        put_value(db, "dhcp_listener_active", output.get("listening"))
+        put_value(db, "ftl_active", output.get("service_active"))
+        put_value(db, "dhcp_runtime_state", output.get("runtime_state"))
+        put_value(db, "dhcp_observation_status", "FRESH")
+        put_value(db, "dhcp_observed_at", datetime.now(timezone.utc).isoformat())
+        put_value(db, "dhcp_running", output.get("dhcp_running") is True)
     queue_event(db, "automatic_failover_completed" if transition == "master" else "automatic_demotion_completed", "warning" if transition == "master" else "info", "Local failover completed without requiring Kaya." if transition == "master" else "DHCP was disabled locally before this node remained standby.", generation, {"automatic": True})
 
 

@@ -1,0 +1,24 @@
+{% if failover_state is defined and failover_run and failover_run.status in ['RUNNING', 'ROLLING_BACK'] %}
+<section class="panel ha-transition-progress" data-ha-transition-progress aria-live="polite">
+  <div class="ha-section-heading">
+    <div>
+      <span class="ha-sync-eyebrow">Live controlled transition</span>
+      <h2 data-ha-transition-message>{{ failover_state.message }}</h2>
+      <p class="muted"><strong>{{ failover_state.source }}</strong> → <strong>{{ failover_state.target }}</strong>. Progress comes from signed node reports and persisted server-side checks.</p>
+    </div>
+    <span class="ha-agent-state is-pending" data-ha-transition-status>{{ failover_state.status|replace('_', ' ')|title }}</span>
+  </div>
+  <div class="ha-transition-track" role="progressbar" aria-label="Controlled transition progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ failover_state.progress_percent }}">
+    <span data-ha-transition-bar style="width: {{ failover_state.progress_percent }}%"></span>
+  </div>
+  <div class="ha-transition-meta">
+    <span>Elapsed <strong data-ha-transition-elapsed>{{ failover_state.elapsed_seconds }}s</strong></span>
+    <span>Verification checks <strong data-ha-transition-attempt>{{ failover_state.verification_attempt }}</strong></span>
+  </div>
+  <ol class="ha-transition-steps" data-ha-transition-steps>
+    {% for step in failover_state.steps %}
+    <li class="is-{{ step.state }}">{{ step.label }}</li>
+    {% endfor %}
+  </ol>
+</section>
+{% endif %}

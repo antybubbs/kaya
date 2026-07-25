@@ -12,12 +12,29 @@ from app.models.models import HACluster, HAEvent, HAFailoverRun, HANode, User
 from app.services.ha_leases import HALeaseError, reconcile_cluster_leases
 from app.services.ha_recovery import failback_target
 from app.services.ha_sync import HASyncError, create_live_sync_plan, execute_sync
-from app.services.ha_topology import pihole_manages_dhcp
+from app.services.ha_topology import dhcp_observation, pihole_manages_dhcp, reconcile_topology
 
 
 ACTIVE_RUN_STATUSES = {"RUNNING", "ROLLING_BACK"}
-MIN_AGENT_VERSION = (0, 1, 5)
-AUTOMATIC_AGENT_VERSION = (0, 2, 2)
+MIN_AGENT_VERSION = (0, 2, 7)
+AUTOMATIC_AGENT_VERSION = (0, 2, 7)
+FORWARD_PHASES = (
+    "WAITING_FOR_LEASES",
+    "DEMOTING_SOURCE",
+    "VERIFYING_SOURCE_DHCP_RELEASE",
+    "MOVING_VIP",
+    "PROMOTING_TARGET",
+    "VERIFYING_TARGET",
+    "COMPLETE",
+)
+ROLLBACK_PHASES = (
+    "ROLLBACK_DEMOTING_TARGET",
+    "VERIFYING_ROLLBACK_TARGET_RELEASE",
+    "ROLLBACK_MOVING_VIP",
+    "ROLLBACK_PROMOTING_SOURCE",
+    "ROLLBACK_VERIFYING_SOURCE",
+    "ROLLED_BACK",
+)
 
 
 class HAFailoverError(ValueError):
@@ -70,7 +87,7 @@ def failover_readiness(cluster: HACluster, *, now: datetime | None = None) -> Fa
         if not node.last_heartbeat_at or node.last_heartbeat_at < current - timedelta(minutes=2):
             blockers.append(f"Wait for a recent heartbeat from {node.display_name}.")
         if _version(node.agent_version) < MIN_AGENT_VERSION:
-            blockers.append(f"Update {node.display_name} to agent 0.1.5 before controlled failover.")
+            blockers.append(f"Update {node.display_name} to agent 0.2.7 or newer before controlled failover.")
         if node.dns_healthy is not True:
             blockers.append(f"Resolve the DNS health warning on {node.display_name}.")
         if node.keepalived_runtime_state != "RUNNING":
@@ -86,10 +103,12 @@ def failover_readiness(cluster: HACluster, *, now: datetime | None = None) -> Fa
                 blockers.append("The standby lease snapshot must be current.")
             if target and target.lease_generation != state.desired_generation:
                 blockers.append(f"Wait for {target.display_name} to stage the current lease generation.")
-            dhcp_nodes = [node for node in cluster.nodes if node.dhcp_running]
-            if len(dhcp_nodes) != 1 or (source and dhcp_nodes[0].id != source.id):
+            topology = reconcile_topology(cluster, now=current, freshness_seconds=120)
+            if topology.dhcp_unknown_node_ids:
+                blockers.append("Wait for a fresh DHCP configuration, FTL and UDP/67 observation from both nodes.")
+            elif len(topology.dhcp_owner_ids) != 1 or (source and topology.dhcp_owner_ids[0] != source.id):
                 blockers.append("Exactly the current VIP owner must report DHCP active before handover.")
-        elif any(node.dhcp_running for node in cluster.nodes):
+        elif any(dhcp_observation(node, current, freshness_seconds=120).active for node in cluster.nodes):
             blockers.append("Pi-hole DHCP is configured as external, but an agent reports DHCP active.")
     if active_failover(cluster):
         blockers.append("A controlled transition is already running.")
@@ -104,7 +123,7 @@ def automatic_failover_blockers(cluster: HACluster, *, now: datetime | None = No
         blockers.append("Complete one successful controlled failover test first.")
     for node in cluster.nodes:
         if _version(node.agent_version) < AUTOMATIC_AGENT_VERSION:
-            blockers.append(f"Update {node.display_name} to agent 0.2.2 for verified offline DHCP failover.")
+            blockers.append(f"Update {node.display_name} to agent 0.2.7 for ordered DHCP telemetry and verified offline failover.")
     if cluster.maintenance_mode:
         blockers.append("Exit maintenance mode before enabling automatic failover.")
     return list(dict.fromkeys(blockers))
@@ -284,32 +303,25 @@ def _record_transition_warning(run: HAFailoverRun, message: str) -> None:
 
 
 def _dhcp_active(node: HANode) -> bool:
-    """Use separate configuration/listener evidence when a current agent supplies it."""
-    configured = node.dhcp_configured if node.dhcp_configured is not None else node.dhcp_running
-    listening = node.dhcp_listener_active if node.dhcp_listener_active is not None else node.dhcp_running
-    ftl_active = node.ftl_active if node.ftl_active is not None else True
-    return bool(configured and listening and ftl_active and node.dhcp_running)
+    return dhcp_observation(node, datetime.utcnow(), freshness_seconds=120).active
 
 
 def _dhcp_released(node: HANode) -> bool:
-    configured = node.dhcp_configured if node.dhcp_configured is not None else node.dhcp_running
-    listening = node.dhcp_listener_active if node.dhcp_listener_active is not None else node.dhcp_running
-    return configured is False and listening is False and node.dhcp_running is False
+    return dhcp_observation(node, datetime.utcnow(), freshness_seconds=120).released
 
 
 def _requested_topology_is_verified(run: HAFailoverRun, *, rolled_back: bool = False) -> bool:
     active = run.source_node if rolled_back else run.target_node
-    standby = run.target_node if rolled_back else run.source_node
-    dhcp_ok = (
-        (_dhcp_active(active) and _dhcp_released(standby))
-        if run.dhcp_managed
-        else not any(node.dhcp_running for node in run.cluster.nodes)
-    )
+    topology = reconcile_topology(run.cluster, freshness_seconds=120)
     return bool(
-        active.vip_owned
-        and not standby.vip_owned
+        topology.vip_owner_ids == (active.id,)
+        and (
+            not run.dhcp_managed
+            or topology.dhcp_owner_ids == (active.id,)
+        )
+        and (not run.dhcp_managed or not topology.dhcp_unknown_node_ids)
         and active.dns_healthy is True
-        and dhcp_ok
+        and topology.topology_safe
     )
 
 
@@ -380,19 +392,15 @@ def record_failover_action_result(db: Session, node: HANode, *, action_type: str
         )
         return run
     if run.phase == "DEMOTING_SOURCE":
-        node.dhcp_running = False
-        run.phase = "MOVING_VIP"
-        _move_vip(db, run, run.target_node)
+        _mark_verification_started(run)
+        run.phase = "VERIFYING_SOURCE_DHCP_RELEASE"
     elif run.phase == "PROMOTING_TARGET":
-        node.dhcp_running = True
         run.phase = "VERIFYING_TARGET"
         _mark_verification_started(run)
     elif run.phase == "ROLLBACK_DEMOTING_TARGET":
-        node.dhcp_running = False
-        run.phase = "ROLLBACK_MOVING_VIP"
-        _move_vip(db, run, run.source_node)
+        _mark_verification_started(run)
+        run.phase = "VERIFYING_ROLLBACK_TARGET_RELEASE"
     elif run.phase == "ROLLBACK_PROMOTING_SOURCE":
-        node.dhcp_running = True
         run.phase = "ROLLBACK_VERIFYING_SOURCE"
         _mark_verification_started(run)
     return run
@@ -442,7 +450,7 @@ def advance_failover(db: Session, cluster: HACluster) -> HAFailoverRun | None:
     run = active_failover(cluster)
     if run is None:
         return None
-    if not run.dhcp_managed and pihole_manages_dhcp(cluster) and any(node.dhcp_running for node in cluster.nodes):
+    if not run.dhcp_managed and pihole_manages_dhcp(cluster):
         # Legacy clusters could previously be misclassified from a temporary
         # inactive flag while DHCP was moving. Stop instead of continuing a
         # DNS-only handover around a live DHCP owner.
@@ -457,6 +465,15 @@ def advance_failover(db: Session, cluster: HACluster) -> HAFailoverRun | None:
         db.commit()
         return run
     state = cluster.lease_replication
+    if run.phase.startswith("VERIFYING_") or run.phase in {"VERIFYING_TARGET", "ROLLBACK_VERIFYING_SOURCE"}:
+        try:
+            report = json.loads(run.report_json or "{}")
+        except json.JSONDecodeError:
+            report = {}
+        attempts = dict(report.get("verification_attempts") or {})
+        attempts[run.phase] = int(attempts.get(run.phase, 0)) + 1
+        report["verification_attempts"] = attempts
+        run.report_json = json.dumps(report, sort_keys=True)
     if run.phase == "WAITING_FOR_LEASES" and state and state.status == "CURRENT" and state.applied_generation >= run.lease_generation:
         run.phase = "DEMOTING_SOURCE"
     elif run.phase == "VERIFYING_SOURCE_DHCP_RELEASE":
@@ -477,7 +494,7 @@ def advance_failover(db: Session, cluster: HACluster) -> HAFailoverRun | None:
         run.phase == "ROLLBACK_DEMOTING_TARGET"
         and run.source_node.vip_owned
         and not run.target_node.vip_owned
-        and not run.target_node.dhcp_running
+        and _dhcp_released(run.target_node)
     ):
         # The failed forward move never left the original VIP owner. Restore
         # DHCP there directly instead of needlessly redeploying Keepalived.
@@ -497,7 +514,7 @@ def advance_failover(db: Session, cluster: HACluster) -> HAFailoverRun | None:
                 and run.dhcp_managed
                 and run.source_node.vip_owned
                 and not run.target_node.vip_owned
-                and not run.target_node.dhcp_running
+                and _dhcp_released(run.target_node)
             ):
                 _restore_dhcp_after_failed_vip_move(db, run, failure)
             else:
@@ -532,9 +549,9 @@ def request_failover_rollback(db: Session, run: HAFailoverRun, *, acknowledged: 
     run.cluster.role_generation += 1
     run.role_generation = run.cluster.role_generation
     source_still_owns_vip = run.source_node.vip_owned and not run.target_node.vip_owned
-    if source_still_owns_vip and (not run.dhcp_managed or run.source_node.dhcp_running):
+    if source_still_owns_vip and (not run.dhcp_managed or _dhcp_active(run.source_node)):
         _complete(db, run, rolled_back=True)
-    elif source_still_owns_vip and run.dhcp_managed and not run.target_node.dhcp_running:
+    elif source_still_owns_vip and run.dhcp_managed and _dhcp_released(run.target_node):
         run.phase = "ROLLBACK_PROMOTING_SOURCE"
         run.error_redacted = run.error_redacted or "The original node retained the virtual IP and DHCP is being restored there."
         _event(db, run, "controlled_failover_rollback_started", "warning", f"Direct DHCP recovery on {run.source_node.display_name} started because it retained exclusive virtual-IP ownership.")
@@ -552,7 +569,37 @@ def failover_status(run: HAFailoverRun | None) -> dict[str, Any]:
         return {"running": False, "status": "NOT_STARTED", "phase": "READY", "message": "No controlled failover has been run.", "warnings": []}
     labels = {"WAITING_FOR_LEASES": "Capturing the final lease snapshot", "DEMOTING_SOURCE": "Stopping DHCP on the current active node", "VERIFYING_SOURCE_DHCP_RELEASE": f"Waiting for {run.source_node.display_name} to release UDP port 67", "MOVING_VIP": "Moving the virtual IP", "PROMOTING_TARGET": "Importing leases and starting DHCP on the target", "VERIFYING_TARGET": "Verifying the final DNS, DHCP and VIP topology", "COMPLETE": "Controlled failover completed", "FAILED_SAFE": "Transition stopped safely", "ROLLBACK_DEMOTING_TARGET": "Ensuring DHCP is stopped on the target", "VERIFYING_ROLLBACK_TARGET_RELEASE": f"Waiting for {run.target_node.display_name} to release UDP port 67", "ROLLBACK_MOVING_VIP": "Returning the virtual IP", "ROLLBACK_PROMOTING_SOURCE": "Restoring DHCP on the original node", "ROLLBACK_VERIFYING_SOURCE": "Verifying the restored final topology", "ROLLED_BACK": "Original node restored"}
     try:
-        warnings = list(json.loads(run.report_json or "{}").get("warnings") or [])
+        report = json.loads(run.report_json or "{}")
+        warnings = list(report.get("warnings") or [])
     except json.JSONDecodeError:
+        report = {}
         warnings = []
-    return {"running": run.status in ACTIVE_RUN_STATUSES, "run_id": run.public_id, "status": run.status, "phase": run.phase, "message": labels.get(run.phase, run.phase.replace("_", " ").title()), "error": run.error_redacted, "warnings": warnings, "source": run.source_node.display_name, "target": run.target_node.display_name, "dhcp_managed": run.dhcp_managed, "transition_kind": _transition_kind(run), "started_at": run.started_at.isoformat() if run.started_at else None, "completed_at": run.completed_at.isoformat() if run.completed_at else None}
+    phases = ROLLBACK_PHASES if run.status == "ROLLING_BACK" or run.phase in ROLLBACK_PHASES else FORWARD_PHASES
+    current_index = phases.index(run.phase) if run.phase in phases else 0
+    steps = [{
+        "phase": phase,
+        "label": labels.get(phase, phase.replace("_", " ").title()),
+        "state": "complete" if index < current_index or run.phase in {"COMPLETE", "ROLLED_BACK"} else "current" if index == current_index else "pending",
+    } for index, phase in enumerate(phases)]
+    attempts = dict(report.get("verification_attempts") or {})
+    started = run.started_at or run.created_at
+    elapsed = max(0, int((datetime.utcnow() - started).total_seconds())) if started else 0
+    return {
+        "running": run.status in ACTIVE_RUN_STATUSES,
+        "run_id": run.public_id,
+        "status": run.status,
+        "phase": run.phase,
+        "message": labels.get(run.phase, run.phase.replace("_", " ").title()),
+        "error": run.error_redacted,
+        "warnings": warnings,
+        "source": run.source_node.display_name,
+        "target": run.target_node.display_name,
+        "dhcp_managed": run.dhcp_managed,
+        "transition_kind": _transition_kind(run),
+        "started_at": run.started_at.isoformat() if run.started_at else None,
+        "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+        "progress_percent": 100 if run.phase in {"COMPLETE", "ROLLED_BACK"} else round((current_index / max(1, len(phases) - 1)) * 100),
+        "elapsed_seconds": elapsed,
+        "verification_attempt": int(attempts.get(run.phase, 0)),
+        "steps": steps,
+    }

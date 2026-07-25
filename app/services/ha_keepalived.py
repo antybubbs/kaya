@@ -7,7 +7,7 @@ from ipaddress import IPv4Address, IPv4Interface
 from sqlalchemy.orm import Session
 
 from app.models.models import HACluster, HANode
-from app.services.ha_topology import pihole_manages_dhcp
+from app.services.ha_topology import dhcp_observation, pihole_manages_dhcp
 
 
 INTERFACE_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
@@ -191,7 +191,7 @@ def request_manual_vip_move(db: Session, cluster: HACluster, target: HANode, ack
     blockers = deployment_blockers(cluster)
     if blockers:
         raise HAKeepalivedError(" ".join(blockers))
-    if any(node.dhcp_running for node in cluster.nodes):
+    if any(dhcp_observation(node, datetime.utcnow(), freshness_seconds=120).active for node in cluster.nodes):
         raise HAKeepalivedError("Manual VIP testing is blocked while an agent reports DHCP running; DHCP transition control is not implemented yet.")
     for node in cluster.nodes:
         node.desired_role = "ACTIVE" if node.id == target.id else "STANDBY"

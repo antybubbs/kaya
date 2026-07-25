@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.models.models import HACluster, HAEvent, HANode
 from app.services.dns_providers import PiHoleProvider
-from app.services.ha_topology import advertised_dns_addresses, pihole_manages_dhcp
+from app.services.ha_topology import advertised_dns_addresses, pihole_manages_dhcp, reconcile_topology
 from app.services.ha_validation import connection_for_node, probe_dns
 
 
@@ -233,10 +233,14 @@ def repair_dns_advertisement(
 ) -> list[DNSAdvertisementState]:
     """Install node-specific, VIP-first Option 6 with rollback and read-back."""
     _validate_topology(cluster)
-    owners = [node for node in cluster.nodes if node.vip_owned]
-    dhcp_reporters = [node for node in cluster.nodes if node.dhcp_running]
+    topology = reconcile_topology(cluster, freshness_seconds=120)
+    owners = [node for node in cluster.nodes if node.id in topology.vip_owner_ids]
+    dhcp_reporters = [node for node in cluster.nodes if node.id in topology.dhcp_owner_ids]
     if cluster.keepalived_status == "DEPLOYED" and (
-        len(owners) != 1 or len(dhcp_reporters) != 1 or owners[0].id != dhcp_reporters[0].id
+        len(owners) != 1
+        or len(dhcp_reporters) != 1
+        or topology.dhcp_unknown_node_ids
+        or owners[0].id != dhcp_reporters[0].id
     ):
         raise HADNSAdvertisementError(
             "Repair is blocked until exactly one node owns the Virtual IP and that same node reports DHCP active."

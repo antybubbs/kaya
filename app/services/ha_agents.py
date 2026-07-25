@@ -18,7 +18,7 @@ from app.services.ha_leases import HALeaseError, desired_lease_action, record_le
 from app.services.ha_failover import AUTOMATIC_AGENT_VERSION, HAFailoverError, advance_failover, desired_failover_action, record_failover_action_result
 from app.services.ha_agent_installer import CURRENT_AGENT_VERSION, version_tuple
 from app.services.audit import write_audit
-from app.services.ha_topology import pihole_manages_dhcp
+from app.services.ha_topology import dhcp_observation, pihole_manages_dhcp, reconcile_topology
 from app.services.ha_maintenance import (
     HAMaintenanceError,
     active_maintenance,
@@ -106,6 +106,8 @@ def register_agent(db: Session, payload: HAAgentRegister) -> tuple[HAAgentCreden
     node.agent_id = credential.agent_id
     node.agent_version = payload.agent_version
     node.last_heartbeat_at = now
+    node.last_report_sequence = 0
+    node.last_agent_reported_at = None
     db.commit()
     db.refresh(credential)
     return credential, node
@@ -163,17 +165,58 @@ async def authenticate_agent_request(request: Request, db: Session) -> Authentic
 
 
 def record_heartbeat(db: Session, node: HANode, heartbeat: HAAgentHeartbeat) -> HANode:
+    if heartbeat.report_sequence and heartbeat.report_sequence <= node.last_report_sequence:
+        # The request is still authenticated and replay-protected, but its
+        # runtime observation predates one already accepted for this identity.
+        return node
     previous_peer = node.peer_reachable
     had_peer_result = node.last_peer_attempt_at is not None
+    received_at = datetime.utcnow()
+    reported_at = heartbeat.reported_at
+    if reported_at is not None and reported_at.tzinfo is not None:
+        reported_at = reported_at.astimezone(timezone.utc).replace(tzinfo=None)
     node.agent_version = heartbeat.agent_version
-    node.last_heartbeat_at = datetime.utcnow()
+    node.last_heartbeat_at = received_at
+    node.last_report_sequence = heartbeat.report_sequence or node.last_report_sequence
+    node.last_agent_reported_at = reported_at or received_at
     node.observed_role = heartbeat.observed_role
     node.observed_generation = heartbeat.observed_generation
     node.vip_owned = heartbeat.vip_owned
-    node.dhcp_running = heartbeat.dhcp_running
-    node.dhcp_configured = heartbeat.dhcp_configured
-    node.dhcp_listener_active = heartbeat.dhcp_listener_active
-    node.ftl_active = heartbeat.ftl_active
+    observation_status = heartbeat.dhcp_observation_status
+    if observation_status is None:
+        observation_status = (
+            "FRESH"
+            if heartbeat.dhcp_configured is not None
+            and heartbeat.dhcp_listener_active is not None
+            and heartbeat.ftl_active is not None
+            else "UNKNOWN"
+        )
+    runtime_state = heartbeat.dhcp_runtime_state
+    if runtime_state is None and observation_status == "FRESH":
+        runtime_state = "RUNNING" if heartbeat.dhcp_running else "STOPPED"
+    node.dhcp_observation_status = observation_status
+    node.dhcp_runtime_state = runtime_state or "UNKNOWN"
+    observed_at = heartbeat.dhcp_observed_at
+    if observed_at is not None and observed_at.tzinfo is not None:
+        observed_at = observed_at.astimezone(timezone.utc).replace(tzinfo=None)
+    if observed_at is not None and abs((received_at - observed_at).total_seconds()) > REQUEST_WINDOW_SECONDS:
+        # The signed request time is already bounded. Do not let a badly
+        # configured agent clock make runtime evidence appear indefinitely
+        # fresh or predate a newer accepted report.
+        observed_at = received_at
+    node.dhcp_observed_at = observed_at or received_at
+    if observation_status == "FRESH":
+        node.dhcp_configured = heartbeat.dhcp_configured
+        node.dhcp_listener_active = heartbeat.dhcp_listener_active
+        node.ftl_active = heartbeat.ftl_active
+        node.dhcp_running = node.dhcp_runtime_state == "RUNNING"
+    else:
+        # Preserve the last known boolean for backwards-compatible history,
+        # while the explicit observation status prevents it being used as
+        # current runtime truth.
+        node.dhcp_configured = None
+        node.dhcp_listener_active = None
+        node.ftl_active = None
     node.dns_healthy = heartbeat.dns_healthy
     node.peer_reachable = heartbeat.peer_reachable
     icmp_probe_status = heartbeat.peer_icmp_probe_status
@@ -274,10 +317,11 @@ def reconcile_vip_ownership(db: Session, cluster: HACluster, reporting_node: HAN
     if cluster.keepalived_status != "DEPLOYED" or any(node.keepalived_status != "DEPLOYED" for node in cluster.nodes):
         return
     now = datetime.utcnow()
+    topology = reconcile_topology(cluster, now=now)
     previous_active_id = cluster.current_active_node_id
     previous_status = cluster.status
-    current_nodes = [node for node in cluster.nodes if _heartbeat_is_fresh(node, now)]
-    owners = [node for node in current_nodes if node.vip_owned]
+    current_nodes = [node for node in cluster.nodes if node.id in topology.fresh_node_ids]
+    owners = [node for node in cluster.nodes if node.id in topology.vip_owner_ids]
     current = owners[0] if len(owners) == 1 else None
     previous_owner = next((node for node in owners if node.id == previous_active_id), None)
     transition_pending = bool(
@@ -298,17 +342,7 @@ def reconcile_vip_ownership(db: Session, cluster: HACluster, reporting_node: HAN
         and all(node.dns_healthy is True for node in current_nodes)
         and all(node.keepalived_runtime_state == "RUNNING" for node in current_nodes)
         and all(node.config_generation >= cluster.keepalived_generation for node in cluster.nodes)
-        and (
-            not pihole_manages_dhcp(cluster)
-            or (
-                len([node for node in current_nodes if node.dhcp_running]) == 0
-                or (
-                    len([node for node in current_nodes if node.dhcp_running]) == 1
-                    and current is not None
-                    and current.dhcp_running is True
-                )
-            )
-        )
+        and topology.topology_safe
     )
     if len(owners) == 1 and fully_healthy:
         cluster.status = "HEALTHY"
@@ -344,8 +378,8 @@ def reconcile_vip_ownership(db: Session, cluster: HACluster, reporting_node: HAN
         dhcp_managed = pihole_manages_dhcp(cluster)
         current_peers = [peer for peer in peers if _heartbeat_is_fresh(peer, now)]
         safe_dhcp = not dhcp_managed or (
-            current.dhcp_running
-            and all(not peer.dhcp_running for peer in current_peers)
+            dhcp_observation(current, now).active
+            and all(dhcp_observation(peer, now).released for peer in current_peers)
             and (len(current_peers) == len(peers) or completed is not None)
         )
         if current.dns_healthy and safe_dhcp:
@@ -400,7 +434,7 @@ def _adopt_verified_automatic_owner(db: Session, node: HANode, event: HAAgentEve
     ):
         return
     dhcp_managed = pihole_manages_dhcp(cluster)
-    if dhcp_managed and node.dhcp_running is not True:
+    if dhcp_managed and not dhcp_observation(node, datetime.utcnow()).active:
         return
     previous_active_id = cluster.current_active_node_id
     for peer in cluster.nodes:

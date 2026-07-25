@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+import json
 
 import pytest
 from sqlalchemy import create_engine, event
@@ -67,6 +68,12 @@ def pair(db: Session, *, split: bool = False):
         observed_generation=4,
         vip_owned=not split,
         dhcp_running=True,
+        dhcp_configured=True,
+        dhcp_listener_active=True,
+        ftl_active=True,
+        dhcp_runtime_state="RUNNING",
+        dhcp_observation_status="FRESH",
+        dhcp_observed_at=now,
         dns_healthy=True,
         keepalived_status="DEPLOYED",
         keepalived_runtime_state="RUNNING",
@@ -87,6 +94,12 @@ def pair(db: Session, *, split: bool = False):
         observed_generation=4,
         vip_owned=split,
         dhcp_running=False,
+        dhcp_configured=False,
+        dhcp_listener_active=False,
+        ftl_active=True,
+        dhcp_runtime_state="STOPPED",
+        dhcp_observation_status="FRESH",
+        dhcp_observed_at=now,
         dns_healthy=True,
         keepalived_status="DEPLOYED",
         keepalived_runtime_state="RUNNING",
@@ -119,6 +132,7 @@ def fresh_after(run: HAMaintenanceRun, *nodes: HANode):
     timestamp = run.started_at + timedelta(seconds=1)
     for node in nodes:
         node.last_heartbeat_at = timestamp
+        node.dhcp_observed_at = timestamp
 
 
 def fake_backup(db: Session, run: HAMaintenanceRun) -> HASyncRun:
@@ -154,6 +168,28 @@ def test_healthy_cluster_reconciliation_is_idempotent_and_moves_no_service():
         reconcile_cluster_state(db, second_run)
         assert second_run.status == "SUCCEEDED"
         assert cluster.current_active_node_id == first.id
+
+
+def test_reinitialisation_repairs_metadata_without_moving_an_already_correct_topology():
+    with database() as db:
+        user, cluster, first, second = pair(db)
+        cluster.current_active_node_id = second.id
+        cluster.authoritative_node_id = second.id
+        first.role = first.desired_role = "STANDBY"
+        second.role = second.desired_role = "ACTIVE"
+        db.commit()
+        before = (first.vip_owned, first.dhcp_running, second.vip_owned, second.dhcp_running)
+
+        run = start_reinitialisation(db, cluster, user, desired_active=first, authority=first, acknowledged=True)
+        fresh_after(run, first, second)
+        advance_reinitialisation(db, run)
+
+        assert run.status == "SUCCEEDED"
+        assert json.loads(run.result_json)["service_movement_performed"] is False
+        assert before == (first.vip_owned, first.dhcp_running, second.vip_owned, second.dhcp_running)
+        assert cluster.current_active_node_id == first.id
+        assert first.role == first.desired_role == "ACTIVE"
+        assert second.role == second.desired_role == "STANDBY"
 
 
 def test_reconciliation_clears_stale_recovery_metadata_without_service_move():
@@ -249,6 +285,7 @@ def complete_runtime(db, run, target, standby):
         node.config_generation = run.cluster.keepalived_generation
         node.observed_generation = run.cluster.role_generation
         node.last_heartbeat_at = run.phase_started_at + timedelta(seconds=1)
+        node.dhcp_observed_at = node.last_heartbeat_at
     db.commit()
     advance_reinitialisation(db, run)
     if run.phase == "PROMOTING_ACTIVE":
@@ -262,10 +299,20 @@ def complete_runtime(db, run, target, standby):
             status="APPLIED",
             message="started",
         )
+        target.dhcp_running = target.dhcp_configured = target.dhcp_listener_active = target.ftl_active = True
+        target.dhcp_runtime_state = "RUNNING"
+        target.dhcp_observation_status = "FRESH"
     for node in (target, standby):
         node.last_heartbeat_at = run.phase_started_at + timedelta(seconds=1)
+        node.dhcp_observed_at = node.last_heartbeat_at
     db.commit()
     advance_reinitialisation(db, run)
+    if run.phase == "VERIFYING":
+        for node in (target, standby):
+            node.last_heartbeat_at = run.phase_started_at + timedelta(seconds=1)
+            node.dhcp_observed_at = node.last_heartbeat_at
+        db.commit()
+        advance_reinitialisation(db, run)
 
 
 def test_reinitialise_can_select_first_node_and_preserves_history(monkeypatch):
@@ -298,6 +345,12 @@ def test_reinitialise_can_select_second_node_without_hardcoded_primary(monkeypat
             status="APPLIED",
             message="stopped",
         )
+        first.dhcp_running = first.dhcp_configured = first.dhcp_listener_active = False
+        first.dhcp_runtime_state = "STOPPED"
+        first.dhcp_observation_status = "FRESH"
+        first.dhcp_observed_at = datetime.utcnow()
+        first.last_heartbeat_at = datetime.utcnow()
+        advance_reinitialisation(db, run)
         complete_runtime(db, run, second, first)
         assert run.status == "SUCCEEDED"
         assert second.vip_owned and second.dhcp_running
@@ -339,8 +392,12 @@ def test_failed_standby_dhcp_stop_waits_for_observed_release_and_never_promotes_
         first.dhcp_running = False
         first.dhcp_configured = False
         first.dhcp_listener_active = False
+        first.dhcp_runtime_state = "STOPPED"
+        first.dhcp_observation_status = "FRESH"
         first.last_heartbeat_at = run.phase_started_at + timedelta(seconds=1)
+        first.dhcp_observed_at = first.last_heartbeat_at
         second.last_heartbeat_at = run.phase_started_at + timedelta(seconds=1)
+        second.dhcp_observed_at = second.last_heartbeat_at
         db.commit()
         advance_reinitialisation(db, run)
 

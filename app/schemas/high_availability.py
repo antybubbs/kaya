@@ -17,6 +17,8 @@ class HAAgentRegister(HAAgentMessage):
 
 
 class HAAgentHeartbeat(HAAgentMessage):
+    report_sequence: int = Field(default=0, ge=0, le=9_223_372_036_854_775_807)
+    reported_at: datetime | None = None
     observed_role: str = Field(pattern="^(ACTIVE|STANDBY|FAULT|UNKNOWN)$")
     observed_generation: int = Field(ge=0)
     vip_owned: bool
@@ -24,6 +26,9 @@ class HAAgentHeartbeat(HAAgentMessage):
     dhcp_configured: bool | None = None
     dhcp_listener_active: bool | None = None
     ftl_active: bool | None = None
+    dhcp_runtime_state: str | None = Field(default=None, pattern="^(RUNNING|STOPPED|UNKNOWN)$")
+    dhcp_observation_status: str | None = Field(default=None, pattern="^(FRESH|UNAVAILABLE|UNKNOWN)$")
+    dhcp_observed_at: datetime | None = None
     dns_healthy: bool
     peer_reachable: bool | None = None
     peer_icmp_probe_status: str | None = Field(default=None, pattern="^(AVAILABLE|NO_REPLY|UNAVAILABLE)$")

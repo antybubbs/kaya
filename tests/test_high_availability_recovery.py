@@ -56,13 +56,19 @@ def recovered_pair(db: Session, now: datetime):
         observed_generation=3,
         vip_owned=False,
         dhcp_running=False,
+        dhcp_configured=False,
+        dhcp_listener_active=False,
+        ftl_active=True,
+        dhcp_runtime_state="STOPPED",
+        dhcp_observation_status="FRESH",
+        dhcp_observed_at=now,
         dns_healthy=True,
         peer_reachable=True,
         keepalived_status="DEPLOYED",
         keepalived_runtime_state="RUNNING",
         config_generation=7,
         lease_generation=11,
-        agent_version="0.1.5",
+        agent_version="0.2.7",
         recovery_state="OFFLINE",
     )
     active = HANode(
@@ -77,13 +83,19 @@ def recovered_pair(db: Session, now: datetime):
         observed_generation=3,
         vip_owned=True,
         dhcp_running=True,
+        dhcp_configured=True,
+        dhcp_listener_active=True,
+        ftl_active=True,
+        dhcp_runtime_state="RUNNING",
+        dhcp_observation_status="FRESH",
+        dhcp_observed_at=now,
         dns_healthy=True,
         peer_reachable=True,
         keepalived_status="DEPLOYED",
         keepalived_runtime_state="RUNNING",
         config_generation=7,
         lease_generation=11,
-        agent_version="0.1.5",
+        agent_version="0.2.7",
         last_heartbeat_at=now,
     )
     db.add_all([preferred, active])
@@ -142,8 +154,8 @@ def test_recovered_node_advances_only_after_sync_and_stability():
         )
         db.commit()
         assert evaluate_recovery(db, cluster, now=now + timedelta(seconds=2))[recovered.id].state == "VERIFYING"
-        recovered.last_heartbeat_at = now + timedelta(seconds=63)
-        active.last_heartbeat_at = now + timedelta(seconds=63)
+        recovered.last_heartbeat_at = recovered.dhcp_observed_at = now + timedelta(seconds=63)
+        active.last_heartbeat_at = active.dhcp_observed_at = now + timedelta(seconds=63)
         db.commit()
         ready = evaluate_recovery(db, cluster, now=now + timedelta(seconds=63))[recovered.id]
         assert ready.state == "STANDBY_READY"

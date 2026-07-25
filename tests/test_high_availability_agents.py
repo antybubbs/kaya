@@ -19,6 +19,7 @@ from app.models.models import HAAgentCredential, HAAgentRequest, HACluster, HAEv
 from app.schemas.high_availability import HAAgentEventItem, HAAgentHeartbeat, HAAgentRegister
 from app.services.ha_agents import HAAgentError, authenticate_agent_request, create_bootstrap_token, desired_state, ingest_events, reconcile_vip_ownership, record_heartbeat, register_agent, revoke_agent
 from app.services.ha_clusters import soft_delete_cluster
+from app.services.ha_topology import reconcile_topology
 from ha_agent.kaya_ha_agent import ICMP_AVAILABLE, ICMP_NO_REPLY, ICMP_UNAVAILABLE, State, probe_icmp, reconcile_desired
 
 
@@ -151,6 +152,105 @@ def test_heartbeat_tracks_divergence_and_desired_state_has_no_commands():
         assert state["allowed_actions"] == []
 
 
+def test_unavailable_dhcp_observation_does_not_become_stopped():
+    with database() as db:
+        _, primary, _ = cluster_with_nodes(db)
+        primary.dhcp_running = True
+        primary.dhcp_configured = True
+        primary.dhcp_listener_active = True
+        primary.ftl_active = True
+        primary.dhcp_runtime_state = "RUNNING"
+        primary.dhcp_observation_status = "FRESH"
+        db.commit()
+
+        record_heartbeat(
+            db,
+            primary,
+            HAAgentHeartbeat(
+                    report_sequence=1,
+                    observed_role="ACTIVE",
+                    observed_generation=0,
+                vip_owned=True,
+                dhcp_running=False,
+                dhcp_runtime_state="UNKNOWN",
+                dhcp_observation_status="UNAVAILABLE",
+                dns_healthy=True,
+                agent_version="0.2.7",
+            ),
+        )
+
+        assert primary.dhcp_running is True
+        assert primary.dhcp_runtime_state == "UNKNOWN"
+        assert primary.dhcp_observation_status == "UNAVAILABLE"
+        assert primary.dhcp_configured is None
+        assert primary.dhcp_listener_active is None
+
+
+def test_out_of_order_heartbeat_cannot_replace_newer_runtime_truth():
+    with database() as db:
+        _, primary, _ = cluster_with_nodes(db)
+        current = HAAgentHeartbeat(
+            report_sequence=2,
+            observed_role="ACTIVE",
+            observed_generation=0,
+            vip_owned=True,
+            dhcp_running=True,
+            dhcp_configured=True,
+            dhcp_listener_active=True,
+            ftl_active=True,
+            dhcp_runtime_state="RUNNING",
+            dhcp_observation_status="FRESH",
+            dns_healthy=True,
+            agent_version="0.2.7",
+        )
+        stale = HAAgentHeartbeat(
+            report_sequence=1,
+            observed_role="STANDBY",
+            observed_generation=0,
+            vip_owned=False,
+            dhcp_running=False,
+            dhcp_configured=False,
+            dhcp_listener_active=False,
+            ftl_active=True,
+            dhcp_runtime_state="STOPPED",
+            dhcp_observation_status="FRESH",
+            dns_healthy=False,
+            agent_version="0.2.7",
+        )
+
+        record_heartbeat(db, primary, current)
+        accepted_at = primary.last_heartbeat_at
+        record_heartbeat(db, primary, stale)
+
+        assert primary.last_report_sequence == 2
+        assert primary.last_heartbeat_at == accepted_at
+        assert primary.vip_owned is True
+        assert primary.dhcp_runtime_state == "RUNNING"
+        assert primary.dns_healthy is True
+
+
+def test_hard_peer_failure_keeps_service_health_separate_from_redundancy():
+    with database() as db:
+        cluster, primary, standby = cluster_with_nodes(db)
+        cluster.deployment_mode = "DNS_DHCP"
+        now = datetime.utcnow()
+        primary.last_heartbeat_at = primary.dhcp_observed_at = now
+        primary.vip_owned = True
+        primary.dns_healthy = True
+        primary.dhcp_running = primary.dhcp_configured = primary.dhcp_listener_active = primary.ftl_active = True
+        primary.dhcp_runtime_state = "RUNNING"
+        primary.dhcp_observation_status = "FRESH"
+        standby.last_heartbeat_at = standby.dhcp_observed_at = now - timedelta(minutes=2)
+        standby.vip_owned = False
+        db.commit()
+
+        topology = reconcile_topology(cluster, now=now)
+
+        assert topology.service_availability == "HEALTHY"
+        assert topology.redundancy_state == "REDUCED"
+        assert topology.telemetry_state == "DEGRADED"
+
+
 def test_icmp_transition_is_informational_and_does_not_degrade_cluster():
     with database() as db:
         cluster, primary, standby = cluster_with_nodes(db)
@@ -208,7 +308,7 @@ def test_desired_state_supplies_offline_failover_safety_context():
         primary.management_host = "192.0.2.20"
         standby.management_host = "192.0.2.21"
         standby.network_interface = "eth0"
-        primary.agent_version = standby.agent_version = "0.2.2"
+        primary.agent_version = standby.agent_version = "0.2.7"
         db.commit()
         state = desired_state(standby)
         assert state["automatic_failover"] is True
@@ -232,8 +332,8 @@ def test_desired_state_keeps_automatic_failover_off_during_rolling_agent_update(
     with database() as db:
         cluster, primary, standby = cluster_with_nodes(db)
         cluster.automatic_failover_enabled = True
-        primary.agent_version = "0.2.2"
-        standby.agent_version = "0.2.1"
+        primary.agent_version = "0.2.7"
+        standby.agent_version = "0.2.6"
         db.commit()
 
         assert desired_state(primary)["automatic_failover"] is False
@@ -244,8 +344,8 @@ def test_non_safety_agent_update_does_not_disable_automatic_failover():
     with database() as db:
         cluster, primary, standby = cluster_with_nodes(db)
         cluster.automatic_failover_enabled = True
-        primary.agent_version = "0.2.2"
-        standby.agent_version = "0.2.3"
+        primary.agent_version = "0.2.7"
+        standby.agent_version = "0.2.8"
         db.commit()
 
         assert desired_state(primary)["automatic_failover"] is True
@@ -281,7 +381,7 @@ def test_verified_automatic_failover_event_immediately_adopts_the_surviving_owne
         primary.vip_owned = True
         db.commit()
 
-        record_heartbeat(db, standby, HAAgentHeartbeat(observed_role="ACTIVE", observed_generation=8, vip_owned=True, dhcp_running=True, dns_healthy=True, peer_reachable=False, lease_generation=0, config_generation=8, agent_version="0.2.2", keepalived_runtime_state="RUNNING"))
+        record_heartbeat(db, standby, HAAgentHeartbeat(observed_role="ACTIVE", observed_generation=8, vip_owned=True, dhcp_running=True, dhcp_configured=True, dhcp_listener_active=True, ftl_active=True, dhcp_runtime_state="RUNNING", dhcp_observation_status="FRESH", dns_healthy=True, peer_reachable=False, lease_generation=0, config_generation=8, agent_version="0.2.7", keepalived_runtime_state="RUNNING"))
         assert cluster.status == "DEGRADED"
         assert db.query(HAEvent).filter_by(event_type="ownership_transition_pending", severity="warning").one()
         assert db.query(HAEvent).filter_by(event_type="split_brain_detected").count() == 0
@@ -370,6 +470,12 @@ def test_completed_managed_failover_adopts_active_node_despite_stale_peer_dhcp_c
             node.dns_healthy = True
             node.vip_owned = True
             node.dhcp_running = True
+            node.dhcp_configured = True
+            node.dhcp_listener_active = True
+            node.ftl_active = True
+            node.dhcp_runtime_state = "RUNNING"
+            node.dhcp_observation_status = "FRESH"
+            node.dhcp_observed_at = datetime.utcnow()
         primary.last_heartbeat_at = datetime.utcnow() - timedelta(minutes=6)
         standby.last_heartbeat_at = datetime.utcnow()
         standby.observed_role = "ACTIVE"

@@ -373,6 +373,7 @@ def cluster_detail_context(request: Request, user, db: Session, cluster: HAClust
     failback_recovery = recovery.get(preferred.id) if preferred and active and preferred.id != active.id else None
     advertisement_states = cached_dns_advertisement(cluster) if pihole_manages_dhcp(cluster) else []
     active_advertisement = next((state for state in advertisement_states if active and state.node_id == active.id), None)
+    latest_transition = latest_failover(cluster)
     return ha_context(
         request,
         user,
@@ -380,7 +381,8 @@ def cluster_detail_context(request: Request, user, db: Session, cluster: HAClust
         cluster=cluster,
         cluster_section="overview",
         failover_readiness=readiness,
-        failover_run=latest_failover(cluster),
+        failover_run=latest_transition,
+        failover_state=failover_status(latest_transition),
         automatic_blockers=automatic_failover_blockers(cluster),
         sync_summary=sync_operational_summary(db, cluster),
         recovery=recovery,
@@ -753,6 +755,9 @@ def cluster_live_status(public_id: str, db: Session = Depends(get_db), user=Depe
             "last_heartbeat_at": node.last_heartbeat_at.isoformat() + "Z" if node.last_heartbeat_at else None,
             "heartbeat_current": node in current_nodes,
             "dns_healthy": node.dns_healthy, "dhcp_running": node.dhcp_running,
+            "dhcp_runtime_state": node.dhcp_runtime_state,
+            "dhcp_observation_status": node.dhcp_observation_status,
+            "dhcp_observed_at": node.dhcp_observed_at.isoformat() + "Z" if node.dhcp_observed_at else None,
             "dhcp_configured": node.dhcp_configured,
             "dhcp_listener_active": node.dhcp_listener_active,
             "ftl_active": node.ftl_active,
