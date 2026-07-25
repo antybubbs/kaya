@@ -30,6 +30,7 @@ from app.services.ha_maintenance import (
     start_reinitialisation,
 )
 from app.services.ha_watchdog import reconcile_cluster as watchdog_reconcile_cluster
+from app.services.ha_topology import reconcile_topology
 
 
 def database():
@@ -518,11 +519,111 @@ def test_watchdog_automatically_repairs_active_configuration_drift_without_movin
         assert second.dhcp_configured is False and second.dhcp_listener_active is False
         assert cluster.maintenance_mode is False
         assert cluster.status == "HEALTHY"
+        final_topology = reconcile_topology(cluster)
+        assert final_topology.service_availability == "HEALTHY"
+        assert final_topology.configuration_state == "CONSISTENT"
+        assert final_topology.topology_safe is True
         completed_status = maintenance_status(run)
         assert completed_status["progress_percent"] == 100
         assert completed_status["visible"] is True
         assert completed_status["message"] == "HA configuration repaired"
         assert "Network service was not interrupted" in completed_status["detail"]
+
+        watchdog_reconcile_cluster(db, cluster)
+        assert db.query(HAMaintenanceRun).filter(HAMaintenanceRun.operation == "DHCP_SELF_HEAL").count() == 1
+
+
+def _failed_active_dhcp_self_heal(db, cluster, first):
+    watchdog_reconcile_cluster(db, cluster)
+    run = active_maintenance(cluster)
+    action = desired_maintenance_action(cluster, first)
+    record_maintenance_action_result(
+        db,
+        first,
+        action_type=action["action_type"],
+        generation=action["generation"],
+        checksum=action["checksum"],
+        status="FAILED",
+        message="Synthetic bounded repair failure.",
+    )
+    run.phase_started_at = datetime.utcnow() - timedelta(seconds=46)
+    db.commit()
+    advance_dhcp_self_heal(db, run)
+    return run
+
+
+def test_failed_self_heal_latches_and_identical_heartbeats_do_not_retry():
+    with database() as db:
+        user, cluster, first, second = pair(db)
+        first.dhcp_configured = False
+        db.commit()
+        run = _failed_active_dhcp_self_heal(db, cluster, first)
+
+        assert run.status == "FAILED_SAFE"
+        assert json.loads(run.result_json)["latch_active"] is True
+        assert maintenance_status(run)["message"] == "Self-heal paused"
+        assert maintenance_status(run)["visible"] is True
+
+        first.last_heartbeat_at = first.dhcp_observed_at = datetime.utcnow()
+        second.last_heartbeat_at = second.dhcp_observed_at = datetime.utcnow()
+        db.commit()
+        watchdog_reconcile_cluster(db, cluster)
+
+        assert db.query(HAMaintenanceRun).filter(HAMaintenanceRun.operation == "DHCP_SELF_HEAL").count() == 1
+        assert active_maintenance(cluster) is None
+
+
+def test_manual_retry_uses_same_controller_for_one_new_bounded_attempt():
+    with database() as db:
+        user, cluster, first, second = pair(db)
+        first.dhcp_configured = False
+        db.commit()
+        failed = _failed_active_dhcp_self_heal(db, cluster, first)
+
+        retried = start_dhcp_self_heal(db, cluster, force_retry=True, requested_by=user)
+
+        assert retried is not None
+        assert retried.requested_by_user_id == user.id
+        assert desired_maintenance_action(cluster, first)["action_type"] == "DHCP_PROMOTE"
+        assert json.loads(failed.result_json)["latch_active"] is False
+        assert json.loads(failed.result_json)["latch_cleared_reason"] == "administrator_retry"
+        assert db.query(HAMaintenanceRun).filter(HAMaintenanceRun.operation == "DHCP_SELF_HEAL").count() == 2
+
+
+def test_material_agent_change_allows_failed_repair_to_be_reconsidered():
+    with database() as db:
+        user, cluster, first, second = pair(db)
+        first.dhcp_configured = False
+        first.agent_version = second.agent_version = "0.2.9"
+        db.commit()
+        failed = _failed_active_dhcp_self_heal(db, cluster, first)
+
+        first.agent_version = "0.2.10"
+        db.commit()
+        watchdog_reconcile_cluster(db, cluster)
+
+        assert active_maintenance(cluster) is not None
+        assert json.loads(failed.result_json)["latch_active"] is False
+        assert json.loads(failed.result_json)["latch_cleared_reason"] == "material_topology_change"
+
+
+def test_independently_resolved_drift_clears_failed_repair_latch():
+    with database() as db:
+        user, cluster, first, second = pair(db)
+        first.dhcp_configured = False
+        db.commit()
+        failed = _failed_active_dhcp_self_heal(db, cluster, first)
+
+        first.dhcp_configured = True
+        first.last_heartbeat_at = first.dhcp_observed_at = datetime.utcnow()
+        second.last_heartbeat_at = second.dhcp_observed_at = datetime.utcnow()
+        db.commit()
+        watchdog_reconcile_cluster(db, cluster)
+
+        assert active_maintenance(cluster) is None
+        assert json.loads(failed.result_json)["latch_active"] is False
+        assert reconcile_topology(cluster).configuration_state == "CONSISTENT"
+        assert maintenance_status(failed)["visible"] is False
 
 
 def test_self_heal_refuses_ambiguous_dual_dhcp_runtime():

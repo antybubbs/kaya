@@ -260,6 +260,8 @@
     if (error) error.textContent = maintenance.error || "";
     const errorPanel = panel.querySelector("[data-ha-maintenance-error-panel]");
     if (errorPanel) errorPanel.hidden = !maintenance.error;
+    const retry = panel.querySelector("[data-ha-maintenance-retry]");
+    if (retry) retry.hidden = !(maintenance.operation === "DHCP_SELF_HEAL" && maintenance.failure_latched === true);
   }
 
   async function refresh() {

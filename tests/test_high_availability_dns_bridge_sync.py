@@ -171,6 +171,24 @@ def test_ha_provider_routes_to_current_owner_and_ignores_offline_cached_owner():
         assert active.config.base_url == "http://two.invalid"
 
 
+def test_ha_provider_uses_canonical_vip_owner_when_cached_active_node_lags():
+    with database() as db:
+        _, cluster, first, second = make_cluster(db)
+        provider = DNSProviderConfig(name="HA", provider_type="pihole", base_url="http://192.0.2.53", ha_cluster_id=cluster.id)
+        db.add(provider)
+        first.last_heartbeat_at = second.last_heartbeat_at = datetime.utcnow()
+        first.vip_owned = False
+        second.vip_owned = True
+        second.dns_healthy = True
+        second.keepalived_runtime_state = "RUNNING"
+        cluster.current_active_node_id = first.id
+        db.commit()
+
+        active = provider_for(provider)._active_provider()
+
+        assert active.config.base_url == "http://two.invalid"
+
+
 def test_ha_collection_reads_queries_from_both_nodes_without_event_id_collisions(monkeypatch):
     with database() as db:
         _, cluster, first, second = make_cluster(db)

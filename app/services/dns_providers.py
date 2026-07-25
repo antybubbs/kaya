@@ -17,6 +17,7 @@ from app.core.performance import external_call
 
 from app.core.security import decrypt_secret
 from app.models.models import DNSProviderConfig
+from app.services.ha_topology import reconcile_topology
 
 
 class DNSProviderError(RuntimeError):
@@ -625,17 +626,11 @@ class HAPiHoleProvider(DNSProvider):
     def _active_provider(self) -> PiHoleProvider:
         cluster = self._cluster()
         now = datetime.utcnow()
-        owners = [
-            node for node in cluster.nodes
-            if node.vip_owned
-            and node.last_heartbeat_at is not None
-            and node.last_heartbeat_at >= now - timedelta(seconds=45)
-            and node.keepalived_runtime_state == "RUNNING"
-            and node.dns_healthy is True
-        ]
-        if len(owners) != 1 or cluster.current_active_node_id != owners[0].id:
+        topology = reconcile_topology(cluster, now=now, freshness_seconds=45)
+        active = next((node for node in cluster.nodes if node.id == topology.active_node_id), None)
+        if active is None or active.keepalived_runtime_state != "RUNNING" or active.dns_healthy is not True:
             raise DNSProviderError("Kaya cannot safely identify one live Pi-hole VIP owner. Check the HA cluster before retrying.")
-        return self._provider_for_node(owners[0], self.config.id)
+        return self._provider_for_node(active, self.config.id)
 
     def _query_providers(self) -> list[tuple[str, PiHoleProvider]]:
         providers = []

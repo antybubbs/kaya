@@ -64,7 +64,6 @@ DHCP_SELF_HEAL_PHASES = (
     "VERIFYING_DHCP_REPAIR",
     "COMPLETE",
 )
-DHCP_SELF_HEAL_COOLDOWN_SECONDS = 300
 # This bounded action and its independent DHCP telemetry were introduced in
 # 0.2.8. Requiring Kaya's latest release here silently disables safe repair
 # during an otherwise supported rolling agent upgrade.
@@ -240,7 +239,83 @@ def _hard_failover_proof(db: Session, cluster: HACluster, owner: HANode, now: da
     return False
 
 
-def start_dhcp_self_heal(db: Session, cluster: HACluster, *, now: datetime | None = None) -> HAMaintenanceRun | None:
+def _result_document(run: HAMaintenanceRun) -> dict[str, Any]:
+    try:
+        result = json.loads(run.result_json or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return result if isinstance(result, dict) else {}
+
+
+def _dhcp_topology_fingerprint(cluster: HACluster, topology, now: datetime) -> str:
+    """Fingerprint meaningful HA evidence, never heartbeat timestamps or counters."""
+    nodes = []
+    for node in sorted(cluster.nodes, key=lambda item: item.id):
+        observation = dhcp_observation(node, now)
+        nodes.append({
+            "node_id": node.public_id,
+            "desired_role": node.desired_role,
+            "observed_role": node.observed_role,
+            "vip_owned": node.vip_owned if node.id in topology.fresh_node_ids else None,
+            "dhcp_state": observation.state,
+            "dhcp_configured": observation.configured,
+            "ftl_active": observation.service_active,
+            "udp67_listening": observation.listening,
+            "dns_healthy": node.dns_healthy if node.id in topology.fresh_node_ids else None,
+            "config_generation": node.config_generation,
+            "agent_version": node.agent_version,
+        })
+    evidence = {
+        "fresh_node_ids": sorted(node.public_id for node in cluster.nodes if node.id in topology.fresh_node_ids),
+        "vip_owner_ids": sorted(node.public_id for node in cluster.nodes if node.id in topology.vip_owner_ids),
+        "dhcp_owner_ids": sorted(node.public_id for node in cluster.nodes if node.id in topology.dhcp_owner_ids),
+        "nodes": nodes,
+    }
+    return hashlib.sha256(json.dumps(evidence, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _clear_changed_dhcp_failure_latches(db: Session, cluster: HACluster, topology_fingerprint: str) -> None:
+    changed = False
+    failed_runs = db.query(HAMaintenanceRun).filter(
+        HAMaintenanceRun.cluster_id == cluster.id,
+        HAMaintenanceRun.operation == "DHCP_SELF_HEAL",
+        HAMaintenanceRun.status == "FAILED_SAFE",
+    ).all()
+    for failed in failed_runs:
+        result = _result_document(failed)
+        if result.get("latch_active") is True and result.get("topology_fingerprint") != topology_fingerprint:
+            result.update({
+                "latch_active": False,
+                "latch_cleared_at": datetime.utcnow().isoformat() + "Z",
+                "latch_cleared_reason": "material_topology_change",
+            })
+            failed.result_json = json.dumps(result, sort_keys=True)
+            changed = True
+    if changed:
+        db.commit()
+
+
+def _matching_dhcp_failure_latch(db: Session, cluster: HACluster, drift_signature: str) -> HAMaintenanceRun | None:
+    failed_runs = db.query(HAMaintenanceRun).filter(
+        HAMaintenanceRun.cluster_id == cluster.id,
+        HAMaintenanceRun.operation == "DHCP_SELF_HEAL",
+        HAMaintenanceRun.status == "FAILED_SAFE",
+    ).order_by(HAMaintenanceRun.created_at.desc()).all()
+    return next((
+        run for run in failed_runs
+        if (result := _result_document(run)).get("latch_active") is True
+        and result.get("drift_signature") == drift_signature
+    ), None)
+
+
+def start_dhcp_self_heal(
+    db: Session,
+    cluster: HACluster,
+    *,
+    now: datetime | None = None,
+    force_retry: bool = False,
+    requested_by: User | None = None,
+) -> HAMaintenanceRun | None:
     """Queue one narrowly-scoped DHCP configuration repair when ownership is certain."""
     current = now or datetime.utcnow()
     if (
@@ -255,19 +330,9 @@ def start_dhcp_self_heal(db: Session, cluster: HACluster, *, now: datetime | Non
     from app.services.ha_failover import active_failover
     if active_failover(cluster):
         return None
-    recent_failure = (
-        db.query(HAMaintenanceRun)
-        .filter(
-            HAMaintenanceRun.cluster_id == cluster.id,
-            HAMaintenanceRun.operation == "DHCP_SELF_HEAL",
-            HAMaintenanceRun.status == "FAILED_SAFE",
-            HAMaintenanceRun.completed_at >= current - timedelta(seconds=DHCP_SELF_HEAL_COOLDOWN_SECONDS),
-        )
-        .first()
-    )
-    if recent_failure:
-        return None
     topology = reconcile_topology(cluster, now=current)
+    topology_fingerprint = _dhcp_topology_fingerprint(cluster, topology, current)
+    _clear_changed_dhcp_failure_latches(db, cluster, topology_fingerprint)
     if (
         len(topology.vip_owner_ids) != 1
         or topology.dhcp_unknown_node_ids
@@ -299,15 +364,42 @@ def start_dhcp_self_heal(db: Session, cluster: HACluster, *, now: datetime | Non
     if repair_node is None:
         return None
 
+    repair_type = "ACTIVE_DHCP_CONFIGURATION_REPAIR" if action_type == "DHCP_PROMOTE" else "STANDBY_DHCP_CONFIGURATION_REPAIR"
+    drift_signature = hashlib.sha256(
+        f"{repair_type}:{repair_node.public_id}:{topology_fingerprint}".encode()
+    ).hexdigest()
+    failed_latch = _matching_dhcp_failure_latch(db, cluster, drift_signature)
+    if failed_latch and not force_retry:
+        return None
+    if failed_latch:
+        failed_result = _result_document(failed_latch)
+        failed_result.update({
+            "latch_active": False,
+            "latch_cleared_at": current.isoformat() + "Z",
+            "latch_cleared_reason": "administrator_retry",
+        })
+        failed_latch.result_json = json.dumps(failed_result, sort_keys=True)
+
+    # Acquire the existing cluster maintenance lock atomically. This prevents
+    # simultaneous signed heartbeats from creating duplicate repair jobs.
+    claimed = db.query(HACluster).filter(
+        HACluster.id == cluster.id,
+        HACluster.maintenance_mode.is_(False),
+    ).update({HACluster.maintenance_mode: True}, synchronize_session=False)
+    if claimed != 1:
+        db.rollback()
+        return None
+    cluster.maintenance_mode = True
+
     cluster.role_generation += 1
     cluster.cluster_generation += 1
-    cluster.maintenance_mode = True
     run = HAMaintenanceRun(
         cluster_id=cluster.id,
         operation="DHCP_SELF_HEAL",
         status="RUNNING",
         phase="REPAIRING_DHCP",
         desired_active_node_id=owner.id,
+        requested_by_user_id=requested_by.id if requested_by else None,
         previous_state_json=json.dumps(_snapshot_state(cluster), sort_keys=True),
         result_json=json.dumps({
             "repair_node_id": repair_node.id,
@@ -316,6 +408,12 @@ def start_dhcp_self_heal(db: Session, cluster: HACluster, *, now: datetime | Non
             "phase_attempts": {"REPAIRING_DHCP": 1},
             "hard_failure_proven": hard_failure_proven,
             "classification": "SAFE_ACTIVE_DHCP_CONFIGURATION_DRIFT" if action_type == "DHCP_PROMOTE" else "SAFE_STANDBY_DHCP_CONFIGURATION_DRIFT",
+            "repair_type": repair_type,
+            "target_node_id": repair_node.public_id,
+            "drift_signature": drift_signature,
+            "topology_fingerprint": topology_fingerprint,
+            "latch_active": False,
+            "automatic": requested_by is None,
             "progress": [
                 "Active node confirmed",
                 "Sole Virtual IP owner confirmed",
@@ -338,19 +436,19 @@ def start_dhcp_self_heal(db: Session, cluster: HACluster, *, now: datetime | Non
         "dhcp_configuration_drift_detected",
         "warning",
         drift_message,
-        {"node_id": repair_node.public_id, "action_type": action_type, "automatic": True},
+        {"node_id": repair_node.public_id, "action_type": action_type, "automatic": requested_by is None},
     )
     db.commit()
     db.refresh(run)
     write_audit(
         db,
-        None,
+        requested_by,
         "started",
         "ha_dhcp_self_heal",
         cluster.public_id,
         detail=f"Queued a bounded DHCP configuration repair for {cluster.name}.",
         severity="warning",
-        metadata={"maintenance_run_id": run.public_id, "node_id": repair_node.public_id, "action_type": action_type},
+        metadata={"maintenance_run_id": run.public_id, "node_id": repair_node.public_id, "action_type": action_type, "automatic": requested_by is None},
     )
     return run
 
@@ -405,10 +503,11 @@ def advance_dhcp_self_heal(db: Session, run: HAMaintenanceRun) -> HAMaintenanceR
         repair_description = "active DHCP configuration restored" if action_type == "DHCP_PROMOTE" else "standby DHCP configuration safely disabled"
         progress.extend(["Fresh signed HA Agent report received", repair_description.capitalize()])
         result.update({"progress": progress[-20:], "service_movement_performed": False, "final_topology_safe": final.topology_safe})
+        result.update({"latch_active": False, "latch_cleared_reason": "repair_succeeded"})
         run.result_json = json.dumps(result, sort_keys=True)
-        _event(db, run, "dhcp_configuration_automatically_repaired", "info", f"Automatic repair completed: {repair_description}. Fresh signed reports verified the result.", {"node_id": repair_node.public_id, "action_type": action_type})
+        _event(db, run, "dhcp_configuration_automatically_repaired", "info", f"Configuration repair completed: {repair_description}. Fresh signed reports verified the result.", {"node_id": repair_node.public_id, "action_type": action_type, "automatic": run.requested_by_user_id is None})
         db.commit()
-        write_audit(db, None, "completed", "ha_dhcp_self_heal", run.cluster.public_id, detail=f"Verified the automatic DHCP configuration repair for {run.cluster.name}.", metadata={"maintenance_run_id": run.public_id, "node_id": repair_node.public_id, "fresh_report_verified": True})
+        write_audit(db, run.requested_by, "completed", "ha_dhcp_self_heal", run.cluster.public_id, detail=f"Verified the DHCP configuration repair for {run.cluster.name}.", metadata={"maintenance_run_id": run.public_id, "node_id": repair_node.public_id, "fresh_report_verified": True, "automatic": run.requested_by_user_id is None})
         return run
     if datetime.utcnow() - run.phase_started_at > timedelta(seconds=45):
         return _fail_dhcp_self_heal(db, run, "DHCP configuration repair did not converge after one bounded attempt. Kaya stopped without changing VIP ownership.")
@@ -423,9 +522,17 @@ def _fail_dhcp_self_heal(db: Session, run: HAMaintenanceRun, message: str) -> HA
     run.completed_at = datetime.utcnow()
     run.cluster.maintenance_mode = False
     run.cluster.status = "DEGRADED"
-    _event(db, run, "dhcp_self_heal_failed_safe", "critical", message[:1000])
+    result = _result_document(run)
+    result.update({
+        "latch_active": True,
+        "attempted_at": datetime.utcnow().isoformat() + "Z",
+        "result": "FAILED_SAFE",
+        "failure_reason": message[:1000],
+    })
+    run.result_json = json.dumps(result, sort_keys=True)
+    _event(db, run, "dhcp_self_heal_failed_safe", "warning", message[:1000])
     db.commit()
-    write_audit(db, None, "fail_safe", "ha_dhcp_self_heal", run.cluster.public_id, detail=message[:1000], severity="warning", metadata={"maintenance_run_id": run.public_id, "cooldown_seconds": DHCP_SELF_HEAL_COOLDOWN_SECONDS})
+    write_audit(db, run.requested_by, "fail_safe", "ha_dhcp_self_heal", run.cluster.public_id, detail=message[:1000], severity="warning", metadata={"maintenance_run_id": run.public_id, "failure_latched": True, "drift_signature": result.get("drift_signature", "")[:16]})
     return run
 
 
@@ -1116,7 +1223,11 @@ def maintenance_status(run: HAMaintenanceRun | None) -> dict[str, Any] | None:
         and run.completed_at
         and datetime.utcnow() - run.completed_at <= timedelta(seconds=15)
     )
-    if run.operation == "DHCP_SELF_HEAL" and run.status == "SUCCEEDED":
+    failure_latched = result.get("latch_active") is True
+    if run.operation == "DHCP_SELF_HEAL" and run.status == "FAILED_SAFE":
+        display_message = "Self-heal paused"
+        detail = "Kaya stopped without moving Virtual IP ownership. Automatic retries are paused until the topology changes or an administrator explicitly retries this repair."
+    elif run.operation == "DHCP_SELF_HEAL" and run.status == "SUCCEEDED":
         display_message = "HA configuration repaired"
         detail = (
             f"Kaya corrected DHCP configuration drift on {repair_node.display_name}. Network service was not interrupted."
@@ -1141,6 +1252,7 @@ def maintenance_status(run: HAMaintenanceRun | None) -> dict[str, Any] | None:
         "status": run.status,
         "phase": run.phase,
         "error": run.error_redacted,
+        "failure_latched": failure_latched,
         "desired_active_node_id": run.desired_active_node.public_id if run.desired_active_node else None,
         "desired_active_name": run.desired_active_node.display_name if run.desired_active_node else None,
         "authoritative_name": run.authoritative_node.display_name if run.authoritative_node else None,
@@ -1150,7 +1262,7 @@ def maintenance_status(run: HAMaintenanceRun | None) -> dict[str, Any] | None:
         "completed_at": run.completed_at.isoformat() + "Z" if run.completed_at else None,
         "message": display_message,
         "detail": detail,
-        "visible": run.status in {"RUNNING", "FAILED_SAFE"} or recently_completed,
+        "visible": run.status == "RUNNING" or (run.status == "FAILED_SAFE" and failure_latched) or recently_completed,
         "elapsed_seconds": elapsed,
         "phase_attempt": int(attempts.get(run.phase, 0)),
         "progress_percent": 100 if run.status == "SUCCEEDED" else round((current_index / max(1, len(phases) - 1)) * 100),

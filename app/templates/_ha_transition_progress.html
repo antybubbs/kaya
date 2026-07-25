@@ -44,4 +44,14 @@
     {% if maintenance_visible %}{% for step in maintenance_state.steps %}<li class="is-{{ step.state }}">{{ step.label }}</li>{% endfor %}{% endif %}
   </ol>
   <div class="alert" data-ha-maintenance-error-panel{% if not maintenance_visible or not maintenance_state.error %} hidden{% endif %}><strong>Repair needs attention</strong><span data-ha-maintenance-error>{{ maintenance_state.error if maintenance_visible else '' }}</span></div>
+  {% if user.role == 'admin' %}
+  <div class="ha-blocker-actions" data-ha-maintenance-retry{% if not maintenance_visible or maintenance_state.operation != 'DHCP_SELF_HEAL' or not maintenance_state.failure_latched %} hidden{% endif %}>
+    <form method="post" action="/high-availability/clusters/{{ cluster.public_id }}/maintenance/reconcile">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="repair_action" value="retry_dhcp_self_heal">
+      <button class="button secondary" type="submit">Retry repair</button>
+    </form>
+    <a class="button secondary" href="/high-availability/clusters/{{ cluster.public_id }}/maintenance">View diagnostics</a>
+  </div>
+  {% endif %}
 </section>

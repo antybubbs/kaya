@@ -43,6 +43,7 @@ from app.services.ha_maintenance import (
     latest_maintenance,
     maintenance_status,
     reconcile_cluster_state,
+    start_dhcp_self_heal,
     start_reconciliation,
     start_reinitialisation,
 )
@@ -503,9 +504,17 @@ async def reconcile_cluster(public_id: str, request: Request, db: Session = Depe
     cluster = cluster_or_404(db, public_id)
     form = await request.form()
     validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    repair_action = str(form.get("repair_action") or "reconcile")
+    if repair_action not in {"reconcile", "retry_dhcp_self_heal"}:
+        raise HTTPException(status_code=400, detail="Invalid reconciliation action")
     try:
-        run = start_reconciliation(db, cluster, user)
-        reconcile_cluster_state(db, run)
+        if repair_action == "retry_dhcp_self_heal":
+            run = start_dhcp_self_heal(db, cluster, force_retry=True, requested_by=user)
+            if run is None:
+                raise HAMaintenanceError("The current signed topology is not safe for an automatic DHCP configuration repair.")
+        else:
+            run = start_reconciliation(db, cluster, user)
+            reconcile_cluster_state(db, run)
     except HAMaintenanceError as exc:
         db.rollback()
         cluster = cluster_or_404(db, public_id)
@@ -518,11 +527,11 @@ async def reconcile_cluster(public_id: str, request: Request, db: Session = Depe
     write_audit(
         db,
         user,
-        "started",
-        "ha_cluster_reconciliation",
+        "retried" if repair_action == "retry_dhcp_self_heal" else "started",
+        "ha_dhcp_self_heal" if repair_action == "retry_dhcp_self_heal" else "ha_cluster_reconciliation",
         entity_id=cluster.public_id,
-        detail=f"Started fresh-state reconciliation for {cluster.name}.",
-        metadata={"service_movement_authorised": False, "history_preserved": True},
+        detail=(f"Explicitly retried the latched DHCP configuration repair for {cluster.name}." if repair_action == "retry_dhcp_self_heal" else f"Started fresh-state reconciliation for {cluster.name}."),
+        metadata={"service_movement_authorised": False, "history_preserved": True, "maintenance_run_id": run.public_id},
     )
     return RedirectResponse(f"/high-availability/clusters/{cluster.public_id}/maintenance?reconcile=started", status_code=303)
 
@@ -684,7 +693,8 @@ def cluster_live_status(public_id: str, db: Session = Depends(get_db), user=Depe
     reconcile_vip_ownership(db, cluster)
     now = datetime.utcnow()
     current_nodes = [node for node in cluster.nodes if node.last_heartbeat_at and node.last_heartbeat_at >= now - timedelta(seconds=HEARTBEAT_FRESH_SECONDS)]
-    active_node = next((node for node in cluster.nodes if node.id == cluster.current_active_node_id), None)
+    consistency = inspect_cluster(cluster, now=now)
+    active_node = next((node for node in cluster.nodes if consistency.vip_owner_ids == (node.id,)), None)
     readiness = failover_readiness(cluster)
     recovery = recovery_snapshot(db, cluster, now=now)
     preferred = preferred_node(cluster)
@@ -707,7 +717,6 @@ def cluster_live_status(public_id: str, db: Session = Depends(get_db), user=Depe
     unacknowledged_alerts = db.query(HAEvent.id).filter(HAEvent.cluster_id == cluster.id, HAEvent.severity.in_(["warning", "error", "critical"]), HAEvent.acknowledged_at.is_(None)).count()
     deployment_items = deployment_blockers(cluster, router_id=cluster.vrrp_router_id or 51)
     sync_summary = sync_operational_summary(db, cluster)
-    consistency = inspect_cluster(cluster, now=now)
     advertisement_states = cached_dns_advertisement(cluster) if pihole_manages_dhcp(cluster) else []
     active_advertisement = next((state for state in advertisement_states if active_node and state.node_id == active_node.id), None)
     sync_json = {**sync_summary}
@@ -770,7 +779,7 @@ def cluster_live_status(public_id: str, db: Session = Depends(get_db), user=Depe
             "active_node": active_node.display_name if active_node else None,
             "preferred_node": preferred.display_name if preferred else None,
             "standby_node": readiness.target.display_name if readiness.target else None,
-            "vip_owner_count": len([node for node in current_nodes if node.vip_owned]),
+            "vip_owner_count": len(consistency.vip_owner_ids),
             "last_failover_at": cluster.last_failover_at.isoformat() + "Z" if cluster.last_failover_at else None,
             "unacknowledged_alerts": unacknowledged_alerts,
             "service_availability": consistency.service_availability,

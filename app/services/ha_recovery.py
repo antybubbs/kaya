@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.models.models import HACluster, HAEvent, HAFailoverRun, HANode, HASyncRun
 from app.services.audit import write_audit
-from app.services.ha_topology import dhcp_observation, pihole_manages_dhcp
+from app.services.ha_topology import dhcp_observation, pihole_manages_dhcp, reconcile_topology
 
 
 RECOVERY_HEARTBEAT_SECONDS = 45
@@ -65,10 +65,8 @@ def preferred_node(cluster: HACluster) -> HANode | None:
 
 def current_active_node(cluster: HACluster, now: datetime | None = None) -> HANode | None:
     current = now or datetime.utcnow()
-    owners = [node for node in cluster.nodes if node.vip_owned and _fresh(node, current)]
-    if len(owners) == 1:
-        return owners[0]
-    return next((node for node in cluster.nodes if node.id == cluster.current_active_node_id and _fresh(node, current)), None)
+    topology = reconcile_topology(cluster, now=current, freshness_seconds=RECOVERY_HEARTBEAT_SECONDS)
+    return next((node for node in cluster.nodes if node.id == topology.active_node_id), None)
 
 
 def _latest_sync(db: Session, cluster: HACluster, active: HANode, target: HANode) -> HASyncRun | None:
