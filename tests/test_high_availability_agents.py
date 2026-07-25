@@ -559,6 +559,56 @@ def test_local_event_queue_survives_restart_and_rejects_stale_desired_state(tmp_
     second.db.close()
 
 
+def test_identical_dhcp_repair_desired_state_executes_once_until_result_is_delivered(tmp_path):
+    state = State(tmp_path)
+    calls = []
+    desired = {
+        "cluster_generation": 4,
+        "desired_role": "ACTIVE",
+        "role_generation": 2,
+        "automatic_failover": False,
+        "maintenance_mode": True,
+        "dhcp_managed": True,
+        "automatic_hold_down_seconds": 10,
+        "keepalived": None,
+        "lease_snapshot": None,
+        "failover": {
+            "action_id": "maintenance:fake:dhcp_promote:node",
+            "action_type": "DHCP_PROMOTE",
+            "generation": 2,
+            "checksum": "a" * 64,
+            "automatic": False,
+            "lease_generation": 7,
+            "restore_original": False,
+            "configuration_only": True,
+        },
+    }
+
+    def runner(command):
+        calls.append(command)
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({
+                "status": "applied",
+                "configured": True,
+                "service_active": True,
+                "listening": True,
+                "runtime_state": "RUNNING",
+                "observation_status": "FRESH",
+                "dhcp_running": True,
+            }),
+            stderr="",
+        )
+
+    reconcile_desired(state, desired, helper_runner=runner)
+    reconcile_desired(state, desired, helper_runner=runner)
+
+    assert len(calls) == 1
+    assert state.get("failover_configuration_only") is True
+    assert state.get("pending_failover_action_result")["status"] == "APPLIED"
+    state.db.close()
+
+
 def test_rejected_old_action_result_cannot_starve_failover_proof_or_heartbeats(tmp_path, monkeypatch):
     from ha_agent import failover_runtime, kaya_ha_agent as transport, keepalived_runtime
 

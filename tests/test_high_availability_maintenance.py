@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 import json
+from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, event
@@ -30,6 +31,7 @@ from app.services.ha_maintenance import (
     start_reinitialisation,
 )
 from app.services.ha_watchdog import reconcile_cluster as watchdog_reconcile_cluster
+from app.services.ha_recovery import evaluate_recovery
 from app.services.ha_topology import reconcile_topology
 
 
@@ -73,7 +75,7 @@ def pair(db: Session, *, split: bool = False):
         desired_role="ACTIVE",
         observed_role="STANDBY" if split else "ACTIVE",
         observed_generation=4,
-        agent_version="0.2.10",
+        agent_version="0.2.11",
         vip_owned=not split,
         dhcp_running=True,
         dhcp_configured=True,
@@ -100,7 +102,7 @@ def pair(db: Session, *, split: bool = False):
         desired_role="STANDBY",
         observed_role="ACTIVE" if split else "STANDBY",
         observed_generation=4,
-        agent_version="0.2.10",
+        agent_version="0.2.11",
         vip_owned=split,
         dhcp_running=False,
         dhcp_configured=False,
@@ -249,7 +251,9 @@ def test_split_ownership_is_explicit_and_reconcile_does_not_move_services():
         run = start_reconciliation(db, cluster, user)
         fresh_after(run, first, second)
         reconcile_cluster_state(db, run)
-        assert run.status == "SUCCEEDED"
+        assert run.status == "FAILED_SAFE"
+        assert run.phase == "PAUSED"
+        assert "currently owned by different nodes" in run.error_redacted
         assert first.dhcp_running and not first.vip_owned
         assert second.vip_owned and not second.dhcp_running
         assert "OWNERSHIP_MISMATCH" in {issue.code for issue in inspect_cluster(cluster).issues}
@@ -482,14 +486,28 @@ def test_process_restart_rewinds_incomplete_repair_to_fresh_inspection(monkeypat
 def test_watchdog_automatically_repairs_active_configuration_drift_without_moving_vip():
     with database() as db:
         user, cluster, first, second = pair(db)
-        # A compatible agent must remain eligible during a rolling upgrade;
-        # self-heal must not be silently tied to Kaya's latest patch version.
-        first.agent_version = second.agent_version = "0.2.9"
+        first.agent_version = second.agent_version = "0.2.11"
+        now = datetime.utcnow()
+        second.recovery_state = "STANDBY_READY"
+        second.recovery_started_at = now - timedelta(minutes=3)
+        second.recovery_stable_since = now - timedelta(minutes=2)
+        db.add(HASyncRun(
+            cluster_id=cluster.id,
+            source_node_id=first.id,
+            target_node_id=second.id,
+            status="IN_SYNC",
+            plan_json="{}",
+            completed_at=now - timedelta(minutes=2),
+        ))
         first.dhcp_configured = False
         first.dhcp_running = True
         first.dhcp_listener_active = True
         first.dhcp_runtime_state = "RUNNING"
         db.commit()
+        recovery_events_before = db.query(HAEvent).filter(
+            HAEvent.node_id == second.id,
+            HAEvent.event_type.in_(["node_recovery_synchronising", "node_recovery_verifying", "node_standby_ready"]),
+        ).count()
 
         watchdog_reconcile_cluster(db, cluster)
         run = active_maintenance(cluster)
@@ -499,6 +517,7 @@ def test_watchdog_automatically_repairs_active_configuration_drift_without_movin
         assert run.desired_active_node_id == first.id
         assert desired_maintenance_action(cluster, first)["action_type"] == "DHCP_PROMOTE"
         action = desired_maintenance_action(cluster, first)
+        assert action["configuration_only"] is True
         record_maintenance_action_result(db, first, action_type=action["action_type"], generation=action["generation"], checksum=action["checksum"], status="APPLIED", message="accepted")
         first.dhcp_configured = True
         first.dhcp_running = True
@@ -530,7 +549,26 @@ def test_watchdog_automatically_repairs_active_configuration_drift_without_movin
         assert "Network service was not interrupted" in completed_status["detail"]
 
         watchdog_reconcile_cluster(db, cluster)
+        recovery = evaluate_recovery(db, cluster, now=datetime.utcnow())[second.id]
         assert db.query(HAMaintenanceRun).filter(HAMaintenanceRun.operation == "DHCP_SELF_HEAL").count() == 1
+        assert second.recovery_state == "STANDBY_READY", [
+            (check.key, check.passed, check.required) for check in recovery.checks
+        ]
+        assert db.query(HAEvent).filter(
+            HAEvent.node_id == second.id,
+            HAEvent.event_type.in_(["node_recovery_synchronising", "node_recovery_verifying", "node_standby_ready"]),
+        ).count() == recovery_events_before
+
+
+def test_maintenance_live_driver_stops_at_terminal_state_and_only_advances_new_phases():
+    script = Path("app/static/js/ha_maintenance.js").read_text(encoding="utf-8")
+
+    assert 'phase === lastPhase' in script
+    assert 'terminal || advancing' in script
+    assert 'window.clearTimeout(advanceTimer)' in script
+    assert 'window.location.reload()' not in script
+    for status in ("SUCCEEDED", "FAILED", "FAILED_SAFE", "PAUSED", "NEEDS_ATTENTION", "CANCELLED"):
+        assert f'"{status}"' in script
 
 
 def _failed_active_dhcp_self_heal(db, cluster, first):
@@ -560,7 +598,11 @@ def test_failed_self_heal_latches_and_identical_heartbeats_do_not_retry():
         run = _failed_active_dhcp_self_heal(db, cluster, first)
 
         assert run.status == "FAILED_SAFE"
-        assert json.loads(run.result_json)["latch_active"] is True
+        failed_result = json.loads(run.result_json)
+        assert failed_result["latch_active"] is True
+        assert failed_result["action_result"]["status"] == "FAILED"
+        assert failed_result["action_result"]["message"] == "Synthetic bounded repair failure."
+        assert first.vip_owned is True and first.dhcp_configured is False
         assert maintenance_status(run)["message"] == "Self-heal paused"
         assert maintenance_status(run)["visible"] is True
 
@@ -594,11 +636,11 @@ def test_material_agent_change_allows_failed_repair_to_be_reconsidered():
     with database() as db:
         user, cluster, first, second = pair(db)
         first.dhcp_configured = False
-        first.agent_version = second.agent_version = "0.2.9"
+        first.agent_version = second.agent_version = "0.2.11"
         db.commit()
         failed = _failed_active_dhcp_self_heal(db, cluster, first)
 
-        first.agent_version = "0.2.10"
+        first.agent_version = "0.2.12"
         db.commit()
         watchdog_reconcile_cluster(db, cluster)
 

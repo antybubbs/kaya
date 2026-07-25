@@ -367,6 +367,41 @@ def test_lease_replacement_preserves_service_ownership_and_mode(tmp_path, monkey
     assert (after.st_uid, after.st_gid, after.st_mode & 0o777) == service_owner
 
 
+def test_configuration_only_dhcp_repair_never_reads_or_replaces_live_leases(tmp_path, monkeypatch, capsys):
+    from ha_agent import kaya_ha_failover_helper as helper
+
+    monkeypatch.setattr(helper, "STATE_ROOT", tmp_path)
+    monkeypatch.setattr(helper, "LOCK_FILE", tmp_path / "dhcp.lock")
+    monkeypatch.setattr(helper.sys, "argv", ["helper", "promote", "7"])
+    values = {
+        "failover_generation": 7,
+        "failover_configuration_only": True,
+        "dns_healthy": True,
+    }
+    monkeypatch.setattr(helper, "_state", lambda key, default=None: values.get(key, default))
+    monkeypatch.setattr(helper, "_owns_vip", lambda: True)
+    monkeypatch.setattr(
+        helper,
+        "_backup",
+        lambda generation: pytest.fail("configuration-only repair must not access the lease file"),
+    )
+    expected = {
+        "configured": True,
+        "service_active": True,
+        "listening": True,
+        "runtime_state": "RUNNING",
+        "observation_status": "FRESH",
+        "dhcp_running": True,
+    }
+    monkeypatch.setattr(helper, "_set_dhcp", lambda enabled: expected)
+    monkeypatch.setattr(helper, "_wait_for_dns", lambda: None)
+
+    helper.main()
+
+    output = __import__("json").loads(capsys.readouterr().out)
+    assert output == {"status": "applied", **expected, "backup_reference": None}
+
+
 def test_dhcp_status_requires_the_service_and_udp_67_listener(tmp_path, monkeypatch):
     from ha_agent import kaya_ha_failover_helper as helper
 

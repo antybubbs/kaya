@@ -3,9 +3,11 @@
   if (!form) return;
   let advancing = false;
   let lastPhase = "";
+  let terminal = false;
+  let advanceTimer = null;
 
   const advance = async (phase) => {
-    if (advancing || !phase) return;
+    if (terminal || advancing || !phase) return;
     advancing = true;
     try {
       await fetch(form.action, {
@@ -22,13 +24,15 @@
   document.addEventListener("ha:live", (event) => {
     const maintenance = event.detail?.maintenance;
     if (!maintenance || maintenance.status !== "RUNNING") {
-      if (maintenance && ["SUCCEEDED", "FAILED_SAFE", "CANCELLED"].includes(maintenance.status)) {
-        window.location.reload();
+      if (maintenance && ["SUCCEEDED", "FAILED", "FAILED_SAFE", "PAUSED", "NEEDS_ATTENTION", "CANCELLED"].includes(maintenance.status)) {
+        terminal = true;
+        if (advanceTimer) window.clearTimeout(advanceTimer);
       }
       return;
     }
     const phase = String(maintenance.phase || "");
-    if (phase !== lastPhase) lastPhase = phase;
-    window.setTimeout(() => advance(phase), 500);
+    if (!phase || phase === lastPhase) return;
+    lastPhase = phase;
+    advanceTimer = window.setTimeout(() => advance(phase), 500);
   });
 })();

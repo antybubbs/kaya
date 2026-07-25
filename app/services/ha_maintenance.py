@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from typing import Any
@@ -39,6 +40,9 @@ from app.services.ha_validation import _safe_configuration
 from app.services.audit import write_audit
 
 
+logger = logging.getLogger(__name__)
+
+
 FRESH_SECONDS = 45
 PROCESS_STARTED_AT = datetime.utcnow()
 ACTIVE_STATUSES = {"RUNNING", "PAUSED"}
@@ -64,10 +68,9 @@ DHCP_SELF_HEAL_PHASES = (
     "VERIFYING_DHCP_REPAIR",
     "COMPLETE",
 )
-# This bounded action and its independent DHCP telemetry were introduced in
-# 0.2.8. Requiring Kaya's latest release here silently disables safe repair
-# during an otherwise supported rolling agent upgrade.
-DHCP_SELF_HEAL_AGENT_VERSION = (0, 2, 8)
+# Configuration-only DHCP repair was introduced in 0.2.11. Older agents would
+# interpret DHCP_PROMOTE as a lease restore and must not receive this repair.
+DHCP_SELF_HEAL_AGENT_VERSION = (0, 2, 11)
 
 
 class HAMaintenanceError(ValueError):
@@ -391,8 +394,9 @@ def start_dhcp_self_heal(
         return None
     cluster.maintenance_mode = True
 
-    cluster.role_generation += 1
-    cluster.cluster_generation += 1
+    # This is configuration convergence on the existing active node. It does
+    # not change HA roles, Keepalived, or desired cluster topology, so changing
+    # either generation would incorrectly invalidate the ready standby.
     run = HAMaintenanceRun(
         cluster_id=cluster.id,
         operation="DHCP_SELF_HEAL",
@@ -425,6 +429,15 @@ def start_dhcp_self_heal(
     )
     db.add(run)
     db.flush()
+    logger.info(
+        "HA DHCP repair classified cluster=%s run=%s repair_type=%s target=%s action=%s vip_owner=%s service_movement=false",
+        cluster.public_id,
+        run.public_id,
+        repair_type,
+        repair_node.public_id,
+        action_type,
+        owner.public_id,
+    )
     drift_message = (
         f"Active DHCP configuration drift detected on {repair_node.display_name}. Kaya safely queued a configuration-only repair."
         if action_type == "DHCP_PROMOTE"
@@ -498,6 +511,17 @@ def advance_dhcp_self_heal(db: Session, run: HAMaintenanceRun) -> HAMaintenanceR
         run.error_redacted = None
         run.cluster.maintenance_mode = False
         final = reconcile_topology(run.cluster)
+        logger.info(
+            "HA DHCP repair verified cluster=%s run=%s target=%s configured=%s runtime=%s udp67=%s vip_owner_ids=%s topology_safe=%s",
+            run.cluster.public_id,
+            run.public_id,
+            repair_node.public_id,
+            repair_observation.configured,
+            repair_observation.state,
+            repair_observation.listening,
+            list(final.vip_owner_ids),
+            final.topology_safe,
+        )
         run.cluster.status = "HEALTHY" if final.topology_safe else "DEGRADED"
         progress = list(result.get("progress") or [])
         repair_description = "active DHCP configuration restored" if action_type == "DHCP_PROMOTE" else "standby DHCP configuration safely disabled"
@@ -510,7 +534,12 @@ def advance_dhcp_self_heal(db: Session, run: HAMaintenanceRun) -> HAMaintenanceR
         write_audit(db, run.requested_by, "completed", "ha_dhcp_self_heal", run.cluster.public_id, detail=f"Verified the DHCP configuration repair for {run.cluster.name}.", metadata={"maintenance_run_id": run.public_id, "node_id": repair_node.public_id, "fresh_report_verified": True, "automatic": run.requested_by_user_id is None})
         return run
     if datetime.utcnow() - run.phase_started_at > timedelta(seconds=45):
-        return _fail_dhcp_self_heal(db, run, "DHCP configuration repair did not converge after one bounded attempt. Kaya stopped without changing VIP ownership.")
+        action_result = result.get("action_result") if isinstance(result.get("action_result"), dict) else {}
+        failure_detail = str(action_result.get("message") or "")[:500] if action_result.get("status") == "FAILED" else ""
+        message = "DHCP configuration repair did not converge after one bounded attempt. Kaya stopped without changing VIP ownership."
+        if failure_detail:
+            message = f"DHCP configuration repair failed: {failure_detail} Kaya stopped without changing VIP ownership."
+        return _fail_dhcp_self_heal(db, run, message)
     db.commit()
     return run
 
@@ -530,6 +559,14 @@ def _fail_dhcp_self_heal(db: Session, run: HAMaintenanceRun, message: str) -> HA
         "failure_reason": message[:1000],
     })
     run.result_json = json.dumps(result, sort_keys=True)
+    logger.warning(
+        "HA DHCP repair failed safely cluster=%s run=%s repair_type=%s target=%s reason=%s",
+        run.cluster.public_id,
+        run.public_id,
+        result.get("repair_type", "unknown"),
+        result.get("target_node_id", "unknown"),
+        message[:300],
+    )
     _event(db, run, "dhcp_self_heal_failed_safe", "warning", message[:1000])
     db.commit()
     write_audit(db, run.requested_by, "fail_safe", "ha_dhcp_self_heal", run.cluster.public_id, detail=message[:1000], severity="warning", metadata={"maintenance_run_id": run.public_id, "failure_latched": True, "drift_signature": result.get("drift_signature", "")[:16]})
@@ -649,23 +686,28 @@ def reconcile_cluster_state(db: Session, run: HAMaintenanceRun) -> HAMaintenance
         "corrected": corrected,
         "service_movement_performed": False,
     }, sort_keys=True)
-    run.status = "SUCCEEDED"
-    run.phase = "COMPLETE"
+    remaining_issues = list(final.issues)
+    run.status = "FAILED_SAFE" if remaining_issues else "SUCCEEDED"
+    run.phase = "PAUSED" if remaining_issues else "COMPLETE"
     run.completed_at = datetime.utcnow()
-    if any(issue.requires_service_movement for issue in final.issues):
+    run.error_redacted = " ".join(issue.message for issue in remaining_issues)[:1000] if remaining_issues else None
+    if any(issue.requires_service_movement for issue in remaining_issues):
         message = f"Reconciliation corrected {len(corrected)} stale state record(s). A service ownership mismatch remains and requires cluster reinitialisation."
+    elif remaining_issues:
+        message = f"Reconciliation stopped with {len(remaining_issues)} unresolved configuration issue(s). Fresh topology does not prove convergence."
     else:
         message = f"Cluster reconciliation completed without moving services. Kaya corrected {len(corrected)} stale state record(s)."
-    _event(db, run, "cluster_reconciliation_completed", "warning" if final.issues else "info", message, {"corrected_count": len(corrected), "remaining_issue_codes": [issue.code for issue in final.issues]})
+    _event(db, run, "cluster_reconciliation_needs_attention" if remaining_issues else "cluster_reconciliation_completed", "warning" if remaining_issues else "info", message, {"corrected_count": len(corrected), "remaining_issue_codes": [issue.code for issue in remaining_issues]})
     db.commit()
     write_audit(
         db,
         run.requested_by,
-        "complete",
+        "fail_safe" if remaining_issues else "complete",
         "ha_cluster_reconciliation",
         run.cluster.public_id,
         detail=message,
-        metadata={"maintenance_run_id": run.public_id, "service_movement_performed": False},
+        severity="warning" if remaining_issues else "info",
+        metadata={"maintenance_run_id": run.public_id, "service_movement_performed": False, "remaining_issue_codes": [issue.code for issue in remaining_issues]},
     )
     return run
 
@@ -827,6 +869,9 @@ def desired_maintenance_action(cluster: HACluster, node: HANode) -> dict[str, An
             "automatic": False,
             "lease_generation": run.cluster.lease_replication.desired_generation if run.cluster.lease_replication else 0,
             "restore_original": False,
+            # Repair the persisted Pi-hole setting only. The node already owns
+            # the VIP and serves DHCP, so live leases must remain untouched.
+            "configuration_only": action_type == "DHCP_PROMOTE",
         }
     target = run.desired_active_node
     if target is None:
@@ -865,6 +910,27 @@ def record_maintenance_action_result(
     expected = desired_maintenance_action(node.cluster, node)
     if run is None or expected is None or generation != expected["generation"] or checksum != expected["checksum"]:
         raise HAMaintenanceError("The maintenance result does not match the current repair generation.")
+    try:
+        result_document = json.loads(run.result_json or "{}")
+    except json.JSONDecodeError:
+        result_document = {}
+    result_document["action_result"] = {
+        "action_type": action_type,
+        "node_id": node.public_id,
+        "status": status,
+        "message": str(message or "")[:1000],
+        "received_at": datetime.utcnow().isoformat() + "Z",
+    }
+    run.result_json = json.dumps(result_document, sort_keys=True)
+    logger.info(
+        "HA DHCP action result received cluster=%s run=%s node=%s action=%s status=%s detail=%s",
+        node.cluster.public_id,
+        run.public_id,
+        node.public_id,
+        action_type,
+        status,
+        str(message or "")[:300],
+    )
     if status != "APPLIED":
         if run.operation == "DHCP_SELF_HEAL":
             _set_phase(run, "VERIFYING_DHCP_REPAIR", f"Unexpected repair response from {node.display_name}; verifying the final two-node topology")

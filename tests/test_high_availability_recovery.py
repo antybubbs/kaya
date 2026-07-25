@@ -9,6 +9,7 @@ from app.db.session import Base
 from app.models.models import (
     HAAgentCredential,
     HACluster,
+    HAEvent,
     HALeaseReplicationState,
     HANode,
     HASyncRun,
@@ -317,3 +318,47 @@ def test_unavailable_ping_does_not_block_recovery_or_failback_readiness():
         assert peer_check.required is False
         assert recovery.ready is True
         assert recovery.state == "STANDBY_READY"
+
+
+def test_ready_standby_ignores_later_failed_sync_check_without_recovery_loop():
+    now = datetime.utcnow()
+    with database() as db:
+        _, cluster, standby, active = recovered_pair(db, now)
+        standby.last_heartbeat_at = standby.dhcp_observed_at = now
+        standby.recovery_started_at = now - timedelta(minutes=3)
+        standby.recovery_stable_since = now - timedelta(minutes=2)
+        standby.recovery_state = "STANDBY_READY"
+        db.add_all([
+            HASyncRun(
+                cluster_id=cluster.id,
+                source_node_id=active.id,
+                target_node_id=standby.id,
+                status="IN_SYNC",
+                plan_json="{}",
+                created_at=now - timedelta(minutes=2),
+                completed_at=now - timedelta(minutes=2),
+            ),
+            HASyncRun(
+                cluster_id=cluster.id,
+                source_node_id=active.id,
+                target_node_id=standby.id,
+                status="ROLLED_BACK",
+                plan_json="{}",
+                created_at=now - timedelta(seconds=5),
+                completed_at=now - timedelta(seconds=5),
+                error_redacted="Synthetic later diagnostic failure.",
+            ),
+        ])
+        db.commit()
+        event_count = db.query(HAEvent).filter(HAEvent.node_id == standby.id).count()
+
+        for offset in (0, 5, 10):
+            observed = now + timedelta(seconds=offset)
+            standby.last_heartbeat_at = standby.dhcp_observed_at = observed
+            active.last_heartbeat_at = active.dhcp_observed_at = observed
+            db.commit()
+            result = evaluate_recovery(db, cluster, now=observed)[standby.id]
+            assert result.state == "STANDBY_READY"
+            assert result.ready is True
+
+        assert db.query(HAEvent).filter(HAEvent.node_id == standby.id).count() == event_count

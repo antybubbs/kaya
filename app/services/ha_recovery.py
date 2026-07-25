@@ -69,13 +69,15 @@ def current_active_node(cluster: HACluster, now: datetime | None = None) -> HANo
     return next((node for node in cluster.nodes if node.id == topology.active_node_id), None)
 
 
-def _latest_sync(db: Session, cluster: HACluster, active: HANode, target: HANode) -> HASyncRun | None:
+def _latest_successful_sync(db: Session, cluster: HACluster, active: HANode, target: HANode) -> HASyncRun | None:
+    """Return durable recovery evidence, ignoring later diagnostic/failed checks."""
     return (
         db.query(HASyncRun)
         .filter(
             HASyncRun.cluster_id == cluster.id,
             HASyncRun.source_node_id == active.id,
             HASyncRun.target_node_id == target.id,
+            HASyncRun.status.in_(["IN_SYNC", "SUCCEEDED"]),
         )
         .order_by(HASyncRun.created_at.desc())
         .first()
@@ -96,7 +98,7 @@ def recovery_checks(db: Session, cluster: HACluster, node: HANode, *, now: datet
     standby_runtime = bool(node.vip_owned is False and node.observed_role == "STANDBY")
     observation = dhcp_observation(node, current, freshness_seconds=RECOVERY_HEARTBEAT_SECONDS)
     dhcp_safe = not pihole_manages_dhcp(cluster) or observation.released
-    latest_sync = _latest_sync(db, cluster, active, node) if active and active.id != node.id else None
+    latest_sync = _latest_successful_sync(db, cluster, active, node) if active and active.id != node.id else None
     configuration_sync = bool(
         latest_sync
         and latest_sync.status in {"IN_SYNC", "SUCCEEDED"}

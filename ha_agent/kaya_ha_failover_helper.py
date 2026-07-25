@@ -206,6 +206,14 @@ def main():
             status = _set_dhcp(False); print(json.dumps({"status": "applied", **status})); return
         if not _owns_vip() or _state("dns_healthy", False) is not True:
             raise RuntimeError("Promotion requires local VIP ownership and healthy DNS.")
+        configuration_only = bool(_state("failover_configuration_only", False)) if not automatic else False
+        if configuration_only:
+            # The node already serves DHCP and owns the VIP. Persist only the
+            # missing setting; do not back up or replace the live lease file.
+            status = _set_dhcp(True)
+            _wait_for_dns()
+            print(json.dumps({"status": "applied", **status, "backup_reference": None}))
+            return
         backup, ownership = _backup(generation)
         try:
             restore_original = bool(_state("failover_restore_original", False)) if not automatic else False

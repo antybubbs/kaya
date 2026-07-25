@@ -37,6 +37,7 @@ from app.services.ha_dns_advertisement import (
 from app.services.ha_maintenance import (
     HAMaintenanceError,
     active_maintenance,
+    advance_dhcp_self_heal,
     advance_reinitialisation,
     inspect_cluster,
     inspection_json,
@@ -592,7 +593,14 @@ async def advance_cluster_maintenance(public_id: str, run_public_id: str, reques
     ).first()
     if run is None:
         raise HTTPException(status_code=404, detail="Cluster maintenance operation not found")
-    advance_reinitialisation(db, run)
+    if run.status in {"SUCCEEDED", "FAILED", "FAILED_SAFE", "PAUSED", "NEEDS_ATTENTION", "CANCELLED"}:
+        return RedirectResponse(f"/high-availability/clusters/{cluster.public_id}/maintenance", status_code=303)
+    if run.operation == "REINITIALISE":
+        advance_reinitialisation(db, run)
+    elif run.operation == "DHCP_SELF_HEAL":
+        advance_dhcp_self_heal(db, run)
+    elif run.operation == "RECONCILE":
+        reconcile_cluster_state(db, run)
     return RedirectResponse(f"/high-availability/clusters/{cluster.public_id}/maintenance", status_code=303)
 
 
@@ -690,7 +698,6 @@ def cluster_live_status(public_id: str, db: Session = Depends(get_db), user=Depe
     ).first()
     if cluster is None:
         raise HTTPException(status_code=404, detail="Cluster not found")
-    reconcile_vip_ownership(db, cluster)
     now = datetime.utcnow()
     current_nodes = [node for node in cluster.nodes if node.last_heartbeat_at and node.last_heartbeat_at >= now - timedelta(seconds=HEARTBEAT_FRESH_SECONDS)]
     consistency = inspect_cluster(cluster, now=now)
