@@ -440,6 +440,11 @@ class PiHoleProvider(DNSProvider):
                     mutate(f"/api/groups/{quote(name, safe='')}", "PUT", payload)
                 else:
                     mutate("/api/groups", "POST", {**payload, "name": [name]})
+                    # Pi-hole's bulk-create endpoint may initialise optional
+                    # fields with defaults. Apply the complete allowlisted
+                    # representation after creation so verification sees the
+                    # source comment/enabled state on a fresh peer.
+                    mutate(f"/api/groups/{quote(name, safe='')}", "PUT", payload)
             extras = sorted(set(target_by_name) - set(source_by_name) - {"Default"})
             if extras and not allow_deletions:
                 raise DNSProviderError("The plan contains group deletions which were not explicitly confirmed.")

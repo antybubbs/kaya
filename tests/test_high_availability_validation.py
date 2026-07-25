@@ -194,6 +194,52 @@ def test_pihole_collection_reconciliation_uses_target_group_ids(monkeypatch):
     assert any(call[1].startswith("/api/clients/") and call[2]["groups"] == [0] for call in updates)
 
 
+def test_pihole_collection_reconciliation_finishes_new_group_metadata(monkeypatch):
+    client = object.__new__(PiHoleProvider)
+    source = {
+        "groups": {
+            "groups": [
+                {"id": 0, "name": "Default", "comment": "", "enabled": True},
+                {"id": 7, "name": "Restricted", "comment": "No social media", "enabled": False},
+            ]
+        }
+    }
+    target = {
+        "groups": {
+            "groups": [
+                {"id": 0, "name": "Default", "comment": "", "enabled": True},
+            ]
+        }
+    }
+    calls = []
+    monkeypatch.setattr(client, "get_ha_configuration", lambda: DNSProviderResult(True, "loaded", {"configuration": target}))
+
+    def request(path, *, method="GET", payload=None):
+        calls.append((method, path, payload))
+        if path == "/api/groups" and method == "POST":
+            for name in payload["name"]:
+                target["groups"]["groups"].append(
+                    {"id": len(target["groups"]["groups"]), "name": name, "comment": "", "enabled": True}
+                )
+            return {}
+        if path == "/api/groups/Restricted" and method == "PUT":
+            row = next(item for item in target["groups"]["groups"] if item["name"] == "Restricted")
+            row.update(payload)
+            return {}
+        if path == "/api/groups" and method == "GET":
+            return target["groups"]
+        return {}
+
+    monkeypatch.setattr(client, "_v6_request_json", request)
+    result = client.reconcile_ha_collections(source, allow_deletions=False)
+
+    assert result.ok
+    restricted = next(item for item in target["groups"]["groups"] if item["name"] == "Restricted")
+    assert restricted["comment"] == "No social media"
+    assert restricted["enabled"] is False
+    assert ("PUT", "/api/groups/Restricted", {"name": "Restricted", "comment": "No social media", "enabled": False}) in calls
+
+
 def test_validation_report_ui_explains_safety_and_exclusions():
     template = Path("app/templates/high_availability_cluster_validation.html").read_text(encoding="utf-8")
     assert "Run Read-only Validation" in template
