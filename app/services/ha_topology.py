@@ -25,6 +25,9 @@ class DHCPObservation:
     state: str
     status: str
     observed_at: datetime | None
+    configured: bool | None = None
+    service_active: bool | None = None
+    listening: bool | None = None
 
     @property
     def active(self) -> bool:
@@ -123,18 +126,14 @@ def dhcp_observation(
     runtime = str(node.dhcp_runtime_state or "UNKNOWN").upper()
     if runtime == "UNKNOWN" and status != "FRESH":
         runtime = "RUNNING" if node.dhcp_running else "STOPPED"
-    if (
-        node.dhcp_configured is True
-        and node.dhcp_listener_active is True
-        and node.ftl_active is True
-        and runtime == "RUNNING"
-    ):
-        return DHCPObservation("ACTIVE", "FRESH", observed_at)
-    if node.dhcp_configured is False and node.dhcp_listener_active is False and runtime == "STOPPED":
-        return DHCPObservation("RELEASED", "FRESH", observed_at)
+    evidence = (node.dhcp_configured, node.ftl_active, node.dhcp_listener_active)
+    if node.dhcp_listener_active is True and node.ftl_active is True and runtime == "RUNNING":
+        return DHCPObservation("ACTIVE", "FRESH", observed_at, *evidence)
+    if node.dhcp_listener_active is False and runtime == "STOPPED":
+        return DHCPObservation("RELEASED", "FRESH", observed_at, *evidence)
     if None in {node.dhcp_configured, node.dhcp_listener_active, node.ftl_active} or runtime == "UNKNOWN":
-        return DHCPObservation("UNKNOWN", status, observed_at)
-    return DHCPObservation("INACTIVE", "FRESH", observed_at)
+        return DHCPObservation("UNKNOWN", status, observed_at, *evidence)
+    return DHCPObservation("INACTIVE", "FRESH", observed_at, *evidence)
 
 
 def reconcile_topology(
@@ -181,10 +180,49 @@ def reconcile_topology(
         issues.append(TopologyIssue("OWNERSHIP_MISMATCH", "Cluster ownership mismatch", "The DNS Virtual IP and DHCP service are currently owned by different nodes.", "critical", True))
 
     owner = vip_owners[0] if len(vip_owners) == 1 else None
+    if managed and owner and owner.id in observations:
+        active_observation = observations[owner.id]
+        if active_observation.configured is False:
+            issues.append(TopologyIssue(
+                "ACTIVE_DHCP_CONFIGURATION_DISABLED",
+                "Active DHCP configuration drift detected",
+                f"{owner.display_name} exclusively owns the Virtual IP but Pi-hole DHCP configuration is disabled.",
+                "warning" if active_observation.active else "critical",
+            ))
+        elif active_observation.configured is True and not active_observation.active:
+            issues.append(TopologyIssue(
+                "ACTIVE_DHCP_ACTIVATION_INCOMPLETE",
+                "Active DHCP service has not converged",
+                f"{owner.display_name} has DHCP enabled but is not listening on UDP port 67.",
+                "critical",
+            ))
+        for standby in (node for node in fresh_nodes if node.id != owner.id):
+            standby_observation = observations[standby.id]
+            if standby_observation.configured is True and standby_observation.released:
+                issues.append(TopologyIssue(
+                    "STANDBY_DHCP_CONFIGURATION_ENABLED",
+                    "Standby DHCP configuration drift detected",
+                    f"{standby.display_name} is not serving DHCP, but its Pi-hole DHCP configuration remains enabled.",
+                    "warning",
+                ))
+
     service_ok = bool(
         owner
         and owner.dns_healthy is True
         and (not managed or (len(dhcp_owners) == 1 and dhcp_owners[0].id == owner.id))
+    )
+    configuration_consistent = bool(
+        not managed
+        or (
+            owner
+            and observations.get(owner.id)
+            and observations[owner.id].configured is True
+            and all(
+                observations[node.id].configured is False
+                for node in fresh_nodes
+                if node.id != owner.id
+            )
+        )
     )
     topology_safe = bool(
         service_ok
@@ -200,6 +238,7 @@ def reconcile_topology(
                 )
             )
         )
+        and configuration_consistent
     )
     return ReconciledTopology(
         observed_at=current,
@@ -211,7 +250,7 @@ def reconcile_topology(
         service_availability="HEALTHY" if service_ok else "DEGRADED",
         redundancy_state="HEALTHY" if len(fresh_nodes) == len(cluster.nodes) and topology_safe else "REDUCED",
         telemetry_state="CURRENT" if len(fresh_nodes) == len(cluster.nodes) and (not managed or not dhcp_unknown) else "DEGRADED",
-        configuration_state="CONSISTENT" if topology_safe else "INCONSISTENT",
+        configuration_state="CONSISTENT" if configuration_consistent else "INCONSISTENT",
         topology_safe=topology_safe,
     )
 

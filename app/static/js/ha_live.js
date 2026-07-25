@@ -228,7 +228,15 @@
 
   function updateMaintenanceProgress(maintenance) {
     const panel = document.querySelector("[data-ha-maintenance-panel]");
-    if (!panel || !maintenance) return;
+    if (!panel) return;
+    const visible = maintenance && ["RUNNING", "FAILED_SAFE"].includes(maintenance.status);
+    panel.hidden = !visible;
+    if (!visible) return;
+    const percent = Math.max(0, Math.min(100, Number(maintenance.progress_percent) || 0));
+    const track = panel.querySelector('[role="progressbar"]');
+    const bar = panel.querySelector("[data-ha-maintenance-bar]");
+    if (track) track.setAttribute("aria-valuenow", String(percent));
+    if (bar) bar.style.width = `${percent}%`;
     const titleElement = panel.querySelector("[data-ha-maintenance-title]");
     if (titleElement) titleElement.textContent = maintenance.message || "Cluster maintenance in progress";
     const status = panel.querySelector("[data-ha-maintenance-status]");
@@ -248,6 +256,8 @@
     }
     const error = panel.querySelector("[data-ha-maintenance-error]");
     if (error) error.textContent = maintenance.error || "";
+    const errorPanel = panel.querySelector("[data-ha-maintenance-error-panel]");
+    if (errorPanel) errorPanel.hidden = !maintenance.error;
   }
 
   async function refresh() {

@@ -57,13 +57,25 @@ def _dhcp_status():
     service_active = True if service.returncode == 0 else False if service.returncode == 3 else None
     listening = _udp_port_bound(67)
     available = configured is not None and service_active is not None and listening is not None
-    running = bool(configured and service_active and listening) if available else None
+    # Configuration intent and runtime ownership are deliberately independent.
+    # Pi-hole can continue listening on UDP/67 after dhcp.active drifted false;
+    # reporting that real listener as stopped can make a second promotion look
+    # safe and is therefore more dangerous than reporting the inconsistency.
+    running = bool(service_active and listening) if available else None
+    consistency = (
+        "CONSISTENT"
+        if available and configured is running
+        else "DRIFT"
+        if available
+        else "UNKNOWN"
+    )
     return {
         "configured": configured,
         "service_active": service_active,
         "listening": listening,
         "runtime_state": "RUNNING" if running is True else "STOPPED" if running is False else "UNKNOWN",
         "observation_status": "FRESH" if available else "UNAVAILABLE",
+        "configuration_consistency": consistency,
         "dhcp_running": running,
     }
 

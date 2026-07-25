@@ -22,7 +22,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 
 PROTOCOL_VERSION = 1
-AGENT_VERSION = "0.2.7"
+AGENT_VERSION = "0.2.8"
 
 ICMP_AVAILABLE = "AVAILABLE"
 ICMP_NO_REPLY = "NO_REPLY"

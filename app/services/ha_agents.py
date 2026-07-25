@@ -270,6 +270,12 @@ def record_heartbeat(db: Session, node: HANode, heartbeat: HAAgentHeartbeat) -> 
         reconcile_cluster_state(db, maintenance)
     elif maintenance and maintenance.operation == "REINITIALISE":
         advance_reinitialisation(db, maintenance)
+    elif maintenance and maintenance.operation == "DHCP_SELF_HEAL":
+        from app.services.ha_maintenance import advance_dhcp_self_heal
+        advance_dhcp_self_heal(db, maintenance)
+    else:
+        from app.services.ha_maintenance import start_dhcp_self_heal
+        start_dhcp_self_heal(db, node.cluster)
     if peer_changed:
         write_audit(
             db,

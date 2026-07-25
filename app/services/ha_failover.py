@@ -223,7 +223,8 @@ def start_controlled_failover(db: Session, cluster: HACluster, target: HANode, u
     cluster.cluster_generation += 1
     cluster.maintenance_mode = True
     phase = "WAITING_FOR_LEASES" if readiness.dhcp_managed and state and state.status != "CURRENT" else ("DEMOTING_SOURCE" if readiness.dhcp_managed else "MOVING_VIP")
-    run = HAFailoverRun(cluster_id=cluster.id, source_node_id=readiness.source.id, target_node_id=target.id, status="RUNNING", phase=phase, dhcp_managed=readiness.dhcp_managed, lease_generation=state.desired_generation if state else 0, role_generation=cluster.role_generation, requested_by_user_id=user.id, report_json=json.dumps({"starting_vip_owner": readiness.source.public_id, "target": target.public_id, "automatic": False, "transition_kind": "FAILBACK" if is_failback else "FAILOVER"}, sort_keys=True))
+    preferred_public_id = next((node.public_id for node in cluster.nodes if node.id == cluster.preferred_node_id), None)
+    run = HAFailoverRun(cluster_id=cluster.id, source_node_id=readiness.source.id, target_node_id=target.id, preferred_node_id=cluster.preferred_node_id, status="RUNNING", phase=phase, dhcp_managed=readiness.dhcp_managed, lease_generation=state.desired_generation if state else 0, role_generation=cluster.role_generation, requested_by_user_id=user.id, report_json=json.dumps({"starting_vip_owner": readiness.source.public_id, "target": target.public_id, "preferred_node": preferred_public_id, "automatic": False, "transition_kind": "FAILBACK" if is_failback else "FAILOVER"}, sort_keys=True))
     db.add(run)
     db.flush()
     if phase == "MOVING_VIP":
@@ -323,6 +324,75 @@ def _requested_topology_is_verified(run: HAFailoverRun, *, rolled_back: bool = F
         and active.dns_healthy is True
         and topology.topology_safe
     )
+
+
+def _queue_safe_dhcp_repair(
+    db: Session,
+    run: HAFailoverRun,
+    *,
+    active: HANode,
+    standby: HANode,
+    rolled_back: bool,
+) -> bool:
+    """Retry configuration convergence once, without changing the chosen owner."""
+    now = datetime.utcnow()
+    topology = reconcile_topology(run.cluster, now=now, freshness_seconds=120)
+    active_observation = dhcp_observation(active, now, freshness_seconds=120)
+    standby_observation = dhcp_observation(standby, now, freshness_seconds=120)
+    if not (
+        topology.fresh
+        and topology.vip_owner_ids == (active.id,)
+        and not topology.dhcp_unknown_node_ids
+        and len(topology.dhcp_owner_ids) <= 1
+        and (not topology.dhcp_owner_ids or topology.dhcp_owner_ids == (active.id,))
+        and active.dns_healthy is True
+        and active.ftl_active is True
+        and standby_observation.released
+        and standby_observation.configured is False
+        and (active_observation.configured is not True or not active_observation.active)
+    ):
+        return False
+    try:
+        report = json.loads(run.report_json or "{}")
+    except json.JSONDecodeError:
+        report = {}
+    key = "rollback_dhcp_self_heal_attempts" if rolled_back else "dhcp_self_heal_attempts"
+    attempts = int(report.get(key, 0))
+    if attempts >= 1:
+        return False
+    report[key] = attempts + 1
+    report.setdefault("warnings", []).append(
+        f"{active.display_name} owned the Virtual IP but DHCP configuration/runtime had not converged; Kaya queued one safe configuration repair."
+    )
+    run.report_json = json.dumps(report, sort_keys=True)
+    run.cluster.role_generation += 1
+    run.cluster.cluster_generation += 1
+    run.role_generation = run.cluster.role_generation
+    run.phase = "ROLLBACK_PROMOTING_SOURCE" if rolled_back else "PROMOTING_TARGET"
+    _event(db, run, "dhcp_configuration_drift_detected", "warning", f"Active DHCP configuration drift detected on {active.display_name}. Standby ownership was verified safe before one bounded repair attempt.")
+    return True
+
+
+def _queue_safe_dhcp_release_retry(db: Session, run: HAFailoverRun, *, node: HANode, rolled_back: bool) -> bool:
+    now = datetime.utcnow()
+    observation = dhcp_observation(node, now, freshness_seconds=120)
+    if observation.status != "FRESH" or observation.listening is not False or observation.configured is False:
+        return False
+    try:
+        report = json.loads(run.report_json or "{}")
+    except json.JSONDecodeError:
+        report = {}
+    key = "rollback_dhcp_release_repair_attempts" if rolled_back else "dhcp_release_repair_attempts"
+    if int(report.get(key, 0)) >= 1:
+        return False
+    report[key] = int(report.get(key, 0)) + 1
+    run.report_json = json.dumps(report, sort_keys=True)
+    run.cluster.role_generation += 1
+    run.cluster.cluster_generation += 1
+    run.role_generation = run.cluster.role_generation
+    run.phase = "ROLLBACK_DEMOTING_TARGET" if rolled_back else "DEMOTING_SOURCE"
+    _event(db, run, "dhcp_configuration_drift_detected", "warning", f"{node.display_name} released UDP port 67 but its DHCP configuration remained enabled. Kaya queued one idempotent disable repair before continuing.")
+    return True
 
 
 def _verification_started_at(run: HAFailoverRun) -> datetime:
@@ -465,6 +535,16 @@ def advance_failover(db: Session, cluster: HACluster) -> HAFailoverRun | None:
         db.commit()
         return run
     state = cluster.lease_replication
+    # A process restart, delayed result, or transient helper error must not
+    # outweigh a fresh, already-correct two-node topology.
+    if run.status == "RUNNING" and _requested_topology_is_verified(run):
+        _complete(db, run, rolled_back=False)
+        db.commit()
+        return run
+    if run.status == "ROLLING_BACK" and _requested_topology_is_verified(run, rolled_back=True):
+        _complete(db, run, rolled_back=True)
+        db.commit()
+        return run
     if run.phase.startswith("VERIFYING_") or run.phase in {"VERIFYING_TARGET", "ROLLBACK_VERIFYING_SOURCE"}:
         try:
             report = json.loads(run.report_json or "{}")
@@ -482,14 +562,16 @@ def advance_failover(db: Session, cluster: HACluster) -> HAFailoverRun | None:
             _move_vip(db, run, run.target_node)
             _event(db, run, "dhcp_release_verified", "info", f"{run.source_node.display_name} released DHCP after bounded final-state verification. The handover is continuing.")
         elif datetime.utcnow() - _verification_started_at(run) > timedelta(seconds=45):
-            _safe_failure(db, run, f"{run.source_node.display_name} still reports DHCP configured or UDP port 67 listening after the bounded release window. The transition stopped before another DHCP owner was enabled.")
+            if not _queue_safe_dhcp_release_retry(db, run, node=run.source_node, rolled_back=False):
+                _safe_failure(db, run, f"{run.source_node.display_name} still reports DHCP configured or UDP port 67 listening after the bounded release window. The transition stopped before another DHCP owner was enabled.")
     elif run.phase == "VERIFYING_ROLLBACK_TARGET_RELEASE":
         if _dhcp_released(run.target_node):
             run.phase = "ROLLBACK_MOVING_VIP"
             _move_vip(db, run, run.source_node)
             _event(db, run, "dhcp_release_verified", "info", f"{run.target_node.display_name} released DHCP after bounded final-state verification. Safe rollback is continuing.")
         elif datetime.utcnow() - _verification_started_at(run) > timedelta(seconds=45):
-            _safe_failure(db, run, f"{run.target_node.display_name} still reports DHCP configured or UDP port 67 listening after the bounded release window. Rollback stopped to prevent split DHCP.")
+            if not _queue_safe_dhcp_release_retry(db, run, node=run.target_node, rolled_back=True):
+                _safe_failure(db, run, f"{run.target_node.display_name} still reports DHCP configured or UDP port 67 listening after the bounded release window. Rollback stopped to prevent split DHCP.")
     elif (
         run.phase == "ROLLBACK_DEMOTING_TARGET"
         and run.source_node.vip_owned
@@ -523,13 +605,15 @@ def advance_failover(db: Session, cluster: HACluster) -> HAFailoverRun | None:
         if _requested_topology_is_verified(run):
             _complete(db, run, rolled_back=False)
         elif datetime.utcnow() - _verification_started_at(run) > timedelta(seconds=30):
-            dhcp_owners = [node.display_name for node in cluster.nodes if _dhcp_active(node)]
-            _safe_failure(db, run, f"Final topology verification did not converge within 30 seconds. Expected {run.target_node.display_name} to exclusively own the VIP and DHCP with healthy DNS; current DHCP owners: {', '.join(dhcp_owners) if dhcp_owners else 'none confirmed'}.")
+            if not _queue_safe_dhcp_repair(db, run, active=run.target_node, standby=run.source_node, rolled_back=False):
+                dhcp_owners = [node.display_name for node in cluster.nodes if _dhcp_active(node)]
+                _safe_failure(db, run, f"Final topology verification did not converge within 30 seconds. Expected {run.target_node.display_name} to exclusively own the VIP and DHCP with healthy DNS; current DHCP owners: {', '.join(dhcp_owners) if dhcp_owners else 'none confirmed'}.")
     elif run.phase == "ROLLBACK_VERIFYING_SOURCE":
         if _requested_topology_is_verified(run, rolled_back=True):
             _complete(db, run, rolled_back=True)
         elif datetime.utcnow() - _verification_started_at(run) > timedelta(seconds=30):
-            _safe_failure(db, run, f"{run.source_node.display_name} did not report healthy DNS within 30 seconds during rollback. Manual recovery is required; Kaya will not enable another DHCP owner.")
+            if not _queue_safe_dhcp_repair(db, run, active=run.source_node, standby=run.target_node, rolled_back=True):
+                _safe_failure(db, run, f"{run.source_node.display_name} did not report a fully restored DNS and DHCP topology within 30 seconds during rollback. Manual recovery is required; Kaya will not enable another DHCP owner.")
     db.commit()
     return run
 

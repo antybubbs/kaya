@@ -9,6 +9,7 @@ from app.db.session import Base
 from app.models.models import (
     HAAgentCredential,
     HACluster,
+    HAEvent,
     HALeaseReplicationState,
     HAMaintenanceRun,
     HANode,
@@ -16,12 +17,14 @@ from app.models.models import (
     User,
 )
 from app.services.ha_maintenance import (
+    advance_dhcp_self_heal,
     advance_reinitialisation,
     desired_maintenance_action,
     inspect_cluster,
     reconcile_cluster_state,
     record_maintenance_action_result,
     start_reconciliation,
+    start_dhcp_self_heal,
     start_reinitialisation,
 )
 
@@ -66,6 +69,7 @@ def pair(db: Session, *, split: bool = False):
         desired_role="ACTIVE",
         observed_role="STANDBY" if split else "ACTIVE",
         observed_generation=4,
+        agent_version="0.2.8",
         vip_owned=not split,
         dhcp_running=True,
         dhcp_configured=True,
@@ -92,6 +96,7 @@ def pair(db: Session, *, split: bool = False):
         desired_role="STANDBY",
         observed_role="ACTIVE" if split else "STANDBY",
         observed_generation=4,
+        agent_version="0.2.8",
         vip_owned=split,
         dhcp_running=False,
         dhcp_configured=False,
@@ -468,3 +473,93 @@ def test_process_restart_rewinds_incomplete_repair_to_fresh_inspection(monkeypat
         advance_reinitialisation(db, run)
         assert run.phase == "WAITING_FOR_REPORTS"
         assert ownership_before == (first.vip_owned, first.dhcp_running, second.vip_owned, second.dhcp_running)
+
+
+def test_active_configuration_drift_is_repaired_without_moving_vip():
+    with database() as db:
+        user, cluster, first, second = pair(db)
+        first.dhcp_configured = False
+        first.dhcp_running = True
+        first.dhcp_listener_active = True
+        first.dhcp_runtime_state = "RUNNING"
+        db.commit()
+
+        run = start_dhcp_self_heal(db, cluster)
+
+        assert run is not None
+        assert run.desired_active_node_id == first.id
+        assert desired_maintenance_action(cluster, first)["action_type"] == "DHCP_PROMOTE"
+        action = desired_maintenance_action(cluster, first)
+        record_maintenance_action_result(db, first, action_type=action["action_type"], generation=action["generation"], checksum=action["checksum"], status="APPLIED", message="accepted")
+        first.dhcp_configured = True
+        first.dhcp_running = True
+        first.dhcp_listener_active = True
+        first.dhcp_runtime_state = "RUNNING"
+        first.last_heartbeat_at = run.phase_started_at + timedelta(seconds=1)
+        first.dhcp_observed_at = first.last_heartbeat_at
+        second.last_heartbeat_at = run.phase_started_at + timedelta(seconds=1)
+        second.dhcp_observed_at = second.last_heartbeat_at
+        db.commit()
+
+        advance_dhcp_self_heal(db, run)
+
+        assert run.status == "SUCCEEDED"
+        assert first.vip_owned is True and second.vip_owned is False
+        assert cluster.maintenance_mode is False
+
+
+def test_self_heal_refuses_ambiguous_dual_dhcp_runtime():
+    with database() as db:
+        user, cluster, first, second = pair(db)
+        first.dhcp_configured = False
+        second.dhcp_configured = True
+        second.dhcp_running = True
+        second.dhcp_listener_active = True
+        second.dhcp_runtime_state = "RUNNING"
+        db.commit()
+
+        assert start_dhcp_self_heal(db, cluster) is None
+        assert not cluster.maintenance_mode
+
+
+def test_proven_hard_failover_can_repair_surviving_owner_with_peer_offline():
+    with database() as db:
+        user, cluster, first, second = pair(db)
+        now = datetime.utcnow()
+        first.dhcp_configured = False
+        first.dhcp_running = False
+        first.dhcp_listener_active = False
+        first.dhcp_runtime_state = "STOPPED"
+        second.last_heartbeat_at = now - timedelta(minutes=2)
+        second.dhcp_observed_at = second.last_heartbeat_at
+        db.add(HAEvent(
+            cluster_id=cluster.id,
+            node_id=first.id,
+            event_type="automatic_failover_completed",
+            severity="warning",
+            source="agent",
+            message="Synthetic local failover proof.",
+            details_json_redacted=json.dumps({"generation": cluster.keepalived_generation}),
+            agent_event_id="synthetic-hard-failover-proof",
+            occurred_at=now,
+        ))
+        db.commit()
+
+        run = start_dhcp_self_heal(db, cluster)
+
+        assert run is not None
+        assert desired_maintenance_action(cluster, first)["action_type"] == "DHCP_PROMOTE"
+
+
+def test_offline_peer_without_signed_failover_proof_blocks_self_heal():
+    with database() as db:
+        user, cluster, first, second = pair(db)
+        first.dhcp_configured = False
+        first.dhcp_running = False
+        first.dhcp_listener_active = False
+        first.dhcp_runtime_state = "STOPPED"
+        second.last_heartbeat_at = datetime.utcnow() - timedelta(minutes=2)
+        second.dhcp_observed_at = second.last_heartbeat_at
+        db.commit()
+
+        assert start_dhcp_self_heal(db, cluster) is None

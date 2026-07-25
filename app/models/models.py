@@ -869,6 +869,7 @@ class HAFailoverRun(Base):
     cluster_id: Mapped[int] = mapped_column(ForeignKey("ha_clusters.id", ondelete="CASCADE"), index=True)
     source_node_id: Mapped[int] = mapped_column(ForeignKey("ha_nodes.id", ondelete="CASCADE"), index=True)
     target_node_id: Mapped[int] = mapped_column(ForeignKey("ha_nodes.id", ondelete="CASCADE"), index=True)
+    preferred_node_id: Mapped[int | None] = mapped_column(ForeignKey("ha_nodes.id", ondelete="SET NULL"), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(30), default="RUNNING", index=True)
     phase: Mapped[str] = mapped_column(String(50), default="PREFLIGHT", index=True)
     dhcp_managed: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -883,6 +884,7 @@ class HAFailoverRun(Base):
     cluster = relationship("HACluster", back_populates="failover_runs")
     source_node = relationship("HANode", foreign_keys=[source_node_id])
     target_node = relationship("HANode", foreign_keys=[target_node_id])
+    preferred_node = relationship("HANode", foreign_keys=[preferred_node_id])
     requested_by = relationship("User", foreign_keys=[requested_by_user_id])
 
 

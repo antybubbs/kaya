@@ -397,6 +397,7 @@ def cluster_detail_context(request: Request, user, db: Session, cluster: HAClust
         consistency=consistency,
         consistency_json=inspection_json(cluster, consistency),
         maintenance_run=latest_maintenance(cluster),
+        maintenance_state=maintenance_status(latest_maintenance(cluster)),
         dns_advertisement_states=advertisement_states,
         dns_advertisement=active_advertisement,
         dns_advertisement_warning=DNS_ADVERTISEMENT_WARNING,
