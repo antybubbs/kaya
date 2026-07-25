@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.db.session import Base
 from app.models.models import HACluster, HAFailoverRun, HALeaseReplicationState, HANode, User
-from app.services.ha_failover import HAFailoverError, advance_failover, automatic_failover_blockers, desired_failover_action, failover_readiness, request_failover_rollback, set_automatic_failover, start_controlled_failover
+from app.services.ha_failover import HAFailoverError, advance_failover, automatic_failover_blockers, desired_failover_action, failover_readiness, record_failover_action_result, request_failover_rollback, set_automatic_failover, start_controlled_failover
 
 
 def database():
@@ -71,6 +71,81 @@ def test_managed_failover_orders_dhcp_stop_vip_move_then_dhcp_start(monkeypatch)
         assert cluster.automatic_failback_enabled is False
         assert cluster.keepalived_status == "PENDING_AGENT"
         assert all(node.keepalived_status == "PENDING_AGENT" for node in cluster.nodes)
+
+
+def test_transient_dhcp_release_error_continues_after_explicit_source_reports_release(monkeypatch):
+    with database() as db:
+        user, cluster, source, target = ready_pair(db)
+        monkeypatch.setattr("app.services.ha_failover.reconcile_cluster_leases", lambda db, cluster: cluster.lease_replication)
+        run = start_controlled_failover(db, cluster, target, user, confirmation="Test Pair", acknowledged=True)
+        action = desired_failover_action(cluster, source)
+
+        record_failover_action_result(
+            db,
+            source,
+            action_type="DHCP_DEMOTE",
+            generation=action["generation"],
+            checksum=action["checksum"],
+            status="FAILED",
+            message="Synthetic delayed UDP/67 release",
+        )
+
+        assert run.status == "RUNNING"
+        assert run.phase == "VERIFYING_SOURCE_DHCP_RELEASE"
+        source.dhcp_running = False
+        source.dhcp_configured = False
+        source.dhcp_listener_active = False
+        advance_failover(db, cluster)
+        assert run.phase == "MOVING_VIP"
+        assert "Synthetic delayed UDP/67 release" in run.report_json
+
+
+def test_transient_promotion_error_is_success_when_final_two_node_topology_is_verified(monkeypatch):
+    with database() as db:
+        user, cluster, source, target = ready_pair(db)
+        monkeypatch.setattr("app.services.ha_failover.reconcile_cluster_leases", lambda db, cluster: cluster.lease_replication)
+        run = start_controlled_failover(db, cluster, target, user, confirmation="Test Pair", acknowledged=True)
+        source.dhcp_running = source.dhcp_configured = source.dhcp_listener_active = False
+        source.vip_owned = False
+        target.vip_owned = True
+        target.keepalived_status = source.keepalived_status = "DEPLOYED"
+        run.phase = "PROMOTING_TARGET"
+        action = desired_failover_action(cluster, target)
+
+        record_failover_action_result(
+            db,
+            target,
+            action_type="DHCP_PROMOTE",
+            generation=action["generation"],
+            checksum=action["checksum"],
+            status="FAILED",
+            message="Synthetic response timeout after apply",
+        )
+        target.dhcp_running = target.dhcp_configured = target.dhcp_listener_active = target.ftl_active = True
+        target.dns_healthy = True
+        advance_failover(db, cluster)
+
+        assert run.status == "SUCCEEDED"
+        assert cluster.current_active_node_id == target.id
+        assert "Synthetic response timeout after apply" in run.report_json
+
+
+def test_final_verification_never_accepts_two_udp_67_listeners(monkeypatch):
+    with database() as db:
+        user, cluster, source, target = ready_pair(db)
+        monkeypatch.setattr("app.services.ha_failover.reconcile_cluster_leases", lambda db, cluster: cluster.lease_replication)
+        run = start_controlled_failover(db, cluster, target, user, confirmation="Test Pair", acknowledged=True)
+        run.phase = "VERIFYING_TARGET"
+        run.report_json = '{"verification_started_at":"2020-01-01T00:00:00"}'
+        source.vip_owned = False
+        target.vip_owned = True
+        source.dhcp_running = source.dhcp_configured = source.dhcp_listener_active = True
+        target.dhcp_running = target.dhcp_configured = target.dhcp_listener_active = target.ftl_active = True
+
+        advance_failover(db, cluster)
+
+        assert run.status == "FAILED_SAFE"
+        assert "current DHCP owners: Primary, Standby" in run.error_redacted
 
 
 def test_external_dhcp_failover_never_emits_dhcp_action():
@@ -200,9 +275,11 @@ def test_live_failover_page_can_reveal_failure_and_rollback_without_reload():
 
     assert "data-ha-failover-diagnostic" in template
     assert "data-ha-failover-error" in template
+    assert "data-ha-failover-warning-message" in template
     assert "data-ha-failover-rollback" in template
     assert 'data.failover.status !== "FAILED_SAFE"' in script
     assert "data.failover.error" in script
+    assert "data.failover.warnings" in script
 
 
 def test_unhealthy_dns_cannot_complete_promotion(monkeypatch):
@@ -218,7 +295,7 @@ def test_unhealthy_dns_cannot_complete_promotion(monkeypatch):
         advance_failover(db, cluster)
 
         assert run.status == "FAILED_SAFE"
-        assert "did not report healthy DNS" in run.error_redacted
+        assert "healthy DNS" in run.error_redacted
 
 
 def test_lease_replacement_preserves_service_ownership_and_mode(tmp_path, monkeypatch):
@@ -298,6 +375,26 @@ def test_dhcp_status_does_not_treat_config_flag_as_runtime_health(tmp_path, monk
     assert status["service_active"] is True
     assert status["listening"] is False
     assert status["dhcp_running"] is False
+
+
+def test_agent_reports_dhcp_configuration_listener_and_ftl_separately():
+    from ha_agent.failover_runtime import refresh_dhcp_state
+
+    values = {}
+    state = type("State", (), {"set": lambda self, key, value: values.__setitem__(key, value)})()
+    result = type("Result", (), {
+        "returncode": 0,
+        "stdout": '{"configured":true,"service_active":true,"listening":false,"dhcp_running":false}',
+    })()
+
+    refresh_dhcp_state(state, runner=lambda command: result)
+
+    assert values == {
+        "dhcp_configured": True,
+        "dhcp_listener_active": False,
+        "ftl_active": True,
+        "dhcp_running": False,
+    }
 
 
 def test_dhcp_promotion_fails_closed_when_udp_67_never_starts(monkeypatch):

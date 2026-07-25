@@ -55,6 +55,8 @@
         card.querySelectorAll('[data-ha-node-field="vip_owned"]').forEach((element) => { element.textContent = current ? (node.vip_owned ? "Owned" : "Not owned") : "Unknown — node offline"; });
         card.querySelectorAll('[data-ha-node-field="dns_healthy"]').forEach((element) => { element.textContent = current ? yesNo(node.dns_healthy, "Healthy", "Unhealthy") : "Unknown — node offline"; });
         card.querySelectorAll('[data-ha-node-field="dhcp_running"]').forEach((element) => { element.textContent = current ? (node.dhcp_running ? "Running" : "Stopped") : "Unknown — node offline"; });
+        card.querySelectorAll('[data-ha-node-field="dhcp_configured"]').forEach((element) => { element.textContent = current ? yesNo(node.dhcp_configured, "Enabled", "Disabled", "Awaiting agent data") : "Unknown — node offline"; });
+        card.querySelectorAll('[data-ha-node-field="dhcp_listener_active"]').forEach((element) => { element.textContent = current ? yesNo(node.dhcp_listener_active, "Listening", "Released", "Awaiting agent data") : "Unknown — node offline"; });
         card.querySelectorAll('[data-ha-node-field="peer_reachable"]').forEach((element) => {
           element.textContent = node.peer_icmp_probe_status === "UNAVAILABLE" ? "ICMP probe unavailable" : node.peer_reachable === true ? "Ping available" : node.peer_reachable === false ? "Ping unavailable" : "Not tested";
         });
@@ -209,6 +211,13 @@
       });
       document.querySelectorAll("[data-ha-failover-error]").forEach((element) => {
         element.textContent = data.failover.error || "";
+      });
+      document.querySelectorAll("[data-ha-failover-warning]").forEach((element) => {
+        element.hidden = !data.failover.warnings?.length;
+      });
+      document.querySelectorAll("[data-ha-failover-warning-message]").forEach((element) => {
+        const warnings = data.failover.warnings || [];
+        element.textContent = warnings[warnings.length - 1] || "";
       });
       document.querySelectorAll("[data-ha-failover-rollback]").forEach((element) => {
         element.hidden = data.failover.status !== "FAILED_SAFE";

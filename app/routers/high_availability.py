@@ -713,6 +713,8 @@ def cluster_live_status(public_id: str, db: Session = Depends(get_db), user=Depe
         sync_json[key] = value.isoformat() + "Z" if value else None
     ping_unavailable = sum(1 for node in current_nodes if node.peer_reachable is False)
     recovering_nodes = [item.node.display_name for item in recovery.values() if item.state in {"RECOVERING", "SYNCHRONISING", "VERIFYING"}]
+    redundancy = "AVAILABLE" if len(current_nodes) == 2 and all(node.dns_healthy is True for node in current_nodes) else "REDUCED"
+    control_plane = "HEALTHY" if len(current_nodes) == len(cluster.nodes) else "DEGRADED"
     return JSONResponse({
         "server_time": datetime.utcnow().isoformat() + "Z",
         "cluster": {
@@ -731,6 +733,8 @@ def cluster_live_status(public_id: str, db: Session = Depends(get_db), user=Depe
             "last_failover_at": cluster.last_failover_at.isoformat() + "Z" if cluster.last_failover_at else None,
             "unacknowledged_alerts": unacknowledged_alerts,
             "service_availability": consistency.service_availability,
+            "redundancy": redundancy,
+            "control_plane": control_plane,
             "ha_configuration": consistency.configuration_state,
             "consistency_issue_count": len(consistency.issues),
             "ha_readiness": "READY" if action_ready else "RECOVERING" if failback_recovery else "NEEDS_ATTENTION",
@@ -749,6 +753,9 @@ def cluster_live_status(public_id: str, db: Session = Depends(get_db), user=Depe
             "last_heartbeat_at": node.last_heartbeat_at.isoformat() + "Z" if node.last_heartbeat_at else None,
             "heartbeat_current": node in current_nodes,
             "dns_healthy": node.dns_healthy, "dhcp_running": node.dhcp_running,
+            "dhcp_configured": node.dhcp_configured,
+            "dhcp_listener_active": node.dhcp_listener_active,
+            "ftl_active": node.ftl_active,
             "vip_owned": node.vip_owned, "peer_reachable": node.peer_reachable,
             "peer_icmp_probe_status": node.peer_icmp_probe_status,
             "peer_dns_reachable": node.peer_dns_reachable,

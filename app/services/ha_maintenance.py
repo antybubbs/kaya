@@ -84,11 +84,24 @@ def _registered(node: HANode) -> bool:
     return bool(credential and credential.registered_at and credential.revoked_at is None)
 
 
+def _dhcp_active(node: HANode) -> bool:
+    configured = node.dhcp_configured if node.dhcp_configured is not None else node.dhcp_running
+    listening = node.dhcp_listener_active if node.dhcp_listener_active is not None else node.dhcp_running
+    ftl_active = node.ftl_active if node.ftl_active is not None else True
+    return bool(configured and listening and ftl_active and node.dhcp_running)
+
+
+def _dhcp_released(node: HANode) -> bool:
+    configured = node.dhcp_configured if node.dhcp_configured is not None else node.dhcp_running
+    listening = node.dhcp_listener_active if node.dhcp_listener_active is not None else node.dhcp_running
+    return configured is False and listening is False and node.dhcp_running is False
+
+
 def inspect_cluster(cluster: HACluster, *, now: datetime | None = None, since: datetime | None = None) -> ClusterInspection:
     current = now or datetime.utcnow()
     fresh_nodes = [node for node in cluster.nodes if _fresh(node, current, since=since)]
     vip_owners = [node for node in fresh_nodes if node.vip_owned]
-    dhcp_owners = [node for node in fresh_nodes if node.dhcp_running]
+    dhcp_owners = [node for node in fresh_nodes if _dhcp_active(node)]
     managed = pihole_manages_dhcp(cluster)
     issues: list[ConsistencyIssue] = []
 
@@ -217,6 +230,9 @@ def inspection_json(cluster: HACluster, inspection: ClusterInspection) -> dict[s
             "agent_generation": node.observed_generation,
             "dns_healthy": node.dns_healthy,
             "dhcp_running": node.dhcp_running,
+            "dhcp_configured": node.dhcp_configured,
+            "dhcp_listener_active": node.dhcp_listener_active,
+            "ftl_active": node.ftl_active,
             "vip_owned": node.vip_owned,
             "keepalived_running": node.keepalived_runtime_state == "RUNNING",
             "network_interface": node.network_interface,
@@ -545,7 +561,23 @@ def record_maintenance_action_result(
     if run is None or expected is None or generation != expected["generation"] or checksum != expected["checksum"]:
         raise HAMaintenanceError("The maintenance result does not match the current repair generation.")
     if status != "APPLIED":
-        return _fail_safe(db, run, message or f"{action_type} failed safely.")
+        if run.phase == "DEMOTING_STANDBY":
+            _set_phase(run, "VERIFYING_DHCP_RELEASE", f"Unexpected response while stopping DHCP on {node.display_name}; checking its fresh configuration and UDP/67 state")
+        elif run.phase == "PROMOTING_ACTIVE":
+            _set_phase(run, "VERIFYING_DHCP_ACTIVATION", f"Unexpected response while starting DHCP on {node.display_name}; checking the final two-node topology")
+        else:
+            return _fail_safe(db, run, message or f"{action_type} failed safely.")
+        run.error_redacted = str(message or f"{action_type} returned an unexpected result.")[:1000]
+        _event(
+            db,
+            run,
+            "cluster_reinitialisation_dhcp_warning",
+            "warning",
+            f"{node.display_name} returned an unexpected DHCP result. Kaya is verifying observed state before deciding whether repair failed.",
+            {"node_id": node.public_id, "action_type": action_type},
+        )
+        db.commit()
+        return run
     if run.phase == "DEMOTING_STANDBY":
         node.dhcp_running = False
         _set_phase(run, "REBUILDING_HA", f"DHCP stopped and verified on {node.display_name}")
@@ -674,6 +706,12 @@ def advance_reinitialisation(db: Session, run: HAMaintenanceRun) -> HAMaintenanc
         elif run.phase == "DEMOTING_STANDBY":
             db.commit()
             return run
+        elif run.phase == "VERIFYING_DHCP_RELEASE":
+            if _dhcp_released(standby):
+                _set_phase(run, "REBUILDING_HA", f"{standby.display_name} has now confirmed DHCP disabled and UDP/67 released")
+                run.error_redacted = None
+            elif datetime.utcnow() - run.phase_started_at > timedelta(seconds=45):
+                return _fail_safe(db, run, f"{standby.display_name} still reports DHCP configured or UDP port 67 listening after the bounded release window. Reinitialisation stopped before another DHCP owner was enabled.")
         elif run.phase == "REBUILDING_HA":
             _request_runtime_rebuild(db, run)
         elif run.phase == "WAITING_FOR_VIP":
@@ -700,6 +738,19 @@ def advance_reinitialisation(db: Session, run: HAMaintenanceRun) -> HAMaintenanc
         elif run.phase == "PROMOTING_ACTIVE":
             db.commit()
             return run
+        elif run.phase == "VERIFYING_DHCP_ACTIVATION":
+            fresh = inspect_cluster(cluster, since=run.phase_started_at)
+            if (
+                fresh.fresh
+                and fresh.vip_owner_ids == (target.id,)
+                and fresh.dhcp_owner_ids == (target.id,)
+                and _dhcp_released(standby)
+                and target.dns_healthy is True
+            ):
+                _set_phase(run, "VERIFYING", f"Final inspection confirmed {target.display_name} exclusively owns the Virtual IP and DHCP")
+                run.error_redacted = None
+            elif datetime.utcnow() - run.phase_started_at > timedelta(seconds=45):
+                return _fail_safe(db, run, "Final DHCP activation verification did not converge. Kaya could not confirm exactly one VIP and DHCP owner, so repair stopped without issuing another ownership change.")
         elif run.phase == "VERIFYING":
             blockers = validate_cluster_invariants(run)
             if blockers:

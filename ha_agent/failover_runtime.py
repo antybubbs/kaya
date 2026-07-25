@@ -10,7 +10,11 @@ def _run(command): return subprocess.run(command, capture_output=True, text=True
 def refresh_dhcp_state(state, *, runner=_run):
     result = runner(["sudo", "-n", HELPER, "status"])
     if result.returncode: raise FailoverRuntimeError("Pi-hole DHCP state could not be read.")
-    state.set("dhcp_running", bool(json.loads(result.stdout)["dhcp_running"]))
+    status = json.loads(result.stdout)
+    state.set("dhcp_configured", bool(status["configured"]))
+    state.set("dhcp_listener_active", bool(status["listening"]))
+    state.set("ftl_active", bool(status["service_active"]))
+    state.set("dhcp_running", bool(status["dhcp_running"]))
 
 def apply_failover_action(state, action, *, runner=_run):
     action_type, generation, checksum = action.get("action_type"), int(action.get("generation") or 0), action.get("checksum")
@@ -24,5 +28,8 @@ def apply_failover_action(state, action, *, runner=_run):
     try: output = json.loads(result.stdout or "{}")
     except json.JSONDecodeError as exc: raise FailoverRuntimeError("The DHCP helper returned an invalid response.") from exc
     if result.returncode or output.get("status") != "applied": raise FailoverRuntimeError(str(output.get("message") or "The DHCP transition failed."))
+    state.set("dhcp_configured", bool(output.get("configured")))
+    state.set("dhcp_listener_active", bool(output.get("listening")))
+    state.set("ftl_active", bool(output.get("service_active")))
     state.set("dhcp_running", bool(output.get("dhcp_running")))
     return {"action_id": action["action_id"], "action_type": action_type, "generation": generation, "status": "APPLIED", "checksum": checksum, "backup_reference": output.get("backup_reference"), "message": "The controlled DHCP transition was applied and verified."}

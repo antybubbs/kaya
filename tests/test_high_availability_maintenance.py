@@ -317,7 +317,7 @@ def test_backup_failure_changes_no_runtime_ownership(monkeypatch):
         assert before == (first.vip_owned, first.dhcp_running, second.vip_owned, second.dhcp_running)
 
 
-def test_failed_standby_dhcp_stop_never_promotes_target(monkeypatch):
+def test_failed_standby_dhcp_stop_waits_for_observed_release_and_never_promotes_target(monkeypatch):
     with database() as db:
         user, cluster, first, second = pair(db, split=True)
         run = start_reinitialisation(db, cluster, user, desired_active=second, authority=second, acknowledged=True)
@@ -332,8 +332,19 @@ def test_failed_standby_dhcp_stop_never_promotes_target(monkeypatch):
             status="FAILED",
             message="Synthetic DHCP stop failure",
         )
-        assert run.status == "FAILED_SAFE"
+        assert run.status == "RUNNING"
+        assert run.phase == "VERIFYING_DHCP_RELEASE"
         assert not second.dhcp_running
+
+        first.dhcp_running = False
+        first.dhcp_configured = False
+        first.dhcp_listener_active = False
+        first.last_heartbeat_at = run.phase_started_at + timedelta(seconds=1)
+        second.last_heartbeat_at = run.phase_started_at + timedelta(seconds=1)
+        db.commit()
+        advance_reinitialisation(db, run)
+
+        assert run.phase == "REBUILDING_HA"
 
 
 def test_vip_non_convergence_fails_without_starting_another_dhcp(monkeypatch):

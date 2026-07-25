@@ -171,6 +171,9 @@ def record_heartbeat(db: Session, node: HANode, heartbeat: HAAgentHeartbeat) -> 
     node.observed_generation = heartbeat.observed_generation
     node.vip_owned = heartbeat.vip_owned
     node.dhcp_running = heartbeat.dhcp_running
+    node.dhcp_configured = heartbeat.dhcp_configured
+    node.dhcp_listener_active = heartbeat.dhcp_listener_active
+    node.ftl_active = heartbeat.ftl_active
     node.dns_healthy = heartbeat.dns_healthy
     node.peer_reachable = heartbeat.peer_reachable
     icmp_probe_status = heartbeat.peer_icmp_probe_status
@@ -222,7 +225,7 @@ def record_heartbeat(db: Session, node: HANode, heartbeat: HAAgentHeartbeat) -> 
     maintenance = active_maintenance(node.cluster)
     if maintenance and maintenance.operation == "RECONCILE":
         reconcile_cluster_state(db, maintenance)
-    elif maintenance and maintenance.operation == "REINITIALISE" and maintenance.phase == "WAITING_FOR_REPORTS":
+    elif maintenance and maintenance.operation == "REINITIALISE":
         advance_reinitialisation(db, maintenance)
     if peer_changed:
         write_audit(

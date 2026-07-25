@@ -177,7 +177,7 @@ def main():
     with LOCK_FILE.open("a+") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if sys.argv[1] in {"demote", "automatic-demote"}:
-            _set_dhcp(False); print(json.dumps({"status": "applied", "dhcp_running": False})); return
+            status = _set_dhcp(False); print(json.dumps({"status": "applied", **status})); return
         if not _owns_vip() or _state("dns_healthy", False) is not True:
             raise RuntimeError("Promotion requires local VIP ownership and healthy DNS.")
         backup, ownership = _backup(generation)
@@ -186,12 +186,12 @@ def main():
             lease_generation = int(_state("failover_lease_generation", 0)) if not automatic else int(_state("lease_generation", 0))
             if not restore_original:
                 _atomic_write(LEASE_FILE, _lease_lines(lease_generation), ownership)
-            _set_dhcp(True)
+            status = _set_dhcp(True)
             _wait_for_dns()
         except Exception:
             try: _set_dhcp(False); _atomic_write(LEASE_FILE, backup.read_text(encoding="utf-8"), ownership)
             finally: raise
-        print(json.dumps({"status": "applied", "dhcp_running": True, "backup_reference": backup.name}))
+        print(json.dumps({"status": "applied", **status, "backup_reference": backup.name}))
 
 if __name__ == "__main__":
     try: main()

@@ -22,7 +22,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 
 PROTOCOL_VERSION = 1
-AGENT_VERSION = "0.2.5"
+AGENT_VERSION = "0.2.6"
 
 ICMP_AVAILABLE = "AVAILABLE"
 ICMP_NO_REPLY = "NO_REPLY"
@@ -271,7 +271,7 @@ def run_once(state: State) -> None:
         state.set("peer_reachable", None)
         state.set("peer_icmp_probe_status", None)
         state.set("peer_dns_reachable", None)
-    heartbeat = {"observed_role": state.get("observed_role", "STANDBY"), "observed_generation": int(state.get("observed_generation", 0)), "vip_owned": bool(state.get("vip_owned", False)), "dhcp_running": bool(state.get("dhcp_running", False)), "dns_healthy": bool(state.get("dns_healthy", False)), "peer_reachable": state.get("peer_reachable"), "peer_icmp_probe_status": state.get("peer_icmp_probe_status"), "peer_dns_reachable": state.get("peer_dns_reachable"), "lease_generation": int(state.get("lease_generation", 0)), "config_generation": int(state.get("config_generation", 0)), "agent_version": AGENT_VERSION, "keepalived_runtime_state": state.get("keepalived_runtime_state", "UNKNOWN")}
+    heartbeat = {"observed_role": state.get("observed_role", "STANDBY"), "observed_generation": int(state.get("observed_generation", 0)), "vip_owned": bool(state.get("vip_owned", False)), "dhcp_running": bool(state.get("dhcp_running", False)), "dhcp_configured": state.get("dhcp_configured"), "dhcp_listener_active": state.get("dhcp_listener_active"), "ftl_active": state.get("ftl_active"), "dns_healthy": bool(state.get("dns_healthy", False)), "peer_reachable": state.get("peer_reachable"), "peer_icmp_probe_status": state.get("peer_icmp_probe_status"), "peer_dns_reachable": state.get("peer_dns_reachable"), "lease_generation": int(state.get("lease_generation", 0)), "config_generation": int(state.get("config_generation", 0)), "agent_version": AGENT_VERSION, "keepalived_runtime_state": state.get("keepalived_runtime_state", "UNKNOWN")}
     response = signed_request(state, "POST", "/api/ha/agent/v1/heartbeat", heartbeat)
     reconcile_desired(state, response["desired"])
     action_result = state.get("pending_action_result")

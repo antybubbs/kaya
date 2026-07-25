@@ -21,6 +21,9 @@ class HAAgentHeartbeat(HAAgentMessage):
     observed_generation: int = Field(ge=0)
     vip_owned: bool
     dhcp_running: bool
+    dhcp_configured: bool | None = None
+    dhcp_listener_active: bool | None = None
+    ftl_active: bool | None = None
     dns_healthy: bool
     peer_reachable: bool | None = None
     peer_icmp_probe_status: str | None = Field(default=None, pattern="^(AVAILABLE|NO_REPLY|UNAVAILABLE)$")
@@ -104,6 +107,9 @@ class HANodeRead(BaseModel):
     observed_generation: int
     vip_owned: bool
     dhcp_running: bool
+    dhcp_configured: bool | None
+    dhcp_listener_active: bool | None
+    ftl_active: bool | None
     config_generation: int
     network_interface: str | None
     vrrp_priority: int | None

@@ -116,7 +116,7 @@ def test_settings_reject_unready_ha_cluster_instead_of_silently_ignoring_selecti
         assert provider.ha_cluster_id is None
 
 
-def test_ha_provider_refuses_ambiguous_vip_ownership():
+def test_ha_provider_keeps_safe_reads_available_through_vip_when_owner_is_ambiguous(monkeypatch):
     with database() as db:
         _, cluster, _, second = make_cluster(db)
         provider = DNSProviderConfig(name="HA", provider_type="pihole", base_url="http://192.0.2.53", ha_cluster_id=cluster.id)
@@ -124,9 +124,33 @@ def test_ha_provider_refuses_ambiguous_vip_ownership():
         second.vip_owned = True
         cluster.current_active_node_id = None
         db.commit()
+        seen = []
+        monkeypatch.setattr(
+            PiHoleProvider,
+            "test_connection",
+            lambda client: seen.append(client.config.base_url) or DNSProviderResult(True, "connected", {}),
+        )
         result = provider_for(provider).test_connection()
+        assert result.ok
+        assert seen == ["http://192.0.2.53"]
+
+
+def test_ha_provider_blocks_write_when_owner_is_ambiguous(monkeypatch):
+    with database() as db:
+        _, cluster, _, second = make_cluster(db)
+        provider = DNSProviderConfig(name="HA", provider_type="pihole", base_url="http://192.0.2.53", ha_cluster_id=cluster.id)
+        db.add(provider)
+        second.vip_owned = True
+        cluster.current_active_node_id = None
+        db.commit()
+        called = []
+        monkeypatch.setattr(PiHoleProvider, "update_blocklists", lambda client: called.append(True) or DNSProviderResult(True, "updated", {}))
+
+        result = provider_for(provider).update_blocklists()
+
         assert not result.ok
-        assert "one live Pi-hole VIP owner" in result.message
+        assert "requires confirmed HA ownership" in result.message
+        assert called == []
 
 
 def test_ha_provider_routes_to_current_owner_and_ignores_offline_cached_owner():

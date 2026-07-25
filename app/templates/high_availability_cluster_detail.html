@@ -21,6 +21,8 @@
 
 <section class="ha-summary-grid" aria-label="Live cluster summary">
   <article><span>Service availability</span><strong data-ha-cluster-field="service_availability">{{ 'Healthy' if active_node and active_node.dns_healthy else 'Checking' }}</strong><small>Can clients use the clustered service?</small></article>
+  <article><span>Redundancy</span><strong data-ha-cluster-field="redundancy">Checking</strong><small>Can another node failure be tolerated?</small></article>
+  <article><span>Control plane</span><strong data-ha-cluster-field="control_plane">Checking</strong><small>Are both signed agent reports current?</small></article>
   <article><span>HA readiness</span><strong data-ha-cluster-field="ha_readiness">{{ 'Ready' if action_ready else 'Recovering' if failback_recovery else 'Needs attention' }}</strong><small>Can the other node take over safely?</small></article>
   <article><span>HA configuration</span><strong data-ha-cluster-field="ha_configuration">{{ consistency.configuration_state|replace('_', ' ')|title }}</strong><small>Do VIP, DHCP, and stored roles agree?</small></article>
   <article title="The single DNS address used by your devices."><span>DNS Virtual IP</span><strong class="mono">{{ cluster.virtual_ip }}/{{ cluster.prefix_length }}</strong><small>The stable DNS address</small></article>
@@ -88,7 +90,9 @@
       <dl class="ha-node-facts">
         <div><dt>Observed role</dt><dd data-ha-node-field="observed_role">{{ node.observed_role|title if node.observed_role else 'Unknown' }}</dd></div>
         <div><dt>DNS</dt><dd data-ha-node-field="dns_healthy">{{ 'Healthy' if node.dns_healthy else 'Unhealthy' }}</dd></div>
-        <div><dt>DHCP</dt><dd data-ha-node-field="dhcp_running">{{ 'Running' if node.dhcp_running else 'Stopped' }}</dd></div>
+        <div><dt>DHCP service</dt><dd data-ha-node-field="dhcp_running">{{ 'Running' if node.dhcp_running else 'Stopped' }}</dd></div>
+        <div><dt>DHCP setting</dt><dd data-ha-node-field="dhcp_configured">{{ 'Enabled' if node.dhcp_configured else 'Disabled' if node.dhcp_configured is sameas false else 'Awaiting agent data' }}</dd></div>
+        <div><dt>UDP port 67</dt><dd data-ha-node-field="dhcp_listener_active">{{ 'Listening' if node.dhcp_listener_active else 'Released' if node.dhcp_listener_active is sameas false else 'Awaiting agent data' }}</dd></div>
         <div><dt>Virtual IP</dt><dd data-ha-node-field="vip_owned">{{ 'Owned' if node.vip_owned else 'Not owned' }}</dd></div>
       </dl>
       <h4>High availability</h4>
