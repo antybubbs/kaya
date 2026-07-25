@@ -1,4 +1,6 @@
 import asyncio
+import json
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -13,6 +15,11 @@ from app.main import app
 from app.models.models import AuditLog, BackupJob, BackupRecord, ComputeHost, ComputeInventoryItem, RemoteManagerSetting, User
 from app.routers.admin import set_backup_manager_feature
 from app.routers.backup_manager import agent_jobs, hash_agent_token, proxmox_backup_jobs, require_backup_user
+from app.services.compute_monitor import (
+    proxmox_backup_task_job_id,
+    proxmox_backup_task_status,
+    proxmox_matching_backup_task,
+)
 from app.services.site_settings import get_site_setting
 
 
@@ -154,3 +161,150 @@ def test_proxmox_backup_jobs_fall_back_to_job_id_without_a_comment():
 
         assert jobs[0]["name"] == "backup-fallback456"
         assert jobs[0]["job_id"] is None
+
+
+def test_proxmox_backup_history_uses_authoritative_job_id_with_overlapping_vmids():
+    jobs = [
+        {"id": "job-daily-local", "vmid": "100,101", "storage": "local"},
+        {"id": "job-daily-pbs", "vmid": "100,102", "storage": "pbs"},
+    ]
+    tasks = [
+        {
+            "id": "100",
+            "upid": "UPID:pve:latest-unrelated:vzdump:100:root@pam:",
+            "starttime": 4000,
+            "exitstatus": "OK",
+        },
+        {
+            "id": "100",
+            "job-id": "job-daily-local",
+            "trigger": "manual",
+            "upid": "UPID:pve:manual:vzdump:100:root@pam:",
+            "starttime": 3000,
+            "exitstatus": "ERROR",
+        },
+        {
+            "id": "100",
+            "trigger": "scheduled",
+            "upid": "UPID:pve:pbs:vzdump:100:root@pam:",
+            "starttime": 2000,
+            "exitstatus": "OK",
+            "_log": [{"n": 1, "t": "Job 'job-daily-pbs' triggered by schedule 'daily'."}],
+        },
+        {
+            "id": "100",
+            "trigger": "scheduled",
+            "upid": "UPID:pve:local-old:vzdump:100:root@pam:",
+            "starttime": 1000,
+            "exitstatus": "OK",
+            "_log": [{"n": 1, "t": "Job 'job-daily-local' triggered by schedule 'daily'."}],
+        },
+    ]
+
+    local_task = proxmox_matching_backup_task(jobs[0], tasks)
+    pbs_task = proxmox_matching_backup_task(jobs[1], tasks)
+
+    assert local_task["upid"] == "UPID:pve:manual:vzdump:100:root@pam:"
+    assert proxmox_backup_task_status(local_task) == "failed"
+    assert pbs_task["upid"] == "UPID:pve:pbs:vzdump:100:root@pam:"
+    assert proxmox_backup_task_status(pbs_task) == "successful"
+
+
+def test_proxmox_backup_history_sorts_actual_execution_timestamp_and_preserves_warning():
+    tasks = [
+        {"job_id": "job-a", "upid": "UPID:old", "starttime": 100, "exitstatus": "OK"},
+        {"backup-job": "job-a", "upid": "UPID:new", "starttime": "300", "status": "stopped", "exitstatus": "WARNINGS: 1"},
+        {"backup_job": "job-a", "upid": "UPID:middle", "starttime": 200, "exitstatus": "ERROR"},
+    ]
+
+    matched = proxmox_matching_backup_task({"id": "job-a", "vmid": "100"}, tasks)
+
+    assert matched["upid"] == "UPID:new"
+    assert proxmox_backup_task_status(matched) == "warning"
+
+
+def test_proxmox_backup_history_uses_direct_last_run_upid_relationship():
+    tasks = [
+        {"job-id": "job-a", "upid": "UPID:newest-by-id", "starttime": 300, "exitstatus": "OK"},
+        {"upid": "UPID:authoritative", "starttime": 400, "exitstatus": "ERROR"},
+    ]
+
+    matched = proxmox_matching_backup_task(
+        {"id": "job-a", "last-run-upid": "UPID:authoritative"},
+        tasks,
+    )
+
+    assert matched["upid"] == "UPID:authoritative"
+    assert proxmox_backup_task_status(matched) == "failed"
+
+
+def test_proxmox_backup_history_recognises_manual_job_id_log_and_no_history():
+    manual = {
+        "upid": "UPID:manual",
+        "starttime": 123,
+        "_log": [{"t": "INFO: starting new backup job: vzdump 100 --job-id 'job-manual' --storage local"}],
+    }
+
+    assert proxmox_backup_task_job_id(manual) == "job-manual"
+    assert proxmox_matching_backup_task({"id": "job-manual"}, [manual]) is manual
+    assert proxmox_matching_backup_task({"id": "job-never-ran"}, [manual]) is None
+    assert proxmox_backup_task_status(None) is None
+
+
+def test_proxmox_backup_jobs_display_unknown_without_execution_history():
+    with database() as db:
+        host = ComputeHost(name="PVE no history", platform="proxmox", base_url="https://pve.invalid")
+        db.add(host)
+        db.flush()
+        db.add(
+            ComputeInventoryItem(
+                host_id=host.id,
+                external_id="job-never-ran",
+                name="job-never-ran",
+                kind="backup",
+                status="enabled",
+                metadata_json='{"id":"job-never-ran","last_task":null,"last_status":null}',
+            )
+        )
+        db.commit()
+
+        job = proxmox_backup_jobs(db)[0]
+
+        assert job["last_run_at"] is None
+        assert job["last_status"] == "unknown"
+
+
+def test_proxmox_backup_jobs_use_task_execution_time_not_inventory_refresh_time():
+    execution_epoch = int(datetime(2026, 7, 25, 7, 15, tzinfo=timezone.utc).timestamp())
+    with database() as db:
+        host = ComputeHost(name="PVE timestamp", platform="proxmox", base_url="https://pve.invalid")
+        db.add(host)
+        db.flush()
+        db.add(
+            ComputeInventoryItem(
+                host_id=host.id,
+                external_id="job-timestamp",
+                name="job-timestamp",
+                kind="backup",
+                status="enabled",
+                last_seen_at=datetime(2026, 7, 25, 12, 0),
+                metadata_json=json.dumps(
+                    {
+                        "id": "job-timestamp",
+                        "last_task": {
+                            "upid": "UPID:pve:task",
+                            "starttime": execution_epoch,
+                            "exitstatus": "OK",
+                        },
+                        "last_status": "successful",
+                    }
+                ),
+            )
+        )
+        db.commit()
+
+        job = proxmox_backup_jobs(db)[0]
+
+        assert job["last_run_at"] == datetime(2026, 7, 25, 7, 15)
+        assert job["last_run_at"] != datetime(2026, 7, 25, 12, 0)
+        assert job["last_status"] == "successful"

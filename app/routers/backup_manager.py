@@ -1,7 +1,8 @@
 import json
 import hashlib
+import logging
 import secrets
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -18,6 +19,7 @@ from app.services.site_settings import get_site_setting
 
 router = APIRouter(prefix="/infrastructure/backup-manager", dependencies=[Depends(require_module_access("backup_manager"))])
 templates = Jinja2Templates(directory="app/templates")
+logger = logging.getLogger(__name__)
 
 
 def require_backup_user(request: Request, db: Session = Depends(get_db), user=Depends(require_user)):
@@ -356,9 +358,21 @@ def proxmox_backup_jobs(db: Session) -> list[dict]:
         last_run_at = None
         if last_task.get("starttime"):
             try:
-                last_run_at = datetime.fromtimestamp(int(last_task["starttime"]))
+                last_run_at = datetime.fromtimestamp(
+                    int(last_task["starttime"]),
+                    timezone.utc,
+                ).replace(tzinfo=None)
             except (TypeError, ValueError, OSError):
                 last_run_at = None
+        logger.debug(
+            "Proxmox backup display correlation kaya_job_id=%s proxmox_job_id=%s "
+            "matched_upid=%s execution_timestamp=%s status=%s",
+            item.id,
+            job_id,
+            last_task.get("upid"),
+            last_task.get("starttime"),
+            data.get("last_status") or "unknown",
+        )
         jobs.append(
             {
                 "host": host,
