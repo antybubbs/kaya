@@ -240,6 +240,75 @@ def test_pihole_collection_reconciliation_finishes_new_group_metadata(monkeypatc
     assert ("PUT", "/api/groups/Restricted", {"name": "Restricted", "comment": "No social media", "enabled": False}) in calls
 
 
+def test_pihole_collection_reconciliation_matches_renamed_default_group_by_id(monkeypatch):
+    client = object.__new__(PiHoleProvider)
+    source = {
+        "groups": {
+            "groups": [
+                {"id": 0, "name": "Main Clients", "comment": "The default group", "enabled": True},
+            ]
+        }
+    }
+    target = {
+        "groups": {
+            "groups": [
+                {"id": 0, "name": "Default", "comment": "", "enabled": True},
+            ]
+        }
+    }
+    calls = []
+    monkeypatch.setattr(client, "get_ha_configuration", lambda: DNSProviderResult(True, "loaded", {"configuration": target}))
+
+    def request(path, *, method="GET", payload=None):
+        calls.append((method, path, payload))
+        if path == "/api/groups/Default" and method == "PUT":
+            target["groups"]["groups"][0].update(payload)
+            return {}
+        if path == "/api/groups" and method == "GET":
+            return target["groups"]
+        return {}
+
+    monkeypatch.setattr(client, "_v6_request_json", request)
+    result = client.reconcile_ha_collections(source, allow_deletions=False)
+
+    assert result.ok
+    assert target["groups"]["groups"] == [
+        {"id": 0, "name": "Main Clients", "comment": "The default group", "enabled": True}
+    ]
+    assert not any(method == "POST" for method, _, _ in calls)
+    assert (
+        "PUT",
+        "/api/groups/Default",
+        {"name": "Main Clients", "comment": "The default group", "enabled": True},
+    ) in calls
+
+
+def test_pihole_collection_reconciliation_rejects_default_name_collision(monkeypatch):
+    client = object.__new__(PiHoleProvider)
+    source = {
+        "groups": {
+            "groups": [
+                {"id": 0, "name": "Main Clients", "comment": "", "enabled": True},
+            ]
+        }
+    }
+    target = {
+        "groups": {
+            "groups": [
+                {"id": 0, "name": "Default", "comment": "", "enabled": True},
+                {"id": 4, "name": "Main Clients", "comment": "", "enabled": True},
+            ]
+        }
+    }
+    monkeypatch.setattr(client, "get_ha_configuration", lambda: DNSProviderResult(True, "loaded", {"configuration": target}))
+    monkeypatch.setattr(client, "_v6_request_json", lambda *args, **kwargs: {})
+
+    result = client.reconcile_ha_collections(source, allow_deletions=True)
+
+    assert not result.ok
+    assert "separate group" in result.message
+
+
 def test_validation_report_ui_explains_safety_and_exclusions():
     template = Path("app/templates/high_availability_cluster_validation.html").read_text(encoding="utf-8")
     assert "Run Read-only Validation" in template

@@ -82,7 +82,16 @@ def _canonical_sync_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
 
     canonical = {key: item for key, item in value.items() if key not in COLLECTION_RECONCILIATION_GROUPS}
     canonical["groups"] = {"groups": sorted(
-        ({"name": str(row.get("name")), "comment": row.get("comment") or "", "enabled": bool(row.get("enabled", True))} for row in group_rows if isinstance(row, dict) and row.get("name")),
+        (
+            {
+                "name": str(row.get("name")),
+                "comment": row.get("comment") or "",
+                "enabled": bool(row.get("enabled", True)),
+                "builtin_default": str(row.get("id")) == "0",
+            }
+            for row in group_rows
+            if isinstance(row, dict) and row.get("name")
+        ),
         key=lambda row: row["name"],
     )}
     clients_value = value.get("clients") if isinstance(value.get("clients"), dict) else {}
@@ -116,7 +125,13 @@ def _collection_identities(group: str, value: Any) -> set[str]:
         key = group
         identity = "name" if group == "groups" else "client"
         rows = value.get(key)
-        return {str(row.get(identity)) for row in rows or [] if isinstance(row, dict) and row.get(identity)}
+        return {
+            "__pihole_default_group__"
+            if group == "groups" and row.get("builtin_default")
+            else str(row.get(identity))
+            for row in rows or []
+            if isinstance(row, dict) and row.get(identity)
+        }
     if group == "filtering":
         identities = set()
         lists_value = value.get("lists") if isinstance(value.get("lists"), dict) else {}
