@@ -5,6 +5,9 @@ import sys
 import re
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from app.services.dns_client_repair import repair_dns_client_identities
+
 DB_PATH = Path("/app/data/kaya.db")
 MODULE_KEYS = (
     "asset_manager", "backup_manager", "compute_manager", "dashboard", "dns_manager",
@@ -460,6 +463,12 @@ def main():
     cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_ha_agent_credentials_public_key ON ha_agent_credentials (public_key) WHERE public_key IS NOT NULL")
     if not ha_existed:
         migrations_applied.append("high_availability_draft_schema_v1")
+
+    repair_stats = repair_dns_client_identities(conn)
+    if repair_stats["merged"]:
+        migrations_applied.append(
+            f"dns_client_identity_repair ({repair_stats['before']} -> {repair_stats['after']})"
+        )
 
     conn.commit()
     cur.execute("PRAGMA foreign_keys = ON")

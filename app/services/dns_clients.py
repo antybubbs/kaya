@@ -117,7 +117,7 @@ def _compatible_mac(client: DNSRecognisedDevice, mac: str | None) -> bool:
     return not (mac and existing and mac != existing)
 
 
-def match_client(db: Session, provider: DNSProviderConfig, *, provider_client_id: str | None, mac: str | None, ip: str | None, hostname: str | None) -> tuple[DNSRecognisedDevice | None, str | None]:
+def match_client(db: Session, provider: DNSProviderConfig, *, provider_client_id: str | None, mac: str | None, ip: str | None, hostname: str | None, observed_at: datetime | None = None) -> tuple[DNSRecognisedDevice | None, str | None]:
     provider_ids = _provider_scope_ids(db, provider)
     hostname_key = normalise_hostname(hostname, ip)
     if mac:
@@ -142,7 +142,7 @@ def match_client(db: Session, provider: DNSProviderConfig, *, provider_client_id
             if leased_client and _compatible_mac(leased_client, mac):
                 return leased_client, "active_dhcp_lease"
         if hostname_key:
-            recent = datetime.utcnow() - timedelta(days=1)
+            recent = (observed_at or datetime.utcnow()) - timedelta(days=1)
             rows = db.query(DNSRecognisedDevice).filter(
                 DNSRecognisedDevice.provider_id.in_(provider_ids),
                 DNSRecognisedDevice.current_ip == ip,
@@ -166,6 +166,18 @@ def match_client(db: Session, provider: DNSProviderConfig, *, provider_client_id
         if len(rows) == 1 and not rows[0].normalised_mac:
             return rows[0], "hostname"
     return None, None
+
+
+def stable_identity_key(*, mac: str | None, provider_client_id: str | None, ip: str | None, hostname: str | None, observed_at: datetime) -> str:
+    """Build a constrained logical identity without treating an IP as permanent."""
+    if mac:
+        return f"mac:{mac}"
+    if provider_client_id:
+        digest = hashlib.sha256(provider_client_id.encode("utf-8")).hexdigest()[:32]
+        return f"provider-client:{digest}"
+    weak = f"{normalise_hostname(hostname, ip) or '-'}|{ip or '-'}"
+    digest = hashlib.sha256(weak.encode("utf-8")).hexdigest()[:32]
+    return f"weak:{digest}:{observed_at.date().isoformat()}"
 
 
 def _suggest_managed_record(db: Session, client: DNSRecognisedDevice) -> None:
@@ -232,19 +244,30 @@ def observe_client(db: Session, provider: DNSProviderConfig, observation: Any, g
     identity_type = "mac" if mac else "provider_client" if provider_client_id else "hostname_ip" if hostname_key and ip else "ip" if ip else "hostname"
     weak_identity = f"{hostname_key or '-'}|{ip or '-'}"
     identity_value = mac or provider_client_id or (f"{weak_identity}|{observed_at.date().isoformat()}" if in_dhcp_range else ip) or hostname_key
+    identity_key = stable_identity_key(mac=mac, provider_client_id=provider_client_id, ip=ip, hostname=hostname, observed_at=observed_at)
+    if not mac and not provider_client_id:
+        identity_value = identity_key
     client = db.query(DNSRecognisedDevice).filter(
-        DNSRecognisedDevice.provider_id.in_(_provider_scope_ids(db, provider)),
-        DNSRecognisedDevice.identity_type == identity_type,
-        DNSRecognisedDevice.identity_value == str(identity_value),
+        DNSRecognisedDevice.logical_provider_key == provider_key,
+        DNSRecognisedDevice.identity_key == identity_key,
     ).first()
+    if not client and (mac or provider_client_id):
+        client = db.query(DNSRecognisedDevice).filter(
+            DNSRecognisedDevice.provider_id.in_(_provider_scope_ids(db, provider)),
+            DNSRecognisedDevice.identity_type == identity_type,
+            DNSRecognisedDevice.identity_value == str(identity_value),
+        ).first()
     match_method = "provider_identity" if client else None
     if not client:
-        client, match_method = match_client(db, provider, provider_client_id=provider_client_id, mac=mac, ip=ip, hostname=hostname)
+        client, match_method = match_client(db, provider, provider_client_id=provider_client_id, mac=mac, ip=ip, hostname=hostname, observed_at=observed_at)
+        if client and client.identity_key:
+            identity_key = client.identity_key
     created = False
     if not client:
         candidate = DNSRecognisedDevice(
             provider_id=provider.id,
             logical_provider_key=provider_key,
+            identity_key=identity_key,
             provider_type=provider.provider_type,
             identity_type=identity_type,
             identity_value=str(identity_value),
@@ -266,7 +289,7 @@ def observe_client(db: Session, provider: DNSProviderConfig, observation: Any, g
             client = candidate
             created = True
         except IntegrityError:
-            client = db.query(DNSRecognisedDevice).filter_by(provider_id=provider.id, identity_type=identity_type, identity_value=str(identity_value)).first()
+            client = db.query(DNSRecognisedDevice).filter_by(logical_provider_key=provider_key, identity_key=identity_key).first()
             if client is None:
                 raise
             match_method = "provider_identity_race"
@@ -274,6 +297,9 @@ def observe_client(db: Session, provider: DNSProviderConfig, observation: Any, g
         _event(db, client, "client_discovered", "DNS client discovered", new=hostname or ip or mac, source=source)
     else:
         client.logical_provider_key = provider_key
+        # Promote a weak identity when a stable identifier becomes available.
+        if mac or provider_client_id or not client.identity_key:
+            client.identity_key = stable_identity_key(mac=mac or client.normalised_mac, provider_client_id=provider_client_id or client.provider_client_id, ip=ip or client.current_ip, hostname=hostname or client.hostname, observed_at=observed_at)
         if ip and client.current_ip and client.current_ip != ip:
             old = client.current_ip
             client.previous_ip = old

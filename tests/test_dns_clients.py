@@ -4,12 +4,14 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from sqlalchemy import create_engine, event
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.db.session import Base
 from app.models.models import DHCPLeaseHistory, DHCPRange, DNSClientEvent, DNSClientHostnameHistory, DNSClientIPHistory, DNSClientObservation, DNSClientTrafficEvent, DNSProviderConfig, DNSRecognisedDevice, HACluster, IPAddress, RemoteManagerSetting, VLAN
 from app.services.dns_clients import cleanup_dns_history, client_status, consolidate_strong_identity_duplicates, dhcp_range_for_ip, list_clients, list_dhcp_leases, normalise_mac, observe_client, reconcile_managed_matches
+from app.services.dns_client_repair import repair_dns_client_identities
 from app.services.dns_insights import NormalisedClient, _persist_client_traffic, _persist_dhcp_leases
 from app.routers import dns_manager
 from app.routers import ip_addresses
@@ -179,14 +181,90 @@ def test_macless_dhcp_client_repeatedly_observed_does_not_grow_logical_rows():
         db.add(DHCPRange(name="Clients", start_address="192.168.1.100", end_address="192.168.1.199"))
         db.commit()
         now = datetime.utcnow()
-        first = observe_client(db, provider, observation(hostname="printer", ip="192.168.1.150", mac=""), now)
-        db.commit()
-        second = observe_client(db, provider, observation(hostname="printer", ip="192.168.1.150", mac=""), now + timedelta(minutes=5))
-        db.commit()
-        assert first.id == second.id
+        ids = []
+        for poll in range(100):
+            client = observe_client(db, provider, observation(hostname="printer", ip="192.168.1.150", mac=""), now + timedelta(minutes=poll))
+            ids.append(client.id)
+            db.commit()
+        assert len(set(ids)) == 1
         assert db.query(DNSRecognisedDevice).count() == 1
-        assert second.observation_count == 2
-        assert db.query(DNSClientObservation).count() == 2
+        assert client.observation_count == 100
+        assert db.query(DNSClientObservation).count() == 100
+
+
+def test_macless_client_alternating_ha_members_keeps_status_and_enriches_with_mac():
+    make = factory()
+    with make() as db:
+        cluster = HACluster(name="Fake HAL-DNS")
+        db.add(cluster)
+        db.flush()
+        providers = [
+            DNSProviderConfig(name="Fake Pi-hole 1", provider_type="pihole", base_url="http://one.invalid", ha_cluster_id=cluster.id),
+            DNSProviderConfig(name="Fake Pi-hole 2", provider_type="pihole", base_url="http://two.invalid", ha_cluster_id=cluster.id),
+        ]
+        db.add_all(providers)
+        db.commit()
+        now = datetime.utcnow()
+        first = observe_client(db, providers[0], observation(hostname="lamp.home", ip="192.168.1.194", mac=""), now)
+        db.commit()
+        first.is_known = True
+        db.commit()
+        second = observe_client(db, providers[1], observation(hostname="lamp.home", ip="192.168.1.194", mac=""), now + timedelta(minutes=1))
+        db.commit()
+        enriched = observe_client(db, providers[0], observation(hostname="lamp.home", ip="192.168.1.194", mac="02:00:00:00:01:94"), now + timedelta(minutes=2))
+        db.commit()
+        assert first.id == second.id == enriched.id
+        assert db.query(DNSRecognisedDevice).count() == 1
+        assert enriched.is_known is True
+        assert enriched.normalised_mac == "02:00:00:00:01:94"
+        assert enriched.identity_key == "mac:02:00:00:00:01:94"
+        assert db.query(DNSClientObservation).count() == 3
+
+
+def test_logical_identity_constraint_rejects_racing_duplicate_insert():
+    make = factory()
+    with make() as db:
+        provider = setup_provider(db)
+        values = dict(provider_id=provider.id, logical_provider_key=f"provider:{provider.id}", identity_key="weak:fake-race:2026-07-26", identity_type="ip", current_ip="192.0.2.194")
+        db.add(DNSRecognisedDevice(identity_value="race-a", **values))
+        db.commit()
+        db.add(DNSRecognisedDevice(identity_value="race-b", **values))
+        try:
+            db.commit()
+            assert False, "logical identity uniqueness must reject the racing insert"
+        except IntegrityError:
+            db.rollback()
+        assert db.query(DNSRecognisedDevice).count() == 1
+
+
+def test_existing_null_mac_duplicate_repair_preserves_status_and_relationships():
+    make = factory()
+    with make() as db:
+        provider = setup_provider(db)
+        now = datetime.utcnow()
+        first = DNSRecognisedDevice(provider_id=provider.id, logical_provider_key=f"provider:{provider.id}", identity_type="dhcp_observation", identity_value="poll-1", hostname="lamp.home", normalised_hostname="lamp.home", current_ip="192.168.1.194", is_known=False, first_seen_at=now, last_seen_at=now, observation_count=1)
+        second = DNSRecognisedDevice(provider_id=provider.id, logical_provider_key=f"provider:{provider.id}", identity_type="dhcp_observation", identity_value="poll-2", hostname="lamp.home", normalised_hostname="lamp.home", current_ip="192.168.1.194", is_known=True, first_seen_at=now + timedelta(minutes=1), last_seen_at=now + timedelta(minutes=1), observation_count=1)
+        db.add_all([first, second])
+        db.flush()
+        db.add(DNSClientEvent(dns_client_id=second.id, event_type="marked_known", event_summary="Synthetic known action", provider_id=provider.id))
+        db.add(DNSClientIPHistory(dns_client_id=second.id, ip_address="192.168.1.194", first_seen_at=now, last_seen_at=now, observation_count=2, provider_id=provider.id))
+        db.commit()
+        raw = db.get_bind().raw_connection()
+        try:
+            stats = repair_dns_client_identities(raw)
+            raw.commit()
+        finally:
+            raw.close()
+        db.expire_all()
+        assert stats["before"] == 2 and stats["after"] == 1 and stats["merged"] == 1
+        survivor = db.query(DNSRecognisedDevice).one()
+        assert survivor.is_known is True
+        assert survivor.first_seen_at == now
+        assert survivor.last_seen_at == now + timedelta(minutes=1)
+        assert survivor.observation_count == 2
+        assert db.query(DNSClientObservation).filter_by(dns_client_id=survivor.id).count() == 2
+        assert db.query(DNSClientEvent).filter_by(dns_client_id=survivor.id).count() == 1
+        assert db.query(DNSClientIPHistory).filter_by(dns_client_id=survivor.id).count() == 1
 
 
 def test_dhcp_address_reuse_creates_distinct_lease_intervals_and_traffic_attribution():

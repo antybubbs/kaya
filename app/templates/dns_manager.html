@@ -586,7 +586,32 @@
 {% elif active_tab == 'dhcp' %}
 {% if demo_mode %}{% set rows = list_from_payload(dhcp.data if dhcp and dhcp.ok else {}, 'leases', 'data') %}{% else %}{% set rows = retained_dhcp_rows %}{% endif %}
 <section class="panel">
-  {% if not demo_mode %}<form class="table-panel-filters" method="get"><input type="hidden" name="tab" value="dhcp"><label>Status <select name="dhcp_status">{% for value, label in [('current','Active + recently ended'),('active','Active'),('recent','Recently ended'),('history','History'),('all','All')] %}<option value="{{ value }}" {% if dhcp_filters.status == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label><button type="submit">Filter</button></form>{% endif %}
+{% if not demo_mode %}
+<form class="table-panel-filters dns-dhcp-filters" method="get">
+  <input type="hidden" name="tab" value="dhcp">
+
+  <label>
+    Status
+    <span class="dns-dhcp-filter-row">
+      <select name="dhcp_status">
+        {% for value, label in [
+          ('current','Active + recently ended'),
+          ('active','Active'),
+          ('recent','Recently ended'),
+          ('history','History'),
+          ('all','All')
+        ] %}
+        <option value="{{ value }}" {% if dhcp_filters.status == value %}selected{% endif %}>
+          {{ label }}
+        </option>
+        {% endfor %}
+      </select>
+
+      <button type="submit">Filter</button>
+    </span>
+  </label>
+</form>
+{% endif %}
   <table data-table-key="dns-dhcp">
     <thead><tr><th>Status</th><th>Hostname</th><th>IP Address</th><th>MAC Address</th><th>Lease Start</th><th>Last Seen</th><th>Lease End / Expiry</th><th>VLAN / Range</th></tr></thead>
     <tbody>

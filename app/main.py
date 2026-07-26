@@ -39,6 +39,7 @@ from app.services.site_settings import (
     get_site_setting,
 )
 from app.services.version import refresh_latest_release, version_check_loop
+from app.services.dns_client_repair import repair_dns_client_identities
 from app.services.modules import (
     enabled_modules,
     grant_all_registered_modules,
@@ -810,6 +811,7 @@ def migrate_existing_database():
         conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_ha_clusters_active_virtual_ip ON ha_clusters (virtual_ip) WHERE virtual_ip IS NOT NULL AND deleted_at IS NULL"))
         conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_ha_nodes_cluster_connection ON ha_nodes (cluster_id, ha_connection_id) WHERE ha_connection_id IS NOT NULL"))
         conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_ha_agent_credentials_public_key ON ha_agent_credentials (public_key) WHERE public_key IS NOT NULL"))
+        repair_dns_client_identities(conn.connection.driver_connection)
 
 
 @app.on_event("startup")

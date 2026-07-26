@@ -491,10 +491,14 @@ class DNSStatisticsSnapshot(Base):
 
 class DNSRecognisedDevice(Base):
     __tablename__ = "dns_recognised_devices"
-    __table_args__ = (UniqueConstraint("provider_id", "identity_type", "identity_value", name="uq_dns_devices_provider_identity"),)
+    __table_args__ = (
+        UniqueConstraint("provider_id", "identity_type", "identity_value", name="uq_dns_devices_provider_identity"),
+        UniqueConstraint("logical_provider_key", "identity_key", name="uq_dns_devices_logical_identity"),
+    )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     provider_id: Mapped[int] = mapped_column(ForeignKey("dns_providers.id", ondelete="CASCADE"), index=True)
     logical_provider_key: Mapped[str] = mapped_column(String(80), default="", index=True)
+    identity_key: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     identity_type: Mapped[str] = mapped_column(String(30), index=True)
     identity_value: Mapped[str] = mapped_column(String(500), index=True)
     hostname: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
