@@ -93,7 +93,7 @@ jobs:
 
       - name: Build and push main commit image
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true
@@ -110,7 +110,7 @@ jobs:
 
       - name: Build and push development branch image
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/dev')
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true
@@ -128,7 +128,7 @@ jobs:
 
       - name: Build and push Kaya branch image
         if: github.event_name == 'push' && github.ref == 'refs/heads/Kaya'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true
@@ -145,7 +145,7 @@ jobs:
 
       - name: Build and push release image
         if: github.event_name == 'release' && steps.meta.outputs.stable_release == 'true'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true
