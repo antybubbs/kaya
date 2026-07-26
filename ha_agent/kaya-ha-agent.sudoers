@@ -5,3 +5,4 @@ kaya-ha ALL=(root) NOPASSWD: /usr/lib/kaya-ha-agent/kaya_ha_failover_helper.py d
 kaya-ha ALL=(root) NOPASSWD: /usr/lib/kaya-ha-agent/kaya_ha_failover_helper.py promote [0-9]*
 kaya-ha ALL=(root) NOPASSWD: /usr/lib/kaya-ha-agent/kaya_ha_failover_helper.py automatic-demote [0-9]*
 kaya-ha ALL=(root) NOPASSWD: /usr/lib/kaya-ha-agent/kaya_ha_failover_helper.py automatic-promote [0-9]*
+kaya-ha ALL=(root) NOPASSWD: /usr/lib/kaya-ha-agent/kaya_ha_resolver_helper.py apply *

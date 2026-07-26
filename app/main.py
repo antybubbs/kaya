@@ -26,6 +26,7 @@ from app.services.compute_monitor import compute_monitor_loop
 from app.services.dns_collector import dns_collector_loop
 from app.services.ha_lease_monitor import ha_lease_reconciliation_loop
 from app.services.ha_sync_monitor import ha_sync_monitor_loop
+from app.services.ha_watchdog import ha_watchdog_loop
 from app.services.audit import begin_request_context, end_request_context, request_event_written, write_audit
 from app.services.client_ip import TrustedProxyMiddleware, client_ip
 from app.services.site_settings import (
@@ -38,6 +39,7 @@ from app.services.site_settings import (
     get_site_setting,
 )
 from app.services.version import refresh_latest_release, version_check_loop
+from app.services.dns_client_repair import repair_dns_client_identities
 from app.services.modules import (
     enabled_modules,
     grant_all_registered_modules,
@@ -59,6 +61,7 @@ version_check_task = None
 secure_send_cleanup_task = None
 ha_lease_reconciliation_task = None
 ha_sync_monitor_task = None
+ha_watchdog_task = None
 app.state.demo_mode = settings.demo_mode
 app.state.demo_reset_schedule = settings.demo_reset_schedule
 
@@ -592,12 +595,13 @@ def migrate_existing_database():
 
         dns_device_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(dns_recognised_devices)"))}
         if not dns_device_columns:
-            conn.execute(text("CREATE TABLE dns_recognised_devices (id INTEGER NOT NULL PRIMARY KEY, provider_id INTEGER NOT NULL REFERENCES dns_providers(id) ON DELETE CASCADE, identity_type VARCHAR(30) NOT NULL, identity_value VARCHAR(500) NOT NULL, hostname VARCHAR(255), previous_hostname VARCHAR(255), current_ip VARCHAR(80), previous_ip VARCHAR(80), mac_address VARCHAR(120), provider_client_id VARCHAR(255), provider_type VARCHAR(40) DEFAULT 'pihole' NOT NULL, friendly_name VARCHAR(255), normalised_hostname VARCHAR(255), normalised_mac VARCHAR(17), is_known BOOLEAN DEFAULT 0 NOT NULL, is_ignored BOOLEAN DEFAULT 0 NOT NULL, last_synced_at DATETIME, linked_ip_record_id INTEGER REFERENCES ip_addresses(id) ON DELETE SET NULL, match_confidence INTEGER, match_method VARCHAR(80), observation_source VARCHAR(255), query_count INTEGER DEFAULT 0 NOT NULL, blocked_query_count INTEGER DEFAULT 0 NOT NULL, notes TEXT, hardware_asset_id INTEGER REFERENCES hardware_assets(id) ON DELETE SET NULL, first_seen_at DATETIME, last_seen_at DATETIME, is_suppressed BOOLEAN DEFAULT 0 NOT NULL, created_at DATETIME, updated_at DATETIME)"))
+            conn.execute(text("CREATE TABLE dns_recognised_devices (id INTEGER NOT NULL PRIMARY KEY, provider_id INTEGER NOT NULL REFERENCES dns_providers(id) ON DELETE CASCADE, logical_provider_key VARCHAR(80) DEFAULT '' NOT NULL, identity_type VARCHAR(30) NOT NULL, identity_value VARCHAR(500) NOT NULL, hostname VARCHAR(255), previous_hostname VARCHAR(255), current_ip VARCHAR(80), previous_ip VARCHAR(80), mac_address VARCHAR(120), provider_client_id VARCHAR(255), provider_type VARCHAR(40) DEFAULT 'pihole' NOT NULL, friendly_name VARCHAR(255), normalised_hostname VARCHAR(255), normalised_mac VARCHAR(17), is_known BOOLEAN DEFAULT 0 NOT NULL, is_ignored BOOLEAN DEFAULT 0 NOT NULL, last_synced_at DATETIME, linked_ip_record_id INTEGER REFERENCES ip_addresses(id) ON DELETE SET NULL, match_confidence INTEGER, match_method VARCHAR(80), observation_source VARCHAR(255), query_count INTEGER DEFAULT 0 NOT NULL, blocked_query_count INTEGER DEFAULT 0 NOT NULL, observation_count INTEGER DEFAULT 0 NOT NULL, notes TEXT, hardware_asset_id INTEGER REFERENCES hardware_assets(id) ON DELETE SET NULL, first_seen_at DATETIME, last_seen_at DATETIME, is_suppressed BOOLEAN DEFAULT 0 NOT NULL, created_at DATETIME, updated_at DATETIME)"))
             conn.execute(text("CREATE UNIQUE INDEX uq_dns_devices_provider_identity ON dns_recognised_devices (provider_id, identity_type, identity_value)"))
             for column in ["provider_id", "identity_type", "identity_value", "hostname", "current_ip", "mac_address", "provider_client_id", "hardware_asset_id", "first_seen_at", "last_seen_at", "is_suppressed"]:
                 conn.execute(text(f"CREATE INDEX ix_dns_recognised_devices_{column} ON dns_recognised_devices ({column})"))
         else:
             dns_client_columns = {
+                "logical_provider_key": "VARCHAR(80) DEFAULT '' NOT NULL",
                 "provider_type": "VARCHAR(40) DEFAULT 'pihole' NOT NULL",
                 "friendly_name": "VARCHAR(255)",
                 "normalised_hostname": "VARCHAR(255)",
@@ -612,6 +616,7 @@ def migrate_existing_database():
                 "observation_source": "VARCHAR(255)",
                 "query_count": "INTEGER DEFAULT 0 NOT NULL",
                 "blocked_query_count": "INTEGER DEFAULT 0 NOT NULL",
+                "observation_count": "INTEGER DEFAULT 0 NOT NULL",
                 "notes": "TEXT",
             }
             for column, definition in dns_client_columns.items():
@@ -619,10 +624,17 @@ def migrate_existing_database():
                     conn.execute(text(f"ALTER TABLE dns_recognised_devices ADD COLUMN {column} {definition}"))
                 conn.execute(text(f"CREATE INDEX IF NOT EXISTS ix_dns_recognised_devices_{column} ON dns_recognised_devices ({column})"))
             conn.execute(text("UPDATE dns_recognised_devices SET is_known = 1, is_ignored = COALESCE(is_suppressed, 0), normalised_hostname = LOWER(RTRIM(hostname, '.')), normalised_mac = LOWER(REPLACE(mac_address, '-', ':')), last_synced_at = COALESCE(last_synced_at, last_seen_at), provider_type = COALESCE(provider_type, 'pihole')"))
+        conn.execute(text("UPDATE dns_recognised_devices SET logical_provider_key = 'provider:' || provider_id WHERE logical_provider_key IS NULL OR logical_provider_key = ''"))
         refreshed_dns_device_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(dns_recognised_devices)"))}
         if "suggested_ip_record_id" not in refreshed_dns_device_columns:
             conn.execute(text("ALTER TABLE dns_recognised_devices ADD COLUMN suggested_ip_record_id INTEGER REFERENCES ip_addresses(id) ON DELETE SET NULL"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_dns_recognised_devices_suggested_ip_record_id ON dns_recognised_devices (suggested_ip_record_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_dns_recognised_devices_logical_provider_key ON dns_recognised_devices (logical_provider_key)"))
+        dns_observation_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(dns_client_observations)"))}
+        if not dns_observation_columns:
+            conn.execute(text("CREATE TABLE dns_client_observations (id INTEGER NOT NULL PRIMARY KEY, dns_client_id INTEGER NOT NULL REFERENCES dns_recognised_devices(id) ON DELETE CASCADE, provider_id INTEGER REFERENCES dns_providers(id) ON DELETE SET NULL, observation_key VARCHAR(64) NOT NULL, ip_address VARCHAR(80), mac_address VARCHAR(17), hostname VARCHAR(255), logical_provider_key VARCHAR(80) NOT NULL, source VARCHAR(255), source_member VARCHAR(120), observed_at DATETIME NOT NULL, created_at DATETIME NOT NULL, UNIQUE (provider_id, observation_key))"))
+            for column in ["dns_client_id", "provider_id", "observation_key", "ip_address", "mac_address", "hostname", "logical_provider_key", "source_member", "observed_at", "created_at"]:
+                conn.execute(text(f"CREATE INDEX ix_dns_client_observations_{column} ON dns_client_observations ({column})"))
         dns_traffic_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(dns_client_traffic_events)"))}
         if not dns_traffic_columns:
             conn.execute(text("CREATE TABLE dns_client_traffic_events (id INTEGER NOT NULL PRIMARY KEY, dns_client_id INTEGER NOT NULL REFERENCES dns_recognised_devices(id) ON DELETE CASCADE, provider_id INTEGER NOT NULL REFERENCES dns_providers(id) ON DELETE CASCADE, dhcp_lease_id INTEGER REFERENCES dhcp_lease_history(id) ON DELETE SET NULL, event_key VARCHAR(64) NOT NULL, client_ip VARCHAR(80), domain VARCHAR(500) NOT NULL, query_type VARCHAR(40), status VARCHAR(80), reply_type VARCHAR(120), reply_time_ms FLOAT, upstream VARCHAR(255), is_blocked BOOLEAN DEFAULT 0 NOT NULL, observed_at DATETIME NOT NULL, created_at DATETIME NOT NULL)"))
@@ -643,6 +655,7 @@ def migrate_existing_database():
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_dns_client_traffic_events_dhcp_lease_id ON dns_client_traffic_events (dhcp_lease_id)"))
         conn.execute(text("INSERT OR IGNORE INTO dns_client_ip_history (dns_client_id, ip_address, first_seen_at, last_seen_at, observation_count, provider_id, source, created_at, updated_at) SELECT id, current_ip, first_seen_at, last_seen_at, 1, provider_id, 'migration', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP FROM dns_recognised_devices WHERE current_ip IS NOT NULL AND current_ip != ''"))
         conn.execute(text("INSERT OR IGNORE INTO dns_client_hostname_history (dns_client_id, hostname, normalised_hostname, first_seen_at, last_seen_at, observation_count, provider_id, source, created_at, updated_at) SELECT id, hostname, LOWER(RTRIM(hostname, '.')), first_seen_at, last_seen_at, 1, provider_id, 'migration', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP FROM dns_recognised_devices WHERE hostname IS NOT NULL AND hostname != ''"))
+        conn.execute(text("UPDATE dns_recognised_devices SET observation_count = MAX(COALESCE((SELECT SUM(observation_count) FROM dns_client_ip_history WHERE dns_client_id = dns_recognised_devices.id), 0), COALESCE(observation_count, 0), 1)"))
 
         audit_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(audit_logs)"))}
         if audit_columns:
@@ -714,7 +727,8 @@ def migrate_existing_database():
         conn.execute(text("CREATE TABLE IF NOT EXISTS ha_drift_items (id INTEGER NOT NULL PRIMARY KEY, sync_run_id INTEGER NOT NULL REFERENCES ha_sync_runs(id) ON DELETE CASCADE, group_key VARCHAR(80) NOT NULL, risk VARCHAR(20) NOT NULL, status VARCHAR(30) DEFAULT 'DRIFT' NOT NULL, source_checksum VARCHAR(64) NOT NULL, target_checksum VARCHAR(64) NOT NULL, message VARCHAR(1000) NOT NULL)"))
         conn.execute(text("CREATE TABLE IF NOT EXISTS ha_lease_replication_states (id INTEGER NOT NULL PRIMARY KEY, cluster_id INTEGER NOT NULL UNIQUE REFERENCES ha_clusters(id) ON DELETE CASCADE, source_node_id INTEGER REFERENCES ha_nodes(id) ON DELETE SET NULL, target_node_id INTEGER REFERENCES ha_nodes(id) ON DELETE SET NULL, status VARCHAR(30) DEFAULT 'NOT_APPLICABLE' NOT NULL, desired_generation INTEGER DEFAULT 0 NOT NULL, applied_generation INTEGER DEFAULT 0 NOT NULL, lease_count INTEGER DEFAULT 0 NOT NULL, difference_count INTEGER DEFAULT 0 NOT NULL, conflict_count INTEGER DEFAULT 0 NOT NULL, last_event_at DATETIME, last_full_reconciliation_at DATETIME, last_applied_at DATETIME, last_error_redacted VARCHAR(1000), created_at DATETIME, updated_at DATETIME)"))
         conn.execute(text("CREATE TABLE IF NOT EXISTS ha_lease_snapshots (id INTEGER NOT NULL PRIMARY KEY, public_id VARCHAR(36) NOT NULL UNIQUE, cluster_id INTEGER NOT NULL REFERENCES ha_clusters(id) ON DELETE CASCADE, source_node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, target_node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, generation INTEGER NOT NULL, checksum VARCHAR(64) NOT NULL, encrypted_payload TEXT NOT NULL, lease_count INTEGER DEFAULT 0 NOT NULL, status VARCHAR(30) DEFAULT 'PENDING' NOT NULL, validation_summary_json TEXT DEFAULT '{}' NOT NULL, created_at DATETIME, staged_at DATETIME, CONSTRAINT uq_ha_lease_snapshot_generation UNIQUE (cluster_id, generation))"))
-        conn.execute(text("CREATE TABLE IF NOT EXISTS ha_failover_runs (id INTEGER NOT NULL PRIMARY KEY, public_id VARCHAR(36) NOT NULL UNIQUE, cluster_id INTEGER NOT NULL REFERENCES ha_clusters(id) ON DELETE CASCADE, source_node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, target_node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, status VARCHAR(30) DEFAULT 'RUNNING' NOT NULL, phase VARCHAR(50) DEFAULT 'PREFLIGHT' NOT NULL, dhcp_managed BOOLEAN DEFAULT 0 NOT NULL, lease_generation INTEGER DEFAULT 0 NOT NULL, role_generation INTEGER NOT NULL, error_redacted VARCHAR(1000), report_json TEXT DEFAULT '{}' NOT NULL, requested_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, started_at DATETIME, completed_at DATETIME, created_at DATETIME)"))
+        conn.execute(text("CREATE TABLE IF NOT EXISTS ha_failover_runs (id INTEGER NOT NULL PRIMARY KEY, public_id VARCHAR(36) NOT NULL UNIQUE, cluster_id INTEGER NOT NULL REFERENCES ha_clusters(id) ON DELETE CASCADE, source_node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, target_node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, preferred_node_id INTEGER REFERENCES ha_nodes(id) ON DELETE SET NULL, status VARCHAR(30) DEFAULT 'RUNNING' NOT NULL, phase VARCHAR(50) DEFAULT 'PREFLIGHT' NOT NULL, dhcp_managed BOOLEAN DEFAULT 0 NOT NULL, lease_generation INTEGER DEFAULT 0 NOT NULL, role_generation INTEGER NOT NULL, error_redacted VARCHAR(1000), report_json TEXT DEFAULT '{}' NOT NULL, requested_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, started_at DATETIME, completed_at DATETIME, created_at DATETIME)"))
+        conn.execute(text("CREATE TABLE IF NOT EXISTS ha_maintenance_runs (id INTEGER NOT NULL PRIMARY KEY, public_id VARCHAR(36) NOT NULL UNIQUE, cluster_id INTEGER NOT NULL REFERENCES ha_clusters(id) ON DELETE CASCADE, operation VARCHAR(30) NOT NULL, status VARCHAR(30) DEFAULT 'RUNNING' NOT NULL, phase VARCHAR(60) DEFAULT 'WAITING_FOR_REPORTS' NOT NULL, desired_active_node_id INTEGER REFERENCES ha_nodes(id) ON DELETE SET NULL, authoritative_node_id INTEGER REFERENCES ha_nodes(id) ON DELETE SET NULL, sync_run_id INTEGER REFERENCES ha_sync_runs(id) ON DELETE SET NULL, previous_state_json TEXT DEFAULT '{}' NOT NULL, result_json TEXT DEFAULT '{}' NOT NULL, error_redacted VARCHAR(1000), requested_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, phase_started_at DATETIME, started_at DATETIME, completed_at DATETIME, created_at DATETIME, updated_at DATETIME)"))
         ha_cluster_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(ha_clusters)"))}
         for column, definition in {"cluster_generation": "INTEGER DEFAULT 1 NOT NULL", "role_generation": "INTEGER DEFAULT 1 NOT NULL", "desired_sync_generation": "INTEGER DEFAULT 0 NOT NULL", "automatic_sync_enabled": "BOOLEAN DEFAULT 0 NOT NULL", "automatic_sync_allow_deletions": "BOOLEAN DEFAULT 0 NOT NULL", "deployment_mode": "VARCHAR(30)", "external_dhcp_provider": "VARCHAR(40)", "gateway_address": "VARCHAR(80)", "preferred_node_id": "INTEGER REFERENCES ha_nodes(id) ON DELETE SET NULL", "vrrp_router_id": "INTEGER", "keepalived_generation": "INTEGER DEFAULT 0 NOT NULL", "keepalived_status": "VARCHAR(40) DEFAULT 'NOT_CONFIGURED' NOT NULL", "keepalived_requested_at": "DATETIME", "keepalived_deployed_at": "DATETIME"}.items():
             if column not in ha_cluster_columns:
@@ -723,6 +737,7 @@ def migrate_existing_database():
         if "ha_cluster_id" not in dns_provider_columns:
             conn.execute(text("ALTER TABLE dns_providers ADD COLUMN ha_cluster_id INTEGER REFERENCES ha_clusters(id) ON DELETE SET NULL"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_dns_providers_ha_cluster_id ON dns_providers (ha_cluster_id)"))
+        conn.execute(text("UPDATE dns_recognised_devices SET logical_provider_key = 'ha-cluster:' || (SELECT ha_cluster_id FROM dns_providers WHERE dns_providers.id = dns_recognised_devices.provider_id) WHERE provider_id IN (SELECT id FROM dns_providers WHERE ha_cluster_id IS NOT NULL)"))
         conn.execute(text("UPDATE ha_clusters SET authoritative_node_id = (SELECT id FROM ha_nodes WHERE ha_nodes.cluster_id = ha_clusters.id AND role = 'ACTIVE' ORDER BY id LIMIT 1) WHERE authoritative_node_id IS NULL"))
         ha_node_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(ha_nodes)"))}
         for column, definition in {
@@ -734,10 +749,24 @@ def migrate_existing_database():
             "observed_generation": "INTEGER DEFAULT 0 NOT NULL",
             "vip_owned": "BOOLEAN DEFAULT 0 NOT NULL",
             "dhcp_running": "BOOLEAN DEFAULT 0 NOT NULL",
+            "dhcp_configured": "BOOLEAN",
+            "dhcp_listener_active": "BOOLEAN",
+            "ftl_active": "BOOLEAN",
+            "dhcp_runtime_state": "VARCHAR(30) DEFAULT 'UNKNOWN' NOT NULL",
+            "dhcp_observation_status": "VARCHAR(30) DEFAULT 'UNKNOWN' NOT NULL",
+            "dhcp_observed_at": "DATETIME",
+            "last_report_sequence": "INTEGER DEFAULT 0 NOT NULL",
+            "last_agent_reported_at": "DATETIME",
             "dns_healthy": "BOOLEAN",
             "peer_reachable": "BOOLEAN",
             "peer_icmp_probe_status": "VARCHAR(30)",
             "peer_dns_reachable": "BOOLEAN",
+            "resolver_manager": "VARCHAR(30)",
+            "resolver_nameservers_json": "TEXT",
+            "resolver_observation_status": "VARCHAR(30)",
+            "resolver_repair_generation": "INTEGER DEFAULT 0 NOT NULL",
+            "resolver_repair_status": "VARCHAR(30)",
+            "resolver_repair_last_error": "VARCHAR(1000)",
             "last_peer_attempt_at": "DATETIME",
             "last_peer_success_at": "DATETIME",
             "last_peer_dns_attempt_at": "DATETIME",
@@ -756,9 +785,13 @@ def migrate_existing_database():
         }.items():
             if column not in ha_node_columns:
                 conn.execute(text(f"ALTER TABLE ha_nodes ADD COLUMN {column} {definition}"))
+        ha_failover_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(ha_failover_runs)"))}
+        if "preferred_node_id" not in ha_failover_columns:
+            conn.execute(text("ALTER TABLE ha_failover_runs ADD COLUMN preferred_node_id INTEGER REFERENCES ha_nodes(id) ON DELETE SET NULL"))
         conn.execute(text("UPDATE ha_clusters SET preferred_node_id = (SELECT source_node_id FROM ha_failover_runs WHERE ha_failover_runs.cluster_id = ha_clusters.id ORDER BY created_at LIMIT 1) WHERE preferred_node_id IS NULL"))
         conn.execute(text("UPDATE ha_clusters SET preferred_node_id = (SELECT id FROM ha_nodes WHERE ha_nodes.cluster_id = ha_clusters.id AND ha_nodes.id != (SELECT node_id FROM ha_events WHERE ha_events.cluster_id = ha_clusters.id AND event_type = 'automatic_failover_reconciled' ORDER BY occurred_at LIMIT 1) ORDER BY id LIMIT 1) WHERE preferred_node_id IS NULL AND EXISTS (SELECT 1 FROM ha_events WHERE ha_events.cluster_id = ha_clusters.id AND event_type = 'automatic_failover_reconciled')"))
         conn.execute(text("UPDATE ha_clusters SET preferred_node_id = authoritative_node_id WHERE preferred_node_id IS NULL"))
+        conn.execute(text("UPDATE ha_failover_runs SET preferred_node_id = (SELECT preferred_node_id FROM ha_clusters WHERE ha_clusters.id = ha_failover_runs.cluster_id) WHERE preferred_node_id IS NULL"))
         ha_check_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(ha_health_checks)"))}
         if "remediation" not in ha_check_columns:
             conn.execute(text("ALTER TABLE ha_health_checks ADD COLUMN remediation TEXT"))
@@ -776,13 +809,15 @@ def migrate_existing_database():
             "ha_drift_items": ["sync_run_id", "group_key", "risk", "status"],
             "ha_lease_replication_states": ["cluster_id", "source_node_id", "target_node_id", "status", "last_full_reconciliation_at"],
             "ha_lease_snapshots": ["public_id", "cluster_id", "source_node_id", "target_node_id", "generation", "checksum", "status", "created_at"],
-            "ha_failover_runs": ["public_id", "cluster_id", "source_node_id", "target_node_id", "status", "phase", "role_generation", "requested_by_user_id", "created_at"],
+            "ha_failover_runs": ["public_id", "cluster_id", "source_node_id", "target_node_id", "preferred_node_id", "status", "phase", "role_generation", "requested_by_user_id", "created_at"],
+            "ha_maintenance_runs": ["public_id", "cluster_id", "operation", "status", "phase", "desired_active_node_id", "authoritative_node_id", "sync_run_id", "requested_by_user_id", "created_at"],
         }.items():
             for column in columns:
                 conn.execute(text(f"CREATE INDEX IF NOT EXISTS ix_{table}_{column} ON {table} ({column})"))
         conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_ha_clusters_active_virtual_ip ON ha_clusters (virtual_ip) WHERE virtual_ip IS NOT NULL AND deleted_at IS NULL"))
         conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_ha_nodes_cluster_connection ON ha_nodes (cluster_id, ha_connection_id) WHERE ha_connection_id IS NOT NULL"))
         conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_ha_agent_credentials_public_key ON ha_agent_credentials (public_key) WHERE public_key IS NOT NULL"))
+        repair_dns_client_identities(conn.connection.driver_connection)
 
 
 @app.on_event("startup")
@@ -794,7 +829,7 @@ async def on_startup():
     if settings.demo_mode:
         return
     start_kaya_remote_service()
-    global monitor_task, domain_poll_task, compute_monitor_task, dns_collector_task, secure_send_cleanup_task, ha_lease_reconciliation_task, ha_sync_monitor_task
+    global monitor_task, domain_poll_task, compute_monitor_task, dns_collector_task, secure_send_cleanup_task, ha_lease_reconciliation_task, ha_sync_monitor_task, ha_watchdog_task
     monitor_task = asyncio.create_task(monitor_loop())
     domain_poll_task = asyncio.create_task(domain_poll_loop())
     compute_monitor_task = asyncio.create_task(compute_monitor_loop())
@@ -802,6 +837,7 @@ async def on_startup():
     secure_send_cleanup_task = asyncio.create_task(secure_send_cleanup_loop())
     ha_lease_reconciliation_task = asyncio.create_task(ha_lease_reconciliation_loop())
     ha_sync_monitor_task = asyncio.create_task(ha_sync_monitor_loop())
+    ha_watchdog_task = asyncio.create_task(ha_watchdog_loop())
 
 
 @app.on_event("shutdown")
@@ -822,6 +858,8 @@ async def on_shutdown():
         ha_lease_reconciliation_task.cancel()
     if ha_sync_monitor_task:
         ha_sync_monitor_task.cancel()
+    if ha_watchdog_task:
+        ha_watchdog_task.cancel()
     stop_kaya_remote_service()
     stop_guacamole_bridge()
 

@@ -116,7 +116,7 @@ def test_settings_reject_unready_ha_cluster_instead_of_silently_ignoring_selecti
         assert provider.ha_cluster_id is None
 
 
-def test_ha_provider_refuses_ambiguous_vip_ownership():
+def test_ha_provider_keeps_safe_reads_available_through_vip_when_owner_is_ambiguous(monkeypatch):
     with database() as db:
         _, cluster, _, second = make_cluster(db)
         provider = DNSProviderConfig(name="HA", provider_type="pihole", base_url="http://192.0.2.53", ha_cluster_id=cluster.id)
@@ -124,9 +124,33 @@ def test_ha_provider_refuses_ambiguous_vip_ownership():
         second.vip_owned = True
         cluster.current_active_node_id = None
         db.commit()
+        seen = []
+        monkeypatch.setattr(
+            PiHoleProvider,
+            "test_connection",
+            lambda client: seen.append(client.config.base_url) or DNSProviderResult(True, "connected", {}),
+        )
         result = provider_for(provider).test_connection()
+        assert result.ok
+        assert seen == ["http://192.0.2.53"]
+
+
+def test_ha_provider_blocks_write_when_owner_is_ambiguous(monkeypatch):
+    with database() as db:
+        _, cluster, _, second = make_cluster(db)
+        provider = DNSProviderConfig(name="HA", provider_type="pihole", base_url="http://192.0.2.53", ha_cluster_id=cluster.id)
+        db.add(provider)
+        second.vip_owned = True
+        cluster.current_active_node_id = None
+        db.commit()
+        called = []
+        monkeypatch.setattr(PiHoleProvider, "update_blocklists", lambda client: called.append(True) or DNSProviderResult(True, "updated", {}))
+
+        result = provider_for(provider).update_blocklists()
+
         assert not result.ok
-        assert "one live Pi-hole VIP owner" in result.message
+        assert "requires confirmed HA ownership" in result.message
+        assert called == []
 
 
 def test_ha_provider_routes_to_current_owner_and_ignores_offline_cached_owner():
@@ -144,6 +168,24 @@ def test_ha_provider_routes_to_current_owner_and_ignores_offline_cached_owner():
         db.commit()
 
         active = provider_for(provider)._active_provider()
+        assert active.config.base_url == "http://two.invalid"
+
+
+def test_ha_provider_uses_canonical_vip_owner_when_cached_active_node_lags():
+    with database() as db:
+        _, cluster, first, second = make_cluster(db)
+        provider = DNSProviderConfig(name="HA", provider_type="pihole", base_url="http://192.0.2.53", ha_cluster_id=cluster.id)
+        db.add(provider)
+        first.last_heartbeat_at = second.last_heartbeat_at = datetime.utcnow()
+        first.vip_owned = False
+        second.vip_owned = True
+        second.dns_healthy = True
+        second.keepalived_runtime_state = "RUNNING"
+        cluster.current_active_node_id = first.id
+        db.commit()
+
+        active = provider_for(provider)._active_provider()
+
         assert active.config.base_url == "http://two.invalid"
 
 
@@ -239,9 +281,12 @@ def test_sync_creates_encrypted_backup_before_write_and_verifies():
         SyncPiHole.state = {f"ha-{source.ha_connection_id}": {"local_dns": source_value}, f"ha-{target.ha_connection_id}": {"local_dns": target_value}}
         SyncPiHole.writes = []
         run = create_sync_plan(db, cluster, user)
+        assert json.loads(run.plan_json)["required_sync_generation"] == 0
         execute_sync(db, cluster, run, client_factory=SyncPiHole)
         db.refresh(run)
         assert run.status == "SUCCEEDED"
+        assert cluster.desired_sync_generation == 1
+        assert json.loads(run.plan_json)["verified_sync_generation"] == 1
         assert len(run.backups) == 1
         assert run.backups[0].encrypted_snapshot != json.dumps({"local_dns": target_value}, sort_keys=True, separators=(",", ":"))
         assert SyncPiHole.writes == [(f"ha-{target.ha_connection_id}", "local_dns")]
@@ -265,6 +310,8 @@ def test_live_plan_refreshes_both_snapshots_before_review():
         run = create_live_sync_plan(db, cluster, user, client_factory=SyncPiHole)
 
         assert run.status == "PLANNED"
+        assert json.loads(run.plan_json)["required_sync_generation"] == cluster.desired_sync_generation
+        assert "verified_sync_generation" not in json.loads(run.plan_json)
         assert json.loads(source.configuration_snapshot_json)["local_dns"] == source_value
         assert json.loads(target.configuration_snapshot_json)["local_dns"] == target_value
 

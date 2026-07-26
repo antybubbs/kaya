@@ -1,11 +1,13 @@
 {% extends "base.html" %}
 {% block content %}
 {% include '_high_availability_cluster_header.html' %}
+{% include '_ha_transition_progress.html' %}
 {# Legacy safety assertion retained for regression coverage: Type <span class="mono">{{ cluster.name }}</span> to confirm #}
 {# Removing a cluster means stored nodes, connections, validation records, DNS links, and history remain preserved. #}
 {% if request.query_params.get('saved') %}<div class="success" role="status">Cluster saved. Start with the guided setup steps below.</div>{% endif %}
 {% if request.query_params.get('automatic') == 'enabled' %}<div class="success" role="status">Automatic failover is being deployed to both nodes. Automatic failback remains disabled.</div>{% endif %}
 {% if request.query_params.get('automatic') == 'disabled' %}<div class="success" role="status">Automatic failover is disabled. DNS and DHCP were not interrupted.</div>{% endif %}
+{% if request.query_params.get('dns_advertisement') == 'repaired' %}<div class="success" role="status">DHCP DNS advertisement repaired and verified on both Pi-holes.</div>{% endif %}
 {% if automatic_error|default(false) %}<div class="alert" role="alert"><strong>Automatic failover was not changed</strong><span>{{ automatic_error }}</span></div>{% endif %}
 
 <section class="panel ha-operations-hero">
@@ -13,9 +15,22 @@
   <div class="ha-current-time"><span>Current local date and time</span><strong data-ha-live-clock>Loading current time…</strong></div>
 </section>
 
+<section class="alert ha-cluster-consistency-alert" role="alert" data-ha-consistency-alert {% if not consistency.issues %}hidden{% endif %}>
+  <div><strong data-ha-consistency-title>{{ consistency.issues[0].title if consistency.issues else 'HA configuration needs attention' }}</strong><span data-ha-consistency-message>{{ consistency.issues[0].message if consistency.issues else '' }}</span></div>
+  <div class="ha-blocker-actions"><a class="button secondary" href="/high-availability/clusters/{{ cluster.public_id }}/maintenance">Diagnose and repair</a></div>
+</section>
+
+<section class="success" role="status" data-ha-single-node-service hidden>
+  <strong data-ha-cluster-field="service_status_title">Service remains available</strong>
+  <span data-ha-cluster-field="service_status_message"></span>
+</section>
+
 <section class="ha-summary-grid" aria-label="Live cluster summary">
   <article><span>Service availability</span><strong data-ha-cluster-field="service_availability">{{ 'Healthy' if active_node and active_node.dns_healthy else 'Checking' }}</strong><small>Can clients use the clustered service?</small></article>
-  <article><span>HA readiness</span><strong data-ha-cluster-field="ha_readiness">{{ 'Ready' if action_ready else 'Recovering' if failback_recovery else 'Needs attention' }}</strong><small>Can the other node take over safely?</small></article>
+  <article><span>Redundancy</span><strong data-ha-cluster-field="redundancy">Checking</strong><small>Can another node failure be tolerated?</small></article>
+  <article><span>Control plane</span><strong data-ha-cluster-field="control_plane">Checking</strong><small>Is the active service reporting signed live state?</small></article>
+  <article><span>HA readiness</span><strong data-ha-cluster-field="ha_readiness">{{ 'Needs attention' if resolver_attention else 'Ready' if action_ready else 'Recovering' if failback_recovery else 'Needs attention' }}</strong><small>Can the other node take over safely?</small></article>
+  <article><span>HA configuration</span><strong data-ha-cluster-field="ha_configuration">{{ consistency.configuration_state|replace('_', ' ')|title }}</strong><small>Do VIP, DHCP, and stored roles agree?</small></article>
   <article title="The single DNS address used by your devices."><span>DNS Virtual IP</span><strong class="mono">{{ cluster.virtual_ip }}/{{ cluster.prefix_length }}</strong><small>The stable DNS address</small></article>
   <article><span>Current active node</span><strong data-ha-cluster-field="active_node">{{ active_node.display_name if active_node else 'Confirming ownership' }}</strong><small>Currently owns the virtual IP</small></article>
   <article><span>Preferred node</span><strong data-ha-cluster-field="preferred_node">{{ preferred_node.display_name if preferred_node else 'Not set' }}</strong><small>Manual failback target after recovery</small></article>
@@ -35,6 +50,39 @@
   </div>
 </section>
 
+{% if pihole_manages_dhcp %}
+<section class="panel section-gap">
+  <div class="ha-section-heading">
+    <div>
+      <span class="ha-sync-eyebrow">DHCP DNS advertisement</span>
+      <h2>Stable DNS for every client</h2>
+      <p class="muted">The DNS Virtual IP is always advertised as the primary DNS server. During failover the Virtual IP moves to the active Pi-hole, so existing clients do not need to renew their DHCP lease.</p>
+    </div>
+    <span class="ha-readiness {{ 'ha-readiness--ready' if dns_advertisement and dns_advertisement.matches else 'ha-readiness--warning' }}" data-ha-cluster-field="dns_advertisement_status">{{ 'Correct' if dns_advertisement and dns_advertisement.matches else 'Needs attention' }}</span>
+  </div>
+  <div class="ha-summary-grid ha-dns-advertisement-grid">
+    <article><span>Primary DNS</span><strong class="mono" data-ha-cluster-field="dns_advertisement_primary">{{ dns_advertisement.expected[0] if dns_advertisement and dns_advertisement.expected else cluster.virtual_ip }}</strong><small>DNS Virtual IP · never changes during failover</small></article>
+    <article><span>Secondary DNS</span><strong class="mono" data-ha-cluster-field="dns_advertisement_secondary">{{ dns_advertisement.expected[1] if dns_advertisement and dns_advertisement.expected else 'Waiting for active node' }}</strong><small>Current standby Pi-hole</small></article>
+    <article><span>Observed Option 6</span><strong class="mono" data-ha-cluster-field="dns_advertisement_observed">{{ dns_advertisement.observed|join(', ') if dns_advertisement and dns_advertisement.observed else 'Not checked' }}</strong><small>Last read from the active Pi-hole</small></article>
+  </div>
+  {% if not dns_advertisement or not dns_advertisement.matches %}
+  <div class="alert" role="alert"><strong>DHCP DNS advertisement needs repair</strong><span>{{ dns_advertisement_warning }}</span>{% if dns_advertisement and dns_advertisement.error %}<small>{{ dns_advertisement.error }}</small>{% endif %}</div>
+  {% if user.role == 'admin' %}
+  <details class="ha-action-disclosure">
+    <summary class="button secondary">Repair DHCP DNS Advertisement</summary>
+    <form method="post" action="/high-availability/clusters/{{ cluster.public_id }}/dhcp-dns-advertisement/repair">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <p>Kaya will preserve unrelated dnsmasq settings, remove conflicting IPv4 Option 6 lines, configure each node with the Virtual IP first, and verify both nodes. Pi-hole may briefly reload its generated configuration.</p>
+      <label class="checkbox-row"><input type="checkbox" name="acknowledge_reload" value="1" required> I understand Pi-hole may briefly reload its generated configuration.</label>
+      <button class="button" type="submit">Repair and verify</button>
+    </form>
+  </details>
+  {% endif %}
+  {% endif %}
+  {% if dns_advertisement_error|default(false) %}<div class="alert" role="alert"><strong>Repair did not complete</strong><span>{{ dns_advertisement_error }}</span></div>{% endif %}
+</section>
+{% endif %}
+
 <section class="panel">
   <div class="ha-section-heading"><div><h2>Service nodes</h2><p class="muted">The current active node owns the DNS Virtual IP. Preferred identifies the node Kaya can return service to after a safe, user-approved failback.</p></div><a class="button secondary" href="/high-availability/clusters/{{ cluster.public_id }}/nodes">Manage nodes</a></div>
   <div class="ha-node-grid">
@@ -46,9 +94,12 @@
       <h3>{{ node.display_name }}</h3><p class="mono">{{ node.management_host }}</p>
       <h4>Service status</h4>
       <dl class="ha-node-facts">
+        <div><dt>Node state</dt><dd data-ha-node-field="service_state">Checking</dd></div>
         <div><dt>Observed role</dt><dd data-ha-node-field="observed_role">{{ node.observed_role|title if node.observed_role else 'Unknown' }}</dd></div>
         <div><dt>DNS</dt><dd data-ha-node-field="dns_healthy">{{ 'Healthy' if node.dns_healthy else 'Unhealthy' }}</dd></div>
-        <div><dt>DHCP</dt><dd data-ha-node-field="dhcp_running">{{ 'Running' if node.dhcp_running else 'Stopped' }}</dd></div>
+        <div><dt>DHCP service</dt><dd data-ha-node-field="dhcp_running">{{ 'Running' if node.dhcp_running else 'Stopped' }}</dd></div>
+        <div><dt>DHCP setting</dt><dd data-ha-node-field="dhcp_configured">{{ 'Enabled' if node.dhcp_configured else 'Disabled' if node.dhcp_configured is sameas false else 'Awaiting agent data' }}</dd></div>
+        <div><dt>UDP port 67</dt><dd data-ha-node-field="dhcp_listener_active">{{ 'Listening' if node.dhcp_listener_active else 'Released' if node.dhcp_listener_active is sameas false else 'Awaiting agent data' }}</dd></div>
         <div><dt>Virtual IP</dt><dd data-ha-node-field="vip_owned">{{ 'Owned' if node.vip_owned else 'Not owned' }}</dd></div>
       </dl>
       <h4>High availability</h4>
@@ -56,8 +107,23 @@
         <div><dt>Recovery state</dt><dd data-ha-node-field="recovery_state">{{ node_recovery.state|replace('_', ' ')|title }}</dd></div>
         <div><dt>Kaya connection</dt><dd data-ha-kaya-connection>{{ 'Reporting' if node.last_heartbeat_at else 'Waiting' }}</dd></div>
         <div><dt>Last Kaya heartbeat</dt><dd data-ha-node-field="last_heartbeat_at">{{ local_time(node.last_heartbeat_at, 'friendly') if node.last_heartbeat_at else 'Never' }}</dd></div>
+        <div><dt>Host DNS resolver</dt><dd data-ha-node-field="resolver_nameservers">{% if node.resolver_nameservers_json %}{{ node.resolver_nameservers_json|replace('[', '')|replace(']', '')|replace('"', '') }}{% else %}Awaiting agent data{% endif %}</dd></div>
+        <div><dt>Resolver management</dt><dd data-ha-node-field="resolver_manager">{{ node.resolver_manager|replace('_', ' ')|title if node.resolver_manager else 'Awaiting agent data' }}</dd></div>
+        <div><dt>Expected resolver</dt><dd class="mono">{{ cluster.virtual_ip }} (HA DNS Virtual IP)</dd></div>
         <div><dt>Peer Network Reachability</dt><dd data-ha-peer-status>{{ peer.display_label }}</dd></div>
       </dl>
+      {% if user.role == 'admin' and node.resolver_observation_status == 'FRESH' and node.resolver_manager == 'SYSTEMD_RESOLVED' and node.resolver_nameservers_json and cluster.virtual_ip not in node.resolver_nameservers_json %}
+      <details class="ha-action-disclosure">
+        <summary class="button secondary">Repair HA Node DNS</summary>
+        <form method="post" action="/high-availability/clusters/{{ cluster.public_id }}/nodes/{{ node.public_id }}/resolver/repair">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <p><strong>Preview:</strong> Kaya will back up its managed systemd-resolved drop-in, set this host to resolve through <span class="mono">{{ cluster.virtual_ip }}</span>, restart systemd-resolved, verify the effective resolver, and roll back automatically if verification fails. Pi-hole DNS and HA ownership are not changed.</p>
+          <label class="checkbox-row"><input type="checkbox" name="acknowledge_resolver_change" value="1" required> I understand this changes only this node's host resolver.</label>
+          <button class="button" type="submit">Back up, repair and verify</button>
+        </form>
+      </details>
+      {% endif %}
+      {% if node.resolver_repair_status == 'FAILED' %}<div class="alert" role="alert"><strong>Resolver repair rolled back</strong><span>{{ node.resolver_repair_last_error }}</span></div>{% endif %}
       <div class="ha-recovery-checks" data-ha-recovery-checks>
         {% for check in node_recovery.checks if check.required %}
         <div class="ha-recovery-check {{ 'is-pass' if check.passed else 'is-waiting' }}" data-ha-recovery-check="{{ check.key }}"><span aria-hidden="true">{{ '✓' if check.passed else '•' }}</span><span><strong>{{ check.label }}</strong><small>{{ check.detail }}</small></span></div>

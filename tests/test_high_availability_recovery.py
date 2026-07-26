@@ -9,6 +9,7 @@ from app.db.session import Base
 from app.models.models import (
     HAAgentCredential,
     HACluster,
+    HAEvent,
     HALeaseReplicationState,
     HANode,
     HASyncRun,
@@ -56,13 +57,19 @@ def recovered_pair(db: Session, now: datetime):
         observed_generation=3,
         vip_owned=False,
         dhcp_running=False,
+        dhcp_configured=False,
+        dhcp_listener_active=False,
+        ftl_active=True,
+        dhcp_runtime_state="STOPPED",
+        dhcp_observation_status="FRESH",
+        dhcp_observed_at=now,
         dns_healthy=True,
         peer_reachable=True,
         keepalived_status="DEPLOYED",
         keepalived_runtime_state="RUNNING",
         config_generation=7,
         lease_generation=11,
-        agent_version="0.1.5",
+        agent_version="0.2.13",
         recovery_state="OFFLINE",
     )
     active = HANode(
@@ -77,13 +84,19 @@ def recovered_pair(db: Session, now: datetime):
         observed_generation=3,
         vip_owned=True,
         dhcp_running=True,
+        dhcp_configured=True,
+        dhcp_listener_active=True,
+        ftl_active=True,
+        dhcp_runtime_state="RUNNING",
+        dhcp_observation_status="FRESH",
+        dhcp_observed_at=now,
         dns_healthy=True,
         peer_reachable=True,
         keepalived_status="DEPLOYED",
         keepalived_runtime_state="RUNNING",
         config_generation=7,
         lease_generation=11,
-        agent_version="0.1.5",
+        agent_version="0.2.13",
         last_heartbeat_at=now,
     )
     db.add_all([preferred, active])
@@ -142,8 +155,8 @@ def test_recovered_node_advances_only_after_sync_and_stability():
         )
         db.commit()
         assert evaluate_recovery(db, cluster, now=now + timedelta(seconds=2))[recovered.id].state == "VERIFYING"
-        recovered.last_heartbeat_at = now + timedelta(seconds=63)
-        active.last_heartbeat_at = now + timedelta(seconds=63)
+        recovered.last_heartbeat_at = recovered.dhcp_observed_at = now + timedelta(seconds=63)
+        active.last_heartbeat_at = active.dhcp_observed_at = now + timedelta(seconds=63)
         db.commit()
         ready = evaluate_recovery(db, cluster, now=now + timedelta(seconds=63))[recovered.id]
         assert ready.state == "STANDBY_READY"
@@ -305,3 +318,170 @@ def test_unavailable_ping_does_not_block_recovery_or_failback_readiness():
         assert peer_check.required is False
         assert recovery.ready is True
         assert recovery.state == "STANDBY_READY"
+
+
+def test_ready_standby_ignores_later_failed_sync_check_without_recovery_loop():
+    now = datetime.utcnow()
+    with database() as db:
+        _, cluster, standby, active = recovered_pair(db, now)
+        standby.last_heartbeat_at = standby.dhcp_observed_at = now
+        standby.recovery_started_at = now - timedelta(minutes=3)
+        standby.recovery_stable_since = now - timedelta(minutes=2)
+        standby.recovery_state = "STANDBY_READY"
+        db.add_all([
+            HASyncRun(
+                cluster_id=cluster.id,
+                source_node_id=active.id,
+                target_node_id=standby.id,
+                status="IN_SYNC",
+                plan_json="{}",
+                created_at=now - timedelta(minutes=2),
+                completed_at=now - timedelta(minutes=2),
+            ),
+            HASyncRun(
+                cluster_id=cluster.id,
+                source_node_id=active.id,
+                target_node_id=standby.id,
+                status="ROLLED_BACK",
+                plan_json="{}",
+                created_at=now - timedelta(seconds=5),
+                completed_at=now - timedelta(seconds=5),
+                error_redacted="Synthetic later diagnostic failure.",
+            ),
+        ])
+        db.commit()
+        event_count = db.query(HAEvent).filter(HAEvent.node_id == standby.id).count()
+
+        for offset in (0, 5, 10):
+            observed = now + timedelta(seconds=offset)
+            standby.last_heartbeat_at = standby.dhcp_observed_at = observed
+            active.last_heartbeat_at = active.dhcp_observed_at = observed
+            db.commit()
+            result = evaluate_recovery(db, cluster, now=observed)[standby.id]
+            assert result.state == "STANDBY_READY"
+            assert result.ready is True
+
+        assert db.query(HAEvent).filter(HAEvent.node_id == standby.id).count() == event_count
+
+
+def test_ready_standby_remains_quiescent_through_twelve_hours_of_observation_then_real_drift():
+    start = datetime.utcnow()
+    with database() as db:
+        _, cluster, standby, active = recovered_pair(db, start)
+        cluster.automatic_sync_enabled = True
+        standby.last_heartbeat_at = standby.dhcp_observed_at = start
+        standby.recovery_started_at = start - timedelta(minutes=3)
+        standby.recovery_stable_since = start - timedelta(minutes=2)
+        standby.recovery_state = "STANDBY_READY"
+        stable_since = standby.recovery_stable_since
+        db.add(HASyncRun(
+            cluster_id=cluster.id,
+            source_node_id=active.id,
+            target_node_id=standby.id,
+            status="IN_SYNC",
+            plan_json='{"groups":[],"required_sync_generation":0,"verified_sync_generation":0}',
+            completed_at=start,
+        ))
+        db.commit()
+        lifecycle_events = {
+            "node_recovery_synchronising",
+            "node_recovery_verifying",
+            "node_standby_ready",
+        }
+        initial_events = db.query(HAEvent).filter(
+            HAEvent.node_id == standby.id,
+            HAEvent.event_type.in_(lifecycle_events),
+        ).count()
+
+        observed = start
+        # 960 complete PENDING -> RUNNING -> SUCCEEDED checks at 15-second
+        # intervals simulate twelve hours of heartbeat and monitoring passes.
+        for _ in range(960):
+            run = HASyncRun(
+                cluster_id=cluster.id,
+                source_node_id=active.id,
+                target_node_id=standby.id,
+                status="PENDING",
+                plan_json='{"groups":[],"required_sync_generation":0}',
+            )
+            db.add(run)
+            for status in ("PENDING", "RUNNING", "SUCCEEDED"):
+                observed += timedelta(seconds=15)
+                run.status = status
+                if status == "SUCCEEDED":
+                    run.plan_json = '{"groups":[],"required_sync_generation":0,"verified_sync_generation":0}'
+                    run.completed_at = observed
+                standby.last_heartbeat_at = standby.dhcp_observed_at = observed
+                active.last_heartbeat_at = active.dhcp_observed_at = observed
+                db.commit()
+                result = evaluate_recovery(db, cluster, now=observed)[standby.id]
+                assert result.state == "STANDBY_READY"
+                assert standby.recovery_stable_since == stable_since
+            # Exercise the existing periodic reconciliation path as a no-op.
+            from app.services.ha_watchdog import reconcile_cluster
+            from app.services.ha_agents import desired_state
+            reconcile_cluster(db, cluster)
+            assert active.dhcp_running is True
+            assert active.dhcp_configured is True
+            assert active.dhcp_listener_active is True
+            assert desired_state(active)["failover"] is None
+
+        assert db.query(HAEvent).filter(
+            HAEvent.node_id == standby.id,
+            HAEvent.event_type.in_(lifecycle_events),
+        ).count() == initial_events
+
+        drift = HASyncRun(
+            cluster_id=cluster.id,
+            source_node_id=active.id,
+            target_node_id=standby.id,
+            status="PLANNED",
+            plan_json=(
+                '{"groups":[{"key":"local_dns","writable":true}],'
+                '"required_sync_generation":0}'
+            ),
+        )
+        db.add(drift)
+        observed += timedelta(seconds=15)
+        standby.last_heartbeat_at = standby.dhcp_observed_at = observed
+        active.last_heartbeat_at = active.dhcp_observed_at = observed
+        db.commit()
+
+        degraded = evaluate_recovery(db, cluster, now=observed)[standby.id]
+        assert degraded.state == "SYNCHRONISING"
+        assert standby.recovery_stable_since is None
+
+        cluster.desired_sync_generation = 1
+        drift.status = "SUCCEEDED"
+        drift.plan_json = (
+            '{"groups":[{"key":"local_dns","writable":true}],'
+            '"required_sync_generation":0,"verified_sync_generation":1}'
+        )
+        drift.completed_at = observed + timedelta(seconds=15)
+        observed += timedelta(seconds=15)
+        standby.last_heartbeat_at = standby.dhcp_observed_at = observed
+        active.last_heartbeat_at = active.dhcp_observed_at = observed
+        db.commit()
+
+        assert evaluate_recovery(db, cluster, now=observed)[standby.id].state == "VERIFYING"
+        observed += timedelta(seconds=61)
+        standby.last_heartbeat_at = standby.dhcp_observed_at = observed
+        active.last_heartbeat_at = active.dhcp_observed_at = observed
+        db.commit()
+        assert evaluate_recovery(db, cluster, now=observed)[standby.id].state == "STANDBY_READY"
+
+        final_events = db.query(HAEvent).filter(
+            HAEvent.node_id == standby.id,
+            HAEvent.event_type.in_(lifecycle_events),
+        ).count()
+        assert final_events == initial_events + 3
+        for _ in range(8):
+            observed += timedelta(seconds=15)
+            standby.last_heartbeat_at = standby.dhcp_observed_at = observed
+            active.last_heartbeat_at = active.dhcp_observed_at = observed
+            db.commit()
+            assert evaluate_recovery(db, cluster, now=observed)[standby.id].state == "STANDBY_READY"
+        assert db.query(HAEvent).filter(
+            HAEvent.node_id == standby.id,
+            HAEvent.event_type.in_(lifecycle_events),
+        ).count() == final_events

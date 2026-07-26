@@ -16,10 +16,11 @@ from starlette.requests import Request
 
 from app.db.session import Base
 from app.models.models import HAAgentCredential, HAAgentRequest, HACluster, HAEvent, HALeaseReplicationState, HANode
-from app.schemas.high_availability import HAAgentEventItem, HAAgentHeartbeat, HAAgentRegister
-from app.services.ha_agents import HAAgentError, authenticate_agent_request, create_bootstrap_token, desired_state, ingest_events, reconcile_vip_ownership, record_heartbeat, register_agent, revoke_agent
+from app.schemas.high_availability import HAAgentActionResult, HAAgentEventItem, HAAgentHeartbeat, HAAgentRegister
+from app.services.ha_agents import HAAgentError, authenticate_agent_request, create_bootstrap_token, desired_state, ingest_events, reconcile_vip_ownership, record_action_result, record_heartbeat, register_agent, revoke_agent
 from app.services.ha_clusters import soft_delete_cluster
-from ha_agent.kaya_ha_agent import ICMP_AVAILABLE, ICMP_NO_REPLY, ICMP_UNAVAILABLE, State, probe_icmp, reconcile_desired
+from app.services.ha_topology import reconcile_topology
+from ha_agent.kaya_ha_agent import AgentRequestError, ICMP_AVAILABLE, ICMP_NO_REPLY, ICMP_UNAVAILABLE, State, probe_icmp, reconcile_desired
 
 
 def database():
@@ -131,6 +132,25 @@ def test_signed_requests_expire_reject_replay_and_stop_after_revocation():
         assert revoked.value.status_code == 401
 
 
+def test_rejected_agent_report_logs_reason_without_signature_or_payload(caplog):
+    with database() as db:
+        cluster, primary, _ = cluster_with_nodes(db)
+        credential, token = create_bootstrap_token(db, primary)
+        registered_key = Ed25519PrivateKey.generate()
+        register_agent(db, registration_payload(cluster, primary, token, registered_key))
+        forged_key = Ed25519PrivateKey.generate()
+        payload = {"observed_role": "ACTIVE", "sensitive_marker": "must-not-appear-in-log"}
+        caplog.set_level("WARNING", logger="app.services.ha_agents")
+
+        with pytest.raises(HTTPException) as rejected:
+            asyncio.run(authenticate_agent_request(signed_request(credential.agent_id, forged_key, "/api/ha/agent/v1/heartbeat", payload, "request-safe-log"), db))
+
+        assert rejected.value.status_code == 401
+        assert "reason=signature_invalid" in caplog.text
+        assert "must-not-appear-in-log" not in caplog.text
+        assert "x-kaya-agent-signature" not in caplog.text.lower()
+
+
 def test_heartbeat_tracks_divergence_and_desired_state_has_no_commands():
     with database() as db:
         cluster, _, standby = cluster_with_nodes(db)
@@ -149,6 +169,187 @@ def test_heartbeat_tracks_divergence_and_desired_state_has_no_commands():
         assert state["desired_role"] == "STANDBY"
         assert state["automatic_failover"] is False
         assert state["allowed_actions"] == []
+
+
+def test_peer_dependent_host_resolver_is_reported_and_repair_is_generation_bound():
+    with database() as db:
+        cluster, primary, standby = cluster_with_nodes(db)
+        primary.management_host = "192.0.2.10"
+        standby.management_host = "192.0.2.11"
+        standby.network_interface = "eth0"
+        db.commit()
+        heartbeat = HAAgentHeartbeat(
+            report_sequence=1,
+            observed_role="STANDBY",
+            observed_generation=1,
+            vip_owned=False,
+            dhcp_running=False,
+            dns_healthy=True,
+            resolver_manager="SYSTEMD_RESOLVED",
+            resolver_nameservers=["192.0.2.10"],
+            resolver_observation_status="FRESH",
+            agent_version="0.2.12",
+        )
+        record_heartbeat(db, standby, heartbeat)
+        event = db.query(HAEvent).filter(HAEvent.event_type == "host_resolver_peer_dependent").one()
+        assert event.severity == "critical"
+        assert "Host resolver depends on peer node" in event.message
+        assert "192.0.2.10" not in event.details_json_redacted
+
+        standby.resolver_repair_generation = 1
+        standby.resolver_repair_status = "PENDING"
+        db.commit()
+        action = desired_state(standby)["resolver_repair"]
+        assert action["action_type"] == "RESOLVER_REPAIR"
+        assert action["virtual_ip"] == cluster.virtual_ip
+        assert action["network_interface"] == "eth0"
+        assert "RESOLVER_REPAIR" in desired_state(standby)["allowed_actions"]
+
+        record_action_result(db, standby, HAAgentActionResult(
+            action_id=action["action_id"],
+            action_type="RESOLVER_REPAIR",
+            generation=1,
+            status="APPLIED",
+            checksum=action["checksum"],
+            backup_reference="a" * 24,
+            message="Host resolver verified.",
+        ))
+        assert standby.resolver_repair_status == "APPLIED"
+        assert desired_state(standby)["resolver_repair"] is None
+
+
+def test_unavailable_dhcp_observation_does_not_become_stopped():
+    with database() as db:
+        _, primary, _ = cluster_with_nodes(db)
+        primary.dhcp_running = True
+        primary.dhcp_configured = True
+        primary.dhcp_listener_active = True
+        primary.ftl_active = True
+        primary.dhcp_runtime_state = "RUNNING"
+        primary.dhcp_observation_status = "FRESH"
+        db.commit()
+
+        record_heartbeat(
+            db,
+            primary,
+            HAAgentHeartbeat(
+                    report_sequence=1,
+                    observed_role="ACTIVE",
+                    observed_generation=0,
+                vip_owned=True,
+                dhcp_running=False,
+                dhcp_runtime_state="UNKNOWN",
+                dhcp_observation_status="UNAVAILABLE",
+                dns_healthy=True,
+                agent_version="0.2.7",
+            ),
+        )
+
+        assert primary.dhcp_running is True
+        assert primary.dhcp_runtime_state == "UNKNOWN"
+        assert primary.dhcp_observation_status == "UNAVAILABLE"
+        assert primary.dhcp_configured is None
+        assert primary.dhcp_listener_active is None
+
+
+def test_out_of_order_heartbeat_cannot_replace_newer_runtime_truth():
+    with database() as db:
+        _, primary, _ = cluster_with_nodes(db)
+        current = HAAgentHeartbeat(
+            report_sequence=2,
+            observed_role="ACTIVE",
+            observed_generation=0,
+            vip_owned=True,
+            dhcp_running=True,
+            dhcp_configured=True,
+            dhcp_listener_active=True,
+            ftl_active=True,
+            dhcp_runtime_state="RUNNING",
+            dhcp_observation_status="FRESH",
+            dns_healthy=True,
+            agent_version="0.2.7",
+        )
+        stale = HAAgentHeartbeat(
+            report_sequence=1,
+            observed_role="STANDBY",
+            observed_generation=0,
+            vip_owned=False,
+            dhcp_running=False,
+            dhcp_configured=False,
+            dhcp_listener_active=False,
+            ftl_active=True,
+            dhcp_runtime_state="STOPPED",
+            dhcp_observation_status="FRESH",
+            dns_healthy=False,
+            agent_version="0.2.7",
+        )
+
+        record_heartbeat(db, primary, current)
+        accepted_at = primary.last_heartbeat_at
+        _, accepted, reason = record_heartbeat(db, primary, stale, return_status=True)
+
+        assert accepted is False
+        assert reason == "out_of_order"
+        assert primary.last_report_sequence == 2
+        assert primary.last_heartbeat_at == accepted_at
+        assert primary.vip_owned is True
+        assert primary.dhcp_runtime_state == "RUNNING"
+        assert primary.dns_healthy is True
+
+
+def test_stale_signed_identity_can_safely_rebase_a_lost_local_report_sequence():
+    with database() as db:
+        _, primary, _ = cluster_with_nodes(db)
+        primary.last_report_sequence = 900
+        primary.last_heartbeat_at = datetime.utcnow() - timedelta(minutes=2)
+        primary.last_agent_reported_at = datetime.utcnow() - timedelta(minutes=2)
+        db.commit()
+
+        heartbeat = HAAgentHeartbeat(
+            report_sequence=1,
+            reported_at=datetime.utcnow(),
+            observed_role="ACTIVE",
+            observed_generation=4,
+            vip_owned=True,
+            dhcp_running=True,
+            dhcp_configured=True,
+            dhcp_listener_active=True,
+            ftl_active=True,
+            dhcp_runtime_state="RUNNING",
+            dhcp_observation_status="FRESH",
+            dns_healthy=True,
+            agent_version="0.2.9",
+        )
+        node, accepted, reason = record_heartbeat(db, primary, heartbeat, return_status=True)
+
+        assert accepted is True
+        assert reason == "sequence_rebased"
+        assert node.last_report_sequence == 1
+        assert node.last_heartbeat_at >= datetime.utcnow() - timedelta(seconds=2)
+        assert node.vip_owned is True
+        assert node.dns_healthy is True
+
+
+def test_hard_peer_failure_keeps_service_health_separate_from_redundancy():
+    with database() as db:
+        cluster, primary, standby = cluster_with_nodes(db)
+        cluster.deployment_mode = "DNS_DHCP"
+        now = datetime.utcnow()
+        primary.last_heartbeat_at = primary.dhcp_observed_at = now
+        primary.vip_owned = True
+        primary.dns_healthy = True
+        primary.dhcp_running = primary.dhcp_configured = primary.dhcp_listener_active = primary.ftl_active = True
+        primary.dhcp_runtime_state = "RUNNING"
+        primary.dhcp_observation_status = "FRESH"
+        standby.last_heartbeat_at = standby.dhcp_observed_at = now - timedelta(minutes=2)
+        standby.vip_owned = False
+        db.commit()
+
+        topology = reconcile_topology(cluster, now=now)
+
+        assert topology.service_availability == "HEALTHY"
+        assert topology.redundancy_state == "REDUCED"
+        assert topology.telemetry_state == "DEGRADED"
 
 
 def test_icmp_transition_is_informational_and_does_not_degrade_cluster():
@@ -208,7 +409,7 @@ def test_desired_state_supplies_offline_failover_safety_context():
         primary.management_host = "192.0.2.20"
         standby.management_host = "192.0.2.21"
         standby.network_interface = "eth0"
-        primary.agent_version = standby.agent_version = "0.2.2"
+        primary.agent_version = standby.agent_version = "0.2.7"
         db.commit()
         state = desired_state(standby)
         assert state["automatic_failover"] is True
@@ -232,8 +433,8 @@ def test_desired_state_keeps_automatic_failover_off_during_rolling_agent_update(
     with database() as db:
         cluster, primary, standby = cluster_with_nodes(db)
         cluster.automatic_failover_enabled = True
-        primary.agent_version = "0.2.2"
-        standby.agent_version = "0.2.1"
+        primary.agent_version = "0.2.7"
+        standby.agent_version = "0.2.6"
         db.commit()
 
         assert desired_state(primary)["automatic_failover"] is False
@@ -244,8 +445,8 @@ def test_non_safety_agent_update_does_not_disable_automatic_failover():
     with database() as db:
         cluster, primary, standby = cluster_with_nodes(db)
         cluster.automatic_failover_enabled = True
-        primary.agent_version = "0.2.2"
-        standby.agent_version = "0.2.3"
+        primary.agent_version = "0.2.7"
+        standby.agent_version = "0.2.8"
         db.commit()
 
         assert desired_state(primary)["automatic_failover"] is True
@@ -281,7 +482,7 @@ def test_verified_automatic_failover_event_immediately_adopts_the_surviving_owne
         primary.vip_owned = True
         db.commit()
 
-        record_heartbeat(db, standby, HAAgentHeartbeat(observed_role="ACTIVE", observed_generation=8, vip_owned=True, dhcp_running=True, dns_healthy=True, peer_reachable=False, lease_generation=0, config_generation=8, agent_version="0.2.2", keepalived_runtime_state="RUNNING"))
+        record_heartbeat(db, standby, HAAgentHeartbeat(observed_role="ACTIVE", observed_generation=8, vip_owned=True, dhcp_running=True, dhcp_configured=True, dhcp_listener_active=True, ftl_active=True, dhcp_runtime_state="RUNNING", dhcp_observation_status="FRESH", dns_healthy=True, peer_reachable=False, lease_generation=0, config_generation=8, agent_version="0.2.7", keepalived_runtime_state="RUNNING"))
         assert cluster.status == "DEGRADED"
         assert db.query(HAEvent).filter_by(event_type="ownership_transition_pending", severity="warning").one()
         assert db.query(HAEvent).filter_by(event_type="split_brain_detected").count() == 0
@@ -370,6 +571,12 @@ def test_completed_managed_failover_adopts_active_node_despite_stale_peer_dhcp_c
             node.dns_healthy = True
             node.vip_owned = True
             node.dhcp_running = True
+            node.dhcp_configured = True
+            node.dhcp_listener_active = True
+            node.ftl_active = True
+            node.dhcp_runtime_state = "RUNNING"
+            node.dhcp_observation_status = "FRESH"
+            node.dhcp_observed_at = datetime.utcnow()
         primary.last_heartbeat_at = datetime.utcnow() - timedelta(minutes=6)
         standby.last_heartbeat_at = datetime.utcnow()
         standby.observed_role = "ACTIVE"
@@ -397,6 +604,109 @@ def test_local_event_queue_survives_restart_and_rejects_stale_desired_state(tmp_
     assert second.get("last_valid_cluster_generation") == 8
     assert any(item["event_type"] == "stale_generation_rejected" for item in second.queued_events())
     second.db.close()
+
+
+def test_identical_dhcp_repair_desired_state_executes_once_until_result_is_delivered(tmp_path):
+    state = State(tmp_path)
+    calls = []
+    desired = {
+        "cluster_generation": 4,
+        "desired_role": "ACTIVE",
+        "role_generation": 2,
+        "automatic_failover": False,
+        "maintenance_mode": True,
+        "dhcp_managed": True,
+        "automatic_hold_down_seconds": 10,
+        "keepalived": None,
+        "lease_snapshot": None,
+        "failover": {
+            "action_id": "maintenance:fake:dhcp_promote:node",
+            "action_type": "DHCP_PROMOTE",
+            "generation": 2,
+            "checksum": "a" * 64,
+            "automatic": False,
+            "lease_generation": 7,
+            "restore_original": False,
+            "configuration_only": True,
+        },
+    }
+
+    def runner(command):
+        calls.append(command)
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({
+                "status": "applied",
+                "configured": True,
+                "service_active": True,
+                "listening": True,
+                "runtime_state": "RUNNING",
+                "observation_status": "FRESH",
+                "dhcp_running": True,
+            }),
+            stderr="",
+        )
+
+    reconcile_desired(state, desired, helper_runner=runner)
+    reconcile_desired(state, desired, helper_runner=runner)
+
+    assert len(calls) == 1
+    assert state.get("failover_configuration_only") is True
+    assert state.get("pending_failover_action_result")["status"] == "APPLIED"
+    state.db.close()
+
+
+def test_rejected_old_action_result_cannot_starve_failover_proof_or_heartbeats(tmp_path, monkeypatch):
+    from ha_agent import failover_runtime, kaya_ha_agent as transport, keepalived_runtime
+
+    state = State(tmp_path)
+    state.config_path.write_text('{"agent_id":"fake-agent","kaya_url":"https://kaya.invalid"}', encoding="utf-8")
+    state.set("pending_action_result", {"action_id": "obsolete", "action_type": "KEEPALIVED_APPLY", "generation": 1, "status": "FAILED", "message": "fake"})
+    event_id = state.queue_event("automatic_failover_completed", "warning", "Local failover completed without requiring Kaya.")
+    monkeypatch.setattr(keepalived_runtime, "refresh_vip_state", lambda value: None)
+    monkeypatch.setattr(failover_runtime, "refresh_dhcp_state", lambda value: None)
+    monkeypatch.setattr(transport.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0))
+    calls = []
+    desired = {
+        "cluster_generation": 4,
+        "desired_role": "ACTIVE",
+        "role_generation": 2,
+        "automatic_failover": True,
+        "maintenance_mode": False,
+        "dhcp_managed": True,
+        "automatic_hold_down_seconds": 10,
+        "keepalived": None,
+        "lease_snapshot": None,
+        "failover": None,
+    }
+
+    def signed_request(_state, method, path, payload=None):
+        calls.append(path)
+        if path == "/api/ha/agent/v1/heartbeat":
+            return {"accepted": True, "desired": desired}
+        if path == "/api/ha/agent/v1/action-result":
+            raise AgentRequestError("request_conflict", "Synthetic stale result.", status=409)
+        return {"accepted": 1}
+
+    monkeypatch.setattr(transport, "signed_request", signed_request)
+    transport.run_once(state)
+
+    assert calls[:3] == [
+        "/api/ha/agent/v1/heartbeat",
+        "/api/ha/agent/v1/events",
+        "/api/ha/agent/v1/action-result",
+    ]
+    assert state.queued_events() == []
+    assert state.get("pending_action_result")["action_id"] == "obsolete"
+    assert state.get("last_error")["reason"] == "request_conflict"
+
+    calls.clear()
+    transport.run_once(state)
+    assert calls[0] == "/api/ha/agent/v1/heartbeat"
+    assert "/api/ha/agent/v1/events" not in calls
+    assert state.get("report_sequence") == 2
+    assert event_id not in {item["event_id"] for item in state.queued_events()}
+    state.db.close()
 
 
 def test_agent_icmp_probe_distinguishes_no_reply_from_local_probe_unavailability():
@@ -433,6 +743,12 @@ def test_agent_routes_expose_only_fixed_protocol_operations():
     assert "Completely remove the Kaya HA agents" in template
     assert "standby node first" in template
     assert 'data-ha-command-origin="{{ agent_command_origin }}"' in template
+    overview = open("app/templates/high_availability_cluster_detail.html", encoding="utf-8").read()
+    live_script = open("app/static/js/ha_live.js", encoding="utf-8").read()
+    assert "Service remains available" in overview
+    assert 'data-ha-node-field="service_state"' in overview
+    assert "single_node_service" in live_script
+    assert 'node.service_state === "OFFLINE"' in live_script
 
 
 def test_agent_commands_use_the_browser_origin_without_trusting_forwarded_headers():

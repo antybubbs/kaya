@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session, joinedload
 from app.core.config import get_settings
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.db.session import get_db
-from app.models.models import DNSClientEvent, DNSClientHostnameHistory, DNSClientIPHistory, DNSClientTrafficEvent, DNSInsight, DNSInvestigation, DNSProviderConfig, DNSRecognisedDevice, DNSStatisticsSnapshot, IPAddress, RemoteManagerSetting, VLAN
+from app.models.models import DHCPLeaseHistory, DNSClientEvent, DNSClientHostnameHistory, DNSClientIPHistory, DNSClientObservation, DNSClientTrafficEvent, DNSInsight, DNSInvestigation, DNSProviderConfig, DNSRecognisedDevice, DNSStatisticsSnapshot, IPAddress, RemoteManagerSetting, VLAN
 from app.routers.auth import require_admin, require_editor, require_module_access, require_user
 from app.services.dns_providers import DNSProvider, DNSProviderResult, provider_for
 from app.services.audit import write_audit
@@ -30,7 +30,7 @@ from app.services.dns_insights import (
     calculate_health_score,
     insight_action_target,
 )
-from app.services.dns_clients import add_event, client_display_name, client_status, dhcp_range_for_ip, list_clients, normalise_mac
+from app.services.dns_clients import add_event, client_display_name, client_status, dhcp_range_for_ip, list_clients, list_dhcp_leases, normalise_mac
 
 router = APIRouter(prefix="/networking/dns-manager", dependencies=[Depends(require_module_access("dns_manager"))])
 templates = Jinja2Templates(directory="app/templates")
@@ -1078,6 +1078,8 @@ def merge_dns_clients(request: Request, client_id: int, duplicate_id: int = Form
             else:
                 item.dns_client_id = primary.id
     db.query(DNSClientEvent).filter_by(dns_client_id=duplicate.id).update({DNSClientEvent.dns_client_id: primary.id}, synchronize_session=False)
+    for model in (DNSClientObservation, DNSClientTrafficEvent, DHCPLeaseHistory):
+        db.query(model).filter(model.dns_client_id == duplicate.id).update({"dns_client_id": primary.id}, synchronize_session=False)
     primary.is_known = primary.is_known or duplicate.is_known
     primary.is_ignored = primary.is_ignored or duplicate.is_ignored
     primary.linked_ip_record_id = primary.linked_ip_record_id or duplicate.linked_ip_record_id
@@ -1086,6 +1088,7 @@ def merge_dns_clients(request: Request, client_id: int, duplicate_id: int = Form
         primary.notes = "\n\n".join(value for value in [primary.notes, duplicate.notes] if value)
     primary.first_seen_at = min(primary.first_seen_at, duplicate.first_seen_at)
     primary.last_seen_at = max(primary.last_seen_at, duplicate.last_seen_at)
+    primary.observation_count = int(primary.observation_count or 0) + int(duplicate.observation_count or 0)
     add_event(db, primary, "clients_merged", f"Merged retained DNS client {duplicate.id}", old=str(duplicate.id), new=str(primary.id))
     db.delete(duplicate)
     db.commit()
@@ -1216,6 +1219,8 @@ def dns_manager(
     client_q: str = Query("", max_length=200),
     client_status_filter: str = Query("", alias="client_status", max_length=40),
     client_page: int = Query(1, ge=1),
+    dhcp_status: str = Query("current", max_length=20),
+    dhcp_page: int = Query(1, ge=1),
     db: Session = Depends(get_db),
     user=Depends(require_user),
 ):
@@ -1236,6 +1241,8 @@ def dns_manager(
     investigations: list[DNSInvestigation] = []
     retained_client_rows: list[DNSRecognisedDevice] = []
     retained_client_total = 0
+    retained_dhcp_rows = []
+    retained_dhcp_total = 0
 
     if enabled and provider:
         if get_settings().demo_mode:
@@ -1279,7 +1286,9 @@ def dns_manager(
             elif active_tab == "local-dns":
                 local_dns = call_provider(provider, "get_local_dns_records", provider_client)
             elif active_tab == "dhcp":
-                dhcp = call_provider(provider, "get_dhcp_leases", provider_client)
+                # Retained lease intervals are populated by the collector. Page
+                # rendering stays bounded and does not wait for Pi-hole.
+                pass
             elif active_tab == "blocklists":
                 blocklists = call_provider(provider, "get_blocklists", provider_client)
 
@@ -1299,8 +1308,16 @@ def dns_manager(
     if active_tab == "clients" and not get_settings().demo_mode:
         retained_client_rows, retained_client_total = list_clients(
             db, provider_id=provider.id if provider else None, search=client_q,
-            status=client_status_filter, offset=(client_page - 1) * 100, limit=100,
+            status=client_status_filter, offset=(client_page - 1) * 50, limit=50,
         )
+    if active_tab == "dhcp" and not get_settings().demo_mode:
+        clean_dhcp_status = dhcp_status if dhcp_status in {"current", "active", "recent", "history", "all"} else "current"
+        retained_dhcp_rows, retained_dhcp_total = list_dhcp_leases(
+            db, provider_id=provider.id if provider else None, status=clean_dhcp_status,
+            offset=(dhcp_page - 1) * 50, limit=50,
+        )
+    else:
+        clean_dhcp_status = "current"
     insight_rows: list[DNSInsight] = []
     last_analysis_at = None
     health_score = None
@@ -1396,6 +1413,9 @@ def dns_manager(
             "retained_client_rows": retained_client_rows,
             "retained_client_total": retained_client_total,
             "client_filters": {"q": client_q, "status": client_status_filter, "page": client_page},
+            "retained_dhcp_rows": retained_dhcp_rows,
+            "retained_dhcp_total": retained_dhcp_total,
+            "dhcp_filters": {"status": clean_dhcp_status, "page": dhcp_page},
             "client_display_name": client_display_name,
             "client_status": client_status,
             "flagged_domains": flagged_domains,

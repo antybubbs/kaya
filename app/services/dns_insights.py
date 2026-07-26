@@ -267,10 +267,10 @@ def _client_label(client: NormalisedClient) -> str:
 
 
 def _identity(hostname: str, ip: str, mac: str, provider_client_id: str = "") -> tuple[str, str]:
-    if provider_client_id:
-        return "provider_client", provider_client_id
     if mac and mac != "-":
         return "mac", mac
+    if provider_client_id:
+        return "provider_client", provider_client_id
     if hostname and hostname not in {"-", ip}:
         return "hostname", _normalise_hostname(hostname)
     return "ip", ip

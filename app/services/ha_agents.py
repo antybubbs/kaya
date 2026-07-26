@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import json
+import logging
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -18,7 +19,15 @@ from app.services.ha_leases import HALeaseError, desired_lease_action, record_le
 from app.services.ha_failover import AUTOMATIC_AGENT_VERSION, HAFailoverError, advance_failover, desired_failover_action, record_failover_action_result
 from app.services.ha_agent_installer import CURRENT_AGENT_VERSION, version_tuple
 from app.services.audit import write_audit
-from app.services.ha_topology import pihole_manages_dhcp
+from app.services.ha_topology import dhcp_observation, pihole_manages_dhcp, reconcile_topology
+from app.services.ha_maintenance import (
+    HAMaintenanceError,
+    active_maintenance,
+    advance_reinitialisation,
+    desired_maintenance_action,
+    reconcile_cluster_state,
+    record_maintenance_action_result,
+)
 
 
 AGENT_PROTOCOL_VERSION = 1
@@ -27,10 +36,35 @@ REQUESTS_PER_MINUTE = 120
 BOOTSTRAP_LIFETIME_MINUTES = 15
 MAX_AGENT_BODY_BYTES = 256 * 1024
 SENSITIVE_DETAIL_PARTS = {"auth", "cookie", "credential", "key", "password", "secret", "session", "token"}
+logger = logging.getLogger(__name__)
 
 
 class HAAgentError(ValueError):
     pass
+
+
+def _reject_agent_request(
+    status: int,
+    detail: str,
+    reason: str,
+    *,
+    agent_id: str = "",
+    request_id: str = "",
+    node: HANode | None = None,
+) -> None:
+    # Agent IDs and node/cluster public IDs are non-secret correlation values.
+    # Signatures, request bodies, credentials, and full URLs are deliberately
+    # excluded from this operational log.
+    logger.warning(
+        "HA agent request rejected reason=%s status=%s agent=%s request=%s cluster=%s node=%s",
+        reason,
+        status,
+        (agent_id[:12] or "missing"),
+        (request_id[:12] or "missing"),
+        node.cluster.public_id if node else "unknown",
+        node.public_id if node else "unknown",
+    )
+    raise HTTPException(status, detail)
 
 
 def _token_hash(value: str) -> str:
@@ -98,6 +132,8 @@ def register_agent(db: Session, payload: HAAgentRegister) -> tuple[HAAgentCreden
     node.agent_id = credential.agent_id
     node.agent_version = payload.agent_version
     node.last_heartbeat_at = now
+    node.last_report_sequence = 0
+    node.last_agent_reported_at = None
     db.commit()
     db.refresh(credential)
     return credential, node
@@ -116,53 +152,140 @@ async def authenticate_agent_request(request: Request, db: Session) -> Authentic
     signature_text = request.headers.get("x-kaya-agent-signature", "").strip()
     protocol = request.headers.get("x-kaya-agent-protocol", "").strip()
     if not agent_id or not timestamp_text or not request_id or not signature_text:
-        raise HTTPException(401, "Missing agent authentication headers")
+        _reject_agent_request(401, "Missing agent authentication headers", "missing_authentication_headers", agent_id=agent_id, request_id=request_id)
     if protocol != str(AGENT_PROTOCOL_VERSION):
-        raise HTTPException(426, "Unsupported agent protocol version")
+        _reject_agent_request(426, "Unsupported agent protocol version", "protocol_mismatch", agent_id=agent_id, request_id=request_id)
     if len(request_id) > 80 or not all(character.isalnum() or character in "-_.:" for character in request_id):
-        raise HTTPException(400, "Invalid agent request ID")
+        _reject_agent_request(400, "Invalid agent request ID", "invalid_request_id", agent_id=agent_id, request_id=request_id)
     credential = db.query(HAAgentCredential).filter(HAAgentCredential.agent_id == agent_id).first()
     if credential is None or credential.revoked_at is not None or not credential.public_key or credential.registered_at is None or credential.node.cluster.deleted_at is not None:
-        raise HTTPException(401, "Invalid or revoked agent identity")
+        _reject_agent_request(401, "Invalid or revoked agent identity", "invalid_or_revoked_identity", agent_id=agent_id, request_id=request_id)
+    node = credential.node
     try:
         request_time = datetime.fromtimestamp(int(timestamp_text), timezone.utc).replace(tzinfo=None)
     except (ValueError, OverflowError):
-        raise HTTPException(400, "Invalid agent request timestamp")
+        _reject_agent_request(400, "Invalid agent request timestamp", "invalid_timestamp", agent_id=agent_id, request_id=request_id, node=node)
     now = datetime.utcnow()
     db.query(HAAgentRequest).filter(HAAgentRequest.received_at < now - timedelta(days=1)).delete(synchronize_session=False)
     if abs((now - request_time).total_seconds()) > REQUEST_WINDOW_SECONDS:
-        raise HTTPException(401, "Expired agent request")
+        _reject_agent_request(401, "Expired agent request", "expired_request", agent_id=agent_id, request_id=request_id, node=node)
     if db.query(HAAgentRequest.id).filter(HAAgentRequest.credential_id == credential.id, HAAgentRequest.request_id == request_id).first():
-        raise HTTPException(409, "Replayed agent request")
+        _reject_agent_request(409, "Replayed agent request", "replayed_request", agent_id=agent_id, request_id=request_id, node=node)
     recent = db.query(HAAgentRequest.id).filter(HAAgentRequest.credential_id == credential.id, HAAgentRequest.received_at >= now - timedelta(minutes=1)).count()
     if recent >= REQUESTS_PER_MINUTE:
-        raise HTTPException(429, "Agent request rate limit exceeded")
+        _reject_agent_request(429, "Agent request rate limit exceeded", "rate_limited", agent_id=agent_id, request_id=request_id, node=node)
     body = await request.body()
     if len(body) > MAX_AGENT_BODY_BYTES:
-        raise HTTPException(413, "Agent payload is too large")
+        _reject_agent_request(413, "Agent payload is too large", "payload_too_large", agent_id=agent_id, request_id=request_id, node=node)
     canonical = "\n".join((request.method.upper(), request.url.path, request_id, timestamp_text, hashlib.sha256(body).hexdigest())).encode()
     try:
         Ed25519PublicKey.from_public_bytes(_decode_urlsafe(credential.public_key)).verify(_decode_urlsafe(signature_text), canonical)
     except (InvalidSignature, ValueError, HAAgentError):
-        raise HTTPException(401, "Invalid agent request signature")
+        _reject_agent_request(401, "Invalid agent request signature", "signature_invalid", agent_id=agent_id, request_id=request_id, node=node)
     db.add(HAAgentRequest(credential_id=credential.id, request_id=request_id, request_timestamp=request_time))
     try:
         db.commit()
     except IntegrityError:
         db.rollback()
-        raise HTTPException(409, "Replayed agent request")
+        _reject_agent_request(409, "Replayed agent request", "request_id_conflict", agent_id=agent_id, request_id=request_id, node=node)
     return AuthenticatedAgent(credential, credential.node)
 
 
-def record_heartbeat(db: Session, node: HANode, heartbeat: HAAgentHeartbeat) -> HANode:
+def record_heartbeat(
+    db: Session,
+    node: HANode,
+    heartbeat: HAAgentHeartbeat,
+    *,
+    return_status: bool = False,
+) -> HANode | tuple[HANode, bool, str | None]:
+    received_at = datetime.utcnow()
+    reported_at = heartbeat.reported_at
+    if reported_at is not None and reported_at.tzinfo is not None:
+        reported_at = reported_at.astimezone(timezone.utc).replace(tzinfo=None)
+    sequence_rebased = False
+    if heartbeat.report_sequence and heartbeat.report_sequence <= node.last_report_sequence:
+        # Each HTTP request is independently timestamp-bounded, replay-checked,
+        # and signed by this node's registered Ed25519 identity. Permit a lost
+        # local sequence database to rebase only after the old server-side
+        # observation is stale and the signed agent timestamp is strictly newer.
+        old_observation_is_stale = bool(
+            node.last_heartbeat_at
+            and node.last_heartbeat_at < received_at - timedelta(seconds=HEARTBEAT_FRESH_SECONDS)
+        )
+        signed_time_is_current_and_newer = bool(
+            reported_at
+            and abs((received_at - reported_at).total_seconds()) <= REQUEST_WINDOW_SECONDS
+            and (node.last_agent_reported_at is None or reported_at > node.last_agent_reported_at)
+        )
+        if old_observation_is_stale and signed_time_is_current_and_newer:
+            sequence_rebased = True
+            logger.warning(
+                "HA agent heartbeat sequence rebased cluster=%s node=%s previous=%s received=%s",
+                node.cluster.public_id,
+                node.public_id,
+                node.last_report_sequence,
+                heartbeat.report_sequence,
+            )
+        else:
+            logger.warning(
+                "HA agent heartbeat ignored reason=out_of_order cluster=%s node=%s previous=%s received=%s",
+                node.cluster.public_id,
+                node.public_id,
+                node.last_report_sequence,
+                heartbeat.report_sequence,
+            )
+            result = (node, False, "out_of_order")
+            return result if return_status else node
     previous_peer = node.peer_reachable
     had_peer_result = node.last_peer_attempt_at is not None
+    peer_node = next((item for item in node.cluster.nodes if item.id != node.id), None)
+    try:
+        previous_resolvers = json.loads(node.resolver_nameservers_json or "[]")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        previous_resolvers = []
+    previous_peer_only = bool(peer_node and previous_resolvers and set(previous_resolvers) == {peer_node.management_host})
     node.agent_version = heartbeat.agent_version
-    node.last_heartbeat_at = datetime.utcnow()
+    node.last_heartbeat_at = received_at
+    node.last_report_sequence = heartbeat.report_sequence or node.last_report_sequence
+    node.last_agent_reported_at = reported_at or received_at
     node.observed_role = heartbeat.observed_role
     node.observed_generation = heartbeat.observed_generation
     node.vip_owned = heartbeat.vip_owned
-    node.dhcp_running = heartbeat.dhcp_running
+    observation_status = heartbeat.dhcp_observation_status
+    if observation_status is None:
+        observation_status = (
+            "FRESH"
+            if heartbeat.dhcp_configured is not None
+            and heartbeat.dhcp_listener_active is not None
+            and heartbeat.ftl_active is not None
+            else "UNKNOWN"
+        )
+    runtime_state = heartbeat.dhcp_runtime_state
+    if runtime_state is None and observation_status == "FRESH":
+        runtime_state = "RUNNING" if heartbeat.dhcp_running else "STOPPED"
+    node.dhcp_observation_status = observation_status
+    node.dhcp_runtime_state = runtime_state or "UNKNOWN"
+    observed_at = heartbeat.dhcp_observed_at
+    if observed_at is not None and observed_at.tzinfo is not None:
+        observed_at = observed_at.astimezone(timezone.utc).replace(tzinfo=None)
+    if observed_at is not None and abs((received_at - observed_at).total_seconds()) > REQUEST_WINDOW_SECONDS:
+        # The signed request time is already bounded. Do not let a badly
+        # configured agent clock make runtime evidence appear indefinitely
+        # fresh or predate a newer accepted report.
+        observed_at = received_at
+    node.dhcp_observed_at = observed_at or received_at
+    if observation_status == "FRESH":
+        node.dhcp_configured = heartbeat.dhcp_configured
+        node.dhcp_listener_active = heartbeat.dhcp_listener_active
+        node.ftl_active = heartbeat.ftl_active
+        node.dhcp_running = node.dhcp_runtime_state == "RUNNING"
+    else:
+        # Preserve the last known boolean for backwards-compatible history,
+        # while the explicit observation status prevents it being used as
+        # current runtime truth.
+        node.dhcp_configured = None
+        node.dhcp_listener_active = None
+        node.ftl_active = None
     node.dns_healthy = heartbeat.dns_healthy
     node.peer_reachable = heartbeat.peer_reachable
     icmp_probe_status = heartbeat.peer_icmp_probe_status
@@ -170,6 +293,35 @@ def record_heartbeat(db: Session, node: HANode, heartbeat: HAAgentHeartbeat) -> 
         icmp_probe_status = "AVAILABLE" if heartbeat.peer_reachable else "NO_REPLY"
     node.peer_icmp_probe_status = icmp_probe_status
     node.peer_dns_reachable = heartbeat.peer_dns_reachable
+    resolver_reported = heartbeat.resolver_observation_status is not None
+    current_resolvers = [str(value) for value in heartbeat.resolver_nameservers]
+    current_peer_only = previous_peer_only
+    if resolver_reported:
+        node.resolver_manager = heartbeat.resolver_manager
+        node.resolver_nameservers_json = json.dumps(current_resolvers, separators=(",", ":"))
+        node.resolver_observation_status = heartbeat.resolver_observation_status
+        current_peer_only = bool(
+            heartbeat.resolver_observation_status == "FRESH"
+            and peer_node
+            and current_resolvers
+            and set(current_resolvers) == {peer_node.management_host}
+        )
+    if resolver_reported and current_peer_only != previous_peer_only:
+        unsafe = current_peer_only
+        db.add(HAEvent(
+            cluster_id=node.cluster_id,
+            node_id=node.id,
+            event_type="host_resolver_peer_dependent" if unsafe else "host_resolver_independence_restored",
+            severity="critical" if unsafe else "info",
+            source="agent",
+            message=(
+                "Host resolver depends on peer node. Agent reporting may fail during peer outage. Configure host DNS to use HA VIP."
+                if unsafe
+                else f"{node.display_name} no longer depends exclusively on its peer for host DNS resolution."
+            ),
+            details_json_redacted=json.dumps({"resolver_manager": heartbeat.resolver_manager, "expected": "ha_virtual_ip"}, sort_keys=True),
+            occurred_at=node.last_heartbeat_at,
+        ))
     if icmp_probe_status is not None:
         node.last_peer_attempt_at = node.last_heartbeat_at
         if icmp_probe_status == "AVAILABLE":
@@ -211,6 +363,17 @@ def record_heartbeat(db: Session, node: HANode, heartbeat: HAAgentHeartbeat) -> 
     advance_failover(db, node.cluster)
     from app.services.ha_recovery import evaluate_recovery
     evaluate_recovery(db, node.cluster)
+    maintenance = active_maintenance(node.cluster)
+    if maintenance and maintenance.operation == "RECONCILE":
+        reconcile_cluster_state(db, maintenance)
+    elif maintenance and maintenance.operation == "REINITIALISE":
+        advance_reinitialisation(db, maintenance)
+    elif maintenance and maintenance.operation == "DHCP_SELF_HEAL":
+        from app.services.ha_maintenance import advance_dhcp_self_heal
+        advance_dhcp_self_heal(db, maintenance)
+    else:
+        from app.services.ha_maintenance import start_dhcp_self_heal
+        start_dhcp_self_heal(db, node.cluster)
     if peer_changed:
         write_audit(
             db,
@@ -222,7 +385,19 @@ def record_heartbeat(db: Session, node: HANode, heartbeat: HAAgentHeartbeat) -> 
             severity="info",
             metadata={"cluster_id": node.cluster.public_id, "probe": "icmp", "reachable": bool(heartbeat.peer_reachable)},
         )
-    return node
+    if sequence_rebased:
+        write_audit(
+            db,
+            None,
+            "reconciled",
+            "ha_agent_report_sequence",
+            entity_id=node.public_id,
+            detail=f"Accepted a fresh signed report after the stored sequence for {node.display_name} became stale.",
+            severity="warning",
+            metadata={"cluster_id": node.cluster.public_id, "reason": "signed_sequence_rebase"},
+        )
+    result = (node, True, "sequence_rebased" if sequence_rebased else None)
+    return result if return_status else node
 
 
 HEARTBEAT_FRESH_SECONDS = 45
@@ -258,10 +433,11 @@ def reconcile_vip_ownership(db: Session, cluster: HACluster, reporting_node: HAN
     if cluster.keepalived_status != "DEPLOYED" or any(node.keepalived_status != "DEPLOYED" for node in cluster.nodes):
         return
     now = datetime.utcnow()
+    topology = reconcile_topology(cluster, now=now)
     previous_active_id = cluster.current_active_node_id
     previous_status = cluster.status
-    current_nodes = [node for node in cluster.nodes if _heartbeat_is_fresh(node, now)]
-    owners = [node for node in current_nodes if node.vip_owned]
+    current_nodes = [node for node in cluster.nodes if node.id in topology.fresh_node_ids]
+    owners = [node for node in cluster.nodes if node.id in topology.vip_owner_ids]
     current = owners[0] if len(owners) == 1 else None
     previous_owner = next((node for node in owners if node.id == previous_active_id), None)
     transition_pending = bool(
@@ -282,6 +458,7 @@ def reconcile_vip_ownership(db: Session, cluster: HACluster, reporting_node: HAN
         and all(node.dns_healthy is True for node in current_nodes)
         and all(node.keepalived_runtime_state == "RUNNING" for node in current_nodes)
         and all(node.config_generation >= cluster.keepalived_generation for node in cluster.nodes)
+        and topology.topology_safe
     )
     if len(owners) == 1 and fully_healthy:
         cluster.status = "HEALTHY"
@@ -317,8 +494,8 @@ def reconcile_vip_ownership(db: Session, cluster: HACluster, reporting_node: HAN
         dhcp_managed = pihole_manages_dhcp(cluster)
         current_peers = [peer for peer in peers if _heartbeat_is_fresh(peer, now)]
         safe_dhcp = not dhcp_managed or (
-            current.dhcp_running
-            and all(not peer.dhcp_running for peer in current_peers)
+            dhcp_observation(current, now).active
+            and all(dhcp_observation(peer, now).released for peer in current_peers)
             and (len(current_peers) == len(peers) or completed is not None)
         )
         if current.dns_healthy and safe_dhcp:
@@ -373,7 +550,7 @@ def _adopt_verified_automatic_owner(db: Session, node: HANode, event: HAAgentEve
     ):
         return
     dhcp_managed = pihole_manages_dhcp(cluster)
-    if dhcp_managed and node.dhcp_running is not True:
+    if dhcp_managed and not dhcp_observation(node, datetime.utcnow()).active:
         return
     previous_active_id = cluster.current_active_node_id
     for peer in cluster.nodes:
@@ -413,25 +590,66 @@ def record_action_result(db: Session, node: HANode, result: HAAgentActionResult)
     existing = db.query(HAAgentActionResultRow).filter(HAAgentActionResultRow.action_id == result.action_id).first()
     if existing:
         if existing.node_id != node.id:
+            logger.warning(
+                "HA agent action result rejected reason=node_mismatch cluster=%s node=%s action=%s",
+                node.cluster.public_id,
+                node.public_id,
+                result.action_id[:16],
+            )
             raise HAAgentError("The action result belongs to a different node.")
         return existing
-    if result.action_type == "KEEPALIVED_APPLY":
+    maintenance_action = desired_maintenance_action(node.cluster, node)
+    if result.action_type == "RESOLVER_REPAIR":
+        expected = desired_resolver_action(node.cluster, node)
+    elif result.action_type == "KEEPALIVED_APPLY":
         expected = desired_keepalived_action(node.cluster, node)
     elif result.action_type == "LEASE_SNAPSHOT_STAGE":
         expected = desired_lease_action(node.cluster, node)
+    elif maintenance_action and result.action_type == maintenance_action["action_type"]:
+        expected = maintenance_action
     else:
         expected = desired_failover_action(node.cluster, node)
     if not expected or result.action_id != expected["action_id"] or result.generation != expected["generation"]:
+        logger.warning(
+            "HA agent action result rejected reason=generation_or_action_mismatch cluster=%s node=%s action=%s reported_generation=%s expected_generation=%s",
+            node.cluster.public_id,
+            node.public_id,
+            result.action_id[:16],
+            result.generation,
+            expected.get("generation") if expected else "none",
+        )
         raise HAAgentError("The action result does not match the node's current desired generation.")
     if result.status == "APPLIED" and result.checksum != expected["checksum"]:
+        logger.warning(
+            "HA agent action result rejected reason=checksum_mismatch cluster=%s node=%s action=%s",
+            node.cluster.public_id,
+            node.public_id,
+            result.action_id[:16],
+        )
         raise HAAgentError("The applied checksum does not match the desired action.")
     row = HAAgentActionResultRow(action_id=result.action_id, cluster_id=node.cluster_id, node_id=node.id, action_type=result.action_type, generation=result.generation, status=result.status, checksum=result.checksum, backup_reference=result.backup_reference, message_redacted=result.message)
     db.add(row)
     cluster = node.cluster
-    if result.action_type == "LEASE_SNAPSHOT_STAGE":
+    if result.action_type == "RESOLVER_REPAIR":
+        node.resolver_repair_status = result.status
+        node.resolver_repair_last_error = None if result.status == "APPLIED" else result.message
+    elif result.action_type == "LEASE_SNAPSHOT_STAGE":
         try:
             record_lease_stage_result(db, node, generation=result.generation, checksum=result.checksum, status=result.status, message=result.message)
         except HALeaseError as exc:
+            raise HAAgentError(str(exc)) from exc
+    elif result.action_type in {"DHCP_DEMOTE", "DHCP_PROMOTE"} and maintenance_action:
+        try:
+            record_maintenance_action_result(
+                db,
+                node,
+                action_type=result.action_type,
+                generation=result.generation,
+                checksum=result.checksum,
+                status=result.status,
+                message=result.message,
+            )
+        except HAMaintenanceError as exc:
             raise HAAgentError(str(exc)) from exc
     elif result.action_type in {"DHCP_DEMOTE", "DHCP_PROMOTE"}:
         try:
@@ -489,8 +707,10 @@ def desired_state(node: HANode) -> dict:
     keepalived = desired_keepalived_action(cluster, node)
     leases = desired_lease_action(cluster, node)
     failover = desired_failover_action(cluster, node)
+    maintenance = desired_maintenance_action(cluster, node)
     peer = next((item for item in cluster.nodes if item.id != node.id), None)
     dhcp_managed = pihole_manages_dhcp(cluster)
+    resolver = desired_resolver_action(cluster, node)
     return {
         "protocol_version": AGENT_PROTOCOL_VERSION,
         "cluster_id": cluster.public_id,
@@ -516,8 +736,26 @@ def desired_state(node: HANode) -> dict:
         "dhcp_managed": dhcp_managed,
         "peer_host": peer.management_host if peer else None,
         "network_interface": node.network_interface,
-        "allowed_actions": (["KEEPALIVED_APPLY"] if keepalived else []) + (["LEASE_SNAPSHOT_STAGE"] if leases else []) + ([failover["action_type"]] if failover else []),
+        "allowed_actions": (["KEEPALIVED_APPLY"] if keepalived else []) + (["LEASE_SNAPSHOT_STAGE"] if leases else []) + (["RESOLVER_REPAIR"] if resolver else []) + ([maintenance["action_type"]] if maintenance else []) + ([failover["action_type"]] if failover else []),
         "keepalived": keepalived,
         "lease_snapshot": leases,
-        "failover": failover,
+        "failover": maintenance or failover,
+        "resolver_repair": resolver,
+    }
+
+
+def desired_resolver_action(cluster: HACluster, node: HANode) -> dict | None:
+    if node.resolver_repair_status != "PENDING" or node.resolver_repair_generation < 1:
+        return None
+    vip = str(cluster.virtual_ip or "")
+    interface = str(node.network_interface or "")
+    content = f"# Managed by Kaya HA\n[Resolve]\nDNS={vip}\nDomains=~.\n"
+    checksum = hashlib.sha256(f"{vip}:{interface}:{content}".encode()).hexdigest()
+    return {
+        "action_id": f"resolver:{cluster.public_id}:{node.public_id}:{node.resolver_repair_generation}",
+        "action_type": "RESOLVER_REPAIR",
+        "generation": node.resolver_repair_generation,
+        "checksum": checksum,
+        "virtual_ip": vip,
+        "network_interface": interface,
     }

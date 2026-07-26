@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -9,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.models.models import HACluster, HAEvent, HAFailoverRun, HANode, HASyncRun
 from app.services.audit import write_audit
-from app.services.ha_topology import pihole_manages_dhcp
+from app.services.ha_topology import dhcp_observation, pihole_manages_dhcp, reconcile_topology
 
 
 RECOVERY_HEARTBEAT_SECONDS = 45
@@ -65,23 +66,73 @@ def preferred_node(cluster: HACluster) -> HANode | None:
 
 def current_active_node(cluster: HACluster, now: datetime | None = None) -> HANode | None:
     current = now or datetime.utcnow()
-    owners = [node for node in cluster.nodes if node.vip_owned and _fresh(node, current)]
-    if len(owners) == 1:
-        return owners[0]
-    return next((node for node in cluster.nodes if node.id == cluster.current_active_node_id and _fresh(node, current)), None)
+    topology = reconcile_topology(cluster, now=current, freshness_seconds=RECOVERY_HEARTBEAT_SECONDS)
+    return next((node for node in cluster.nodes if node.id == topology.active_node_id), None)
 
 
-def _latest_sync(db: Session, cluster: HACluster, active: HANode, target: HANode) -> HASyncRun | None:
-    return (
+def _sync_plan(run: HASyncRun) -> dict:
+    try:
+        value = json.loads(run.plan_json or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _sync_generation(run: HASyncRun) -> int | None:
+    plan = _sync_plan(run)
+    value = plan.get("verified_sync_generation", plan.get("required_sync_generation"))
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _valid_for_required_generation(run: HASyncRun, cluster: HACluster) -> bool:
+    generation = _sync_generation(run)
+    # Existing successful records predate generation tagging. Preserve them as
+    # durable evidence until a new generation-aware comparison supersedes them.
+    return generation is None or generation == cluster.desired_sync_generation
+
+
+def _latest_successful_sync(db: Session, cluster: HACluster, active: HANode, target: HANode) -> HASyncRun | None:
+    """Return durable, generation-valid evidence; ignore job lifecycle churn."""
+    candidates = (
         db.query(HASyncRun)
         .filter(
             HASyncRun.cluster_id == cluster.id,
             HASyncRun.source_node_id == active.id,
             HASyncRun.target_node_id == target.id,
+            HASyncRun.status.in_(["IN_SYNC", "SUCCEEDED"]),
         )
         .order_by(HASyncRun.created_at.desc())
-        .first()
+        .yield_per(100)
     )
+    return next((run for run in candidates if _valid_for_required_generation(run, cluster)), None)
+
+
+def _newer_supported_drift(
+    db: Session,
+    cluster: HACluster,
+    active: HANode,
+    target: HANode,
+    successful: HASyncRun | None,
+) -> bool:
+    """Return true only for observed writable drift, never for run status alone."""
+    query = db.query(HASyncRun).filter(
+        HASyncRun.cluster_id == cluster.id,
+        HASyncRun.source_node_id == active.id,
+        HASyncRun.target_node_id == target.id,
+    )
+    if successful is not None:
+        query = query.filter(HASyncRun.created_at > successful.created_at)
+    for run in query.order_by(HASyncRun.created_at.desc()).yield_per(100):
+        generation = _sync_generation(run)
+        if generation is not None and generation != cluster.desired_sync_generation:
+            continue
+        groups = _sync_plan(run).get("groups")
+        if isinstance(groups, list) and any(
+            isinstance(group, dict) and group.get("writable") is True
+            for group in groups
+        ):
+            return True
+    return False
 
 
 def recovery_checks(db: Session, cluster: HACluster, node: HANode, *, now: datetime | None = None) -> tuple[RecoveryCheck, ...]:
@@ -96,11 +147,13 @@ def recovery_checks(db: Session, cluster: HACluster, node: HANode, *, now: datet
         and node.observed_generation >= cluster.role_generation
     )
     standby_runtime = bool(node.vip_owned is False and node.observed_role == "STANDBY")
-    dhcp_safe = not pihole_manages_dhcp(cluster) or node.dhcp_running is False
-    latest_sync = _latest_sync(db, cluster, active, node) if active and active.id != node.id else None
+    observation = dhcp_observation(node, current, freshness_seconds=RECOVERY_HEARTBEAT_SECONDS)
+    dhcp_safe = not pihole_manages_dhcp(cluster) or observation.released
+    latest_sync = _latest_successful_sync(db, cluster, active, node) if active and active.id != node.id else None
     configuration_sync = bool(
         latest_sync
         and latest_sync.status in {"IN_SYNC", "SUCCEEDED"}
+        and not _newer_supported_drift(db, cluster, active, node, latest_sync)
         and (
             node.recovery_started_at is None
             or (latest_sync.completed_at or latest_sync.created_at) >= node.recovery_started_at
@@ -118,6 +171,58 @@ def recovery_checks(db: Session, cluster: HACluster, node: HANode, *, now: datet
         )
     )
     peer_label = "Peer Network Reachability (optional)"
+    peer = next((item for item in cluster.nodes if item.id != node.id), None)
+    try:
+        resolver_nameservers = json.loads(node.resolver_nameservers_json or "[]")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        resolver_nameservers = []
+    resolver_nameservers = [str(value) for value in resolver_nameservers if isinstance(value, str)][:8]
+    resolver_observed = node.resolver_observation_status == "FRESH"
+    resolver_safe = bool(
+        resolver_observed
+        and cluster.virtual_ip
+        and cluster.virtual_ip in resolver_nameservers
+    )
+    resolver_peer_only = bool(
+        resolver_observed
+        and peer
+        and resolver_nameservers
+        and set(resolver_nameservers) == {peer.management_host}
+    )
+    if resolver_peer_only:
+        resolver_detail = "Host resolver depends on peer node. Agent reporting may fail during peer outage. Configure host DNS to use HA VIP."
+    elif resolver_safe:
+        resolver_detail = f"Current: {', '.join(resolver_nameservers)}. Expected HA DNS Virtual IP: {cluster.virtual_ip}."
+    elif resolver_observed:
+        resolver_detail = f"Current: {', '.join(resolver_nameservers) or 'none reported'}. Expected HA DNS Virtual IP: {cluster.virtual_ip}."
+    else:
+        resolver_detail = f"Awaiting a resolver report from the current HA Agent. Expected HA DNS Virtual IP: {cluster.virtual_ip}."
+    resolver_check = RecoveryCheck(
+        "host_dns_resolver",
+        "Host DNS Resolver",
+        not resolver_peer_only,
+        resolver_detail,
+        resolver_peer_only,
+    )
+    if active and node.id == active.id:
+        return (
+            RecoveryCheck("kaya_heartbeat", "Kaya heartbeat", heartbeat, "The HA Agent has reported to Kaya recently."),
+            RecoveryCheck("agent_identity", "HA Agent identity", agent, "The registered, non-revoked agent identity is reporting."),
+            RecoveryCheck("dns", "Local DNS and Pi-hole FTL", node.dns_healthy is True, "Pi-hole answered the agent's local DNS probe."),
+            RecoveryCheck("network_interface", "Expected network interface", bool(node.network_interface), "The node has the configured HA network interface."),
+            RecoveryCheck("keepalived", "Local failover service", keepalived, "Keepalived is deployed and running."),
+            RecoveryCheck("cluster_generation", "Cluster generation", generation, "The node recognises the current configuration and role generations."),
+            resolver_check,
+            RecoveryCheck("active_runtime", "Virtual IP ownership", node.vip_owned is True, "The Active node is the exclusive DNS Virtual IP owner."),
+            RecoveryCheck("dhcp_active", "DHCP active state", not pihole_manages_dhcp(cluster) or observation.active, "A fresh Pi-hole configuration, FTL and UDP/67 observation confirms DHCP on the Active node.", pihole_manages_dhcp(cluster)),
+            RecoveryCheck(
+                "peer_reachability",
+                peer_label,
+                node.peer_reachable is True,
+                "Optional ICMP ping only. An unavailable ping does not affect recovery, failover, failback, DNS health, or Kaya heartbeat status.",
+                False,
+            ),
+        )
     return (
         RecoveryCheck("kaya_heartbeat", "Kaya heartbeat", heartbeat, "The HA Agent has reported to Kaya recently."),
         RecoveryCheck("agent_identity", "HA Agent identity", agent, "The registered, non-revoked agent identity is reporting."),
@@ -125,8 +230,9 @@ def recovery_checks(db: Session, cluster: HACluster, node: HANode, *, now: datet
         RecoveryCheck("network_interface", "Expected network interface", bool(node.network_interface), "The node has the configured HA network interface."),
         RecoveryCheck("keepalived", "Local failover service", keepalived, "Keepalived is deployed and running."),
         RecoveryCheck("cluster_generation", "Cluster generation", generation, "The node recognises the current configuration and role generations."),
+        resolver_check,
         RecoveryCheck("standby_runtime", "Standby ownership", standby_runtime, "The recovered node is not claiming the DNS Virtual IP."),
-        RecoveryCheck("dhcp_safe", "DHCP standby state", dhcp_safe, "DHCP is safely stopped on the recovered node.", pihole_manages_dhcp(cluster)),
+        RecoveryCheck("dhcp_safe", "DHCP standby state", dhcp_safe, "A fresh Pi-hole configuration and UDP/67 observation confirms DHCP is released on the recovered node.", pihole_manages_dhcp(cluster)),
         RecoveryCheck("configuration_sync", "Pi-hole API, configuration and drift", configuration_sync, "A post-recovery active-to-standby API comparison or synchronisation completed without supported drift."),
         RecoveryCheck("lease_sync", "DHCP generation and lease staging", lease_sync, "The standby has staged the current validated DHCP generation.", pihole_manages_dhcp(cluster)),
         RecoveryCheck(

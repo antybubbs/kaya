@@ -14,6 +14,22 @@ from pathlib import Path
 
 ROOT = Path("/var/lib/kaya-ha-agent")
 HELPER = "/usr/lib/kaya-ha-agent/kaya_ha_failover_helper.py"
+SQLITE_BUSY_ATTEMPTS = 6
+
+
+def _write(db, statement, parameters):
+    for attempt in range(SQLITE_BUSY_ATTEMPTS):
+        try:
+            db.execute(statement, parameters)
+            db.commit()
+            return
+        except sqlite3.OperationalError as exc:
+            db.rollback()
+            if not ("locked" in str(exc).lower() or "busy" in str(exc).lower()):
+                raise
+            if attempt + 1 == SQLITE_BUSY_ATTEMPTS:
+                raise
+            time.sleep(0.05 * (attempt + 1))
 
 
 def get_value(db, key, default=None):
@@ -22,13 +38,13 @@ def get_value(db, key, default=None):
 
 
 def put_value(db, key, value):
-    db.execute("INSERT INTO state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, json.dumps(value)))
+    _write(db, "INSERT INTO state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, json.dumps(value)))
 
 
 def queue_event(db, event_type, severity, message, generation, details=None):
     occurred = datetime.now(timezone.utc).isoformat()
     event = {"event_id": secrets.token_hex(16), "event_type": event_type, "severity": severity, "message": message, "occurred_at": occurred, "details": {"generation": generation, **(details or {})}}
-    db.execute("INSERT INTO events(event_id,payload,created_at) VALUES(?,?,?)", (event["event_id"], json.dumps(event), occurred))
+    _write(db, "INSERT INTO events(event_id,payload,created_at) VALUES(?,?,?)", (event["event_id"], json.dumps(event), occurred))
 
 
 def automatic_transition(db, transition, generation):
@@ -61,7 +77,14 @@ def automatic_transition(db, transition, generation):
             subprocess.run(["sudo", "-n", HELPER, "automatic-demote", str(generation)], capture_output=True, timeout=20, check=False)
         queue_event(db, "automatic_failover_blocked", "critical", str(output.get("message") or "The local DHCP safety transition failed.")[:500], generation)
         return
-    put_value(db, "dhcp_running", transition == "master")
+    if output.get("observation_status") == "FRESH":
+        put_value(db, "dhcp_configured", output.get("configured"))
+        put_value(db, "dhcp_listener_active", output.get("listening"))
+        put_value(db, "ftl_active", output.get("service_active"))
+        put_value(db, "dhcp_runtime_state", output.get("runtime_state"))
+        put_value(db, "dhcp_observation_status", "FRESH")
+        put_value(db, "dhcp_observed_at", datetime.now(timezone.utc).isoformat())
+        put_value(db, "dhcp_running", output.get("dhcp_running") is True)
     queue_event(db, "automatic_failover_completed" if transition == "master" else "automatic_demotion_completed", "warning" if transition == "master" else "info", "Local failover completed without requiring Kaya." if transition == "master" else "DHCP was disabled locally before this node remained standby.", generation, {"automatic": True})
 
 
@@ -73,7 +96,10 @@ def main() -> int:
     ROOT.mkdir(parents=True, exist_ok=True)
     with (ROOT / "transition.lock").open("a+") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        db = sqlite3.connect(ROOT / "state.sqlite3")
+        db = sqlite3.connect(ROOT / "state.sqlite3", timeout=5)
+        db.execute("PRAGMA busy_timeout=5000")
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA synchronous=NORMAL")
         db.execute("CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS events (event_id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT NOT NULL)")
         row = db.execute("SELECT value FROM state WHERE key='keepalived_generation'").fetchone()

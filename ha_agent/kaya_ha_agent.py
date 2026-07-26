@@ -5,6 +5,7 @@ import argparse
 import base64
 import hashlib
 import json
+import ssl
 import os
 import secrets
 import socket
@@ -22,11 +23,26 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 
 PROTOCOL_VERSION = 1
-AGENT_VERSION = "0.2.5"
+AGENT_VERSION = "0.2.13"
+SQLITE_BUSY_ATTEMPTS = 6
+SQLITE_BUSY_TIMEOUT_MS = 5000
 
 ICMP_AVAILABLE = "AVAILABLE"
 ICMP_NO_REPLY = "NO_REPLY"
 ICMP_UNAVAILABLE = "UNAVAILABLE"
+
+
+class AgentRequestError(ValueError):
+    """A safely reportable agent transport failure without request secrets."""
+
+    def __init__(self, reason: str, message: str, *, status: int | None = None):
+        super().__init__(message)
+        self.reason = reason
+        self.status = status
+
+
+class TransientStateBusy(RuntimeError):
+    """A bounded SQLite contention failure, distinct from corruption."""
 
 
 def encoded(value: bytes) -> str:
@@ -69,33 +85,118 @@ class State:
         self.config_path = root / "config.json"
         self.key_path = root / "agent.key"
         self.database_path = root / "state.sqlite3"
+        self.telemetry_deferred = False
         root.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(self.database_path)
+        self.db = sqlite3.connect(self.database_path, timeout=SQLITE_BUSY_TIMEOUT_MS / 1000)
+        self.db.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+        self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.execute("PRAGMA synchronous=NORMAL")
         self.db.execute("CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         self.db.execute("CREATE TABLE IF NOT EXISTS events (event_id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT NOT NULL)")
         self.db.commit()
 
+    @staticmethod
+    def _busy(exc: sqlite3.OperationalError) -> bool:
+        message = str(exc).lower()
+        return "locked" in message or "busy" in message
+
+    def _run(self, operation, *, transient_ok: bool = False):
+        for attempt in range(SQLITE_BUSY_ATTEMPTS):
+            try:
+                return operation()
+            except sqlite3.OperationalError as exc:
+                self.db.rollback()
+                if not self._busy(exc):
+                    raise
+                if attempt + 1 < SQLITE_BUSY_ATTEMPTS:
+                    time.sleep(0.05 * (attempt + 1))
+                    continue
+                if transient_ok:
+                    self.telemetry_deferred = True
+                    print("Kaya HA agent state update deferred: sqlite_busy", file=sys.stderr, flush=True)
+                    return None
+                raise TransientStateBusy("Agent state is temporarily busy.") from None
+
     def get(self, key: str, default=None):
-        row = self.db.execute("SELECT value FROM state WHERE key = ?", (key,)).fetchone()
+        row = self._run(lambda: self.db.execute("SELECT value FROM state WHERE key = ?", (key,)).fetchone())
         return json.loads(row[0]) if row else default
 
     def set(self, key: str, value) -> None:
-        self.db.execute("INSERT INTO state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, json.dumps(value)))
-        self.db.commit()
+        def write():
+            self.db.execute("INSERT INTO state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, json.dumps(value)))
+            self.db.commit()
+            return True
+        self._run(write)
+
+    def set_telemetry(self, key: str, value) -> bool:
+        """Best-effort observation storage; contention must not terminate the agent."""
+        def write():
+            self.db.execute("INSERT INTO state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, json.dumps(value)))
+            self.db.commit()
+            return True
+        return bool(self._run(write, transient_ok=True))
 
     def queue_event(self, event_type: str, severity: str, message: str) -> str:
         event_id = secrets.token_hex(16)
         payload = {"event_id": event_id, "event_type": event_type, "severity": severity, "message": message, "occurred_at": datetime.now(timezone.utc).isoformat(), "details": {}}
-        self.db.execute("INSERT INTO events(event_id,payload,created_at) VALUES(?,?,?)", (event_id, json.dumps(payload), payload["occurred_at"]))
-        self.db.commit()
+        def write():
+            self.db.execute("INSERT INTO events(event_id,payload,created_at) VALUES(?,?,?)", (event_id, json.dumps(payload), payload["occurred_at"]))
+            self.db.commit()
+        self._run(write)
         return event_id
 
     def queued_events(self) -> list[dict]:
-        return [json.loads(row[0]) for row in self.db.execute("SELECT payload FROM events ORDER BY created_at LIMIT 100")]
+        rows = self._run(lambda: self.db.execute("SELECT payload FROM events ORDER BY created_at LIMIT 100").fetchall())
+        return [json.loads(row[0]) for row in rows]
 
     def acknowledge_events(self, event_ids: list[str]) -> None:
-        self.db.executemany("DELETE FROM events WHERE event_id = ?", ((item,) for item in event_ids))
-        self.db.commit()
+        def write():
+            self.db.executemany("DELETE FROM events WHERE event_id = ?", ((item,) for item in event_ids))
+            self.db.commit()
+        self._run(write)
+
+
+def observe_host_resolver(interface: str | None) -> tuple[str, list[str], str]:
+    """Return manager, effective nameservers and bounded observation status."""
+    resolv_conf = Path("/etc/resolv.conf")
+    nameservers: list[str] = []
+    try:
+        for line in resolv_conf.read_text(encoding="utf-8", errors="replace").splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[0].lower() == "nameserver":
+                try:
+                    nameservers.append(str(__import__("ipaddress").ip_address(parts[1].split("%", 1)[0])))
+                except ValueError:
+                    continue
+    except OSError:
+        return "UNKNOWN", [], "UNAVAILABLE"
+
+    manager = "STATIC"
+    try:
+        target = str(resolv_conf.resolve(strict=False))
+    except OSError:
+        target = ""
+    if "systemd/resolve" in target or any(value.startswith("127.0.0.5") for value in nameservers):
+        manager = "SYSTEMD_RESOLVED"
+        command = ["/usr/bin/resolvectl", "dns"] + ([interface] if interface else [])
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=5, check=False)
+            if result.returncode == 0:
+                resolved: list[str] = []
+                for token in result.stdout.replace("(", " ").replace(")", " ").split():
+                    try:
+                        resolved.append(str(__import__("ipaddress").ip_address(token.split("%", 1)[0])))
+                    except ValueError:
+                        continue
+                if resolved:
+                    nameservers = resolved
+        except (OSError, subprocess.SubprocessError):
+            pass
+    elif Path("/run/NetworkManager").exists():
+        manager = "NETWORK_MANAGER"
+    elif Path("/etc/netplan").exists():
+        manager = "NETPLAN"
+    return manager, list(dict.fromkeys(nameservers))[:8], "FRESH"
 
 
 def json_request(url: str, method: str, payload: dict | None, headers: dict[str, str] | None = None) -> dict:
@@ -106,8 +207,56 @@ def json_request(url: str, method: str, payload: dict | None, headers: dict[str,
             return json.loads(response.read() or b"{}")
     except error.HTTPError as exc:
         if exc.code in {307, 308}:
-            raise ValueError("Kaya redirected the agent request. Generate a new command from the HTTPS Kaya page and try again.") from None
-        raise ValueError(f"Kaya rejected the agent request with HTTP {exc.code}.") from None
+            raise AgentRequestError(
+                "redirect_rejected",
+                "Kaya redirected the signed agent request. Generate a new command from the HTTPS Kaya page and try again.",
+                status=exc.code,
+            ) from None
+        reason = {
+            400: "request_invalid",
+            401: "authentication_rejected",
+            404: "endpoint_not_found",
+            409: "request_conflict",
+            413: "payload_rejected",
+            426: "protocol_rejected",
+            429: "rate_limited",
+        }.get(exc.code, "server_error" if exc.code >= 500 else "http_rejected")
+        raise AgentRequestError(reason, f"Kaya rejected the agent request with HTTP {exc.code}.", status=exc.code) from None
+    except error.URLError as exc:
+        cause = exc.reason
+        if isinstance(cause, ssl.SSLCertVerificationError):
+            reason, message = "tls_verification_failed", "Kaya's TLS certificate could not be verified."
+        elif isinstance(cause, socket.gaierror):
+            reason, message = "name_resolution_failed", "The Kaya host name could not be resolved."
+        elif isinstance(cause, ConnectionRefusedError):
+            reason, message = "connection_refused", "Kaya refused the agent connection."
+        elif isinstance(cause, TimeoutError):
+            reason, message = "connection_timeout", "The Kaya agent request timed out."
+        else:
+            reason, message = "connection_unavailable", "Kaya could not be reached."
+        raise AgentRequestError(reason, message) from None
+
+
+def report_transport_failure(state: State, operation: str, exc: Exception) -> None:
+    reason = exc.reason if isinstance(exc, AgentRequestError) else type(exc).__name__.lower()
+    safe = {"operation": operation, "reason": reason, "at": datetime.now(timezone.utc).isoformat()}
+    if isinstance(exc, AgentRequestError) and exc.status is not None:
+        safe["http_status"] = exc.status
+    state.set_telemetry("last_error", safe)
+    print(f"Kaya HA agent {operation} failed: {reason}", file=sys.stderr, flush=True)
+
+
+def submit_pending(state: State, key: str, operation: str) -> bool:
+    payload = state.get(key)
+    if not payload:
+        return True
+    try:
+        signed_request(state, "POST", "/api/ha/agent/v1/action-result", payload)
+    except (AgentRequestError, TimeoutError, ValueError, KeyError) as exc:
+        report_transport_failure(state, operation, exc)
+        return False
+    state.set(key, None)
+    return True
 
 
 def private_key(state: State) -> Ed25519PrivateKey:
@@ -232,9 +381,25 @@ def reconcile_desired(state: State, desired: dict, *, helper_runner=None) -> Non
         except FailoverRuntimeError as exc:
             result = {"action_id": failover_action.get("action_id", "invalid"), "action_type": failover_action.get("action_type", "DHCP_DEMOTE"), "generation": int(failover_action.get("generation") or 0), "status": "FAILED", "checksum": failover_action.get("checksum"), "backup_reference": None, "message": str(exc)[:1000]}
         state.set("pending_failover_action_result", result)
+    resolver_action = desired.get("resolver_repair")
+    if resolver_action:
+        pending = state.get("pending_resolver_action_result")
+        if pending and pending.get("action_id") == resolver_action.get("action_id"):
+            return
+        try:
+            try:
+                from .resolver_runtime import apply_resolver_action
+            except ImportError:
+                from resolver_runtime import apply_resolver_action
+            kwargs = {"runner": helper_runner} if helper_runner is not None else {}
+            result = apply_resolver_action(resolver_action, **kwargs)
+        except (ValueError, OSError, subprocess.SubprocessError) as exc:
+            result = {"action_id": resolver_action.get("action_id", "invalid"), "action_type": "RESOLVER_REPAIR", "generation": int(resolver_action.get("generation") or 0), "status": "FAILED", "checksum": None, "backup_reference": None, "message": str(exc)[:1000]}
+        state.set("pending_resolver_action_result", result)
 
 
 def run_once(state: State) -> None:
+    state.telemetry_deferred = False
     config = json.loads(state.config_path.read_text(encoding="utf-8"))
     try:
         try:
@@ -243,7 +408,7 @@ def run_once(state: State) -> None:
             from keepalived_runtime import refresh_vip_state
         refresh_vip_state(state)
     except Exception:
-        state.set("keepalived_runtime_state", "UNKNOWN")
+        state.set_telemetry("keepalived_runtime_state", "UNKNOWN")
     try:
         try:
             from .failover_runtime import refresh_dhcp_state
@@ -251,45 +416,63 @@ def run_once(state: State) -> None:
             from failover_runtime import refresh_dhcp_state
         refresh_dhcp_state(state)
     except Exception:
-        pass
+        state.set_telemetry("dhcp_configured", None)
+        state.set_telemetry("dhcp_listener_active", None)
+        state.set_telemetry("ftl_active", None)
+        state.set_telemetry("dhcp_runtime_state", "UNKNOWN")
+        state.set_telemetry("dhcp_observation_status", "UNAVAILABLE")
+        state.set_telemetry("dhcp_observed_at", datetime.now(timezone.utc).isoformat())
     try:
         check = subprocess.run(["/usr/lib/kaya-ha-agent/check-pihole-dns", "--observe"], capture_output=True, timeout=10, check=False)
-        state.set("dns_healthy", check.returncode == 0)
+        state.set_telemetry("dns_healthy", check.returncode == 0)
     except (OSError, subprocess.SubprocessError):
-        state.set("dns_healthy", False)
+        state.set_telemetry("dns_healthy", False)
     peer_host = str(state.get("peer_host", "") or "").strip()
     if peer_host:
         peer_reachable, icmp_probe_status = probe_icmp(peer_host)
-        state.set("peer_reachable", peer_reachable)
-        state.set("peer_icmp_probe_status", icmp_probe_status)
+        state.set_telemetry("peer_reachable", peer_reachable)
+        state.set_telemetry("peer_icmp_probe_status", icmp_probe_status)
         try:
             with socket.create_connection((peer_host, 53), timeout=2):
-                state.set("peer_dns_reachable", True)
+                state.set_telemetry("peer_dns_reachable", True)
         except OSError:
-            state.set("peer_dns_reachable", False)
+            state.set_telemetry("peer_dns_reachable", False)
     else:
-        state.set("peer_reachable", None)
-        state.set("peer_icmp_probe_status", None)
-        state.set("peer_dns_reachable", None)
-    heartbeat = {"observed_role": state.get("observed_role", "STANDBY"), "observed_generation": int(state.get("observed_generation", 0)), "vip_owned": bool(state.get("vip_owned", False)), "dhcp_running": bool(state.get("dhcp_running", False)), "dns_healthy": bool(state.get("dns_healthy", False)), "peer_reachable": state.get("peer_reachable"), "peer_icmp_probe_status": state.get("peer_icmp_probe_status"), "peer_dns_reachable": state.get("peer_dns_reachable"), "lease_generation": int(state.get("lease_generation", 0)), "config_generation": int(state.get("config_generation", 0)), "agent_version": AGENT_VERSION, "keepalived_runtime_state": state.get("keepalived_runtime_state", "UNKNOWN")}
+        state.set_telemetry("peer_reachable", None)
+        state.set_telemetry("peer_icmp_probe_status", None)
+        state.set_telemetry("peer_dns_reachable", None)
+    resolver_manager, resolver_nameservers, resolver_status = observe_host_resolver(state.get("network_interface"))
+    state.set_telemetry("resolver_manager", resolver_manager)
+    state.set_telemetry("resolver_nameservers", resolver_nameservers)
+    state.set_telemetry("resolver_observation_status", resolver_status)
+    if state.telemetry_deferred:
+        return
+    report_sequence = int(state.get("report_sequence", 0)) + 1
+    if not state.set_telemetry("report_sequence", report_sequence):
+        return
+    heartbeat = {"report_sequence": report_sequence, "reported_at": datetime.now(timezone.utc).isoformat(), "observed_role": state.get("observed_role", "STANDBY"), "observed_generation": int(state.get("observed_generation", 0)), "vip_owned": bool(state.get("vip_owned", False)), "dhcp_running": bool(state.get("dhcp_running", False)), "dhcp_configured": state.get("dhcp_configured"), "dhcp_listener_active": state.get("dhcp_listener_active"), "ftl_active": state.get("ftl_active"), "dhcp_runtime_state": state.get("dhcp_runtime_state", "UNKNOWN"), "dhcp_observation_status": state.get("dhcp_observation_status", "UNAVAILABLE"), "dhcp_observed_at": state.get("dhcp_observed_at"), "dns_healthy": bool(state.get("dns_healthy", False)), "peer_reachable": state.get("peer_reachable"), "peer_icmp_probe_status": state.get("peer_icmp_probe_status"), "peer_dns_reachable": state.get("peer_dns_reachable"), "resolver_manager": state.get("resolver_manager", "UNKNOWN"), "resolver_nameservers": state.get("resolver_nameservers", []), "resolver_observation_status": state.get("resolver_observation_status", "UNAVAILABLE"), "lease_generation": int(state.get("lease_generation", 0)), "config_generation": int(state.get("config_generation", 0)), "agent_version": AGENT_VERSION, "keepalived_runtime_state": state.get("keepalived_runtime_state", "UNKNOWN")}
     response = signed_request(state, "POST", "/api/ha/agent/v1/heartbeat", heartbeat)
-    reconcile_desired(state, response["desired"])
-    action_result = state.get("pending_action_result")
-    if action_result:
-        signed_request(state, "POST", "/api/ha/agent/v1/action-result", action_result)
-        state.set("pending_action_result", None)
-    lease_action_result = state.get("pending_lease_action_result")
-    if lease_action_result:
-        signed_request(state, "POST", "/api/ha/agent/v1/action-result", lease_action_result)
-        state.set("pending_lease_action_result", None)
-    failover_action_result = state.get("pending_failover_action_result")
-    if failover_action_result:
-        signed_request(state, "POST", "/api/ha/agent/v1/action-result", failover_action_result)
-        state.set("pending_failover_action_result", None)
+    if response.get("accepted") is False:
+        reason = str(response.get("reason") or "report_rejected")[:80]
+        report_transport_failure(state, "heartbeat acceptance", AgentRequestError(f"report_{reason}", "Kaya did not accept the runtime observation."))
+
+    # Local failover evidence is authoritative, generation-bound safety proof.
+    # Deliver it before optional action results so one obsolete/rejected result
+    # cannot indefinitely hide a successful failover from Kaya.
     queued = state.queued_events()
     if queued:
-        signed_request(state, "POST", "/api/ha/agent/v1/events", {"events": queued})
-        state.acknowledge_events([item["event_id"] for item in queued])
+        try:
+            signed_request(state, "POST", "/api/ha/agent/v1/events", {"events": queued})
+        except (AgentRequestError, TimeoutError, ValueError, KeyError) as exc:
+            report_transport_failure(state, "event delivery", exc)
+        else:
+            state.acknowledge_events([item["event_id"] for item in queued])
+
+    reconcile_desired(state, response["desired"])
+    submit_pending(state, "pending_action_result", "Keepalived result delivery")
+    submit_pending(state, "pending_lease_action_result", "lease result delivery")
+    submit_pending(state, "pending_failover_action_result", "failover result delivery")
+    submit_pending(state, "pending_resolver_action_result", "resolver repair result delivery")
 
 
 def main() -> None:
@@ -326,8 +509,8 @@ def main() -> None:
         while True:
             try:
                 run_once(state)
-            except (error.URLError, TimeoutError, ValueError, KeyError) as exc:
-                state.set("last_error", type(exc).__name__)
+            except (error.URLError, TimeoutError, ValueError, KeyError, TransientStateBusy) as exc:
+                report_transport_failure(state, "heartbeat", exc)
             time.sleep(max(5, args.interval))
 
 

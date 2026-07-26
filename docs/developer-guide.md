@@ -28,6 +28,26 @@ make logs
 make shell
 ```
 
+## Publishing Releases
+
+Production containers are published only when a non-draft, non-prerelease GitHub
+Release is published with a tag that exactly matches `vMAJOR.MINOR.PATCH`. The
+release must also be the release returned by GitHub's `releases/latest` API.
+That single build publishes both the version tag and `latest`, so both tags refer
+to the same image digest and contain the release tag as `APP_VERSION`.
+
+From an authenticated GitHub CLI session, the repository release helper performs
+the tag push and creates the GitHub Release:
+
+```bash
+make release VERSION=v0.26.0
+```
+
+Pushing a tag alone does not publish a production container. Development branches
+publish only `dev...` tags, `main` publishes only a short-SHA tag, and `Kaya`
+publishes only its branch tag. Production deployments continue to use
+`ghcr.io/antybubbs/kaya:latest`.
+
 To run without Docker, install Python dependencies and Node dependencies, then run Uvicorn against `app.main:app`. Local filesystem paths may need adjustment because defaults assume `/app/data` and `/app/uploads`.
 
 ## Adding A New Module

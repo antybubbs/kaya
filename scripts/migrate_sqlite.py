@@ -5,6 +5,9 @@ import sys
 import re
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from app.services.dns_client_repair import repair_dns_client_identities
+
 DB_PATH = Path("/app/data/kaya.db")
 MODULE_KEYS = (
     "asset_manager", "backup_manager", "compute_manager", "dashboard", "dns_manager",
@@ -180,7 +183,7 @@ def main():
 
     if not table_exists(cur, "dns_recognised_devices"):
         cur.execute(
-            "CREATE TABLE dns_recognised_devices (id INTEGER NOT NULL PRIMARY KEY, provider_id INTEGER NOT NULL REFERENCES dns_providers(id) ON DELETE CASCADE, identity_type VARCHAR(30) NOT NULL, identity_value VARCHAR(500) NOT NULL, hostname VARCHAR(255), previous_hostname VARCHAR(255), current_ip VARCHAR(80), previous_ip VARCHAR(80), mac_address VARCHAR(120), provider_client_id VARCHAR(255), provider_type VARCHAR(40) DEFAULT 'pihole' NOT NULL, friendly_name VARCHAR(255), normalised_hostname VARCHAR(255), normalised_mac VARCHAR(17), is_known BOOLEAN DEFAULT 0 NOT NULL, is_ignored BOOLEAN DEFAULT 0 NOT NULL, last_synced_at DATETIME, linked_ip_record_id INTEGER REFERENCES ip_addresses(id) ON DELETE SET NULL, match_confidence INTEGER, match_method VARCHAR(80), observation_source VARCHAR(255), query_count INTEGER DEFAULT 0 NOT NULL, blocked_query_count INTEGER DEFAULT 0 NOT NULL, notes TEXT, hardware_asset_id INTEGER REFERENCES hardware_assets(id) ON DELETE SET NULL, first_seen_at DATETIME, last_seen_at DATETIME, is_suppressed BOOLEAN DEFAULT 0 NOT NULL, created_at DATETIME, updated_at DATETIME)"
+            "CREATE TABLE dns_recognised_devices (id INTEGER NOT NULL PRIMARY KEY, provider_id INTEGER NOT NULL REFERENCES dns_providers(id) ON DELETE CASCADE, logical_provider_key VARCHAR(80) DEFAULT '' NOT NULL, identity_type VARCHAR(30) NOT NULL, identity_value VARCHAR(500) NOT NULL, hostname VARCHAR(255), previous_hostname VARCHAR(255), current_ip VARCHAR(80), previous_ip VARCHAR(80), mac_address VARCHAR(120), provider_client_id VARCHAR(255), provider_type VARCHAR(40) DEFAULT 'pihole' NOT NULL, friendly_name VARCHAR(255), normalised_hostname VARCHAR(255), normalised_mac VARCHAR(17), is_known BOOLEAN DEFAULT 0 NOT NULL, is_ignored BOOLEAN DEFAULT 0 NOT NULL, last_synced_at DATETIME, linked_ip_record_id INTEGER REFERENCES ip_addresses(id) ON DELETE SET NULL, match_confidence INTEGER, match_method VARCHAR(80), observation_source VARCHAR(255), query_count INTEGER DEFAULT 0 NOT NULL, blocked_query_count INTEGER DEFAULT 0 NOT NULL, observation_count INTEGER DEFAULT 0 NOT NULL, notes TEXT, hardware_asset_id INTEGER REFERENCES hardware_assets(id) ON DELETE SET NULL, first_seen_at DATETIME, last_seen_at DATETIME, is_suppressed BOOLEAN DEFAULT 0 NOT NULL, created_at DATETIME, updated_at DATETIME)"
         )
         cur.execute("CREATE UNIQUE INDEX uq_dns_devices_provider_identity ON dns_recognised_devices (provider_id, identity_type, identity_value)")
         for column in ["provider_id", "identity_type", "identity_value", "hostname", "current_ip", "mac_address", "provider_client_id", "hardware_asset_id", "first_seen_at", "last_seen_at", "is_suppressed"]:
@@ -188,12 +191,13 @@ def main():
         migrations_applied.append("dns_recognised_devices")
     else:
         dns_client_columns = {
+            "logical_provider_key": "VARCHAR(80) DEFAULT '' NOT NULL",
             "provider_type": "VARCHAR(40) DEFAULT 'pihole' NOT NULL", "friendly_name": "VARCHAR(255)",
             "normalised_hostname": "VARCHAR(255)", "normalised_mac": "VARCHAR(17)",
             "is_known": "BOOLEAN DEFAULT 0 NOT NULL", "is_ignored": "BOOLEAN DEFAULT 0 NOT NULL",
             "last_synced_at": "DATETIME", "linked_ip_record_id": "INTEGER REFERENCES ip_addresses(id) ON DELETE SET NULL", "suggested_ip_record_id": "INTEGER REFERENCES ip_addresses(id) ON DELETE SET NULL",
             "match_confidence": "INTEGER", "match_method": "VARCHAR(80)", "observation_source": "VARCHAR(255)",
-            "query_count": "INTEGER DEFAULT 0 NOT NULL", "blocked_query_count": "INTEGER DEFAULT 0 NOT NULL", "notes": "TEXT",
+            "query_count": "INTEGER DEFAULT 0 NOT NULL", "blocked_query_count": "INTEGER DEFAULT 0 NOT NULL", "observation_count": "INTEGER DEFAULT 0 NOT NULL", "notes": "TEXT",
         }
         for column, definition in dns_client_columns.items():
             if not column_exists(cur, "dns_recognised_devices", column):
@@ -201,9 +205,18 @@ def main():
                 migrations_applied.append(f"dns_recognised_devices.{column}")
         cur.execute("UPDATE dns_recognised_devices SET is_known = 1, is_ignored = COALESCE(is_suppressed, 0), normalised_hostname = LOWER(RTRIM(hostname, '.')), normalised_mac = LOWER(REPLACE(mac_address, '-', ':')), last_synced_at = COALESCE(last_synced_at, last_seen_at), provider_type = COALESCE(provider_type, 'pihole')")
 
+    cur.execute("UPDATE dns_recognised_devices SET logical_provider_key = 'provider:' || provider_id WHERE logical_provider_key IS NULL OR logical_provider_key = ''")
+    cur.execute("CREATE INDEX IF NOT EXISTS ix_dns_recognised_devices_logical_provider_key ON dns_recognised_devices (logical_provider_key)")
+
     if not column_exists(cur, "dns_recognised_devices", "suggested_ip_record_id"):
         cur.execute("ALTER TABLE dns_recognised_devices ADD COLUMN suggested_ip_record_id INTEGER REFERENCES ip_addresses(id) ON DELETE SET NULL")
         migrations_applied.append("dns_recognised_devices.suggested_ip_record_id")
+
+    if not table_exists(cur, "dns_client_observations"):
+        cur.execute("CREATE TABLE dns_client_observations (id INTEGER NOT NULL PRIMARY KEY, dns_client_id INTEGER NOT NULL REFERENCES dns_recognised_devices(id) ON DELETE CASCADE, provider_id INTEGER REFERENCES dns_providers(id) ON DELETE SET NULL, observation_key VARCHAR(64) NOT NULL, ip_address VARCHAR(80), mac_address VARCHAR(17), hostname VARCHAR(255), logical_provider_key VARCHAR(80) NOT NULL, source VARCHAR(255), source_member VARCHAR(120), observed_at DATETIME NOT NULL, created_at DATETIME NOT NULL, UNIQUE (provider_id, observation_key))")
+        for column in ["dns_client_id", "provider_id", "observation_key", "ip_address", "mac_address", "hostname", "logical_provider_key", "source_member", "observed_at", "created_at"]:
+            cur.execute(f"CREATE INDEX ix_dns_client_observations_{column} ON dns_client_observations ({column})")
+        migrations_applied.append("dns_client_observations")
 
     for table_sql, indexes in [
         ("CREATE TABLE IF NOT EXISTS dns_client_ip_history (id INTEGER NOT NULL PRIMARY KEY, dns_client_id INTEGER NOT NULL REFERENCES dns_recognised_devices(id) ON DELETE CASCADE, ip_address VARCHAR(80) NOT NULL, first_seen_at DATETIME, last_seen_at DATETIME, observation_count INTEGER DEFAULT 1 NOT NULL, provider_id INTEGER REFERENCES dns_providers(id) ON DELETE SET NULL, source VARCHAR(255), created_at DATETIME, updated_at DATETIME, UNIQUE (dns_client_id, ip_address))", ["dns_client_id", "ip_address", "last_seen_at", "provider_id"]),
@@ -218,6 +231,7 @@ def main():
             cur.execute(f"CREATE INDEX IF NOT EXISTS ix_{table}_{column} ON {table} ({column})")
     cur.execute("INSERT OR IGNORE INTO dns_client_ip_history (dns_client_id, ip_address, first_seen_at, last_seen_at, observation_count, provider_id, source, created_at, updated_at) SELECT id, current_ip, first_seen_at, last_seen_at, 1, provider_id, 'migration', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP FROM dns_recognised_devices WHERE current_ip IS NOT NULL AND current_ip != ''")
     cur.execute("INSERT OR IGNORE INTO dns_client_hostname_history (dns_client_id, hostname, normalised_hostname, first_seen_at, last_seen_at, observation_count, provider_id, source, created_at, updated_at) SELECT id, hostname, LOWER(RTRIM(hostname, '.')), first_seen_at, last_seen_at, 1, provider_id, 'migration', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP FROM dns_recognised_devices WHERE hostname IS NOT NULL AND hostname != ''")
+    cur.execute("UPDATE dns_recognised_devices SET observation_count = MAX(COALESCE((SELECT SUM(observation_count) FROM dns_client_ip_history WHERE dns_client_id = dns_recognised_devices.id), 0), COALESCE(observation_count, 0), 1)")
 
     if table_exists(cur, "ip_addresses") and not column_exists(cur, "ip_addresses", "mac_address"):
         cur.execute("ALTER TABLE ip_addresses ADD COLUMN mac_address VARCHAR(17)")
@@ -342,7 +356,8 @@ def main():
         "CREATE TABLE IF NOT EXISTS ha_drift_items (id INTEGER NOT NULL PRIMARY KEY, sync_run_id INTEGER NOT NULL REFERENCES ha_sync_runs(id) ON DELETE CASCADE, group_key VARCHAR(80) NOT NULL, risk VARCHAR(20) NOT NULL, status VARCHAR(30) DEFAULT 'DRIFT' NOT NULL, source_checksum VARCHAR(64) NOT NULL, target_checksum VARCHAR(64) NOT NULL, message VARCHAR(1000) NOT NULL)",
         "CREATE TABLE IF NOT EXISTS ha_lease_replication_states (id INTEGER NOT NULL PRIMARY KEY, cluster_id INTEGER NOT NULL UNIQUE REFERENCES ha_clusters(id) ON DELETE CASCADE, source_node_id INTEGER REFERENCES ha_nodes(id) ON DELETE SET NULL, target_node_id INTEGER REFERENCES ha_nodes(id) ON DELETE SET NULL, status VARCHAR(30) DEFAULT 'NOT_APPLICABLE' NOT NULL, desired_generation INTEGER DEFAULT 0 NOT NULL, applied_generation INTEGER DEFAULT 0 NOT NULL, lease_count INTEGER DEFAULT 0 NOT NULL, difference_count INTEGER DEFAULT 0 NOT NULL, conflict_count INTEGER DEFAULT 0 NOT NULL, last_event_at DATETIME, last_full_reconciliation_at DATETIME, last_applied_at DATETIME, last_error_redacted VARCHAR(1000), created_at DATETIME, updated_at DATETIME)",
         "CREATE TABLE IF NOT EXISTS ha_lease_snapshots (id INTEGER NOT NULL PRIMARY KEY, public_id VARCHAR(36) NOT NULL UNIQUE, cluster_id INTEGER NOT NULL REFERENCES ha_clusters(id) ON DELETE CASCADE, source_node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, target_node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, generation INTEGER NOT NULL, checksum VARCHAR(64) NOT NULL, encrypted_payload TEXT NOT NULL, lease_count INTEGER DEFAULT 0 NOT NULL, status VARCHAR(30) DEFAULT 'PENDING' NOT NULL, validation_summary_json TEXT DEFAULT '{}' NOT NULL, created_at DATETIME, staged_at DATETIME, CONSTRAINT uq_ha_lease_snapshot_generation UNIQUE (cluster_id, generation))",
-        "CREATE TABLE IF NOT EXISTS ha_failover_runs (id INTEGER NOT NULL PRIMARY KEY, public_id VARCHAR(36) NOT NULL UNIQUE, cluster_id INTEGER NOT NULL REFERENCES ha_clusters(id) ON DELETE CASCADE, source_node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, target_node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, status VARCHAR(30) DEFAULT 'RUNNING' NOT NULL, phase VARCHAR(50) DEFAULT 'PREFLIGHT' NOT NULL, dhcp_managed BOOLEAN DEFAULT 0 NOT NULL, lease_generation INTEGER DEFAULT 0 NOT NULL, role_generation INTEGER NOT NULL, error_redacted VARCHAR(1000), report_json TEXT DEFAULT '{}' NOT NULL, requested_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, started_at DATETIME, completed_at DATETIME, created_at DATETIME)",
+        "CREATE TABLE IF NOT EXISTS ha_failover_runs (id INTEGER NOT NULL PRIMARY KEY, public_id VARCHAR(36) NOT NULL UNIQUE, cluster_id INTEGER NOT NULL REFERENCES ha_clusters(id) ON DELETE CASCADE, source_node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, target_node_id INTEGER NOT NULL REFERENCES ha_nodes(id) ON DELETE CASCADE, preferred_node_id INTEGER REFERENCES ha_nodes(id) ON DELETE SET NULL, status VARCHAR(30) DEFAULT 'RUNNING' NOT NULL, phase VARCHAR(50) DEFAULT 'PREFLIGHT' NOT NULL, dhcp_managed BOOLEAN DEFAULT 0 NOT NULL, lease_generation INTEGER DEFAULT 0 NOT NULL, role_generation INTEGER NOT NULL, error_redacted VARCHAR(1000), report_json TEXT DEFAULT '{}' NOT NULL, requested_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, started_at DATETIME, completed_at DATETIME, created_at DATETIME)",
+        "CREATE TABLE IF NOT EXISTS ha_maintenance_runs (id INTEGER NOT NULL PRIMARY KEY, public_id VARCHAR(36) NOT NULL UNIQUE, cluster_id INTEGER NOT NULL REFERENCES ha_clusters(id) ON DELETE CASCADE, operation VARCHAR(30) NOT NULL, status VARCHAR(30) DEFAULT 'RUNNING' NOT NULL, phase VARCHAR(60) DEFAULT 'WAITING_FOR_REPORTS' NOT NULL, desired_active_node_id INTEGER REFERENCES ha_nodes(id) ON DELETE SET NULL, authoritative_node_id INTEGER REFERENCES ha_nodes(id) ON DELETE SET NULL, sync_run_id INTEGER REFERENCES ha_sync_runs(id) ON DELETE SET NULL, previous_state_json TEXT DEFAULT '{}' NOT NULL, result_json TEXT DEFAULT '{}' NOT NULL, error_redacted VARCHAR(1000), requested_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, phase_started_at DATETIME, started_at DATETIME, completed_at DATETIME, created_at DATETIME, updated_at DATETIME)",
     ]
     ha_existed = table_exists(cur, "ha_clusters")
     for statement in ha_schema:
@@ -351,6 +366,7 @@ def main():
         cur.execute("ALTER TABLE dns_providers ADD COLUMN ha_cluster_id INTEGER REFERENCES ha_clusters(id) ON DELETE SET NULL")
         migrations_applied.append("dns_provider_ha_cluster_link_v1")
     cur.execute("CREATE INDEX IF NOT EXISTS ix_dns_providers_ha_cluster_id ON dns_providers (ha_cluster_id)")
+    cur.execute("UPDATE dns_recognised_devices SET logical_provider_key = 'ha-cluster:' || (SELECT ha_cluster_id FROM dns_providers WHERE dns_providers.id = dns_recognised_devices.provider_id) WHERE provider_id IN (SELECT id FROM dns_providers WHERE ha_cluster_id IS NOT NULL)")
     cur.execute("UPDATE ha_clusters SET authoritative_node_id = (SELECT id FROM ha_nodes WHERE ha_nodes.cluster_id = ha_clusters.id AND role = 'ACTIVE' ORDER BY id LIMIT 1) WHERE authoritative_node_id IS NULL")
     ha_v5_changed = False
     for column, definition in {
@@ -379,6 +395,14 @@ def main():
         "observed_generation": "INTEGER DEFAULT 0 NOT NULL",
         "vip_owned": "BOOLEAN DEFAULT 0 NOT NULL",
         "dhcp_running": "BOOLEAN DEFAULT 0 NOT NULL",
+        "dhcp_configured": "BOOLEAN",
+        "dhcp_listener_active": "BOOLEAN",
+        "ftl_active": "BOOLEAN",
+        "dhcp_runtime_state": "VARCHAR(30) DEFAULT 'UNKNOWN' NOT NULL",
+        "dhcp_observation_status": "VARCHAR(30) DEFAULT 'UNKNOWN' NOT NULL",
+        "dhcp_observed_at": "DATETIME",
+        "last_report_sequence": "INTEGER DEFAULT 0 NOT NULL",
+        "last_agent_reported_at": "DATETIME",
         "dns_healthy": "BOOLEAN",
         "peer_reachable": "BOOLEAN",
         "peer_icmp_probe_status": "VARCHAR(30)",
@@ -402,12 +426,16 @@ def main():
         if not column_exists(cur, "ha_nodes", column):
             cur.execute(f"ALTER TABLE ha_nodes ADD COLUMN {column} {definition}")
             ha_v5_changed = True
+    if not column_exists(cur, "ha_failover_runs", "preferred_node_id"):
+        cur.execute("ALTER TABLE ha_failover_runs ADD COLUMN preferred_node_id INTEGER REFERENCES ha_nodes(id) ON DELETE SET NULL")
+        ha_v5_changed = True
     if not column_exists(cur, "ha_health_checks", "remediation"):
         cur.execute("ALTER TABLE ha_health_checks ADD COLUMN remediation TEXT")
         ha_v5_changed = True
     cur.execute("UPDATE ha_clusters SET preferred_node_id = (SELECT source_node_id FROM ha_failover_runs WHERE ha_failover_runs.cluster_id = ha_clusters.id ORDER BY created_at LIMIT 1) WHERE preferred_node_id IS NULL")
     cur.execute("UPDATE ha_clusters SET preferred_node_id = (SELECT id FROM ha_nodes WHERE ha_nodes.cluster_id = ha_clusters.id AND ha_nodes.id != (SELECT node_id FROM ha_events WHERE ha_events.cluster_id = ha_clusters.id AND event_type = 'automatic_failover_reconciled' ORDER BY occurred_at LIMIT 1) ORDER BY id LIMIT 1) WHERE preferred_node_id IS NULL AND EXISTS (SELECT 1 FROM ha_events WHERE ha_events.cluster_id = ha_clusters.id AND event_type = 'automatic_failover_reconciled')")
     cur.execute("UPDATE ha_clusters SET preferred_node_id = authoritative_node_id WHERE preferred_node_id IS NULL")
+    cur.execute("UPDATE ha_failover_runs SET preferred_node_id = (SELECT preferred_node_id FROM ha_clusters WHERE ha_clusters.id = ha_failover_runs.cluster_id) WHERE preferred_node_id IS NULL")
     if ha_v5_changed:
         migrations_applied.append("high_availability_keepalived_schema_v5")
     ha_indexes = {
@@ -424,7 +452,8 @@ def main():
         "ha_drift_items": ["sync_run_id", "group_key", "risk", "status"],
         "ha_lease_replication_states": ["cluster_id", "source_node_id", "target_node_id", "status", "last_full_reconciliation_at"],
         "ha_lease_snapshots": ["public_id", "cluster_id", "source_node_id", "target_node_id", "generation", "checksum", "status", "created_at"],
-        "ha_failover_runs": ["public_id", "cluster_id", "source_node_id", "target_node_id", "status", "phase", "role_generation", "requested_by_user_id", "created_at"],
+        "ha_failover_runs": ["public_id", "cluster_id", "source_node_id", "target_node_id", "preferred_node_id", "status", "phase", "role_generation", "requested_by_user_id", "created_at"],
+        "ha_maintenance_runs": ["public_id", "cluster_id", "operation", "status", "phase", "desired_active_node_id", "authoritative_node_id", "sync_run_id", "requested_by_user_id", "created_at"],
     }
     for table, columns in ha_indexes.items():
         for column in columns:
@@ -434,6 +463,12 @@ def main():
     cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_ha_agent_credentials_public_key ON ha_agent_credentials (public_key) WHERE public_key IS NOT NULL")
     if not ha_existed:
         migrations_applied.append("high_availability_draft_schema_v1")
+
+    repair_stats = repair_dns_client_identities(conn)
+    if repair_stats["merged"]:
+        migrations_applied.append(
+            f"dns_client_identity_repair ({repair_stats['before']} -> {repair_stats['after']})"
+        )
 
     conn.commit()
     cur.execute("PRAGMA foreign_keys = ON")

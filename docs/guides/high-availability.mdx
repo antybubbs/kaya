@@ -90,6 +90,63 @@ Connection Diagnostics reports three independent signals:
 
 Existing clients may temporarily display the previous DHCP server until they acquire a new lease. This does not mean that the previous Pi-hole is still serving DHCP; Kaya determines ownership from current HA service state.
 
+## Understanding live service state
+
+Kaya treats the HA Agent's latest signed observation as evidence, not as an instruction result. A successful "enable DHCP" or "disable DHCP" response means the node accepted the action; Kaya waits for a newer observation before declaring the service active or released.
+
+For DNS + DHCP clusters, the live state combines four independent facts:
+
+- whether Pi-hole is configured to provide DHCP;
+- whether Pi-hole FTL is active;
+- whether UDP port 67 is listening; and
+- when that observation was made.
+
+Kaya keeps **DHCP configuration** and **DHCP runtime** separate. For example,
+`dhcp.active=false` with a healthy FTL process listening on UDP/67 means the
+service is running but its saved Pi-hole setting has drifted. Kaya reports the
+real service as available and the configuration as inconsistent; it does not
+mislabel that node as stopped.
+
+If any probe cannot be completed, Kaya displays **Unknown — probe unavailable**. It does not silently turn an unknown result into **Stopped**, start DHCP on another node, or declare a transition complete. Signed reports carry a monotonic sequence number so a delayed report cannot overwrite newer runtime truth.
+
+The overview separates **Service availability**, **Redundancy**, and **Control plane**. A surviving active node can continue serving DNS and DHCP while its peer is off; in that case service may remain healthy while redundancy is reduced. Reinitialisation observes the current topology first. If the requested owner already exclusively holds the Virtual IP and DHCP, Kaya repairs its stored roles and recovery metadata without moving service.
+
+During a controlled handover, the live progress panel shows persisted stages, elapsed time, and actual verification attempts. Refreshing or reopening the page resumes the same server-side run; the browser does not invent progress from a timer.
+
+### Automatic topology reconciliation
+
+Kaya observes each fresh signed Agent report and also runs a lightweight
+periodic watchdog. It compares the real two-node topology with these DNS + DHCP
+invariants: one Virtual IP owner, one UDP/67 owner, DHCP configuration enabled
+on that owner, DHCP configuration disabled on the standby, and healthy DNS.
+
+If ownership is unambiguous and only the Pi-hole DHCP setting has drifted, Kaya
+uses the existing restricted Agent helper to correct that setting once, waits
+for a newer signed report, and records the repair in Activity and Audit history.
+The live overview shows the real repair stage and elapsed time. A failed repair
+enters a cooldown instead of repeatedly toggling DHCP.
+
+Kaya never guesses in a split-brain, dual-DHCP, stale-telemetry, unknown-owner,
+or concurrent-transition state. Those cases remain blocked and require review.
+During a proven local hard failover, the surviving Agent's signed completion
+event can establish that the failed peer is offline; Kaya may then repair DHCP
+configuration on the sole Virtual IP owner without moving the Virtual IP.
+
+## Beta verification checklist
+
+Use non-production nodes and an unused Virtual IP for this test. Replace the example values with addresses from your test network.
+
+1. Confirm both agents show version **0.2.10** or newer, are live, and report fresh DNS and DHCP observations.
+2. On each node, confirm Keepalived is running and only one node owns the Virtual IP: `ip -4 address show dev <interface>`.
+3. Query the shared address directly: `dig @<virtual-ip> example.com` or `nslookup example.com <virtual-ip>`.
+4. For DNS + DHCP, renew a test client lease and confirm its DNS server is the Virtual IP—not a physical Pi-hole address.
+5. Run a controlled failover. Follow the server-derived stages and confirm exactly one Virtual IP owner and exactly one UDP/67 listener after completion.
+6. Run controlled failback only after the recovered preferred node is stable and Kaya marks it ready.
+7. Power off the active test node. Confirm local automatic failover works while Kaya is online, then repeat with Kaya unavailable. Network service must remain local to the Pi-holes.
+8. Restore the node and confirm it returns as standby. Check that service availability remains healthy while redundancy moves from reduced back to healthy.
+9. In DNS Manager, query the HA provider through the Virtual IP and confirm existing provider history and linked IP data remain present.
+10. Review **Activity** and the downloaded HA report for the signed observations, ownership change, retries, and final topology. No registration token, API password, lease payload, or other secret should appear.
+
 ## Safety and data retention
 
 - Unknown or ambiguous high-risk state blocks deployment or DHCP activation.

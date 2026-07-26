@@ -84,6 +84,7 @@ def apply_desired_keepalived(state, action: dict, *, runner: Callable = subproce
 
 
 def refresh_vip_state(state, *, runner: Callable = subprocess.run) -> None:
+    store = getattr(state, "set_telemetry", state.set)
     vip = state.get("desired_virtual_ip")
     if not vip:
         return
@@ -91,7 +92,7 @@ def refresh_vip_state(state, *, runner: Callable = subprocess.run) -> None:
         completed = runner(["sudo", "-n", HELPER_PATH, "status", str(vip).split("/", 1)[0]], capture_output=True, text=True, timeout=10, check=False)
         output = json.loads((completed.stdout or "{}").strip())
     except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
-        state.set("keepalived_runtime_state", "UNKNOWN")
+        store("keepalived_runtime_state", "UNKNOWN")
         return
-    state.set("keepalived_runtime_state", str(output.get("runtime_state") or "UNKNOWN"))
-    state.set("vip_owned", bool(output.get("vip_owned")))
+    store("keepalived_runtime_state", str(output.get("runtime_state") or "UNKNOWN"))
+    store("vip_owned", bool(output.get("vip_owned")))

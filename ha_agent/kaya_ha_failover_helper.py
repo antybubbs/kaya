@@ -15,7 +15,8 @@ FTL, IP = "/usr/bin/pihole-FTL", "/usr/sbin/ip"
 MAC = re.compile(r"^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$", re.I)
 
 def _state(key, default=None):
-    with sqlite3.connect(STATE_DB) as db:
+    with sqlite3.connect(STATE_DB, timeout=5) as db:
+        db.execute("PRAGMA busy_timeout=5000")
         row = db.execute("SELECT value FROM state WHERE key = ?", (key,)).fetchone()
     return json.loads(row[0]) if row else default
 
@@ -26,17 +27,19 @@ def _dhcp_active():
     result = _run([FTL, "--config", "dhcp.active"])
     matches = re.findall(r"\b(true|false)\b", result.stdout.lower())
     if result.returncode or not matches:
-        raise RuntimeError("Pi-hole DHCP state could not be read.")
+        return None
     return matches[-1] == "true"
 
 
 def _udp_port_bound(port, paths=None):
     """Read the kernel socket table without invoking a shell or a broad helper."""
+    inspected = False
     for path in paths or PROC_UDP:
         try:
             lines = path.read_text(encoding="ascii", errors="strict").splitlines()[1:]
         except (FileNotFoundError, OSError, UnicodeError):
             continue
+        inspected = True
         for line in lines:
             fields = line.split()
             if len(fields) < 2:
@@ -46,18 +49,27 @@ def _udp_port_bound(port, paths=None):
                     return True
             except (IndexError, ValueError):
                 continue
-    return False
+    return False if inspected else None
 
 
 def _dhcp_status():
     configured = _dhcp_active()
     service = _run(["systemctl", "is-active", "pihole-FTL"])
+    service_active = True if service.returncode == 0 else False if service.returncode == 3 else None
     listening = _udp_port_bound(67)
+    available = configured is not None and service_active is not None and listening is not None
+    # Configuration intent and runtime ownership are deliberately independent.
+    # Pi-hole can continue listening on UDP/67 after dhcp.active drifted false;
+    # reporting that real listener as stopped can make a second promotion look
+    # safe and is therefore more dangerous than reporting the inconsistency.
+    running = bool(service_active and listening) if available else None
     return {
         "configured": configured,
-        "service_active": service.returncode == 0,
+        "service_active": service_active,
         "listening": listening,
-        "dhcp_running": configured and service.returncode == 0 and listening,
+        "runtime_state": "RUNNING" if running is True else "STOPPED" if running is False else "UNKNOWN",
+        "observation_status": "FRESH" if available else "UNAVAILABLE",
+        "dhcp_running": running,
     }
 
 
@@ -65,7 +77,22 @@ def _wait_for_dhcp(enabled):
     latest = {}
     for _ in range(20):
         latest = _dhcp_status()
-        ready = latest["dhcp_running"] if enabled else not latest["configured"] and not latest["listening"]
+        if latest.get("observation_status") != "FRESH":
+            time.sleep(1)
+            continue
+        # Promotion and demotion have deliberately opposite post-conditions.
+        # In particular, an already-running listener must never let promotion
+        # succeed while Pi-hole still reports dhcp.active=false.
+        ready = (
+            latest.get("configured") is True
+            and latest.get("service_active") is True
+            and latest.get("listening") is True
+            and latest.get("runtime_state") == "RUNNING"
+            if enabled
+            else latest.get("configured") is False
+            and latest.get("listening") is False
+            and latest.get("runtime_state") == "STOPPED"
+        )
         if ready:
             return latest
         time.sleep(1)
@@ -177,21 +204,29 @@ def main():
     with LOCK_FILE.open("a+") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if sys.argv[1] in {"demote", "automatic-demote"}:
-            _set_dhcp(False); print(json.dumps({"status": "applied", "dhcp_running": False})); return
+            status = _set_dhcp(False); print(json.dumps({"status": "applied", **status})); return
         if not _owns_vip() or _state("dns_healthy", False) is not True:
             raise RuntimeError("Promotion requires local VIP ownership and healthy DNS.")
+        configuration_only = bool(_state("failover_configuration_only", False)) if not automatic else False
+        if configuration_only:
+            # The node already serves DHCP and owns the VIP. Persist only the
+            # missing setting; do not back up or replace the live lease file.
+            status = _set_dhcp(True)
+            _wait_for_dns()
+            print(json.dumps({"status": "applied", **status, "backup_reference": None}))
+            return
         backup, ownership = _backup(generation)
         try:
             restore_original = bool(_state("failover_restore_original", False)) if not automatic else False
             lease_generation = int(_state("failover_lease_generation", 0)) if not automatic else int(_state("lease_generation", 0))
             if not restore_original:
                 _atomic_write(LEASE_FILE, _lease_lines(lease_generation), ownership)
-            _set_dhcp(True)
+            status = _set_dhcp(True)
             _wait_for_dns()
         except Exception:
             try: _set_dhcp(False); _atomic_write(LEASE_FILE, backup.read_text(encoding="utf-8"), ownership)
             finally: raise
-        print(json.dumps({"status": "applied", "dhcp_running": True, "backup_reference": backup.name}))
+        print(json.dumps({"status": "applied", **status, "backup_reference": backup.name}))
 
 if __name__ == "__main__":
     try: main()

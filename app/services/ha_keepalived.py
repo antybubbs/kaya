@@ -7,6 +7,7 @@ from ipaddress import IPv4Address, IPv4Interface
 from sqlalchemy.orm import Session
 
 from app.models.models import HACluster, HANode
+from app.services.ha_topology import dhcp_observation, pihole_manages_dhcp
 
 
 INTERFACE_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
@@ -75,6 +76,11 @@ def deployment_blockers(cluster: HACluster, *, now: datetime | None = None, rout
             blockers.append(str(exc))
     if cluster.status not in {"VALIDATED", "VALIDATED_WITH_WARNINGS", "READY_TO_DEPLOY", "DEPLOYING", "HEALTHY"}:
         blockers.append("Complete read-only validation without blocking failures before deployment.")
+    if pihole_manages_dhcp(cluster):
+        from app.services.ha_dns_advertisement import cached_dns_advertisement
+
+        if any(state.checked and not state.matches for state in cached_dns_advertisement(cluster)):
+            blockers.append("Repair DHCP DNS Advertisement so the DNS Virtual IP is advertised first.")
     current = now or datetime.utcnow()
     for node in cluster.nodes:
         credential = node.agent_credential
@@ -91,12 +97,20 @@ def _controlled_preemption_target(cluster: HACluster) -> int | None:
         for item in sorted(cluster.failover_runs, key=lambda value: value.created_at, reverse=True)
         if item.status in {"RUNNING", "ROLLING_BACK"}
     ), None)
-    if run is None:
-        return None
-    if run.phase == "MOVING_VIP":
-        return run.target_node_id
-    if run.phase == "ROLLBACK_MOVING_VIP":
-        return run.source_node_id
+    if run is not None:
+        if run.phase == "MOVING_VIP":
+            return run.target_node_id
+        if run.phase == "ROLLBACK_MOVING_VIP":
+            return run.source_node_id
+    maintenance = next((
+        item
+        for item in sorted(cluster.maintenance_runs, key=lambda value: value.created_at, reverse=True)
+        if item.operation == "REINITIALISE"
+        and item.status == "RUNNING"
+        and item.phase == "WAITING_FOR_VIP"
+    ), None)
+    if maintenance is not None:
+        return maintenance.desired_active_node_id
     return None
 
 
@@ -177,7 +191,7 @@ def request_manual_vip_move(db: Session, cluster: HACluster, target: HANode, ack
     blockers = deployment_blockers(cluster)
     if blockers:
         raise HAKeepalivedError(" ".join(blockers))
-    if any(node.dhcp_running for node in cluster.nodes):
+    if any(dhcp_observation(node, datetime.utcnow(), freshness_seconds=120).active for node in cluster.nodes):
         raise HAKeepalivedError("Manual VIP testing is blocked while an agent reports DHCP running; DHCP transition control is not implemented yet.")
     for node in cluster.nodes:
         node.desired_role = "ACTIVE" if node.id == target.id else "STANDBY"

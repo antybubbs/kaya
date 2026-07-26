@@ -17,6 +17,7 @@ from app.core.performance import external_call
 
 from app.core.security import decrypt_secret
 from app.models.models import DNSProviderConfig
+from app.services.ha_topology import reconcile_topology
 
 
 class DNSProviderError(RuntimeError):
@@ -382,6 +383,34 @@ class PiHoleProvider(DNSProvider):
 
         return self._safe("Configuration", run)
 
+    def get_ha_dhcp_dns_advertisement(self) -> DNSProviderResult:
+        """Read Pi-hole v6 custom dnsmasq lines used for HA DHCP Option 6."""
+        def run():
+            data = self._v6_request_json("/api/config/misc/dnsmasq_lines")
+            return DNSProviderResult(True, "Pi-hole DHCP DNS advertisement loaded.", data)
+
+        return self._safe("DHCP DNS advertisement", run)
+
+    def apply_ha_dhcp_dns_advertisement(self, dnsmasq_lines: list[str]) -> DNSProviderResult:
+        """Replace Pi-hole v6 custom dnsmasq lines through its supported API."""
+        def run():
+            if (
+                not isinstance(dnsmasq_lines, list)
+                or len(dnsmasq_lines) > 256
+                or any(not isinstance(line, str) or not line or len(line) > 512 or "\n" in line or "\r" in line for line in dnsmasq_lines)
+            ):
+                raise DNSProviderError("The generated dnsmasq configuration is invalid.")
+            payload = {"config": {"misc": {"dnsmasq_lines": dnsmasq_lines}}}
+            data = self._request_json(
+                "/api/config/misc/dnsmasq_lines",
+                method="PATCH",
+                payload=payload,
+                headers=self._v6_auth_headers(),
+            )
+            return DNSProviderResult(True, "Pi-hole DHCP DNS advertisement applied.", data)
+
+        return self._safe("DHCP DNS advertisement update", run)
+
     def apply_ha_configuration_group(self, group: str, value: Any) -> DNSProviderResult:
         """Apply one allowlisted Pi-hole v6 configuration group.
 
@@ -574,13 +603,13 @@ class HAPiHoleProvider(DNSProvider):
     """
 
     @staticmethod
-    def _provider_for_node(node, provider_id) -> PiHoleProvider:
+    def _provider_for_node(node, provider_id, *, base_url: str | None = None) -> PiHoleProvider:
         source = node.integration if node.integration is not None else node.ha_connection
         if source is None or getattr(source, "deleted_at", None) is not None:
             raise DNSProviderError(f"{node.display_name} has no usable management connection.")
         node_config = SimpleNamespace(
             id=f"ha-dns-{provider_id}-node-{node.id}",
-            base_url=source.base_url if node.integration is not None else source.api_base_url,
+            base_url=base_url or (source.base_url if node.integration is not None else source.api_base_url),
             auth_method=source.auth_method,
             encrypted_secret=source.encrypted_secret,
             ssl_verify=source.ssl_verify,
@@ -597,17 +626,11 @@ class HAPiHoleProvider(DNSProvider):
     def _active_provider(self) -> PiHoleProvider:
         cluster = self._cluster()
         now = datetime.utcnow()
-        owners = [
-            node for node in cluster.nodes
-            if node.vip_owned
-            and node.last_heartbeat_at is not None
-            and node.last_heartbeat_at >= now - timedelta(seconds=45)
-            and node.keepalived_runtime_state == "RUNNING"
-            and node.dns_healthy is True
-        ]
-        if len(owners) != 1 or cluster.current_active_node_id != owners[0].id:
+        topology = reconcile_topology(cluster, now=now, freshness_seconds=45)
+        active = next((node for node in cluster.nodes if node.id == topology.active_node_id), None)
+        if active is None or active.keepalived_runtime_state != "RUNNING" or active.dns_healthy is not True:
             raise DNSProviderError("Kaya cannot safely identify one live Pi-hole VIP owner. Check the HA cluster before retrying.")
-        return self._provider_for_node(owners[0], self.config.id)
+        return self._provider_for_node(active, self.config.id)
 
     def _query_providers(self) -> list[tuple[str, PiHoleProvider]]:
         providers = []
@@ -620,23 +643,65 @@ class HAPiHoleProvider(DNSProvider):
             raise DNSProviderError("The HA cluster has no usable node management connections.")
         return providers
 
+    def _vip_read_providers(self) -> list[PiHoleProvider]:
+        """Build bounded VIP clients with each authorised node credential.
+
+        Pi-hole credentials can differ between nodes. During an ownership
+        telemetry gap, safe reads try the stable cluster endpoint with each
+        already-authorised credential without guessing a physical owner.
+        """
+        cluster = self._cluster()
+        base_url = str(self.config.base_url or "").rstrip("/")
+        if not base_url:
+            raise DNSProviderError("The HA provider has no DNS Virtual IP endpoint.")
+        providers: list[PiHoleProvider] = []
+        for node in cluster.nodes[:2]:
+            try:
+                providers.append(self._provider_for_node(node, self.config.id, base_url=base_url))
+            except DNSProviderError:
+                continue
+        if not providers:
+            raise DNSProviderError("The HA cluster has no authorised credential for its DNS Virtual IP endpoint.")
+        return providers
+
     def _call(self, method: str, *args, **kwargs) -> DNSProviderResult:
         try:
             return getattr(self._active_provider(), method)(*args, **kwargs)
+        except DNSProviderError:
+            return DNSProviderResult(False, "DNS service remains available, but this change requires confirmed HA ownership.", None)
+
+    def _read_call(self, method: str, *args, **kwargs) -> DNSProviderResult:
+        try:
+            active = self._active_provider()
+        except DNSProviderError:
+            active = None
+        if active is not None:
+            result = getattr(active, method)(*args, **kwargs)
+            if result.ok:
+                return result
+        try:
+            providers = self._vip_read_providers()
         except DNSProviderError as exc:
             return DNSProviderResult(False, str(exc), None)
+        last_message = "The DNS Virtual IP did not return provider data."
+        for provider in providers:
+            result = getattr(provider, method)(*args, **kwargs)
+            if result.ok:
+                return result
+            last_message = result.message
+        return DNSProviderResult(False, f"DNS service data is unavailable through the HA Virtual IP. {last_message}", None)
 
-    def test_connection(self): return self._call("test_connection")
-    def get_status(self): return self._call("get_status")
-    def get_statistics(self): return self._call("get_statistics")
-    def get_history(self): return self._call("get_history")
-    def get_clients(self): return self._call("get_clients")
-    def get_query_log(self, *, limit: int = 100): return self._call("get_query_log", limit=limit)
-    def get_local_dns_records(self): return self._call("get_local_dns_records")
-    def get_dhcp_leases(self): return self._call("get_dhcp_leases")
-    def get_blocklists(self): return self._call("get_blocklists")
-    def get_version(self): return self._call("get_version")
-    def get_ha_configuration(self): return self._call("get_ha_configuration")
+    def test_connection(self): return self._read_call("test_connection")
+    def get_status(self): return self._read_call("get_status")
+    def get_statistics(self): return self._read_call("get_statistics")
+    def get_history(self): return self._read_call("get_history")
+    def get_clients(self): return self._read_call("get_clients")
+    def get_query_log(self, *, limit: int = 100): return self._read_call("get_query_log", limit=limit)
+    def get_local_dns_records(self): return self._read_call("get_local_dns_records")
+    def get_dhcp_leases(self): return self._read_call("get_dhcp_leases")
+    def get_blocklists(self): return self._read_call("get_blocklists")
+    def get_version(self): return self._read_call("get_version")
+    def get_ha_configuration(self): return self._read_call("get_ha_configuration")
     def update_blocklists(self): return self._call("update_blocklists")
 
 
@@ -648,10 +713,20 @@ class HAPiHoleCollectionProvider(DNSProvider):
     address until their DHCP lease is renewed.
     """
 
-    def __init__(self, active: PiHoleProvider, query_providers: list[tuple[str, PiHoleProvider]]):
+    def __init__(self, active: PiHoleProvider | None, read_providers: list[PiHoleProvider], query_providers: list[tuple[str, PiHoleProvider]]):
         self.active = active
-        self.config = active.config
+        self.read_providers = read_providers
+        self.config = (active or read_providers[0]).config
         self.query_providers = query_providers
+
+    def _read(self, method: str) -> DNSProviderResult:
+        last_message = "The DNS Virtual IP did not return provider data."
+        for provider in ([self.active] if self.active else []) + self.read_providers:
+            result = getattr(provider, method)()
+            if result.ok:
+                return result
+            last_message = result.message
+        return DNSProviderResult(False, f"DNS service data is unavailable through the HA Virtual IP. {last_message}", None)
 
     def get_query_log(self, *, limit: int = 100) -> DNSProviderResult:
         bounded_limit = max(1, min(limit, 500))
@@ -677,17 +752,20 @@ class HAPiHoleCollectionProvider(DNSProvider):
             {"queries": rows},
         )
 
-    def test_connection(self): return self.active.test_connection()
-    def get_status(self): return self.active.get_status()
-    def get_statistics(self): return self.active.get_statistics()
-    def get_history(self): return self.active.get_history()
-    def get_clients(self): return self.active.get_clients()
-    def get_local_dns_records(self): return self.active.get_local_dns_records()
-    def get_dhcp_leases(self): return self.active.get_dhcp_leases()
-    def get_blocklists(self): return self.active.get_blocklists()
-    def get_version(self): return self.active.get_version()
-    def get_ha_configuration(self): return self.active.get_ha_configuration()
-    def update_blocklists(self): return self.active.update_blocklists()
+    def test_connection(self): return self._read("test_connection")
+    def get_status(self): return self._read("get_status")
+    def get_statistics(self): return self._read("get_statistics")
+    def get_history(self): return self._read("get_history")
+    def get_clients(self): return self._read("get_clients")
+    def get_local_dns_records(self): return self._read("get_local_dns_records")
+    def get_dhcp_leases(self): return self._read("get_dhcp_leases")
+    def get_blocklists(self): return self._read("get_blocklists")
+    def get_version(self): return self._read("get_version")
+    def get_ha_configuration(self): return self._read("get_ha_configuration")
+    def update_blocklists(self):
+        if self.active is None:
+            return DNSProviderResult(False, "DNS service remains available, but this change requires confirmed HA ownership.", None)
+        return self.active.update_blocklists()
 
 
 def provider_for(config: DNSProviderConfig) -> DNSProvider:
@@ -710,8 +788,13 @@ def provider_snapshot_for_io(config: DNSProviderConfig) -> DNSProvider:
         raise DNSProviderError(f"Unsupported DNS provider type: {config.provider_type}")
     if config.ha_cluster_id is not None:
         ha_provider = HAPiHoleProvider(config)
+        try:
+            active = ha_provider._active_provider()
+        except DNSProviderError:
+            active = None
         return HAPiHoleCollectionProvider(
-            ha_provider._active_provider(),
+            active,
+            ha_provider._vip_read_providers(),
             ha_provider._query_providers(),
         )
     return PiHoleProvider(SimpleNamespace(

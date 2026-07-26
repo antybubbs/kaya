@@ -29,6 +29,8 @@ Insights are advisory. They identify supported observations in available DNS dat
 - `DNSInsight`
 - `DNSStatisticsSnapshot`
 - `DNSRecognisedDevice`
+- `DNSClientObservation`
+- `DHCPLeaseHistory`
 
 ## Workflows
 
@@ -112,6 +114,8 @@ Thresholds are centralized in `DNSInsightThresholds` so a future settings interf
 - `dns_collector_enabled`
 - `dns_refresh_interval_seconds` (30 to 86,400 seconds)
 - `dns_traffic_history_days` (1 to 3,650 days; default 30)
+- `dns_observation_history_days` (30 days by default; supports Forever)
+- `dns_dhcp_history_days` (90 days by default; supports Forever)
 - `dns_default_provider_id`
 - Provider base URL
 - Auth method
@@ -127,7 +131,9 @@ Provider network calls use their configured bounded timeout and run outside an a
 
 ## Persistent client intelligence
 
-The collector retains every observed client in `dns_recognised_devices`. Existing retained devices are migrated in place and treated as known; their IDs and provider relationships are preserved. Identity matching prefers provider identifiers and validated, normalised MAC addresses, then uses conservative IP/hostname fallbacks. A hostname never silently merges records with different MAC addresses.
+The collector retains one logical client summary in `dns_recognised_devices` and each bounded raw sighting in `dns_client_observations`. Identity matching prefers validated, normalised MAC addresses, then stable provider identifiers and conservative hostname/IP or IP-only fallbacks. For HA-backed providers, the HA cluster is the identity boundary, so observations do not split merely because the active member changes. A hostname or reused address never silently merges records with different MAC addresses.
+
+The Clients tab reads only logical summaries, displays first/last seen and a lifetime observation count, and uses 50-row server-side pagination. Existing duplicate rows are consolidated automatically only when they share the same valid MAC and logical provider. Conflicting managed-record links are left separate for manual review.
 
 IP and hostname observations are stored in `dns_client_ip_history` and `dns_client_hostname_history`. Repeated observations update the existing history row and count rather than creating duplicates. `dns_client_events` records discovery, IP/hostname changes, user state changes, links, managed-record updates, merges, and other meaningful transitions.
 
@@ -151,7 +157,9 @@ Client-management settings under Site Administration → Modules → DNS Manager
 
 Addresses inside an enabled `DHCPRange` are treated as temporary lease evidence, not stable device identity. Kaya reunites observations in those ranges by provider client ID or normalised MAC address. An IP-only managed-record link is rejected inside a DHCP range because a later lease holder may reuse the address.
 
-Each provider lease is persisted as a time-bounded `DHCPLeaseHistory` row. When an address changes owner, Kaya closes the previous active interval and creates another rather than overwriting it. New `DNSClientTrafficEvent` rows retain both the observed client IP and applicable lease ID, so historical DNS activity remains attributable after address reuse. Existing retained history remains available during Pi-hole outages; configured retention and explicit Kaya deletion policies still apply.
+Each provider lease is persisted as a time-bounded `DHCPLeaseHistory` row. When an address changes owner, Kaya closes the previous active interval and creates another rather than overwriting it. New `DNSClientTrafficEvent` rows retain both the observed client IP and applicable lease ID, so historical DNS activity remains attributable after address reuse. The default DHCP view is database-backed and shows active leases plus leases ended in the last 24 hours; Active, Recently ended, History and All filters are server-side and paginated at 50 rows.
+
+Approximately daily, the existing DNS collector transactionally removes expired raw observations and ended DHCP intervals. Active leases, logical clients, managed records, managed links and identity mappings are never removed by this cleanup. Raw observation retention defaults to 30 days and ended-lease retention to 90 days; either may be set to Forever.
 
 ## Dependencies
 

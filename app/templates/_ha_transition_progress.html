@@ -1,0 +1,57 @@
+{% if failover_state is defined and failover_run and failover_run.status in ['RUNNING', 'ROLLING_BACK'] %}
+<section class="panel ha-transition-progress" data-ha-transition-progress aria-live="polite">
+  <div class="ha-section-heading">
+    <div>
+      <span class="ha-sync-eyebrow">Live controlled transition</span>
+      <h2 data-ha-transition-message>{{ failover_state.message }}</h2>
+      <p class="muted"><strong>{{ failover_state.source }}</strong> → <strong>{{ failover_state.target }}</strong>. Progress comes from signed node reports and persisted server-side checks.</p>
+    </div>
+    <span class="ha-agent-state is-pending" data-ha-transition-status>{{ failover_state.status|replace('_', ' ')|title }}</span>
+  </div>
+  <div class="ha-transition-track" role="progressbar" aria-label="Controlled transition progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ failover_state.progress_percent }}">
+    <span data-ha-transition-bar style="width: {{ failover_state.progress_percent }}%"></span>
+  </div>
+  <div class="ha-transition-meta">
+    <span>Elapsed <strong data-ha-transition-elapsed>{{ failover_state.elapsed_seconds }}s</strong></span>
+    <span>Verification checks <strong data-ha-transition-attempt>{{ failover_state.verification_attempt }}</strong></span>
+  </div>
+  <ol class="ha-transition-steps" data-ha-transition-steps>
+    {% for step in failover_state.steps %}
+    <li class="is-{{ step.state }}">{{ step.label }}</li>
+    {% endfor %}
+  </ol>
+</section>
+{% endif %}
+
+{% set maintenance_visible = maintenance_state is defined and maintenance_state and maintenance_state.visible %}
+<section class="panel ha-transition-progress" data-ha-maintenance-panel aria-live="polite"{% if not maintenance_visible %} hidden{% endif %}>
+  <div class="ha-section-heading">
+    <div>
+      <span class="ha-sync-eyebrow">Self-healing HA configuration</span>
+      <h2 data-ha-maintenance-title>{{ maintenance_state.message if maintenance_visible else 'Checking HA configuration' }}</h2>
+      <p class="muted" data-ha-maintenance-detail>{{ maintenance_state.detail if maintenance_visible else 'Kaya repairs only unambiguous DHCP configuration drift. Virtual IP ownership is not changed by this repair.' }}</p>
+    </div>
+    <span class="ha-agent-state is-pending" data-ha-maintenance-status>{{ maintenance_state.status|replace('_', ' ')|title if maintenance_visible else 'Observing' }}</span>
+  </div>
+  <div class="ha-transition-track" role="progressbar" aria-label="HA reconciliation progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ maintenance_state.progress_percent if maintenance_visible else 0 }}">
+    <span data-ha-maintenance-bar style="width: {{ maintenance_state.progress_percent if maintenance_visible else 0 }}%"></span>
+  </div>
+  <div class="ha-transition-meta">
+    <span>Elapsed <strong data-ha-maintenance-elapsed>{{ maintenance_state.elapsed_seconds if maintenance_visible else 0 }}s</strong></span>
+    <span>Current-stage checks <strong data-ha-maintenance-attempt>{{ maintenance_state.phase_attempt if maintenance_visible else 0 }}</strong></span>
+  </div>
+  <ol class="ha-transition-steps" data-ha-maintenance-progress>
+    {% if maintenance_visible %}{% for step in maintenance_state.steps %}<li class="is-{{ step.state }}">{{ step.label }}</li>{% endfor %}{% endif %}
+  </ol>
+  <div class="alert" data-ha-maintenance-error-panel{% if not maintenance_visible or not maintenance_state.error %} hidden{% endif %}><strong>Repair needs attention</strong><span data-ha-maintenance-error>{{ maintenance_state.error if maintenance_visible else '' }}</span></div>
+  {% if user.role == 'admin' %}
+  <div class="ha-blocker-actions" data-ha-maintenance-retry{% if not maintenance_visible or maintenance_state.operation != 'DHCP_SELF_HEAL' or not maintenance_state.failure_latched %} hidden{% endif %}>
+    <form method="post" action="/high-availability/clusters/{{ cluster.public_id }}/maintenance/reconcile">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="repair_action" value="retry_dhcp_self_heal">
+      <button class="button secondary" type="submit">Retry repair</button>
+    </form>
+    <a class="button secondary" href="/high-availability/clusters/{{ cluster.public_id }}/maintenance">View diagnostics</a>
+  </div>
+  {% endif %}
+</section>

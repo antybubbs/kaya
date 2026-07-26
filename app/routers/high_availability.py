@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.db.session import get_db
-from app.models.models import HACluster, HAEvent, HAFailoverRun, HAHealthCheck, HALeaseReplicationState, HANode, HASyncRun
+from app.models.models import HACluster, HAEvent, HAFailoverRun, HAHealthCheck, HALeaseReplicationState, HAMaintenanceRun, HANode, HASyncRun
 from app.routers.auth import require_module_access, require_user
 from app.schemas.high_availability import HAClusterDraftCreate, HAClusterRead, HAConfigurationDifferenceRead, HANodeDraftCreate, HANodeUpdate
 from app.services.audit import write_audit
@@ -28,6 +28,26 @@ from app.services.ha_failover import HAFailoverError, active_failover, automatic
 from app.services.ha_recovery import current_active_node, peer_diagnostic, preferred_node, recovery_snapshot
 from app.services.site_settings import get_site_setting
 from app.services.ha_topology import deployment_mode, pihole_manages_dhcp
+from app.services.ha_dns_advertisement import (
+    HADNSAdvertisementError,
+    WARNING_MESSAGE as DNS_ADVERTISEMENT_WARNING,
+    cached_dns_advertisement,
+    repair_dns_advertisement,
+)
+from app.services.ha_maintenance import (
+    HAMaintenanceError,
+    active_maintenance,
+    advance_dhcp_self_heal,
+    advance_reinitialisation,
+    inspect_cluster,
+    inspection_json,
+    latest_maintenance,
+    maintenance_status,
+    reconcile_cluster_state,
+    start_dhcp_self_heal,
+    start_reconciliation,
+    start_reinitialisation,
+)
 
 
 router = APIRouter(prefix="/high-availability", tags=["high-availability"], dependencies=[Depends(require_module_access("high_availability"))])
@@ -122,6 +142,8 @@ def cluster_or_404(db: Session, public_id: str) -> HACluster:
             selectinload(HACluster.events),
             selectinload(HACluster.failover_runs).selectinload(HAFailoverRun.source_node),
             selectinload(HACluster.failover_runs).selectinload(HAFailoverRun.target_node),
+            selectinload(HACluster.maintenance_runs).selectinload(HAMaintenanceRun.desired_active_node),
+            selectinload(HACluster.maintenance_runs).selectinload(HAMaintenanceRun.authoritative_node),
         )
         .first()
     )
@@ -172,10 +194,17 @@ def sync_operational_summary(db: Session, cluster: HACluster) -> dict[str, objec
 
 
 def node_or_404(cluster: HACluster, node_public_id: str) -> HANode:
+    if not node_public_id or len(node_public_id) > 64:
+        raise HTTPException(status_code=400, detail="Invalid node identifier")
     node = next((item for item in cluster.nodes if item.public_id == node_public_id), None)
     if node is None:
         raise HTTPException(status_code=404, detail="Node not found")
     return node
+
+
+def require_no_cluster_maintenance(cluster: HACluster) -> None:
+    if active_maintenance(cluster):
+        raise HTTPException(status_code=409, detail="Cluster maintenance is in progress")
 
 
 def node_form_values(node: HANode) -> dict[str, str]:
@@ -330,35 +359,297 @@ async def save_cluster(request: Request, db: Session = Depends(get_db), user=Dep
 @router.get("/clusters/{public_id}")
 def cluster_detail(public_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_high_availability)):
     cluster = cluster_or_404(db, public_id)
+    return templates.TemplateResponse(
+        request,
+        "high_availability_cluster_detail.html",
+        cluster_detail_context(request, user, db, cluster),
+    )
+
+
+def cluster_detail_context(request: Request, user, db: Session, cluster: HACluster, **extra):
     readiness = failover_readiness(cluster)
     recovery = recovery_snapshot(db, cluster)
     preferred = preferred_node(cluster)
     active = current_active_node(cluster)
+    consistency = inspect_cluster(cluster)
     failback_recovery = recovery.get(preferred.id) if preferred and active and preferred.id != active.id else None
+    advertisement_states = cached_dns_advertisement(cluster) if pihole_manages_dhcp(cluster) else []
+    active_advertisement = next((state for state in advertisement_states if active and state.node_id == active.id), None)
+    latest_transition = latest_failover(cluster)
+    resolver_attention = any(
+        check.key == "host_dns_resolver" and not check.passed
+        for item in recovery.values()
+        for check in item.checks
+    )
+    return ha_context(
+        request,
+        user,
+        "clusters",
+        cluster=cluster,
+        cluster_section="overview",
+        failover_readiness=readiness,
+        failover_run=latest_transition,
+        failover_state=failover_status(latest_transition),
+        automatic_blockers=automatic_failover_blockers(cluster),
+        sync_summary=sync_operational_summary(db, cluster),
+        recovery=recovery,
+        peer_diagnostics={
+            node.id: peer_diagnostic(node, next((peer for peer in cluster.nodes if peer.id != node.id), None))
+            for node in cluster.nodes
+        },
+        preferred_node=preferred,
+        active_node=active,
+        failback_recovery=failback_recovery,
+        action_ready=readiness.ready and (failback_recovery is None or failback_recovery.ready),
+        resolver_attention=resolver_attention,
+        consistency=consistency,
+        consistency_json=inspection_json(cluster, consistency),
+        maintenance_run=latest_maintenance(cluster),
+        maintenance_state=maintenance_status(latest_maintenance(cluster)),
+        dns_advertisement_states=advertisement_states,
+        dns_advertisement=active_advertisement,
+        dns_advertisement_warning=DNS_ADVERTISEMENT_WARNING,
+        **extra,
+    )
+
+
+@router.post("/clusters/{public_id}/dhcp-dns-advertisement/repair")
+async def repair_cluster_dhcp_dns_advertisement(
+    public_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    user=Depends(require_ha_admin),
+):
+    cluster = cluster_or_404(db, public_id)
+    require_no_cluster_maintenance(cluster)
+    form = await request.form()
+    validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    if str(form.get("acknowledge_reload") or "") != "1":
+        return templates.TemplateResponse(
+            request,
+            "high_availability_cluster_detail.html",
+            cluster_detail_context(
+                request,
+                user,
+                db,
+                cluster,
+                dns_advertisement_error="Confirm that Pi-hole may briefly reload its generated configuration.",
+            ),
+            status_code=400,
+        )
+    try:
+        repair_dns_advertisement(db, cluster)
+    except HADNSAdvertisementError as exc:
+        db.rollback()
+        write_audit(
+            db,
+            user,
+            "failed",
+            "ha_dhcp_dns_advertisement",
+            entity_id=cluster.public_id,
+            detail=f"DHCP DNS advertisement repair for {cluster.name} did not complete.",
+            severity="warning",
+            metadata={"cluster_id": cluster.public_id, "error": str(exc)[:300], "secret_logged": False},
+        )
+        cluster = cluster_or_404(db, public_id)
+        return templates.TemplateResponse(
+            request,
+            "high_availability_cluster_detail.html",
+            cluster_detail_context(request, user, db, cluster, dns_advertisement_error=str(exc)),
+            status_code=409,
+        )
+    write_audit(
+        db,
+        user,
+        "repaired",
+        "ha_dhcp_dns_advertisement",
+        entity_id=cluster.public_id,
+        detail=f"Repaired and verified VIP-first DHCP DNS advertisement for {cluster.name}.",
+        metadata={"cluster_id": cluster.public_id, "primary": "virtual_ip", "secondary": "peer_node", "verified": True, "secret_logged": False},
+    )
+    return RedirectResponse(f"/high-availability/clusters/{cluster.public_id}?dns_advertisement=repaired", status_code=303)
+
+
+@router.post("/clusters/{public_id}/nodes/{node_public_id}/resolver/repair")
+async def request_node_resolver_repair(
+    public_id: str,
+    node_public_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    user=Depends(require_ha_admin),
+):
+    cluster = cluster_or_404(db, public_id)
+    node = next((item for item in cluster.nodes if item.public_id == node_public_id), None)
+    if node is None:
+        raise HTTPException(status_code=404, detail="Node not found")
+    form = await request.form()
+    validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    if str(form.get("acknowledge_resolver_change") or "") != "1":
+        raise HTTPException(status_code=400, detail="Resolver change confirmation is required")
+    if node.resolver_manager != "SYSTEMD_RESOLVED" or node.resolver_observation_status != "FRESH":
+        raise HTTPException(status_code=409, detail="Automatic resolver repair is not supported for this node")
+    peer = next((item for item in cluster.nodes if item.id != node.id), None)
+    try:
+        nameservers = json.loads(node.resolver_nameservers_json or "[]")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        nameservers = []
+    if not peer or set(nameservers) != {peer.management_host} or cluster.virtual_ip in nameservers:
+        raise HTTPException(status_code=409, detail="The latest signed resolver report no longer requires this repair")
+    node.resolver_repair_generation = max(0, node.resolver_repair_generation) + 1
+    node.resolver_repair_status = "PENDING"
+    node.resolver_repair_last_error = None
+    db.commit()
+    write_audit(
+        db,
+        user,
+        "requested",
+        "ha_node_resolver_repair",
+        entity_id=node.public_id,
+        detail=f"Requested a generation-bound systemd-resolved repair for {node.display_name}.",
+        severity="warning",
+        metadata={"cluster_id": cluster.public_id, "generation": node.resolver_repair_generation, "manager": node.resolver_manager, "secret_logged": False},
+    )
+    return RedirectResponse(f"/high-availability/clusters/{cluster.public_id}", status_code=303)
+
+
+def maintenance_page_context(
+    request: Request,
+    user,
+    cluster: HACluster,
+    error: str | None = None,
+    *,
+    show_latest_run: bool = True,
+):
+    consistency = inspect_cluster(cluster)
+    latest_run = latest_maintenance(cluster) if show_latest_run else None
+    return ha_context(
+        request,
+        user,
+        "clusters",
+        cluster=cluster,
+        cluster_section="maintenance",
+        consistency=consistency,
+        consistency_json=inspection_json(cluster, consistency),
+        maintenance_run=latest_run,
+        maintenance_status=maintenance_status(latest_run),
+        preferred_node=preferred_node(cluster),
+        maintenance_error=error,
+    )
+
+
+@router.get("/clusters/{public_id}/maintenance")
+def cluster_maintenance(public_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_high_availability)):
+    cluster = cluster_or_404(db, public_id)
+    show_latest = request.query_params.get("new") != "1" or active_maintenance(cluster) is not None
     return templates.TemplateResponse(
         request,
-        "high_availability_cluster_detail.html",
-        ha_context(
-            request,
-            user,
-            "clusters",
-            cluster=cluster,
-            cluster_section="overview",
-            failover_readiness=readiness,
-            failover_run=latest_failover(cluster),
-            automatic_blockers=automatic_failover_blockers(cluster),
-            sync_summary=sync_operational_summary(db, cluster),
-            recovery=recovery,
-            peer_diagnostics={
-                node.id: peer_diagnostic(node, next((peer for peer in cluster.nodes if peer.id != node.id), None))
-                for node in cluster.nodes
-            },
-            preferred_node=preferred,
-            active_node=active,
-            failback_recovery=failback_recovery,
-            action_ready=readiness.ready and (failback_recovery is None or failback_recovery.ready),
-        ),
+        "high_availability_cluster_maintenance.html",
+        maintenance_page_context(request, user, cluster, show_latest_run=show_latest),
     )
+
+
+@router.post("/clusters/{public_id}/maintenance/reconcile")
+async def reconcile_cluster(public_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_ha_admin)):
+    cluster = cluster_or_404(db, public_id)
+    form = await request.form()
+    validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    repair_action = str(form.get("repair_action") or "reconcile")
+    if repair_action not in {"reconcile", "retry_dhcp_self_heal"}:
+        raise HTTPException(status_code=400, detail="Invalid reconciliation action")
+    try:
+        if repair_action == "retry_dhcp_self_heal":
+            run = start_dhcp_self_heal(db, cluster, force_retry=True, requested_by=user)
+            if run is None:
+                raise HAMaintenanceError("The current signed topology is not safe for an automatic DHCP configuration repair.")
+        else:
+            run = start_reconciliation(db, cluster, user)
+            reconcile_cluster_state(db, run)
+    except HAMaintenanceError as exc:
+        db.rollback()
+        cluster = cluster_or_404(db, public_id)
+        return templates.TemplateResponse(
+            request,
+            "high_availability_cluster_maintenance.html",
+            maintenance_page_context(request, user, cluster, str(exc)),
+            status_code=409,
+        )
+    write_audit(
+        db,
+        user,
+        "retried" if repair_action == "retry_dhcp_self_heal" else "started",
+        "ha_dhcp_self_heal" if repair_action == "retry_dhcp_self_heal" else "ha_cluster_reconciliation",
+        entity_id=cluster.public_id,
+        detail=(f"Explicitly retried the latched DHCP configuration repair for {cluster.name}." if repair_action == "retry_dhcp_self_heal" else f"Started fresh-state reconciliation for {cluster.name}."),
+        metadata={"service_movement_authorised": False, "history_preserved": True, "maintenance_run_id": run.public_id},
+    )
+    return RedirectResponse(f"/high-availability/clusters/{cluster.public_id}/maintenance?reconcile=started", status_code=303)
+
+
+@router.post("/clusters/{public_id}/maintenance/reinitialise")
+async def reinitialise_cluster(public_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_ha_admin)):
+    cluster = cluster_or_404(db, public_id)
+    form = await request.form()
+    validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    desired = node_or_404(cluster, str(form.get("desired_active_node_id") or ""))
+    authority = node_or_404(cluster, str(form.get("authoritative_node_id") or ""))
+    try:
+        run = start_reinitialisation(
+            db,
+            cluster,
+            user,
+            desired_active=desired,
+            authority=authority,
+            acknowledged=str(form.get("acknowledge_reinitialisation") or "") == "1",
+        )
+    except HAMaintenanceError as exc:
+        db.rollback()
+        cluster = cluster_or_404(db, public_id)
+        return templates.TemplateResponse(
+            request,
+            "high_availability_cluster_maintenance.html",
+            maintenance_page_context(request, user, cluster, str(exc)),
+            status_code=409,
+        )
+    write_audit(
+        db,
+        user,
+        "started",
+        "ha_cluster_reinitialisation",
+        entity_id=cluster.public_id,
+        detail=f"Started protected HA reinitialisation for {cluster.name}.",
+        severity="warning",
+        metadata={
+            "selected_active_node_id": desired.public_id,
+            "authoritative_node_id": authority.public_id,
+            "history_preserved": True,
+            "pihole_data_preserved": True,
+        },
+    )
+    return RedirectResponse(f"/high-availability/clusters/{cluster.public_id}/maintenance?reinitialise=started", status_code=303)
+
+
+@router.post("/clusters/{public_id}/maintenance/{run_public_id}/advance")
+async def advance_cluster_maintenance(public_id: str, run_public_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_ha_admin)):
+    cluster = cluster_or_404(db, public_id)
+    if not run_public_id or len(run_public_id) > 64:
+        raise HTTPException(status_code=400, detail="Invalid maintenance operation identifier")
+    form = await request.form()
+    validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    run = db.query(HAMaintenanceRun).filter(
+        HAMaintenanceRun.public_id == run_public_id,
+        HAMaintenanceRun.cluster_id == cluster.id,
+    ).first()
+    if run is None:
+        raise HTTPException(status_code=404, detail="Cluster maintenance operation not found")
+    if run.status in {"SUCCEEDED", "FAILED", "FAILED_SAFE", "PAUSED", "NEEDS_ATTENTION", "CANCELLED"}:
+        return RedirectResponse(f"/high-availability/clusters/{cluster.public_id}/maintenance", status_code=303)
+    if run.operation == "REINITIALISE":
+        advance_reinitialisation(db, run)
+    elif run.operation == "DHCP_SELF_HEAL":
+        advance_dhcp_self_heal(db, run)
+    elif run.operation == "RECONCILE":
+        reconcile_cluster_state(db, run)
+    return RedirectResponse(f"/high-availability/clusters/{cluster.public_id}/maintenance", status_code=303)
 
 
 def topology_page_context(request: Request, user, cluster: HACluster, error: str | None = None):
@@ -374,6 +665,7 @@ def cluster_topology(public_id: str, request: Request, db: Session = Depends(get
 @router.post("/clusters/{public_id}/topology")
 async def update_cluster_topology(public_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_ha_admin)):
     cluster = cluster_or_404(db, public_id)
+    require_no_cluster_maintenance(cluster)
     form = await request.form()
     validate_csrf_token(request, str(form.get("csrf_token") or ""))
     mode = str(form.get("deployment_mode") or "")
@@ -444,13 +736,20 @@ async def update_cluster_topology(public_id: str, request: Request, db: Session 
 
 @router.get("/clusters/{public_id}/live")
 def cluster_live_status(public_id: str, db: Session = Depends(get_db), user=Depends(require_high_availability)):
-    cluster = db.query(HACluster).filter(HACluster.public_id == public_id, HACluster.deleted_at.is_(None)).options(selectinload(HACluster.nodes), selectinload(HACluster.lease_replication), selectinload(HACluster.failover_runs).selectinload(HAFailoverRun.source_node), selectinload(HACluster.failover_runs).selectinload(HAFailoverRun.target_node)).first()
+    cluster = db.query(HACluster).filter(HACluster.public_id == public_id, HACluster.deleted_at.is_(None)).options(
+        selectinload(HACluster.nodes).selectinload(HANode.agent_credential),
+        selectinload(HACluster.lease_replication),
+        selectinload(HACluster.failover_runs).selectinload(HAFailoverRun.source_node),
+        selectinload(HACluster.failover_runs).selectinload(HAFailoverRun.target_node),
+        selectinload(HACluster.maintenance_runs).selectinload(HAMaintenanceRun.desired_active_node),
+        selectinload(HACluster.maintenance_runs).selectinload(HAMaintenanceRun.authoritative_node),
+    ).first()
     if cluster is None:
         raise HTTPException(status_code=404, detail="Cluster not found")
-    reconcile_vip_ownership(db, cluster)
     now = datetime.utcnow()
     current_nodes = [node for node in cluster.nodes if node.last_heartbeat_at and node.last_heartbeat_at >= now - timedelta(seconds=HEARTBEAT_FRESH_SECONDS)]
-    active_node = next((node for node in cluster.nodes if node.id == cluster.current_active_node_id), None)
+    consistency = inspect_cluster(cluster, now=now)
+    active_node = next((node for node in cluster.nodes if consistency.vip_owner_ids == (node.id,)), None)
     readiness = failover_readiness(cluster)
     recovery = recovery_snapshot(db, cluster, now=now)
     preferred = preferred_node(cluster)
@@ -473,18 +772,63 @@ def cluster_live_status(public_id: str, db: Session = Depends(get_db), user=Depe
     unacknowledged_alerts = db.query(HAEvent.id).filter(HAEvent.cluster_id == cluster.id, HAEvent.severity.in_(["warning", "error", "critical"]), HAEvent.acknowledged_at.is_(None)).count()
     deployment_items = deployment_blockers(cluster, router_id=cluster.vrrp_router_id or 51)
     sync_summary = sync_operational_summary(db, cluster)
+    advertisement_states = cached_dns_advertisement(cluster) if pihole_manages_dhcp(cluster) else []
+    active_advertisement = next((state for state in advertisement_states if active_node and state.node_id == active_node.id), None)
     sync_json = {**sync_summary}
     for key in ("last_checked_at", "last_applied_at", "next_check_at"):
         value = sync_json[key]
         sync_json[key] = value.isoformat() + "Z" if value else None
-    services_healthy = bool(
-        active_node
-        and len([node for node in current_nodes if node.vip_owned]) == 1
-        and active_node.dns_healthy is True
-        and (not pihole_manages_dhcp(cluster) or active_node.dhcp_running is True)
-    )
     ping_unavailable = sum(1 for node in current_nodes if node.peer_reachable is False)
     recovering_nodes = [item.node.display_name for item in recovery.values() if item.state in {"RECOVERING", "SYNCHRONISING", "VERIFYING"}]
+    resolver_attention = any(
+        check.key == "host_dns_resolver" and not check.passed
+        for item in recovery.values()
+        for check in item.checks
+    )
+    redundancy = "AVAILABLE" if len(current_nodes) == 2 and all(node.dns_healthy is True for node in current_nodes) else "REDUCED"
+    # Control-plane health answers whether Kaya has fresh, signed evidence from
+    # the node currently serving clients. Redundancy reports peer loss
+    # independently, so a successful hard failover is not mislabelled as loss
+    # of control of the surviving service.
+    control_plane = "HEALTHY" if active_node and active_node in current_nodes else "DEGRADED"
+    single_node_service = bool(
+        consistency.service_availability == "HEALTHY"
+        and len(current_nodes) == 1
+        and active_node in current_nodes
+    )
+    unavailable_nodes = [node for node in cluster.nodes if node not in current_nodes]
+    verified_automatic_completion = False
+    for event in events:
+        if event.source != "agent" or event.event_type != "automatic_failover_completed" or not active_node or event.node_id != active_node.id:
+            continue
+        try:
+            verified_automatic_completion = int(json.loads(event.details_json_redacted or "{}").get("generation", -1)) == cluster.keepalived_generation
+        except (TypeError, ValueError, json.JSONDecodeError):
+            verified_automatic_completion = False
+        if verified_automatic_completion:
+            break
+    automatic_hard_failover = bool(
+        single_node_service
+        and preferred
+        and active_node
+        and active_node.id != preferred.id
+        and verified_automatic_completion
+    )
+    if automatic_hard_failover:
+        unavailable_name = unavailable_nodes[0].display_name if len(unavailable_nodes) == 1 else "The preferred node"
+        service_message = (
+            f"Service has automatically failed over to {active_node.display_name}. "
+            f"{unavailable_name} is unavailable. DNS"
+            f"{' and DHCP' if pihole_manages_dhcp(cluster) else ''} remain operational."
+        )
+    elif single_node_service:
+        unavailable_name = unavailable_nodes[0].display_name if len(unavailable_nodes) == 1 else "The other node"
+        service_message = (
+            f"Clients are currently being served by {active_node.display_name}. "
+            f"{unavailable_name} is unavailable. The cluster is operating on one node."
+        )
+    else:
+        service_message = ""
     return JSONResponse({
         "server_time": datetime.utcnow().isoformat() + "Z",
         "cluster": {
@@ -499,13 +843,24 @@ def cluster_live_status(public_id: str, db: Session = Depends(get_db), user=Depe
             "active_node": active_node.display_name if active_node else None,
             "preferred_node": preferred.display_name if preferred else None,
             "standby_node": readiness.target.display_name if readiness.target else None,
-            "vip_owner_count": len([node for node in current_nodes if node.vip_owned]),
+            "vip_owner_count": len(consistency.vip_owner_ids),
             "last_failover_at": cluster.last_failover_at.isoformat() + "Z" if cluster.last_failover_at else None,
             "unacknowledged_alerts": unacknowledged_alerts,
-            "service_availability": "HEALTHY" if services_healthy else "UNAVAILABLE" if active_node is None else "DEGRADED",
-            "ha_readiness": "READY" if action_ready else "RECOVERING" if failback_recovery else "NEEDS_ATTENTION",
+            "service_availability": consistency.service_availability,
+            "redundancy": redundancy,
+            "control_plane": control_plane,
+            "single_node_service": single_node_service,
+            "service_status_title": "Service remains available" if single_node_service else "",
+            "service_status_message": service_message,
+            "ha_configuration": consistency.configuration_state,
+            "consistency_issue_count": len(consistency.issues),
+            "ha_readiness": "NEEDS_ATTENTION" if resolver_attention else "READY" if action_ready else "RECOVERING" if failback_recovery else "NEEDS_ATTENTION",
             "ping_unavailable_count": ping_unavailable,
             "recovering_nodes": recovering_nodes,
+            "dns_advertisement_primary": active_advertisement.expected[0] if active_advertisement and active_advertisement.expected else None,
+            "dns_advertisement_secondary": active_advertisement.expected[1] if active_advertisement and active_advertisement.expected else None,
+            "dns_advertisement_observed": ", ".join(active_advertisement.observed) if active_advertisement and active_advertisement.observed else "Not checked",
+            "dns_advertisement_status": "CORRECT" if active_advertisement and active_advertisement.matches else "NEEDS_ATTENTION" if pihole_manages_dhcp(cluster) else "NOT_APPLICABLE",
         },
         "nodes": [{
             "id": node.public_id, "name": node.display_name, "desired_role": node.desired_role,
@@ -514,10 +869,28 @@ def cluster_live_status(public_id: str, db: Session = Depends(get_db), user=Depe
             "agent_version_status": agent_version_status(node.agent_version),
             "last_heartbeat_at": node.last_heartbeat_at.isoformat() + "Z" if node.last_heartbeat_at else None,
             "heartbeat_current": node in current_nodes,
+            "service_state": (
+                "ACTIVE"
+                if active_node and node.id == active_node.id and node in current_nodes
+                else "OFFLINE"
+                if automatic_hard_failover and node not in current_nodes
+                else "STANDBY"
+                if node in current_nodes
+                else "UNKNOWN"
+            ),
             "dns_healthy": node.dns_healthy, "dhcp_running": node.dhcp_running,
+            "dhcp_runtime_state": node.dhcp_runtime_state,
+            "dhcp_observation_status": node.dhcp_observation_status,
+            "dhcp_observed_at": node.dhcp_observed_at.isoformat() + "Z" if node.dhcp_observed_at else None,
+            "dhcp_configured": node.dhcp_configured,
+            "dhcp_listener_active": node.dhcp_listener_active,
+            "ftl_active": node.ftl_active,
             "vip_owned": node.vip_owned, "peer_reachable": node.peer_reachable,
             "peer_icmp_probe_status": node.peer_icmp_probe_status,
             "peer_dns_reachable": node.peer_dns_reachable,
+            "resolver_manager": node.resolver_manager,
+            "resolver_nameservers": json.loads(node.resolver_nameservers_json or "[]"),
+            "resolver_observation_status": node.resolver_observation_status,
             "keepalived_status": node.keepalived_status, "keepalived_runtime_state": node.keepalived_runtime_state,
             "network_interface": node.network_interface, "vrrp_priority": node.vrrp_priority,
             "keepalived_config_checksum": node.keepalived_config_checksum, "keepalived_last_error": node.keepalived_last_error,
@@ -541,6 +914,8 @@ def cluster_live_status(public_id: str, db: Session = Depends(get_db), user=Depe
         },
         "deployment": {"ready": not deployment_items, "blockers": deployment_items},
         "sync": sync_json,
+        "consistency": inspection_json(cluster, consistency),
+        "maintenance": maintenance_status(latest_maintenance(cluster)),
         "events": [{"id": event.id, "type": event.event_type, "severity": event.severity, "message": event.message, "node": event.node.display_name if event.node else "Cluster", "occurred_at": event.occurred_at.isoformat() + "Z", "acknowledged": event.acknowledged_at is not None} for event in events[:20]],
     })
 
@@ -733,6 +1108,7 @@ def cluster_synchronisation(public_id: str, request: Request, db: Session = Depe
 @router.post("/clusters/{public_id}/synchronisation/plan")
 async def plan_cluster_synchronisation(public_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_ha_editor)):
     cluster = cluster_or_404(db, public_id)
+    require_no_cluster_maintenance(cluster)
     form = await request.form()
     validate_csrf_token(request, str(form.get("csrf_token") or ""))
     try:
@@ -754,6 +1130,7 @@ async def plan_cluster_synchronisation(public_id: str, request: Request, db: Ses
 @router.post("/clusters/{public_id}/synchronisation/automatic")
 async def configure_automatic_synchronisation(public_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_ha_admin)):
     cluster = cluster_or_404(db, public_id)
+    require_no_cluster_maintenance(cluster)
     form = await request.form()
     validate_csrf_token(request, str(form.get("csrf_token") or ""))
     enabled = str(form.get("enabled") or "") == "1"
@@ -780,6 +1157,7 @@ async def configure_automatic_synchronisation(public_id: str, request: Request, 
 @router.post("/clusters/{public_id}/synchronisation/apply")
 async def apply_cluster_synchronisation(public_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_ha_admin)):
     cluster = cluster_or_404(db, public_id)
+    require_no_cluster_maintenance(cluster)
     form = await request.form()
     validate_csrf_token(request, str(form.get("csrf_token") or ""))
     run = db.query(HASyncRun).filter(HASyncRun.cluster_id == cluster.id, HASyncRun.public_id == str(form.get("sync_run_id") or "")).first()
@@ -799,6 +1177,7 @@ async def apply_cluster_synchronisation(public_id: str, request: Request, db: Se
 @router.post("/clusters/{public_id}/deployment")
 async def deploy_cluster_keepalived(public_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_ha_admin)):
     cluster = cluster_or_404(db, public_id)
+    require_no_cluster_maintenance(cluster)
     form = await request.form()
     validate_csrf_token(request, str(form.get("csrf_token") or ""))
     try:
@@ -821,6 +1200,7 @@ async def deploy_cluster_keepalived(public_id: str, request: Request, db: Sessio
 @router.post("/clusters/{public_id}/deployment/move-vip")
 async def move_cluster_vip(public_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_ha_admin)):
     cluster = cluster_or_404(db, public_id)
+    require_no_cluster_maintenance(cluster)
     form = await request.form()
     validate_csrf_token(request, str(form.get("csrf_token") or ""))
     target = node_or_404(cluster, str(form.get("target_node_id") or ""))
@@ -922,6 +1302,7 @@ def edit_cluster_node(public_id: str, node_public_id: str, request: Request, db:
 @router.post("/clusters/{public_id}/nodes/{node_public_id}/edit")
 async def save_cluster_node(public_id: str, node_public_id: str, request: Request, db: Session = Depends(get_db), user=Depends(require_ha_admin)):
     cluster = cluster_or_404(db, public_id)
+    require_no_cluster_maintenance(cluster)
     node = node_or_404(cluster, node_public_id)
     form = await request.form()
     validate_csrf_token(request, str(form.get("csrf_token") or ""))

@@ -44,10 +44,10 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 SOURCE_BASE="$KAYA_URL/api/ha/agent/v1/files"
-for file in kaya_ha_agent.py keepalived_runtime.py failover_runtime.py kaya_ha_keepalived_helper.py kaya_ha_failover_helper.py kaya_ha_transition.py check-pihole-dns kaya-ha-agent.service kaya-ha-agent.sudoers; do
+for file in kaya_ha_agent.py keepalived_runtime.py failover_runtime.py resolver_runtime.py kaya_ha_keepalived_helper.py kaya_ha_failover_helper.py kaya_ha_resolver_helper.py kaya_ha_transition.py check-pihole-dns kaya-ha-agent.service kaya-ha-agent.sudoers; do
     curl --fail --show-error --silent --location "$SOURCE_BASE/$file" --output "$TEMP_DIR/$file" || fail "could not download $file from Kaya"
 done
-python3 -m py_compile "$TEMP_DIR/kaya_ha_agent.py" "$TEMP_DIR/keepalived_runtime.py" "$TEMP_DIR/failover_runtime.py" "$TEMP_DIR/kaya_ha_keepalived_helper.py" "$TEMP_DIR/kaya_ha_failover_helper.py" "$TEMP_DIR/kaya_ha_transition.py" || fail "downloaded Python files did not validate"
+python3 -m py_compile "$TEMP_DIR/kaya_ha_agent.py" "$TEMP_DIR/keepalived_runtime.py" "$TEMP_DIR/failover_runtime.py" "$TEMP_DIR/resolver_runtime.py" "$TEMP_DIR/kaya_ha_keepalived_helper.py" "$TEMP_DIR/kaya_ha_failover_helper.py" "$TEMP_DIR/kaya_ha_resolver_helper.py" "$TEMP_DIR/kaya_ha_transition.py" || fail "downloaded Python files did not validate"
 visudo -cf "$TEMP_DIR/kaya-ha-agent.sudoers" >/dev/null || fail "the restricted sudo policy did not validate"
 validate_service_unit "$TEMP_DIR/kaya-ha-agent.service"
 
@@ -57,7 +57,7 @@ cp -a /usr/lib/kaya-ha-agent/. "$BACKUP_DIR/lib/"
 [ ! -f /etc/sudoers.d/kaya-ha-agent ] || cp -a /etc/sudoers.d/kaya-ha-agent "$BACKUP_DIR/sudoers"
 systemctl stop kaya-ha-agent.service
 FILES_INSTALLED=1
-install -m 0755 -o root -g root "$TEMP_DIR/kaya_ha_agent.py" "$TEMP_DIR/keepalived_runtime.py" "$TEMP_DIR/failover_runtime.py" "$TEMP_DIR/kaya_ha_keepalived_helper.py" "$TEMP_DIR/kaya_ha_failover_helper.py" "$TEMP_DIR/kaya_ha_transition.py" "$TEMP_DIR/check-pihole-dns" /usr/lib/kaya-ha-agent/
+install -m 0755 -o root -g root "$TEMP_DIR/kaya_ha_agent.py" "$TEMP_DIR/keepalived_runtime.py" "$TEMP_DIR/failover_runtime.py" "$TEMP_DIR/resolver_runtime.py" "$TEMP_DIR/kaya_ha_keepalived_helper.py" "$TEMP_DIR/kaya_ha_failover_helper.py" "$TEMP_DIR/kaya_ha_resolver_helper.py" "$TEMP_DIR/kaya_ha_transition.py" "$TEMP_DIR/check-pihole-dns" /usr/lib/kaya-ha-agent/
 install -m 0440 -o root -g root "$TEMP_DIR/kaya-ha-agent.sudoers" /etc/sudoers.d/kaya-ha-agent
 install -m 0644 -o root -g root "$TEMP_DIR/kaya-ha-agent.service" /etc/systemd/system/kaya-ha-agent.service
 systemctl daemon-reload

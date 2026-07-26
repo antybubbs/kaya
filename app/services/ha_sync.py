@@ -68,6 +68,7 @@ def _sync_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     return {
         key: _without_dhcp_activation(value) if key == "dhcp" else value
         for key, value in snapshot.items()
+        if not key.startswith("_ha_")
     }
 
 
@@ -189,6 +190,9 @@ def sync_plan(cluster: HACluster) -> dict[str, Any]:
         dhcp_text = json.dumps(dhcp_value, sort_keys=True).casefold() if dhcp_value is not None else ""
         dhcp_mode = "PIHOLE_MANAGED" if '"active": true' in dhcp_text or '"enabled": true' in dhcp_text else "EXTERNAL" if dhcp_value is not None else "UNKNOWN"
     return {
+        # Bind read-only comparison evidence to the configuration generation
+        # it evaluated. Job lifecycle status is not itself recovery evidence.
+        "required_sync_generation": cluster.desired_sync_generation,
         "source_node_id": source.id,
         "source_name": source.display_name,
         "target_node_id": target.id,
@@ -203,6 +207,8 @@ def sync_plan(cluster: HACluster) -> dict[str, Any]:
 
 def create_sync_plan(db: Session, cluster: HACluster, user: User | None = None) -> HASyncRun:
     plan = sync_plan(cluster)
+    if not plan["groups"]:
+        plan["verified_sync_generation"] = cluster.desired_sync_generation
     run = HASyncRun(
         cluster_id=cluster.id,
         source_node_id=plan["source_node_id"],
@@ -254,6 +260,9 @@ def create_live_sync_plan(
     source, target = authority_and_target(cluster)
     for node in (source, target):
         _, configuration = _live_configuration(node, client_factory)
+        from app.services.ha_dns_advertisement import preserve_cached_dns_advertisement
+
+        configuration = preserve_cached_dns_advertisement(node, configuration)
         snapshot = json.dumps(configuration, sort_keys=True, separators=(",", ":"))
         node.configuration_snapshot_json = snapshot
         node.configuration_checksum = hashlib.sha256(snapshot.encode()).hexdigest()
@@ -261,10 +270,21 @@ def create_live_sync_plan(
     return create_sync_plan(db, cluster, user)
 
 
-def execute_sync(db: Session, cluster: HACluster, run: HASyncRun, *, allow_deletions: bool = False, client_factory: Callable = PiHoleProvider) -> HASyncRun:
+def execute_sync(
+    db: Session,
+    cluster: HACluster,
+    run: HASyncRun,
+    *,
+    allow_deletions: bool = False,
+    client_factory: Callable = PiHoleProvider,
+    maintenance_authorised: bool = False,
+) -> HASyncRun:
     if run.cluster_id != cluster.id or run.status != "PLANNED":
         raise HASyncError("This synchronisation plan is no longer executable.")
-    if cluster.status != "HEALTHY" or cluster.keepalived_status != "DEPLOYED":
+    maintenance_safe = maintenance_authorised and cluster.maintenance_mode and cluster.keepalived_status == "DEPLOYED"
+    if cluster.maintenance_mode and not maintenance_authorised:
+        raise HASyncError("Cluster maintenance is in progress.")
+    if not maintenance_safe and (cluster.status != "HEALTHY" or cluster.keepalived_status != "DEPLOYED"):
         raise HASyncError("The cluster must be healthy and Keepalived deployed before synchronisation.")
     plan = json.loads(run.plan_json)
     if plan.get("blocked_groups"):
@@ -327,11 +347,16 @@ def execute_sync(db: Session, cluster: HACluster, run: HASyncRun, *, allow_delet
         if failed:
             raise HASyncError("Verification failed for: " + ", ".join(sorted(failed)))
 
+        from app.services.ha_dns_advertisement import preserve_cached_dns_advertisement
+
+        verified_raw = preserve_cached_dns_advertisement(target, verified_raw)
         snapshot = json.dumps(verified_raw, sort_keys=True, separators=(",", ":"))
         target.configuration_snapshot_json = snapshot
         target.configuration_checksum = hashlib.sha256(snapshot.encode()).hexdigest()
         target.last_sync_at = datetime.utcnow()
         cluster.desired_sync_generation += 1
+        plan["verified_sync_generation"] = cluster.desired_sync_generation
+        run.plan_json = json.dumps(plan, sort_keys=True, separators=(",", ":"))
         run.status = "SUCCEEDED"
         run.completed_at = datetime.utcnow()
         for item in run.drift_items:

@@ -104,6 +104,8 @@ DNS Manager adds three additive tables:
 - `dns_insights` stores stable rule results and active, acknowledged and resolved lifecycle timestamps.
 - `dns_statistics_snapshots` stores bounded hourly provider aggregates with 30-day retention.
 - `dns_recognised_devices` stores stable provider-scoped device identities and observed IP/hostname changes.
+- `dns_client_observations` stores bounded raw sightings linked to logical recognised devices.
+- `dhcp_lease_history` stores time-bounded active and ended DHCP address assignments.
 
 Existing databases are upgraded idempotently during normal application bootstrap. Existing DNS providers, investigations and recognised-hostname settings are preserved; recognised hostname settings are imported lazily into stable device records when a successful analysis observes the device.
 
