@@ -378,6 +378,8 @@ def save_dns_manager_settings(
     dns_provider_enabled: str,
     dns_provider_description: str,
     dns_provider_connection_mode: str = "standalone",
+    dns_observation_history_days: str = "30",
+    dns_dhcp_history_days: str = "90",
 ) -> DNSProviderConfig | None:
     save_site_setting(db, "dns_manager_enabled", "1" if dns_manager_enabled else "")
     save_site_setting(db, "dns_collector_enabled", "1" if dns_collector_enabled else "")
@@ -407,6 +409,17 @@ def save_dns_manager_settings(
     except ValueError:
         traffic_history_days = 30
     save_site_setting(db, "dns_traffic_history_days", str(traffic_history_days))
+    for key, value, default in (
+        ("dns_observation_history_days", dns_observation_history_days, "30"),
+        ("dns_dhcp_history_days", dns_dhcp_history_days, "90"),
+    ):
+        clean = str(value or "").strip().lower()
+        if clean != "forever":
+            try:
+                clean = str(max(1, min(int(clean), 3650)))
+            except ValueError:
+                clean = default
+        save_site_setting(db, key, clean)
     try:
         refresh = max(30, min(int(dns_refresh_interval_seconds or "300"), 86400))
     except ValueError:
@@ -2580,6 +2593,8 @@ async def save_settings(
     dns_stale_client_days: str = Form("30"),
     dns_retain_client_history: str = Form(""),
     dns_client_history_days: str = Form("365"),
+    dns_observation_history_days: str = Form("30"),
+    dns_dhcp_history_days: str = Form("90"),
     dns_traffic_history_days: str = Form("30"),
     dns_vlan_enrichment_enabled: str = Form(""),
     dns_update_empty_managed_hostname: str = Form(""),
@@ -2774,6 +2789,8 @@ async def save_settings(
             dns_stale_client_days=dns_stale_client_days,
             dns_retain_client_history=dns_retain_client_history,
             dns_client_history_days=dns_client_history_days,
+            dns_observation_history_days=dns_observation_history_days,
+            dns_dhcp_history_days=dns_dhcp_history_days,
             dns_traffic_history_days=dns_traffic_history_days,
             dns_vlan_enrichment_enabled=dns_vlan_enrichment_enabled,
             dns_update_empty_managed_hostname=dns_update_empty_managed_hostname,
@@ -2914,6 +2931,8 @@ def test_dns_provider(
     dns_stale_client_days: str = Form("30"),
     dns_retain_client_history: str = Form(""),
     dns_client_history_days: str = Form("365"),
+    dns_observation_history_days: str = Form("30"),
+    dns_dhcp_history_days: str = Form("90"),
     dns_traffic_history_days: str = Form("30"),
     dns_vlan_enrichment_enabled: str = Form(""),
     dns_update_empty_managed_hostname: str = Form(""),
@@ -2949,6 +2968,8 @@ def test_dns_provider(
             dns_stale_client_days=dns_stale_client_days,
             dns_retain_client_history=dns_retain_client_history,
             dns_client_history_days=dns_client_history_days,
+            dns_observation_history_days=dns_observation_history_days,
+            dns_dhcp_history_days=dns_dhcp_history_days,
             dns_traffic_history_days=dns_traffic_history_days,
             dns_vlan_enrichment_enabled=dns_vlan_enrichment_enabled,
             dns_update_empty_managed_hostname=dns_update_empty_managed_hostname,
@@ -3048,6 +3069,8 @@ def save_dns_provider(
             dns_stale_client_days=current.get("dns_stale_client_days", "30"),
             dns_retain_client_history=current.get("dns_retain_client_history", ""),
             dns_client_history_days=current.get("dns_client_history_days", "365"),
+            dns_observation_history_days=current.get("dns_observation_history_days", "30"),
+            dns_dhcp_history_days=current.get("dns_dhcp_history_days", "90"),
             dns_traffic_history_days=current.get("dns_traffic_history_days", "30"),
             dns_vlan_enrichment_enabled=current.get("dns_vlan_enrichment_enabled", ""),
             dns_update_empty_managed_hostname=current.get("dns_update_empty_managed_hostname", ""),

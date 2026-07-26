@@ -56,6 +56,8 @@ DEFAULT_SITE_SETTINGS = {
     "dns_stale_client_days": "30",
     "dns_retain_client_history": "1",
     "dns_client_history_days": "365",
+    "dns_observation_history_days": "30",
+    "dns_dhcp_history_days": "90",
     "dns_traffic_history_days": "30",
     "dns_vlan_enrichment_enabled": "1",
     "dns_update_empty_managed_hostname": "",

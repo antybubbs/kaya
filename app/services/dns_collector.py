@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+from datetime import datetime
 from time import monotonic
 
 from sqlalchemy.orm import Session
@@ -13,7 +14,7 @@ from app.db.session import SessionLocal
 from app.models.models import DNSProviderConfig
 from app.services.dns_insights import AnalysisAlreadyRunning, analyse_provider
 from app.services.site_settings import get_site_settings
-from app.services.dns_clients import prune_client_history, reconcile_managed_matches
+from app.services.dns_clients import cleanup_dns_history, consolidate_strong_identity_duplicates, prune_client_history, reconcile_managed_matches
 
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,7 @@ DISABLED_RECHECK_SECONDS = 30
 MIN_INTERVAL_SECONDS = 30
 MAX_INTERVAL_SECONDS = 86400
 _pass_lock = threading.Lock()
+_last_history_cleanup_date = None
 
 
 def collector_configuration(db: Session) -> tuple[bool, int, list[int], str]:
@@ -85,8 +87,14 @@ def run_dns_collection_pass(session_factory=SessionLocal) -> int:
             collect_provider(provider_id, known_hostnames_raw, session_factory)
         maintenance_db = session_factory()
         try:
+            consolidate_strong_identity_duplicates(maintenance_db)
             reconcile_managed_matches(maintenance_db)
             prune_client_history(maintenance_db)
+            global _last_history_cleanup_date
+            today = datetime.utcnow().date()
+            if _last_history_cleanup_date != today:
+                cleanup_dns_history(maintenance_db)
+                _last_history_cleanup_date = today
         finally:
             maintenance_db.close()
         return interval

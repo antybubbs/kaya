@@ -8,8 +8,8 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.db.session import Base
-from app.models.models import DHCPLeaseHistory, DHCPRange, DNSClientEvent, DNSClientHostnameHistory, DNSClientIPHistory, DNSClientTrafficEvent, DNSProviderConfig, DNSRecognisedDevice, IPAddress, RemoteManagerSetting, VLAN
-from app.services.dns_clients import client_status, dhcp_range_for_ip, list_clients, normalise_mac, observe_client, reconcile_managed_matches
+from app.models.models import DHCPLeaseHistory, DHCPRange, DNSClientEvent, DNSClientHostnameHistory, DNSClientIPHistory, DNSClientObservation, DNSClientTrafficEvent, DNSProviderConfig, DNSRecognisedDevice, HACluster, IPAddress, RemoteManagerSetting, VLAN
+from app.services.dns_clients import cleanup_dns_history, client_status, consolidate_strong_identity_duplicates, dhcp_range_for_ip, list_clients, list_dhcp_leases, normalise_mac, observe_client, reconcile_managed_matches
 from app.services.dns_insights import NormalisedClient, _persist_client_traffic, _persist_dhcp_leases
 from app.routers import dns_manager
 from app.routers import ip_addresses
@@ -124,6 +124,26 @@ def test_same_mac_on_different_providers_keeps_separate_provider_history():
         assert second.provider_id == second_provider.id
 
 
+def test_same_mac_on_members_of_one_ha_cluster_is_one_logical_client():
+    make = factory()
+    with make() as db:
+        cluster = HACluster(name="Fake HA DNS")
+        db.add(cluster)
+        db.flush()
+        first_provider = DNSProviderConfig(name="Fake HA DNS", provider_type="pihole", base_url="http://one.invalid", ha_cluster_id=cluster.id)
+        second_provider = DNSProviderConfig(name="Fake HA DNS", provider_type="pihole", base_url="http://two.invalid", ha_cluster_id=cluster.id)
+        db.add_all([first_provider, second_provider])
+        db.commit()
+        first = observe_client(db, first_provider, observation(), datetime.utcnow())
+        db.commit()
+        second = observe_client(db, second_provider, observation(), datetime.utcnow())
+        db.commit()
+        assert first.id == second.id
+        assert db.query(DNSRecognisedDevice).count() == 1
+        assert db.query(DNSClientObservation).count() == 2
+        assert second.logical_provider_key == f"ha-cluster:{cluster.id}"
+
+
 def test_same_hostname_with_different_macs_does_not_merge_and_null_mac_does_not_false_match():
     make = factory()
     with make() as db:
@@ -150,6 +170,23 @@ def test_configured_dhcp_range_requires_stable_identity_for_reuse():
         second = observe_client(db, provider, observation(hostname="second", ip="192.168.1.150", mac="66:77:88:99:aa:bb"), datetime.utcnow())
         db.commit()
         assert first.id != second.id
+
+
+def test_macless_dhcp_client_repeatedly_observed_does_not_grow_logical_rows():
+    make = factory()
+    with make() as db:
+        provider = setup_provider(db)
+        db.add(DHCPRange(name="Clients", start_address="192.168.1.100", end_address="192.168.1.199"))
+        db.commit()
+        now = datetime.utcnow()
+        first = observe_client(db, provider, observation(hostname="printer", ip="192.168.1.150", mac=""), now)
+        db.commit()
+        second = observe_client(db, provider, observation(hostname="printer", ip="192.168.1.150", mac=""), now + timedelta(minutes=5))
+        db.commit()
+        assert first.id == second.id
+        assert db.query(DNSRecognisedDevice).count() == 1
+        assert second.observation_count == 2
+        assert db.query(DNSClientObservation).count() == 2
 
 
 def test_dhcp_address_reuse_creates_distinct_lease_intervals_and_traffic_attribution():
@@ -327,15 +364,76 @@ def test_empty_vlan_filter_means_all_vlans():
 def test_dns_client_category_uses_vlan_ip_manager_categories():
     manager_template = Path("app/templates/dns_manager.html").read_text(encoding="utf-8")
     detail_template = Path("app/templates/dns_client_detail.html").read_text(encoding="utf-8")
-    assert '<th data-col="category">Category</th>' in manager_template
-    assert "linked_ip_record.category|urlencode" in manager_template
+    assert '<th data-col="provider">Provider</th>' in manager_template
+    assert '<th data-col="observations">Observations</th>' in manager_template
     assert "<dt>Category</dt>" in detail_template
     assert "linked_ip_record.category|urlencode" in detail_template
     assert "record.category" in detail_template
-    assert '<th data-col="vlan">VLAN</th>' in manager_template
-    assert "linked_ip_record.vlan" in manager_template
+    assert "Possible Managed Match" in manager_template
     assert "<dt>VLAN</dt>" in detail_template
     assert "linked_ip_record.vlan" in detail_template
+
+
+def test_dhcp_default_and_history_filters_are_database_paginated():
+    make = factory()
+    with make() as db:
+        provider = setup_provider(db)
+        now = datetime.utcnow()
+        db.add_all([
+            DHCPLeaseHistory(provider_id=provider.id, ip_address="192.0.2.10", lease_started_at=now, first_seen_at=now, last_seen_at=now, is_active=True),
+            DHCPLeaseHistory(provider_id=provider.id, ip_address="192.0.2.11", lease_started_at=now - timedelta(days=1), first_seen_at=now - timedelta(days=1), last_seen_at=now, ended_at=now - timedelta(hours=2), is_active=False),
+            DHCPLeaseHistory(provider_id=provider.id, ip_address="192.0.2.12", lease_started_at=now - timedelta(days=10), first_seen_at=now - timedelta(days=10), last_seen_at=now - timedelta(days=5), ended_at=now - timedelta(days=5), is_active=False),
+        ])
+        db.commit()
+        current, current_total = list_dhcp_leases(db, provider_id=provider.id, status="current", now=now)
+        history, history_total = list_dhcp_leases(db, provider_id=provider.id, status="history", now=now)
+        assert current_total == 2 and {row.ip_address for row in current} == {"192.0.2.10", "192.0.2.11"}
+        assert history_total == 1 and history[0].ip_address == "192.0.2.12"
+
+
+def test_retention_cleanup_removes_only_expired_history():
+    make = factory()
+    with make() as db:
+        provider = setup_provider(db)
+        setting(db, "dns_observation_history_days", "30")
+        setting(db, "dns_dhcp_history_days", "90")
+        vlan = VLAN(name="Managed")
+        record = IPAddress(vlan=vlan, address="192.0.2.20", name="Retained managed record")
+        db.add(record)
+        db.flush()
+        old = datetime.utcnow() - timedelta(days=120)
+        client = observe_client(db, provider, observation(ip="192.0.2.20"), old)
+        client.linked_ip_record_id = record.id
+        db.add_all([
+            DHCPLeaseHistory(provider_id=provider.id, dns_client_id=client.id, ip_address="192.0.2.20", lease_started_at=old, first_seen_at=old, last_seen_at=old, ended_at=old, is_active=False),
+            DHCPLeaseHistory(provider_id=provider.id, dns_client_id=client.id, ip_address="192.0.2.21", lease_started_at=old, first_seen_at=old, last_seen_at=old, is_active=True),
+        ])
+        db.commit()
+        deleted = cleanup_dns_history(db, now=datetime.utcnow())
+        assert deleted == {"observations": 1, "dhcp_leases": 1}
+        assert db.get(DNSRecognisedDevice, client.id).linked_ip_record_id == record.id
+        assert db.get(IPAddress, record.id) is not None
+        assert db.query(DHCPLeaseHistory).one().is_active is True
+
+
+def test_safe_duplicate_consolidation_preserves_managed_link_and_history():
+    make = factory()
+    with make() as db:
+        provider = setup_provider(db)
+        vlan = VLAN(name="Managed")
+        record = IPAddress(vlan=vlan, address="192.0.2.30")
+        db.add(record)
+        db.flush()
+        now = datetime.utcnow()
+        first = DNSRecognisedDevice(provider_id=provider.id, logical_provider_key=f"provider:{provider.id}", identity_type="ip", identity_value="192.0.2.30", current_ip="192.0.2.30", normalised_mac="00:11:22:33:44:55", mac_address="00:11:22:33:44:55", linked_ip_record_id=record.id, first_seen_at=now - timedelta(days=2), last_seen_at=now - timedelta(days=1), observation_count=2)
+        duplicate = DNSRecognisedDevice(provider_id=provider.id, logical_provider_key=f"provider:{provider.id}", identity_type="mac", identity_value="00:11:22:33:44:55", current_ip="192.0.2.31", normalised_mac="00:11:22:33:44:55", mac_address="00:11:22:33:44:55", first_seen_at=now - timedelta(days=1), last_seen_at=now, observation_count=3)
+        db.add_all([first, duplicate])
+        db.commit()
+        assert consolidate_strong_identity_duplicates(db) == 1
+        survivor = db.query(DNSRecognisedDevice).one()
+        assert survivor.linked_ip_record_id == record.id
+        assert survivor.current_ip == "192.0.2.31"
+        assert survivor.observation_count == 5
 
 
 def test_client_traffic_history_is_persisted_and_deduplicated():
