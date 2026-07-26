@@ -1,0 +1,82 @@
+import re
+from pathlib import Path
+
+
+WORKFLOW = Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
+MAKEFILE = Path("Makefile").read_text(encoding="utf-8")
+STABLE_TAG = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
+
+
+def workflow_step(name: str) -> str:
+    match = re.search(
+        rf"      - name: {re.escape(name)}\n(?P<body>.*?)(?=\n      - name:|\Z)",
+        WORKFLOW,
+        re.DOTALL,
+    )
+    assert match is not None
+    return match.group("body")
+
+
+def test_only_published_releases_can_reach_the_latest_tag():
+    trigger = WORKFLOW.partition("permissions:")[0]
+    assert "release:" in trigger
+    assert "- published" in trigger
+    assert "tags:" not in trigger
+
+    release = workflow_step("Build and push release image")
+    assert "github.event_name == 'release'" in release
+    assert "steps.meta.outputs.stable_release == 'true'" in release
+    assert "${{ steps.meta.outputs.image }}:latest" in release
+
+    assert WORKFLOW.count("${{ steps.meta.outputs.image }}:latest") == 1
+
+
+def test_branch_builds_cannot_publish_latest_and_keep_expected_versions():
+    metadata = workflow_step("Set image metadata")
+    main = workflow_step("Build and push main commit image")
+    development = workflow_step("Build and push development branch image")
+    kaya = workflow_step("Build and push Kaya branch image")
+
+    assert 'VERSION="$SHORT_SHA"' in metadata
+    assert '[[ "$REF" == refs/heads/dev* ]]' in metadata
+    assert 'VERSION="$REF_TAG"' in metadata
+
+    assert "refs/heads/main" in main
+    assert "APP_VERSION=${{ steps.meta.outputs.version }}" in main
+    assert "${{ steps.meta.outputs.short_sha }}" in main
+
+    assert "refs/heads/dev" in development
+    assert "APP_VERSION=${{ steps.meta.outputs.version }}" in development
+    assert "${{ steps.meta.outputs.ref_tag }}" in development
+    assert "${{ steps.meta.outputs.ref_tag }}-${{ steps.meta.outputs.short_sha }}" in development
+
+    assert "refs/heads/Kaya" in kaya
+    assert "APP_VERSION=${{ steps.meta.outputs.version }}" in kaya
+    assert kaya.count("${{ steps.meta.outputs.image }}:") == 1
+
+    for step in (main, development, kaya):
+        assert ":latest" not in step
+
+
+def test_stable_release_validation_is_strict_semver_without_suffixes():
+    allowed = ["v0.25.1", "v0.26.0", "v1.0.0", "v10.12.3"]
+    rejected = ["v0.26", "v0.26.0-dev", "v0.26.0-beta", "vtest", "version1", "dev0.26.0"]
+
+    assert all(STABLE_TAG.fullmatch(tag) for tag in allowed)
+    assert not any(STABLE_TAG.fullmatch(tag) for tag in rejected)
+    assert "grep -Eq '^v[0-9]+\\.[0-9]+\\.[0-9]+$'" in WORKFLOW
+    assert "LATEST_RELEASE_TAG" in WORKFLOW
+    assert 'LATEST_RELEASE_TAG" != "$RELEASE_TAG' in WORKFLOW
+    assert "VERSION=\"$RELEASE_TAG\"" in WORKFLOW
+
+
+def test_release_command_creates_a_github_release_after_validating_version():
+    assert "grep -Eq '^v[0-9]+\\.[0-9]+\\.[0-9]+$$'" in MAKEFILE
+    assert "gh release create $(VERSION) --verify-tag --generate-notes --title $(VERSION)" in MAKEFILE
+
+
+def test_production_deployments_stay_on_latest():
+    expected = "ghcr.io/antybubbs/kaya:latest"
+    assert expected in Path("docker-compose.yml").read_text(encoding="utf-8")
+    assert expected in Path("docker-compose.demo.yml").read_text(encoding="utf-8")
+    assert expected in Path("install-kaya.sh").read_text(encoding="utf-8")

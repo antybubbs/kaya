@@ -6,8 +6,9 @@ on:
       - main
       - Kaya
       - "dev*"
-    tags:
-      - "v*"
+  release:
+    types:
+      - published
 
 permissions:
   contents: read
@@ -17,22 +18,52 @@ jobs:
   container:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out source
-        uses: actions/checkout@v4
-
+      # PRODUCTION: vX.Y.Z GitHub release -> publishes vX.Y.Z + latest.
+      # DEVELOPMENT: dev* branch -> publishes development tags only.
+      # MAIN: publishes a commit-specific SHA image only.
+      # KAYA: publishes its branch tag only.
       - name: Set image metadata
         id: meta
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_DRAFT: ${{ github.event.release.draft }}
+          RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+
           OWNER="$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
           IMAGE="ghcr.io/$OWNER/kaya"
-          SHORT_SHA="$(printf '%s' '${{ github.sha }}' | cut -c1-12)"
-          REF_NAME='${{ github.ref_name }}'
+          SHORT_SHA="$(printf '%s' "$GITHUB_SHA" | cut -c1-12)"
           REF_TAG="$(printf '%s' "$REF_NAME" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_.-' '-')"
           VERSION="$SHORT_SHA"
-          if printf '%s' '${{ github.ref }}' | grep -q '^refs/tags/'; then
-            VERSION="$REF_NAME"
-          elif printf '%s' "$REF_NAME" | grep -Eq '^(dev|Kaya)'; then
+          STABLE_RELEASE=false
+          CHECKOUT_REF="$GITHUB_SHA"
+
+          if [ "$EVENT_NAME" = "release" ]; then
+            if [ "$RELEASE_DRAFT" = "true" ] || [ "$RELEASE_PRERELEASE" = "true" ]; then
+              echo "Refusing to publish latest from a draft or prerelease." >&2
+              exit 1
+            fi
+            if ! printf '%s' "$RELEASE_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "Refusing to publish latest: release tag must match vMAJOR.MINOR.PATCH." >&2
+              exit 1
+            fi
+
+            LATEST_RELEASE_TAG="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.tag_name')"
+            if [ "$LATEST_RELEASE_TAG" != "$RELEASE_TAG" ]; then
+              echo "Refusing to publish latest: this is not GitHub's latest stable release." >&2
+              exit 1
+            fi
+
+            VERSION="$RELEASE_TAG"
+            CHECKOUT_REF="$RELEASE_TAG"
+            STABLE_RELEASE=true
+          elif [ "$REF" = "refs/heads/Kaya" ] || [[ "$REF" == refs/heads/dev* ]]; then
             VERSION="$REF_TAG"
           fi
 
@@ -41,7 +72,14 @@ jobs:
             echo "short_sha=$SHORT_SHA"
             echo "ref_tag=$REF_TAG"
             echo "version=$VERSION"
+            echo "stable_release=$STABLE_RELEASE"
+            echo "checkout_ref=$CHECKOUT_REF"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.meta.outputs.checkout_ref }}
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -54,7 +92,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Build and push main commit image
-        if: github.ref == 'refs/heads/main'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -71,7 +109,7 @@ jobs:
             ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.short_sha }}
 
       - name: Build and push development branch image
-        if: startsWith(github.ref_name, 'dev')
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/dev')
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -89,7 +127,7 @@ jobs:
             ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.ref_tag }}-${{ steps.meta.outputs.short_sha }}
 
       - name: Build and push Kaya branch image
-        if: github.ref_name == 'Kaya'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/Kaya'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -104,10 +142,9 @@ jobs:
             org.opencontainers.image.version=${{ steps.meta.outputs.version }}
           tags: |
             ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.ref_tag }}
-            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.ref_tag }}-${{ steps.meta.outputs.short_sha }}
 
       - name: Build and push release image
-        if: startsWith(github.ref, 'refs/tags/')
+        if: github.event_name == 'release' && steps.meta.outputs.stable_release == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -121,5 +158,5 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=${{ steps.meta.outputs.version }}
           tags: |
-            ${{ steps.meta.outputs.image }}:${{ github.ref_name }}
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}
             ${{ steps.meta.outputs.image }}:latest

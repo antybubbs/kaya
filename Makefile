@@ -17,5 +17,8 @@ shell:
 
 release:
 	@test -n "$(VERSION)" || (echo "Usage: make release VERSION=v1.0.0" && exit 1)
+	@printf '%s\n' "$(VERSION)" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$$' || (echo "VERSION must match vMAJOR.MINOR.PATCH" && exit 1)
+	@command -v gh >/dev/null 2>&1 || (echo "GitHub CLI (gh) is required to publish a release" && exit 1)
 	git tag $(VERSION)
 	git push origin $(VERSION)
+	gh release create $(VERSION) --verify-tag --generate-notes --title $(VERSION)
