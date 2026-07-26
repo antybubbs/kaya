@@ -69,7 +69,7 @@ def recovered_pair(db: Session, now: datetime):
         keepalived_runtime_state="RUNNING",
         config_generation=7,
         lease_generation=11,
-        agent_version="0.2.7",
+        agent_version="0.2.13",
         recovery_state="OFFLINE",
     )
     active = HANode(
@@ -96,7 +96,7 @@ def recovered_pair(db: Session, now: datetime):
         keepalived_runtime_state="RUNNING",
         config_generation=7,
         lease_generation=11,
-        agent_version="0.2.7",
+        agent_version="0.2.13",
         last_heartbeat_at=now,
     )
     db.add_all([preferred, active])
@@ -419,7 +419,12 @@ def test_ready_standby_remains_quiescent_through_twelve_hours_of_observation_the
                 assert standby.recovery_stable_since == stable_since
             # Exercise the existing periodic reconciliation path as a no-op.
             from app.services.ha_watchdog import reconcile_cluster
+            from app.services.ha_agents import desired_state
             reconcile_cluster(db, cluster)
+            assert active.dhcp_running is True
+            assert active.dhcp_configured is True
+            assert active.dhcp_listener_active is True
+            assert desired_state(active)["failover"] is None
 
         assert db.query(HAEvent).filter(
             HAEvent.node_id == standby.id,

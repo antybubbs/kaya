@@ -30,6 +30,7 @@ from app.services.ha_maintenance import (
     start_dhcp_self_heal,
     start_reinitialisation,
 )
+from app.services.ha_dhcp_safety import authorise_dhcp_demotion
 from app.services.ha_watchdog import reconcile_cluster as watchdog_reconcile_cluster
 from app.services.ha_recovery import evaluate_recovery
 from app.services.ha_topology import reconcile_topology
@@ -75,7 +76,7 @@ def pair(db: Session, *, split: bool = False):
         desired_role="ACTIVE",
         observed_role="STANDBY" if split else "ACTIVE",
         observed_generation=4,
-        agent_version="0.2.11",
+        agent_version="0.2.13",
         vip_owned=not split,
         dhcp_running=True,
         dhcp_configured=True,
@@ -102,7 +103,7 @@ def pair(db: Session, *, split: bool = False):
         desired_role="STANDBY",
         observed_role="ACTIVE" if split else "STANDBY",
         observed_generation=4,
-        agent_version="0.2.11",
+        agent_version="0.2.13",
         vip_owned=split,
         dhcp_running=False,
         dhcp_configured=False,
@@ -179,6 +180,39 @@ def test_healthy_cluster_reconciliation_is_idempotent_and_moves_no_service():
         reconcile_cluster_state(db, second_run)
         assert second_run.status == "SUCCEEDED"
         assert cluster.current_active_node_id == first.id
+
+
+def test_stale_standby_cleanup_cannot_disable_new_sole_owner():
+    with database() as db:
+        _, cluster, first, second = pair(db)
+        second.dhcp_configured = True
+        db.commit()
+        run = start_dhcp_self_heal(db, cluster)
+        assert run is not None
+        assert desired_maintenance_action(cluster, second)["action_type"] == "DHCP_DEMOTE"
+
+        first.vip_owned = False
+        first.dhcp_running = first.dhcp_configured = first.dhcp_listener_active = False
+        first.dhcp_runtime_state = "STOPPED"
+        second.vip_owned = True
+        second.dhcp_running = second.dhcp_configured = second.dhcp_listener_active = True
+        second.dhcp_runtime_state = "RUNNING"
+        now = datetime.utcnow()
+        for node in (first, second):
+            node.last_heartbeat_at = now
+            node.dhcp_observed_at = now
+        db.commit()
+
+        assert desired_maintenance_action(cluster, second) is None
+        assert second.dhcp_running is True
+        advance_dhcp_self_heal(db, run)
+        assert run.status == "SUCCEEDED"
+        assert run.phase == "COMPLETE"
+        assert cluster.maintenance_mode is False
+        assert second.dhcp_running is True
+        result = json.loads(run.result_json)
+        assert result["repair_cancelled"] is True
+        assert result["service_movement_performed"] is False
 
 
 def test_reinitialisation_repairs_metadata_without_moving_an_already_correct_topology():
@@ -349,6 +383,7 @@ def test_reinitialise_can_select_second_node_without_hardcoded_primary(monkeypat
         drive_to_runtime_rebuild(db, monkeypatch, run, first, second)
         assert run.phase == "DEMOTING_STANDBY", run.error_redacted
         action = desired_maintenance_action(cluster, first)
+        assert action is not None, authorise_dhcp_demotion(cluster, first, replacement=second, owner_handover=True).reason
         record_maintenance_action_result(
             db,
             first,
@@ -389,6 +424,7 @@ def test_failed_standby_dhcp_stop_waits_for_observed_release_and_never_promotes_
         run = start_reinitialisation(db, cluster, user, desired_active=second, authority=second, acknowledged=True)
         drive_to_runtime_rebuild(db, monkeypatch, run, first, second)
         action = desired_maintenance_action(cluster, first)
+        assert action is not None, authorise_dhcp_demotion(cluster, first, replacement=second, owner_handover=True).reason
         record_maintenance_action_result(
             db,
             first,

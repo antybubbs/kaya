@@ -3,7 +3,7 @@ from pathlib import Path
 
 
 AGENT_ROOT = Path(__file__).resolve().parents[2] / "ha_agent"
-CURRENT_AGENT_VERSION = "0.2.11"
+CURRENT_AGENT_VERSION = "0.2.13"
 PUBLIC_AGENT_FILES = frozenset({
     "install.sh",
     "update.sh",
@@ -11,8 +11,10 @@ PUBLIC_AGENT_FILES = frozenset({
     "kaya_ha_agent.py",
     "keepalived_runtime.py",
     "failover_runtime.py",
+    "resolver_runtime.py",
     "kaya_ha_failover_helper.py",
     "kaya_ha_keepalived_helper.py",
+    "kaya_ha_resolver_helper.py",
     "kaya_ha_transition.py",
     "check-pihole-dns",
     "kaya-ha-agent.service",

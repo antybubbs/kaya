@@ -171,6 +171,39 @@ def recovery_checks(db: Session, cluster: HACluster, node: HANode, *, now: datet
         )
     )
     peer_label = "Peer Network Reachability (optional)"
+    peer = next((item for item in cluster.nodes if item.id != node.id), None)
+    try:
+        resolver_nameservers = json.loads(node.resolver_nameservers_json or "[]")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        resolver_nameservers = []
+    resolver_nameservers = [str(value) for value in resolver_nameservers if isinstance(value, str)][:8]
+    resolver_observed = node.resolver_observation_status == "FRESH"
+    resolver_safe = bool(
+        resolver_observed
+        and cluster.virtual_ip
+        and cluster.virtual_ip in resolver_nameservers
+    )
+    resolver_peer_only = bool(
+        resolver_observed
+        and peer
+        and resolver_nameservers
+        and set(resolver_nameservers) == {peer.management_host}
+    )
+    if resolver_peer_only:
+        resolver_detail = "Host resolver depends on peer node. Agent reporting may fail during peer outage. Configure host DNS to use HA VIP."
+    elif resolver_safe:
+        resolver_detail = f"Current: {', '.join(resolver_nameservers)}. Expected HA DNS Virtual IP: {cluster.virtual_ip}."
+    elif resolver_observed:
+        resolver_detail = f"Current: {', '.join(resolver_nameservers) or 'none reported'}. Expected HA DNS Virtual IP: {cluster.virtual_ip}."
+    else:
+        resolver_detail = f"Awaiting a resolver report from the current HA Agent. Expected HA DNS Virtual IP: {cluster.virtual_ip}."
+    resolver_check = RecoveryCheck(
+        "host_dns_resolver",
+        "Host DNS Resolver",
+        not resolver_peer_only,
+        resolver_detail,
+        resolver_peer_only,
+    )
     if active and node.id == active.id:
         return (
             RecoveryCheck("kaya_heartbeat", "Kaya heartbeat", heartbeat, "The HA Agent has reported to Kaya recently."),
@@ -179,6 +212,7 @@ def recovery_checks(db: Session, cluster: HACluster, node: HANode, *, now: datet
             RecoveryCheck("network_interface", "Expected network interface", bool(node.network_interface), "The node has the configured HA network interface."),
             RecoveryCheck("keepalived", "Local failover service", keepalived, "Keepalived is deployed and running."),
             RecoveryCheck("cluster_generation", "Cluster generation", generation, "The node recognises the current configuration and role generations."),
+            resolver_check,
             RecoveryCheck("active_runtime", "Virtual IP ownership", node.vip_owned is True, "The Active node is the exclusive DNS Virtual IP owner."),
             RecoveryCheck("dhcp_active", "DHCP active state", not pihole_manages_dhcp(cluster) or observation.active, "A fresh Pi-hole configuration, FTL and UDP/67 observation confirms DHCP on the Active node.", pihole_manages_dhcp(cluster)),
             RecoveryCheck(
@@ -196,6 +230,7 @@ def recovery_checks(db: Session, cluster: HACluster, node: HANode, *, now: datet
         RecoveryCheck("network_interface", "Expected network interface", bool(node.network_interface), "The node has the configured HA network interface."),
         RecoveryCheck("keepalived", "Local failover service", keepalived, "Keepalived is deployed and running."),
         RecoveryCheck("cluster_generation", "Cluster generation", generation, "The node recognises the current configuration and role generations."),
+        resolver_check,
         RecoveryCheck("standby_runtime", "Standby ownership", standby_runtime, "The recovered node is not claiming the DNS Virtual IP."),
         RecoveryCheck("dhcp_safe", "DHCP standby state", dhcp_safe, "A fresh Pi-hole configuration and UDP/67 observation confirms DHCP is released on the recovered node.", pihole_manages_dhcp(cluster)),
         RecoveryCheck("configuration_sync", "Pi-hole API, configuration and drift", configuration_sync, "A post-recovery active-to-standby API comparison or synchronisation completed without supported drift."),

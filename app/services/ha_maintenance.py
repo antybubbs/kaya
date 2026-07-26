@@ -23,6 +23,7 @@ from app.models.models import (
 )
 from app.services.ha_leases import HALeaseError, reconcile_cluster_leases
 from app.services.ha_agent_installer import version_tuple
+from app.services.ha_dhcp_safety import authorise_dhcp_demotion
 from app.services.ha_recovery import evaluate_recovery
 from app.services.ha_sync import (
     HASyncError,
@@ -470,6 +471,37 @@ def advance_dhcp_self_heal(db: Session, run: HAMaintenanceRun) -> HAMaintenanceR
     if run.operation != "DHCP_SELF_HEAL" or run.status != "RUNNING":
         return run
     if run.phase == "REPAIRING_DHCP":
+        result = _result_document(run)
+        repair_node = db.get(HANode, result.get("repair_node_id"))
+        if repair_node is not None and result.get("action_type") == "DHCP_DEMOTE":
+            owner = run.desired_active_node
+            decision = authorise_dhcp_demotion(
+                run.cluster,
+                repair_node,
+                replacement=owner,
+                owner_handover=False,
+            )
+            if not decision.allowed:
+                run.status = "SUCCEEDED"
+                run.phase = "COMPLETE"
+                run.completed_at = datetime.utcnow()
+                run.cluster.maintenance_mode = False
+                result.update({
+                    "service_movement_performed": False,
+                    "repair_cancelled": True,
+                    "repair_cancelled_reason": decision.reason,
+                    "latch_active": False,
+                })
+                run.result_json = json.dumps(result, sort_keys=True)
+                _event(
+                    db,
+                    run,
+                    "dhcp_configuration_repair_cancelled",
+                    "info",
+                    "The queued standby DHCP cleanup was cancelled because ownership changed. DHCP on the current owner was not altered.",
+                    {"node_id": repair_node.public_id, "service_movement_performed": False},
+                )
+                db.commit()
         return run
     try:
         result = json.loads(run.result_json or "{}")
@@ -859,6 +891,12 @@ def desired_maintenance_action(cluster: HACluster, node: HANode) -> dict[str, An
         if node.id != result.get("repair_node_id") or result.get("action_type") not in {"DHCP_PROMOTE", "DHCP_DEMOTE"}:
             return None
         action_type = result["action_type"]
+        owner_handover = False
+        if action_type == "DHCP_DEMOTE":
+            replacement = run.desired_active_node
+            decision = authorise_dhcp_demotion(cluster, node, replacement=replacement, owner_handover=False)
+            if not decision.allowed:
+                return None
         checksum = _maintenance_checksum(run, node, action_type)
         return {
             "action_id": f"maintenance:{run.public_id}:{action_type.lower()}:{node.public_id}",
@@ -872,6 +910,7 @@ def desired_maintenance_action(cluster: HACluster, node: HANode) -> dict[str, An
             # Repair the persisted Pi-hole setting only. The node already owns
             # the VIP and serves DHCP, so live leases must remain untouched.
             "configuration_only": action_type == "DHCP_PROMOTE",
+            "owner_handover_authorised": owner_handover,
         }
     target = run.desired_active_node
     if target is None:
@@ -883,6 +922,18 @@ def desired_maintenance_action(cluster: HACluster, node: HANode) -> dict[str, An
         action_type = "DHCP_PROMOTE"
     if action_type is None:
         return None
+    owner_handover = False
+    if action_type == "DHCP_DEMOTE":
+        decision = authorise_dhcp_demotion(
+            cluster,
+            node,
+            replacement=target,
+            owner_handover=True,
+            replacement_has_local_authority=run.authoritative_node_id == target.id,
+        )
+        if not decision.allowed:
+            return None
+        owner_handover = decision.owner_handover
     checksum = _maintenance_checksum(run, node, action_type)
     return {
         "action_id": f"maintenance:{run.public_id}:{action_type.lower()}:{node.public_id}",
@@ -893,6 +944,7 @@ def desired_maintenance_action(cluster: HACluster, node: HANode) -> dict[str, An
         "automatic": False,
         "lease_generation": run.cluster.lease_replication.desired_generation if run.cluster.lease_replication else 0,
         "restore_original": False,
+        "owner_handover_authorised": owner_handover,
     }
 
 

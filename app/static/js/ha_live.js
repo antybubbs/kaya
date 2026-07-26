@@ -20,7 +20,7 @@
   const valueFor = (object, key) => {
     const value = object?.[key];
     if (key.endsWith("_at")) return localDate(value);
-    if (key === "status" || key.endsWith("_status") || key.endsWith("_role")) return title(value);
+    if (key === "status" || key.endsWith("_status") || key.endsWith("_role") || key.endsWith("_manager")) return title(value);
     if (key === "automatic_failover") return value ? "Enabled" : "Disabled";
     return value ?? "Not reported";
   };

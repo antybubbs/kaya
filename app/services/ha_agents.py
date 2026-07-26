@@ -238,6 +238,12 @@ def record_heartbeat(
             return result if return_status else node
     previous_peer = node.peer_reachable
     had_peer_result = node.last_peer_attempt_at is not None
+    peer_node = next((item for item in node.cluster.nodes if item.id != node.id), None)
+    try:
+        previous_resolvers = json.loads(node.resolver_nameservers_json or "[]")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        previous_resolvers = []
+    previous_peer_only = bool(peer_node and previous_resolvers and set(previous_resolvers) == {peer_node.management_host})
     node.agent_version = heartbeat.agent_version
     node.last_heartbeat_at = received_at
     node.last_report_sequence = heartbeat.report_sequence or node.last_report_sequence
@@ -287,6 +293,35 @@ def record_heartbeat(
         icmp_probe_status = "AVAILABLE" if heartbeat.peer_reachable else "NO_REPLY"
     node.peer_icmp_probe_status = icmp_probe_status
     node.peer_dns_reachable = heartbeat.peer_dns_reachable
+    resolver_reported = heartbeat.resolver_observation_status is not None
+    current_resolvers = [str(value) for value in heartbeat.resolver_nameservers]
+    current_peer_only = previous_peer_only
+    if resolver_reported:
+        node.resolver_manager = heartbeat.resolver_manager
+        node.resolver_nameservers_json = json.dumps(current_resolvers, separators=(",", ":"))
+        node.resolver_observation_status = heartbeat.resolver_observation_status
+        current_peer_only = bool(
+            heartbeat.resolver_observation_status == "FRESH"
+            and peer_node
+            and current_resolvers
+            and set(current_resolvers) == {peer_node.management_host}
+        )
+    if resolver_reported and current_peer_only != previous_peer_only:
+        unsafe = current_peer_only
+        db.add(HAEvent(
+            cluster_id=node.cluster_id,
+            node_id=node.id,
+            event_type="host_resolver_peer_dependent" if unsafe else "host_resolver_independence_restored",
+            severity="critical" if unsafe else "info",
+            source="agent",
+            message=(
+                "Host resolver depends on peer node. Agent reporting may fail during peer outage. Configure host DNS to use HA VIP."
+                if unsafe
+                else f"{node.display_name} no longer depends exclusively on its peer for host DNS resolution."
+            ),
+            details_json_redacted=json.dumps({"resolver_manager": heartbeat.resolver_manager, "expected": "ha_virtual_ip"}, sort_keys=True),
+            occurred_at=node.last_heartbeat_at,
+        ))
     if icmp_probe_status is not None:
         node.last_peer_attempt_at = node.last_heartbeat_at
         if icmp_probe_status == "AVAILABLE":
@@ -564,7 +599,9 @@ def record_action_result(db: Session, node: HANode, result: HAAgentActionResult)
             raise HAAgentError("The action result belongs to a different node.")
         return existing
     maintenance_action = desired_maintenance_action(node.cluster, node)
-    if result.action_type == "KEEPALIVED_APPLY":
+    if result.action_type == "RESOLVER_REPAIR":
+        expected = desired_resolver_action(node.cluster, node)
+    elif result.action_type == "KEEPALIVED_APPLY":
         expected = desired_keepalived_action(node.cluster, node)
     elif result.action_type == "LEASE_SNAPSHOT_STAGE":
         expected = desired_lease_action(node.cluster, node)
@@ -593,7 +630,10 @@ def record_action_result(db: Session, node: HANode, result: HAAgentActionResult)
     row = HAAgentActionResultRow(action_id=result.action_id, cluster_id=node.cluster_id, node_id=node.id, action_type=result.action_type, generation=result.generation, status=result.status, checksum=result.checksum, backup_reference=result.backup_reference, message_redacted=result.message)
     db.add(row)
     cluster = node.cluster
-    if result.action_type == "LEASE_SNAPSHOT_STAGE":
+    if result.action_type == "RESOLVER_REPAIR":
+        node.resolver_repair_status = result.status
+        node.resolver_repair_last_error = None if result.status == "APPLIED" else result.message
+    elif result.action_type == "LEASE_SNAPSHOT_STAGE":
         try:
             record_lease_stage_result(db, node, generation=result.generation, checksum=result.checksum, status=result.status, message=result.message)
         except HALeaseError as exc:
@@ -670,6 +710,7 @@ def desired_state(node: HANode) -> dict:
     maintenance = desired_maintenance_action(cluster, node)
     peer = next((item for item in cluster.nodes if item.id != node.id), None)
     dhcp_managed = pihole_manages_dhcp(cluster)
+    resolver = desired_resolver_action(cluster, node)
     return {
         "protocol_version": AGENT_PROTOCOL_VERSION,
         "cluster_id": cluster.public_id,
@@ -695,8 +736,26 @@ def desired_state(node: HANode) -> dict:
         "dhcp_managed": dhcp_managed,
         "peer_host": peer.management_host if peer else None,
         "network_interface": node.network_interface,
-        "allowed_actions": (["KEEPALIVED_APPLY"] if keepalived else []) + (["LEASE_SNAPSHOT_STAGE"] if leases else []) + ([maintenance["action_type"]] if maintenance else []) + ([failover["action_type"]] if failover else []),
+        "allowed_actions": (["KEEPALIVED_APPLY"] if keepalived else []) + (["LEASE_SNAPSHOT_STAGE"] if leases else []) + (["RESOLVER_REPAIR"] if resolver else []) + ([maintenance["action_type"]] if maintenance else []) + ([failover["action_type"]] if failover else []),
         "keepalived": keepalived,
         "lease_snapshot": leases,
         "failover": maintenance or failover,
+        "resolver_repair": resolver,
+    }
+
+
+def desired_resolver_action(cluster: HACluster, node: HANode) -> dict | None:
+    if node.resolver_repair_status != "PENDING" or node.resolver_repair_generation < 1:
+        return None
+    vip = str(cluster.virtual_ip or "")
+    interface = str(node.network_interface or "")
+    content = f"# Managed by Kaya HA\n[Resolve]\nDNS={vip}\nDomains=~.\n"
+    checksum = hashlib.sha256(f"{vip}:{interface}:{content}".encode()).hexdigest()
+    return {
+        "action_id": f"resolver:{cluster.public_id}:{node.public_id}:{node.resolver_repair_generation}",
+        "action_type": "RESOLVER_REPAIR",
+        "generation": node.resolver_repair_generation,
+        "checksum": checksum,
+        "virtual_ip": vip,
+        "network_interface": interface,
     }

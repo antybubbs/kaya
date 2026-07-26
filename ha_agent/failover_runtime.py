@@ -19,6 +19,7 @@ def _log_action(event, **details):
     print(json.dumps(safe, sort_keys=True, separators=(",", ":")), file=sys.stderr, flush=True)
 
 def refresh_dhcp_state(state, *, runner=_run):
+    store = getattr(state, "set_telemetry", state.set)
     result = runner(["sudo", "-n", HELPER, "status"])
     observed_at = datetime.now(timezone.utc).isoformat()
     try:
@@ -26,12 +27,12 @@ def refresh_dhcp_state(state, *, runner=_run):
     except json.JSONDecodeError:
         status = {}
     if result.returncode or status.get("observation_status") != "FRESH":
-        state.set("dhcp_configured", None)
-        state.set("dhcp_listener_active", None)
-        state.set("ftl_active", None)
-        state.set("dhcp_runtime_state", "UNKNOWN")
-        state.set("dhcp_observation_status", "UNAVAILABLE")
-        state.set("dhcp_observed_at", observed_at)
+        store("dhcp_configured", None)
+        store("dhcp_listener_active", None)
+        store("ftl_active", None)
+        store("dhcp_runtime_state", "UNKNOWN")
+        store("dhcp_observation_status", "UNAVAILABLE")
+        store("dhcp_observed_at", observed_at)
         return
     configured = status.get("configured")
     listening = status.get("listening")
@@ -39,13 +40,13 @@ def refresh_dhcp_state(state, *, runner=_run):
     runtime_state = str(status.get("runtime_state") or "UNKNOWN")
     if configured not in {True, False} or listening not in {True, False} or service_active not in {True, False} or runtime_state not in {"RUNNING", "STOPPED"}:
         raise FailoverRuntimeError("Pi-hole DHCP state returned invalid evidence.")
-    state.set("dhcp_configured", configured)
-    state.set("dhcp_listener_active", listening)
-    state.set("ftl_active", service_active)
-    state.set("dhcp_runtime_state", runtime_state)
-    state.set("dhcp_observation_status", "FRESH")
-    state.set("dhcp_observed_at", observed_at)
-    state.set("dhcp_running", runtime_state == "RUNNING")
+    store("dhcp_configured", configured)
+    store("dhcp_listener_active", listening)
+    store("ftl_active", service_active)
+    store("dhcp_runtime_state", runtime_state)
+    store("dhcp_observation_status", "FRESH")
+    store("dhcp_observed_at", observed_at)
+    store("dhcp_running", runtime_state == "RUNNING")
 
 def apply_failover_action(state, action, *, runner=_run):
     action_type, generation, checksum = action.get("action_type"), int(action.get("generation") or 0), action.get("checksum")
@@ -56,12 +57,28 @@ def apply_failover_action(state, action, *, runner=_run):
     configuration_only = action.get("configuration_only", False)
     if not isinstance(configuration_only, bool) or (configuration_only and action_type != "DHCP_PROMOTE"):
         raise FailoverRuntimeError("Kaya supplied an invalid DHCP repair scope.")
+    owner_handover_authorised = action.get("owner_handover_authorised", False)
+    if not isinstance(owner_handover_authorised, bool):
+        raise FailoverRuntimeError("Kaya supplied an invalid DHCP owner-handover authorisation.")
+    if (
+        action_type == "DHCP_DEMOTE"
+        and bool(state.get("dhcp_running", False))
+        and (
+            not owner_handover_authorised
+            or not (
+                str(action.get("run_id") or "").strip()
+                or str(action.get("maintenance_run_id") or "").strip()
+            )
+        )
+    ):
+        raise FailoverRuntimeError("Refusing to disable DHCP on the current sole owner without a verified atomic handover.")
     _log_action(
         "dhcp_action_received",
         action_type=action_type,
         generation=generation,
         action_id=str(action.get("action_id") or "")[:80],
         configuration_only=configuration_only,
+        owner_handover_authorised=owner_handover_authorised,
     )
     state.set("failover_generation", generation); state.set("failover_lease_generation", int(action.get("lease_generation") or 0)); state.set("failover_restore_original", bool(action.get("restore_original", False))); state.set("failover_configuration_only", configuration_only)
     command = "demote" if action_type == "DHCP_DEMOTE" else "promote"

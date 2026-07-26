@@ -376,6 +376,11 @@ def cluster_detail_context(request: Request, user, db: Session, cluster: HAClust
     advertisement_states = cached_dns_advertisement(cluster) if pihole_manages_dhcp(cluster) else []
     active_advertisement = next((state for state in advertisement_states if active and state.node_id == active.id), None)
     latest_transition = latest_failover(cluster)
+    resolver_attention = any(
+        check.key == "host_dns_resolver" and not check.passed
+        for item in recovery.values()
+        for check in item.checks
+    )
     return ha_context(
         request,
         user,
@@ -396,6 +401,7 @@ def cluster_detail_context(request: Request, user, db: Session, cluster: HAClust
         active_node=active,
         failback_recovery=failback_recovery,
         action_ready=readiness.ready and (failback_recovery is None or failback_recovery.ready),
+        resolver_attention=resolver_attention,
         consistency=consistency,
         consistency_json=inspection_json(cluster, consistency),
         maintenance_run=latest_maintenance(cluster),
@@ -462,6 +468,48 @@ async def repair_cluster_dhcp_dns_advertisement(
         metadata={"cluster_id": cluster.public_id, "primary": "virtual_ip", "secondary": "peer_node", "verified": True, "secret_logged": False},
     )
     return RedirectResponse(f"/high-availability/clusters/{cluster.public_id}?dns_advertisement=repaired", status_code=303)
+
+
+@router.post("/clusters/{public_id}/nodes/{node_public_id}/resolver/repair")
+async def request_node_resolver_repair(
+    public_id: str,
+    node_public_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    user=Depends(require_ha_admin),
+):
+    cluster = cluster_or_404(db, public_id)
+    node = next((item for item in cluster.nodes if item.public_id == node_public_id), None)
+    if node is None:
+        raise HTTPException(status_code=404, detail="Node not found")
+    form = await request.form()
+    validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    if str(form.get("acknowledge_resolver_change") or "") != "1":
+        raise HTTPException(status_code=400, detail="Resolver change confirmation is required")
+    if node.resolver_manager != "SYSTEMD_RESOLVED" or node.resolver_observation_status != "FRESH":
+        raise HTTPException(status_code=409, detail="Automatic resolver repair is not supported for this node")
+    peer = next((item for item in cluster.nodes if item.id != node.id), None)
+    try:
+        nameservers = json.loads(node.resolver_nameservers_json or "[]")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        nameservers = []
+    if not peer or set(nameservers) != {peer.management_host} or cluster.virtual_ip in nameservers:
+        raise HTTPException(status_code=409, detail="The latest signed resolver report no longer requires this repair")
+    node.resolver_repair_generation = max(0, node.resolver_repair_generation) + 1
+    node.resolver_repair_status = "PENDING"
+    node.resolver_repair_last_error = None
+    db.commit()
+    write_audit(
+        db,
+        user,
+        "requested",
+        "ha_node_resolver_repair",
+        entity_id=node.public_id,
+        detail=f"Requested a generation-bound systemd-resolved repair for {node.display_name}.",
+        severity="warning",
+        metadata={"cluster_id": cluster.public_id, "generation": node.resolver_repair_generation, "manager": node.resolver_manager, "secret_logged": False},
+    )
+    return RedirectResponse(f"/high-availability/clusters/{cluster.public_id}", status_code=303)
 
 
 def maintenance_page_context(
@@ -732,8 +780,17 @@ def cluster_live_status(public_id: str, db: Session = Depends(get_db), user=Depe
         sync_json[key] = value.isoformat() + "Z" if value else None
     ping_unavailable = sum(1 for node in current_nodes if node.peer_reachable is False)
     recovering_nodes = [item.node.display_name for item in recovery.values() if item.state in {"RECOVERING", "SYNCHRONISING", "VERIFYING"}]
+    resolver_attention = any(
+        check.key == "host_dns_resolver" and not check.passed
+        for item in recovery.values()
+        for check in item.checks
+    )
     redundancy = "AVAILABLE" if len(current_nodes) == 2 and all(node.dns_healthy is True for node in current_nodes) else "REDUCED"
-    control_plane = "HEALTHY" if len(current_nodes) == len(cluster.nodes) else "DEGRADED"
+    # Control-plane health answers whether Kaya has fresh, signed evidence from
+    # the node currently serving clients. Redundancy reports peer loss
+    # independently, so a successful hard failover is not mislabelled as loss
+    # of control of the surviving service.
+    control_plane = "HEALTHY" if active_node and active_node in current_nodes else "DEGRADED"
     single_node_service = bool(
         consistency.service_availability == "HEALTHY"
         and len(current_nodes) == 1
@@ -797,7 +854,7 @@ def cluster_live_status(public_id: str, db: Session = Depends(get_db), user=Depe
             "service_status_message": service_message,
             "ha_configuration": consistency.configuration_state,
             "consistency_issue_count": len(consistency.issues),
-            "ha_readiness": "READY" if action_ready else "RECOVERING" if failback_recovery else "NEEDS_ATTENTION",
+            "ha_readiness": "NEEDS_ATTENTION" if resolver_attention else "READY" if action_ready else "RECOVERING" if failback_recovery else "NEEDS_ATTENTION",
             "ping_unavailable_count": ping_unavailable,
             "recovering_nodes": recovering_nodes,
             "dns_advertisement_primary": active_advertisement.expected[0] if active_advertisement and active_advertisement.expected else None,
@@ -831,6 +888,9 @@ def cluster_live_status(public_id: str, db: Session = Depends(get_db), user=Depe
             "vip_owned": node.vip_owned, "peer_reachable": node.peer_reachable,
             "peer_icmp_probe_status": node.peer_icmp_probe_status,
             "peer_dns_reachable": node.peer_dns_reachable,
+            "resolver_manager": node.resolver_manager,
+            "resolver_nameservers": json.loads(node.resolver_nameservers_json or "[]"),
+            "resolver_observation_status": node.resolver_observation_status,
             "keepalived_status": node.keepalived_status, "keepalived_runtime_state": node.keepalived_runtime_state,
             "network_interface": node.network_interface, "vrrp_priority": node.vrrp_priority,
             "keepalived_config_checksum": node.keepalived_config_checksum, "keepalived_last_error": node.keepalived_last_error,

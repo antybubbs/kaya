@@ -25,6 +25,17 @@ if [ -f "$MANAGED_CONFIG" ]; then
     rm -f "$CONFIG_BACKUP"
 fi
 
+RESOLVER_CONFIG=/etc/systemd/resolved.conf.d/90-kaya-ha.conf
+RESOLVER_BASELINE=/var/lib/kaya-ha-agent/resolver-backups/baseline
+if [ -f "$RESOLVER_CONFIG" ] && grep -qx '# Managed by Kaya HA' "$RESOLVER_CONFIG"; then
+    if [ -f "$RESOLVER_BASELINE" ] && [ "$(tr -d '\r\n' < "$RESOLVER_BASELINE")" != "__ABSENT__" ]; then
+        install -m 0644 -o root -g root "$RESOLVER_BASELINE" "$RESOLVER_CONFIG"
+    else
+        rm -f "$RESOLVER_CONFIG"
+    fi
+    if systemctl is-active --quiet systemd-resolved.service 2>/dev/null; then systemctl restart systemd-resolved.service; fi
+fi
+
 rm -f /etc/systemd/system/kaya-ha-agent.service /etc/sudoers.d/kaya-ha-agent
 rm -rf /usr/lib/kaya-ha-agent /var/lib/kaya-ha-agent
 systemctl daemon-reload

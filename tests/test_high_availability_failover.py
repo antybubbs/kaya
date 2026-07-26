@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.db.session import Base
 from app.models.models import HACluster, HAFailoverRun, HALeaseReplicationState, HANode, User
+from app.services.ha_dhcp_safety import authorise_dhcp_demotion
 from app.services.ha_failover import HAFailoverError, advance_failover, automatic_failover_blockers, desired_failover_action, failover_readiness, record_failover_action_result, request_failover_rollback, set_automatic_failover, start_controlled_failover
 
 
@@ -23,8 +24,8 @@ def ready_pair(db, *, managed=True):
     cluster = HACluster(name="Test Pair", provider_key="pihole", deployment_mode="DNS_DHCP" if managed else "DNS_ONLY", status="HEALTHY", virtual_ip="192.168.50.53", prefix_length=24, keepalived_status="DEPLOYED", keepalived_generation=4)
     db.add_all([user, cluster]); db.flush()
     now = datetime.utcnow()
-    source = HANode(cluster_id=cluster.id, display_name="Primary", api_base_url="http://192.168.50.2", role="ACTIVE", desired_role="ACTIVE", vip_owned=True, dhcp_running=managed, dhcp_configured=managed, dhcp_listener_active=managed, ftl_active=True, dhcp_runtime_state="RUNNING" if managed else "STOPPED", dhcp_observation_status="FRESH", dhcp_observed_at=now, dns_healthy=True, keepalived_status="DEPLOYED", keepalived_runtime_state="RUNNING", config_generation=4, lease_generation=7, agent_version="0.2.8", last_heartbeat_at=now)
-    target = HANode(cluster_id=cluster.id, display_name="Standby", api_base_url="http://192.168.50.3", role="STANDBY", desired_role="STANDBY", vip_owned=False, dhcp_running=False, dhcp_configured=False, dhcp_listener_active=False, ftl_active=True, dhcp_runtime_state="STOPPED", dhcp_observation_status="FRESH", dhcp_observed_at=now, dns_healthy=True, keepalived_status="DEPLOYED", keepalived_runtime_state="RUNNING", config_generation=4, lease_generation=7, agent_version="0.2.8", last_heartbeat_at=now)
+    source = HANode(cluster_id=cluster.id, display_name="Primary", api_base_url="http://192.168.50.2", role="ACTIVE", desired_role="ACTIVE", vip_owned=True, dhcp_running=managed, dhcp_configured=managed, dhcp_listener_active=managed, ftl_active=True, dhcp_runtime_state="RUNNING" if managed else "STOPPED", dhcp_observation_status="FRESH", dhcp_observed_at=now, dns_healthy=True, keepalived_status="DEPLOYED", keepalived_runtime_state="RUNNING", config_generation=4, lease_generation=7, agent_version="0.2.13", last_heartbeat_at=now)
+    target = HANode(cluster_id=cluster.id, display_name="Standby", api_base_url="http://192.168.50.3", role="STANDBY", desired_role="STANDBY", vip_owned=False, dhcp_running=False, dhcp_configured=False, dhcp_listener_active=False, ftl_active=True, dhcp_runtime_state="STOPPED", dhcp_observation_status="FRESH", dhcp_observed_at=now, dns_healthy=True, keepalived_status="DEPLOYED", keepalived_runtime_state="RUNNING", config_generation=4, lease_generation=7, agent_version="0.2.13", last_heartbeat_at=now)
     db.add_all([source, target]); db.flush()
     cluster.current_active_node_id = cluster.authoritative_node_id = cluster.preferred_node_id = source.id
     db.add(HALeaseReplicationState(cluster_id=cluster.id, source_node_id=source.id, target_node_id=target.id, status="CURRENT" if managed else "NOT_APPLICABLE", desired_generation=7 if managed else 0, applied_generation=7 if managed else 0))
@@ -48,9 +49,9 @@ def test_preflight_requires_current_agent_and_exactly_one_dhcp_owner():
     with database() as db:
         _, cluster, source, target = ready_pair(db)
         assert failover_readiness(cluster).ready
-        target.agent_version = "0.2.5"
-        assert "agent 0.2.7" in " ".join(failover_readiness(cluster).blockers)
-        target.agent_version = "0.2.8"; target.dhcp_running = target.dhcp_configured = target.dhcp_listener_active = True; target.dhcp_runtime_state = "RUNNING"
+        target.agent_version = "0.2.12"
+        assert "agent 0.2.13" in " ".join(failover_readiness(cluster).blockers)
+        target.agent_version = "0.2.13"; target.dhcp_running = target.dhcp_configured = target.dhcp_listener_active = True; target.dhcp_runtime_state = "RUNNING"
         assert "Exactly the current VIP owner" in " ".join(failover_readiness(cluster).blockers)
 
 
@@ -91,6 +92,67 @@ def test_managed_failover_orders_dhcp_stop_vip_move_then_dhcp_start(monkeypatch)
         assert cluster.automatic_failback_enabled is False
         assert cluster.keepalived_status == "PENDING_AGENT"
         assert all(node.keepalived_status == "PENDING_AGENT" for node in cluster.nodes)
+
+
+def test_sole_dhcp_owner_cannot_be_demoted_by_routine_work():
+    with database() as db:
+        _, cluster, source, target = ready_pair(db)
+        decision = authorise_dhcp_demotion(cluster, source, replacement=target, owner_handover=False)
+        assert decision.allowed is False
+        assert "Routine work" in decision.reason
+
+
+def test_controlled_owner_demotion_waits_for_replacement_prerequisites(monkeypatch):
+    with database() as db:
+        user, cluster, source, target = ready_pair(db)
+        monkeypatch.setattr("app.services.ha_failover.reconcile_cluster_leases", lambda db, cluster: cluster.lease_replication)
+        run = start_controlled_failover(db, cluster, target, user, confirmation="Test Pair", acknowledged=True)
+
+        target.dns_healthy = False
+        assert desired_failover_action(cluster, source) is None
+        assert source.dhcp_running is True
+
+        target.dns_healthy = True
+        action = desired_failover_action(cluster, source)
+        assert action["action_type"] == "DHCP_DEMOTE"
+        assert action["owner_handover_authorised"] is True
+        assert action["run_id"] == run.public_id
+
+
+def test_agent_rejects_unverified_owner_demotion_and_accepts_bound_handover():
+    from ha_agent.failover_runtime import FailoverRuntimeError, apply_failover_action
+
+    class State:
+        def __init__(self):
+            self.values = {"vip_owned": True, "dhcp_running": True, "failover_generation": 0}
+
+        def get(self, key, default=None):
+            return self.values.get(key, default)
+
+        def set(self, key, value):
+            self.values[key] = value
+
+    class Result:
+        returncode = 0
+        stderr = ""
+        stdout = '{"status":"applied","configured":false,"listening":false,"service_active":true,"runtime_state":"STOPPED","observation_status":"FRESH","dhcp_running":false}'
+
+    base = {
+        "action_id": "failover:fake:dhcp_demote:node",
+        "action_type": "DHCP_DEMOTE",
+        "generation": 2,
+        "checksum": "a" * 64,
+        "automatic": False,
+    }
+    with pytest.raises(FailoverRuntimeError, match="sole owner"):
+        apply_failover_action(State(), base, runner=lambda command: Result())
+
+    result = apply_failover_action(
+        State(),
+        {**base, "run_id": "00000000-0000-0000-0000-000000000001", "owner_handover_authorised": True},
+        runner=lambda command: Result(),
+    )
+    assert result["status"] == "APPLIED"
 
 
 def test_transient_dhcp_release_error_continues_after_explicit_source_reports_release(monkeypatch):
@@ -719,7 +781,7 @@ def test_automatic_failover_requires_current_agents_and_successful_controlled_te
     with database() as db:
         user, cluster, source, target = ready_pair(db)
         assert "successful controlled failover" in " ".join(automatic_failover_blockers(cluster))
-        source.agent_version = target.agent_version = "0.2.8"
+        source.agent_version = target.agent_version = "0.2.13"
         db.add(HAFailoverRun(cluster_id=cluster.id, source_node_id=source.id, target_node_id=target.id, status="SUCCEEDED", phase="COMPLETE", dhcp_managed=True, lease_generation=7, role_generation=2, requested_by_user_id=user.id))
         db.commit()
         assert automatic_failover_blockers(cluster) == []

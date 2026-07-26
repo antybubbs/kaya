@@ -15,7 +15,8 @@ FTL, IP = "/usr/bin/pihole-FTL", "/usr/sbin/ip"
 MAC = re.compile(r"^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$", re.I)
 
 def _state(key, default=None):
-    with sqlite3.connect(STATE_DB) as db:
+    with sqlite3.connect(STATE_DB, timeout=5) as db:
+        db.execute("PRAGMA busy_timeout=5000")
         row = db.execute("SELECT value FROM state WHERE key = ?", (key,)).fetchone()
     return json.loads(row[0]) if row else default
 

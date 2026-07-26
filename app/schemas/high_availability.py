@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, IPvAnyAddress
 
 
 class HAAgentMessage(BaseModel):
@@ -33,6 +33,9 @@ class HAAgentHeartbeat(HAAgentMessage):
     peer_reachable: bool | None = None
     peer_icmp_probe_status: str | None = Field(default=None, pattern="^(AVAILABLE|NO_REPLY|UNAVAILABLE)$")
     peer_dns_reachable: bool | None = None
+    resolver_manager: str | None = Field(default=None, pattern="^(SYSTEMD_RESOLVED|NETWORK_MANAGER|NETPLAN|STATIC|UNKNOWN)$")
+    resolver_nameservers: list[IPvAnyAddress] = Field(default_factory=list, max_length=8)
+    resolver_observation_status: str | None = Field(default=None, pattern="^(FRESH|UNAVAILABLE)$")
     lease_generation: int = Field(default=0, ge=0)
     config_generation: int = Field(default=0, ge=0)
     agent_version: str = Field(min_length=1, max_length=80)
@@ -41,7 +44,7 @@ class HAAgentHeartbeat(HAAgentMessage):
 
 class HAAgentActionResult(HAAgentMessage):
     action_id: str = Field(min_length=20, max_length=180, pattern=r"^[A-Za-z0-9._:-]+$")
-    action_type: str = Field(pattern="^(KEEPALIVED_APPLY|LEASE_SNAPSHOT_STAGE|DHCP_DEMOTE|DHCP_PROMOTE)$")
+    action_type: str = Field(pattern="^(KEEPALIVED_APPLY|LEASE_SNAPSHOT_STAGE|DHCP_DEMOTE|DHCP_PROMOTE|RESOLVER_REPAIR)$")
     generation: int = Field(ge=1)
     status: str = Field(pattern="^(APPLIED|FAILED)$")
     checksum: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")

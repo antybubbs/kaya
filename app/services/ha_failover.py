@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.models.models import HACluster, HAEvent, HAFailoverRun, HANode, User
+from app.services.ha_dhcp_safety import OWNER_PROTECTION_AGENT_VERSION, authorise_dhcp_demotion
 from app.services.ha_leases import HALeaseError, reconcile_cluster_leases
 from app.services.ha_recovery import failback_target
 from app.services.ha_sync import HASyncError, create_live_sync_plan, execute_sync
@@ -83,16 +84,19 @@ def failover_readiness(cluster: HACluster, *, now: datetime | None = None) -> Fa
         blockers.append("Exactly one node must currently own the virtual IP.")
     if cluster.keepalived_status != "DEPLOYED" or any(node.keepalived_status != "DEPLOYED" for node in cluster.nodes):
         blockers.append("Keepalived must be deployed and current on both nodes.")
+    state = cluster.lease_replication
+    dhcp_managed = bool(state is not None and state.status != "NOT_APPLICABLE")
+    required_agent_version = OWNER_PROTECTION_AGENT_VERSION if dhcp_managed else MIN_AGENT_VERSION
+    required_agent_label = ".".join(str(part) for part in required_agent_version)
     for node in cluster.nodes:
         if not node.last_heartbeat_at or node.last_heartbeat_at < current - timedelta(minutes=2):
             blockers.append(f"Wait for a recent heartbeat from {node.display_name}.")
-        if _version(node.agent_version) < MIN_AGENT_VERSION:
-            blockers.append(f"Update {node.display_name} to agent 0.2.7 or newer before controlled failover.")
+        if _version(node.agent_version) < required_agent_version:
+            blockers.append(f"Update {node.display_name} to agent {required_agent_label} or newer before controlled failover.")
         if node.dns_healthy is not True:
             blockers.append(f"Resolve the DNS health warning on {node.display_name}.")
         if node.keepalived_runtime_state != "RUNNING":
             blockers.append(f"Keepalived must be running on {node.display_name}.")
-    state = cluster.lease_replication
     if state is None:
         blockers.append("Complete the DHCP continuity check before failover.")
         dhcp_managed = False
@@ -251,8 +255,20 @@ def desired_failover_action(cluster: HACluster, node: HANode) -> dict[str, Any] 
         action_type, restore_original = "DHCP_PROMOTE", True
     if action_type is None:
         return None
+    owner_handover = False
+    if action_type == "DHCP_DEMOTE":
+        replacement = run.target_node if run.phase == "DEMOTING_SOURCE" else run.source_node
+        decision = authorise_dhcp_demotion(
+            cluster,
+            node,
+            replacement=replacement,
+            owner_handover=True,
+        )
+        if not decision.allowed:
+            return None
+        owner_handover = decision.owner_handover
     checksum = _action_checksum(run, node, action_type)
-    return {"action_id": f"failover:{run.public_id}:{action_type.lower()}:{node.public_id}", "action_type": action_type, "generation": run.role_generation, "checksum": checksum, "run_id": run.public_id, "automatic": False, "lease_generation": run.lease_generation, "restore_original": restore_original}
+    return {"action_id": f"failover:{run.public_id}:{action_type.lower()}:{node.public_id}", "action_type": action_type, "generation": run.role_generation, "checksum": checksum, "run_id": run.public_id, "automatic": False, "lease_generation": run.lease_generation, "restore_original": restore_original, "owner_handover_authorised": owner_handover}
 
 
 def _safe_failure(db: Session, run: HAFailoverRun, message: str) -> None:

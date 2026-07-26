@@ -16,8 +16,8 @@ from starlette.requests import Request
 
 from app.db.session import Base
 from app.models.models import HAAgentCredential, HAAgentRequest, HACluster, HAEvent, HALeaseReplicationState, HANode
-from app.schemas.high_availability import HAAgentEventItem, HAAgentHeartbeat, HAAgentRegister
-from app.services.ha_agents import HAAgentError, authenticate_agent_request, create_bootstrap_token, desired_state, ingest_events, reconcile_vip_ownership, record_heartbeat, register_agent, revoke_agent
+from app.schemas.high_availability import HAAgentActionResult, HAAgentEventItem, HAAgentHeartbeat, HAAgentRegister
+from app.services.ha_agents import HAAgentError, authenticate_agent_request, create_bootstrap_token, desired_state, ingest_events, reconcile_vip_ownership, record_action_result, record_heartbeat, register_agent, revoke_agent
 from app.services.ha_clusters import soft_delete_cluster
 from app.services.ha_topology import reconcile_topology
 from ha_agent.kaya_ha_agent import AgentRequestError, ICMP_AVAILABLE, ICMP_NO_REPLY, ICMP_UNAVAILABLE, State, probe_icmp, reconcile_desired
@@ -169,6 +169,53 @@ def test_heartbeat_tracks_divergence_and_desired_state_has_no_commands():
         assert state["desired_role"] == "STANDBY"
         assert state["automatic_failover"] is False
         assert state["allowed_actions"] == []
+
+
+def test_peer_dependent_host_resolver_is_reported_and_repair_is_generation_bound():
+    with database() as db:
+        cluster, primary, standby = cluster_with_nodes(db)
+        primary.management_host = "192.0.2.10"
+        standby.management_host = "192.0.2.11"
+        standby.network_interface = "eth0"
+        db.commit()
+        heartbeat = HAAgentHeartbeat(
+            report_sequence=1,
+            observed_role="STANDBY",
+            observed_generation=1,
+            vip_owned=False,
+            dhcp_running=False,
+            dns_healthy=True,
+            resolver_manager="SYSTEMD_RESOLVED",
+            resolver_nameservers=["192.0.2.10"],
+            resolver_observation_status="FRESH",
+            agent_version="0.2.12",
+        )
+        record_heartbeat(db, standby, heartbeat)
+        event = db.query(HAEvent).filter(HAEvent.event_type == "host_resolver_peer_dependent").one()
+        assert event.severity == "critical"
+        assert "Host resolver depends on peer node" in event.message
+        assert "192.0.2.10" not in event.details_json_redacted
+
+        standby.resolver_repair_generation = 1
+        standby.resolver_repair_status = "PENDING"
+        db.commit()
+        action = desired_state(standby)["resolver_repair"]
+        assert action["action_type"] == "RESOLVER_REPAIR"
+        assert action["virtual_ip"] == cluster.virtual_ip
+        assert action["network_interface"] == "eth0"
+        assert "RESOLVER_REPAIR" in desired_state(standby)["allowed_actions"]
+
+        record_action_result(db, standby, HAAgentActionResult(
+            action_id=action["action_id"],
+            action_type="RESOLVER_REPAIR",
+            generation=1,
+            status="APPLIED",
+            checksum=action["checksum"],
+            backup_reference="a" * 24,
+            message="Host resolver verified.",
+        ))
+        assert standby.resolver_repair_status == "APPLIED"
+        assert desired_state(standby)["resolver_repair"] is None
 
 
 def test_unavailable_dhcp_observation_does_not_become_stopped():

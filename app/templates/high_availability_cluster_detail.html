@@ -28,8 +28,8 @@
 <section class="ha-summary-grid" aria-label="Live cluster summary">
   <article><span>Service availability</span><strong data-ha-cluster-field="service_availability">{{ 'Healthy' if active_node and active_node.dns_healthy else 'Checking' }}</strong><small>Can clients use the clustered service?</small></article>
   <article><span>Redundancy</span><strong data-ha-cluster-field="redundancy">Checking</strong><small>Can another node failure be tolerated?</small></article>
-  <article><span>Control plane</span><strong data-ha-cluster-field="control_plane">Checking</strong><small>Are both signed agent reports current?</small></article>
-  <article><span>HA readiness</span><strong data-ha-cluster-field="ha_readiness">{{ 'Ready' if action_ready else 'Recovering' if failback_recovery else 'Needs attention' }}</strong><small>Can the other node take over safely?</small></article>
+  <article><span>Control plane</span><strong data-ha-cluster-field="control_plane">Checking</strong><small>Is the active service reporting signed live state?</small></article>
+  <article><span>HA readiness</span><strong data-ha-cluster-field="ha_readiness">{{ 'Needs attention' if resolver_attention else 'Ready' if action_ready else 'Recovering' if failback_recovery else 'Needs attention' }}</strong><small>Can the other node take over safely?</small></article>
   <article><span>HA configuration</span><strong data-ha-cluster-field="ha_configuration">{{ consistency.configuration_state|replace('_', ' ')|title }}</strong><small>Do VIP, DHCP, and stored roles agree?</small></article>
   <article title="The single DNS address used by your devices."><span>DNS Virtual IP</span><strong class="mono">{{ cluster.virtual_ip }}/{{ cluster.prefix_length }}</strong><small>The stable DNS address</small></article>
   <article><span>Current active node</span><strong data-ha-cluster-field="active_node">{{ active_node.display_name if active_node else 'Confirming ownership' }}</strong><small>Currently owns the virtual IP</small></article>
@@ -107,8 +107,23 @@
         <div><dt>Recovery state</dt><dd data-ha-node-field="recovery_state">{{ node_recovery.state|replace('_', ' ')|title }}</dd></div>
         <div><dt>Kaya connection</dt><dd data-ha-kaya-connection>{{ 'Reporting' if node.last_heartbeat_at else 'Waiting' }}</dd></div>
         <div><dt>Last Kaya heartbeat</dt><dd data-ha-node-field="last_heartbeat_at">{{ local_time(node.last_heartbeat_at, 'friendly') if node.last_heartbeat_at else 'Never' }}</dd></div>
+        <div><dt>Host DNS resolver</dt><dd data-ha-node-field="resolver_nameservers">{% if node.resolver_nameservers_json %}{{ node.resolver_nameservers_json|replace('[', '')|replace(']', '')|replace('"', '') }}{% else %}Awaiting agent data{% endif %}</dd></div>
+        <div><dt>Resolver management</dt><dd data-ha-node-field="resolver_manager">{{ node.resolver_manager|replace('_', ' ')|title if node.resolver_manager else 'Awaiting agent data' }}</dd></div>
+        <div><dt>Expected resolver</dt><dd class="mono">{{ cluster.virtual_ip }} (HA DNS Virtual IP)</dd></div>
         <div><dt>Peer Network Reachability</dt><dd data-ha-peer-status>{{ peer.display_label }}</dd></div>
       </dl>
+      {% if user.role == 'admin' and node.resolver_observation_status == 'FRESH' and node.resolver_manager == 'SYSTEMD_RESOLVED' and node.resolver_nameservers_json and cluster.virtual_ip not in node.resolver_nameservers_json %}
+      <details class="ha-action-disclosure">
+        <summary class="button secondary">Repair HA Node DNS</summary>
+        <form method="post" action="/high-availability/clusters/{{ cluster.public_id }}/nodes/{{ node.public_id }}/resolver/repair">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <p><strong>Preview:</strong> Kaya will back up its managed systemd-resolved drop-in, set this host to resolve through <span class="mono">{{ cluster.virtual_ip }}</span>, restart systemd-resolved, verify the effective resolver, and roll back automatically if verification fails. Pi-hole DNS and HA ownership are not changed.</p>
+          <label class="checkbox-row"><input type="checkbox" name="acknowledge_resolver_change" value="1" required> I understand this changes only this node's host resolver.</label>
+          <button class="button" type="submit">Back up, repair and verify</button>
+        </form>
+      </details>
+      {% endif %}
+      {% if node.resolver_repair_status == 'FAILED' %}<div class="alert" role="alert"><strong>Resolver repair rolled back</strong><span>{{ node.resolver_repair_last_error }}</span></div>{% endif %}
       <div class="ha-recovery-checks" data-ha-recovery-checks>
         {% for check in node_recovery.checks if check.required %}
         <div class="ha-recovery-check {{ 'is-pass' if check.passed else 'is-waiting' }}" data-ha-recovery-check="{{ check.key }}"><span aria-hidden="true">{{ '✓' if check.passed else '•' }}</span><span><strong>{{ check.label }}</strong><small>{{ check.detail }}</small></span></div>
