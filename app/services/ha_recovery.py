@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -69,9 +70,30 @@ def current_active_node(cluster: HACluster, now: datetime | None = None) -> HANo
     return next((node for node in cluster.nodes if node.id == topology.active_node_id), None)
 
 
+def _sync_plan(run: HASyncRun) -> dict:
+    try:
+        value = json.loads(run.plan_json or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _sync_generation(run: HASyncRun) -> int | None:
+    plan = _sync_plan(run)
+    value = plan.get("verified_sync_generation", plan.get("required_sync_generation"))
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _valid_for_required_generation(run: HASyncRun, cluster: HACluster) -> bool:
+    generation = _sync_generation(run)
+    # Existing successful records predate generation tagging. Preserve them as
+    # durable evidence until a new generation-aware comparison supersedes them.
+    return generation is None or generation == cluster.desired_sync_generation
+
+
 def _latest_successful_sync(db: Session, cluster: HACluster, active: HANode, target: HANode) -> HASyncRun | None:
-    """Return durable recovery evidence, ignoring later diagnostic/failed checks."""
-    return (
+    """Return durable, generation-valid evidence; ignore job lifecycle churn."""
+    candidates = (
         db.query(HASyncRun)
         .filter(
             HASyncRun.cluster_id == cluster.id,
@@ -80,8 +102,37 @@ def _latest_successful_sync(db: Session, cluster: HACluster, active: HANode, tar
             HASyncRun.status.in_(["IN_SYNC", "SUCCEEDED"]),
         )
         .order_by(HASyncRun.created_at.desc())
-        .first()
+        .yield_per(100)
     )
+    return next((run for run in candidates if _valid_for_required_generation(run, cluster)), None)
+
+
+def _newer_supported_drift(
+    db: Session,
+    cluster: HACluster,
+    active: HANode,
+    target: HANode,
+    successful: HASyncRun | None,
+) -> bool:
+    """Return true only for observed writable drift, never for run status alone."""
+    query = db.query(HASyncRun).filter(
+        HASyncRun.cluster_id == cluster.id,
+        HASyncRun.source_node_id == active.id,
+        HASyncRun.target_node_id == target.id,
+    )
+    if successful is not None:
+        query = query.filter(HASyncRun.created_at > successful.created_at)
+    for run in query.order_by(HASyncRun.created_at.desc()).yield_per(100):
+        generation = _sync_generation(run)
+        if generation is not None and generation != cluster.desired_sync_generation:
+            continue
+        groups = _sync_plan(run).get("groups")
+        if isinstance(groups, list) and any(
+            isinstance(group, dict) and group.get("writable") is True
+            for group in groups
+        ):
+            return True
+    return False
 
 
 def recovery_checks(db: Session, cluster: HACluster, node: HANode, *, now: datetime | None = None) -> tuple[RecoveryCheck, ...]:
@@ -102,6 +153,7 @@ def recovery_checks(db: Session, cluster: HACluster, node: HANode, *, now: datet
     configuration_sync = bool(
         latest_sync
         and latest_sync.status in {"IN_SYNC", "SUCCEEDED"}
+        and not _newer_supported_drift(db, cluster, active, node, latest_sync)
         and (
             node.recovery_started_at is None
             or (latest_sync.completed_at or latest_sync.created_at) >= node.recovery_started_at

@@ -190,6 +190,9 @@ def sync_plan(cluster: HACluster) -> dict[str, Any]:
         dhcp_text = json.dumps(dhcp_value, sort_keys=True).casefold() if dhcp_value is not None else ""
         dhcp_mode = "PIHOLE_MANAGED" if '"active": true' in dhcp_text or '"enabled": true' in dhcp_text else "EXTERNAL" if dhcp_value is not None else "UNKNOWN"
     return {
+        # Bind read-only comparison evidence to the configuration generation
+        # it evaluated. Job lifecycle status is not itself recovery evidence.
+        "required_sync_generation": cluster.desired_sync_generation,
         "source_node_id": source.id,
         "source_name": source.display_name,
         "target_node_id": target.id,
@@ -204,6 +207,8 @@ def sync_plan(cluster: HACluster) -> dict[str, Any]:
 
 def create_sync_plan(db: Session, cluster: HACluster, user: User | None = None) -> HASyncRun:
     plan = sync_plan(cluster)
+    if not plan["groups"]:
+        plan["verified_sync_generation"] = cluster.desired_sync_generation
     run = HASyncRun(
         cluster_id=cluster.id,
         source_node_id=plan["source_node_id"],
@@ -350,6 +355,8 @@ def execute_sync(
         target.configuration_checksum = hashlib.sha256(snapshot.encode()).hexdigest()
         target.last_sync_at = datetime.utcnow()
         cluster.desired_sync_generation += 1
+        plan["verified_sync_generation"] = cluster.desired_sync_generation
+        run.plan_json = json.dumps(plan, sort_keys=True, separators=(",", ":"))
         run.status = "SUCCEEDED"
         run.completed_at = datetime.utcnow()
         for item in run.drift_items:

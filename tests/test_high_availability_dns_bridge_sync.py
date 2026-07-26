@@ -281,9 +281,12 @@ def test_sync_creates_encrypted_backup_before_write_and_verifies():
         SyncPiHole.state = {f"ha-{source.ha_connection_id}": {"local_dns": source_value}, f"ha-{target.ha_connection_id}": {"local_dns": target_value}}
         SyncPiHole.writes = []
         run = create_sync_plan(db, cluster, user)
+        assert json.loads(run.plan_json)["required_sync_generation"] == 0
         execute_sync(db, cluster, run, client_factory=SyncPiHole)
         db.refresh(run)
         assert run.status == "SUCCEEDED"
+        assert cluster.desired_sync_generation == 1
+        assert json.loads(run.plan_json)["verified_sync_generation"] == 1
         assert len(run.backups) == 1
         assert run.backups[0].encrypted_snapshot != json.dumps({"local_dns": target_value}, sort_keys=True, separators=(",", ":"))
         assert SyncPiHole.writes == [(f"ha-{target.ha_connection_id}", "local_dns")]
@@ -307,6 +310,8 @@ def test_live_plan_refreshes_both_snapshots_before_review():
         run = create_live_sync_plan(db, cluster, user, client_factory=SyncPiHole)
 
         assert run.status == "PLANNED"
+        assert json.loads(run.plan_json)["required_sync_generation"] == cluster.desired_sync_generation
+        assert "verified_sync_generation" not in json.loads(run.plan_json)
         assert json.loads(source.configuration_snapshot_json)["local_dns"] == source_value
         assert json.loads(target.configuration_snapshot_json)["local_dns"] == target_value
 

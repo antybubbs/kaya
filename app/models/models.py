@@ -494,6 +494,7 @@ class DNSRecognisedDevice(Base):
     __table_args__ = (UniqueConstraint("provider_id", "identity_type", "identity_value", name="uq_dns_devices_provider_identity"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     provider_id: Mapped[int] = mapped_column(ForeignKey("dns_providers.id", ondelete="CASCADE"), index=True)
+    logical_provider_key: Mapped[str] = mapped_column(String(80), default="", index=True)
     identity_type: Mapped[str] = mapped_column(String(30), index=True)
     identity_value: Mapped[str] = mapped_column(String(500), index=True)
     hostname: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
@@ -516,6 +517,7 @@ class DNSRecognisedDevice(Base):
     observation_source: Mapped[str | None] = mapped_column(String(255), nullable=True)
     query_count: Mapped[int] = mapped_column(Integer, default=0)
     blocked_query_count: Mapped[int] = mapped_column(Integer, default=0)
+    observation_count: Mapped[int] = mapped_column(Integer, default=0)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     hardware_asset_id: Mapped[int | None] = mapped_column(ForeignKey("hardware_assets.id", ondelete="SET NULL"), nullable=True, index=True)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
@@ -531,6 +533,28 @@ class DNSRecognisedDevice(Base):
     hostname_history = relationship("DNSClientHostnameHistory", cascade="all, delete-orphan", back_populates="client")
     events = relationship("DNSClientEvent", cascade="all, delete-orphan", back_populates="client")
     traffic_history = relationship("DNSClientTrafficEvent", cascade="all, delete-orphan", back_populates="client")
+    observations = relationship("DNSClientObservation", cascade="all, delete-orphan", back_populates="client")
+
+
+class DNSClientObservation(Base):
+    """One retained sighting of a logical DNS client."""
+
+    __tablename__ = "dns_client_observations"
+    __table_args__ = (UniqueConstraint("provider_id", "observation_key", name="uq_dns_client_observation_provider_key"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    dns_client_id: Mapped[int] = mapped_column(ForeignKey("dns_recognised_devices.id", ondelete="CASCADE"), index=True)
+    provider_id: Mapped[int | None] = mapped_column(ForeignKey("dns_providers.id", ondelete="SET NULL"), nullable=True, index=True)
+    observation_key: Mapped[str] = mapped_column(String(64), index=True)
+    ip_address: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    mac_address: Mapped[str | None] = mapped_column(String(17), nullable=True, index=True)
+    hostname: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    logical_provider_key: Mapped[str] = mapped_column(String(80), index=True)
+    source: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_member: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    client = relationship("DNSRecognisedDevice", back_populates="observations")
+    provider = relationship("DNSProviderConfig")
 
 
 class DNSClientIPHistory(Base):
