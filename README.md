@@ -555,7 +555,7 @@ But who am I kidding, the roadmap is like a pub crawl, we hopping all through th
 
 # Contributing
 
-Feel free
+Over here: https://github.com/antybubbs/kaya?tab=contributing-ov-file
 
 ------------------------------------------------------------------------
 
