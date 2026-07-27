@@ -152,6 +152,31 @@ Kaya is more than a homelab inventory. It is a self-hosted operations hub for th
 - DHCP-aware identity handling that avoids treating a temporary lease address as a permanent device identity.
 - Background collection with configurable intervals and no provider calls during ordinary page rendering.
 
+## High Availability
+- Provide managed high availability for supported DNS and DHCP services, beginning with paired Pi-hole nodes.
+- Pair a primary and secondary Pi-hole installation and manage them as a single highly available service from Kaya.
+- Continuously monitor both nodes, service health, peer reachability, DNS availability and DHCP state.
+- Present clear Active, Standby, Degraded, Failover in Progress, Failed Over and Recovery states rather than relying only on individual node  availability.
+- Support automatic failover when the active node or its required services become unavailable.
+- Support controlled manual failover and failback from the Kaya interface.
+- Use virtual IP addressing so clients continue using a consistent DNS service address when the active node changes.
+- Support DHCP-aware deployments where the active DHCP service follows the currently active HA node.
+- Synchronise required DNS and DHCP configuration between paired nodes while retaining safeguards against overwriting healthy configuration with stale or incomplete data.
+- Validate configuration and synchronisation state before failover or failback is allowed to proceed.
+- Perform pre-flight checks covering node reachability, peer communication, DNS health, DHCP health, virtual IP ownership and configuration readiness.
+- Use staged failover and failback workflows with visible progress so administrators can see exactly what Kaya is doing.
+- Show live operation progress, including preparation, synchronisation, service transition, virtual IP movement, validation and completion.
+- Do not report an operation as failed simply because an intermediate service temporarily becomes unavailable during an expected transition.
+- Verify the final operational state independently after a failover or failback and distinguish between a completed transition with warnings and a genuine failure.
+- Prevent simultaneous active ownership where possible and surface split-brain or conflicting service states as critical conditions.
+- Retain HA events and operational history, including failovers, failbacks, health changes, synchronisation activity, warnings, failures and recovery.
+- Clearly identify which node currently owns DNS and DHCP services and which node is acting as standby.
+- Allow automatic failback to the preferred primary node to be enabled or disabled, with manual failback remaining available.
+- Use configurable health thresholds and stabilisation periods to avoid unnecessary failovers caused by short network interruptions or transient service restarts.
+- Preserve DNS and DHCP availability during planned maintenance by allowing administrators to intentionally move services to the standby node before taking the primary offline.
+- Integrate HA health and active-node state into the Kaya dashboard and Attention Required feed.
+- Keep the HA architecture extensible so additional supported services and providers can adopt the same health, orchestration and state-management framework in future.
+
 ## Domain Manager
 
 - Track domain registrations, registrars, DNS providers, status, expiry and auto-renew state.
