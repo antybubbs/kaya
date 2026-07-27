@@ -6,6 +6,7 @@ Dark Mode
 Light Mode
 <img width="2402" height="1149" alt="Screenshot 2026-07-27 212234" src="https://github.com/user-attachments/assets/4cf746a4-2338-44a4-83ef-27a8d5b1a31d" />
 
+More ScreenShots - https://www.kaya-app.uk/screenshots
 
 
 
