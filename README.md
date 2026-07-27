@@ -152,7 +152,7 @@ Kaya is more than a homelab inventory. It is a self-hosted operations hub for th
 - DHCP-aware identity handling that avoids treating a temporary lease address as a permanent device identity.
 - Background collection with configurable intervals and no provider calls during ordinary page rendering.
 
-## High Availability
+## High Availability [BETA]
 - Provide managed high availability for supported DNS and DHCP services, beginning with paired Pi-hole nodes.
 - Pair a primary and secondary Pi-hole installation and manage them as a single highly available service from Kaya.
 - Continuously monitor both nodes, service health, peer reachability, DNS availability and DHCP state.
