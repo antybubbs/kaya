@@ -4,7 +4,8 @@ Dark Mode
 
 
 Light Mode
-<img width="2401" height="1151" alt="Screenshot 2026-07-27 212034" src="https://github.com/user-attachments/assets/54dd0855-8d62-44e6-a470-636b223f7424" />
+<img width="2402" height="1149" alt="Screenshot 2026-07-27 212234" src="https://github.com/user-attachments/assets/4cf746a4-2338-44a4-83ef-27a8d5b1a31d" />
+
 
 
 
