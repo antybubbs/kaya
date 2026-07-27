@@ -79,7 +79,6 @@ where another demo user could view them.
 - Rate limits are in-memory and not distributed.
 - RBAC is coarse-grained.
 - Permissions are manually applied per route.
-- No object-level access control.
 - Hardware photos are validated more strongly than general attachments.
 - No antivirus/content scanning.
 - Remote recordings may contain sensitive data.
