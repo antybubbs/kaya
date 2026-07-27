@@ -1,6 +1,6 @@
 # Contributing to Kaya
 
-Thanks for taking the time to contribute to Kaya.
+Thanks for taking the time to contribute to Kaya. If you are reading this, i would assume you want to contribute - thank you!
 
 Kaya is an actively developed, self-hosted infrastructure operations platform. Contributions are welcome, including bug fixes, documentation, UI improvements, integrations and new features.
 
