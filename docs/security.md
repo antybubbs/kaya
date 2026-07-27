@@ -1,7 +1,7 @@
 # Security
 
-**Kaya version:** `dev`  
-**Documentation version:** `dev`
+**Kaya version:** `Live`  
+**Documentation version:** `Live`
 
 ## Authentication
 
