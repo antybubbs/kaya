@@ -1,8 +1,5 @@
 # Security
 
-**Kaya version:** `Live`  
-**Documentation version:** `Live`
-
 ## Authentication
 
 Kaya uses email/password authentication with optional TOTP two-factor authentication.
