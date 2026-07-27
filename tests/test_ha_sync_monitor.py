@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime
 
 from sqlalchemy import create_engine
@@ -52,6 +53,22 @@ def test_monitor_does_not_repeat_a_recent_check(monkeypatch):
     assert checked == []
 
 
+def test_monitor_continues_read_only_check_when_recovery_evaluation_fails(monkeypatch):
+    factory = monitor_database()
+    checked = []
+
+    def fail_recovery_evaluation(db, cluster, *, now):
+        raise RuntimeError("synthetic recovery-state failure")
+
+    monkeypatch.setattr(ha_sync_monitor, "get_site_setting", lambda db, key: "1")
+    monkeypatch.setattr(ha_sync_monitor, "evaluate_recovery", fail_recovery_evaluation)
+    monkeypatch.setattr(ha_sync_monitor, "create_live_sync_plan", lambda db, cluster: checked.append(cluster.public_id))
+
+    ha_sync_monitor.run_ha_sync_monitor_pass(factory)
+
+    assert len(checked) == 1
+
+
 def test_opted_in_monitor_applies_safe_drift_from_current_vip_owner(monkeypatch):
     factory = monitor_database()
     with factory() as db:
@@ -82,3 +99,33 @@ def test_opted_in_monitor_applies_safe_drift_from_current_vip_owner(monkeypatch)
 
     assert len(applied) == 1
     assert applied[0][2] is False
+
+
+def test_monitor_loop_retries_after_unexpected_pass_failure(monkeypatch):
+    attempts = []
+    sleeps = []
+
+    async def run_in_thread(_func):
+        attempts.append(len(attempts) + 1)
+        if len(attempts) == 1:
+            raise RuntimeError("synthetic transient failure")
+        raise asyncio.CancelledError
+
+    async def sleep(delay):
+        sleeps.append(delay)
+
+    monkeypatch.setattr(ha_sync_monitor.asyncio, "to_thread", run_in_thread)
+    monkeypatch.setattr(ha_sync_monitor.asyncio, "sleep", sleep)
+    monkeypatch.setattr(ha_sync_monitor, "STARTUP_DELAY_SECONDS", 0)
+
+    async def exercise_loop():
+        try:
+            await ha_sync_monitor.ha_sync_monitor_loop()
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(exercise_loop())
+
+    assert attempts == [1, 2]
+    assert sleeps[0] == 0
+    assert 1 <= sleeps[1] <= ha_sync_monitor.CHECK_INTERVAL_SECONDS
