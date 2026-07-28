@@ -5,6 +5,11 @@
   </div>
   <div class="ha-header-actions"><span class="ha-agent-state is-pending" data-ha-live-indicator aria-live="polite">Connecting</span><a class="button secondary" href="/high-availability/clusters/{{ cluster.public_id }}/report">Download report</a><a class="button secondary" href="/high-availability/clusters">Back to clusters</a></div>
 </section>
+{{ module_navigation('High Availability navigation', [
+  {'label': 'Overview', 'url': '/high-availability', 'active': false},
+  {'label': 'Clusters', 'url': '/high-availability/clusters', 'active': true},
+  {'label': 'Providers/Apps', 'url': '/high-availability/supported-services', 'active': false}
+], none, 'ha-tabs') }}
 <div data-ha-live-root data-live-url="/high-availability/clusters/{{ cluster.public_id }}/live" hidden></div>
 <nav class="module-tabs ha-detail-tabs" aria-label="Cluster sections">
   <a class="{{ 'active' if cluster_section == 'overview' else '' }}" {% if cluster_section == 'overview' %}aria-current="page"{% endif %} href="/high-availability/clusters/{{ cluster.public_id }}">Overview</a>

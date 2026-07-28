@@ -96,6 +96,64 @@
     });
   }
 
+  function setupMonitorThresholds() {
+    document.querySelectorAll("[data-monitor-threshold-settings]").forEach((fieldset) => {
+      const useDefaults = fieldset.querySelector("[data-monitor-threshold-defaults]");
+      const source = fieldset.querySelector("[data-monitor-threshold-source]");
+      const thresholdFields = Array.from(fieldset.querySelectorAll("[data-threshold-field]"));
+      const interval = fieldset.closest("form")?.querySelector('[name="monitor_interval_seconds"], [name="interval_seconds"]');
+      const warningLatency = fieldset.querySelector("[data-threshold-warning-latency]");
+      const criticalLatency = fieldset.querySelector("[data-threshold-critical-latency]");
+      const warningLoss = fieldset.querySelector("[data-threshold-warning-loss]");
+      const criticalLoss = fieldset.querySelector("[data-threshold-critical-loss]");
+
+      function updateDurations() {
+        const seconds = Number(interval?.value || 300);
+        fieldset.querySelectorAll("[data-monitor-count]").forEach((input) => {
+          const output = input.parentElement?.querySelector("[data-monitor-duration]");
+          if (output) output.textContent = "Approximately " + (Number(input.value || 0) * seconds) + " seconds at the selected interval.";
+        });
+      }
+
+      function validatePairs() {
+        criticalLatency?.setCustomValidity(
+          Number(criticalLatency.value) < Number(warningLatency?.value || 0)
+            ? "Critical latency must be greater than or equal to warning latency."
+            : "",
+        );
+        criticalLoss?.setCustomValidity(
+          Number(criticalLoss.value) < Number(warningLoss?.value || 0)
+            ? "Critical packet loss must be greater than or equal to warning packet loss."
+            : "",
+        );
+      }
+
+      function updateInheritance() {
+        const inherited = Boolean(useDefaults?.checked);
+        thresholdFields.forEach((input) => {
+          if (input.type === "checkbox") input.disabled = inherited;
+          else input.readOnly = inherited;
+        });
+        fieldset.classList.toggle("is-inherited", inherited);
+        if (source) {
+          source.textContent = inherited ? "Inherited" : "Custom";
+          source.classList.toggle("good", inherited);
+        }
+        validatePairs();
+      }
+
+      useDefaults?.addEventListener("change", updateInheritance);
+      interval?.addEventListener("change", updateDurations);
+      thresholdFields.forEach((input) => input.addEventListener("input", () => {
+        validatePairs();
+        updateDurations();
+      }));
+      updateInheritance();
+      updateDurations();
+    });
+  }
+
   setupBulkEdit();
   setupQuickPing();
+  setupMonitorThresholds();
 })();

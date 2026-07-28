@@ -1,37 +1,41 @@
 <section class="cards monitor-summary-cards">
   <div class="card"><span>Total monitors</span><strong>{{ total }}</strong></div>
-  <div class="card"><span>Healthy</span><strong>{{ up_count }}</strong></div>
-  <div class="card"><span>Warning</span><strong>{{ warning_count }}</strong></div>
-  <div class="card"><span>Offline</span><strong>{{ down_count }}</strong></div>
-  <div class="card"><span>Average latency</span><strong>{{ average_latency ~ ' ms' if average_latency is not none else '-' }}</strong></div>
-  <div class="card"><span>24h availability</span><strong>{{ availability_24h ~ '%' if availability_24h is not none else '-' }}</strong></div>
-  <div class="card"><span>Checks/minute</span><strong>{{ checks_per_minute }}</strong></div>
+  <div class="card"><span>Healthy</span><strong data-monitor-summary="up_count">{{ up_count }}</strong></div>
+  <div class="card"><span>Warning</span><strong data-monitor-summary="warning_count">{{ warning_count }}</strong></div>
+  <div class="card"><span>Offline</span><strong data-monitor-summary="down_count">{{ down_count }}</strong></div>
+  <div class="card"><span>Average latency</span><strong data-monitor-summary="average_latency">{{ average_latency ~ ' ms' if average_latency is not none else '-' }}</strong></div>
+  <div class="card"><span>24h availability</span><strong data-monitor-summary="availability_24h">{{ availability_24h ~ '%' if availability_24h is not none else '-' }}</strong></div>
+  <div class="card"><span>Active checks/min</span><strong data-monitor-summary="checks_per_minute">{{ checks_per_minute }}</strong></div>
 </section>
 {% if not rows %}
 <section class="panel"><p class="muted">No IP addresses are enabled for IP/WAN Monitor yet.</p></section>
 {% else %}
-<section class="monitor-grid">
+<section class="monitor-grid monitor-live-grid" data-monitor-live-grid data-latest-observation-id="{{ latest_observation_id }}">
 {% for row in rows %}
   {% set monitor = row.monitor %}
-  <article class="monitor-card" data-monitor-card="{{ monitor.id }}">
+  {% set card_state = row.state %}
+  <article class="monitor-card monitor-live-card state-{{ card_state }}" data-monitor-card="{{ monitor.id }}" data-monitor-state="{{ card_state }}" data-state="{{ card_state }}" data-monitor-enabled="{{ 'true' if monitor.is_enabled else 'false' }}" data-monitor-interval="{{ row.effective_interval }}" data-monitor-warning="{{ row.thresholds.latency_warning_ms }}" data-monitor-critical="{{ row.thresholds.latency_critical_ms }}" data-monitor-series='{{ row.chart_points|tojson|forceescape }}'>
     <div class="monitor-card-header">
-      <div><h2><a href="/networking/ip-wan-monitor/{{ monitor.id }}">{{ row.label }}</a></h2><p class="muted mono">{{ monitor.ip_address.address }}</p></div>
-      <span class="status-pill {{ monitor.last_status or 'pending' }}">{% if not monitor.is_enabled %}Paused{% else %}{{ monitor.last_status|capitalize if monitor.last_status else 'Pending' }}{% endif %}</span>
+      <div class="monitor-card-identity"><h2 title="{{ row.label }}"><a href="/networking/ip-wan-monitor/{{ monitor.id }}">{{ row.label }}</a></h2><p class="muted mono" title="{{ monitor.ip_address.address }}">{{ monitor.ip_address.address }}</p></div>
+      <span class="status-pill {{ card_state }}" data-monitor-status>{{ card_state|capitalize }}</span>
     </div>
+    <p class="monitor-state-reason" data-monitor-state-reason>{{ 'Monitoring disabled' if not monitor.is_enabled else monitor.state_reason or 'Awaiting first check' }}</p>
     <div class="monitor-meta">
-      <div><span>Current latency</span><strong>{{ monitor.last_latency_ms ~ ' ms' if monitor.last_latency_ms is not none else '-' }}</strong></div>
-      <div><span>Average 24h</span><strong>{{ row.average_latency ~ ' ms' if row.average_latency is not none else '-' }}</strong></div>
-      <div><span>Availability 24h</span><strong>{{ row.uptime ~ '%' if row.uptime is not none else '-' }}</strong></div>
+      <div><span>Current</span><strong data-monitor-current>{{ monitor.last_latency_ms ~ ' ms' if monitor.last_latency_ms is not none else 'Unavailable' if card_state == 'offline' else '-' }}</strong></div>
+      <div><span>Rolling average</span><strong data-monitor-average>{{ row.average_latency ~ ' ms' if row.average_latency is not none else '-' }}</strong></div>
+      <div><span>Availability 24h</span><strong data-monitor-availability>{{ row.uptime ~ '%' if row.uptime is not none else '-' }}</strong></div>
     </div>
-    <div class="latency-spark" aria-label="Recent latency">
-      {% for check in row.history %}<span class="{{ check.status }}" style="height:{{ ([check.latency_ms or 2, 100]|min) }}%" title="{{ check.checked_at }} · {{ check.status }}{% if check.latency_ms is not none %} · {{ check.latency_ms }} ms{% endif %}"></span>{% else %}<em>Waiting for first check</em>{% endfor %}
+    <div class="monitor-card-chart-shell">
+      <div class="monitor-card-chart" data-monitor-card-chart role="img" aria-label="Live response time for {{ row.label }}"></div>
     </div>
-    <div class="uptime-strip" aria-label="Recent availability">{% for check in row.history %}<span class="uptime-block {{ check.status }}" title="{{ check.checked_at }} · {{ check.status }}"></span>{% endfor %}</div>
-    {% if monitor.last_error %}<p class="monitor-error">{{ monitor.last_error }}</p>{% endif %}
+    {% if monitor.last_error %}<p class="monitor-error" data-monitor-error>{{ monitor.last_error }}</p>{% endif %}
+    <div class="monitor-live-footer">
+      <span class="monitor-feed-state {{ 'paused' if not monitor.is_enabled else card_state }}" data-monitor-feed-state>{% if not monitor.is_enabled %}Paused{% elif card_state == 'healthy' %}● Live{% else %}● {{ card_state|upper }}{% endif %}</span>
+      <span class="monitor-last-result">Last result {% if monitor.last_checked_at %}<time data-monitor-last-result data-utc-time="{{ monitor.last_checked_at }}" data-time-format="relative">{{ monitor.last_checked_at }}</time>{% else %}<span data-monitor-last-result>never</span>{% endif %}</span>
+    </div>
     <div class="monitor-card-actions">
       <a class="button secondary" href="/networking/ip-wan-monitor/{{ monitor.id }}">View details</a>
-      <form class="monitor-refresh-form" method="post" action="/networking/ip-wan-monitor/{{ monitor.id }}/refresh"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit">Check now</button></form>
-      {% if user.role in ['admin','editor'] %}<form method="post" action="/networking/ip-wan-monitor/{{ monitor.id }}/toggle"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit">{{ 'Pause' if monitor.is_enabled else 'Resume' }}</button></form>{% endif %}
+      {% if user.role in ['admin','editor'] %}<form class="monitor-refresh-form" method="post" action="/networking/ip-wan-monitor/{{ monitor.id }}/refresh"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit" {% if not monitor.is_enabled %}disabled{% endif %}>Check now</button></form><form method="post" action="/networking/ip-wan-monitor/{{ monitor.id }}/toggle"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit">{{ 'Pause' if monitor.is_enabled else 'Resume' }}</button></form>{% endif %}
     </div>
   </article>
 {% endfor %}

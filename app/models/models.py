@@ -230,13 +230,22 @@ class NetworkMonitor(Base):
     interval_seconds: Mapped[int] = mapped_column(Integer, default=300)
     timeout_ms: Mapped[int] = mapped_column(Integer, default=2000)
     notify_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    use_default_thresholds: Mapped[bool] = mapped_column(Boolean, default=True)
     failure_threshold: Mapped[int] = mapped_column(Integer, default=3)
     latency_warning_ms: Mapped[int] = mapped_column(Integer, default=150)
     latency_critical_ms: Mapped[int] = mapped_column(Integer, default=500)
     packet_loss_warning_percent: Mapped[int] = mapped_column(Integer, default=20)
     packet_loss_critical_percent: Mapped[int] = mapped_column(Integer, default=60)
+    degraded_threshold: Mapped[int] = mapped_column(Integer, default=2)
+    recovery_state_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    consecutive_degraded: Mapped[int] = mapped_column(Integer, default=0)
     consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
+    recovery_threshold: Mapped[int] = mapped_column(Integer, default=2)
+    consecutive_successes: Mapped[int] = mapped_column(Integer, default=0)
     last_status: Mapped[str | None] = mapped_column(String(30), nullable=True, index=True)
+    state_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    state_changed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    is_in_maintenance: Mapped[bool] = mapped_column(Boolean, default=False)
     last_latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_packet_loss_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
@@ -248,9 +257,11 @@ class NetworkMonitor(Base):
 
 class NetworkMonitorCheck(Base):
     __tablename__ = "network_monitor_checks"
+    __table_args__ = (Index("ix_network_monitor_checks_monitor_checked_at", "monitor_id", "checked_at"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     monitor_id: Mapped[int] = mapped_column(ForeignKey("network_monitors.id"), index=True)
     status: Mapped[str] = mapped_column(String(30), index=True)
+    health_state: Mapped[str | None] = mapped_column(String(30), nullable=True, index=True)
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     packet_loss_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
     response_time_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -276,7 +287,9 @@ class NetworkMonitorOutage(Base):
     monitor_id: Mapped[int] = mapped_column(ForeignKey("network_monitors.id"), index=True)
     started_at: Mapped[datetime] = mapped_column(DateTime, index=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    incident_type: Mapped[str] = mapped_column(String(30), default="offline", index=True)
     failure_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    details_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     monitor = relationship("NetworkMonitor")
 
 
@@ -291,6 +304,7 @@ class NetworkMonitorStatistic(Base):
     avg_latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     max_latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     avg_packet_loss_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    health_state: Mapped[str | None] = mapped_column(String(30), nullable=True)
     monitor = relationship("NetworkMonitor")
 
 

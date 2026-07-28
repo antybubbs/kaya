@@ -62,10 +62,12 @@ from app.services.exporter import export_ip_addresses_csv, export_licences_csv
 from app.services.importer import ImportCSVError, import_csv, import_ip_addresses_csv
 from app.services.managed_lists import MANAGED_LIST_MODULES, MANAGED_LISTS, list_label
 from app.services.mail import MailConfigurationError, render_email_template, send_mail
+from app.services.network_monitor import validate_threshold_values
 from app.services.modules import (
     MODULE_KEYS,
     accessible_module_keys,
     enabled_modules,
+    granted_module_keys,
     has_module_access,
     module_access_counts,
     replace_module_access,
@@ -106,6 +108,15 @@ INTERNAL_MODULE_KEYS = {
     "ip_addresses": "vlan_ip_manager",
     "hardware_assets": "asset_manager",
     "licences": "licence_manager",
+}
+MODULE_SETTINGS_TABS = {
+    "module-backup-manager": "backup_manager",
+    "module-dashboard": "dashboard",
+    "module-dns-manager": "dns_manager",
+    "module-vlan-ip-manager": "vlan_ip_manager",
+    "module-remote-manager": "remote_manager",
+    "module-secret-vault": "secret_vault",
+    "module-secure-send": "secure_send",
 }
 
 
@@ -165,6 +176,34 @@ def require_internal_module(request: Request, db: Session, user: User, module: s
     return module
 
 
+def require_module_settings_tab(request: Request, db: Session, user: User) -> None:
+    """Protect direct module-settings deep links with the module grant as well as admin RBAC."""
+    tab = str(request.query_params.get("tab") or "")
+    if not tab.startswith("module-"):
+        return
+    if len(tab) > 80:
+        raise HTTPException(status_code=404, detail="Module settings not found")
+    module_key = MODULE_SETTINGS_TABS.get(tab)
+    if not module_key:
+        raise HTTPException(status_code=404, detail="Module settings not found")
+    require_module_settings_access(request, db, user, module_key)
+
+
+def require_module_settings_access(request: Request, db: Session, user: User, module_key: str) -> None:
+    if module_key not in MODULE_KEYS:
+        raise HTTPException(status_code=404, detail="Module settings not found")
+    if module_key in granted_module_keys(db, user):
+        return
+    write_audit(
+        db, user, "module_access_denied", "module_permission", module_key,
+        trusted_client_ip(request),
+        detail=f"Access denied to module settings {module_key}",
+        status_code=403,
+        metadata={"module_key": module_key},
+    )
+    raise PermissionError("Module access required")
+
+
 def permitted_internal_modules(db: Session, user: User, choices: dict[str, str]) -> dict[str, str]:
     return {
         module: label
@@ -200,6 +239,14 @@ SITE_SETTING_KEYS = {
     "dashboard_show_source_age": "1",
     "dashboard_attention_required": "1",
     "dashboard_globally_disabled_widgets": "",
+    "network_monitor_latency_warning_ms": "100",
+    "network_monitor_latency_critical_ms": "250",
+    "network_monitor_packet_loss_warning_percent": "5",
+    "network_monitor_packet_loss_critical_percent": "25",
+    "network_monitor_degraded_threshold": "2",
+    "network_monitor_failure_threshold": "3",
+    "network_monitor_recovery_threshold": "3",
+    "network_monitor_recovery_state_enabled": "1",
     "high_availability_enabled": "",
     "backup_manager_enabled": "1",
     "dns_manager_enabled": "",
@@ -2260,11 +2307,13 @@ def settings_page(
     db: Session = Depends(get_db),
     user=Depends(require_admin),
 ):
+    require_module_settings_tab(request, db, user)
     return templates.TemplateResponse(
         request,
         "settings.html",
         {
             "user": user,
+            "module_access": granted_module_keys(db, user),
             "settings": load_site_settings(db),
             "ha_active_cluster_count": db.query(HACluster).filter(HACluster.deleted_at.is_(None)).count(),
             "backup_preserved_item_count": db.query(BackupRecord).count() + db.query(BackupJob).count(),
@@ -2321,6 +2370,7 @@ async def set_backup_manager_feature(
     db: Session = Depends(get_db),
     user=Depends(require_admin),
 ):
+    require_module_settings_access(request, db, user, "backup_manager")
     form = await request.form()
     validate_csrf_token(request, str(form.get("csrf_token") or ""))
     enabled = str(form.get("enabled") or "") == "1"
@@ -2353,6 +2403,7 @@ async def set_backup_manager_feature(
 
 @router.post("/system/site-administration/vlan-ip-manager")
 async def manage_vlan_ip_options(request: Request, db: Session = Depends(get_db), user=Depends(require_admin)):
+    require_module_settings_access(request, db, user, "vlan_ip_manager")
     form = await request.form()
     validate_csrf_token(request, str(form.get("csrf_token") or ""))
     action = str(form.get("admin_action") or "")
@@ -2496,6 +2547,53 @@ async def manage_vlan_ip_options(request: Request, db: Session = Depends(get_db)
     return RedirectResponse("/system/site-administration?tab=module-vlan-ip-manager", status_code=303)
 
 
+@router.post("/system/site-administration/ip-wan-monitor")
+async def save_network_monitor_defaults(
+    request: Request,
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    require_module_settings_access(request, db, user, "network_monitor")
+    form = await request.form()
+    validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    try:
+        values = validate_threshold_values({
+            "latency_warning_ms": int(str(form.get("network_monitor_latency_warning_ms") or "")),
+            "latency_critical_ms": int(str(form.get("network_monitor_latency_critical_ms") or "")),
+            "packet_loss_warning_percent": int(str(form.get("network_monitor_packet_loss_warning_percent") or "")),
+            "packet_loss_critical_percent": int(str(form.get("network_monitor_packet_loss_critical_percent") or "")),
+            "degraded_threshold": int(str(form.get("network_monitor_degraded_threshold") or "")),
+            "failure_threshold": int(str(form.get("network_monitor_failure_threshold") or "")),
+            "recovery_threshold": int(str(form.get("network_monitor_recovery_threshold") or "")),
+            "recovery_state_enabled": str(form.get("network_monitor_recovery_state_enabled") or "") == "1",
+        })
+    except (TypeError, ValueError) as exc:
+        message = str(exc) if isinstance(exc, ValueError) and str(exc) else "Enter valid numeric monitor thresholds."
+        raise HTTPException(status_code=400, detail=message) from exc
+    setting_map = {
+        "latency_warning_ms": "network_monitor_latency_warning_ms",
+        "latency_critical_ms": "network_monitor_latency_critical_ms",
+        "packet_loss_warning_percent": "network_monitor_packet_loss_warning_percent",
+        "packet_loss_critical_percent": "network_monitor_packet_loss_critical_percent",
+        "degraded_threshold": "network_monitor_degraded_threshold",
+        "failure_threshold": "network_monitor_failure_threshold",
+        "recovery_threshold": "network_monitor_recovery_threshold",
+        "recovery_state_enabled": "network_monitor_recovery_state_enabled",
+    }
+    old_values = {key: get_site_setting(db, setting_key) for key, setting_key in setting_map.items()}
+    for key, setting_key in setting_map.items():
+        value = "1" if key == "recovery_state_enabled" and values[key] else "" if key == "recovery_state_enabled" else str(values[key])
+        save_site_setting(db, setting_key, value)
+    db.commit()
+    write_audit(
+        db, user, "update", "network_monitor_defaults", None,
+        request.client.host if request.client else None,
+        detail="Updated inherited IP/WAN Monitor health thresholds",
+        metadata={"old": old_values, "new": values},
+    )
+    return RedirectResponse("/system/site-administration?tab=module-network-monitor", status_code=303)
+
+
 @router.get("/system/site-administration/security/public-ip")
 def public_ip_check(user=Depends(require_admin)):
     try:
@@ -2630,6 +2728,10 @@ async def save_settings(
 ):
     validate_csrf_token(request, csrf_token)
     form = await request.form()
+    module_settings_access = granted_module_keys(db, user)
+    if "remote_manager" not in module_settings_access:
+        guacd_host = get_site_setting(db, "guacd_host")
+        guacd_port = get_site_setting(db, "guacd_port")
     timezone_region = timezone_region.strip()
     if not timezone_region or len(timezone_region) > 100 or not re.fullmatch(r"[A-Za-z0-9_+\-/]+", timezone_region):
         timezone_region = "UTC"
@@ -2660,6 +2762,7 @@ async def save_settings(
             "settings.html",
             {
                 "user": user,
+                "module_access": module_settings_access,
                 "settings": submitted_settings,
                 "dns_providers": dns_providers_for_admin(db),
                 "ha_dns_clusters": ha_dns_clusters_for_admin(db),
@@ -2708,109 +2811,113 @@ async def save_settings(
         hsts_max_age=hsts_max_age,
         rdp_token_ttl_minutes=rdp_token_ttl_minutes,
     )
-    save_backup_settings(
-        db,
-        backup_storage_type=backup_storage_type,
-        backup_storage_path=backup_storage_path,
-        backup_remote_host=backup_remote_host,
-        backup_remote_share=backup_remote_share,
-        backup_remote_username=backup_remote_username,
-        backup_remote_password=backup_remote_password,
-    )
-    normalized_targets = normalize_backup_targets_json(backup_targets_json)
-    save_site_setting(db, "backup_targets_json", normalized_targets)
-    default_name = backup_default_target_name.strip()
-    if default_name:
-        save_site_setting(db, "backup_default_target_name", default_name)
-    else:
-        save_site_setting(db, "backup_default_target_name", "")
-    save_site_setting(db, "dashboard_customisation_enabled", "1" if dashboard_customisation_enabled else "")
-    save_site_setting(db, "dashboard_monitor_mode_enabled", "1" if dashboard_monitor_mode_enabled else "")
-    save_site_setting(db, "dashboard_show_source_age", "1" if dashboard_show_source_age else "")
-    save_site_setting(db, "dashboard_attention_required", "1" if dashboard_attention_required else "")
-    disabled_widget_keys = ",".join(sorted({key.strip() for key in dashboard_globally_disabled_widgets.split(",") if re.fullmatch(r"[a-z0-9_]+", key.strip())}))
-    save_site_setting(db, "dashboard_globally_disabled_widgets", disabled_widget_keys)
-    try:
-        dashboard_poll_interval_seconds = str(int(dashboard_poll_interval_seconds))
-    except ValueError:
-        dashboard_poll_interval_seconds = "10"
-    if dashboard_poll_interval_seconds not in {"10", "30", "60", "300"}:
-        dashboard_poll_interval_seconds = "10"
-    try:
-        dashboard_recent_activity_limit = str(max(1, min(int(dashboard_recent_activity_limit), 20)))
-    except ValueError:
-        dashboard_recent_activity_limit = "10"
-    save_site_setting(db, "dashboard_poll_interval_seconds", dashboard_poll_interval_seconds)
-    save_site_setting(db, "dashboard_recent_activity_limit", dashboard_recent_activity_limit)
-    try:
-        vault_min_pin = str(max(6, min(int(secret_vault_min_pin_length), 20)))
-    except ValueError:
-        vault_min_pin = "8"
-    if secret_vault_max_auto_lock_minutes not in {"5", "10", "15", "30", "60"}:
-        secret_vault_max_auto_lock_minutes = "60"
-    save_site_setting(db, "secret_vault_min_pin_length", vault_min_pin)
-    save_site_setting(db, "secret_vault_max_auto_lock_minutes", secret_vault_max_auto_lock_minutes)
-    save_site_setting(db, "secret_vault_sharing_enabled", "1" if secret_vault_sharing_enabled else "")
-    if secret_vault_oidc_mfa_policy not in {"kaya_totp", "idp_mfa", "either"}:
-        secret_vault_oidc_mfa_policy = "either"
-    save_site_setting(db, "secret_vault_oidc_mfa_policy", secret_vault_oidc_mfa_policy)
-    save_site_setting(db, "secret_vault_oidc_accepted_acr", secret_vault_oidc_accepted_acr.strip()[:500])
-    save_site_setting(db, "secure_send_enabled", "1" if secure_send_enabled else "")
-    save_site_setting(db, "secure_send_default_expiry", secure_send_default_expiry if secure_send_default_expiry in {"15m", "1h", "4h", "24h", "3d", "7d"} else "24h")
-    try:
-        secure_send_max_expiry_days = str(max(1, min(int(secure_send_max_expiry_days), 30)))
-    except ValueError:
-        secure_send_max_expiry_days = "7"
-    try:
-        secure_send_max_upload_mb = str(max(1, min(int(secure_send_max_upload_mb), 250)))
-    except ValueError:
-        secure_send_max_upload_mb = "25"
-    save_site_setting(db, "secure_send_max_expiry_days", secure_send_max_expiry_days)
-    save_site_setting(db, "secure_send_max_upload_mb", secure_send_max_upload_mb)
-    save_site_setting(db, "secure_send_allow_one_download", "1" if secure_send_allow_one_download else "")
-    save_site_setting(db, "secure_send_vault_integration", "1" if secure_send_vault_integration else "")
-    save_site_setting(db, "secure_send_email_notifications", "1" if secure_send_email_notifications else "")
-    gateway_hostname = secure_send_gateway_hostname.strip().rstrip("/")[:500]
-    if not re.fullmatch(r"https?://[^\s/]+(?::\d+)?", gateway_hostname):
-        gateway_hostname = "http://localhost:8999"
-    save_site_setting(db, "secure_send_gateway_hostname", gateway_hostname)
-    try:
-        save_dns_manager_settings(
+    if "backup_manager" in module_settings_access:
+        save_backup_settings(
             db,
-            dns_manager_enabled=dns_manager_enabled,
-            dns_collector_enabled=dns_collector_enabled,
-            dns_default_provider_id=dns_default_provider_id,
-            dns_refresh_interval_seconds=dns_refresh_interval_seconds,
-            dns_cache_enabled=dns_cache_enabled,
-            dns_vlan_integration_enabled=dns_vlan_integration_enabled,
-            dns_match_suggestions_enabled=dns_match_suggestions_enabled,
-            dns_auto_link_exact_mac=dns_auto_link_exact_mac,
-            dns_auto_update_dynamic_ip=dns_auto_update_dynamic_ip,
-            dns_stale_client_days=dns_stale_client_days,
-            dns_retain_client_history=dns_retain_client_history,
-            dns_client_history_days=dns_client_history_days,
-            dns_observation_history_days=dns_observation_history_days,
-            dns_dhcp_history_days=dns_dhcp_history_days,
-            dns_traffic_history_days=dns_traffic_history_days,
-            dns_vlan_enrichment_enabled=dns_vlan_enrichment_enabled,
-            dns_update_empty_managed_hostname=dns_update_empty_managed_hostname,
-            dns_provider_id=dns_provider_id,
-            dns_provider_name=dns_provider_name,
-            dns_provider_type=dns_provider_type,
-            dns_provider_connection_mode=dns_provider_connection_mode,
-            dns_provider_ha_cluster_id=dns_provider_ha_cluster_id,
-            dns_provider_base_url=dns_provider_base_url,
-            dns_provider_auth_method=dns_provider_auth_method,
-            dns_provider_secret=dns_provider_secret,
-            dns_provider_ssl_verify=dns_provider_ssl_verify,
-            dns_provider_timeout_seconds=dns_provider_timeout_seconds,
-            dns_provider_enabled=dns_provider_enabled,
-            dns_provider_description=dns_provider_description,
+            backup_storage_type=backup_storage_type,
+            backup_storage_path=backup_storage_path,
+            backup_remote_host=backup_remote_host,
+            backup_remote_share=backup_remote_share,
+            backup_remote_username=backup_remote_username,
+            backup_remote_password=backup_remote_password,
         )
-    except DNSProviderSettingsError as exc:
-        db.rollback()
-        return templates.TemplateResponse(request, "settings.html", {"user": user, "settings": load_site_settings(db), "dns_providers": dns_providers_for_admin(db), "ha_dns_clusters": ha_dns_clusters_for_admin(db), **vlan_ip_admin_context(db), "security_check": security_check_context(request, db), "message": None, "error": str(exc), **csrf_context(request)}, status_code=422)
-    guacamole_bridge_changed = save_remote_manager_settings(db, form)
+        save_site_setting(db, "backup_targets_json", normalize_backup_targets_json(backup_targets_json))
+        save_site_setting(db, "backup_default_target_name", backup_default_target_name.strip())
+    if "dashboard" in module_settings_access:
+        save_site_setting(db, "dashboard_customisation_enabled", "1" if dashboard_customisation_enabled else "")
+        save_site_setting(db, "dashboard_monitor_mode_enabled", "1" if dashboard_monitor_mode_enabled else "")
+        save_site_setting(db, "dashboard_show_source_age", "1" if dashboard_show_source_age else "")
+        save_site_setting(db, "dashboard_attention_required", "1" if dashboard_attention_required else "")
+        disabled_widget_keys = ",".join(sorted({key.strip() for key in dashboard_globally_disabled_widgets.split(",") if re.fullmatch(r"[a-z0-9_]+", key.strip())}))
+        save_site_setting(db, "dashboard_globally_disabled_widgets", disabled_widget_keys)
+        try:
+            dashboard_poll_interval_seconds = str(int(dashboard_poll_interval_seconds))
+        except ValueError:
+            dashboard_poll_interval_seconds = "10"
+        if dashboard_poll_interval_seconds not in {"10", "30", "60", "300"}:
+            dashboard_poll_interval_seconds = "10"
+        try:
+            dashboard_recent_activity_limit = str(max(1, min(int(dashboard_recent_activity_limit), 20)))
+        except ValueError:
+            dashboard_recent_activity_limit = "10"
+        save_site_setting(db, "dashboard_poll_interval_seconds", dashboard_poll_interval_seconds)
+        save_site_setting(db, "dashboard_recent_activity_limit", dashboard_recent_activity_limit)
+    if "secret_vault" in module_settings_access:
+        try:
+            vault_min_pin = str(max(6, min(int(secret_vault_min_pin_length), 20)))
+        except ValueError:
+            vault_min_pin = "8"
+        if secret_vault_max_auto_lock_minutes not in {"5", "10", "15", "30", "60"}:
+            secret_vault_max_auto_lock_minutes = "60"
+        save_site_setting(db, "secret_vault_min_pin_length", vault_min_pin)
+        save_site_setting(db, "secret_vault_max_auto_lock_minutes", secret_vault_max_auto_lock_minutes)
+        save_site_setting(db, "secret_vault_sharing_enabled", "1" if secret_vault_sharing_enabled else "")
+        if secret_vault_oidc_mfa_policy not in {"kaya_totp", "idp_mfa", "either"}:
+            secret_vault_oidc_mfa_policy = "either"
+        save_site_setting(db, "secret_vault_oidc_mfa_policy", secret_vault_oidc_mfa_policy)
+        save_site_setting(db, "secret_vault_oidc_accepted_acr", secret_vault_oidc_accepted_acr.strip()[:500])
+    if "secure_send" in module_settings_access:
+        save_site_setting(db, "secure_send_enabled", "1" if secure_send_enabled else "")
+        save_site_setting(db, "secure_send_default_expiry", secure_send_default_expiry if secure_send_default_expiry in {"15m", "1h", "4h", "24h", "3d", "7d"} else "24h")
+        try:
+            secure_send_max_expiry_days = str(max(1, min(int(secure_send_max_expiry_days), 30)))
+        except ValueError:
+            secure_send_max_expiry_days = "7"
+        try:
+            secure_send_max_upload_mb = str(max(1, min(int(secure_send_max_upload_mb), 250)))
+        except ValueError:
+            secure_send_max_upload_mb = "25"
+        save_site_setting(db, "secure_send_max_expiry_days", secure_send_max_expiry_days)
+        save_site_setting(db, "secure_send_max_upload_mb", secure_send_max_upload_mb)
+        save_site_setting(db, "secure_send_allow_one_download", "1" if secure_send_allow_one_download else "")
+        save_site_setting(db, "secure_send_vault_integration", "1" if secure_send_vault_integration else "")
+        save_site_setting(db, "secure_send_email_notifications", "1" if secure_send_email_notifications else "")
+        gateway_hostname = secure_send_gateway_hostname.strip().rstrip("/")[:500]
+        if not re.fullmatch(r"https?://[^\s/]+(?::\d+)?", gateway_hostname):
+            gateway_hostname = "http://localhost:8999"
+        save_site_setting(db, "secure_send_gateway_hostname", gateway_hostname)
+    if "dns_manager" in module_settings_access:
+        try:
+            save_dns_manager_settings(
+                db,
+                dns_manager_enabled=dns_manager_enabled,
+                dns_collector_enabled=dns_collector_enabled,
+                dns_default_provider_id=dns_default_provider_id,
+                dns_refresh_interval_seconds=dns_refresh_interval_seconds,
+                dns_cache_enabled=dns_cache_enabled,
+                dns_vlan_integration_enabled=dns_vlan_integration_enabled,
+                dns_match_suggestions_enabled=dns_match_suggestions_enabled,
+                dns_auto_link_exact_mac=dns_auto_link_exact_mac,
+                dns_auto_update_dynamic_ip=dns_auto_update_dynamic_ip,
+                dns_stale_client_days=dns_stale_client_days,
+                dns_retain_client_history=dns_retain_client_history,
+                dns_client_history_days=dns_client_history_days,
+                dns_observation_history_days=dns_observation_history_days,
+                dns_dhcp_history_days=dns_dhcp_history_days,
+                dns_traffic_history_days=dns_traffic_history_days,
+                dns_vlan_enrichment_enabled=dns_vlan_enrichment_enabled,
+                dns_update_empty_managed_hostname=dns_update_empty_managed_hostname,
+                dns_provider_id=dns_provider_id,
+                dns_provider_name=dns_provider_name,
+                dns_provider_type=dns_provider_type,
+                dns_provider_connection_mode=dns_provider_connection_mode,
+                dns_provider_ha_cluster_id=dns_provider_ha_cluster_id,
+                dns_provider_base_url=dns_provider_base_url,
+                dns_provider_auth_method=dns_provider_auth_method,
+                dns_provider_secret=dns_provider_secret,
+                dns_provider_ssl_verify=dns_provider_ssl_verify,
+                dns_provider_timeout_seconds=dns_provider_timeout_seconds,
+                dns_provider_enabled=dns_provider_enabled,
+                dns_provider_description=dns_provider_description,
+            )
+        except DNSProviderSettingsError as exc:
+            db.rollback()
+            return templates.TemplateResponse(request, "settings.html", {"user": user, "module_access": module_settings_access, "settings": load_site_settings(db), "dns_providers": dns_providers_for_admin(db), "ha_dns_clusters": ha_dns_clusters_for_admin(db), **vlan_ip_admin_context(db), "security_check": security_check_context(request, db), "message": None, "error": str(exc), **csrf_context(request)}, status_code=422)
+    guacamole_bridge_changed = (
+        save_remote_manager_settings(db, form)
+        if "remote_manager" in module_settings_access
+        else False
+    )
 
     db.commit()
     if guacamole_bridge_changed:
@@ -2831,6 +2938,7 @@ async def save_settings(
         "settings.html",
         {
             "user": user,
+            "module_access": module_settings_access,
             "settings": load_site_settings(db),
             "dns_providers": dns_providers_for_admin(db),
             "ha_dns_clusters": ha_dns_clusters_for_admin(db),
@@ -2859,6 +2967,7 @@ def test_backup_storage(
     db: Session = Depends(get_db),
     user=Depends(require_admin),
 ):
+    require_module_settings_access(request, db, user, "backup_manager")
     validate_csrf_token(request, csrf_token)
 
     effective_remote_password = backup_remote_password.strip()
@@ -2904,6 +3013,7 @@ def test_backup_storage(
         "settings.html",
         {
             "user": user,
+            "module_access": granted_module_keys(db, user),
             "settings": load_site_settings(db),
             "dns_providers": dns_providers_for_admin(db),
             "ha_dns_clusters": ha_dns_clusters_for_admin(db),
@@ -2952,6 +3062,7 @@ def test_dns_provider(
     db: Session = Depends(get_db),
     user=Depends(require_admin),
 ):
+    require_module_settings_access(request, db, user, "dns_manager")
     validate_csrf_token(request, csrf_token)
     try:
         save_dns_manager_settings(
@@ -2988,7 +3099,7 @@ def test_dns_provider(
         )
     except DNSProviderSettingsError as exc:
         db.rollback()
-        return templates.TemplateResponse(request, "settings.html", {"user": user, "settings": load_site_settings(db), "dns_providers": dns_providers_for_admin(db), "ha_dns_clusters": ha_dns_clusters_for_admin(db), **vlan_ip_admin_context(db), "security_check": security_check_context(request, db), "message": None, "error": str(exc), **csrf_context(request)}, status_code=422)
+        return templates.TemplateResponse(request, "settings.html", {"user": user, "module_access": granted_module_keys(db, user), "settings": load_site_settings(db), "dns_providers": dns_providers_for_admin(db), "ha_dns_clusters": ha_dns_clusters_for_admin(db), **vlan_ip_admin_context(db), "security_check": security_check_context(request, db), "message": None, "error": str(exc), **csrf_context(request)}, status_code=422)
     db.commit()
 
     provider_id = (get_site_setting(db, "dns_default_provider_id") or "").strip()
@@ -3021,6 +3132,7 @@ def test_dns_provider(
         "settings.html",
         {
             "user": user,
+            "module_access": granted_module_keys(db, user),
             "settings": load_site_settings(db),
             "dns_providers": dns_providers_for_admin(db),
             "ha_dns_clusters": ha_dns_clusters_for_admin(db),
@@ -3052,6 +3164,7 @@ def save_dns_provider(
     db: Session = Depends(get_db),
     user=Depends(require_admin),
 ):
+    require_module_settings_access(request, db, user, "dns_manager")
     validate_csrf_token(request, csrf_token)
     current = load_site_settings(db)
     try:
@@ -3092,7 +3205,7 @@ def save_dns_provider(
         db.commit()
     except DNSProviderSettingsError as exc:
         db.rollback()
-        return templates.TemplateResponse(request, "settings.html", {"user": user, "settings": load_site_settings(db), "dns_providers": dns_providers_for_admin(db), "ha_dns_clusters": ha_dns_clusters_for_admin(db), **vlan_ip_admin_context(db), "security_check": security_check_context(request, db), "message": None, "error": str(exc), **csrf_context(request)}, status_code=422)
+        return templates.TemplateResponse(request, "settings.html", {"user": user, "module_access": granted_module_keys(db, user), "settings": load_site_settings(db), "dns_providers": dns_providers_for_admin(db), "ha_dns_clusters": ha_dns_clusters_for_admin(db), **vlan_ip_admin_context(db), "security_check": security_check_context(request, db), "message": None, "error": str(exc), **csrf_context(request)}, status_code=422)
     write_audit(db, user, "update", "dns_provider", str(provider.id), request.client.host if request.client else None, detail=f"Saved DNS provider {provider.name}.", metadata={"ha_cluster_id": provider.ha_cluster.public_id if provider.ha_cluster else None, "history_preserved": True})
     return RedirectResponse("/system/site-administration?tab=module-dns-manager&provider_saved=1", status_code=303)
 
@@ -3134,6 +3247,10 @@ def send_test_email(
     user=Depends(require_admin),
 ):
     validate_csrf_token(request, csrf_token)
+    module_settings_access = granted_module_keys(db, user)
+    if "remote_manager" not in module_settings_access:
+        guacd_host = get_site_setting(db, "guacd_host")
+        guacd_port = get_site_setting(db, "guacd_port")
 
     save_email_settings(
         db,
@@ -3216,6 +3333,7 @@ def send_test_email(
         "settings.html",
         {
             "user": user,
+            "module_access": module_settings_access,
             "settings": load_site_settings(db),
             "dns_providers": dns_providers_for_admin(db),
             "ha_dns_clusters": ha_dns_clusters_for_admin(db),

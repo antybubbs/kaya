@@ -1,0 +1,17 @@
+{% macro module_navigation(aria_label, items, settings_url=none, extra_class='') -%}
+<nav class="module-nav module-tabs{% if extra_class %} {{ extra_class }}{% endif %}" aria-label="{{ aria_label }}">
+  <div class="module-nav__pages">
+    {% for item in items if item.visible|default(true) %}
+    <a href="{{ item.url }}" class="{% if item.active %}active{% endif %}"{% if item.active %} aria-current="page"{% endif %}>
+      <span>{{ item.label }}</span>
+      {% if item.badge is defined and item.badge is not none %}<span class="table-chip module-nav__badge" aria-label="{{ item.badge }} {{ item.badge_label|default('items') }}">{{ item.badge }}</span>{% endif %}
+    </a>
+    {% endfor %}
+  </div>
+  {% if settings_url and user.role == 'admin' %}
+  <div class="module-nav__actions">
+    <a class="module-nav__settings" href="{{ settings_url }}"><span aria-hidden="true">&#9881;</span><span>Settings</span></a>
+  </div>
+  {% endif %}
+</nav>
+{%- endmacro %}

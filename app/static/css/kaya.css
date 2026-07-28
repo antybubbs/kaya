@@ -1042,9 +1042,26 @@ html[data-kaya-theme=light-ops] .module-tabs>button.active{
   color:#111827!important;
 }
 
+/* Standard module page shell: page destinations scroll independently while
+   the RBAC-gated central Settings shortcut remains a distinct right action. */
+.module-nav{overflow:hidden!important;padding:6px 8px!important}
+.module-nav__pages{align-items:center;display:flex;flex:1 1 auto;gap:4px;min-width:0;overflow-x:auto;scrollbar-width:thin}
+.module-nav__actions{align-items:center;border-left:1px solid #2a303a;display:flex;flex:0 0 auto;margin-left:auto;padding-left:8px}
+.module-nav__pages>a,.module-nav__actions>a{align-items:center;background:transparent;border:0;border-radius:6px;color:#aab2bf;display:inline-flex;flex:0 0 auto;font-size:12px;font-weight:850;gap:5px;justify-content:center;line-height:1.2;min-height:34px;padding:8px 13px;text-decoration:none;white-space:nowrap}
+.module-nav__pages>a:hover,.module-nav__actions>a:hover{background:#1d222b;color:#f8fafc}
+.module-nav__pages>a.active,.module-nav__pages>a[aria-current=page]{background:#1d222b;color:#f8fafc;box-shadow:none}
+.module-nav__pages>a:focus-visible,.module-nav__actions>a:focus-visible{box-shadow:0 0 0 2px var(--kaya-orange);outline:2px solid transparent;outline-offset:1px}
+.module-nav__badge{margin-left:2px!important}
+html[data-theme=light] .module-nav__actions,html[data-kaya-theme=light-ops] .module-nav__actions{border-left-color:#d8dee8}
+html[data-theme=light] .module-nav__pages>a,html[data-theme=light] .module-nav__actions>a,html[data-kaya-theme=light-ops] .module-nav__pages>a,html[data-kaya-theme=light-ops] .module-nav__actions>a{color:#64748b}
+html[data-theme=light] .module-nav__pages>a:hover,html[data-theme=light] .module-nav__actions>a:hover,html[data-theme=light] .module-nav__pages>a.active,html[data-kaya-theme=light-ops] .module-nav__pages>a:hover,html[data-kaya-theme=light-ops] .module-nav__actions>a:hover,html[data-kaya-theme=light-ops] .module-nav__pages>a.active{background:#eef2f7;color:#111827}
+.runbook-dashboard-shell{grid-template-columns:minmax(0,1fr)!important}
+
 @media(max-width:700px){
   .module-tabs{scrollbar-width:thin}
   .module-tabs>a,.module-tabs>button,.module-tabs>span{min-height:40px!important;padding:9px 12px!important}
+  .module-nav__pages>a,.module-nav__actions>a{min-height:40px;padding:9px 12px}
+  .module-nav__actions{padding-left:6px}
 }
 
 .monitor-refresh-control{

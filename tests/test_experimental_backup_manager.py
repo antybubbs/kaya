@@ -14,10 +14,19 @@ from app.db.session import Base
 from app.main import app
 from app.models.models import AuditLog, BackupJob, BackupRecord, ComputeHost, ComputeInventoryItem, RemoteManagerSetting, User
 from app.routers.admin import set_backup_manager_feature
-from app.routers.backup_manager import agent_jobs, hash_agent_token, proxmox_backup_jobs, require_backup_user
+from app.routers.backup_manager import (
+    agent_jobs,
+    hash_agent_token,
+    proxmox_backup_history_warnings,
+    proxmox_backup_jobs,
+    require_backup_user,
+)
 from app.services.compute_monitor import (
-    proxmox_backup_task_job_id,
+    proxmox_backup_execution_candidates,
+    proxmox_backup_task_match_reason,
+    proxmox_backup_task_signature,
     proxmox_backup_task_status,
+    proxmox_backup_tasks,
     proxmox_matching_backup_task,
 )
 from app.services.site_settings import get_site_setting
@@ -163,64 +172,62 @@ def test_proxmox_backup_jobs_fall_back_to_job_id_without_a_comment():
         assert jobs[0]["job_id"] is None
 
 
-def test_proxmox_backup_history_uses_authoritative_job_id_with_overlapping_vmids():
+def vzdump_task(upid, starttime, vmids, *, storage="local", mode="snapshot", status="OK", node="pve"):
+    command = f"INFO: starting new backup job: vzdump {' '.join(str(vmid) for vmid in vmids)} --storage {storage} --mode {mode}"
+    return {
+        "id": str(vmids[0]) if len(vmids) == 1 else "",
+        "upid": upid,
+        "node": node,
+        "type": "vzdump",
+        "starttime": starttime,
+        "endtime": starttime + 60,
+        "status": status,
+        "_log": [{"n": 1, "t": command}],
+    }
+
+
+def test_proxmox_backup_task_signature_parses_raw_vzdump_command():
+    task = vzdump_task("UPID:pve:raw", 100, [118, 129, 123], storage="QNAPBU_PVE")
+
+    assert proxmox_backup_task_signature(task) == {
+        "node": "pve",
+        "storage": "QNAPBU_PVE",
+        "mode": "snapshot",
+        "vmids": {"118", "129", "123"},
+    }
+
+
+def test_proxmox_backup_history_uses_exact_signature_with_overlapping_vmids():
     jobs = [
-        {"id": "job-daily-local", "vmid": "100,101", "storage": "local"},
-        {"id": "job-daily-pbs", "vmid": "100,102", "storage": "pbs"},
+        {"id": "job-a", "vmid": "100,101", "storage": "local", "mode": "snapshot", "node": "pve"},
+        {"id": "job-b", "vmid": "100,102", "storage": "local", "mode": "snapshot", "node": "pve"},
     ]
     tasks = [
-        {
-            "id": "100",
-            "upid": "UPID:pve:latest-unrelated:vzdump:100:root@pam:",
-            "starttime": 4000,
-            "exitstatus": "OK",
-        },
-        {
-            "id": "100",
-            "job-id": "job-daily-local",
-            "trigger": "manual",
-            "upid": "UPID:pve:manual:vzdump:100:root@pam:",
-            "starttime": 3000,
-            "exitstatus": "ERROR",
-        },
-        {
-            "id": "100",
-            "trigger": "scheduled",
-            "upid": "UPID:pve:pbs:vzdump:100:root@pam:",
-            "starttime": 2000,
-            "exitstatus": "OK",
-            "_log": [{"n": 1, "t": "Job 'job-daily-pbs' triggered by schedule 'daily'."}],
-        },
-        {
-            "id": "100",
-            "trigger": "scheduled",
-            "upid": "UPID:pve:local-old:vzdump:100:root@pam:",
-            "starttime": 1000,
-            "exitstatus": "OK",
-            "_log": [{"n": 1, "t": "Job 'job-daily-local' triggered by schedule 'daily'."}],
-        },
+        vzdump_task("UPID:pve:only-overlap", 4000, [100]),
+        vzdump_task("UPID:pve:job-a", 3000, [100, 101]),
+        vzdump_task("UPID:pve:job-b", 2000, [100, 102]),
     ]
 
-    local_task = proxmox_matching_backup_task(jobs[0], tasks)
-    pbs_task = proxmox_matching_backup_task(jobs[1], tasks)
-
-    assert local_task["upid"] == "UPID:pve:manual:vzdump:100:root@pam:"
-    assert proxmox_backup_task_status(local_task) == "failed"
-    assert pbs_task["upid"] == "UPID:pve:pbs:vzdump:100:root@pam:"
-    assert proxmox_backup_task_status(pbs_task) == "successful"
+    assert proxmox_matching_backup_task(jobs[0], tasks)["upid"] == "UPID:pve:job-a"
+    assert proxmox_matching_backup_task(jobs[1], tasks)["upid"] == "UPID:pve:job-b"
+    matched, reason = proxmox_backup_task_match_reason(jobs[0], tasks[0])
+    assert matched is False
+    assert reason == "VM/CT set differs"
 
 
-def test_proxmox_backup_history_sorts_actual_execution_timestamp_and_preserves_warning():
+def test_proxmox_backup_history_selects_newest_scheduled_or_manual_execution():
+    job = {"id": "job-a", "vmid": "100,101", "storage": "local", "mode": "snapshot"}
     tasks = [
-        {"job_id": "job-a", "upid": "UPID:old", "starttime": 100, "exitstatus": "OK"},
-        {"backup-job": "job-a", "upid": "UPID:new", "starttime": "300", "status": "stopped", "exitstatus": "WARNINGS: 1"},
-        {"backup_job": "job-a", "upid": "UPID:middle", "starttime": 200, "exitstatus": "ERROR"},
+        vzdump_task("UPID:pve:scheduled", 100, [100, 101]),
+        vzdump_task("UPID:pve:manual", 300, [100, 101], status="ERROR"),
+        vzdump_task("UPID:pve:middle", 200, [100, 101]),
     ]
 
-    matched = proxmox_matching_backup_task({"id": "job-a", "vmid": "100"}, tasks)
+    matched = proxmox_matching_backup_task(job, tasks)
 
-    assert matched["upid"] == "UPID:new"
-    assert proxmox_backup_task_status(matched) == "warning"
+    assert matched["upid"] == "UPID:pve:manual"
+    assert matched["starttime"] == 300
+    assert proxmox_backup_task_status(matched) == "failed"
 
 
 def test_proxmox_backup_history_uses_direct_last_run_upid_relationship():
@@ -238,16 +245,34 @@ def test_proxmox_backup_history_uses_direct_last_run_upid_relationship():
     assert proxmox_backup_task_status(matched) == "failed"
 
 
-def test_proxmox_backup_history_recognises_manual_job_id_log_and_no_history():
-    manual = {
-        "upid": "UPID:manual",
-        "starttime": 123,
-        "_log": [{"t": "INFO: starting new backup job: vzdump 100 --job-id 'job-manual' --storage local"}],
-    }
+def test_proxmox_backup_history_groups_member_tasks_and_aggregates_status():
+    job = {"id": "job-group", "vmid": "100,101,102", "storage": "local", "mode": "snapshot"}
+    successful = [
+        vzdump_task("UPID:pve:100", 100, [100]),
+        vzdump_task("UPID:pve:101", 160, [101]),
+        vzdump_task("UPID:pve:102", 220, [102]),
+    ]
+    partial = [
+        vzdump_task("UPID:pve:new-100", 1000, [100]),
+        vzdump_task("UPID:pve:new-101", 1060, [101], status="ERROR"),
+        vzdump_task("UPID:pve:new-102", 1120, [102]),
+    ]
 
-    assert proxmox_backup_task_job_id(manual) == "job-manual"
-    assert proxmox_matching_backup_task({"id": "job-manual"}, [manual]) is manual
-    assert proxmox_matching_backup_task({"id": "job-never-ran"}, [manual]) is None
+    executions = proxmox_backup_execution_candidates(job, successful + partial)
+    matched = proxmox_matching_backup_task(job, successful + partial)
+
+    assert len(executions) == 2
+    assert proxmox_backup_task_status(executions[0]) == "successful"
+    assert matched["starttime"] == 1000
+    assert matched["member_upids"] == ["UPID:pve:new-100", "UPID:pve:new-101", "UPID:pve:new-102"]
+    assert proxmox_backup_task_status(matched) == "warning"
+
+
+def test_proxmox_backup_history_does_not_group_tasks_outside_window():
+    job = {"vmid": "100,101", "storage": "local", "mode": "snapshot"}
+    tasks = [vzdump_task("UPID:100", 100, [100]), vzdump_task("UPID:101", 401, [101])]
+
+    assert proxmox_matching_backup_task(job, tasks) is None
     assert proxmox_backup_task_status(None) is None
 
 
@@ -308,3 +333,130 @@ def test_proxmox_backup_jobs_use_task_execution_time_not_inventory_refresh_time(
         assert job["last_run_at"] == datetime(2026, 7, 25, 7, 15)
         assert job["last_run_at"] != datetime(2026, 7, 25, 12, 0)
         assert job["last_status"] == "successful"
+
+
+def test_proxmox_backup_task_rejection_explains_missing_signature_fields():
+    matched, reason = proxmox_backup_task_match_reason(
+        {"id": "backup-fake-job", "vmid": "100", "storage": "local", "mode": "snapshot"},
+        {"upid": "UPID:pve:fake:vzdump::root@pam:", "id": "", "type": "vzdump"},
+    )
+
+    assert matched is False
+    assert reason == "task log exposes no storage"
+
+
+def test_proxmox_backup_tasks_report_node_history_available_when_cluster_endpoint_fails(monkeypatch):
+    host = type("Host", (), {"id": 7})()
+    task = {
+        "upid": "UPID:pve:fake:vzdump::root@pam:",
+        "id": "",
+        "type": "vzdump",
+        "starttime": 100,
+        "status": "OK",
+        "node": "pve",
+    }
+
+    def fake_pve(_host, path):
+        if path.startswith("/cluster/tasks"):
+            raise RuntimeError("fake unsupported endpoint")
+        if path.startswith("/nodes/pve/tasks?"):
+            return [task]
+        if path.endswith("/log?start=0&limit=50"):
+            return [{"t": "INFO: starting new backup job: vzdump 100"}]
+        raise AssertionError(path)
+
+    monkeypatch.setattr("app.services.compute_monitor.pve", fake_pve)
+
+    tasks, diagnostics = proxmox_backup_tasks(
+        host,
+        ["pve"],
+        ["backup-fake-job"],
+        return_diagnostics=True,
+    )
+
+    assert tasks == [task]
+    assert diagnostics["task_history_available"] is True
+    assert diagnostics["task_logs_available"] is True
+    assert diagnostics["warning"] is None
+
+
+@pytest.mark.parametrize("warning_code", ["task_history_unavailable", "task_logs_unavailable"])
+def test_proxmox_backup_history_problem_is_visible_above_table(warning_code):
+    with database() as db:
+        host = ComputeHost(
+            name="PVE warning host",
+            platform="proxmox",
+            base_url="https://pve.invalid",
+            metadata_json=json.dumps({"backup_history": {"warning": warning_code}}),
+        )
+        db.add(host)
+        db.commit()
+
+        warnings = proxmox_backup_history_warnings(db)
+
+        assert warnings[0]["host"] == "PVE warning host"
+        assert warnings[0]["detail"]
+
+    page = Path("app/templates/backup_manager.html").read_text(encoding="utf-8")
+    assert "Backup execution history unavailable." in page
+
+
+def test_missing_explicit_job_id_is_not_an_unavailable_warning():
+    with database() as db:
+        host = ComputeHost(
+            name="PVE readable",
+            platform="proxmox",
+            base_url="https://pve.invalid",
+            metadata_json=json.dumps(
+                {"backup_history": {"warning": "task_correlation_unavailable"}}
+            ),
+        )
+        db.add(host)
+        db.flush()
+        db.add(
+            ComputeInventoryItem(
+                host_id=host.id,
+                external_id="backup-fake-job",
+                name="backup-fake-job",
+                kind="backup",
+                status="enabled",
+                metadata_json='{"id":"backup-fake-job","last_task":null,"last_status":null}',
+            )
+        )
+        db.commit()
+
+        job = proxmox_backup_jobs(db)[0]
+
+        assert job["last_run_at"] is None
+        assert job["last_status"] == "unknown"
+        assert proxmox_backup_history_warnings(db) == []
+
+
+def test_successful_empty_history_is_available_and_jobs_remain_unknown(monkeypatch):
+    host = type("Host", (), {"id": 8})()
+
+    def fake_pve(_host, path):
+        if path.startswith("/cluster/tasks") or path.startswith("/nodes/pve/tasks?"):
+            return []
+        raise AssertionError(path)
+
+    monkeypatch.setattr("app.services.compute_monitor.pve", fake_pve)
+    tasks, diagnostics = proxmox_backup_tasks(host, ["pve"], ["backup-fake"], return_diagnostics=True)
+
+    assert tasks == []
+    assert diagnostics["task_history_available"] is True
+    assert diagnostics["warning"] is None
+
+
+def test_denied_task_history_is_reported_as_unavailable(monkeypatch):
+    host = type("Host", (), {"id": 9})()
+
+    def fake_pve(_host, _path):
+        raise PermissionError("fake Proxmox task audit denial")
+
+    monkeypatch.setattr("app.services.compute_monitor.pve", fake_pve)
+    tasks, diagnostics = proxmox_backup_tasks(host, ["pve"], ["backup-fake"], return_diagnostics=True)
+
+    assert tasks == []
+    assert diagnostics["task_history_available"] is False
+    assert diagnostics["warning"] == "task_history_unavailable"

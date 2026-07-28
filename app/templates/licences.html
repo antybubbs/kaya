@@ -33,6 +33,11 @@
     </div>
   </div>
 </section>
+{{ module_navigation('License Keys navigation', [
+  {'label': 'Overview', 'url': '/security/license-keys', 'active': true},
+  {'label': 'Categories', 'url': '/data/categories?module=licences', 'visible': user.role == 'admin'},
+  {'label': 'Custom Fields', 'url': '/data/custom-fields?module=licences', 'visible': user.role == 'admin'}
+]) }}
 <section class="panel">
 <nav class="category-tabs table-panel-filters" aria-label="License key types">
   <a class="{% if not active_licence_type %}active{% endif %}" href="/security/license-keys{% if q %}?q={{ q|urlencode }}{% endif %}">All</a>

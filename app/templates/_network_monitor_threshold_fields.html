@@ -1,0 +1,47 @@
+{% set field_prefix = monitor_field_prefix|default('monitor_') %}
+{% set inherited = monitor_using_default_thresholds|default(true) %}
+<fieldset class="monitor-threshold-settings" data-monitor-threshold-settings>
+  <legend>Health thresholds</legend>
+  {% if monitor_show_default_toggle|default(true) %}
+  <div class="monitor-threshold-heading">
+    <label class="checkbox-label">
+      <input name="{{ field_prefix }}use_default_thresholds" type="checkbox" value="1" data-monitor-threshold-defaults {% if inherited %}checked{% endif %}>
+      Use Kaya default thresholds
+    </label>
+    <span class="table-chip {% if inherited %}good{% endif %}" data-monitor-threshold-source>{{ 'Inherited' if inherited else 'Custom' }}</span>
+  </div>
+  <p class="muted monitor-threshold-help">Inherited values follow Site Administration. Choose custom thresholds to tune this host independently.</p>
+  {% else %}
+  <p class="muted monitor-threshold-help">These values are inherited by hosts that use Kaya defaults.</p>
+  {% endif %}
+  <div class="form-grid monitor-threshold-grid">
+    <label>Warning latency
+      <span class="input-with-unit"><input name="{{ field_prefix }}latency_warning_ms" type="number" min="0" max="60000" value="{{ monitor_thresholds.latency_warning_ms }}" required data-threshold-field data-threshold-warning-latency><span>ms</span></span>
+    </label>
+    <label>Critical latency
+      <span class="input-with-unit"><input name="{{ field_prefix }}latency_critical_ms" type="number" min="0" max="60000" value="{{ monitor_thresholds.latency_critical_ms }}" required data-threshold-field data-threshold-critical-latency><span>ms</span></span>
+    </label>
+    <label>Warning packet loss
+      <span class="input-with-unit"><input name="{{ field_prefix }}packet_loss_warning_percent" type="number" min="0" max="100" value="{{ monitor_thresholds.packet_loss_warning_percent }}" required data-threshold-field data-threshold-warning-loss><span>%</span></span>
+    </label>
+    <label>Critical packet loss
+      <span class="input-with-unit"><input name="{{ field_prefix }}packet_loss_critical_percent" type="number" min="0" max="100" value="{{ monitor_thresholds.packet_loss_critical_percent }}" required data-threshold-field data-threshold-critical-loss><span>%</span></span>
+    </label>
+    <label>Degraded checks required
+      <input name="{{ field_prefix }}degraded_threshold" type="number" min="1" max="20" value="{{ monitor_thresholds.degraded_threshold }}" required data-threshold-field data-monitor-count>
+      <small class="muted" data-monitor-duration>Approximately {{ monitor_thresholds.degraded_threshold * (monitor.interval_seconds if monitor else 300) }} seconds at the selected interval.</small>
+    </label>
+    <label>Failures before offline
+      <input name="{{ field_prefix }}failure_threshold" type="number" min="1" max="20" value="{{ monitor_thresholds.failure_threshold }}" required data-threshold-field data-monitor-count>
+      <small class="muted" data-monitor-duration>Approximately {{ monitor_thresholds.failure_threshold * (monitor.interval_seconds if monitor else 300) }} seconds at the selected interval.</small>
+    </label>
+    <label>Successes before recovery
+      <input name="{{ field_prefix }}recovery_threshold" type="number" min="1" max="20" value="{{ monitor_thresholds.recovery_threshold }}" required data-threshold-field data-monitor-count>
+      <small class="muted" data-monitor-duration>Approximately {{ monitor_thresholds.recovery_threshold * (monitor.interval_seconds if monitor else 300) }} seconds at the selected interval.</small>
+    </label>
+    <label class="checkbox-label monitor-recovery-option">
+      <input name="{{ field_prefix }}recovery_state_enabled" type="checkbox" value="1" data-threshold-field {% if monitor_thresholds.recovery_state_enabled %}checked{% endif %}>
+      Show explicit Recovering state
+    </label>
+  </div>
+</fieldset>

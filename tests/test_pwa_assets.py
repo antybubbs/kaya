@@ -52,6 +52,20 @@ def test_mobile_shell_and_pwa_metadata_are_global():
     assert ".is-editing .widget-mobile-move{display:flex!important}" in core_styles
 
 
+def test_responsive_styles_load_last_and_cover_shared_mobile_interactions():
+    base = (ROOT / "app" / "templates" / "base.html").read_text(encoding="utf-8")
+    responsive = (STATIC / "css" / "responsive.css").read_text(encoding="utf-8")
+    assert base.index("css/responsive.css") > base.index("css/sidebar.css")
+    assert base.index("css/responsive.css") > base.index("css/secret_vault.css")
+    assert ".module-nav__pages{overscroll-behavior-inline:contain" in responsive
+    assert ".module-nav__pages>a,.module-nav__actions>a{min-height:44px!important" in responsive
+    assert ".topbar{align-items:flex-start;flex-wrap:wrap" in responsive
+    assert ".remote-manager-hero>.button{grid-column:1!important" in responsive
+    assert "pre{max-width:100%;overflow:auto" in responsive
+    assert ".settings-internal-sidebar{max-height:min(42dvh,360px);overflow:auto" in responsive
+    assert ".panel:has(table){overflow-x:auto;overflow-y:visible" in responsive
+
+
 def test_offline_page_contains_no_infrastructure_data_or_inline_script():
     offline = (STATIC / "offline.html").read_text(encoding="utf-8")
     assert "requires a network connection" not in offline  # wording may change

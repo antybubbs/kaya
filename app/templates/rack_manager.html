@@ -9,6 +9,9 @@
     <span class="module-stat">Placed devices <strong>{{ total_items }}</strong></span>
   </div>
 </section>
+{{ module_navigation('Rack Manager navigation', [
+  {'label': 'Overview', 'url': '/infrastructure/rack-manager', 'active': true}
+]) }}
 {% if user.role in ['admin','editor'] %}
 <section class="panel rack-create-panel">
   <div class="panel-heading"><div><h2>Create rack</h2><p class="muted">Start with a named rack, location and height in U.</p></div></div>

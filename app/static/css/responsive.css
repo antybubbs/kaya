@@ -56,6 +56,10 @@
   .demo-banner~.app-topbar{position:sticky;top:0}
   .demo-banner~.content{padding-top:12px!important}
   .panel,.card,.record-hero,.module-header,.topbar,.dashboard-hero,.dashboard-launch,.remote-card{max-width:100%;min-width:0;width:100%}
+  .topbar{align-items:flex-start;flex-wrap:wrap;gap:10px}
+  .topbar>*{max-width:100%;min-width:0}
+  .topbar-actions,.module-actions,.vault-header-actions,.secure-send-header-actions{flex-wrap:wrap;max-width:100%}
+  .settings-content-panel,.settings-tab-panel{max-width:100%;min-width:0}
   .cards,.form-grid,.settings-grid,.detail-grid,.compute-summary-grid,.compute-resource-grid,.compute-host-grid,.compute-lower-grid,.audit-summary-grid,.audit-filters,.dns-insights-summary,.dns-insight-list,.dns-insight-filters,.dns-analysis-metrics,.dns-analysis-evidence,.dns-summary-grid,.dns-insight-grid,.rack-workspace,.rack-form-grid,.rack-card-grid,.monitor-grid,.about-grid,.record-layout,.record-edit-grid,.remote-settings-grid,.remote-recording-settings-grid,.remote-overrides-grid,.backup-grid,.runbook-page-grid,.runbook-editor-layout,.runbook-detail-layout,.setup-form-grid{grid-template-columns:1fr!important}
   .wide,.settings-grid>.wide{grid-column:1!important}
   .panel-heading,.dashboard-hero,.dashboard-launch,.dns-insights-toolbar{align-items:flex-start;flex-wrap:wrap;gap:10px}
@@ -63,17 +67,25 @@
   dialog,.widget-manager{max-height:calc(100dvh - 24px)!important;max-width:calc(100vw - 24px)!important;width:100%!important}
   dialog>form,.widget-manager>form{max-height:calc(100dvh - 24px)!important;overflow:auto}
   img,canvas,svg,video{max-width:100%}
+  pre{max-width:100%;overflow:auto;white-space:pre-wrap;word-break:break-word}
+  code{overflow-wrap:anywhere}
   .mono,.secret,a,td{overflow-wrap:anywhere}
 
   .module-header{display:grid;gap:8px;grid-template-columns:1fr!important;padding:12px!important}
   .module-header .module-title-row,.module-header .module-toolbar,.module-header>.module-filters{grid-column:1!important;grid-row:auto!important}
-  .module-header .module-title-row{gap:8px}
+  .module-header .module-title-row{flex-wrap:wrap;gap:8px}
+  .module-header .module-heading{max-width:100%;min-width:min(100%,240px)}
   .module-header .module-toolbar{align-items:stretch;display:flex!important;flex-direction:column;gap:8px;width:100%}
   .module-header .module-primary-actions{align-items:stretch;display:flex;flex-direction:row!important;flex-wrap:wrap!important;gap:8px;min-width:0;width:100%!important}
   .module-header .module-primary-actions .list-search{display:grid;flex:1 1 360px;grid-template-columns:minmax(0,1fr) auto;height:auto!important;min-width:0;width:auto}
   .module-header .module-primary-actions>.button{flex:0 0 auto}
   .module-header .module-secondary-actions,.module-header .module-toolbar>.compute-tabs,.module-header .module-toolbar>.dns-refresh-control{align-self:stretch;display:flex;flex-wrap:wrap;justify-content:flex-start;margin:0;width:100%}
   .module-stat{white-space:nowrap}
+  .remote-manager-hero>.button{grid-column:1!important;grid-row:auto!important;justify-self:start}
+  .module-nav{display:grid!important;grid-template-columns:minmax(0,1fr) auto;max-width:100%;width:100%}
+  .module-nav__pages{overscroll-behavior-inline:contain;scroll-snap-type:x proximity;-webkit-overflow-scrolling:touch}
+  .module-nav__pages>a{scroll-snap-align:start}
+  .module-nav__actions{min-width:0}
   .list-search,.search{height:auto!important;min-height:0}
   .list-search input,.search input{height:44px!important;min-height:44px!important;min-width:0;width:100%!important}
   .table-toolbar{align-items:center;display:flex;flex-wrap:nowrap;gap:8px;justify-content:space-between}
@@ -81,7 +93,7 @@
   .table-toolbar .category-tabs a{flex:0 0 auto}
   .table-settings{flex:0 0 auto;margin-left:auto}
   .table-settings-panel{max-height:70dvh;max-width:calc(100vw - 36px);min-width:min(280px,calc(100vw - 36px));position:fixed;right:18px;top:calc(var(--mobile-header-height) + env(safe-area-inset-top) + 8px)}
-  .panel:has(table){overflow:visible;padding:12px}
+  .panel:has(table){overflow-x:auto;overflow-y:visible;padding:12px}
   .table-scroll{border:1px solid rgba(148,163,184,.18);border-radius:8px;position:relative;width:100%}
   .table-scroll:focus-within{outline:2px solid var(--accent);outline-offset:2px}
   .panel table{min-width:720px;table-layout:auto}
@@ -102,8 +114,9 @@
   .rack-elevation-panel{overflow-x:auto}
   .remote-shell,.remote-layout,.remote-workspace,.runbook-shell,.site-admin-layout,.settings-layout{grid-template-columns:1fr!important}
   .remote-workspace{height:auto!important;min-height:0!important}
-  .remote-host-rail,.runbook-side,.settings-internal-sidebar{max-height:none;position:static;width:100%}
+  .remote-host-rail,.runbook-side,.settings-internal-sidebar{position:static;width:100%}
   .remote-host-rail{max-height:42dvh!important}
+  .settings-internal-sidebar{max-height:min(42dvh,360px);overflow:auto;overscroll-behavior:contain;scrollbar-width:thin}
   .remote-session-frame,.remote-console-empty{min-height:58dvh}
   .site-admin-tabs,.site-admin-subtabs,.compute-tabs{max-width:100%;overflow-x:auto}
   .bulk-action-bar,.inline-actions,.rack-form-actions,.dns-blocklist-actions,.remote-settings-actions,.site-admin-actions{align-items:stretch;flex-wrap:wrap}
@@ -123,11 +136,17 @@
   input:not([type=checkbox]):not([type=radio]):not([type=color]),select{height:44px;min-height:44px}
   textarea{height:auto!important;min-height:96px}
   button,.button,.category-tabs a,.account-link,.nav-link,.nav-group>summary,.nav-subgroup>summary{min-height:44px}
+  .module-nav{padding:4px!important}
+  .module-nav__pages>a,.module-nav__actions>a{min-height:44px!important;padding:10px 11px!important}
+  .module-nav__actions{padding-left:4px}
   .panel td .button,.panel td button,.panel td form button,.table-settings>summary,.icon-button{min-height:44px}
+  .table-settings-panel label{align-items:center;min-height:44px}
   input[type=checkbox],input[type=radio]{height:22px;min-height:22px;width:22px}
   .module-header .module-primary-actions .list-search{flex-basis:100%}
   .module-header .module-primary-actions>.button{flex:1 1 auto}
   .module-title-row{align-items:flex-start}
+  .topbar-actions,.module-actions,.vault-header-actions,.secure-send-header-actions,.wizard-actions{align-items:stretch;width:100%}
+  .module-header>.button,.module-header>.module-actions>.button,.module-header>.module-actions>button{width:100%}
   .module-stat strong{font-size:14px}
   .network-monitor-header{margin-bottom:10px;padding:10px!important}
   .network-monitor-header .module-title-row{display:grid;gap:7px;grid-template-columns:minmax(0,1fr)}

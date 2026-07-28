@@ -330,6 +330,8 @@ Interfaces should be usable on:
 - tablet;
 - mobile/PWA.
 
+The shared `responsive.css` stylesheet is loaded after core and module styles and owns narrow-screen safeguards. New interfaces must remain usable at 320 CSS pixels, use touch targets of at least 44px on phones, allow headings and action groups to wrap, and avoid fixed widths that create page-level horizontal scrolling. Wide operational tables keep their columns inside keyboard-focusable horizontal scroll regions; do not hide data merely to make a table fit. Module navigation may scroll horizontally while its authorised Settings action remains reachable.
+
 ### Navigation
 
 Do not add every module subpage to the main sidebar.
@@ -337,6 +339,25 @@ Do not add every module subpage to the main sidebar.
 Subpages should normally remain inside their parent module.
 
 Site Administration should use its existing structured navigation patterns.
+
+### Standard Module Page Layout
+
+Every user-facing module page follows this hierarchy:
+
+1. Module Hero
+2. Module Navigation Bar
+3. Page Toolbar or Page Controls
+4. Module Content
+
+The Module Navigation Bar is required even when a module currently has only one page. Module page links appear on the left and the shared **Settings** action appears at the far right only when a real central destination exists under **Site Administration → Module Settings** and the user is authorised to manage it. Both the operational module route and the settings route must enforce authentication, role and module allocation on the server; navigation visibility is not an authorisation control.
+
+Hero blocks hold module identity, context, status and operational summaries. Current-page actions such as search, filters, refresh, add/create and bulk actions remain in the hero toolbar or page toolbar. Table settings remain separate from module administration.
+
+New modules must use `components/module_navigation.html` from their initial implementation. Do not create module-specific copies of the component or duplicate central settings forms inside an operational module.
+
+Module administration and module configuration are separate concepts. Categories, custom fields and other controls that define how a module's records are organised belong to that module and are reached from its Module Navigation Bar. Central **Site Administration → Module Settings** is reserved for system-level configuration such as provider connections, infrastructure definitions, collection behaviour, retention and security controls. Do not add contextual record-administration links to the global sidebar or duplicate them in central settings. Render these links only for modules with a working implementation and only for roles authorised by the destination route; direct routes must still enforce role, module allocation and object-level access.
+
+Remote Manager is the deliberate exception because its terminal/RDP workspace prioritises vertical screen space. It omits the Module Navigation Bar, keeps recordings in the existing application sidebar, and renders the same RBAC-controlled central **Settings** shortcut at the far right of its module hero.
 
 ### Use existing patterns for
 

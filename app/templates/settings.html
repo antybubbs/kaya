@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block extra_head %}<link rel="stylesheet" href="/static/css/remote.css?v={{ asset_version }}">{% endblock %}
 {% block content %}
+{% set module_access = module_access|default([], true) %}
 {% macro switch(name, title, description) -%}
 <label class="remote-setting-row">
   <span><strong>{{ title }}</strong><small>{{ description }}</small></span>
@@ -53,18 +54,21 @@
         </div>
       </details>
 
+      {% if 'backup_manager' in module_access or 'dashboard' in module_access or 'dns_manager' in module_access or 'network_monitor' in module_access or 'vlan_ip_manager' in module_access or 'remote_manager' in module_access or 'secret_vault' in module_access or 'secure_send' in module_access %}
       <details class="settings-side-group" data-settings-details="modules" open>
-        <summary class="settings-side-link" data-settings-parent-tab="modules" data-default-child="module-backup-manager" aria-selected="false">Module Settings</summary>
+        <summary class="settings-side-link" data-settings-parent-tab="modules" data-default-child="{% if 'backup_manager' in module_access %}module-backup-manager{% elif 'dashboard' in module_access %}module-dashboard{% elif 'dns_manager' in module_access %}module-dns-manager{% elif 'network_monitor' in module_access %}module-network-monitor{% elif 'vlan_ip_manager' in module_access %}module-vlan-ip-manager{% elif 'remote_manager' in module_access %}module-remote-manager{% elif 'secret_vault' in module_access %}module-secret-vault{% else %}module-secure-send{% endif %}" aria-selected="false">Module Settings</summary>
         <div class="settings-side-children">
-          <a href="/system/site-administration?tab=module-backup-manager" class="settings-side-child" data-settings-child-tab="module-backup-manager" data-settings-parent="modules" aria-selected="false">Backup Manager</a>
-          <a href="/system/site-administration?tab=module-dashboard" class="settings-side-child" data-settings-child-tab="module-dashboard" data-settings-parent="modules" aria-selected="false">Dashboard</a>
-          <a href="/system/site-administration?tab=module-dns-manager" class="settings-side-child" data-settings-child-tab="module-dns-manager" data-settings-parent="modules" aria-selected="false">DNS Manager</a>
-          <a href="/system/site-administration?tab=module-vlan-ip-manager" class="settings-side-child" data-settings-child-tab="module-vlan-ip-manager" data-settings-parent="modules" aria-selected="false">VLAN/IP Manager</a>
-          <a href="/system/site-administration?tab=module-remote-manager" class="settings-side-child" data-settings-child-tab="module-remote-manager" data-settings-parent="modules" aria-selected="false">Remote Manager</a>
-          <a href="/system/site-administration?tab=module-secret-vault" class="settings-side-child" data-settings-child-tab="module-secret-vault" data-settings-parent="modules" aria-selected="false">Secret Vault</a>
-          <a href="/system/site-administration?tab=module-secure-send" class="settings-side-child" data-settings-child-tab="module-secure-send" data-settings-parent="modules" aria-selected="false">Secure Send</a>
+          {% if 'backup_manager' in module_access %}<a href="/system/site-administration?tab=module-backup-manager" class="settings-side-child" data-settings-child-tab="module-backup-manager" data-settings-parent="modules" aria-selected="false">Backup Manager</a>{% endif %}
+          {% if 'dashboard' in module_access %}<a href="/system/site-administration?tab=module-dashboard" class="settings-side-child" data-settings-child-tab="module-dashboard" data-settings-parent="modules" aria-selected="false">Dashboard</a>{% endif %}
+          {% if 'dns_manager' in module_access %}<a href="/system/site-administration?tab=module-dns-manager" class="settings-side-child" data-settings-child-tab="module-dns-manager" data-settings-parent="modules" aria-selected="false">DNS Manager</a>{% endif %}
+          {% if 'network_monitor' in module_access %}<a href="/system/site-administration?tab=module-network-monitor" class="settings-side-child" data-settings-child-tab="module-network-monitor" data-settings-parent="modules" aria-selected="false">IP/WAN Monitor</a>{% endif %}
+          {% if 'vlan_ip_manager' in module_access %}<a href="/system/site-administration?tab=module-vlan-ip-manager" class="settings-side-child" data-settings-child-tab="module-vlan-ip-manager" data-settings-parent="modules" aria-selected="false">VLAN/IP Manager</a>{% endif %}
+          {% if 'remote_manager' in module_access %}<a href="/system/site-administration?tab=module-remote-manager" class="settings-side-child" data-settings-child-tab="module-remote-manager" data-settings-parent="modules" aria-selected="false">Remote Manager</a>{% endif %}
+          {% if 'secret_vault' in module_access %}<a href="/system/site-administration?tab=module-secret-vault" class="settings-side-child" data-settings-child-tab="module-secret-vault" data-settings-parent="modules" aria-selected="false">Secret Vault</a>{% endif %}
+          {% if 'secure_send' in module_access %}<a href="/system/site-administration?tab=module-secure-send" class="settings-side-child" data-settings-child-tab="module-secure-send" data-settings-parent="modules" aria-selected="false">Secure Send</a>{% endif %}
         </div>
       </details>
+      {% endif %}
     </aside>
 
     <main class="settings-content-panel">
@@ -91,7 +95,7 @@
       </div>
     </div>
   </section>
-  <section class="settings-tab-panel" data-settings-panel="module-secure-send" data-settings-parent="modules" role="tabpanel" hidden>
+  {% if 'secure_send' in module_access %}<section class="settings-tab-panel" data-settings-panel="module-secure-send" data-settings-parent="modules" role="tabpanel" hidden>
     <h2>Secure Send</h2>
     <div class="remote-settings-card">
       <header><span>Temporary encrypted delivery</span></header>
@@ -107,8 +111,8 @@
       {{ switch('secure_send_email_notifications', 'Enable email notifications', 'Send recipient links and lifecycle notices through Kaya SMTP. Credentials are never emailed.') }}
       <div class="vault-admin-note"><strong>Public exposure</strong><span>Publish only the Security Gateway port. The main Kaya application remains the authenticated management interface.</span></div>
     </div>
-  </section>
-  <section class="settings-tab-panel vault-admin-panel" data-settings-panel="module-secret-vault" data-settings-parent="modules" role="tabpanel" hidden>
+  </section>{% endif %}
+  {% if 'secret_vault' in module_access %}<section class="settings-tab-panel vault-admin-panel" data-settings-panel="module-secret-vault" data-settings-parent="modules" role="tabpanel" hidden>
     <h2>Secret Vault</h2>
     <div class="remote-settings-card vault-admin-card">
       <header><span>Security policy</span></header>
@@ -121,8 +125,8 @@
       {{ switch('secret_vault_sharing_enabled', 'Allow secure collection sharing', 'Users may explicitly share collections with named Kaya users. Private vaults remain private by default.') }}
       <div class="vault-admin-note"><strong>Protect the application key</strong><span>Kaya's ENCRYPTION_KEY must be backed up separately. Database and attachment backups cannot be restored without it; portable .kayavault exports use their own passphrase.</span></div>
     </div>
-  </section>
-  <section class="settings-tab-panel" data-settings-panel="module-dashboard" data-settings-parent="modules" role="tabpanel" hidden>
+  </section>{% endif %}
+  {% if 'dashboard' in module_access %}<section class="settings-tab-panel" data-settings-panel="module-dashboard" data-settings-parent="modules" role="tabpanel" hidden>
     <h2>Dashboard</h2>
     <div class="remote-settings-card">
       <header><span>Global dashboard defaults</span></header>
@@ -135,7 +139,30 @@
         <label><strong>Globally disabled widget keys</strong><small>Comma-separated registry keys. Existing user preferences are preserved.</small><input name="dashboard_globally_disabled_widgets" value="{{ settings.get('dashboard_globally_disabled_widgets','') }}" placeholder="team_users,recent_activity"></label>
       </div>
     </div>
+  </section>{% endif %}
+  {% if 'network_monitor' in module_access %}
+  <section class="settings-tab-panel" data-settings-panel="module-network-monitor" data-settings-parent="modules" role="tabpanel" hidden>
+    <h2>IP/WAN Monitor</h2>
+    <div class="remote-settings-card">
+      <header><span>Default health thresholds</span></header>
+      {% set monitor_field_prefix = 'network_monitor_' %}
+      {% set monitor_show_default_toggle = false %}
+      {% set monitor_using_default_thresholds = false %}
+      {% set monitor_thresholds = {
+        'latency_warning_ms': settings.get('network_monitor_latency_warning_ms', '100')|int,
+        'latency_critical_ms': settings.get('network_monitor_latency_critical_ms', '250')|int,
+        'packet_loss_warning_percent': settings.get('network_monitor_packet_loss_warning_percent', '5')|int,
+        'packet_loss_critical_percent': settings.get('network_monitor_packet_loss_critical_percent', '25')|int,
+        'degraded_threshold': settings.get('network_monitor_degraded_threshold', '2')|int,
+        'failure_threshold': settings.get('network_monitor_failure_threshold', '3')|int,
+        'recovery_threshold': settings.get('network_monitor_recovery_threshold', '3')|int,
+        'recovery_state_enabled': settings.get('network_monitor_recovery_state_enabled', '1') == '1'
+      } %}
+      {% include "_network_monitor_threshold_fields.html" %}
+      <div class="form-actions"><button class="button" type="submit" formaction="/system/site-administration/ip-wan-monitor" formmethod="post">Save monitor defaults</button></div>
+    </div>
   </section>
+  {% endif %}
   <section class="settings-tab-panel active" data-settings-panel="general" data-settings-parent="general" role="tabpanel">
     <h2>General</h2>
 
@@ -347,7 +374,7 @@
     </div>
   </section>
 
-  <section class="settings-tab-panel" data-settings-panel="module-backup-manager" data-settings-parent="modules" role="tabpanel" hidden>
+  {% if 'backup_manager' in module_access %}<section class="settings-tab-panel" data-settings-panel="module-backup-manager" data-settings-parent="modules" role="tabpanel" hidden>
     <h2>Backup Manager</h2>
 
     <div class="remote-settings-card">
@@ -370,11 +397,11 @@
         </div>
       </div>
     </div>
-  </section>
+  </section>{% endif %}
 
-  <section class="settings-tab-panel vlan-ip-admin-panel" data-settings-panel="module-vlan-ip-manager" data-settings-parent="modules" role="tabpanel" hidden>
+  {% if 'vlan_ip_manager' in module_access %}<section class="settings-tab-panel vlan-ip-admin-panel" data-settings-panel="module-vlan-ip-manager" data-settings-parent="modules" role="tabpanel" hidden>
     <h2>VLAN/IP Manager</h2>
-    <p class="muted">Define the network hierarchy used throughout Kaya. VLAN identifies the network segment; Category classifies the allocation or device within it.</p>
+    <p class="muted">Define the network hierarchy and DHCP ranges used throughout Kaya. Categories and custom fields are managed from VLAN/IP Manager.</p>
 
     <div class="remote-settings-card vlan-ip-admin-card">
       <header><span>VLANs</span></header>
@@ -386,19 +413,6 @@
           <td><div class="vlan-ip-row-actions"><button type="submit" formaction="/system/site-administration/vlan-ip-manager" name="admin_action" value="update_vlan:{{ vlan.id }}">Save</button><button class="button secondary" type="submit" formaction="/system/site-administration/vlan-ip-manager" name="admin_action" value="delete_vlan:{{ vlan.id }}">Delete</button></div></td>
         </tr>{% endfor %}
         <tr class="vlan-ip-add-row"><td><input name="vlan_name" placeholder="New VLAN name"></td><td><input name="vlan_subnet" placeholder="192.168.20.0/24"></td><td><input name="vlan_description" placeholder="Optional description"></td><td><button type="submit" formaction="/system/site-administration/vlan-ip-manager" name="admin_action" value="create_vlan">Add VLAN</button></td></tr>
-      </tbody></table></div>
-    </div>
-
-    <div class="remote-settings-card vlan-ip-admin-card">
-      <header><span>Categories</span></header>
-      <p class="muted">Renaming a Category updates existing VLAN/IP records. Disable one to hide it from new selections while preserving history.</p>
-      <div class="table-scroll"><table class="vlan-ip-admin-table category-admin-table"><thead><tr><th>Name</th><th>Available</th><th>Actions</th></tr></thead><tbody>
-        {% for category in vlan_ip_categories or [] %}<tr>
-          <td><input name="category_value_{{ category.id }}" value="{{ category.value }}" required></td>
-          <td><label class="vlan-ip-toggle"><input class="remote-switch" name="category_enabled_{{ category.id }}" type="checkbox" value="1" {% if category.is_active %}checked{% endif %}><span>{{ 'Enabled' if category.is_active else 'Disabled' }}</span></label></td>
-          <td><div class="vlan-ip-row-actions"><button type="submit" formaction="/system/site-administration/vlan-ip-manager" name="admin_action" value="update_category:{{ category.id }}">Save</button><button class="button secondary" type="submit" formaction="/system/site-administration/vlan-ip-manager" name="admin_action" value="delete_category:{{ category.id }}">Delete</button></div></td>
-        </tr>{% endfor %}
-        <tr class="vlan-ip-add-row"><td><input name="category_value" placeholder="New Category name"></td><td><span class="muted">Available by default</span></td><td><button type="submit" formaction="/system/site-administration/vlan-ip-manager" name="admin_action" value="create_category">Add Category</button></td></tr>
       </tbody></table></div>
     </div>
 
@@ -418,9 +432,9 @@
         <tr class="vlan-ip-add-row"><td><input name="scope_name" placeholder="New DHCP range"></td><td><select name="scope_vlan_id"><option value="">Unassigned</option>{% for vlan in vlan_options or [] %}<option value="{{ vlan.id }}">{{ vlan.name }}</option>{% endfor %}</select></td><td><input class="mono" name="scope_start" placeholder="192.168.1.100"></td><td><input class="mono" name="scope_end" placeholder="192.168.1.199"></td><td><input name="scope_description" placeholder="Optional"></td><td><label class="vlan-ip-switch-only" title="Enabled"><input class="remote-switch" name="scope_enabled" type="checkbox" value="1" checked><span class="sr-only">Enabled</span></label></td><td><button type="submit" formaction="/system/site-administration/vlan-ip-manager" name="admin_action" value="create_scope">Add range</button></td></tr>
       </tbody></table></div>
     </div>
-  </section>
+  </section>{% endif %}
 
-  <section class="settings-tab-panel" data-settings-panel="module-dns-manager" data-settings-parent="modules" role="tabpanel" hidden>
+  {% if 'dns_manager' in module_access %}<section class="settings-tab-panel" data-settings-panel="module-dns-manager" data-settings-parent="modules" role="tabpanel" hidden>
     <h2>DNS Manager</h2>
     {% if request.query_params.get('provider_saved') %}<div class="success"><strong>Pi-hole provider saved</strong><span>DNS Manager will treat the selected HA cluster as one logical Pi-hole through its virtual IP. Existing provider history and linked IP records were retained.</span></div>{% endif %}
     {% set dns_default_id = settings.get('dns_default_provider_id', '') %}
@@ -553,9 +567,9 @@
         <button class="button secondary" type="submit" formaction="/system/site-administration/test-dns-provider" formmethod="post" formnovalidate>Test Pi-hole connection</button>
       </div>
     </div>
-  </section>
+  </section>{% endif %}
 
-  <section class="settings-tab-panel" data-settings-panel="module-remote-manager" data-settings-parent="modules" role="tabpanel" hidden>
+  {% if 'remote_manager' in module_access %}<section class="settings-tab-panel" data-settings-panel="module-remote-manager" data-settings-parent="modules" role="tabpanel" hidden>
     <h2>Remote Manager</h2>
 
     <div class="remote-settings-card" id="remote-manager-general">
@@ -721,7 +735,7 @@
       {{ switch('rdp_enable_printing', 'Enable printing', 'Redirect local printers to the remote session') }}
       {{ switch('rdp_enable_drive', 'Enable drive redirection', 'Map a local folder as a drive in the remote session') }}
     </div>
-  </section>
+  </section>{% endif %}
 
   <section class="settings-tab-panel" data-settings-panel="uploads" data-settings-parent="uploads" role="tabpanel" hidden>
     <h2>Uploads</h2>
@@ -841,4 +855,5 @@
 <script src="/static/js/settings_tabs.js?v={{ asset_version }}"></script>
 <script src="/static/js/remote_settings.js?v={{ asset_version }}"></script>
 <script src="/static/js/dns_provider_settings.js?v={{ asset_version }}"></script>
+<script src="/static/js/ip_addresses.js?v={{ asset_version }}"></script>
 {% endblock %}

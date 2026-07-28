@@ -10,12 +10,12 @@
     {% if can_create %}<a class="button" href="/security/secure-send/new">Create secure package</a>{% endif %}
   </div>
 </section>
-<nav class="detail-tabs" aria-label="Secure Send views">
-  <a class="{% if view == 'dashboard' %}active{% endif %}" href="/security/secure-send">Dashboard</a>
-  <a class="{% if view == 'sent' %}active{% endif %}" href="/security/secure-send?view=sent">Sent</a>
-  <a class="{% if view == 'received' %}active{% endif %}" href="/security/secure-send?view=received">Received</a>
-  {% if user.role == 'admin' %}<a class="{% if view == 'manage' %}active{% endif %}" href="/security/secure-send?view=manage">Manage all</a>{% endif %}
-</nav>
+{{ module_navigation('Secure Send navigation', [
+  {'label': 'Dashboard', 'url': '/security/secure-send', 'active': view == 'dashboard'},
+  {'label': 'Sent', 'url': '/security/secure-send?view=sent', 'active': view == 'sent'},
+  {'label': 'Received', 'url': '/security/secure-send?view=received', 'active': view == 'received'},
+  {'label': 'Manage all', 'url': '/security/secure-send?view=manage', 'active': view == 'manage', 'visible': user.role == 'admin'}
+], '/system/site-administration?tab=module-secure-send') }}
 {% if view == 'dashboard' %}
 <div class="secure-send-metrics">
   {% for label, value in [('Active',metrics.active),('Opened today',metrics.opened_today),('Expiring today',metrics.expiring_today),('Expired',metrics.expired)] %}<article><span>{{ label }}</span><strong>{{ value }}</strong></article>{% endfor %}

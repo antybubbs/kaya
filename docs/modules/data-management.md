@@ -63,6 +63,11 @@ Permissions:
 - Admin only for field management.
 - Module edit permissions for editing values.
 
+Navigation:
+
+- Management is contextual to the supported module and is linked from that module's shared navigation bar.
+- It is not a Site Administration module-setting or global sidebar destination.
+
 Risks:
 
 - Values use polymorphic entity references without database-level foreign keys.
@@ -87,6 +92,11 @@ Models:
 Permissions:
 
 - Admin only for list management.
+
+Navigation:
+
+- Management is contextual to the supported module and is linked from that module's shared navigation bar.
+- It is not a Site Administration module-setting or global sidebar destination.
 
 Risks:
 

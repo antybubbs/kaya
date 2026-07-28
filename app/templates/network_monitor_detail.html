@@ -1,19 +1,104 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="module-header">
-  <div class="module-title-row"><div class="module-heading"><p class="breadcrumb"><a href="/networking/ip-wan-monitor">IP/WAN Monitor</a> / Details</p><h1>{{ monitor.display_name or monitor.ip_address.name or monitor.ip_address.address }}</h1><p class="muted mono">{{ monitor.ip_address.address }}</p></div><span class="status-pill {{ monitor.last_status or 'pending' }}">{{ monitor.last_status|capitalize if monitor.last_status else 'Pending' }}</span></div>
-</section>
-<nav class="module-tabs detail-tabs" aria-label="Monitor sections"><a href="#overview">Overview</a><a href="#performance">Performance</a><a href="#history">History</a><a href="#events">Events</a><a href="#settings">Settings</a></nav>
-<section id="overview" class="cards monitor-summary-cards">
-  <div class="card"><span>Availability</span><strong>{{ availability ~ '%' if availability is not none else '-' }}</strong></div><div class="card"><span>Average latency</span><strong>{{ average_latency ~ ' ms' if average_latency is not none else '-' }}</strong></div><div class="card"><span>Checks</span><strong>{{ sample_count }}</strong></div><div class="card"><span>Outages</span><strong>{{ outage_count }}</strong></div><div class="card"><span>Packet loss</span><strong>{{ monitor.last_packet_loss_percent ~ '%' if monitor.last_packet_loss_percent is not none else '-' }}</strong></div>
-</section>
-<section id="performance" class="panel section-gap">
-  <div class="panel-heading"><div><h2>Performance</h2><p class="muted">Stored latency and availability observations. Viewing {{ selected_range }}.</p></div><div class="range-links">{% for value,label in [('24h','24 hours'),('7d','7 days'),('30d','30 days'),('1y','1 year')] %}<a class="button secondary {% if selected_range == value %}active{% endif %}" href="?range={{ value }}#performance">{{ label }}</a>{% endfor %}</div></div>
-  <div class="performance-chart" aria-label="Latency history">{% for point in graph_points %}<span class="{{ 'up' if point.up else 'down' }}" style="height:{{ ((point.latency or 1) / max_latency * 100)|round }}%" title="{{ point.at }} · {{ point.latency if point.latency is not none else '-' }} ms · {{ point.loss if point.loss is not none else '-' }}% loss"></span>{% else %}<p class="muted">No retained observations in this period.</p>{% endfor %}</div>
-</section>
-<section id="history" class="panel section-gap"><div class="panel-heading"><div><h2>Check history</h2><p class="muted">Most recent 100 raw checks in the selected period.</p></div></div><div class="table-wrap"><table><thead><tr><th>When</th><th>Status</th><th>Latency</th><th>Packet loss</th><th>Response</th><th>Failure</th></tr></thead><tbody>{% for check in checks %}<tr><td>{{ check.checked_at }}</td><td><span class="status-pill {{ check.status }}">{{ check.status|capitalize }}</span></td><td>{{ check.latency_ms ~ ' ms' if check.latency_ms is not none else '-' }}</td><td>{{ check.packet_loss_percent ~ '%' if check.packet_loss_percent is not none else '-' }}</td><td>{{ check.response_time_ms ~ ' ms' if check.response_time_ms is not none else '-' }}</td><td>{{ check.error or '-' }}</td></tr>{% else %}<tr><td colspan="6" class="muted">No raw checks in this period.</td></tr>{% endfor %}</tbody></table></div></section>
-<section id="events" class="panel section-gap"><h2>Events and outages</h2><div class="event-feed">{% for event in events %}<article><span class="status-pill {{ event.severity }}">{{ event.severity|capitalize }}</span><div><strong>{{ event.message }}</strong><p class="muted">{{ event.occurred_at }} · {{ event.event_type|replace('_',' ')|title }}</p></div></article>{% else %}<p class="muted">No threshold transitions or outages in this period.</p>{% endfor %}</div></section>
-<section id="settings" class="panel section-gap"><div class="panel-heading"><div><h2>Settings</h2><p class="muted">Checks run in Kaya's background collector. Notification profiles are reserved for a future release.</p></div></div>{% if user.role in ['admin','editor'] %}<form method="post" action="/networking/ip-wan-monitor/{{ monitor.id }}/settings" class="detail-grid"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label>Interval (seconds)<input type="number" min="60" max="86400" name="interval_seconds" value="{{ monitor.interval_seconds }}"></label><label>Timeout (ms)<input type="number" min="500" max="10000" name="timeout_ms" value="{{ monitor.timeout_ms }}"></label><label>Failures before outage<input type="number" min="1" max="20" name="failure_threshold" value="{{ monitor.failure_threshold }}"></label><label>Latency warning (ms)<input type="number" min="1" name="latency_warning_ms" value="{{ monitor.latency_warning_ms }}"></label><label>Latency critical (ms)<input type="number" min="1" name="latency_critical_ms" value="{{ monitor.latency_critical_ms }}"></label><label>Packet loss warning (%)<input type="number" min="1" max="100" name="packet_loss_warning_percent" value="{{ monitor.packet_loss_warning_percent }}"></label><label>Packet loss critical (%)<input type="number" min="1" max="100" name="packet_loss_critical_percent" value="{{ monitor.packet_loss_critical_percent }}"></label><label>Notification profile<input disabled value="Coming in a future release"></label><div class="inline-actions"><button class="button" type="submit">Save settings</button></div></form>{% endif %}</section>
-<section class="panel section-gap"><div class="inline-actions"><form method="post" action="/networking/ip-wan-monitor/{{ monitor.id }}/refresh"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button" type="submit">Check now</button></form>{% if user.role in ['admin','editor'] %}<form method="post" action="/networking/ip-wan-monitor/{{ monitor.id }}/toggle"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit">{{ 'Pause monitor' if monitor.is_enabled else 'Resume monitor' }}</button></form><a class="button secondary" href="/networking/vlan-ip-manager/{{ monitor.ip_address_id }}">Open VLAN/IP record</a><a class="button secondary" href="/networking/dns-manager?tab=clients&amp;client_q={{ monitor.ip_address.address|urlencode }}">Review DNS clients</a>{% endif %}</div></section>
+<div class="monitor-detail" data-monitor-chart='{{ chart_payload|tojson|forceescape }}'>
+  <section class="module-header monitor-detail-header">
+    <div class="module-title-row">
+      <div class="module-heading">
+        <p class="breadcrumb"><a href="/networking/ip-wan-monitor">IP/WAN Monitor</a> / {{ monitor.check_type|upper }}</p>
+        <div class="monitor-title-line">
+          <h1>{{ monitor.display_name or monitor.ip_address.name or monitor.ip_address.address }}</h1>
+          {% set display_status = current_state %}
+          <span class="monitor-health-state {{ display_status }}">{{ display_status|upper }}</span>
+        </div>
+        <div class="monitor-identity">
+          <span>{{ monitor.check_type|upper }} monitor</span><span class="mono">{{ monitor.ip_address.address }}</span>
+          <span>Last check: {% if monitor.last_checked_at %}<time data-utc-time="{{ monitor.last_checked_at }}" data-time-format="relative">{{ monitor.last_checked_at }}</time>{% else %}Never{% endif %}</span>
+          <span>Every {{ monitor.interval_seconds }} seconds</span>
+          {% if monitor.ip_address.vlan %}{% if can_ip_manager %}<a href="/networking/vlan-ip-manager?vlan_id={{ monitor.ip_address.vlan.id }}">VLAN: {{ monitor.ip_address.vlan.name }}</a>{% else %}<span>VLAN: {{ monitor.ip_address.vlan.name }}</span>{% endif %}{% endif %}
+        </div>
+      </div>
+      <div class="module-actions monitor-primary-actions">
+        {% if user.role in ['admin','editor'] %}
+        <form method="post" action="/networking/ip-wan-monitor/{{ monitor.id }}/refresh"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button" type="submit" {% if not monitor.is_enabled %}disabled{% endif %}>Check now</button></form>
+        <form method="post" action="/networking/ip-wan-monitor/{{ monitor.id }}/toggle"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit">{{ 'Pause' if monitor.is_enabled else 'Resume' }}</button></form>
+        {% if can_ip_manager %}<a class="button secondary" href="/networking/vlan-ip-manager/{{ monitor.ip_address_id }}/edit">Edit</a>{% endif %}
+        {% endif %}
+      </div>
+    </div>
+  </section>
+
+  <section class="cards monitor-summary-cards monitor-detail-summary">
+    <div class="card"><span>Current response</span><strong>{{ monitor.last_latency_ms ~ ' ms' if monitor.last_latency_ms is not none else '-' }}</strong><small>Latest check</small></div>
+    <div class="card"><span>Average response</span><strong>{{ average_latency ~ ' ms' if average_latency is not none else '-' }}</strong><small>{{ selected_range }} average</small></div>
+    <div class="card"><span>Availability</span><strong>{{ availability ~ '%' if availability is not none else '-' }}</strong><small>{{ selected_range }}</small></div>
+    <div class="card"><span>Packet loss</span><strong>{{ average_packet_loss ~ '%' if average_packet_loss is not none else '-' }}</strong><small>{{ selected_range }} average</small></div>
+    <div class="card"><span>Monitoring since</span><strong class="monitor-date">{{ monitor.created_at.strftime('%d %b %Y') if monitor.created_at else '-' }}</strong><small>{{ sample_count }} retained samples</small></div>
+    <div class="card"><span>Last incident</span><strong class="monitor-date">{% if last_incident %}<time data-utc-time="{{ last_incident.started_at }}" data-time-format="relative">{{ last_incident.started_at }}</time>{% else %}None{% endif %}</strong><small>{{ outage_count }} in range</small></div>
+  </section>
+
+  <nav class="module-tabs detail-tabs" aria-label="Monitor sections"><a href="#overview">Overview</a><a href="#performance">Performance</a><a href="#incidents">Incidents <span class="table-chip">{{ outage_count }}</span></a><a href="#checks">Checks</a><a href="#settings">Settings</a></nav>
+
+  <section id="overview" class="monitor-tab-panel">
+    <div class="monitor-overview-grid">
+      <article class="panel monitor-health-panel">
+        <div class="panel-heading"><div><h2>Health</h2><p class="muted">{{ monitor.state_reason or 'Current operational state' }}</p></div><span class="status-pill {{ current_state }}">{{ current_state|capitalize }}</span></div>
+        <dl class="monitor-facts">
+          <div><dt>Current latency</dt><dd>{{ monitor.last_latency_ms ~ ' ms' if monitor.last_latency_ms is not none else '-' }}</dd></div>
+          <div><dt>Packet loss</dt><dd>{{ monitor.last_packet_loss_percent ~ '%' if monitor.last_packet_loss_percent is not none else '-' }}</dd></div>
+          <div><dt>Monitoring interval</dt><dd>{{ monitor.interval_seconds }} seconds</dd></div>
+          <div><dt>Consecutive failures</dt><dd>{{ monitor.consecutive_failures }}</dd></div>
+          <div><dt>Consecutive successes</dt><dd>{{ monitor.consecutive_successes }}</dd></div>
+          <div><dt>Open incident</dt><dd>{{ 'Yes' if last_incident and not last_incident.ended_at else 'No' }}</dd></div>
+        </dl>
+      </article>
+      <article class="panel monitor-timeline-panel">
+        <div class="panel-heading"><div><h2>Uptime timeline</h2><p class="muted">Recent retained observations</p></div></div>
+        <div class="monitor-heartbeats" aria-label="Recent uptime observations">{% for point in graph_points[-60:] %}<a class="heartbeat-block {{ point.status }}" href="#checks" title="{{ point.at }} · {{ point.status|title }} · {{ point.latency if point.latency is not none else '-' }} ms · {{ point.loss if point.loss is not none else '-' }}% loss"></a>{% else %}<span class="muted">Waiting for the first observation.</span>{% endfor %}</div>
+        <div class="heartbeat-legend"><span class="up">Healthy</span><span class="warning">Degraded</span><span class="down">Down</span><span class="pending">Paused/no data</span></div>
+      </article>
+    </div>
+    <article class="panel section-gap monitor-chart-panel"><div class="panel-heading"><div><h2>Response time</h2><p class="muted">Hover for observations, drag to zoom, mouse wheel to refine, double-click to reset.</p></div><button class="button secondary" type="button" data-chart-export="latency">Export PNG</button></div><div class="monitor-chart" data-monitor-latency-chart role="img" aria-label="Interactive response time chart"></div><p class="muted chart-empty" hidden data-chart-empty>No retained observations in this period.</p></article>
+  </section>
+
+  <section id="performance" class="monitor-tab-panel">
+    <article class="panel">
+      <div class="panel-heading"><div><h2>Performance analytics</h2><p class="muted">Statistics use raw observations and retained aggregate buckets in the selected range.</p></div><div class="range-links">{% for value,label in [('1h','1 hour'),('6h','6 hours'),('24h','24 hours'),('7d','7 days'),('30d','30 days'),('90d','90 days'),('1y','1 year')] %}<a class="button secondary {% if selected_range == value %}active{% endif %}" href="?range={{ value }}#performance">{{ label }}</a>{% endfor %}</div></div>
+      <div class="monitor-stat-grid">
+        {% for label,value in [('Availability', availability ~ '%' if availability is not none else '-'),('Average latency', average_latency ~ ' ms' if average_latency is not none else '-'),('Median latency', median_latency ~ ' ms' if median_latency is not none else '-'),('Minimum', minimum_latency ~ ' ms' if minimum_latency is not none else '-'),('Maximum', maximum_latency ~ ' ms' if maximum_latency is not none else '-'),('95th percentile', p95_latency ~ ' ms' if p95_latency is not none else '-'),('99th percentile', p99_latency ~ ' ms' if p99_latency is not none else '-'),('Packet loss', average_packet_loss ~ '%' if average_packet_loss is not none else '-'),('Jitter', average_jitter ~ ' ms' if average_jitter is not none else '-'),('Successful checks', successful_checks),('Failed checks', failed_checks),('Downtime', downtime_seconds ~ ' sec'),('Recovery time', average_recovery_seconds ~ ' sec' if average_recovery_seconds is not none else '-'),('Incidents', outage_count)] %}<div><span>{{ label }}</span><strong>{{ value }}</strong></div>{% endfor %}
+      </div>
+    </article>
+    <div class="monitor-mini-chart-grid section-gap"><article class="panel"><h3>Latency</h3><div class="monitor-mini-chart" data-monitor-mini="latency"></div></article><article class="panel"><h3>Packet loss</h3><div class="monitor-mini-chart" data-monitor-mini="loss"></div></article><article class="panel"><h3>Jitter</h3><div class="monitor-mini-chart" data-monitor-mini="jitter"></div></article><article class="panel"><h3>Availability</h3><div class="monitor-mini-chart" data-monitor-mini="availability"></div></article></div>
+  </section>
+
+  <section id="incidents" class="monitor-tab-panel">
+    <div class="panel-heading"><div><h2>Incidents</h2><p class="muted">Automatically grouped critical threshold breaches and outages.</p></div></div>
+    <div class="incident-grid">{% for row in incident_rows %}<article class="panel incident-card" id="incident-{{ row.incident.id }}"><div class="incident-card-heading"><div><span class="status-pill {{ 'critical' if not row.incident.ended_at else 'healthy' }}">{{ 'Open' if not row.incident.ended_at else 'Resolved' }}</span><h3>{{ row.incident.incident_type|capitalize }} incident #{{ row.incident.id }}</h3></div><strong>{{ row.duration_seconds }} sec</strong></div><dl class="monitor-facts"><div><dt>Started</dt><dd>{{ row.incident.started_at }}</dd></div><div><dt>Ended</dt><dd>{{ row.incident.ended_at or 'Ongoing' }}</dd></div><div><dt>Cause</dt><dd>{{ row.incident.failure_reason or 'Threshold exceeded' }}</dd></div><div><dt>Failed checks</dt><dd>{{ row.failed_checks }}</dd></div><div><dt>Peak latency</dt><dd>{{ row.peak_latency ~ ' ms' if row.peak_latency is not none else '-' }}</dd></div></dl></article>{% else %}<article class="panel empty-state"><h2>No incidents</h2><p class="muted">No confirmed degraded condition or outage overlaps this range.</p></article>{% endfor %}</div>
+    <article class="panel section-gap"><h2>Event timeline</h2><div class="event-feed">{% for event in events %}<article><span class="status-pill {{ event.severity }}">{{ event.severity|capitalize }}</span><div><strong>{{ event.message }}</strong><p class="muted">{{ event.occurred_at }} · {{ event.event_type|replace('_',' ')|title }}</p></div></article>{% else %}<p class="muted">No transitions in this period.</p>{% endfor %}</div></article>
+  </section>
+
+  <section id="checks" class="monitor-tab-panel panel">
+    <div class="panel-heading"><div><h2>Checks</h2><p class="muted">Most recent 100 raw observations in the selected range.</p></div><div class="inline-actions"><label class="compact-field">Status<select data-check-filter><option value="all">All</option><option value="up">Healthy</option><option value="warning">Warning</option><option value="down">Failed</option></select></label><a class="button secondary" href="/networking/ip-wan-monitor/{{ monitor.id }}/checks.csv?range={{ selected_range }}">Export CSV</a></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Timestamp</th><th>Status</th><th>Latency</th><th>Packet loss</th><th>Response</th><th>Failure reason</th></tr></thead><tbody>{% for check in checks %}{% set check_health = check.health_state or ('offline' if check.status != 'up' else 'critical' if (check.packet_loss_percent is not none and check.packet_loss_percent >= thresholds.packet_loss_critical_percent) or (check.latency_ms is not none and check.latency_ms >= thresholds.latency_critical_ms) else 'warning' if (check.packet_loss_percent is not none and check.packet_loss_percent >= thresholds.packet_loss_warning_percent) or (check.latency_ms is not none and check.latency_ms >= thresholds.latency_warning_ms) else 'healthy') %}<tr data-check-status="{{ check_health }}"><td>{{ check.checked_at }}</td><td><span class="status-pill {{ check_health }}">{{ check_health|capitalize }}</span></td><td>{{ check.latency_ms ~ ' ms' if check.latency_ms is not none else '-' }}</td><td>{{ check.packet_loss_percent ~ '%' if check.packet_loss_percent is not none else '-' }}</td><td>{{ check.response_time_ms ~ ' ms' if check.response_time_ms is not none else '-' }}</td><td>{{ check.error or '-' }}</td></tr>{% else %}<tr><td colspan="6" class="muted">No raw checks in this period.</td></tr>{% endfor %}</tbody></table></div>
+  </section>
+
+  <section id="settings" class="monitor-tab-panel panel">
+    <div class="panel-heading"><div><h2>Settings</h2><p class="muted">Collection and incident thresholds. Notifications remain reserved for a future release.</p></div></div>
+    {% if user.role in ['admin','editor'] %}
+    <form method="post" action="/networking/ip-wan-monitor/{{ monitor.id }}/settings" class="monitor-detail-settings">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="detail-grid"><label>Interval (seconds)<input type="number" min="5" max="86400" name="interval_seconds" value="{{ monitor.interval_seconds }}" required></label><label>Timeout (ms)<input type="number" min="500" max="10000" name="timeout_ms" value="{{ monitor.timeout_ms }}" required></label><label class="checkbox-label"><input type="checkbox" name="maintenance_mode" value="1" {% if monitor.is_in_maintenance %}checked{% endif %}> Maintenance mode</label></div>
+      {% set monitor_field_prefix = '' %}
+      {% set monitor_using_default_thresholds = monitor.use_default_thresholds %}
+      {% set monitor_thresholds = thresholds %}
+      {% include "_network_monitor_threshold_fields.html" %}
+      <div class="inline-actions"><button class="button" type="submit">Save settings</button>{% if can_ip_manager %}<a class="button secondary" href="/networking/vlan-ip-manager/{{ monitor.ip_address_id }}">Open VLAN/IP record</a>{% endif %}{% if can_dns %}<a class="button secondary" href="/networking/dns-manager?tab=clients&amp;client_q={{ monitor.ip_address.address|urlencode }}">Review DNS</a>{% endif %}{% if can_remote and remote_access %}<a class="button secondary" href="/remote-manager/{{ remote_access.id }}/session">Connect {{ remote_access.protocol|upper }}</a>{% endif %}</div>
+    </form>
+    {% else %}
+    <dl class="monitor-facts"><div><dt>Threshold source</dt><dd>{{ 'Kaya defaults' if monitor.use_default_thresholds else 'Custom' }}</dd></div><div><dt>Latency</dt><dd>{{ thresholds.latency_warning_ms }} ms warning / {{ thresholds.latency_critical_ms }} ms critical</dd></div><div><dt>Packet loss</dt><dd>{{ thresholds.packet_loss_warning_percent }}% warning / {{ thresholds.packet_loss_critical_percent }}% critical</dd></div><div><dt>Confirmation</dt><dd>{{ thresholds.degraded_threshold }} degraded / {{ thresholds.failure_threshold }} failed / {{ thresholds.recovery_threshold }} recovered</dd></div></dl>
+    {% endif %}
+  </section>
+</div>
+<script src="/static/vendor/echarts/echarts.min.js?v=6.1.0" defer></script>
 <script src="/static/js/network_monitor.js?v={{ asset_version }}" defer></script>
+<script src="/static/js/ip_addresses.js?v={{ asset_version }}" defer></script>
 {% endblock %}

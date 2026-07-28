@@ -8,6 +8,9 @@
       {% if dashboard_config.monitor_mode_enabled %}<button class="button secondary" type="button" data-monitor-mode>Monitor mode</button>{% endif %}
     </div>
   </section>
+  {{ module_navigation('Dashboard navigation', [
+    {'label': 'Overview', 'url': '/dashboard', 'active': true}
+  ], '/system/site-administration?tab=module-dashboard') }}
   <div class="dashboard-save-state" data-save-state role="status" aria-live="polite"></div>
   <section class="dashboard-grid" data-dashboard-grid aria-label="Dashboard widgets">
   {# Compatibility markers for the preserved dashboard sections: compute-resource-grid, dashboard-dns-summary, VM / Docker Manager. #}

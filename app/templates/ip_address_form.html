@@ -17,11 +17,12 @@
   <label>Description<textarea name="description">{{ record.description if record and record.description else 'Created from DNS observation' if dns_client else '' }}</textarea></label>
   <label>Static/Dynamic<select name="assignment_type">{% for option in assignment_types %}<option value="{{ option }}" {% if (record and record.assignment_type == option) or (not record and selected_assignment_type|default('Static') == option) %}selected{% endif %}>{{ option }}</option>{% endfor %}</select></label>
   <div class="wide monitor-settings">
-    <label class="checkbox-label"><input name="monitor_enabled" type="checkbox" value="1" {% if monitor and monitor.is_enabled %}checked{% endif %}> Show in IP/WAN Monitor</label>
+    <div class="monitor-threshold-heading"><label class="checkbox-label"><input name="monitor_enabled" type="checkbox" value="1" {% if monitor and monitor.is_enabled %}checked{% endif %}> Show in IP/WAN Monitor</label><label class="checkbox-label"><input name="monitor_maintenance_mode" type="checkbox" value="1" {% if monitor and monitor.is_in_maintenance %}checked{% endif %}> Maintenance mode</label></div>
     <div class="form-grid">
       <label>Monitor display name<input name="monitor_display_name" placeholder="Uses name or IP address if blank" value="{{ monitor.display_name if monitor and monitor.display_name else '' }}"></label>
       <label>Check interval<select name="monitor_interval_seconds">
         {% set interval = monitor.interval_seconds if monitor else 300 %}
+        <option value="5" {% if interval == 5 %}selected{% endif %}>Live · 5 seconds</option>
         <option value="60" {% if interval == 60 %}selected{% endif %}>1 minute</option>
         <option value="300" {% if interval == 300 %}selected{% endif %}>5 minutes</option>
         <option value="900" {% if interval == 900 %}selected{% endif %}>15 minutes</option>
@@ -34,6 +35,8 @@
         <option value="5000" {% if timeout == 5000 %}selected{% endif %}>5 seconds</option>
       </select></label>
     </div>
+    {% set monitor_field_prefix = 'monitor_' %}
+    {% include "_network_monitor_threshold_fields.html" %}
   </div>
   <div class="wide monitor-settings">
     <label class="checkbox-label"><input name="remote_enabled" type="checkbox" value="1" {% if remote and remote.is_enabled %}checked{% endif %}> Show in Remote Manager</label>
@@ -158,4 +161,5 @@
   <button type="submit">Save</button>
 </form>
 </section>
+<script src="/static/js/ip_addresses.js?v={{ asset_version }}" defer></script>
 {% endblock %}

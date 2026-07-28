@@ -17,6 +17,8 @@ Kaya uses a shared responsive layer in `app/static/css/responsive.css`. Desktop 
 
 Wide data tables retain their full desktop columns and are placed in keyboard-focusable, horizontally scrollable regions on narrow screens. This avoids hiding operational fields while containing overflow to the table panel.
 
+Shared module navigation uses touch-sized controls and horizontal scroll containment on phones. Module heroes, action groups, settings navigation, long identifiers and code blocks wrap or scroll within their own component instead of widening the page.
+
 ## PWA security model
 
 - The service worker only handles same-origin `GET` requests.

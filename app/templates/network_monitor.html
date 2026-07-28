@@ -7,22 +7,27 @@
       <p class="muted module-description">Background availability, latency, packet-loss, event and outage history for managed IP addresses.</p>
     </div>
     <div class="module-actions">
-      <label class="monitor-refresh-control"><span class="monitor-refresh-label">Collection rate</span>
-        <select data-monitor-refresh-rate data-monitor-csrf="{{ csrf_token }}">
-          <option value="default">Record schedules</option>
-          <option value="live">Live</option>
-          <option value="5000">5 seconds</option>
-          <option value="10000">10 seconds</option>
-          <option value="60000">1 minute</option>
-          <option value="300000">5 minutes</option>
+      {% if user.role in ['admin','editor'] %}
+      <label class="monitor-refresh-control"><span class="monitor-refresh-label">Active check rate</span>
+        <select data-monitor-refresh-rate data-monitor-csrf="{{ csrf_token }}" aria-describedby="monitor-refresh-help">
+          <option value="live"{% if dashboard_interval is none or dashboard_interval == 5 %} selected{% endif %}>Live · every 5 seconds</option>
+          <option value="standard"{% if dashboard_interval == 30 %} selected{% endif %}>Standard · every 30 seconds</option>
+          <option value="relaxed"{% if dashboard_interval == 60 %} selected{% endif %}>Relaxed · every 60 seconds</option>
+          <option value="paused">Paused</option>
         </select>
       </label>
+      <small class="muted" id="monitor-refresh-help">Temporarily overrides backend checks while this dashboard is visible. Saved per-monitor intervals resume when you leave.</small>
+      {% endif %}
       <span class="module-stat">Monitors <strong>{{ total }}</strong></span>
     </div>
   </div>
 </section>
+{{ module_navigation('IP/WAN Monitor navigation', [
+  {'label': 'Overview', 'url': '/networking/ip-wan-monitor', 'active': true}
+]) }}
 <div data-monitor-content>
   {% include "_network_monitor_cards.html" %}
 </div>
+<script src="/static/vendor/echarts/echarts.min.js?v=6.1.0" defer></script>
 <script src="/static/js/network_monitor.js?v={{ asset_version }}" defer></script>
 {% endblock %}

@@ -22,11 +22,13 @@
   </div>
 </section>
 
-<nav class="module-tabs section-gap vlan-ip-view-tabs" aria-label="VLAN/IP views">
-  <a class="{% if active_view == 'managed' %}active{% endif %}" href="/networking/vlan-ip-manager">Managed records</a>
-  <a class="{% if active_view == 'observed' %}active{% endif %}" href="/networking/vlan-ip-manager?view=observed">Observed DNS clients <span class="table-chip">{{ observed_total }}</span></a>
-  <a class="{% if active_view == 'leases' %}active{% endif %}" href="/networking/vlan-ip-manager?view=leases">DHCP leases</a>
-</nav>
+{{ module_navigation('VLAN/IP Manager navigation', [
+  {'label': 'Managed records', 'url': '/networking/vlan-ip-manager', 'active': active_view == 'managed'},
+  {'label': 'Observed DNS clients', 'url': '/networking/vlan-ip-manager?view=observed', 'active': active_view == 'observed', 'badge': observed_total, 'badge_label': 'observed clients'},
+  {'label': 'DHCP leases', 'url': '/networking/vlan-ip-manager?view=leases', 'active': active_view == 'leases'},
+  {'label': 'Categories', 'url': '/data/categories?module=ip_addresses', 'visible': user.role == 'admin'},
+  {'label': 'Custom Fields', 'url': '/data/custom-fields?module=ip_addresses', 'visible': user.role == 'admin'}
+], '/system/site-administration?tab=module-vlan-ip-manager', 'section-gap vlan-ip-view-tabs') }}
 
 {% if active_view == 'observed' %}
 <section class="panel">

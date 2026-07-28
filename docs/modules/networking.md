@@ -31,7 +31,7 @@ Workflows:
 - List/search/filter IP records by VLAN, then Category.
 - Create/edit IP address records.
 - Bulk update VLAN, Category, and assignment type.
-- Configure VLANs, Categories, and multiple DHCP ranges under Site Administration → Module Settings → VLAN/IP Manager.
+- Configure VLANs and multiple DHCP ranges under Site Administration → Module Settings → VLAN/IP Manager; manage Categories from the VLAN/IP Manager navigation bar.
 - Review current and historical DHCP leases independently of provider availability.
 - Attribute retained DNS traffic to the client IP and lease interval observed at query time.
 - Ping an address.
