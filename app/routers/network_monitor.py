@@ -17,9 +17,10 @@ from app.routers.auth import require_editor, require_module_access, require_user
 from app.services.audit import write_audit
 from app.services.network_monitor import (
     DASHBOARD_INTERVALS, active_dashboard_interval, effective_monitor_thresholds,
-    monitor_label, run_monitor_check_by_id, set_dashboard_interval_override,
+    latency_label, live_latency_label, monitor_label, run_monitor_check_by_id, set_dashboard_interval_override,
     validate_monitor_timing, validate_threshold_values,
 )
+from app.services.client_ip import client_ip as trusted_client_ip
 
 router = APIRouter(prefix="/networking/ip-wan-monitor", dependencies=[Depends(require_module_access("network_monitor"))])
 templates = Jinja2Templates(directory="app/templates")
@@ -38,7 +39,7 @@ def monitor_state(monitor: NetworkMonitor) -> str:
     )
 
 
-def monitor_rows(db: Session) -> tuple[list[dict], int, int, int, int]:
+def monitor_rows(db: Session) -> tuple[list[dict], dict[str, int]]:
     monitors = db.query(NetworkMonitor).options(selectinload(NetworkMonitor.ip_address)).order_by(NetworkMonitor.display_name.asc(), NetworkMonitor.id.asc()).all()
     since = datetime.utcnow() - timedelta(hours=24)
     monitor_ids = [monitor.id for monitor in monitors]
@@ -69,44 +70,48 @@ def monitor_rows(db: Session) -> tuple[list[dict], int, int, int, int]:
             recent_subquery,
             NetworkMonitorCheck.id == recent_subquery.c.check_id,
         ).filter(
-            recent_subquery.c.recent_rank <= 120,
+            recent_subquery.c.recent_rank <= 400,
         ).order_by(NetworkMonitorCheck.monitor_id.asc(), NetworkMonitorCheck.checked_at.asc()).all()
         for check in recent_checks:
             recent_by_monitor.setdefault(check.monitor_id, []).append(check)
     rows = []
-    up_count = 0
-    down_count = 0
-    warning_count = 0
+    state_counts = {state: 0 for state in ("healthy", "warning", "critical", "recovering", "offline", "paused", "maintenance", "unknown")}
     for monitor in monitors:
         thresholds = effective_monitor_thresholds(db, monitor)
         state = monitor_state(monitor)
         total_checks, total_up, average_latency = stats.get(monitor.id, (0, 0, None))
-        if state == "healthy":
-            up_count += 1
-        if state == "offline":
-            down_count += 1
-        if state in {"warning", "critical", "recovering"}:
-            warning_count += 1
+        state_counts[state if state in state_counts else "unknown"] += 1
         history = recent_by_monitor.get(monitor.id, [])
+        chart_points = [{
+            "id": check.id, "at": check.checked_at.isoformat() + "Z",
+            "latency": check.latency_ms, "loss": check.packet_loss_percent,
+            "status": check.health_state or point_health(
+                thresholds, check.latency_ms, check.packet_loss_percent,
+                check.status == "up",
+            ),
+        } for check in history]
+        if not chart_points and monitor.last_checked_at:
+            chart_points.append({
+                "id": 0, "at": monitor.last_checked_at.isoformat() + "Z",
+                "latency": monitor.last_latency_ms,
+                "loss": monitor.last_packet_loss_percent,
+                "status": state,
+            })
         rows.append({
             "monitor": monitor,
             "state": state,
             "label": monitor_label(monitor),
             "history": history,
             "thresholds": thresholds,
-            "chart_points": [{
-                "id": check.id, "at": check.checked_at.isoformat() + "Z",
-                "latency": check.latency_ms, "loss": check.packet_loss_percent,
-                "status": check.health_state or point_health(thresholds, check.latency_ms, check.packet_loss_percent, check.status == "up"),
-            } for check in history],
+            "chart_points": chart_points,
             "uptime": round((total_up / total_checks) * 100, 1) if total_checks else None,
-            "average_latency": round(average_latency) if average_latency is not None else None,
+            "average_latency": round(float(average_latency), 1) if average_latency is not None else None,
         })
-    return rows, len(monitors), up_count, down_count, warning_count
+    return rows, state_counts
 
 
 def dashboard_context(db: Session) -> dict:
-    rows, total, up_count, down_count, warning_count = monitor_rows(db)
+    rows, state_counts = monitor_rows(db)
     dashboard_interval = active_dashboard_interval()
     for row in rows:
         row["effective_interval"] = dashboard_interval or row["monitor"].interval_seconds
@@ -116,13 +121,24 @@ def dashboard_context(db: Session) -> dict:
         func.sum(case((NetworkMonitorCheck.status == "up", 1), else_=0)),
         func.avg(NetworkMonitorCheck.latency_ms),
     ).filter(NetworkMonitorCheck.checked_at >= since).one()
+    checks_per_minute = round(sum(
+        60 / max(row["effective_interval"], 5)
+        for row in rows if row["monitor"].is_enabled
+    ), 1)
     return {
-        "rows": rows, "total": total, "up_count": up_count, "down_count": down_count,
-        "warning_count": warning_count, "average_latency": round(avg_latency) if avg_latency is not None else None,
+        "rows": rows, "total": len(rows), "up_count": state_counts["healthy"],
+        "warning_count": state_counts["warning"], "critical_count": state_counts["critical"],
+        "recovering_count": state_counts["recovering"], "down_count": state_counts["offline"],
+        "paused_count": state_counts["paused"], "maintenance_count": state_counts["maintenance"],
+        "unknown_count": state_counts["unknown"],
+        "active_incidents": db.query(func.count(NetworkMonitorOutage.id)).filter(NetworkMonitorOutage.ended_at.is_(None)).scalar() or 0,
+        "average_latency": round(float(avg_latency), 1) if avg_latency is not None else None,
         "availability_24h": round((up_checks / total_checks) * 100, 2) if total_checks else None,
-        "checks_per_minute": round(sum(60 / max(row["effective_interval"], 5) for row in rows if row["monitor"].is_enabled), 1),
+        "checks_per_minute": int(checks_per_minute) if checks_per_minute.is_integer() else checks_per_minute,
         "dashboard_interval": dashboard_interval,
         "latest_observation_id": db.query(func.max(NetworkMonitorCheck.id)).scalar() or 0,
+        "latency_label": latency_label,
+        "live_latency_label": live_latency_label,
     }
 
 
@@ -133,7 +149,7 @@ def range_start(value: str) -> datetime:
     return datetime.utcnow() - duration
 
 
-def percentile(values: list[int], quantile: float) -> int | None:
+def percentile(values: list[float], quantile: float) -> float | None:
     if not values:
         return None
     ordered = sorted(values)
@@ -142,10 +158,10 @@ def percentile(values: list[int], quantile: float) -> int | None:
     upper = math.ceil(index)
     if lower == upper:
         return ordered[lower]
-    return round(ordered[lower] + (ordered[upper] - ordered[lower]) * (index - lower))
+    return round(ordered[lower] + (ordered[upper] - ordered[lower]) * (index - lower), 2)
 
 
-def point_health(thresholds: dict, latency: int | None, loss: int | None, is_up: bool) -> str:
+def point_health(thresholds: dict, latency: float | None, loss: int | None, is_up: bool) -> str:
     if not is_up:
         return "offline"
     if (loss is not None and loss >= thresholds["packet_loss_critical_percent"]) or (latency is not None and latency >= thresholds["latency_critical_ms"]):
@@ -172,7 +188,7 @@ def display_points(points: list[dict], selected_range: str) -> list[dict]:
         loss_rows = [row for row in rows if row["loss"] is not None]
         result.append({
             "at": bucket,
-            "latency": round(sum(row["latency"] * row["samples"] for row in latency_rows) / sum(row["samples"] for row in latency_rows)) if latency_rows else None,
+            "latency": round(sum(row["latency"] * row["samples"] for row in latency_rows) / sum(row["samples"] for row in latency_rows), 3) if latency_rows else None,
             "loss": round(sum(row["loss"] * row["samples"] for row in loss_rows) / sum(row["samples"] for row in loss_rows)) if loss_rows else None,
             "samples": sample_count,
             "up_count": sum(row["up_count"] for row in rows),
@@ -181,12 +197,18 @@ def display_points(points: list[dict], selected_range: str) -> list[dict]:
     return result
 
 
-def monitor_detail_context(db: Session, monitor: NetworkMonitor, selected_range: str = "24h") -> dict:
+def monitor_detail_context(
+    db: Session,
+    monitor: NetworkMonitor,
+    selected_range: str = "24h",
+    check_page: int = 1,
+    check_status: str = "all",
+    check_q: str = "",
+) -> dict:
     thresholds = effective_monitor_thresholds(db, monitor)
     start = range_start(selected_range)
     checks = db.query(NetworkMonitorCheck).filter(NetworkMonitorCheck.monitor_id == monitor.id, NetworkMonitorCheck.checked_at >= start).order_by(NetworkMonitorCheck.checked_at.asc()).all()
     statistics = db.query(NetworkMonitorStatistic).filter(NetworkMonitorStatistic.monitor_id == monitor.id, NetworkMonitorStatistic.bucket_start >= start).order_by(NetworkMonitorStatistic.bucket_start.asc()).all()
-    history = list(reversed(checks[-100:]))
     events = db.query(NetworkMonitorEvent).filter(NetworkMonitorEvent.monitor_id == monitor.id, NetworkMonitorEvent.occurred_at >= start).order_by(NetworkMonitorEvent.occurred_at.desc()).limit(100).all()
     outages = db.query(NetworkMonitorOutage).filter(
         NetworkMonitorOutage.monitor_id == monitor.id,
@@ -224,12 +246,32 @@ def monitor_detail_context(db: Session, monitor: NetworkMonitor, selected_range:
         "incidents": [{"id": row.id, "start": row.started_at.isoformat() + "Z", "end": row.ended_at.isoformat() + "Z" if row.ended_at else None} for row in outages],
         "thresholds": {"warning": thresholds["latency_warning_ms"], "critical": thresholds["latency_critical_ms"]},
     }
+    filtered_checks = []
+    clean_check_q = check_q.strip().lower()
+    for check in reversed(checks):
+        health = check.health_state or point_health(
+            thresholds, check.latency_ms, check.packet_loss_percent, check.status == "up"
+        )
+        if check_status != "all" and health != check_status:
+            continue
+        searchable = " ".join(str(value or "") for value in (
+            check.checked_at, health, check.status, check.latency_ms,
+            check.packet_loss_percent, check.error,
+        )).lower()
+        if clean_check_q and clean_check_q not in searchable:
+            continue
+        filtered_checks.append(check)
+    check_page_size = 50
+    check_pages = max(1, math.ceil(len(filtered_checks) / check_page_size))
+    check_page = min(check_page, check_pages)
+    check_offset = (check_page - 1) * check_page_size
+    history = filtered_checks[check_offset:check_offset + check_page_size]
     return {
         "monitor": monitor, "selected_range": selected_range, "checks": history, "events": events,
         "current_state": monitor_state(monitor),
         "outages": outages, "incident_rows": incident_rows, "graph_points": graph_points, "chart_payload": chart_payload,
         "sample_count": sample_count, "availability": round((up_count / sample_count) * 100, 2) if sample_count else None,
-        "average_latency": round(latency_total / latency_count) if latency_count else None,
+        "average_latency": round(latency_total / latency_count, 2) if latency_count else None,
         "median_latency": percentile(chart_latencies, .5), "minimum_latency": min(chart_latencies, default=None),
         "maximum_latency": max(chart_latencies, default=None), "p95_latency": percentile(chart_latencies, .95),
         "p99_latency": percentile(chart_latencies, .99), "average_jitter": round(sum(jitter_values) / len(jitter_values)) if jitter_values else None,
@@ -239,6 +281,10 @@ def monitor_detail_context(db: Session, monitor: NetworkMonitor, selected_range:
         "last_incident": latest_incident,
         "thresholds": thresholds,
         "outage_count": len(outages),
+        "latency_label": latency_label,
+        "check_count": len(filtered_checks), "check_page": check_page,
+        "check_pages": check_pages, "check_status": check_status,
+        "check_q": check_q.strip(),
     }
 
 
@@ -273,7 +319,7 @@ def live_dashboard_observations(after: int = Query(0, ge=0), db: Session = Depen
         row.monitor_id: row for row in db.query(NetworkMonitorOutage).filter(NetworkMonitorOutage.ended_at.is_(None)).all()
     }
     observations = []
-    previous_latency: dict[int, int | None] = {}
+    previous_latency: dict[int, float | None] = {}
     for check in checks:
         monitor = monitors.get(check.monitor_id)
         if not monitor:
@@ -302,7 +348,11 @@ def live_dashboard_observations(after: int = Query(0, ge=0), db: Session = Depen
             "interval_seconds": row["effective_interval"],
             "incident_started_at": open_incidents[row["monitor"].id].started_at.isoformat() + "Z" if row["monitor"].id in open_incidents else None,
         } for row in context["rows"]],
-        "summary": {key: context[key] for key in ("up_count", "down_count", "warning_count", "average_latency", "availability_24h", "checks_per_minute")},
+        "summary": {key: context[key] for key in (
+            "total", "up_count", "warning_count", "critical_count", "recovering_count",
+            "down_count", "paused_count", "maintenance_count", "unknown_count",
+            "active_incidents", "average_latency", "availability_24h", "checks_per_minute",
+        )},
         "has_more": len(checks) == 1000,
     })
 
@@ -323,7 +373,7 @@ def set_collection_rate(
     if changed:
         interval = DASHBOARD_INTERVALS.get(mode)
         detail = f"Dashboard backend interval set to {interval} seconds" if interval else "Dashboard backend interval override released"
-        write_audit(db, user, "update", "network_monitor_collection_rate", None, request.client.host if request.client else None, detail=detail)
+        write_audit(db, user, "update", "network_monitor_collection_rate", None, trusted_client_ip(request), detail=detail)
     return JSONResponse({"ok": True, "mode": mode, "effective_interval_seconds": active_dashboard_interval()})
 
 
@@ -334,17 +384,28 @@ def refresh_monitor(request: Request, monitor_id: int, csrf_token: str = Form(..
     if not monitor or not monitor.is_enabled:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Monitor not found")
     run_monitor_check_by_id(monitor.id)
-    write_audit(db, user, "check_now", "network_monitor", str(monitor.id), request.client.host if request.client else None, detail="Manual monitor check requested")
+    write_audit(db, user, "check_now", "network_monitor", str(monitor.id), trusted_client_ip(request), detail="Manual monitor check requested")
     if request.headers.get("x-requested-with") == "fetch":
         return JSONResponse({"ok": True})
     return RedirectResponse(f"/networking/ip-wan-monitor/{monitor.id}", status_code=303)
 
 
 @router.get("/{monitor_id}")
-def monitor_detail(request: Request, monitor_id: int, range: str = Query("24h", max_length=8), db: Session = Depends(get_db), user=Depends(require_user)):
+def monitor_detail(
+    request: Request,
+    monitor_id: int,
+    range: str = Query("24h", max_length=8),
+    check_page: int = Query(1, ge=1, le=100000),
+    check_status: str = Query("all", max_length=20),
+    check_q: str = Query("", max_length=100),
+    db: Session = Depends(get_db),
+    user=Depends(require_user),
+):
     monitor = db.query(NetworkMonitor).options(selectinload(NetworkMonitor.ip_address)).filter(NetworkMonitor.id == monitor_id).first()
     if not monitor:
         raise HTTPException(status_code=404, detail="Monitor not found")
+    if check_status not in {"all", "healthy", "warning", "critical", "offline", "maintenance"}:
+        raise HTTPException(status_code=400, detail="Unsupported check status")
     accessible_modules = getattr(user, "_accessible_module_keys", frozenset())
     remote_access = db.query(RemoteAccess).filter(RemoteAccess.ip_address_id == monitor.ip_address_id, RemoteAccess.is_enabled == True).first()  # noqa: E712
     return templates.TemplateResponse(request, "network_monitor_detail.html", {
@@ -352,7 +413,7 @@ def monitor_detail(request: Request, monitor_id: int, range: str = Query("24h", 
         "can_remote": "remote_manager" in accessible_modules,
         "can_dns": "dns_manager" in accessible_modules,
         "can_ip_manager": "vlan_ip_manager" in accessible_modules,
-        **monitor_detail_context(db, monitor, range), **csrf_context(request),
+        **monitor_detail_context(db, monitor, range, check_page, check_status, check_q), **csrf_context(request),
     })
 
 
@@ -376,7 +437,7 @@ def export_monitor_checks(request: Request, monitor_id: int, range: str = Query(
     writer.writerow(["timestamp_utc", "status", "latency_ms", "packet_loss_percent", "response_time_ms", "failure_reason"])
     for row in rows:
         writer.writerow([row.checked_at.isoformat() + "Z", row.status, row.latency_ms, row.packet_loss_percent, row.response_time_ms, csv_safe(row.error)])
-    write_audit(db, user, "export", "network_monitor_checks", str(monitor.id), request.client.host if request.client else None, detail=f"Exported {len(rows)} checks for {range}")
+    write_audit(db, user, "export", "network_monitor_checks", str(monitor.id), trusted_client_ip(request), detail=f"Exported {len(rows)} checks for {range}")
     filename = f"network-monitor-{monitor.id}-{range}.csv"
     return Response(output.getvalue(), media_type="text/csv; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
@@ -395,7 +456,7 @@ def toggle_monitor(request: Request, monitor_id: int, csrf_token: str = Form(...
     monitor.consecutive_failures = 0
     monitor.consecutive_successes = 0
     db.commit()
-    write_audit(db, user, "resume" if monitor.is_enabled else "pause", "network_monitor", str(monitor.id), request.client.host if request.client else None, detail="Monitor collection state changed")
+    write_audit(db, user, "resume" if monitor.is_enabled else "pause", "network_monitor", str(monitor.id), trusted_client_ip(request), detail="Monitor collection state changed")
     return RedirectResponse(f"/networking/ip-wan-monitor/{monitor.id}", status_code=303)
 
 
@@ -468,7 +529,7 @@ def update_monitor_settings(
     }
     write_audit(
         db, user, "update", "network_monitor", str(monitor.id),
-        request.client.host if request.client else None,
+        trusted_client_ip(request),
         detail="Updated per-host health thresholds and collection settings",
         metadata={"old": old_values, "new": new_values},
     )
@@ -488,5 +549,5 @@ def delete_monitor(request: Request, monitor_id: int, csrf_token: str = Form(...
     db.query(NetworkMonitorStatistic).filter(NetworkMonitorStatistic.monitor_id == monitor.id).delete(synchronize_session=False)
     db.delete(monitor)
     db.commit()
-    write_audit(db, user, "delete", "network_monitor", str(monitor_id), request.client.host if request.client else None, detail=label)
+    write_audit(db, user, "delete", "network_monitor", str(monitor_id), trusted_client_ip(request), detail=label)
     return RedirectResponse("/networking/ip-wan-monitor", status_code=303)

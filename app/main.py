@@ -444,7 +444,7 @@ def migrate_existing_database():
             conn.execute(text("CREATE INDEX ix_managed_list_items_value ON managed_list_items (value)"))
         monitor_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(network_monitors)"))}
         if not monitor_columns:
-            conn.execute(text("CREATE TABLE network_monitors (id INTEGER NOT NULL PRIMARY KEY, ip_address_id INTEGER NOT NULL UNIQUE REFERENCES ip_addresses(id), check_type VARCHAR(30) DEFAULT 'icmp' NOT NULL, display_name VARCHAR(255), is_enabled BOOLEAN DEFAULT 1 NOT NULL, interval_seconds INTEGER DEFAULT 300 NOT NULL, timeout_ms INTEGER DEFAULT 2000 NOT NULL, notify_enabled BOOLEAN DEFAULT 0 NOT NULL, last_status VARCHAR(30), last_latency_ms INTEGER, last_error VARCHAR(500), last_checked_at DATETIME, created_at DATETIME, updated_at DATETIME)"))
+            conn.execute(text("CREATE TABLE network_monitors (id INTEGER NOT NULL PRIMARY KEY, ip_address_id INTEGER NOT NULL UNIQUE REFERENCES ip_addresses(id), check_type VARCHAR(30) DEFAULT 'icmp' NOT NULL, display_name VARCHAR(255), is_enabled BOOLEAN DEFAULT 1 NOT NULL, interval_seconds INTEGER DEFAULT 300 NOT NULL, timeout_ms INTEGER DEFAULT 2000 NOT NULL, notify_enabled BOOLEAN DEFAULT 0 NOT NULL, last_status VARCHAR(30), last_latency_ms FLOAT, last_error VARCHAR(500), last_checked_at DATETIME, created_at DATETIME, updated_at DATETIME)"))
             conn.execute(text("CREATE INDEX ix_network_monitors_ip_address_id ON network_monitors (ip_address_id)"))
             conn.execute(text("CREATE INDEX ix_network_monitors_is_enabled ON network_monitors (is_enabled)"))
             conn.execute(text("CREATE INDEX ix_network_monitors_last_status ON network_monitors (last_status)"))
@@ -453,12 +453,12 @@ def migrate_existing_database():
         for column, definition in {
             "use_default_thresholds": "BOOLEAN DEFAULT 1 NOT NULL",
             "failure_threshold": "INTEGER DEFAULT 3 NOT NULL",
-            "latency_warning_ms": "INTEGER DEFAULT 150 NOT NULL",
-            "latency_critical_ms": "INTEGER DEFAULT 500 NOT NULL",
-            "packet_loss_warning_percent": "INTEGER DEFAULT 20 NOT NULL",
-            "packet_loss_critical_percent": "INTEGER DEFAULT 60 NOT NULL",
+            "latency_warning_ms": "INTEGER DEFAULT 100 NOT NULL",
+            "latency_critical_ms": "INTEGER DEFAULT 250 NOT NULL",
+            "packet_loss_warning_percent": "INTEGER DEFAULT 5 NOT NULL",
+            "packet_loss_critical_percent": "INTEGER DEFAULT 25 NOT NULL",
             "consecutive_failures": "INTEGER DEFAULT 0 NOT NULL",
-            "recovery_threshold": "INTEGER DEFAULT 2 NOT NULL",
+            "recovery_threshold": "INTEGER DEFAULT 3 NOT NULL",
             "consecutive_successes": "INTEGER DEFAULT 0 NOT NULL",
             "last_packet_loss_percent": "INTEGER",
             "degraded_threshold": "INTEGER DEFAULT 2 NOT NULL",
@@ -474,14 +474,14 @@ def migrate_existing_database():
             conn.execute(text("UPDATE network_monitors SET consecutive_failures = 0, consecutive_successes = 0, consecutive_degraded = 0, last_status = NULL, state_reason = 'Awaiting first check after threshold migration', state_changed_at = CURRENT_TIMESTAMP"))
         monitor_check_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(network_monitor_checks)"))}
         if not monitor_check_columns:
-            conn.execute(text("CREATE TABLE network_monitor_checks (id INTEGER NOT NULL PRIMARY KEY, monitor_id INTEGER NOT NULL REFERENCES network_monitors(id), status VARCHAR(30) NOT NULL, latency_ms INTEGER, error VARCHAR(500), checked_at DATETIME)"))
+            conn.execute(text("CREATE TABLE network_monitor_checks (id INTEGER NOT NULL PRIMARY KEY, monitor_id INTEGER NOT NULL REFERENCES network_monitors(id), status VARCHAR(30) NOT NULL, latency_ms FLOAT, error VARCHAR(500), checked_at DATETIME)"))
             conn.execute(text("CREATE INDEX ix_network_monitor_checks_monitor_id ON network_monitor_checks (monitor_id)"))
             conn.execute(text("CREATE INDEX ix_network_monitor_checks_status ON network_monitor_checks (status)"))
             conn.execute(text("CREATE INDEX ix_network_monitor_checks_checked_at ON network_monitor_checks (checked_at)"))
             monitor_check_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(network_monitor_checks)"))}
         for column in ("packet_loss_percent", "response_time_ms"):
             if column not in monitor_check_columns:
-                conn.execute(text(f"ALTER TABLE network_monitor_checks ADD COLUMN {column} INTEGER"))
+                conn.execute(text(f"ALTER TABLE network_monitor_checks ADD COLUMN {column} {'FLOAT' if column == 'response_time_ms' else 'INTEGER'}"))
         if "health_state" not in monitor_check_columns:
             conn.execute(text("ALTER TABLE network_monitor_checks ADD COLUMN health_state VARCHAR(30)"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_network_monitor_checks_health_state ON network_monitor_checks (health_state)"))
@@ -503,7 +503,7 @@ def migrate_existing_database():
             if "details_json" not in outage_columns:
                 conn.execute(text("ALTER TABLE network_monitor_outages ADD COLUMN details_json TEXT"))
         if not conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='network_monitor_statistics'" )).first():
-            conn.execute(text("CREATE TABLE network_monitor_statistics (id INTEGER NOT NULL PRIMARY KEY, monitor_id INTEGER NOT NULL REFERENCES network_monitors(id), bucket_start DATETIME NOT NULL, bucket_seconds INTEGER NOT NULL, sample_count INTEGER DEFAULT 0 NOT NULL, up_count INTEGER DEFAULT 0 NOT NULL, avg_latency_ms INTEGER, max_latency_ms INTEGER, avg_packet_loss_percent INTEGER, health_state VARCHAR(30))"))
+            conn.execute(text("CREATE TABLE network_monitor_statistics (id INTEGER NOT NULL PRIMARY KEY, monitor_id INTEGER NOT NULL REFERENCES network_monitors(id), bucket_start DATETIME NOT NULL, bucket_seconds INTEGER NOT NULL, sample_count INTEGER DEFAULT 0 NOT NULL, up_count INTEGER DEFAULT 0 NOT NULL, avg_latency_ms FLOAT, max_latency_ms FLOAT, avg_packet_loss_percent INTEGER, health_state VARCHAR(30))"))
             conn.execute(text("CREATE INDEX ix_network_monitor_statistics_monitor_id ON network_monitor_statistics (monitor_id)"))
             conn.execute(text("CREATE INDEX ix_network_monitor_statistics_bucket_start ON network_monitor_statistics (bucket_start)"))
         else:

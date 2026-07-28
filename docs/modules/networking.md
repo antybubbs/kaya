@@ -64,19 +64,25 @@ Models:
 
 - `NetworkMonitor`
 - `NetworkMonitorCheck`
+- `NetworkMonitorEvent`
+- `NetworkMonitorOutage`
+- `NetworkMonitorStatistic`
 - `IPAddress`
 
 Workflows:
 
-- Display status cards.
-- Calculate recent uptime.
-- Run manual refresh.
-- Background loop runs due checks.
+- Display stable live status cards and five-minute rolling charts from retained observations.
+- Calculate central threshold-driven health, recovery and incident state.
+- Search and paginate raw checks, inspect retained analytics and export bounded CSV history.
+- Temporarily select an audited backend dashboard collection rate.
+- Run manual checks and pause/resume monitors.
+- Background collection runs due checks with per-monitor overlap protection and tiered retention.
 
 Permissions:
 
 - Read requires authenticated user.
-- Manual refresh requires authenticated user with CSRF.
+- Manual checks, pause/resume, per-monitor settings and dashboard rate overrides require editor access and CSRF.
+- Site-wide defaults require administrator access plus the Network Monitor module allocation.
 
 Dependencies:
 

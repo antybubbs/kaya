@@ -57,6 +57,8 @@ def test_failure_threshold_opens_outage_and_recovery_closes_it(monkeypatch):
         assert monitor.consecutive_failures == 0
         assert db.query(NetworkMonitorOutage).filter_by(monitor_id=monitor_id, ended_at=None).count() == 1
         network_monitor.run_monitor_check(db, monitor)
+        assert monitor.last_status == "recovering"
+        network_monitor.run_monitor_check(db, monitor)
         assert db.query(NetworkMonitorOutage).filter_by(monitor_id=monitor_id, ended_at=None).count() == 0
         assert monitor.last_status == "healthy"
         event_types = [row.event_type for row in db.query(NetworkMonitorEvent).order_by(NetworkMonitorEvent.id)]
@@ -80,6 +82,48 @@ def test_latency_thresholds_are_recorded_without_request_time_collection(monkeyp
         assert check.response_time_ms == 350
         assert monitor.consecutive_successes == 0
         assert db.query(NetworkMonitorOutage).filter_by(monitor_id=monitor_id, ended_at=None).count() == 1
+
+
+def test_sub_millisecond_latency_is_preserved_and_displayed_without_zero_rounding():
+    factory = session_factory()
+    monitor_id = add_monitor(factory)
+    with factory() as db:
+        monitor = db.get(NetworkMonitor, monitor_id)
+        network_monitor.record_monitor_result(db, monitor, True, 0.4, 0, None)
+        check = db.query(NetworkMonitorCheck).one()
+        assert monitor.last_latency_ms == 0.4
+        assert check.latency_ms == 0.4
+        assert check.response_time_ms == 0.4
+    assert network_monitor.latency_label(0.4) == "<1 ms"
+    assert network_monitor.latency_label(1.25) == "1.2 ms"
+    assert network_monitor.live_latency_label(0.483) == "0.483 ms"
+    assert network_monitor.live_latency_label(15.558) == "15.558 ms"
+
+
+def test_live_dashboard_override_uses_one_genuine_single_ping(monkeypatch):
+    network_monitor._dashboard_interval_leases.clear()
+    factory = session_factory()
+    monitor_id = add_monitor(factory)
+    calls = []
+    monkeypatch.setattr(
+        network_monitor, "ping_ipv4",
+        lambda address, timeout: calls.append((address, timeout)) or (True, 0.483, None),
+    )
+    monkeypatch.setattr(
+        network_monitor, "ping_ipv4_samples",
+        lambda *_: (_ for _ in ()).throw(AssertionError("Live must use a single ping")),
+    )
+    try:
+        network_monitor.set_dashboard_interval_override("dashboard-live", "live")
+        with factory() as db:
+            monitor = db.get(NetworkMonitor, monitor_id)
+            network_monitor.run_monitor_check(db, monitor)
+            check = db.query(NetworkMonitorCheck).one()
+            assert check.latency_ms == 0.483
+            assert check.packet_loss_percent == 0
+        assert calls == [("192.0.2.10", 2000)]
+    finally:
+        network_monitor._dashboard_interval_leases.clear()
 
 
 def test_degraded_state_requires_confirmation_and_healthy_resets_count():
@@ -232,15 +276,15 @@ def test_dashboard_rate_lease_overrides_saved_interval_and_expires():
     network_monitor._dashboard_interval_leases.clear()
     try:
         assert network_monitor.active_dashboard_interval() is None
-        assert network_monitor.set_dashboard_interval_override("dashboard-one", "standard") is True
-        assert network_monitor.set_dashboard_interval_override("dashboard-one", "standard") is False
-        assert network_monitor.active_dashboard_interval() == 30
+        assert network_monitor.set_dashboard_interval_override("dashboard-one", "ten") is True
+        assert network_monitor.set_dashboard_interval_override("dashboard-one", "ten") is False
+        assert network_monitor.active_dashboard_interval() == 10
         assert network_monitor.set_dashboard_interval_override("dashboard-two", "live") is True
-        assert network_monitor.active_dashboard_interval() == 5
+        assert network_monitor.active_dashboard_interval() == 1
         assert network_monitor.set_dashboard_interval_override("dashboard-two", "paused") is True
-        assert network_monitor.active_dashboard_interval() == 30
+        assert network_monitor.active_dashboard_interval() == 10
         network_monitor._dashboard_interval_leases["dashboard-one"] = (
-            "standard", 30, datetime.utcnow() - timedelta(seconds=1),
+            "ten", 10, datetime.utcnow() - timedelta(seconds=1),
         )
         assert network_monitor.active_dashboard_interval() is None
     finally:
@@ -252,10 +296,10 @@ def test_dashboard_rate_makes_monitor_due_before_saved_interval():
     factory = session_factory()
     monitor_id = add_monitor(factory, interval_seconds=300)
     try:
-        network_monitor.set_dashboard_interval_override("dashboard-one", "standard")
+        network_monitor.set_dashboard_interval_override("dashboard-one", "ten")
         with factory() as db:
             monitor = db.get(NetworkMonitor, monitor_id)
-            monitor.last_checked_at = datetime.utcnow() - timedelta(seconds=31)
+            monitor.last_checked_at = datetime.utcnow() - timedelta(seconds=11)
             db.commit()
             assert [row.id for row in network_monitor.fallback_due_monitors(db)] == [monitor_id]
     finally:
@@ -264,8 +308,11 @@ def test_dashboard_rate_makes_monitor_due_before_saved_interval():
 
 def test_dashboard_exposes_backend_override_rates_without_browser_probes():
     template = (Path(__file__).resolve().parents[1] / "app" / "templates" / "network_monitor.html").read_text(encoding="utf-8")
-    for value in ("live", "standard", "relaxed", "paused"):
+    assert network_monitor.DASHBOARD_INTERVALS == {"live": 1, "five": 5, "ten": 10, "sixty": 60}
+    for value, label in (("live", "Live"), ("five", "5 seconds"), ("ten", "10 seconds"), ("sixty", "60 seconds")):
         assert f'value="{value}"' in template
+        assert f">{label}</option>" in template
+    assert 'value="paused"' not in template
     assert "/collect" not in template
     assert "Temporarily overrides backend checks" in template
     assert "data-monitor-csrf" in template
@@ -299,12 +346,85 @@ def test_live_feed_returns_only_new_genuine_observations():
         assert payload["summary"]["checks_per_minute"] == 12.0
 
 
+def test_dashboard_resumes_from_stored_result_outside_live_window():
+    factory = session_factory()
+    monitor_id = add_monitor(factory)
+    with factory() as db:
+        monitor = db.get(NetworkMonitor, monitor_id)
+        monitor.last_checked_at = datetime.utcnow() - timedelta(minutes=10)
+        monitor.last_latency_ms = 15.558
+        monitor.last_packet_loss_percent = 0
+        monitor.last_status = "healthy"
+        db.commit()
+
+        context = network_monitor_router.dashboard_context(db)
+
+        assert context["rows"][0]["chart_points"] == [{
+            "id": 0,
+            "at": monitor.last_checked_at.isoformat() + "Z",
+            "latency": 15.558,
+            "loss": 0,
+            "status": "healthy",
+        }]
+
+
+def test_dashboard_summary_separates_critical_paused_and_active_incidents():
+    factory = session_factory()
+    critical_id = add_monitor(factory)
+    with factory() as db:
+        critical = db.get(NetworkMonitor, critical_id)
+        critical.last_status = "critical"
+        paused_address = IPAddress(address="192.0.2.11", name="Paused target")
+        db.add(paused_address)
+        db.flush()
+        db.add(NetworkMonitor(ip_address_id=paused_address.id, is_enabled=False, last_status="paused"))
+        db.add(NetworkMonitorOutage(monitor_id=critical.id, started_at=datetime.utcnow(), incident_type="degraded"))
+        db.commit()
+
+        context = network_monitor_router.dashboard_context(db)
+
+        assert context["total"] == 2
+        assert context["critical_count"] == 1
+        assert context["warning_count"] == 0
+        assert context["paused_count"] == 1
+        assert context["active_incidents"] == 1
+
+
 def test_detail_ranges_are_allowlisted_and_reduce_long_browser_series():
     now = datetime.utcnow()
     points = [{"at": now - timedelta(minutes=index), "latency": 20 + index % 4, "loss": 0, "samples": 1, "up_count": 1} for index in range(1440)]
     reduced = network_monitor_router.display_points(points, "30d")
     assert len(reduced) <= 25
     assert network_monitor_router.range_start("90d") < network_monitor_router.range_start("24h")
+
+
+def test_detail_checks_are_searchable_and_paginated():
+    factory = session_factory()
+    monitor_id = add_monitor(factory)
+    now = datetime.utcnow()
+    with factory() as db:
+        db.add_all([
+            NetworkMonitorCheck(
+                monitor_id=monitor_id,
+                status="down" if index == 60 else "up",
+                health_state="offline" if index == 60 else "healthy",
+                latency_ms=None if index == 60 else 1.25,
+                packet_loss_percent=100 if index == 60 else 0,
+                error="needle timeout" if index == 60 else None,
+                checked_at=now - timedelta(seconds=index),
+            )
+            for index in range(61)
+        ])
+        db.commit()
+        monitor = db.get(NetworkMonitor, monitor_id)
+
+        second_page = network_monitor_router.monitor_detail_context(db, monitor, "1h", check_page=2)
+        searched = network_monitor_router.monitor_detail_context(db, monitor, "1h", check_status="offline", check_q="needle")
+
+        assert second_page["check_pages"] == 2
+        assert len(second_page["checks"]) == 11
+        assert searched["check_count"] == 1
+        assert searched["checks"][0].error == "needle timeout"
 
 
 def test_csv_text_neutralises_spreadsheet_formula_prefixes():
@@ -318,6 +438,9 @@ def test_detail_uses_local_echarts_and_incident_checks_tabs():
     assert "/static/vendor/echarts/echarts.min.js" in template
     assert 'href="#incidents"' in template
     assert 'href="#checks"' in template
+    assert "latency_label(check.latency_ms)" in template
+    assert "latency_label(check.response_time_ms)" in template
+    assert "latency_label(row.peak_latency)" in template
     assert (root / "app" / "static" / "vendor" / "echarts" / "LICENSE").is_file()
 
 
@@ -336,8 +459,22 @@ def test_dashboard_uses_rolling_echarts_with_duplicate_and_visibility_guards():
     assert "ResizeObserver" in script
     assert "requestAnimationFrame" in script
     assert "containLabel: true" in script
-    assert "axisPaddingMs" in script
-    assert "max: now + axisPaddingMs" in script
+    assert "presentationSeries" in script
+    assert "drawLiveTrace" in script
+    assert "formatLiveLatency" in script
+    assert "monitor-heartbeat" not in script
+    assert ".monitor-heartbeat{" not in css
+    assert "@keyframes monitor-heartbeat" not in css
+    assert script.index('if (state !== previousState)') < script.index('card.element.classList.add(`state-${state}`)')
+    assert "data.push([now, latest.latency" in script
+    assert "if (beforeWindow) card.points.unshift(beforeWindow)" in script
+    assert "animationDurationUpdate" not in script
+    assert "animation: false" in script
+    assert "chartUpdateOption" in script
+    assert "id: `latency-${card.id}`" in script
+    assert "MutationObserver" in script
+    assert "formatLatency" in script
+    assert "max: now + 250" in script
     assert "showSymbol: false, clip: true" in script
     assert "right: 20" in script
     assert "data-monitor-state-reason" in cards
@@ -345,17 +482,19 @@ def test_dashboard_uses_rolling_echarts_with_duplicate_and_visibility_guards():
     assert 'data-state="{{ card_state }}"' in cards
     assert "monitor-card-chart-shell" in cards
     assert "monitor-last-result" in cards
-    assert "card_state|upper" in cards
     assert '"/networking/ip-wan-monitor/collect"' not in script
     assert ".monitor-live-grid{grid-template-columns:repeat(3" in css
     assert "@media(max-width:1650px)" in css and "@media(max-width:950px)" in css
     assert "@media(prefers-reduced-motion:reduce)" in css
     assert ".monitor-live-card.state-healthy{background:linear-gradient" in css
     assert ".monitor-live-card.state-offline" in css
-    assert ".monitor-live-card.state-warning .monitor-live-footer" in css
-    assert "min-width:calc(100% + 32px)" in css
-    assert 'warning: "● Warning"' in script
-    assert 'offline: "● Offline"' in script
+    assert ".monitor-live-card.state-warning .monitor-live-footer" not in css
+    assert "min-width:calc(100% + 32px)" not in css
+    assert ".monitor-live-footer{background:transparent;border:0" in css
+    assert 'state.textContent = "● Live"' in script
+    assert "stateLabels" not in script
+    assert '"incidents", "checks"' in script
+    assert "rgba(22,163,74,.04)" in css
 
 
 def test_healthy_monitor_renders_state_on_the_full_card():
@@ -372,9 +511,11 @@ def test_healthy_monitor_renders_state_on_the_full_card():
         chart_points=[], label="Synthetic healthy host", average_latency=1, uptime=100,
     )
     rendered = template.render(
-        rows=[row], total=1, up_count=1, warning_count=0, down_count=0,
+        rows=[row], total=1, up_count=1, warning_count=0, critical_count=0, down_count=0, paused_count=0,
         average_latency=1, availability_24h=100, checks_per_minute=12,
-        latest_observation_id=0, user=SimpleNamespace(role="viewer"), csrf_token="fake-csrf-token",
+        active_incidents=0, latest_observation_id=0, latency_label=network_monitor.latency_label,
+        live_latency_label=network_monitor.live_latency_label,
+        user=SimpleNamespace(role="viewer"), csrf_token="fake-csrf-token",
     )
     assert 'class="monitor-card monitor-live-card state-healthy"' in rendered
     assert 'data-state="healthy"' in rendered
@@ -383,12 +524,15 @@ def test_healthy_monitor_renders_state_on_the_full_card():
 
     row.state = "warning"
     warning_rendered = template.render(
-        rows=[row], total=1, up_count=0, warning_count=1, down_count=0,
+        rows=[row], total=1, up_count=0, warning_count=1, critical_count=0, down_count=0, paused_count=0,
         average_latency=1, availability_24h=100, checks_per_minute=12,
-        latest_observation_id=0, user=SimpleNamespace(role="viewer"), csrf_token="fake-csrf-token",
+        active_incidents=0, latest_observation_id=0, latency_label=network_monitor.latency_label,
+        live_latency_label=network_monitor.live_latency_label,
+        user=SimpleNamespace(role="viewer"), csrf_token="fake-csrf-token",
     )
     assert 'class="monitor-card monitor-live-card state-warning"' in warning_rendered
-    assert "● WARNING" in warning_rendered
+    assert ">Warning</span>" in warning_rendered
+    assert "● Live" in warning_rendered
 
 
 def test_per_host_and_global_threshold_controls_are_present():

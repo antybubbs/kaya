@@ -10,10 +10,10 @@
       {% if user.role in ['admin','editor'] %}
       <label class="monitor-refresh-control"><span class="monitor-refresh-label">Active check rate</span>
         <select data-monitor-refresh-rate data-monitor-csrf="{{ csrf_token }}" aria-describedby="monitor-refresh-help">
-          <option value="live"{% if dashboard_interval is none or dashboard_interval == 5 %} selected{% endif %}>Live · every 5 seconds</option>
-          <option value="standard"{% if dashboard_interval == 30 %} selected{% endif %}>Standard · every 30 seconds</option>
-          <option value="relaxed"{% if dashboard_interval == 60 %} selected{% endif %}>Relaxed · every 60 seconds</option>
-          <option value="paused">Paused</option>
+          <option value="live"{% if dashboard_interval is none or dashboard_interval == 1 %} selected{% endif %}>Live</option>
+          <option value="five"{% if dashboard_interval == 5 %} selected{% endif %}>5 seconds</option>
+          <option value="ten"{% if dashboard_interval == 10 %} selected{% endif %}>10 seconds</option>
+          <option value="sixty"{% if dashboard_interval == 60 %} selected{% endif %}>60 seconds</option>
         </select>
       </label>
       <small class="muted" id="monitor-refresh-help">Temporarily overrides backend checks while this dashboard is visible. Saved per-monitor intervals resume when you leave.</small>

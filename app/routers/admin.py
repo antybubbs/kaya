@@ -2587,7 +2587,7 @@ async def save_network_monitor_defaults(
     db.commit()
     write_audit(
         db, user, "update", "network_monitor_defaults", None,
-        request.client.host if request.client else None,
+        trusted_client_ip(request),
         detail="Updated inherited IP/WAN Monitor health thresholds",
         metadata={"old": old_values, "new": values},
     )

@@ -16,7 +16,7 @@ Default thresholds are managed under **Site Administration â†’ Module Settings â
 
 The monitor detail workspace presents current health, response time, packet loss, recent heartbeat observations, incidents, checks and settings. Apache ECharts 6.1.0 is vendored locally so interactive line charts, threshold and incident markers, zoom, pan and PNG export work under Kaya's self-only Content Security Policy and in offline deployments. The Performance tab supports 1-hour, 6-hour, 24-hour, 7-day, 30-day, 90-day and 1-year views. Longer browser views are reduced automatically to five-minute, hourly or daily points.
 
-Raw checks can be filtered in the browser and exported as CSV. Exports are limited to 10,000 rows, neutralise spreadsheet formula prefixes in text fields, require module access and produce an audit record.
+Raw checks are searched, state-filtered and paginated server-side in 50-row pages, and can be exported as CSV. Exports are limited to 10,000 rows, neutralise spreadsheet formula prefixes in text fields, require module access and produce an audit record.
 
 ## Live dashboard
 
@@ -24,9 +24,15 @@ Every dashboard card uses a five-minute rolling ECharts response-time graph made
 
 Cards use the backend state and reason, independently of the browser feed state. Healthy, Warning, Critical, Offline, Recovering, Maintenance, Paused and Unknown have restrained theme-aware shading plus text status. A feed reconnect changes only the LIVE indicator. Each observation stores its own health severity, so later threshold changes do not recolour retained raw or aggregate history. Failed checks remain graph gaps with failure markers rather than zero-millisecond responses.
 
+Dashboard summaries distinguish Healthy, Warning, Critical, Offline and Paused monitors and include active incidents, real configured checks per minute, average latency and 24-hour availability. Successful response times retain decimal precision; values below one millisecond display as `<1 ms` instead of `0 ms`.
+
+Each dashboard ECharts instance receives its complete configuration once. Polls update only rolling axis bounds, state-aware series data and incident markers; the age clock does not repaint charts. Theme changes update mounted chart styles through `setOption()` without replacing cards or recreating chart instances.
+
 The grid uses at most three columns, reduces to two below 1650 CSS pixels and one below 950 CSS pixels, and allows metrics, footers and actions to wrap. Charts use contained labels and a per-chart ResizeObserver, covering window resizing, sidebar changes, responsive grid changes and browser zoom. Observers are disconnected on navigation, and reduced-motion preferences disable heartbeat and state-attention animations.
 
-For editors and administrators, the Active check rate selector temporarily overrides the shared backend scheduler while the dashboard is visible: Live every 5 seconds, Standard every 30 seconds, Relaxed every 60 seconds, or Paused. The browser renews a short lease but does not perform probes itself. If several dashboards are open, the fastest active rate wins. Hiding or leaving the dashboard releases its lease, and abandoned leases expire after 25 seconds. The saved per-monitor intervals then resume for historical collection. Viewer sessions can read the live feed but cannot create an override.
+For editors and administrators, the Active check rate selector temporarily overrides the shared backend scheduler while the dashboard is visible: Live every second, or fixed 5-second, 10-second and 60-second intervals. The browser renews a short lease but does not perform probes itself. If several dashboards are open, the fastest active rate wins. Hiding or leaving the dashboard releases its lease, and abandoned leases expire after 25 seconds. The saved per-monitor intervals then resume for historical collection. Viewer sessions can read the live feed but cannot create an override.
+
+The card chart advances its time axis continuously and temporarily holds the latest genuine value at the live edge between backend results. That held edge exists only in the mounted ECharts series: it is never persisted, exported, counted or passed through health/incident evaluation. The next stored result replaces the held edge and joins the retained series. When the dashboard opens, it loads the full five-minute stored window, or the persisted last result as an older anchor when the window is otherwise empty.
 
 Each monitor retains its own backend check interval for collection when no authorised dashboard override is active. Editor and administrator users can configure a five-second interval from the monitor or VLAN/IP record. The shared scheduler checks due monitors once per second and uses a non-blocking per-monitor lock, so a slow check is skipped on the next scheduling pass rather than overlapped or queued.
 

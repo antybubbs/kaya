@@ -28,7 +28,7 @@ _monitor_check_locks: dict[int, threading.Lock] = {}
 _monitor_check_locks_guard = threading.Lock()
 _dashboard_interval_leases: dict[str, tuple[str, int, datetime]] = {}
 _dashboard_interval_leases_guard = threading.Lock()
-DASHBOARD_INTERVALS = {"live": 5, "standard": 30, "relaxed": 60}
+DASHBOARD_INTERVALS = {"live": 1, "five": 5, "ten": 10, "sixty": 60}
 MONITOR_THRESHOLD_DEFAULTS = {
     "latency_warning_ms": 100,
     "latency_critical_ms": 250,
@@ -50,6 +50,23 @@ def monitor_label(monitor: NetworkMonitor) -> str:
     if monitor.ip_address and monitor.ip_address.name:
         return monitor.ip_address.name
     return monitor.ip_address.address if monitor.ip_address else "Unknown monitor"
+
+
+def latency_label(value: float | int | None) -> str:
+    if value is None:
+        return "-"
+    numeric = float(value)
+    if 0 <= numeric < 1:
+        return "<1 ms"
+    rounded = round(numeric, 1)
+    return f"{int(rounded) if rounded.is_integer() else rounded:g} ms"
+
+
+def live_latency_label(value: float | int | None) -> str:
+    """Format dashboard live readings without discarding captured precision."""
+    if value is None:
+        return "-"
+    return f"{float(value):.3f}".rstrip("0").rstrip(".") + " ms"
 
 
 def clamp_interval(value: int) -> int:
@@ -122,7 +139,7 @@ def effective_monitor_thresholds(db: Session, monitor: NetworkMonitor) -> dict[s
 def observation_health(
     thresholds: dict[str, int | bool],
     ok: bool,
-    latency_ms: int | None,
+    latency_ms: float | None,
     packet_loss: int | None,
 ) -> tuple[str, str, str | None, int | None, int | None]:
     if not ok or packet_loss == 100:
@@ -154,7 +171,7 @@ def _set_state(monitor: NetworkMonitor, state: str, reason: str, now: datetime) 
     return changed
 
 
-def ping_ipv4(address: str, timeout_ms: int) -> tuple[bool, int | None, str | None]:
+def ping_ipv4(address: str, timeout_ms: int) -> tuple[bool, float | None, str | None]:
     parsed = ip_address(address)
     if parsed.version != 4:
         return False, None, "IPv6 ping is not supported yet."
@@ -177,13 +194,13 @@ def ping_ipv4(address: str, timeout_ms: int) -> tuple[bool, int | None, str | No
     output = f"{result.stdout}\n{result.stderr}"
     if result.returncode == 0:
         match = PING_TIME_PATTERN.search(output)
-        latency = int(float(match.group(1))) if match else int((time.monotonic() - started) * 1000)
+        latency = round(float(match.group(1)), 3) if match else round((time.monotonic() - started) * 1000, 3)
         return True, latency, None
     error = result.stderr.strip() or result.stdout.strip() or "Ping failed"
     return False, None, error.splitlines()[-1][:500]
 
 
-def ping_ipv4_samples(address: str, timeout_ms: int, samples: int = 4) -> tuple[bool, int | None, int, str | None]:
+def ping_ipv4_samples(address: str, timeout_ms: int, samples: int = 4) -> tuple[bool, float | None, int, str | None]:
     parsed = ip_address(address)
     if parsed.version != 4:
         return False, None, 100, "IPv6 ping is not supported yet."
@@ -203,7 +220,7 @@ def ping_ipv4_samples(address: str, timeout_ms: int, samples: int = 4) -> tuple[
     loss_match = PING_LOSS_PATTERN.search(output)
     packet_loss = round(float(loss_match.group(1))) if loss_match else (0 if result.returncode == 0 else 100)
     average_match = PING_AVERAGE_PATTERN.search(output)
-    latency = round(float(average_match.group(1))) if average_match else None
+    latency = round(float(average_match.group(1)), 3) if average_match else None
     ok = packet_loss < 100
     error = None if ok else (result.stderr.strip() or result.stdout.strip() or "Ping failed").splitlines()[-1][:500]
     return ok, latency, packet_loss, error
@@ -275,7 +292,7 @@ def _aggregate_checks(db: Session, cutoff: datetime, bucket_seconds: int) -> Non
             db.add(NetworkMonitorStatistic(
                 monitor_id=monitor_id, bucket_start=bucket, bucket_seconds=bucket_seconds,
                 sample_count=len(checks), up_count=sum(1 for item in checks if item.status == "up"),
-                avg_latency_ms=round(sum(latencies) / len(latencies)) if latencies else None,
+                avg_latency_ms=round(sum(latencies) / len(latencies), 3) if latencies else None,
                 max_latency_ms=max(latencies) if latencies else None,
                 avg_packet_loss_percent=round(sum(losses) / len(losses)) if losses else None,
                 health_state=_worst_health(item.health_state or ("healthy" if item.status == "up" else "offline") for item in checks),
@@ -301,7 +318,7 @@ def _rollup_statistics(db: Session, source_seconds: int, cutoff: datetime, targe
             db.add(NetworkMonitorStatistic(
                 monitor_id=monitor_id, bucket_start=bucket, bucket_seconds=target_seconds,
                 sample_count=samples, up_count=sum(row.up_count for row in rows),
-                avg_latency_ms=round(sum(row.avg_latency_ms * row.sample_count for row in latency_samples) / sum(row.sample_count for row in latency_samples)) if latency_samples else None,
+                avg_latency_ms=round(sum(row.avg_latency_ms * row.sample_count for row in latency_samples) / sum(row.sample_count for row in latency_samples), 3) if latency_samples else None,
                 max_latency_ms=max((row.max_latency_ms for row in rows if row.max_latency_ms is not None), default=None),
                 avg_packet_loss_percent=round(sum(row.avg_packet_loss_percent * row.sample_count for row in loss_samples) / sum(row.sample_count for row in loss_samples)) if loss_samples else None,
                 health_state=_worst_health(row.health_state for row in rows),
@@ -330,7 +347,7 @@ def record_monitor_result(
     db: Session,
     monitor: NetworkMonitor,
     ok: bool,
-    latency_ms: int | None,
+    latency_ms: float | None,
     packet_loss: int | None,
     error: str | None,
     now: datetime | None = None,
@@ -459,10 +476,17 @@ def record_monitor_result(
 
 
 def run_monitor_check(db: Session, monitor: NetworkMonitor) -> None:
-    ok, latency_ms, packet_loss, error = ping_ipv4_samples(
-        monitor.ip_address.address, clamp_timeout(monitor.timeout_ms)
-    )
-    record_monitor_result(db, monitor, ok, latency_ms, packet_loss, error)
+    started_at = datetime.utcnow()
+    if active_dashboard_interval() == 1:
+        ok, latency_ms, error = ping_ipv4(
+            monitor.ip_address.address, clamp_timeout(monitor.timeout_ms)
+        )
+        packet_loss = 0 if ok else 100
+    else:
+        ok, latency_ms, packet_loss, error = ping_ipv4_samples(
+            monitor.ip_address.address, clamp_timeout(monitor.timeout_ms)
+        )
+    record_monitor_result(db, monitor, ok, latency_ms, packet_loss, error, now=started_at)
 
 
 def run_monitor_check_by_id(monitor_id: int) -> bool:
@@ -492,18 +516,40 @@ def run_monitor_check_by_id(monitor_id: int) -> bool:
 
 async def monitor_loop() -> None:
     await asyncio.sleep(STARTUP_DELAY_SECONDS)
-    while True:
-        db = SessionLocal()
-        try:
-            monitor_ids = [monitor.id for monitor in fallback_due_monitors(db)]
-        finally:
-            db.close()
-        if monitor_ids:
-            semaphore = asyncio.Semaphore(MAX_CONCURRENT_CHECKS)
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_CHECKS)
+    in_flight: dict[int, asyncio.Task] = {}
+    next_tick = time.monotonic()
 
-            async def checked_monitor(monitor_id: int) -> None:
-                async with semaphore:
-                    await asyncio.to_thread(run_monitor_check_by_id, monitor_id)
+    async def checked_monitor(monitor_id: int) -> None:
+        async with semaphore:
+            await asyncio.to_thread(run_monitor_check_by_id, monitor_id)
 
-            await asyncio.gather(*(checked_monitor(monitor_id) for monitor_id in monitor_ids))
-        await asyncio.sleep(CHECK_INTERVAL_SECONDS)
+    try:
+        while True:
+            for task in (task for task in in_flight.values() if task.done()):
+                try:
+                    task.result()
+                except Exception:
+                    pass
+            in_flight = {
+                monitor_id: task for monitor_id, task in in_flight.items()
+                if not task.done()
+            }
+            db = SessionLocal()
+            try:
+                monitor_ids = [
+                    monitor.id for monitor in fallback_due_monitors(db)
+                    if monitor.id not in in_flight
+                ]
+            finally:
+                db.close()
+            for monitor_id in monitor_ids:
+                in_flight[monitor_id] = asyncio.create_task(checked_monitor(monitor_id))
+            next_tick += CHECK_INTERVAL_SECONDS
+            await asyncio.sleep(max(0, next_tick - time.monotonic()))
+            if next_tick < time.monotonic() - CHECK_INTERVAL_SECONDS:
+                next_tick = time.monotonic()
+    finally:
+        for task in in_flight.values():
+            task.cancel()
+        await asyncio.gather(*in_flight.values(), return_exceptions=True)

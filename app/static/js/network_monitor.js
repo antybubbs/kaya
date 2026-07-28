@@ -1,6 +1,6 @@
 (function () {
   const tabs = document.querySelector(".detail-tabs");
-  const panels = ["overview", "performance", "history", "events", "settings"].map((id) => document.getElementById(id)).filter(Boolean);
+  const panels = ["overview", "performance", "incidents", "checks", "settings"].map((id) => document.getElementById(id)).filter(Boolean);
   if (tabs && panels.length) {
     const showTab = () => {
       const selected = panels.some((panel) => `#${panel.id}` === window.location.hash) ? window.location.hash.slice(1) : "overview";
@@ -21,9 +21,10 @@
       payload = { points: [], incidents: [], thresholds: {} };
     }
     const points = Array.isArray(payload.points) ? payload.points : [];
-    const textColor = getComputedStyle(document.documentElement).getPropertyValue("--text").trim() || "#dbe4ef";
-    const mutedColor = getComputedStyle(document.documentElement).getPropertyValue("--muted").trim() || "#94a3b8";
-    const gridColor = "rgba(148,163,184,.12)";
+    const detailColors = chartTheme();
+    const textColor = getComputedStyle(document.documentElement).getPropertyValue("--text").trim() || detailColors.tooltipText;
+    const mutedColor = detailColors.axis;
+    const gridColor = detailColors.grid;
     const timeValue = (point, key) => [Date.parse(point.at), point[key] == null ? null : Number(point[key]), statusLevel(point.status)];
     const incidentLines = (payload.incidents || []).map((incident) => ({
       name: `Incident #${incident.id}`,
@@ -40,25 +41,21 @@
       axisLabel: { color: mutedColor }, splitLine: { lineStyle: { color: gridColor } },
     };
     const charts = [];
+    const miniCharts = [];
     const latencyElement = detail.querySelector("[data-monitor-latency-chart]");
     if (latencyElement && points.length) {
       const chart = window.echarts.init(latencyElement, null, { renderer: "canvas" });
       chart.setOption({
         animationDuration: 350, backgroundColor: "transparent", textStyle: { color: textColor },
-        grid: { left: 58, right: 24, top: 24, bottom: 62 },
-        tooltip: { trigger: "axis", confine: true, extraCssText: "max-width:min(280px,80vw);white-space:normal;overflow-wrap:anywhere;", backgroundColor: "#111827", borderColor: "#374151", textStyle: { color: "#f8fafc" }, valueFormatter: (value) => value == null ? "-" : `${value} ms` },
+        grid: { left: 18, right: 24, top: 24, bottom: 62, containLabel: true },
+        tooltip: { trigger: "axis", confine: true, extraCssText: "max-width:min(280px,80vw);white-space:normal;overflow-wrap:anywhere;", backgroundColor: detailColors.tooltipBackground, borderColor: detailColors.tooltipBorder, textStyle: { color: detailColors.tooltipText }, valueFormatter: (value) => value == null ? "-" : formatLatency(value) },
         toolbox: { right: 8, feature: { dataZoom: {}, restore: {}, saveAsImage: { name: "kaya-monitor-latency" } }, iconStyle: { borderColor: mutedColor } },
         xAxis: { type: "time", ...axis }, yAxis: { type: "value", name: "ms", min: 0, ...axis },
-        visualMap: { show: false, dimension: 2, seriesIndex: 0, pieces: [
-          { value: 0, color: "#22c55e" }, { value: 1, color: "#f59e0b" },
-          { value: 2, color: "#ef4444" }, { value: 3, color: "#ef4444" },
-          { value: 4, color: "#38bdf8" }, { value: 5, color: "#a3e635" },
-          { value: 6, color: "#94a3b8" }, { value: 7, color: "#64748b" },
-        ] },
+        visualMap: { show: false, dimension: 2, seriesIndex: 0, pieces: statePieces(detailColors) },
         dataZoom: [{ type: "inside", filterMode: "none" }, { type: "slider", height: 20, bottom: 12, borderColor: gridColor, textStyle: { color: mutedColor } }],
         series: [{
           name: "Latency", type: "line", smooth: .24, showSymbol: false, connectNulls: false,
-          lineStyle: { color: "#22c55e", width: 2 }, itemStyle: { color: "#22c55e" }, areaStyle: { color: "rgba(34,197,94,.08)" },
+          lineStyle: { width: 2 }, areaStyle: { opacity: .08 },
           data: points.map((point) => timeValue(point, "latency")),
           markLine: { silent: false, symbol: "none", data: [
             { name: "Warning", yAxis: Number(payload.thresholds?.warning || 0), lineStyle: { color: "#f59e0b", type: "dashed" }, label: { color: "#fbbf24" } },
@@ -72,7 +69,7 @@
       detail.querySelector('[data-chart-export="latency"]')?.addEventListener("click", () => {
         const link = document.createElement("a");
         link.download = "kaya-monitor-latency.png";
-        link.href = chart.getDataURL({ type: "png", pixelRatio: 2, backgroundColor: "#0f1218" });
+        link.href = chart.getDataURL({ type: "png", pixelRatio: 2, backgroundColor: document.documentElement.dataset.kayaTheme === "light-ops" ? "#ffffff" : "#0f1218" });
         link.click();
       });
       charts.push(chart);
@@ -90,19 +87,31 @@
     detail.querySelectorAll("[data-monitor-mini]").forEach((element) => {
       const key = element.dataset.monitorMini;
       const chart = window.echarts.init(element, null, { renderer: "canvas" });
-      chart.setOption({ animation: false, grid: { left: 2, right: 2, top: 5, bottom: 2 }, xAxis: { type: "time", show: false }, yAxis: { type: "value", show: false, min: key === "availability" ? 0 : null, max: key === "availability" ? 100 : null }, series: [{ type: "line", smooth: .2, showSymbol: false, connectNulls: false, lineStyle: { color: key === "loss" ? "#f59e0b" : "#22c55e", width: 1.5 }, areaStyle: { color: "rgba(34,197,94,.08)" }, data: miniData[key] || [] }] });
+      chart.setOption({ animation: false, grid: { left: 2, right: 2, top: 5, bottom: 2, containLabel: true }, xAxis: { type: "time", show: false }, yAxis: { type: "value", show: false, min: key === "availability" ? 0 : null, max: key === "availability" ? 100 : null }, series: [{ type: "line", smooth: .2, showSymbol: false, connectNulls: false, lineStyle: { color: key === "loss" ? detailColors.warning : detailColors.healthy, width: 1.5 }, areaStyle: { opacity: .08 }, data: miniData[key] || [] }] });
       charts.push(chart);
+      miniCharts.push({ chart, key });
     });
     window.addEventListener("resize", () => charts.forEach((chart) => chart.resize()));
-  }
-
-  const checkFilter = document.querySelector("[data-check-filter]");
-  checkFilter?.addEventListener("change", () => {
-    document.querySelectorAll("[data-check-status]").forEach((row) => {
-      const selected = checkFilter.value;
-      row.hidden = selected !== "all" && row.dataset.checkStatus !== selected && !(selected === "warning" && row.dataset.checkStatus === "critical");
+    const detailThemeObserver = new MutationObserver((mutations) => {
+      if (!mutations.some((mutation) => mutation.attributeName === "data-kaya-theme")) return;
+      const colors = chartTheme();
+      charts.forEach((chart) => chart.setOption({
+        textStyle: { color: getComputedStyle(document.documentElement).getPropertyValue("--text").trim() || colors.tooltipText },
+        tooltip: { backgroundColor: colors.tooltipBackground, borderColor: colors.tooltipBorder, textStyle: { color: colors.tooltipText } },
+        xAxis: { axisLine: { lineStyle: { color: colors.line } }, axisLabel: { color: colors.axis }, splitLine: { lineStyle: { color: colors.grid } } },
+        yAxis: { axisLine: { lineStyle: { color: colors.line } }, axisLabel: { color: colors.axis }, splitLine: { lineStyle: { color: colors.grid } } },
+        visualMap: { pieces: statePieces(colors) },
+      }, { notMerge: false, lazyUpdate: true, silent: true }));
+      miniCharts.forEach(({ chart, key }) => chart.setOption({
+        series: [{ lineStyle: { color: key === "loss" ? colors.warning : colors.healthy } }],
+      }, { notMerge: false, lazyUpdate: true, silent: true }));
     });
-  });
+    detailThemeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-kaya-theme"] });
+    window.addEventListener("pagehide", () => {
+      detailThemeObserver.disconnect();
+      charts.forEach((chart) => chart.dispose());
+    }, { once: true });
+  }
 
   const container = document.querySelector("[data-monitor-content]");
   const liveGrid = document.querySelector("[data-monitor-live-grid]");
@@ -114,7 +123,7 @@
   const refreshSelect = document.querySelector("[data-monitor-refresh-rate]");
   const storageKey = "kaya.ipWanMonitor.dashboardRate";
   const clientKey = "kaya.ipWanMonitor.dashboardClient";
-  const pollDelays = { live: 5000, standard: 30000, relaxed: 60000 };
+  const pollDelays = { live: 1000, five: 5000, ten: 10000, sixty: 60000 };
   let clientId = window.sessionStorage.getItem(clientKey);
   if (!clientId) {
     clientId = window.crypto?.randomUUID?.() || `dashboard-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -125,11 +134,12 @@
   let pollTimer = null;
   let clockTimer = null;
   let leaseTimer = null;
+  let traceFrame = null;
+  let lastTraceDraw = 0;
   let polling = false;
   let stopped = false;
   let activeRequest = null;
   let feedFailed = false;
-  let catchingUp = false;
 
   function parseSeries(element) {
     try {
@@ -147,6 +157,42 @@
     }[status] ?? 7;
   }
 
+  function formatLatency(value) {
+    if (value == null || !Number.isFinite(Number(value))) return "-";
+    const numeric = Number(value);
+    if (numeric >= 0 && numeric < 1) return "<1 ms";
+    return `${Math.round(numeric * 10) / 10} ms`;
+  }
+
+  function formatLiveLatency(value) {
+    if (value == null || !Number.isFinite(Number(value))) return "-";
+    return `${Number(value).toFixed(3).replace(/\.?0+$/, "")} ms`;
+  }
+
+  function chartTheme() {
+    const light = document.documentElement.dataset.kayaTheme === "light-ops";
+    return light ? {
+      axis: "rgba(15,23,42,.68)", line: "rgba(15,23,42,.16)", grid: "rgba(15,23,42,.08)",
+      tooltipBackground: "#ffffff", tooltipBorder: "rgba(15,23,42,.18)", tooltipText: "#0f172a",
+      healthy: "#16a34a", warning: "#d97706", critical: "#dc2626", offline: "#b91c1c",
+      maintenance: "#2563eb", recovering: "#65a30d", paused: "#64748b", unknown: "#64748b",
+    } : {
+      axis: "#94a3b8", line: "rgba(148,163,184,.22)", grid: "rgba(148,163,184,.10)",
+      tooltipBackground: "#111827", tooltipBorder: "#374151", tooltipText: "#f8fafc",
+      healthy: "#22c55e", warning: "#f59e0b", critical: "#ef4444", offline: "#ef4444",
+      maintenance: "#38bdf8", recovering: "#a3e635", paused: "#94a3b8", unknown: "#64748b",
+    };
+  }
+
+  function statePieces(theme) {
+    return [
+      { value: 0, color: theme.healthy }, { value: 1, color: theme.warning },
+      { value: 2, color: theme.critical }, { value: 3, color: theme.offline },
+      { value: 4, color: theme.maintenance }, { value: 5, color: theme.recovering },
+      { value: 6, color: theme.paused }, { value: 7, color: theme.unknown },
+    ];
+  }
+
   function axisBounds(points) {
     const values = points.map((point) => point.latency).filter((value) => Number.isFinite(value));
     if (!values.length) return { min: 0, max: 10 };
@@ -160,52 +206,56 @@
     return { min: Math.max(0, Math.floor(minimum - padding)), max: Math.ceil(maximum + padding) };
   }
 
+  function presentationSeries(card, now) {
+    const data = card.points.map((point) => [point.time, point.latency, statusLevel(point.status)]);
+    const latest = card.points[card.points.length - 1];
+    if (latest && Number.isFinite(latest.latency) && now > latest.time) {
+      data.push([now, latest.latency, statusLevel(latest.status)]);
+    }
+    return data;
+  }
+
   function chartOption(card, now) {
     const bounds = axisBounds(card.points);
-    const axisPaddingMs = Math.max(card.interval * 1000, 5000);
+    const theme = chartTheme();
     const downMarkers = card.points.filter((point) => point.status === "down" || point.status === "offline").map((point) => ({
       xAxis: point.time, lineStyle: { color: "#ef4444", width: 1 }, label: { show: false },
     }));
     if (card.incidentStart) downMarkers.push({ xAxis: card.incidentStart, lineStyle: { color: "#ef4444", width: 2 }, label: { show: false } });
     return {
-      animationDurationUpdate: 240,
+      animation: false,
       backgroundColor: "transparent",
       grid: { left: 12, right: 20, top: 18, bottom: 12, containLabel: true },
       tooltip: {
-        trigger: "axis", confine: true, extraCssText: "max-width:min(260px,80vw);white-space:normal;overflow-wrap:anywhere;", backgroundColor: "#111827", borderColor: "#374151",
-        textStyle: { color: "#f8fafc", fontSize: 11 },
+        trigger: "axis", confine: true, extraCssText: "max-width:min(260px,80vw);white-space:normal;overflow-wrap:anywhere;", backgroundColor: theme.tooltipBackground, borderColor: theme.tooltipBorder,
+        textStyle: { color: theme.tooltipText, fontSize: 11 },
         formatter: (parameters) => {
           const item = parameters.find((entry) => entry.seriesName === "Response time");
           if (!item) return "No response";
           const point = card.points.find((candidate) => candidate.time === item.value[0]);
           const at = new Date(item.value[0]).toLocaleTimeString();
-          const latency = item.value[1] == null ? "No response" : `${item.value[1]} ms`;
+          const latency = item.value[1] == null ? "No response" : formatLiveLatency(item.value[1]);
           return `${at}<br>${latency}<br>${point?.status || "unknown"}`;
         },
       },
       xAxis: {
-        type: "time", min: now - liveWindowMs - axisPaddingMs, max: now + axisPaddingMs,
-        axisLine: { lineStyle: { color: "rgba(148,163,184,.22)" } }, axisTick: { show: false },
-        axisLabel: { color: "#94a3b8", fontSize: 9, hideOverlap: true }, splitLine: { show: true, lineStyle: { color: "rgba(148,163,184,.08)" } },
+        type: "time", min: now - liveWindowMs, max: now + 250,
+        axisLine: { lineStyle: { color: theme.line } }, axisTick: { show: false },
+        axisLabel: { color: theme.axis, fontSize: 9, hideOverlap: true }, splitLine: { show: true, lineStyle: { color: theme.grid } },
       },
       yAxis: {
-        type: "value", min: bounds.min, max: bounds.max, name: "ms", nameTextStyle: { color: "#94a3b8", fontSize: 9 },
-        axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: "#94a3b8", fontSize: 9 },
-        splitLine: { lineStyle: { color: "rgba(148,163,184,.10)" } },
+        type: "value", min: bounds.min, max: bounds.max, name: "ms", nameTextStyle: { color: theme.axis, fontSize: 9 },
+        axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: theme.axis, fontSize: 9 },
+        splitLine: { lineStyle: { color: theme.grid } },
       },
       visualMap: {
         show: false, dimension: 2, seriesIndex: 0,
-        pieces: [
-          { value: 0, color: "#22c55e" }, { value: 1, color: "#f59e0b" },
-          { value: 2, color: "#ef4444" }, { value: 3, color: "#ef4444" },
-          { value: 4, color: "#38bdf8" }, { value: 5, color: "#a3e635" },
-          { value: 6, color: "#94a3b8" }, { value: 7, color: "#64748b" },
-        ],
+        pieces: statePieces(theme),
       },
       series: [{
-        name: "Response time", type: "line", smooth: .2, showSymbol: false, clip: true, connectNulls: false,
+        id: `latency-${card.id}`, name: "Response time", type: "line", smooth: .12, showSymbol: false, clip: true, connectNulls: false,
         lineStyle: { width: 2 }, areaStyle: { opacity: .06 },
-        data: card.points.map((point) => [point.time, point.latency, statusLevel(point.status)]),
+        data: presentationSeries(card, now),
         markLine: {
           silent: true, symbol: "none",
           data: [
@@ -227,19 +277,9 @@
       state.textContent = "Paused";
       return;
     }
-    const monitorState = card.element.dataset.monitorState || "unknown";
-    state.classList.add(monitorState);
-    const stateLabels = {
-      warning: "● Warning", critical: "● Critical", offline: "● Offline",
-      recovering: "● Recovering", maintenance: "● Maintenance", unknown: "● Unknown",
-    };
-    if (monitorState !== "healthy" && monitorState !== "up") {
-      state.textContent = stateLabels[monitorState] || "● Unknown";
-      return;
-    }
     if (refreshSelect?.value === "paused") {
       state.className = "monitor-feed-state paused";
-      state.textContent = "Dashboard paused";
+      state.textContent = "● Paused";
       return;
     }
     if (feedFailed) {
@@ -253,17 +293,57 @@
       state.textContent = "● Delayed";
       return;
     }
-    state.className = "monitor-feed-state healthy";
+    state.className = "monitor-feed-state live";
     state.textContent = "● Live";
   }
 
-  function renderCard(card, now = Date.now()) {
-    card.points = card.points.filter((point) => point.time >= now - liveWindowMs);
+  function prunePoints(card, now) {
+    const previousLength = card.points.length;
+    const cutoff = now - liveWindowMs;
+    const beforeWindow = card.points.filter((point) => point.time < cutoff).pop();
+    card.points = card.points.filter((point) => point.time >= cutoff);
+    if (beforeWindow) card.points.unshift(beforeWindow);
     for (const id of [...card.seen]) {
       if (!card.points.some((point) => point.id === id)) card.seen.delete(id);
     }
-    card.chart.setOption(chartOption(card, now), { notMerge: false, lazyUpdate: true });
+    return previousLength !== card.points.length;
+  }
+
+  function chartUpdateOption(card, now) {
+    const bounds = axisBounds(card.points);
+    const downMarkers = card.points.filter((point) => point.status === "down" || point.status === "offline").map((point) => ({
+      xAxis: point.time, lineStyle: { color: chartTheme().offline, width: 1 }, label: { show: false },
+    }));
+    if (card.incidentStart) downMarkers.push({ xAxis: card.incidentStart, lineStyle: { color: chartTheme().offline, width: 2 }, label: { show: false } });
+    return {
+      xAxis: { min: now - liveWindowMs, max: now + 250 },
+      yAxis: { min: bounds.min, max: bounds.max },
+      series: [{
+        id: `latency-${card.id}`,
+        data: presentationSeries(card, now),
+        markLine: { silent: true, symbol: "none", data: [
+          { yAxis: card.warning, lineStyle: { color: "rgba(245,158,11,.48)", type: "dashed" }, label: { show: false } },
+          { yAxis: card.critical, lineStyle: { color: "rgba(239,68,68,.48)", type: "dashed" }, label: { show: false } },
+          ...downMarkers,
+        ] },
+      }],
+    };
+  }
+
+  function renderCard(card, now = Date.now(), initial = false) {
+    prunePoints(card, now);
+    card.chart.setOption(initial ? chartOption(card, now) : chartUpdateOption(card, now), { notMerge: false, lazyUpdate: true, silent: true });
     updateFeedState(card, now);
+  }
+
+  function updateChartTheme(card) {
+    const theme = chartTheme();
+    card.chart.setOption({
+      tooltip: { backgroundColor: theme.tooltipBackground, borderColor: theme.tooltipBorder, textStyle: { color: theme.tooltipText } },
+      xAxis: { axisLine: { lineStyle: { color: theme.line } }, axisLabel: { color: theme.axis }, splitLine: { lineStyle: { color: theme.grid } } },
+      yAxis: { nameTextStyle: { color: theme.axis }, axisLabel: { color: theme.axis }, splitLine: { lineStyle: { color: theme.grid } } },
+      visualMap: { pieces: statePieces(theme) },
+    }, { notMerge: false, lazyUpdate: true, silent: true });
   }
 
   function scheduleChartResize(card) {
@@ -275,16 +355,17 @@
       id: Number(point.id), time: Date.parse(point.at), latency: point.latency == null ? null : Number(point.latency), status: point.status,
     })).filter((point) => Number.isFinite(point.time));
     const chartElement = element.querySelector("[data-monitor-card-chart]");
+    const id = Number(element.dataset.monitorCard);
     const card = {
-      element, chart: window.echarts.init(chartElement, null, { renderer: "canvas" }), points: initial,
+      id, element, chart: window.echarts.init(chartElement, null, { renderer: "canvas" }), points: initial,
       seen: new Set(initial.map((point) => point.id)), enabled: element.dataset.monitorEnabled === "true",
-      interval: Number(element.dataset.monitorInterval || 60), warning: Number(element.dataset.monitorWarning || 150),
-      critical: Number(element.dataset.monitorCritical || 500),
+      interval: Number(element.dataset.monitorInterval || 60), warning: Number(element.dataset.monitorWarning || 100),
+      critical: Number(element.dataset.monitorCritical || 250),
       lastChecked: initial.length ? initial[initial.length - 1].time : null,
       incidentStart: null,
     };
-    cards.set(Number(element.dataset.monitorCard), card);
-    renderCard(card);
+    cards.set(id, card);
+    renderCard(card, Date.now(), true);
     scheduleChartResize(card);
   });
   const resizeObservers = [];
@@ -303,10 +384,14 @@
   }
 
   function updateSummary(summary) {
+    setText('[data-monitor-summary="total"]', summary.total);
     setText('[data-monitor-summary="up_count"]', summary.up_count);
     setText('[data-monitor-summary="warning_count"]', summary.warning_count);
+    setText('[data-monitor-summary="critical_count"]', summary.critical_count);
     setText('[data-monitor-summary="down_count"]', summary.down_count);
-    setText('[data-monitor-summary="average_latency"]', summary.average_latency == null ? "-" : `${summary.average_latency} ms`);
+    setText('[data-monitor-summary="paused_count"]', summary.paused_count);
+    setText('[data-monitor-summary="active_incidents"]', summary.active_incidents);
+    setText('[data-monitor-summary="average_latency"]', formatLatency(summary.average_latency));
     setText('[data-monitor-summary="availability_24h"]', summary.availability_24h == null ? "-" : `${summary.availability_24h}%`);
     setText('[data-monitor-summary="checks_per_minute"]', summary.checks_per_minute);
   }
@@ -324,9 +409,9 @@
     const previousState = card.element.dataset.monitorState || "unknown";
     card.element.dataset.monitorState = state;
     card.element.dataset.state = state;
-    Array.from(card.element.classList).filter((name) => name.startsWith("state-")).forEach((name) => card.element.classList.remove(name));
-    card.element.classList.add(`state-${state}`);
     if (state !== previousState) {
+      Array.from(card.element.classList).filter((name) => name.startsWith("state-")).forEach((name) => card.element.classList.remove(name));
+      card.element.classList.add(`state-${state}`);
       card.element.classList.remove("monitor-state-changed", "monitor-offline-attention");
       void card.element.offsetWidth;
       card.element.classList.add("monitor-state-changed");
@@ -344,8 +429,8 @@
     const average = card.element.querySelector("[data-monitor-average]");
     const availability = card.element.querySelector("[data-monitor-availability]");
     const lastResult = card.element.querySelector("[data-monitor-last-result]");
-    if (current) current.textContent = monitor.latency_ms == null ? (state === "offline" ? "Unavailable" : "-") : `${monitor.latency_ms} ms`;
-    if (average) average.textContent = monitor.average_latency_ms == null ? "-" : `${monitor.average_latency_ms} ms`;
+    if (current) current.textContent = monitor.latency_ms == null && state === "offline" ? "Unavailable" : formatLiveLatency(monitor.latency_ms);
+    if (average) average.textContent = formatLatency(monitor.average_latency_ms);
     if (availability) availability.textContent = monitor.availability == null ? "-" : `${monitor.availability}%`;
     if (lastResult && monitor.last_checked_at) {
       lastResult.dataset.utcTime = monitor.last_checked_at;
@@ -375,12 +460,6 @@
     });
     card.points.sort((left, right) => left.time - right.time);
     card.lastChecked = time;
-    if (card.enabled && !catchingUp && observation.status !== "offline" && observation.status !== "down") {
-      card.element.classList.remove("monitor-heartbeat");
-      void card.element.offsetWidth;
-      card.element.classList.add("monitor-heartbeat");
-      window.setTimeout(() => card.element.classList.remove("monitor-heartbeat"), 260);
-    }
   }
 
   async function pollLive() {
@@ -407,7 +486,6 @@
         await pollLive();
         return;
       }
-      catchingUp = false;
     } catch (error) {
       if (error.name !== "AbortError") {
         feedFailed = true;
@@ -447,9 +525,11 @@
     window.clearTimeout(pollTimer);
     window.clearInterval(clockTimer);
     window.clearInterval(leaseTimer);
+    window.cancelAnimationFrame(traceFrame);
     pollTimer = null;
     clockTimer = null;
     leaseTimer = null;
+    traceFrame = null;
     activeRequest?.abort();
   }
 
@@ -457,26 +537,42 @@
     window.clearTimeout(pollTimer);
     if (stopped || document.hidden || refreshSelect?.value === "paused") return;
     const delay = pollDelays[refreshSelect?.value] || pollDelays.live;
-    pollTimer = window.setTimeout(async () => {
-      await pollLive();
+    pollTimer = window.setTimeout(() => {
       schedulePoll(false);
+      void pollLive();
     }, immediate ? 0 : delay);
+  }
+
+  function drawLiveTrace(frameTime) {
+    if (stopped || document.hidden) {
+      traceFrame = null;
+      return;
+    }
+    if (frameTime - lastTraceDraw >= 100) {
+      const now = Date.now();
+      cards.forEach((card) => {
+        prunePoints(card, now);
+        card.chart.setOption(chartUpdateOption(card, now), { notMerge: false, lazyUpdate: true, silent: true });
+      });
+      lastTraceDraw = frameTime;
+    }
+    traceFrame = window.requestAnimationFrame(drawLiveTrace);
   }
 
   function startFeed(immediate = false) {
     clearTimers();
     cards.forEach((card) => renderCard(card));
     if (document.hidden || stopped) return;
+    lastTraceDraw = 0;
+    traceFrame = window.requestAnimationFrame(drawLiveTrace);
     renewOverride().catch(() => {});
-    if (refreshSelect?.value !== "paused") {
-      leaseTimer = window.setInterval(() => renewOverride().catch(() => {}), 10000);
-    }
+    leaseTimer = window.setInterval(() => renewOverride().catch(() => {}), 10000);
     clockTimer = window.setInterval(() => {
       const now = Date.now();
       cards.forEach((card) => {
         const lastResult = card.element.querySelector("[data-monitor-last-result]");
         if (lastResult && card.lastChecked) lastResult.textContent = relativeAge(card.lastChecked);
-        renderCard(card, now);
+        updateFeedState(card, now);
       });
     }, 1000);
     schedulePoll(immediate);
@@ -497,7 +593,7 @@
   });
 
   const savedMode = window.sessionStorage.getItem(storageKey);
-  if (refreshSelect && Object.keys({ ...pollDelays, paused: 0 }).includes(savedMode)) refreshSelect.value = savedMode;
+  if (refreshSelect && Object.keys(pollDelays).includes(savedMode)) refreshSelect.value = savedMode;
   refreshSelect?.addEventListener("change", () => {
     window.sessionStorage.setItem(storageKey, refreshSelect.value);
     startFeed(true);
@@ -508,15 +604,21 @@
       releaseOverride();
     }
     else {
-      catchingUp = true;
       startFeed(true);
     }
   });
+  const themeObserver = new MutationObserver((mutations) => {
+    if (mutations.some((mutation) => mutation.attributeName === "data-kaya-theme")) {
+      cards.forEach(updateChartTheme);
+    }
+  });
+  themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-kaya-theme"] });
   window.addEventListener("resize", () => cards.forEach(scheduleChartResize));
   window.addEventListener("pagehide", () => {
     stopped = true;
     clearTimers();
     releaseOverride();
+    themeObserver.disconnect();
     resizeObservers.forEach((observer) => observer.disconnect());
     cards.forEach((card) => card.chart.dispose());
   });

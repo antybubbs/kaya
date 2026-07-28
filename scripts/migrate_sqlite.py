@@ -108,6 +108,76 @@ def main():
         cur.execute("ALTER TABLE app_sessions ADD COLUMN encrypted_oidc_id_token TEXT")
         migrations_applied.append("app_sessions.encrypted_oidc_id_token")
 
+    if table_exists(cur, "network_monitors"):
+        thresholds_existed = column_exists(cur, "network_monitors", "use_default_thresholds")
+        monitor_changed = False
+        for column, definition in {
+            "use_default_thresholds": "BOOLEAN DEFAULT 1 NOT NULL",
+            "failure_threshold": "INTEGER DEFAULT 3 NOT NULL",
+            "latency_warning_ms": "INTEGER DEFAULT 100 NOT NULL",
+            "latency_critical_ms": "INTEGER DEFAULT 250 NOT NULL",
+            "packet_loss_warning_percent": "INTEGER DEFAULT 5 NOT NULL",
+            "packet_loss_critical_percent": "INTEGER DEFAULT 25 NOT NULL",
+            "consecutive_failures": "INTEGER DEFAULT 0 NOT NULL",
+            "recovery_threshold": "INTEGER DEFAULT 3 NOT NULL",
+            "consecutive_successes": "INTEGER DEFAULT 0 NOT NULL",
+            "last_packet_loss_percent": "INTEGER",
+            "degraded_threshold": "INTEGER DEFAULT 2 NOT NULL",
+            "recovery_state_enabled": "BOOLEAN DEFAULT 1 NOT NULL",
+            "consecutive_degraded": "INTEGER DEFAULT 0 NOT NULL",
+            "state_reason": "VARCHAR(500)",
+            "state_changed_at": "DATETIME",
+            "is_in_maintenance": "BOOLEAN DEFAULT 0 NOT NULL",
+        }.items():
+            if not column_exists(cur, "network_monitors", column):
+                cur.execute(f"ALTER TABLE network_monitors ADD COLUMN {column} {definition}")
+                monitor_changed = True
+        if not thresholds_existed:
+            cur.execute(
+                "UPDATE network_monitors SET consecutive_failures = 0, consecutive_successes = 0, "
+                "consecutive_degraded = 0, last_status = NULL, "
+                "state_reason = 'Awaiting first check after threshold migration', "
+                "state_changed_at = CURRENT_TIMESTAMP"
+            )
+        if table_exists(cur, "network_monitor_checks"):
+            for column, definition in {
+                "packet_loss_percent": "INTEGER",
+                "response_time_ms": "FLOAT",
+                "health_state": "VARCHAR(30)",
+            }.items():
+                if not column_exists(cur, "network_monitor_checks", column):
+                    cur.execute(f"ALTER TABLE network_monitor_checks ADD COLUMN {column} {definition}")
+                    monitor_changed = True
+            cur.execute("CREATE INDEX IF NOT EXISTS ix_network_monitor_checks_health_state ON network_monitor_checks (health_state)")
+            cur.execute("CREATE INDEX IF NOT EXISTS ix_network_monitor_checks_monitor_checked_at ON network_monitor_checks (monitor_id, checked_at)")
+        if not table_exists(cur, "network_monitor_events"):
+            cur.execute("CREATE TABLE network_monitor_events (id INTEGER NOT NULL PRIMARY KEY, monitor_id INTEGER NOT NULL REFERENCES network_monitors(id), event_type VARCHAR(40) NOT NULL, severity VARCHAR(20) DEFAULT 'info' NOT NULL, message VARCHAR(500) NOT NULL, occurred_at DATETIME)")
+            cur.execute("CREATE INDEX ix_network_monitor_events_monitor_id ON network_monitor_events (monitor_id)")
+            cur.execute("CREATE INDEX ix_network_monitor_events_occurred_at ON network_monitor_events (occurred_at)")
+            monitor_changed = True
+        if not table_exists(cur, "network_monitor_outages"):
+            cur.execute("CREATE TABLE network_monitor_outages (id INTEGER NOT NULL PRIMARY KEY, monitor_id INTEGER NOT NULL REFERENCES network_monitors(id), started_at DATETIME NOT NULL, ended_at DATETIME, incident_type VARCHAR(30) DEFAULT 'offline' NOT NULL, failure_reason VARCHAR(500), details_json TEXT)")
+            cur.execute("CREATE INDEX ix_network_monitor_outages_monitor_id ON network_monitor_outages (monitor_id)")
+            cur.execute("CREATE INDEX ix_network_monitor_outages_started_at ON network_monitor_outages (started_at)")
+            cur.execute("CREATE INDEX ix_network_monitor_outages_incident_type ON network_monitor_outages (incident_type)")
+            monitor_changed = True
+        else:
+            for column, definition in {"incident_type": "VARCHAR(30) DEFAULT 'offline' NOT NULL", "details_json": "TEXT"}.items():
+                if not column_exists(cur, "network_monitor_outages", column):
+                    cur.execute(f"ALTER TABLE network_monitor_outages ADD COLUMN {column} {definition}")
+                    monitor_changed = True
+            cur.execute("CREATE INDEX IF NOT EXISTS ix_network_monitor_outages_incident_type ON network_monitor_outages (incident_type)")
+        if not table_exists(cur, "network_monitor_statistics"):
+            cur.execute("CREATE TABLE network_monitor_statistics (id INTEGER NOT NULL PRIMARY KEY, monitor_id INTEGER NOT NULL REFERENCES network_monitors(id), bucket_start DATETIME NOT NULL, bucket_seconds INTEGER NOT NULL, sample_count INTEGER DEFAULT 0 NOT NULL, up_count INTEGER DEFAULT 0 NOT NULL, avg_latency_ms FLOAT, max_latency_ms FLOAT, avg_packet_loss_percent INTEGER, health_state VARCHAR(30))")
+            cur.execute("CREATE INDEX ix_network_monitor_statistics_monitor_id ON network_monitor_statistics (monitor_id)")
+            cur.execute("CREATE INDEX ix_network_monitor_statistics_bucket_start ON network_monitor_statistics (bucket_start)")
+            monitor_changed = True
+        elif not column_exists(cur, "network_monitor_statistics", "health_state"):
+            cur.execute("ALTER TABLE network_monitor_statistics ADD COLUMN health_state VARCHAR(30)")
+            monitor_changed = True
+        if monitor_changed:
+            migrations_applied.append("network_monitor_vnext")
+
     # Public releases before v0.18 do not have compute_hosts yet. In that case,
     # application startup creates the complete current table via SQLAlchemy.
     # May the migration God bless us all.

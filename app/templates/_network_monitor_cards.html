@@ -1,11 +1,14 @@
 <section class="cards monitor-summary-cards">
-  <div class="card"><span>Total monitors</span><strong>{{ total }}</strong></div>
+  <div class="card"><span>Total monitors</span><strong data-monitor-summary="total">{{ total }}</strong></div>
   <div class="card"><span>Healthy</span><strong data-monitor-summary="up_count">{{ up_count }}</strong></div>
   <div class="card"><span>Warning</span><strong data-monitor-summary="warning_count">{{ warning_count }}</strong></div>
+  <div class="card"><span>Critical</span><strong data-monitor-summary="critical_count">{{ critical_count }}</strong></div>
   <div class="card"><span>Offline</span><strong data-monitor-summary="down_count">{{ down_count }}</strong></div>
-  <div class="card"><span>Average latency</span><strong data-monitor-summary="average_latency">{{ average_latency ~ ' ms' if average_latency is not none else '-' }}</strong></div>
+  <div class="card"><span>Paused</span><strong data-monitor-summary="paused_count">{{ paused_count }}</strong></div>
+  <div class="card"><span>Average latency</span><strong data-monitor-summary="average_latency">{{ latency_label(average_latency) }}</strong></div>
   <div class="card"><span>24h availability</span><strong data-monitor-summary="availability_24h">{{ availability_24h ~ '%' if availability_24h is not none else '-' }}</strong></div>
   <div class="card"><span>Active checks/min</span><strong data-monitor-summary="checks_per_minute">{{ checks_per_minute }}</strong></div>
+  <div class="card"><span>Active incidents</span><strong data-monitor-summary="active_incidents">{{ active_incidents }}</strong></div>
 </section>
 {% if not rows %}
 <section class="panel"><p class="muted">No IP addresses are enabled for IP/WAN Monitor yet.</p></section>
@@ -21,8 +24,8 @@
     </div>
     <p class="monitor-state-reason" data-monitor-state-reason>{{ 'Monitoring disabled' if not monitor.is_enabled else monitor.state_reason or 'Awaiting first check' }}</p>
     <div class="monitor-meta">
-      <div><span>Current</span><strong data-monitor-current>{{ monitor.last_latency_ms ~ ' ms' if monitor.last_latency_ms is not none else 'Unavailable' if card_state == 'offline' else '-' }}</strong></div>
-      <div><span>Rolling average</span><strong data-monitor-average>{{ row.average_latency ~ ' ms' if row.average_latency is not none else '-' }}</strong></div>
+      <div><span>Current</span><strong data-monitor-current>{{ 'Unavailable' if monitor.last_latency_ms is none and card_state == 'offline' else live_latency_label(monitor.last_latency_ms) }}</strong></div>
+      <div><span>Rolling average</span><strong data-monitor-average>{{ latency_label(row.average_latency) }}</strong></div>
       <div><span>Availability 24h</span><strong data-monitor-availability>{{ row.uptime ~ '%' if row.uptime is not none else '-' }}</strong></div>
     </div>
     <div class="monitor-card-chart-shell">
@@ -30,7 +33,7 @@
     </div>
     {% if monitor.last_error %}<p class="monitor-error" data-monitor-error>{{ monitor.last_error }}</p>{% endif %}
     <div class="monitor-live-footer">
-      <span class="monitor-feed-state {{ 'paused' if not monitor.is_enabled else card_state }}" data-monitor-feed-state>{% if not monitor.is_enabled %}Paused{% elif card_state == 'healthy' %}● Live{% else %}● {{ card_state|upper }}{% endif %}</span>
+      <span class="monitor-feed-state {{ 'paused' if not monitor.is_enabled else 'live' }}" data-monitor-feed-state>{% if not monitor.is_enabled %}Paused{% else %}● Live{% endif %}</span>
       <span class="monitor-last-result">Last result {% if monitor.last_checked_at %}<time data-monitor-last-result data-utc-time="{{ monitor.last_checked_at }}" data-time-format="relative">{{ monitor.last_checked_at }}</time>{% else %}<span data-monitor-last-result>never</span>{% endif %}</span>
     </div>
     <div class="monitor-card-actions">
