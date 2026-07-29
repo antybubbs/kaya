@@ -11,7 +11,8 @@ from app.db.session import Base
 from app.main import app
 from app.models.models import AppSession, AuditLog, RemoteManagerSetting, User, UserModulePermission
 from app.routers.auth import require_admin, require_module_access
-from app.routers.admin import require_internal_module, require_module_settings_tab
+from app.routers.admin import SITE_SETTING_KEYS, require_internal_module, require_module_settings_tab
+from app.services.site_settings import DEFAULT_SITE_SETTINGS
 from app.services.modules import (
     MODULES,
     MODULE_KEYS,
@@ -21,6 +22,7 @@ from app.services.modules import (
     grant_all_registered_modules,
     has_module_access,
     module_for_path,
+    module_is_enabled,
     replace_module_access,
 )
 
@@ -66,6 +68,18 @@ def test_roles_and_module_access_remain_independent(db):
     assert viewer.role == "viewer"
     assert has_module_access(db, viewer, "secret_vault") is True
     assert has_module_access(db, viewer, "remote_manager") is False
+
+
+def test_dns_manager_is_available_on_a_fresh_install(db):
+    assert DEFAULT_SITE_SETTINGS["dns_manager_enabled"] == "1"
+    assert SITE_SETTING_KEYS["dns_manager_enabled"] == "1"
+    dns_manager = next(module for module in MODULES if module.key == "dns_manager")
+    assert module_is_enabled(db, dns_manager) is True
+
+    admin = account(db, "fresh-admin@example.test", "admin")
+    grant_all_registered_modules(db, admin)
+    db.commit()
+    assert "dns_manager" in accessible_module_keys(db, admin)
 
 
 def test_contextual_module_administration_requires_admin_role_and_module_allocation(db):
