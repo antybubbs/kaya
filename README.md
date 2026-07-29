@@ -48,7 +48,7 @@ Use it, dont use it. Its up to you really (but it is quite cool if I do say so m
 
 # With thanks
 
-<img width="289" height="67" alt="image" src="https://github.com/user-attachments/assets/c9563e0e-b9bb-4e96-b33a-a8cabaccba1d" />
+[<img width="289" height="67" alt="image" src="https://github.com/user-attachments/assets/c9563e0e-b9bb-4e96-b33a-a8cabaccba1d" />](https://www.aikido.dev/)
 
 # Features
 
