@@ -14,6 +14,23 @@ def test_existing_user_migration_preserves_local_account_and_makes_password_null
     )
     connection.execute("CREATE TABLE app_sessions (id INTEGER NOT NULL PRIMARY KEY, session_id VARCHAR(120), user_id INTEGER NOT NULL REFERENCES users(id))")
     connection.execute("INSERT INTO app_sessions (session_id, user_id) VALUES ('existing-session', 1)")
+    connection.execute(
+        "CREATE TABLE network_monitors (id INTEGER NOT NULL PRIMARY KEY, ip_address_id INTEGER NOT NULL, "
+        "is_enabled BOOLEAN DEFAULT 1 NOT NULL, interval_seconds INTEGER DEFAULT 300 NOT NULL, "
+        "timeout_ms INTEGER DEFAULT 2000 NOT NULL, last_status VARCHAR(30), last_latency_ms INTEGER)"
+    )
+    connection.execute(
+        "INSERT INTO network_monitors (id, ip_address_id, last_status, last_latency_ms) "
+        "VALUES (7, 70, 'up', 12)"
+    )
+    connection.execute(
+        "CREATE TABLE network_monitor_checks (id INTEGER NOT NULL PRIMARY KEY, monitor_id INTEGER NOT NULL, "
+        "status VARCHAR(30) NOT NULL, latency_ms INTEGER, error VARCHAR(500), checked_at DATETIME)"
+    )
+    connection.execute(
+        "INSERT INTO network_monitor_checks (id, monitor_id, status, latency_ms, checked_at) "
+        "VALUES (9, 7, 'up', 12, '2026-07-01 12:00:00')"
+    )
     connection.commit(); connection.close()
     monkeypatch.setattr(migration, "DB_PATH", path)
 
@@ -35,6 +52,22 @@ def test_existing_user_migration_preserves_local_account_and_makes_password_null
     ha_cluster_columns = {row[1] for row in connection.execute("PRAGMA table_info(ha_clusters)")}
     ha_check_columns = {row[1] for row in connection.execute("PRAGMA table_info(ha_health_checks)")}
     dns_provider_columns = {row[1] for row in connection.execute("PRAGMA table_info(dns_providers)")}
+    monitor_columns = {row[1] for row in connection.execute("PRAGMA table_info(network_monitors)")}
+    check_columns = {row[1] for row in connection.execute("PRAGMA table_info(network_monitor_checks)")}
+    retained_check = connection.execute(
+        "SELECT monitor_id, status, latency_ms, checked_at FROM network_monitor_checks WHERE id = 9"
+    ).fetchone()
+    migrated_monitor = connection.execute(
+        "SELECT last_status, latency_warning_ms, latency_critical_ms, packet_loss_warning_percent, "
+        "packet_loss_critical_percent, recovery_threshold FROM network_monitors WHERE id = 7"
+    ).fetchone()
+    monitor_history_tables = {
+        row[0]
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN "
+            "('network_monitor_events', 'network_monitor_outages', 'network_monitor_statistics')"
+        )
+    }
     connection.close()
     assert columns["password_hash"][3] == 0
     assert "encrypted_oidc_id_token" in session_columns
@@ -51,3 +84,10 @@ def test_existing_user_migration_preserves_local_account_and_makes_password_null
     assert {"vrrp_router_id", "keepalived_generation", "keepalived_status", "keepalived_requested_at", "keepalived_deployed_at"} <= ha_cluster_columns
     assert "preferred_node_id" in ha_cluster_columns
     assert "remediation" in ha_check_columns
+    assert {"use_default_thresholds", "state_reason", "is_in_maintenance"} <= monitor_columns
+    assert {"packet_loss_percent", "response_time_ms", "health_state"} <= check_columns
+    assert retained_check == (7, "up", 12, "2026-07-01 12:00:00")
+    assert migrated_monitor == (None, 100, 250, 5, 25, 3)
+    assert monitor_history_tables == {
+        "network_monitor_events", "network_monitor_outages", "network_monitor_statistics",
+    }

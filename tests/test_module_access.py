@@ -10,12 +10,14 @@ from starlette.requests import Request
 from app.db.session import Base
 from app.main import app
 from app.models.models import AppSession, AuditLog, RemoteManagerSetting, User, UserModulePermission
-from app.routers.auth import require_module_access
+from app.routers.auth import require_admin, require_module_access
+from app.routers.admin import require_internal_module, require_module_settings_tab
 from app.services.modules import (
     MODULES,
     MODULE_KEYS,
     accessible_module_keys,
     filter_search_results,
+    granted_module_keys,
     grant_all_registered_modules,
     has_module_access,
     module_for_path,
@@ -66,6 +68,29 @@ def test_roles_and_module_access_remain_independent(db):
     assert has_module_access(db, viewer, "remote_manager") is False
 
 
+def test_contextual_module_administration_requires_admin_role_and_module_allocation(db):
+    owner = account(db, "owner@example.test", "admin")
+    editor = account(db, "editor@example.test", "editor")
+    viewer = account(db, "viewer@example.test", "viewer")
+    no_access_admin = account(db, "no-access@example.test", "admin")
+    for user in (owner, editor, viewer):
+        replace_module_access(db, user, {"asset_manager"}, owner)
+    db.commit()
+
+    owner_request = request_for(db, owner, "/data/categories")
+    assert require_admin(owner_request, db) == owner
+    assert require_internal_module(owner_request, db, owner, "hardware_assets") == "hardware_assets"
+
+    for user in (editor, viewer):
+        with pytest.raises(PermissionError, match="Admin access required"):
+            require_admin(request_for(db, user, "/data/custom-fields"), db)
+
+    denied_request = request_for(db, no_access_admin, "/data/categories")
+    assert require_admin(denied_request, db) == no_access_admin
+    with pytest.raises(PermissionError, match="Module access required"):
+        require_internal_module(denied_request, db, no_access_admin, "hardware_assets")
+
+
 def test_disabled_modules_are_not_assignable_or_exposed(db):
     admin = account(db, "admin@example.test", "admin")
     user = account(db, "user@example.test")
@@ -74,6 +99,26 @@ def test_disabled_modules_are_not_assignable_or_exposed(db):
     db.commit()
     assert db.query(UserModulePermission).filter_by(user_id=user.id, module_key="dns_manager").first() is None
     assert "dns_manager" not in accessible_module_keys(db, user)
+
+
+def test_persisted_module_grants_remain_available_for_disabled_module_settings(db):
+    user = account(db, "admin@example.test", "admin")
+    db.add(UserModulePermission(user_id=user.id, module_key="dns_manager", allowed=True, created_by=user.id))
+    db.add(RemoteManagerSetting(key="dns_manager_enabled", value=""))
+    db.commit()
+    assert "dns_manager" in granted_module_keys(db, user)
+    assert "dns_manager" not in accessible_module_keys(db, user)
+
+
+def test_direct_module_settings_tab_requires_specific_module_allocation(db):
+    user = account(db, "admin@example.test", "admin")
+    request = request_for(db, user, "/system/site-administration")
+    request.scope["query_string"] = b"tab=module-dns-manager"
+    with pytest.raises(PermissionError, match="Module access required"):
+        require_module_settings_tab(request, db, user)
+    event = db.query(AuditLog).filter_by(action="module_access_denied").one()
+    assert event.entity_id == "dns_manager"
+    assert event.status_code == 403
 
 
 def test_existing_install_backfill_grants_every_registered_module(db):
@@ -138,3 +183,14 @@ def test_every_browser_module_route_has_a_post_session_module_dependency():
             if isinstance((value := cell.cell_contents), str)
         }
         assert module.key in closure_values, f"{path} is missing the {module.key} module gate"
+
+
+def test_remote_manager_settings_redirect_remains_admin_protected():
+    route = next(
+        route
+        for route in app.routes
+        if getattr(route, "path", "") == "/remote-manager/settings"
+        and "GET" in (getattr(route, "methods", set()) or set())
+    )
+    calls = [dependency.call for dependency in route.dependant.dependencies]
+    assert require_admin in calls

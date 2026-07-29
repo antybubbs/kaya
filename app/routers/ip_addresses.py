@@ -15,7 +15,10 @@ from app.routers.remote_manager import RDP_SETTING_KEYS, SETTINGS as REMOTE_MANA
 from app.services.audit import write_audit
 from app.services.custom_fields import active_fields, field_values, option_list, save_custom_values, validate_custom_values
 from app.services.managed_lists import list_values
-from app.services.network_monitor import clamp_interval, clamp_timeout, ping_ipv4
+from app.services.network_monitor import (
+    MONITOR_THRESHOLD_DEFAULTS, effective_monitor_thresholds, ping_ipv4,
+    validate_monitor_timing, validate_threshold_values,
+)
 from app.services.dns_clients import add_event, client_display_name, client_status, dhcp_range_for_ip, normalise_mac
 from app.services.site_settings import get_site_setting
 
@@ -84,19 +87,96 @@ def monitor_for(db: Session, record_id: int | None) -> NetworkMonitor | None:
     return db.query(NetworkMonitor).filter(NetworkMonitor.ip_address_id == record_id).first()
 
 
-def save_monitor_settings(db: Session, record: IPAddress, enabled: bool, display_name: str, interval_seconds: int, timeout_ms: int) -> None:
+def monitor_threshold_form_values(form) -> tuple[bool, dict[str, int | bool]]:
+    use_defaults = str(form.get("monitor_use_default_thresholds") or "") == "1"
+    raw_values = {}
+    for key, default in MONITOR_THRESHOLD_DEFAULTS.items():
+        if key == "recovery_state_enabled":
+            raw_values[key] = str(form.get("monitor_recovery_state_enabled") or "") == "1"
+            continue
+        raw = str(form.get(f"monitor_{key}") or default)
+        try:
+            raw_values[key] = int(raw)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"{key.replace('_', ' ').title()} must be a number.") from exc
+    try:
+        return use_defaults, validate_threshold_values(raw_values)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def monitor_form_context(db: Session, monitor: NetworkMonitor | None) -> dict:
+    if monitor:
+        values = effective_monitor_thresholds(db, monitor)
+        using_defaults = monitor.use_default_thresholds
+    else:
+        placeholder = NetworkMonitor(use_default_thresholds=True)
+        values = effective_monitor_thresholds(db, placeholder)
+        using_defaults = True
+    return {"monitor_thresholds": values, "monitor_using_default_thresholds": using_defaults}
+
+
+def save_monitor_settings(
+    db: Session,
+    record: IPAddress,
+    enabled: bool,
+    display_name: str,
+    interval_seconds: int,
+    timeout_ms: int,
+    maintenance_mode: bool,
+    use_defaults: bool,
+    thresholds: dict[str, int | bool],
+) -> dict:
     monitor = monitor_for(db, record.id)
+    old = {
+        "enabled": monitor.is_enabled,
+        "display_name": monitor.display_name,
+        "interval_seconds": monitor.interval_seconds,
+        "timeout_ms": monitor.timeout_ms,
+        "use_default_thresholds": monitor.use_default_thresholds,
+        "maintenance_mode": monitor.is_in_maintenance,
+        **{key: getattr(monitor, key) for key in thresholds},
+    } if monitor else None
+    if monitor:
+        monitor.is_in_maintenance = maintenance_mode
     if not enabled:
         if monitor:
             monitor.is_enabled = False
-        return
+            monitor.last_status = "paused"
+            monitor.state_reason = "Monitoring disabled"
+            monitor.state_changed_at = datetime.utcnow()
+        return {"old": old, "new": {"enabled": False}}
     if not monitor:
         monitor = NetworkMonitor(ip_address_id=record.id, check_type="icmp")
         db.add(monitor)
+    try:
+        interval, timeout = validate_monitor_timing(interval_seconds, timeout_ms)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     monitor.display_name = display_name.strip() or None
     monitor.is_enabled = True
-    monitor.interval_seconds = clamp_interval(interval_seconds)
-    monitor.timeout_ms = clamp_timeout(timeout_ms)
+    monitor.interval_seconds = interval
+    monitor.timeout_ms = timeout
+    monitor.is_in_maintenance = maintenance_mode
+    if maintenance_mode:
+        monitor.last_status = "maintenance"
+        monitor.state_reason = "Active maintenance window"
+        monitor.state_changed_at = datetime.utcnow()
+    elif monitor.last_status == "maintenance":
+        monitor.last_status = "unknown"
+        monitor.state_reason = "Awaiting first check after maintenance"
+        monitor.state_changed_at = datetime.utcnow()
+    monitor.use_default_thresholds = use_defaults
+    for key, value in thresholds.items():
+        setattr(monitor, key, value)
+    return {
+        "old": old,
+        "new": {
+            "enabled": True, "display_name": monitor.display_name,
+            "interval_seconds": interval, "timeout_ms": timeout,
+            "use_default_thresholds": use_defaults, "maintenance_mode": maintenance_mode, **thresholds,
+        },
+    }
 
 
 def remote_for(db: Session, record_id: int | None) -> RemoteAccess | None:
@@ -302,7 +382,7 @@ def new_ip_address(request: Request, vlan_id: int | None = Query(None), dns_clie
     vlans = db.query(VLAN).order_by(VLAN.name.asc()).all()
     scope = dhcp_range_for_ip(db, dns_client.current_ip) if dns_client else None
     inferred_vlan_id = vlan_id or (scope.vlan_id if scope else None)
-    return templates.TemplateResponse(request, "ip_address_form.html", {"user": user, "record": None, "dns_client": dns_client, "monitor": None, "remote": None, "categories": categories, "vlans": vlans, "selected_vlan_id": resolve_vlan(db, inferred_vlan_id).id, "selected_assignment_type": "Dynamic" if scope else "Static", "dhcp_range": scope, "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": {}, "option_list": option_list, "error": None, **remote_settings_context(None), **csrf_context(request)})
+    return templates.TemplateResponse(request, "ip_address_form.html", {"user": user, "record": None, "dns_client": dns_client, "monitor": None, "remote": None, "categories": categories, "vlans": vlans, "selected_vlan_id": resolve_vlan(db, inferred_vlan_id).id, "selected_assignment_type": "Dynamic" if scope else "Static", "dhcp_range": scope, "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": {}, "option_list": option_list, "error": None, **monitor_form_context(db, None), **remote_settings_context(None), **csrf_context(request)})
 
 
 @router.post("/new")
@@ -314,11 +394,16 @@ async def create_ip_address(request: Request, address: str = Form(..., max_lengt
     categories = list_values(db, MODULE).get("category", [])
     vlans = db.query(VLAN).order_by(VLAN.name.asc()).all()
     form = await request.form()
+    use_default_thresholds, monitor_thresholds = monitor_threshold_form_values(form)
+    try:
+        validate_monitor_timing(monitor_interval_seconds, monitor_timeout_ms)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     custom_error = validate_custom_values(fields, form)
     if custom_error:
-        return templates.TemplateResponse(request, "ip_address_form.html", {"user": user, "record": None, "dns_client": None, "monitor": None, "remote": None, "categories": categories, "vlans": vlans, "selected_vlan_id": selected_vlan.id, "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": {}, "option_list": option_list, "error": custom_error, **remote_settings_context(None), **csrf_context(request)}, status_code=400)
+        return templates.TemplateResponse(request, "ip_address_form.html", {"user": user, "record": None, "dns_client": None, "monitor": None, "remote": None, "categories": categories, "vlans": vlans, "selected_vlan_id": selected_vlan.id, "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": {}, "option_list": option_list, "error": custom_error, "monitor_thresholds": monitor_thresholds, "monitor_using_default_thresholds": use_default_thresholds, **remote_settings_context(None), **csrf_context(request)}, status_code=400)
     if db.query(IPAddress).filter(IPAddress.vlan_id == selected_vlan.id, IPAddress.address == clean_address).first():
-        return templates.TemplateResponse(request, "ip_address_form.html", {"user": user, "record": None, "dns_client": None, "monitor": None, "remote": None, "categories": categories, "vlans": vlans, "selected_vlan_id": selected_vlan.id, "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": {}, "option_list": option_list, "error": "That IP address already exists in this VLAN.", **remote_settings_context(None), **csrf_context(request)}, status_code=400)
+        return templates.TemplateResponse(request, "ip_address_form.html", {"user": user, "record": None, "dns_client": None, "monitor": None, "remote": None, "categories": categories, "vlans": vlans, "selected_vlan_id": selected_vlan.id, "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": {}, "option_list": option_list, "error": "That IP address already exists in this VLAN.", "monitor_thresholds": monitor_thresholds, "monitor_using_default_thresholds": use_default_thresholds, **remote_settings_context(None), **csrf_context(request)}, status_code=400)
     clean_mac = normalise_mac(mac_address)
     if mac_address.strip() and not clean_mac:
         raise HTTPException(status_code=400, detail="Enter a valid MAC address.")
@@ -337,11 +422,11 @@ async def create_ip_address(request: Request, address: str = Form(..., max_lengt
         dns_client.match_confidence = 100
         add_event(db, dns_client, "linked_to_ip_record", "Created and linked VLAN/IP record", new=str(row.id))
     db.commit()
-    save_monitor_settings(db, row, bool(monitor_enabled), monitor_display_name, monitor_interval_seconds, monitor_timeout_ms)
+    monitor_changes = save_monitor_settings(db, row, bool(monitor_enabled), monitor_display_name, monitor_interval_seconds, monitor_timeout_ms, str(form.get("monitor_maintenance_mode") or "") == "1", use_default_thresholds, monitor_thresholds)
     save_remote_settings(db, row, bool(remote_enabled), remote_display_name, remote_protocol, remote_port, remote_username, remote_override_settings(form, TERMINAL_SETTING_KEYS), remote_override_settings(form, RDP_SETTING_KEYS))
     save_custom_values(db, fields, form, ENTITY_TYPE, row.id)
     db.commit()
-    write_audit(db, user, "create", "ip_address", str(row.id), request.client.host if request.client else None, detail=clean_address, metadata={"dns_client_id": dns_client.id if dns_client else None})
+    write_audit(db, user, "create", "ip_address", str(row.id), request.client.host if request.client else None, detail=clean_address, metadata={"dns_client_id": dns_client.id if dns_client else None, "monitor_settings": monitor_changes})
     return RedirectResponse(f"/networking/vlan-ip-manager/{row.id}", status_code=303)
 
 
@@ -394,7 +479,7 @@ def detail_ip_address(request: Request, record_id: int, db: Session = Depends(ge
             "events": db.query(NetworkMonitorEvent).filter(NetworkMonitorEvent.monitor_id == monitor.id).order_by(NetworkMonitorEvent.occurred_at.desc()).limit(5).all(),
             "outages": db.query(NetworkMonitorOutage).filter(NetworkMonitorOutage.monitor_id == monitor.id, NetworkMonitorOutage.started_at >= since).count(),
         }
-    return templates.TemplateResponse(request, "ip_address_detail.html", {"user": user, "record": row, "monitor": monitor, "monitor_observations": monitor_observations, "remote": remote_for(db, row.id), "compute_matches": compute_matches, "dns_clients": dns_clients, "dns_link_candidates": dns_link_candidates, "lease_history": lease_history, "ip_traffic_history": ip_traffic_history, "dns_client_status": client_status, "uptime_label": uptime_label, "categories": categories, "vlans": db.query(VLAN).order_by(VLAN.name.asc()).all(), "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": values, "option_list": option_list, **remote_settings_context(remote_for(db, row.id)), **csrf_context(request)})
+    return templates.TemplateResponse(request, "ip_address_detail.html", {"user": user, "record": row, "monitor": monitor, "monitor_observations": monitor_observations, "remote": remote_for(db, row.id), "compute_matches": compute_matches, "dns_clients": dns_clients, "dns_link_candidates": dns_link_candidates, "lease_history": lease_history, "ip_traffic_history": ip_traffic_history, "dns_client_status": client_status, "uptime_label": uptime_label, "categories": categories, "vlans": db.query(VLAN).order_by(VLAN.name.asc()).all(), "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": values, "option_list": option_list, **monitor_form_context(db, monitor), **remote_settings_context(remote_for(db, row.id)), **csrf_context(request)})
 
 
 @router.post("/{record_id}/link-dns-client")
@@ -433,7 +518,8 @@ def edit_ip_address(request: Request, record_id: int, db: Session = Depends(get_
     values = field_values(db, MODULE, ENTITY_TYPE, row.id)
     categories = list_values(db, MODULE).get("category", [])
     remote = remote_for(db, row.id)
-    return templates.TemplateResponse(request, "ip_address_form.html", {"user": user, "record": row, "monitor": monitor_for(db, row.id), "remote": remote, "categories": categories, "vlans": db.query(VLAN).order_by(VLAN.name.asc()).all(), "selected_vlan_id": row.vlan_id, "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": values, "option_list": option_list, "error": None, **remote_settings_context(remote), **csrf_context(request)})
+    monitor = monitor_for(db, row.id)
+    return templates.TemplateResponse(request, "ip_address_form.html", {"user": user, "record": row, "monitor": monitor, "remote": remote, "categories": categories, "vlans": db.query(VLAN).order_by(VLAN.name.asc()).all(), "selected_vlan_id": row.vlan_id, "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": values, "option_list": option_list, "error": None, **monitor_form_context(db, monitor), **remote_settings_context(remote), **csrf_context(request)})
 
 
 @router.post("/{record_id}/edit")
@@ -449,14 +535,19 @@ async def update_ip_address(request: Request, record_id: int, address: str = For
     categories = list_values(db, MODULE).get("category", [])
     vlans = db.query(VLAN).order_by(VLAN.name.asc()).all()
     form = await request.form()
+    use_default_thresholds, monitor_thresholds = monitor_threshold_form_values(form)
+    try:
+        validate_monitor_timing(monitor_interval_seconds, monitor_timeout_ms)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     custom_error = validate_custom_values(fields, form)
     if custom_error:
         remote = remote_for(db, row.id)
-        return templates.TemplateResponse(request, "ip_address_form.html", {"user": user, "record": row, "monitor": monitor_for(db, row.id), "remote": remote, "categories": categories, "vlans": vlans, "selected_vlan_id": selected_vlan.id, "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": values, "option_list": option_list, "error": custom_error, **remote_settings_context(remote), **csrf_context(request)}, status_code=400)
+        return templates.TemplateResponse(request, "ip_address_form.html", {"user": user, "record": row, "monitor": monitor_for(db, row.id), "remote": remote, "categories": categories, "vlans": vlans, "selected_vlan_id": selected_vlan.id, "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": values, "option_list": option_list, "error": custom_error, "monitor_thresholds": monitor_thresholds, "monitor_using_default_thresholds": use_default_thresholds, **remote_settings_context(remote), **csrf_context(request)}, status_code=400)
     existing = db.query(IPAddress).filter(IPAddress.vlan_id == selected_vlan.id, IPAddress.address == clean_address, IPAddress.id != row.id).first()
     if existing:
         remote = remote_for(db, row.id)
-        return templates.TemplateResponse(request, "ip_address_form.html", {"user": user, "record": row, "monitor": monitor_for(db, row.id), "remote": remote, "categories": categories, "vlans": vlans, "selected_vlan_id": selected_vlan.id, "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": values, "option_list": option_list, "error": "That IP address already exists in this VLAN.", **remote_settings_context(remote), **csrf_context(request)}, status_code=400)
+        return templates.TemplateResponse(request, "ip_address_form.html", {"user": user, "record": row, "monitor": monitor_for(db, row.id), "remote": remote, "categories": categories, "vlans": vlans, "selected_vlan_id": selected_vlan.id, "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": values, "option_list": option_list, "error": "That IP address already exists in this VLAN.", "monitor_thresholds": monitor_thresholds, "monitor_using_default_thresholds": use_default_thresholds, **remote_settings_context(remote), **csrf_context(request)}, status_code=400)
     row.vlan_id = selected_vlan.id
     row.address = clean_address
     clean_mac = normalise_mac(mac_address)
@@ -469,11 +560,11 @@ async def update_ip_address(request: Request, record_id: int, address: str = For
     row.assignment_type = clean_assignment_type(assignment_type)
     row.notes = notes.strip() or None
     db.commit()
-    save_monitor_settings(db, row, bool(monitor_enabled), monitor_display_name, monitor_interval_seconds, monitor_timeout_ms)
+    monitor_changes = save_monitor_settings(db, row, bool(monitor_enabled), monitor_display_name, monitor_interval_seconds, monitor_timeout_ms, str(form.get("monitor_maintenance_mode") or "") == "1", use_default_thresholds, monitor_thresholds)
     save_remote_settings(db, row, bool(remote_enabled), remote_display_name, remote_protocol, remote_port, remote_username, remote_override_settings(form, TERMINAL_SETTING_KEYS), remote_override_settings(form, RDP_SETTING_KEYS))
     save_custom_values(db, fields, form, ENTITY_TYPE, row.id)
     db.commit()
-    write_audit(db, user, "update", "ip_address", str(row.id), request.client.host if request.client else None, detail=clean_address)
+    write_audit(db, user, "update", "ip_address", str(row.id), request.client.host if request.client else None, detail=clean_address, metadata={"monitor_settings": monitor_changes})
     return RedirectResponse(f"/networking/vlan-ip-manager/{row.id}", status_code=303)
 
 

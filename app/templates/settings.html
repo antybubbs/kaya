@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block extra_head %}<link rel="stylesheet" href="/static/css/remote.css?v={{ asset_version }}">{% endblock %}
 {% block content %}
+{% set module_access = module_access|default([], true) %}
 {% macro switch(name, title, description) -%}
 <label class="remote-setting-row">
   <span><strong>{{ title }}</strong><small>{{ description }}</small></span>
@@ -53,18 +54,21 @@
         </div>
       </details>
 
+      {% if 'backup_manager' in module_access or 'dashboard' in module_access or 'dns_manager' in module_access or 'network_monitor' in module_access or 'vlan_ip_manager' in module_access or 'remote_manager' in module_access or 'secret_vault' in module_access or 'secure_send' in module_access %}
       <details class="settings-side-group" data-settings-details="modules" open>
-        <summary class="settings-side-link" data-settings-parent-tab="modules" data-default-child="module-backup-manager" aria-selected="false">Module Settings</summary>
+        <summary class="settings-side-link" data-settings-parent-tab="modules" data-default-child="{% if 'backup_manager' in module_access %}module-backup-manager{% elif 'dashboard' in module_access %}module-dashboard{% elif 'dns_manager' in module_access %}module-dns-manager{% elif 'network_monitor' in module_access %}module-network-monitor{% elif 'vlan_ip_manager' in module_access %}module-vlan-ip-manager{% elif 'remote_manager' in module_access %}module-remote-manager{% elif 'secret_vault' in module_access %}module-secret-vault{% else %}module-secure-send{% endif %}" aria-selected="false">Module Settings</summary>
         <div class="settings-side-children">
-          <a href="/system/site-administration?tab=module-backup-manager" class="settings-side-child" data-settings-child-tab="module-backup-manager" data-settings-parent="modules" aria-selected="false">Backup Manager</a>
-          <a href="/system/site-administration?tab=module-dashboard" class="settings-side-child" data-settings-child-tab="module-dashboard" data-settings-parent="modules" aria-selected="false">Dashboard</a>
-          <a href="/system/site-administration?tab=module-dns-manager" class="settings-side-child" data-settings-child-tab="module-dns-manager" data-settings-parent="modules" aria-selected="false">DNS Manager</a>
-          <a href="/system/site-administration?tab=module-vlan-ip-manager" class="settings-side-child" data-settings-child-tab="module-vlan-ip-manager" data-settings-parent="modules" aria-selected="false">VLAN/IP Manager</a>
-          <a href="/system/site-administration?tab=module-remote-manager" class="settings-side-child" data-settings-child-tab="module-remote-manager" data-settings-parent="modules" aria-selected="false">Remote Manager</a>
-          <a href="/system/site-administration?tab=module-secret-vault" class="settings-side-child" data-settings-child-tab="module-secret-vault" data-settings-parent="modules" aria-selected="false">Secret Vault</a>
-          <a href="/system/site-administration?tab=module-secure-send" class="settings-side-child" data-settings-child-tab="module-secure-send" data-settings-parent="modules" aria-selected="false">Secure Send</a>
+          {% if 'backup_manager' in module_access %}<a href="/system/site-administration?tab=module-backup-manager" class="settings-side-child" data-settings-child-tab="module-backup-manager" data-settings-parent="modules" aria-selected="false">Backup Manager</a>{% endif %}
+          {% if 'dashboard' in module_access %}<a href="/system/site-administration?tab=module-dashboard" class="settings-side-child" data-settings-child-tab="module-dashboard" data-settings-parent="modules" aria-selected="false">Dashboard</a>{% endif %}
+          {% if 'dns_manager' in module_access %}<a href="/system/site-administration?tab=module-dns-manager" class="settings-side-child" data-settings-child-tab="module-dns-manager" data-settings-parent="modules" aria-selected="false">DNS Manager</a>{% endif %}
+          {% if 'network_monitor' in module_access %}<a href="/system/site-administration?tab=module-network-monitor" class="settings-side-child" data-settings-child-tab="module-network-monitor" data-settings-parent="modules" aria-selected="false">IP/WAN Monitor</a>{% endif %}
+          {% if 'vlan_ip_manager' in module_access %}<a href="/system/site-administration?tab=module-vlan-ip-manager" class="settings-side-child" data-settings-child-tab="module-vlan-ip-manager" data-settings-parent="modules" aria-selected="false">VLAN/IP Manager</a>{% endif %}
+          {% if 'remote_manager' in module_access %}<a href="/system/site-administration?tab=module-remote-manager" class="settings-side-child" data-settings-child-tab="module-remote-manager" data-settings-parent="modules" aria-selected="false">Remote Manager</a>{% endif %}
+          {% if 'secret_vault' in module_access %}<a href="/system/site-administration?tab=module-secret-vault" class="settings-side-child" data-settings-child-tab="module-secret-vault" data-settings-parent="modules" aria-selected="false">Secret Vault</a>{% endif %}
+          {% if 'secure_send' in module_access %}<a href="/system/site-administration?tab=module-secure-send" class="settings-side-child" data-settings-child-tab="module-secure-send" data-settings-parent="modules" aria-selected="false">Secure Send</a>{% endif %}
         </div>
       </details>
+      {% endif %}
     </aside>
 
     <main class="settings-content-panel">
@@ -91,7 +95,7 @@
       </div>
     </div>
   </section>
-  <section class="settings-tab-panel" data-settings-panel="module-secure-send" data-settings-parent="modules" role="tabpanel" hidden>
+  {% if 'secure_send' in module_access %}<section class="settings-tab-panel" data-settings-panel="module-secure-send" data-settings-parent="modules" role="tabpanel" hidden>
     <h2>Secure Send</h2>
     <div class="remote-settings-card">
       <header><span>Temporary encrypted delivery</span></header>
@@ -107,8 +111,8 @@
       {{ switch('secure_send_email_notifications', 'Enable email notifications', 'Send recipient links and lifecycle notices through Kaya SMTP. Credentials are never emailed.') }}
       <div class="vault-admin-note"><strong>Public exposure</strong><span>Publish only the Security Gateway port. The main Kaya application remains the authenticated management interface.</span></div>
     </div>
-  </section>
-  <section class="settings-tab-panel vault-admin-panel" data-settings-panel="module-secret-vault" data-settings-parent="modules" role="tabpanel" hidden>
+  </section>{% endif %}
+  {% if 'secret_vault' in module_access %}<section class="settings-tab-panel vault-admin-panel" data-settings-panel="module-secret-vault" data-settings-parent="modules" role="tabpanel" hidden>
     <h2>Secret Vault</h2>
     <div class="remote-settings-card vault-admin-card">
       <header><span>Security policy</span></header>
@@ -121,8 +125,8 @@
       {{ switch('secret_vault_sharing_enabled', 'Allow secure collection sharing', 'Users may explicitly share collections with named Kaya users. Private vaults remain private by default.') }}
       <div class="vault-admin-note"><strong>Protect the application key</strong><span>Kaya's ENCRYPTION_KEY must be backed up separately. Database and attachment backups cannot be restored without it; portable .kayavault exports use their own passphrase.</span></div>
     </div>
-  </section>
-  <section class="settings-tab-panel" data-settings-panel="module-dashboard" data-settings-parent="modules" role="tabpanel" hidden>
+  </section>{% endif %}
+  {% if 'dashboard' in module_access %}<section class="settings-tab-panel" data-settings-panel="module-dashboard" data-settings-parent="modules" role="tabpanel" hidden>
     <h2>Dashboard</h2>
     <div class="remote-settings-card">
       <header><span>Global dashboard defaults</span></header>
@@ -135,7 +139,107 @@
         <label><strong>Globally disabled widget keys</strong><small>Comma-separated registry keys. Existing user preferences are preserved.</small><input name="dashboard_globally_disabled_widgets" value="{{ settings.get('dashboard_globally_disabled_widgets','') }}" placeholder="team_users,recent_activity"></label>
       </div>
     </div>
+  </section>{% endif %}
+  {% if 'network_monitor' in module_access %}
+  <section class="settings-tab-panel ip-wan-admin" data-settings-panel="module-network-monitor" data-settings-parent="modules" role="tabpanel" hidden>
+    <div class="ip-wan-admin-heading"><h2>IP/WAN Monitor</h2><p class="muted">Configure default health thresholds and Wallboard access.</p></div>
+    <div class="remote-settings-card ip-wan-settings-card">
+      <header class="settings-card-heading"><span>Default health thresholds</span><small>Used by monitors configured to inherit Kaya defaults.</small></header>
+      <div class="ip-wan-card-body">
+      {% set monitor_field_prefix = 'network_monitor_' %}
+      {% set monitor_show_default_toggle = false %}
+      {% set monitor_using_default_thresholds = false %}
+      {% set monitor_admin_layout = true %}
+      {% set monitor_thresholds = {
+        'latency_warning_ms': settings.get('network_monitor_latency_warning_ms', '100')|int,
+        'latency_critical_ms': settings.get('network_monitor_latency_critical_ms', '250')|int,
+        'packet_loss_warning_percent': settings.get('network_monitor_packet_loss_warning_percent', '5')|int,
+        'packet_loss_critical_percent': settings.get('network_monitor_packet_loss_critical_percent', '25')|int,
+        'degraded_threshold': settings.get('network_monitor_degraded_threshold', '2')|int,
+        'failure_threshold': settings.get('network_monitor_failure_threshold', '3')|int,
+        'recovery_threshold': settings.get('network_monitor_recovery_threshold', '3')|int,
+        'recovery_state_enabled': settings.get('network_monitor_recovery_state_enabled', '1') == '1'
+      } %}
+      {% include "_network_monitor_threshold_fields.html" %}
+      </div>
+      <footer class="settings-card-footer"><button class="button" type="submit" formaction="/system/site-administration/ip-wan-monitor" formmethod="post">Save defaults</button></footer>
+    </div>
+    <div class="remote-settings-card wallboard-admin-settings ip-wan-settings-card" data-wallboard-admin>
+      <header class="settings-card-heading"><span>IP/WAN Monitor Wallboard</span><small>Configure shared large-display access, security and presentation defaults.</small></header>
+      <div class="wallboard-setup-summary" aria-label="Wallboard setup status">
+        <div><span>Shared Wallboard</span><strong class="table-chip {{ 'good' if wallboard and wallboard.enabled else '' }}" data-wallboard-enabled-status>{{ 'Enabled' if wallboard and wallboard.enabled else 'Disabled' }}</strong></div>
+        <div><span>URL</span><strong data-wallboard-url-summary>{{ 'Generated' if wallboard_url else 'Not generated' }}</strong></div>
+        <div><span>Passcode</span><strong>{{ 'Configured' if wallboard and wallboard.passcode_hash else 'Not configured' }}</strong></div>
+        <div><span>Assigned monitors</span><strong data-wallboard-selected-count>{{ wallboard_monitors|selectattr('is_enabled')|list|length if not wallboard or wallboard.all_active_monitors else wallboard_memberships|length }}</strong></div>
+      </div>
+      <div class="wallboard-sections">
+        <section class="wallboard-settings-section" aria-labelledby="wallboard-availability-heading">
+          <div class="settings-subsection-heading"><h3 id="wallboard-availability-heading">Availability</h3></div>
+          <label class="remote-setting-row"><span><strong>Enable shared Wallboard</strong><small>Allow restricted access through the generated Wallboard URL. Authenticated Kaya users can still use Wallboard mode when this is disabled.</small></span><input class="remote-switch" name="wallboard_enabled" type="checkbox" value="1" data-wallboard-enabled {% if wallboard and wallboard.enabled %}checked{% endif %}></label>
+          <div class="settings-callout"><strong>Shared access</strong><span>The generated URL does not grant access by itself. A configured Wallboard passcode is still required.</span></div>
+        </section>
+
+        <section class="wallboard-settings-section" aria-labelledby="wallboard-identity-heading">
+          <div class="settings-subsection-heading"><h3 id="wallboard-identity-heading">Identity and URL</h3></div>
+          <div class="remote-settings-grid two wallboard-identity-grid">
+            <label><strong>Wallboard name</strong><small>Displayed in the Wallboard header.</small><input name="wallboard_name" maxlength="120" value="{{ wallboard.name if wallboard else 'Network Operations Wallboard' }}"></label>
+            <div class="wallboard-url-setting"><strong>Shared URL</strong><small data-wallboard-url-empty {% if wallboard_url %}hidden{% endif %}>No shared URL has been generated.</small><div class="input-action" data-wallboard-url-shell {% if not wallboard_url %}hidden{% endif %}><input data-wallboard-url value="{{ wallboard_url or '' }}" aria-label="Shared Wallboard URL" readonly><button class="button secondary" type="button" data-wallboard-copy-url {% if not wallboard_url %}hidden disabled{% endif %}>Copy</button></div><div class="wallboard-url-actions"><button class="button secondary" name="wallboard_action" value="{{ 'regenerate' if wallboard_url else 'generate' }}" type="submit" formaction="/system/site-administration/ip-wan-monitor/wallboard" formmethod="post" data-wallboard-generate-url {% if wallboard_url %}data-wallboard-confirm="Re-generating this URL will immediately change the live Wallboard URL and invalidate all currently connected shared displays. Continue?"{% endif %}>{{ 'Re-generate URL' if wallboard_url else 'Generate URL' }}</button><button class="button danger" name="wallboard_action" value="revoke" type="submit" formaction="/system/site-administration/ip-wan-monitor/wallboard" formmethod="post" data-wallboard-revoke-url data-wallboard-confirm="Revoke this URL and invalidate all shared Wallboard sessions?" {% if not wallboard_url %}hidden disabled{% endif %}>Revoke URL</button></div><span class="muted" role="status" aria-live="polite" data-wallboard-url-status></span></div>
+          </div>
+        </section>
+
+        <section class="wallboard-settings-section wallboard-shared-only" aria-labelledby="wallboard-auth-heading">
+          <div class="settings-subsection-heading"><h3 id="wallboard-auth-heading">Authentication</h3><span class="table-chip {{ 'good' if wallboard and wallboard.passcode_hash else '' }}">{{ 'Configured' if wallboard and wallboard.passcode_hash else 'Not configured' }}</span></div>
+          <p class="settings-section-help">Kaya stores a secure hash only. For security, the current passcode cannot be displayed. Set a new one to {{ 'replace it' if wallboard and wallboard.passcode_hash else 'configure access' }}.</p>
+          <div class="remote-settings-grid wallboard-passcode-grid">
+            <label class="wide-field"><strong>Passcode type</strong><select name="wallboard_passcode_type" data-wallboard-passcode-type><option value="numeric" {% if not wallboard or wallboard.passcode_type == 'numeric' %}selected{% endif %}>Numeric PIN - minimum 6 digits</option><option value="alphanumeric" {% if wallboard and wallboard.passcode_type == 'alphanumeric' %}selected{% endif %}>Alphanumeric - minimum 8 characters, including a letter and number</option></select><small data-wallboard-passcode-guidance>{{ 'Use at least 8 characters, including a letter and number.' if wallboard and wallboard.passcode_type == 'alphanumeric' else 'Use at least 6 digits.' }}</small></label>
+            <label><strong>New PIN/passcode</strong><input name="wallboard_passcode" type="password" maxlength="128" autocomplete="new-password" data-wallboard-passcode placeholder="Leave blank to keep current"></label>
+            <label><strong>Confirm PIN/passcode</strong><input name="wallboard_passcode_confirm" type="password" maxlength="128" autocomplete="new-password" data-wallboard-passcode-confirm></label>
+          </div>
+          <div class="subsection-actions"><button class="button" name="wallboard_action" value="save" type="submit" formaction="/system/site-administration/ip-wan-monitor/wallboard" formmethod="post" data-wallboard-passcode-submit disabled>{{ 'Replace passcode' if wallboard and wallboard.passcode_hash else 'Set passcode' }}</button></div>
+        </section>
+
+        <section class="wallboard-settings-section wallboard-shared-only" aria-labelledby="wallboard-session-heading">
+          <div class="settings-subsection-heading"><h3 id="wallboard-session-heading">Session security</h3></div>
+          <div class="remote-settings-grid two constrained-grid"><label><strong>Shared session lifetime</strong><select name="wallboard_session_lifetime">{% for value,label in [(3600,'1 hour'),(28800,'8 hours'),(86400,'24 hours'),(604800,'7 days'),(2592000,'30 days'),(0,'Never, until revoked')] %}<option value="{{ value }}" {% if (wallboard.session_lifetime_seconds if wallboard else 86400) == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label></div>
+          <label class="remote-setting-row"><span><strong>Remember this display</strong><small>Allow dedicated screens to retain restricted Wallboard access.</small></span><input class="remote-switch" name="wallboard_remember_enabled" type="checkbox" value="1" data-wallboard-remember {% if wallboard and wallboard.remember_display_enabled %}checked{% endif %}></label>
+          <div class="remote-settings-grid two constrained-grid dependent-setting" data-wallboard-remember-setting><label><strong>Remembered display lifetime</strong><select name="wallboard_remember_lifetime" data-wallboard-remember-lifetime>{% for value,label in [(86400,'24 hours'),(604800,'7 days'),(2592000,'30 days')] %}<option value="{{ value }}" {% if (wallboard.remember_display_lifetime_seconds if wallboard else 2592000) == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label></div>
+        </section>
+
+        <section class="wallboard-settings-section" aria-labelledby="wallboard-monitor-heading">
+          <div class="settings-subsection-heading"><h3 id="wallboard-monitor-heading">Monitor access</h3><span class="muted"><span data-wallboard-selected-count>{{ wallboard_monitors|selectattr('is_enabled')|list|length if not wallboard or wallboard.all_active_monitors else wallboard_memberships|length }}</span> selected</span></div>
+          <div class="wallboard-scope-options" role="radiogroup" aria-label="Monitor scope"><label><input type="radio" name="wallboard_monitor_scope" value="all" {% if not wallboard or wallboard.all_active_monitors %}checked{% endif %}> <span><strong>All active monitors</strong><small>Automatically include active monitors.</small></span></label><label><input type="radio" name="wallboard_monitor_scope" value="selected" {% if wallboard and not wallboard.all_active_monitors %}checked{% endif %}> <span><strong>Selected monitors only</strong><small>Choose and order individual monitors.</small></span></label></div>
+          <div class="wallboard-monitor-selection" data-wallboard-selected-monitors {% if not wallboard or wallboard.all_active_monitors %}hidden{% endif %}>
+            <label class="wallboard-monitor-search"><strong>Search monitors</strong><input type="search" placeholder="Name or IP address" data-wallboard-monitor-search></label>
+            <input type="hidden" name="wallboard_monitor_order" data-wallboard-monitor-order value="{{ wallboard_monitors|map(attribute='id')|join(',') if wallboard_monitors else '' }}">
+            <div class="wallboard-monitor-picker" data-wallboard-monitor-picker>
+              {% for monitor in wallboard_monitors %}<div class="wallboard-monitor-choice" data-monitor-search="{{ (monitor_label(monitor) ~ ' ' ~ monitor.ip_address.address)|lower }}" data-monitor-id="{{ monitor.id }}" data-monitor-enabled="{{ 'true' if monitor.is_enabled else 'false' }}"><label class="checkbox-row"><input type="checkbox" name="wallboard_monitor_ids" value="{{ monitor.id }}" {% if not wallboard or wallboard.all_active_monitors or monitor.id in wallboard_memberships %}checked{% endif %}><span><strong>{{ monitor_label(monitor) }}</strong><small>{{ monitor.ip_address.address }} - {{ 'Active' if monitor.is_enabled else 'Paused' }}</small></span></label><span class="wallboard-order-buttons"><button class="icon-button" type="button" data-wallboard-order="up" aria-label="Move {{ monitor_label(monitor) }} earlier">&uarr;</button><button class="icon-button" type="button" data-wallboard-order="down" aria-label="Move {{ monitor_label(monitor) }} later">&darr;</button></span></div>{% else %}<div class="wallboard-monitor-empty"><strong>No monitors available</strong><span>Add an IP/WAN monitor before selecting individual entries.</span></div>{% endfor %}
+            </div>
+          </div>
+          <label class="remote-setting-row compact-toggle-row"><span><strong>Show paused monitors</strong><small>Include paused monitors in the shared Wallboard.</small></span><input class="remote-switch" type="checkbox" name="wallboard_show_paused_monitors" value="1" {% if not wallboard or wallboard.show_paused_monitors %}checked{% endif %}></label>
+        </section>
+
+        <section class="wallboard-settings-section" aria-labelledby="wallboard-display-heading">
+          <div class="settings-subsection-heading"><h3 id="wallboard-display-heading">Display defaults</h3></div>
+          <h4>Layout</h4><div class="remote-settings-grid two constrained-grid"><label><strong>Default columns</strong><select name="wallboard_columns">{% for value in ['auto','2','3','4','5','6','8'] %}<option value="{{ value }}" {% if wallboard_display.columns == value %}selected{% endif %}>{{ value|capitalize }}</option>{% endfor %}</select></label><label><strong>Default density</strong><select name="wallboard_density">{% for value in ['comfortable','compact','dense'] %}<option value="{{ value }}" {% if wallboard_display.density == value %}selected{% endif %}>{{ value|capitalize }}</option>{% endfor %}</select></label></div>
+          <h4>Visibility</h4><div class="wallboard-admin-switch-grid">{% for key,label in [('show_graphs','Show graphs'),('show_summary','Show summary statistics'),('show_actions','Show action buttons'),('show_ip_addresses','Show IP addresses'),('show_last_result','Show last-result time'),('show_rolling_average','Show rolling average'),('show_availability','Show availability'),('show_header','Show Wallboard header')] %}<label class="remote-setting-row compact-toggle-row"><span><strong>{{ label }}</strong></span><input class="remote-switch" type="checkbox" name="wallboard_{{ key }}" value="1" {% if wallboard_display[key] %}checked{% endif %}></label>{% endfor %}</div>
+        </section>
+
+        <section class="wallboard-settings-section wallboard-shared-only" aria-labelledby="wallboard-permissions-heading">
+          <div class="settings-subsection-heading"><h3 id="wallboard-permissions-heading">Shared Wallboard permissions</h3></div>
+          <div class="settings-callout"><strong>Read-only by default</strong><span>Enable only the actions required for trusted displays.</span></div>
+          <div class="wallboard-admin-switch-grid wallboard-permission-grid">{% for key,label in [('allow_detail_links','Allow monitor detail links'),('allow_check_now','Allow Check now'),('allow_pause','Allow Pause'),('allow_reorder','Allow card reordering'),('allow_display_changes','Allow display-setting changes')] %}<label class="remote-setting-row compact-toggle-row {% if key in ['allow_check_now','allow_pause','allow_reorder'] %}behaviour-permission{% endif %}"><span><strong>{{ label }}</strong></span><input class="remote-switch" type="checkbox" name="wallboard_{{ key }}" value="1" {% if wallboard_permissions[key] %}checked{% endif %}></label>{% endfor %}</div>
+        </section>
+
+        <section class="wallboard-settings-section wallboard-shared-only" aria-labelledby="wallboard-management-heading">
+          <div class="settings-subsection-heading"><h3 id="wallboard-management-heading">Session management</h3></div>
+          <div class="wallboard-management-row"><span><strong>Active sessions</strong><small>Immediately sign out all shared Wallboard displays.</small></span><button class="button danger" name="wallboard_action" value="invalidate_sessions" type="submit" formaction="/system/site-administration/ip-wan-monitor/wallboard" formmethod="post" data-wallboard-confirm="Invalidate every active shared Wallboard session?">Invalidate all sessions</button></div>
+          <div class="wallboard-management-row"><span><strong>Passcode lockouts</strong><small>Clear failed-attempt lockouts for shared displays.</small></span><button class="button secondary" name="wallboard_action" value="clear_lockout" type="submit" formaction="/system/site-administration/ip-wan-monitor/wallboard" formmethod="post">Clear lockouts</button></div>
+        </section>
+      </div>
+      <footer class="settings-card-footer wallboard-card-footer"><span>Changes to shared access may affect connected displays.</span><div><a class="button secondary" href="/system/site-administration?tab=module-network-monitor">Cancel changes</a><button class="button" name="wallboard_action" value="save" type="submit" formaction="/system/site-administration/ip-wan-monitor/wallboard" formmethod="post">Save Wallboard settings</button></div></footer>
+    </div>
   </section>
+  {% endif %}
   <section class="settings-tab-panel active" data-settings-panel="general" data-settings-parent="general" role="tabpanel">
     <h2>General</h2>
 
@@ -347,7 +451,7 @@
     </div>
   </section>
 
-  <section class="settings-tab-panel" data-settings-panel="module-backup-manager" data-settings-parent="modules" role="tabpanel" hidden>
+  {% if 'backup_manager' in module_access %}<section class="settings-tab-panel" data-settings-panel="module-backup-manager" data-settings-parent="modules" role="tabpanel" hidden>
     <h2>Backup Manager</h2>
 
     <div class="remote-settings-card">
@@ -370,11 +474,11 @@
         </div>
       </div>
     </div>
-  </section>
+  </section>{% endif %}
 
-  <section class="settings-tab-panel vlan-ip-admin-panel" data-settings-panel="module-vlan-ip-manager" data-settings-parent="modules" role="tabpanel" hidden>
+  {% if 'vlan_ip_manager' in module_access %}<section class="settings-tab-panel vlan-ip-admin-panel" data-settings-panel="module-vlan-ip-manager" data-settings-parent="modules" role="tabpanel" hidden>
     <h2>VLAN/IP Manager</h2>
-    <p class="muted">Define the network hierarchy used throughout Kaya. VLAN identifies the network segment; Category classifies the allocation or device within it.</p>
+    <p class="muted">Define the network hierarchy and DHCP ranges used throughout Kaya. Categories and custom fields are managed from VLAN/IP Manager.</p>
 
     <div class="remote-settings-card vlan-ip-admin-card">
       <header><span>VLANs</span></header>
@@ -386,19 +490,6 @@
           <td><div class="vlan-ip-row-actions"><button type="submit" formaction="/system/site-administration/vlan-ip-manager" name="admin_action" value="update_vlan:{{ vlan.id }}">Save</button><button class="button secondary" type="submit" formaction="/system/site-administration/vlan-ip-manager" name="admin_action" value="delete_vlan:{{ vlan.id }}">Delete</button></div></td>
         </tr>{% endfor %}
         <tr class="vlan-ip-add-row"><td><input name="vlan_name" placeholder="New VLAN name"></td><td><input name="vlan_subnet" placeholder="192.168.20.0/24"></td><td><input name="vlan_description" placeholder="Optional description"></td><td><button type="submit" formaction="/system/site-administration/vlan-ip-manager" name="admin_action" value="create_vlan">Add VLAN</button></td></tr>
-      </tbody></table></div>
-    </div>
-
-    <div class="remote-settings-card vlan-ip-admin-card">
-      <header><span>Categories</span></header>
-      <p class="muted">Renaming a Category updates existing VLAN/IP records. Disable one to hide it from new selections while preserving history.</p>
-      <div class="table-scroll"><table class="vlan-ip-admin-table category-admin-table"><thead><tr><th>Name</th><th>Available</th><th>Actions</th></tr></thead><tbody>
-        {% for category in vlan_ip_categories or [] %}<tr>
-          <td><input name="category_value_{{ category.id }}" value="{{ category.value }}" required></td>
-          <td><label class="vlan-ip-toggle"><input class="remote-switch" name="category_enabled_{{ category.id }}" type="checkbox" value="1" {% if category.is_active %}checked{% endif %}><span>{{ 'Enabled' if category.is_active else 'Disabled' }}</span></label></td>
-          <td><div class="vlan-ip-row-actions"><button type="submit" formaction="/system/site-administration/vlan-ip-manager" name="admin_action" value="update_category:{{ category.id }}">Save</button><button class="button secondary" type="submit" formaction="/system/site-administration/vlan-ip-manager" name="admin_action" value="delete_category:{{ category.id }}">Delete</button></div></td>
-        </tr>{% endfor %}
-        <tr class="vlan-ip-add-row"><td><input name="category_value" placeholder="New Category name"></td><td><span class="muted">Available by default</span></td><td><button type="submit" formaction="/system/site-administration/vlan-ip-manager" name="admin_action" value="create_category">Add Category</button></td></tr>
       </tbody></table></div>
     </div>
 
@@ -418,9 +509,9 @@
         <tr class="vlan-ip-add-row"><td><input name="scope_name" placeholder="New DHCP range"></td><td><select name="scope_vlan_id"><option value="">Unassigned</option>{% for vlan in vlan_options or [] %}<option value="{{ vlan.id }}">{{ vlan.name }}</option>{% endfor %}</select></td><td><input class="mono" name="scope_start" placeholder="192.168.1.100"></td><td><input class="mono" name="scope_end" placeholder="192.168.1.199"></td><td><input name="scope_description" placeholder="Optional"></td><td><label class="vlan-ip-switch-only" title="Enabled"><input class="remote-switch" name="scope_enabled" type="checkbox" value="1" checked><span class="sr-only">Enabled</span></label></td><td><button type="submit" formaction="/system/site-administration/vlan-ip-manager" name="admin_action" value="create_scope">Add range</button></td></tr>
       </tbody></table></div>
     </div>
-  </section>
+  </section>{% endif %}
 
-  <section class="settings-tab-panel" data-settings-panel="module-dns-manager" data-settings-parent="modules" role="tabpanel" hidden>
+  {% if 'dns_manager' in module_access %}<section class="settings-tab-panel" data-settings-panel="module-dns-manager" data-settings-parent="modules" role="tabpanel" hidden>
     <h2>DNS Manager</h2>
     {% if request.query_params.get('provider_saved') %}<div class="success"><strong>Pi-hole provider saved</strong><span>DNS Manager will treat the selected HA cluster as one logical Pi-hole through its virtual IP. Existing provider history and linked IP records were retained.</span></div>{% endif %}
     {% set dns_default_id = settings.get('dns_default_provider_id', '') %}
@@ -553,9 +644,9 @@
         <button class="button secondary" type="submit" formaction="/system/site-administration/test-dns-provider" formmethod="post" formnovalidate>Test Pi-hole connection</button>
       </div>
     </div>
-  </section>
+  </section>{% endif %}
 
-  <section class="settings-tab-panel" data-settings-panel="module-remote-manager" data-settings-parent="modules" role="tabpanel" hidden>
+  {% if 'remote_manager' in module_access %}<section class="settings-tab-panel" data-settings-panel="module-remote-manager" data-settings-parent="modules" role="tabpanel" hidden>
     <h2>Remote Manager</h2>
 
     <div class="remote-settings-card" id="remote-manager-general">
@@ -721,7 +812,7 @@
       {{ switch('rdp_enable_printing', 'Enable printing', 'Redirect local printers to the remote session') }}
       {{ switch('rdp_enable_drive', 'Enable drive redirection', 'Map a local folder as a drive in the remote session') }}
     </div>
-  </section>
+  </section>{% endif %}
 
   <section class="settings-tab-panel" data-settings-panel="uploads" data-settings-parent="uploads" role="tabpanel" hidden>
     <h2>Uploads</h2>
@@ -841,4 +932,6 @@
 <script src="/static/js/settings_tabs.js?v={{ asset_version }}"></script>
 <script src="/static/js/remote_settings.js?v={{ asset_version }}"></script>
 <script src="/static/js/dns_provider_settings.js?v={{ asset_version }}"></script>
+<script src="/static/js/ip_addresses.js?v={{ asset_version }}"></script>
+<script src="/static/js/network_monitor_wallboard_admin.js?v={{ asset_version }}"></script>
 {% endblock %}

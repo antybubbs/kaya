@@ -72,4 +72,11 @@ Several modules expose JSON or partial-refresh endpoints for UI interactions, in
 - Remote RDP preflight/start
 - Site Administration test actions
 
+IP/WAN Monitor's authenticated internal UI surface includes:
+
+- `GET /networking/ip-wan-monitor/live?after={observation_id}` for bounded incremental observations and current summary/state data. `after` must be a non-negative integer; the response is capped at 1,000 records from the current five-minute window.
+- `POST /networking/ip-wan-monitor/collection-rate` for an editor/admin dashboard lease. The mode and opaque client ID are allowlisted, CSRF validation is required, and the lease expires automatically.
+- `GET /networking/ip-wan-monitor/{monitor_id}?check_page={page}&check_status={state}&check_q={query}` for authenticated, server-filtered 50-row check-history pages.
+- `GET /networking/ip-wan-monitor/{monitor_id}/checks.csv` for an audited export capped at 10,000 rows.
+
 These are internal UI endpoints rather than a stable public API.

@@ -1,4 +1,4 @@
-import asyncio, http.client, json, logging, re, socket, ssl
+import asyncio, http.client, json, logging, re, shlex, socket, ssl
 from datetime import datetime, timedelta
 from urllib.parse import quote
 from urllib.request import Request, urlopen
@@ -7,6 +7,8 @@ from app.db.session import SessionLocal
 from app.models.models import ComputeEvent, ComputeHost, ComputeInventoryItem, ComputeMetric, ComputeWorkload
 
 logger = logging.getLogger(__name__)
+PROXMOX_BACKUP_LOG_INSPECTION_LIMIT = 100
+PROXMOX_BACKUP_GROUP_WINDOW_SECONDS = 300
 
 class UnixConnection(http.client.HTTPConnection):
     def __init__(self, path): super().__init__('localhost', timeout=15); self.path=path
@@ -141,7 +143,7 @@ def proxmox_guest_addresses(host,node_name,endpoint,guest):
     return addresses
 
 def proxmox_backup_task_job_id(task):
-    """Return only an authoritative Proxmox backup job identifier for a task."""
+    """Return an explicit job identifier when a Proxmox version provides one."""
     if not isinstance(task, dict):
         return None
     for key in ('job-id', 'job_id', 'backup-job', 'backup_job'):
@@ -168,12 +170,94 @@ def proxmox_backup_task_log(host,task):
         return []
     return pve(host,f"/nodes/{quote(node,safe='')}/tasks/{quote(upid,safe='')}/log?start=0&limit=50") or []
 
-def proxmox_backup_tasks(host,node_names=None,job_ids=None):
-    tasks=[]; seen=set()
+def proxmox_backup_vmids(value):
+    if value is None:
+        return set()
+    if isinstance(value,(list,tuple,set)):
+        values=value
+    else:
+        values=re.split(r'[\s,;]+',str(value).strip())
+    return {str(item).strip() for item in values if str(item).strip().isdigit()}
+
+def proxmox_backup_task_signature(task):
+    """Parse the non-secret vzdump invocation recorded in the task log."""
+    signature={
+        'node':str(task.get('node') or '').strip(),
+        'storage':None,
+        'mode':None,
+        'vmids':set(),
+    }
+    for row in task.get('_log') or []:
+        text=row.get('t') if isinstance(row,dict) else row
+        match=re.search(r'\bstarting new backup job:\s*vzdump(?:\s+(.*))?$',str(text or ''),re.IGNORECASE)
+        if not match:
+            continue
+        try:
+            tokens=shlex.split(match.group(1) or '',posix=True)
+        except ValueError:
+            return signature
+        index=0
+        while index < len(tokens):
+            token=tokens[index]
+            if token.startswith('--'):
+                option,value=(token[2:].split('=',1)+[None])[:2] if '=' in token else (token[2:],None)
+                if value is None and index+1 < len(tokens) and not tokens[index+1].startswith('--'):
+                    index+=1; value=tokens[index]
+                if option in {'storage','mode','node'} and value:
+                    signature[option]=str(value).strip()
+                elif option in {'vmid','exclude'} and value and option == 'vmid':
+                    signature['vmids'].update(proxmox_backup_vmids(value))
+            elif token.isdigit():
+                signature['vmids'].add(token)
+            index+=1
+        break
+    if not signature['vmids']:
+        signature['vmids']=proxmox_backup_vmids(task.get('id'))
+    return signature
+
+def proxmox_backup_job_signature(job):
+    return {
+        'node':str(job.get('node') or '').strip(),
+        'storage':str(job.get('storage') or '').strip(),
+        'mode':str(job.get('mode') or '').strip(),
+        'vmids':proxmox_backup_vmids(job.get('_included_vmids') or job.get('vmid')),
+    }
+
+def _proxmox_backup_signature_reason(job_signature,task_signature,allow_subset=False):
+    if job_signature['node'] and task_signature['node'] != job_signature['node']:
+        return f"node differs ({task_signature['node'] or '-'})"
+    if not task_signature['storage']:
+        return 'task log exposes no storage'
+    if job_signature['storage'] != task_signature['storage']:
+        return f"storage differs ({task_signature['storage']})"
+    if job_signature['mode'] and not task_signature['mode']:
+        return 'task log exposes no backup mode'
+    if job_signature['mode'] and job_signature['mode'] != task_signature['mode']:
+        return f"backup mode differs ({task_signature['mode']})"
+    if not job_signature['vmids']:
+        return 'configured VM/CT set is unavailable'
+    if not task_signature['vmids']:
+        return 'task VM/CT set is unavailable'
+    if allow_subset and task_signature['vmids'].issubset(job_signature['vmids']):
+        return None
+    if task_signature['vmids'] != job_signature['vmids']:
+        return 'VM/CT set differs'
+    return None
+
+def proxmox_backup_tasks(host,node_names=None,job_ids=None,return_diagnostics=False):
+    tasks=[]; seen=set(); endpoint_successes=0; endpoint_failures=0
     for path in ['/cluster/tasks?typefilter=vzdump&limit=500', *[f'/nodes/{node}/tasks?typefilter=vzdump&limit=500' for node in (node_names or [])]]:
         try:
             rows=pve(host,path) or []
-        except Exception:
+            endpoint_successes+=1
+        except Exception as exc:
+            endpoint_failures+=1
+            logger.debug(
+                "Proxmox backup task endpoint unavailable host_id=%s path=%s error=%s",
+                host.id,
+                path,
+                type(exc).__name__,
+            )
             continue
         for task in rows:
             identity=task.get('upid') or f"{task.get('node')}:{task.get('starttime')}:{task.get('type')}:{task.get('id')}"
@@ -182,27 +266,57 @@ def proxmox_backup_tasks(host,node_names=None,job_ids=None):
             seen.add(identity); tasks.append(task)
     tasks=sorted(tasks,key=lambda item:int(item.get('starttime') or 0),reverse=True)
 
-    unresolved={str(job_id) for job_id in (job_ids or []) if job_id is not None}
     for task in tasks:
-        matched_id=proxmox_backup_task_job_id(task)
-        if matched_id in unresolved:
-            unresolved.remove(matched_id)
-        elif matched_id is None and unresolved:
+        logger.debug(
+            "Raw Proxmox vzdump task host_id=%s upid=%s id=%s type=%s worker_id=%s "
+            "user=%s starttime=%s endtime=%s status=%s node=%s",
+            host.id,
+            task.get('upid'),
+            task.get('id'),
+            task.get('type'),
+            task.get('worker_id') or task.get('worker-id'),
+            task.get('user'),
+            task.get('starttime'),
+            task.get('endtime'),
+            task.get('exitstatus') or task.get('status'),
+            task.get('node'),
+        )
+
+    log_attempts=0; log_successes=0; log_failures=0
+    if job_ids:
+        for task in tasks[:PROXMOX_BACKUP_LOG_INSPECTION_LIMIT]:
+            log_attempts+=1
             try:
                 task['_log']=proxmox_backup_task_log(host,task)
+                log_successes+=1
             except Exception as exc:
+                log_failures+=1
                 logger.debug(
                     "Unable to inspect Proxmox backup task log node=%s upid=%s error=%s",
                     task.get('node'),
                     task.get('upid'),
                     type(exc).__name__,
                 )
-            matched_id=proxmox_backup_task_job_id(task)
-            if matched_id in unresolved:
-                unresolved.remove(matched_id)
-        if job_ids and not unresolved:
-            break
-    return tasks
+
+    diagnostics={
+        'task_history_available': endpoint_successes > 0,
+        'task_count': len(tasks),
+        'endpoint_failures': endpoint_failures,
+        'task_logs_available': log_successes > 0 if log_attempts else None,
+        'log_failures': log_failures,
+        'log_inspection_truncated': len(tasks) > PROXMOX_BACKUP_LOG_INSPECTION_LIMIT,
+        'unmatched_job_ids': [],
+    }
+    if endpoint_successes == 0:
+        diagnostics['state']='unavailable'
+        diagnostics['warning']='task_history_unavailable'
+    elif log_attempts and log_successes == 0:
+        diagnostics['state']='unavailable'
+        diagnostics['warning']='task_logs_unavailable'
+    else:
+        diagnostics['state']='available'
+        diagnostics['warning']=None
+    return (tasks,diagnostics) if return_diagnostics else tasks
 
 def proxmox_backup_task_status(task):
     if not task:
@@ -211,13 +325,15 @@ def proxmox_backup_task_status(task):
     if not status:
         return 'running'
     normalized=status.upper()
+    if normalized in {'RUNNING','ACTIVE'}:
+        return 'running'
     if normalized == 'OK':
         return 'successful'
     if 'WARN' in normalized or 'PARTIAL' in normalized:
         return 'warning'
     return 'failed'
 
-def proxmox_matching_backup_task(job,tasks):
+def proxmox_backup_execution_candidates(job,tasks,window_seconds=PROXMOX_BACKUP_GROUP_WINDOW_SECONDS):
     authoritative_upid=next(
         (
             str(job.get(key)).strip()
@@ -226,17 +342,77 @@ def proxmox_matching_backup_task(job,tasks):
         ),
         None,
     )
+    if authoritative_upid:
+        direct=next((task for task in tasks if str(task.get('upid') or '') == authoritative_upid),None)
+        return [direct] if direct else []
     job_id=str(job.get('id') or '').strip()
-    if not job_id and not authoritative_upid:
-        return None
-    matching=[
-        task for task in tasks
-        if (
-            (authoritative_upid and str(task.get('upid') or '') == authoritative_upid)
-            or (job_id and proxmox_backup_task_job_id(task) == job_id)
-        )
-    ]
-    return max(matching,key=lambda item:int(item.get('starttime') or 0),default=None)
+    authoritative=[task for task in tasks if job_id and proxmox_backup_task_job_id(task) == job_id]
+    if authoritative:
+        return authoritative
+    job_signature=proxmox_backup_job_signature(job)
+    exact=[]; members=[]
+    for task in tasks:
+        signature=proxmox_backup_task_signature(task)
+        if _proxmox_backup_signature_reason(job_signature,signature) is None:
+            exact.append(task)
+        elif len(signature['vmids']) == 1 and _proxmox_backup_signature_reason(job_signature,signature,allow_subset=True) is None:
+            members.append((task,signature))
+    groups=[]
+    members.sort(key=lambda pair:int(pair[0].get('starttime') or 0))
+    for task,signature in members:
+        started=int(task.get('starttime') or 0)
+        current=groups[-1] if groups else None
+        if not current or started-int(current[0][0].get('starttime') or 0) > window_seconds:
+            groups.append([(task,signature)])
+        else:
+            current.append((task,signature))
+    for group in groups:
+        if set().union(*(signature['vmids'] for _,signature in group)) != job_signature['vmids']:
+            continue
+        group_tasks=[task for task,_ in group]
+        statuses=[proxmox_backup_task_status(task) for task in group_tasks]
+        if any(status == 'running' for status in statuses):
+            aggregate='RUNNING'
+        elif all(status == 'successful' for status in statuses):
+            aggregate='OK'
+        elif all(status == 'failed' for status in statuses):
+            aggregate='ERROR'
+        else:
+            aggregate='WARNINGS'
+        exact.append({
+            'upid':group_tasks[0].get('upid'),
+            'member_upids':[task.get('upid') for task in group_tasks],
+            'node':group_tasks[0].get('node'),
+            'starttime':min(int(task.get('starttime') or 0) for task in group_tasks),
+            'endtime':max(int(task.get('endtime') or task.get('starttime') or 0) for task in group_tasks),
+            'exitstatus':aggregate,
+            '_grouped':True,
+        })
+    return exact
+
+def proxmox_matching_backup_task(job,tasks):
+    return max(proxmox_backup_execution_candidates(job,tasks),key=lambda item:int(item.get('starttime') or 0),default=None)
+
+def proxmox_backup_task_match_reason(job,task):
+    job_id=str(job.get('id') or '').strip()
+    authoritative_upid=next(
+        (
+            str(job.get(key)).strip()
+            for key in ('last-run-upid','last_run_upid')
+            if job.get(key) is not None and str(job.get(key)).strip()
+        ),
+        None,
+    )
+    task_upid=str(task.get('upid') or '')
+    if authoritative_upid and task_upid == authoritative_upid:
+        return True,'authoritative UPID match'
+    task_job_id=proxmox_backup_task_job_id(task)
+    if task_job_id and job_id and task_job_id != job_id:
+        return False,f"task backup job ID is {task_job_id!r}"
+    reason=_proxmox_backup_signature_reason(proxmox_backup_job_signature(job),proxmox_backup_task_signature(task))
+    if reason:
+        return False,reason
+    return True,'exact node/storage/mode/VM-CT execution signature'
 
 def collect_proxmox(host):
     version=pve(host,'/version') or {}
@@ -283,13 +459,61 @@ def collect_proxmox(host):
         elif kind=='storage': items.append({'external_id':x.get('id'),'name':x.get('storage') or x.get('id'),'kind':'storage','status':x.get('status'),'size_bytes':x.get('maxdisk'),'metadata':{'node':x.get('node'),'used':x.get('disk'),'type':x.get('plugintype')}})
     try: jobs=pve(host,'/cluster/backup') or []
     except Exception: jobs=[]
-    backup_tasks=proxmox_backup_tasks(
+    for job in jobs:
+        job_id=str(job.get('id') or '').strip()
+        if not job_id:
+            continue
+        try:
+            included=pve(host,f"/cluster/backup/{quote(job_id,safe='')}/included_volumes") or {}
+            job['_included_vmids']=[
+                str(guest.get('id'))
+                for guest in included.get('children') or []
+                if isinstance(guest,dict) and str(guest.get('id') or '').isdigit()
+            ]
+        except Exception as exc:
+            logger.debug(
+                "Unable to read included VM/CT set for Proxmox backup job host_id=%s job_id=%s error=%s",
+                host.id,
+                job_id,
+                type(exc).__name__,
+            )
+    backup_tasks,backup_history=proxmox_backup_tasks(
         host,
         node_names,
         [job.get('id') for job in jobs if job.get('id') is not None],
+        return_diagnostics=True,
     )
+    unmatched_job_ids=[]
     for x in jobs:
+        signature=proxmox_backup_job_signature(x)
+        logger.debug(
+            "Configured Proxmox backup job host_id=%s job_id=%s node=%s schedule=%s "
+            "storage=%s mode=%s vmids=%s",
+            host.id,
+            x.get('id'),
+            signature['node'] or '*',
+            x.get('schedule'),
+            signature['storage'],
+            signature['mode'],
+            sorted(signature['vmids']),
+        )
+        for candidate in backup_tasks:
+            matched,reason=proxmox_backup_task_match_reason(x,candidate)
+            logger.debug(
+                "Proxmox backup candidate configured_job_id=%s upid=%s type=%s id=%s "
+                "worker_id=%s status=%s match_result=%s rejection_reason=%s",
+                x.get('id'),
+                candidate.get('upid'),
+                candidate.get('type'),
+                candidate.get('id'),
+                candidate.get('worker_id') or candidate.get('worker-id'),
+                candidate.get('exitstatus') or candidate.get('status'),
+                matched,
+                None if matched else reason,
+            )
         task=proxmox_matching_backup_task(x,backup_tasks)
+        if not task:
+            unmatched_job_ids.append(str(x.get('id') or ''))
         if task:
             task={key:value for key,value in task.items() if key != '_log'}
         task_status=proxmox_backup_task_status(task)
@@ -304,10 +528,11 @@ def collect_proxmox(host):
         )
         metadata={**x,'last_task':task,'last_status':task_status}
         eid=str(x.get('id') or f"{x.get('storage')}:{x.get('schedule')}:{x.get('vmid','all')}"); items.append({'external_id':eid,'name':x.get('id') or f"Backup to {x.get('storage','storage')}",'kind':'backup','status':'enabled' if x.get('enabled',1) else 'disabled','size_bytes':None,'metadata':metadata})
+    backup_history['unmatched_job_ids']=unmatched_job_ids
     cpu=sum(float(x.get('cpu') or 0)*100 for x in nodes)/len(nodes) if nodes else None
     limited=bool(nodes) and not any(x.get('maxmem') for x in nodes)
     warning='Connected, but the API token cannot read node capacity or guests. Assign PVEAuditor to the API token at / with Propagate enabled.' if limited else None
-    return {'version':version.get('version'),'warning':warning,'host':{'cpu_percent':round(cpu,2) if cpu is not None else None,'memory_used':sum(x.get('mem') or 0 for x in nodes),'memory_total':sum(x.get('maxmem') or 0 for x in nodes),'storage_used':sum(x.get('disk') or 0 for x in nodes),'storage_total':sum(x.get('maxdisk') or 0 for x in nodes),'metadata':{'release':version.get('release'),'nodes':len(nodes)}},'workloads':workloads,'items':items}
+    return {'version':version.get('version'),'warning':warning,'host':{'cpu_percent':round(cpu,2) if cpu is not None else None,'memory_used':sum(x.get('mem') or 0 for x in nodes),'memory_total':sum(x.get('maxmem') or 0 for x in nodes),'storage_used':sum(x.get('disk') or 0 for x in nodes),'storage_total':sum(x.get('maxdisk') or 0 for x in nodes),'metadata':{'release':version.get('release'),'nodes':len(nodes),'backup_history':backup_history}},'workloads':workloads,'items':items}
 
 def sync_host(db,host):
     if host.platform == 'docker_agent':

@@ -19,6 +19,11 @@
     </div>
   </div>
 </section>
+{{ module_navigation('Asset Manager navigation', [
+  {'label': 'Overview', 'url': '/infrastructure/asset-manager', 'active': true},
+  {'label': 'Categories', 'url': '/data/categories?module=hardware_assets', 'visible': user.role == 'admin'},
+  {'label': 'Custom Fields', 'url': '/data/custom-fields?module=hardware_assets', 'visible': user.role == 'admin'}
+]) }}
 <section class="panel">
 <nav class="category-tabs table-panel-filters" aria-label="Asset categories">
   <a class="{% if not active_category %}active{% endif %}" href="/infrastructure/asset-manager{% if q %}?q={{ q|urlencode }}{% endif %}">All</a>

@@ -82,7 +82,17 @@ def accessible_module_keys(db: Session, user: User) -> frozenset[str]:
     cached = getattr(user, "_accessible_module_keys", None)
     if cached is not None:
         return cached
-    granted = frozenset(
+    granted = granted_module_keys(db, user)
+    result = granted & enabled_module_keys(db)
+    user._accessible_module_keys = result
+    return result
+
+
+def granted_module_keys(db: Session, user: User | None) -> frozenset[str]:
+    """Return persisted module allocations without conflating them with feature enablement."""
+    if not user or not user.is_active:
+        return frozenset()
+    return frozenset(
         key
         for (key,) in db.query(UserModulePermission.module_key)
         .filter(
@@ -92,9 +102,6 @@ def accessible_module_keys(db: Session, user: User) -> frozenset[str]:
         )
         .all()
     )
-    result = granted & enabled_module_keys(db)
-    user._accessible_module_keys = result
-    return result
 
 
 def has_module_access(db: Session, user: User | None, module_key: str) -> bool:

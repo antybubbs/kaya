@@ -9,9 +9,11 @@
 .remote-workspace{display:grid;grid-template-columns:var(--remote-host-rail-width,310px) minmax(0,1fr);height:calc(100vh - 56px);min-height:480px}
 .remote-host-rail{background:#0b1016;border-right:1px solid var(--line);display:grid;grid-template-rows:auto auto minmax(0,1fr);min-height:0;position:relative}
 .remote-host-header{align-items:center;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;min-height:42px;padding:9px 14px}
-.remote-host-header div{display:grid;gap:1px}
+.remote-host-heading{display:grid;gap:1px;min-width:0}
 .remote-host-header strong{font-size:13px}
 .remote-host-header span{color:#f59e0b;font-size:12px}
+.remote-host-settings-link{align-items:center;display:inline-flex;flex:0 0 auto;font-size:12px;gap:5px;min-height:28px;padding:5px 8px;white-space:nowrap}
+.remote-host-settings-link span:last-child{color:inherit}
 .remote-host-search{border-bottom:1px solid var(--line);display:grid;gap:8px;padding:8px}
 .remote-host-search label{align-items:center;background:#111827;border:1px solid var(--line);border-radius:7px;color:var(--muted);display:grid;grid-template-columns:18px minmax(0,1fr);min-height:34px;padding:0 9px}
 .remote-host-search input{background:transparent;border:0;color:var(--text);font-size:12px;min-height:30px;padding:0;width:100%}
@@ -65,7 +67,8 @@ body.remote-resizing{cursor:col-resize;user-select:none}
 .remote-rail-compact .remote-connect-menu>summary{font-size:12px}
 .remote-rail-mini .remote-host-header strong,.remote-rail-mini .remote-host-search input,.remote-rail-mini .remote-host-main strong,.remote-rail-mini .remote-connect-menu{display:none}
 .remote-rail-mini .remote-host-header{justify-content:center;padding-left:6px;padding-right:6px}
-.remote-rail-mini .remote-host-header div{place-items:center}
+.remote-rail-mini .remote-host-heading{place-items:center}
+.remote-rail-mini .remote-host-settings-link{display:none}
 .remote-rail-mini .remote-host-search{padding:6px}
 .remote-rail-mini .remote-host-search label{display:none}
 .remote-rail-mini .remote-host-toolbar{display:grid;grid-template-columns:1fr;justify-items:center}

@@ -7,22 +7,31 @@
       <p class="muted module-description">Background availability, latency, packet-loss, event and outage history for managed IP addresses.</p>
     </div>
     <div class="module-actions">
-      <label class="monitor-refresh-control"><span class="monitor-refresh-label">Collection rate</span>
-        <select data-monitor-refresh-rate data-monitor-csrf="{{ csrf_token }}">
-          <option value="default">Record schedules</option>
-          <option value="live">Live</option>
-          <option value="5000">5 seconds</option>
-          <option value="10000">10 seconds</option>
-          <option value="60000">1 minute</option>
-          <option value="300000">5 minutes</option>
+      <a class="button secondary" href="/monitoring/ip-wan-monitor/wallboard">Wallboard</a>
+      <label class="checkbox-row monitor-layout-toggle"><input type="checkbox" data-wallboard-edit-layout> Edit layout</label>
+      <button class="button secondary" type="button" data-wallboard-reset>Reset layout</button>
+      {% if user.role in ['admin','editor'] %}
+      <label class="monitor-refresh-control"><span class="monitor-refresh-label">Active check rate</span>
+        <select data-monitor-refresh-rate data-monitor-csrf="{{ csrf_token }}" aria-describedby="monitor-refresh-help">
+          <option value="live"{% if dashboard_interval is none or dashboard_interval == 1 %} selected{% endif %}>Live</option>
+          <option value="five"{% if dashboard_interval == 5 %} selected{% endif %}>5 seconds</option>
+          <option value="ten"{% if dashboard_interval == 10 %} selected{% endif %}>10 seconds</option>
+          <option value="sixty"{% if dashboard_interval == 60 %} selected{% endif %}>60 seconds</option>
         </select>
       </label>
+      <small class="muted" id="monitor-refresh-help">Temporarily overrides backend checks while this dashboard is visible. Saved per-monitor intervals resume when you leave.</small>
+      {% endif %}
       <span class="module-stat">Monitors <strong>{{ total }}</strong></span>
     </div>
   </div>
 </section>
-<div data-monitor-content>
+{{ module_navigation('IP/WAN Monitor navigation', [
+  {'label': 'Overview', 'url': '/networking/ip-wan-monitor', 'active': true}
+]) }}
+<div data-monitor-content data-dashboard-layout data-preferences-endpoint="/monitoring/ip-wan-monitor/wallboard/preferences" data-reset-endpoint="/monitoring/ip-wan-monitor/wallboard/preferences/reset" data-csrf="{{ csrf_token }}" data-shared="false" data-can-reorder="true" data-preferences='{{ wallboard_preferences|tojson|forceescape }}'>
   {% include "_network_monitor_cards.html" %}
 </div>
+<script src="/static/vendor/echarts/echarts.min.js?v=6.1.0" defer></script>
 <script src="/static/js/network_monitor.js?v={{ asset_version }}" defer></script>
+<script src="/static/js/network_monitor_wallboard.js?v={{ asset_version }}" defer></script>
 {% endblock %}

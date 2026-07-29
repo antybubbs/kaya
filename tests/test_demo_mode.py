@@ -55,6 +55,8 @@ class DemoModeSafetyTests(unittest.TestCase):
     def test_blocks_shared_dashboard_preference_changes(self):
         self.assertTrue(self.blocked("PUT", "/api/dashboard/preferences"))
         self.assertTrue(self.blocked("POST", "/api/dashboard/preferences/reset"))
+        self.assertTrue(self.blocked("PUT", "/monitoring/ip-wan-monitor/wallboard/preferences"))
+        self.assertTrue(self.blocked("POST", "/monitoring/ip-wan-monitor/wallboard/shared/fake-token/authenticate"))
         self.assertFalse(self.blocked("GET", "/api/dashboard/snapshot"))
 
     def test_blocks_oidc_provider_flows_in_public_demo(self):

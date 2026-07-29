@@ -49,6 +49,7 @@ def demo_request_is_blocked(method: str, path: str) -> bool:
         "/system/site-administration",
         "/security/secure-send",
         "/api/dashboard/preferences",
+        "/monitoring/ip-wan-monitor/wallboard",
         "/remote-manager",
         "/infrastructure/backup-manager",
         "/networking/dns-manager/investigations",

@@ -31,6 +31,9 @@ Major tables:
 - `ip_addresses`
 - `network_monitors`
 - `network_monitor_checks`
+- `network_monitor_events`
+- `network_monitor_outages`
+- `network_monitor_statistics`
 - `remote_access`
 - `remote_manager_settings`
 - `remote_session_recordings`
@@ -61,6 +64,7 @@ Major tables:
 
 - `IPAddress` belongs to `VLAN`.
 - `NetworkMonitor` has a one-to-one relationship with `IPAddress`.
+- `NetworkMonitorCheck`, `NetworkMonitorEvent`, `NetworkMonitorOutage`, and `NetworkMonitorStatistic` belong to `NetworkMonitor`. Check and statistic latency columns use floating-point storage so valid sub-millisecond responses are not reported as zero.
 - `RemoteAccess` has a one-to-one relationship with `IPAddress`.
 - `RemoteSessionRecording` references `RemoteAccess` and `User`.
 - `UserModulePermission` grants one stable registered module key to a user. Its unique `(user_id, module_key)` constraint prevents duplicate grants, and `created_by` records the administrator responsible for the current grant.

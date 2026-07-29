@@ -1,5 +1,6 @@
 from pathlib import Path
 import asyncio
+import re
 from datetime import datetime
 from time import perf_counter
 from uuid import uuid4
@@ -184,16 +185,27 @@ def audit_entity_for_path(path: str) -> str:
     return parts[0].replace("-", "_") if parts else "application"
 
 
+def audit_safe_path(path: str) -> str:
+    """Redact bearer-like Wallboard URL identifiers before audit persistence."""
+    return re.sub(
+        r"(?<=/monitoring/ip-wan-monitor/wallboard/shared/)[A-Za-z0-9_-]{20,80}",
+        "[redacted]",
+        path,
+        count=1,
+    )
+
+
 @app.middleware("http")
 async def audit_requests(request: Request, call_next):
     path = request.url.path
     if path.startswith("/static/") or path == "/healthz":
         return await call_next(request)
     request_id = (request.headers.get("x-request-id") or uuid4().hex)[:64]
+    safe_path = audit_safe_path(path)
     token, context = begin_request_context(
         request_id=request_id,
         method=request.method,
-        path=path,
+        path=safe_path,
         ip_address=None if settings.demo_mode else client_ip(request),
         user_agent=None if settings.demo_mode else ((request.headers.get("user-agent") or "")[:2000] or None),
         redact_client=settings.demo_mode,
@@ -232,7 +244,7 @@ async def audit_requests(request: Request, call_next):
                     action,
                     audit_entity_for_path(path),
                     ip_address=context.get("ip_address"),
-                    detail=f"{request.method} {path} returned {response.status_code}",
+                    detail=f"{request.method} {safe_path} returned {response.status_code}",
                     status_code=response.status_code,
                     metadata={"duration_ms": duration_ms, "query_keys": sorted(request.query_params.keys())},
                 )
@@ -444,45 +456,85 @@ def migrate_existing_database():
             conn.execute(text("CREATE INDEX ix_managed_list_items_value ON managed_list_items (value)"))
         monitor_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(network_monitors)"))}
         if not monitor_columns:
-            conn.execute(text("CREATE TABLE network_monitors (id INTEGER NOT NULL PRIMARY KEY, ip_address_id INTEGER NOT NULL UNIQUE REFERENCES ip_addresses(id), check_type VARCHAR(30) DEFAULT 'icmp' NOT NULL, display_name VARCHAR(255), is_enabled BOOLEAN DEFAULT 1 NOT NULL, interval_seconds INTEGER DEFAULT 300 NOT NULL, timeout_ms INTEGER DEFAULT 2000 NOT NULL, notify_enabled BOOLEAN DEFAULT 0 NOT NULL, last_status VARCHAR(30), last_latency_ms INTEGER, last_error VARCHAR(500), last_checked_at DATETIME, created_at DATETIME, updated_at DATETIME)"))
+            conn.execute(text("CREATE TABLE network_monitors (id INTEGER NOT NULL PRIMARY KEY, ip_address_id INTEGER NOT NULL UNIQUE REFERENCES ip_addresses(id), check_type VARCHAR(30) DEFAULT 'icmp' NOT NULL, display_name VARCHAR(255), is_enabled BOOLEAN DEFAULT 1 NOT NULL, interval_seconds INTEGER DEFAULT 300 NOT NULL, timeout_ms INTEGER DEFAULT 2000 NOT NULL, notify_enabled BOOLEAN DEFAULT 0 NOT NULL, last_status VARCHAR(30), last_latency_ms FLOAT, last_error VARCHAR(500), last_checked_at DATETIME, created_at DATETIME, updated_at DATETIME)"))
             conn.execute(text("CREATE INDEX ix_network_monitors_ip_address_id ON network_monitors (ip_address_id)"))
             conn.execute(text("CREATE INDEX ix_network_monitors_is_enabled ON network_monitors (is_enabled)"))
             conn.execute(text("CREATE INDEX ix_network_monitors_last_status ON network_monitors (last_status)"))
             conn.execute(text("CREATE INDEX ix_network_monitors_last_checked_at ON network_monitors (last_checked_at)"))
             monitor_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(network_monitors)"))}
         for column, definition in {
+            "use_default_thresholds": "BOOLEAN DEFAULT 1 NOT NULL",
             "failure_threshold": "INTEGER DEFAULT 3 NOT NULL",
-            "latency_warning_ms": "INTEGER DEFAULT 150 NOT NULL",
-            "latency_critical_ms": "INTEGER DEFAULT 500 NOT NULL",
-            "packet_loss_warning_percent": "INTEGER DEFAULT 20 NOT NULL",
-            "packet_loss_critical_percent": "INTEGER DEFAULT 60 NOT NULL",
+            "latency_warning_ms": "INTEGER DEFAULT 100 NOT NULL",
+            "latency_critical_ms": "INTEGER DEFAULT 250 NOT NULL",
+            "packet_loss_warning_percent": "INTEGER DEFAULT 5 NOT NULL",
+            "packet_loss_critical_percent": "INTEGER DEFAULT 25 NOT NULL",
             "consecutive_failures": "INTEGER DEFAULT 0 NOT NULL",
+            "recovery_threshold": "INTEGER DEFAULT 3 NOT NULL",
+            "consecutive_successes": "INTEGER DEFAULT 0 NOT NULL",
             "last_packet_loss_percent": "INTEGER",
+            "degraded_threshold": "INTEGER DEFAULT 2 NOT NULL",
+            "recovery_state_enabled": "BOOLEAN DEFAULT 1 NOT NULL",
+            "consecutive_degraded": "INTEGER DEFAULT 0 NOT NULL",
+            "state_reason": "VARCHAR(500)",
+            "state_changed_at": "DATETIME",
+            "is_in_maintenance": "BOOLEAN DEFAULT 0 NOT NULL",
         }.items():
             if column not in monitor_columns:
                 conn.execute(text(f"ALTER TABLE network_monitors ADD COLUMN {column} {definition}"))
+        if "use_default_thresholds" not in monitor_columns:
+            conn.execute(text("UPDATE network_monitors SET consecutive_failures = 0, consecutive_successes = 0, consecutive_degraded = 0, last_status = NULL, state_reason = 'Awaiting first check after threshold migration', state_changed_at = CURRENT_TIMESTAMP"))
         monitor_check_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(network_monitor_checks)"))}
         if not monitor_check_columns:
-            conn.execute(text("CREATE TABLE network_monitor_checks (id INTEGER NOT NULL PRIMARY KEY, monitor_id INTEGER NOT NULL REFERENCES network_monitors(id), status VARCHAR(30) NOT NULL, latency_ms INTEGER, error VARCHAR(500), checked_at DATETIME)"))
+            conn.execute(text("CREATE TABLE network_monitor_checks (id INTEGER NOT NULL PRIMARY KEY, monitor_id INTEGER NOT NULL REFERENCES network_monitors(id), status VARCHAR(30) NOT NULL, latency_ms FLOAT, error VARCHAR(500), checked_at DATETIME)"))
             conn.execute(text("CREATE INDEX ix_network_monitor_checks_monitor_id ON network_monitor_checks (monitor_id)"))
             conn.execute(text("CREATE INDEX ix_network_monitor_checks_status ON network_monitor_checks (status)"))
             conn.execute(text("CREATE INDEX ix_network_monitor_checks_checked_at ON network_monitor_checks (checked_at)"))
             monitor_check_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(network_monitor_checks)"))}
         for column in ("packet_loss_percent", "response_time_ms"):
             if column not in monitor_check_columns:
-                conn.execute(text(f"ALTER TABLE network_monitor_checks ADD COLUMN {column} INTEGER"))
+                conn.execute(text(f"ALTER TABLE network_monitor_checks ADD COLUMN {column} {'FLOAT' if column == 'response_time_ms' else 'INTEGER'}"))
+        if "health_state" not in monitor_check_columns:
+            conn.execute(text("ALTER TABLE network_monitor_checks ADD COLUMN health_state VARCHAR(30)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_network_monitor_checks_health_state ON network_monitor_checks (health_state)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_network_monitor_checks_monitor_checked_at ON network_monitor_checks (monitor_id, checked_at)"))
         if not conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='network_monitor_events'" )).first():
             conn.execute(text("CREATE TABLE network_monitor_events (id INTEGER NOT NULL PRIMARY KEY, monitor_id INTEGER NOT NULL REFERENCES network_monitors(id), event_type VARCHAR(40) NOT NULL, severity VARCHAR(20) DEFAULT 'info' NOT NULL, message VARCHAR(500) NOT NULL, occurred_at DATETIME)"))
             conn.execute(text("CREATE INDEX ix_network_monitor_events_monitor_id ON network_monitor_events (monitor_id)"))
             conn.execute(text("CREATE INDEX ix_network_monitor_events_occurred_at ON network_monitor_events (occurred_at)"))
         if not conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='network_monitor_outages'" )).first():
-            conn.execute(text("CREATE TABLE network_monitor_outages (id INTEGER NOT NULL PRIMARY KEY, monitor_id INTEGER NOT NULL REFERENCES network_monitors(id), started_at DATETIME NOT NULL, ended_at DATETIME, failure_reason VARCHAR(500))"))
+            conn.execute(text("CREATE TABLE network_monitor_outages (id INTEGER NOT NULL PRIMARY KEY, monitor_id INTEGER NOT NULL REFERENCES network_monitors(id), started_at DATETIME NOT NULL, ended_at DATETIME, incident_type VARCHAR(30) DEFAULT 'offline' NOT NULL, failure_reason VARCHAR(500), details_json TEXT)"))
             conn.execute(text("CREATE INDEX ix_network_monitor_outages_monitor_id ON network_monitor_outages (monitor_id)"))
             conn.execute(text("CREATE INDEX ix_network_monitor_outages_started_at ON network_monitor_outages (started_at)"))
+            conn.execute(text("CREATE INDEX ix_network_monitor_outages_incident_type ON network_monitor_outages (incident_type)"))
+        else:
+            outage_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(network_monitor_outages)"))}
+            if "incident_type" not in outage_columns:
+                conn.execute(text("ALTER TABLE network_monitor_outages ADD COLUMN incident_type VARCHAR(30) DEFAULT 'offline' NOT NULL"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_network_monitor_outages_incident_type ON network_monitor_outages (incident_type)"))
+            if "details_json" not in outage_columns:
+                conn.execute(text("ALTER TABLE network_monitor_outages ADD COLUMN details_json TEXT"))
         if not conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='network_monitor_statistics'" )).first():
-            conn.execute(text("CREATE TABLE network_monitor_statistics (id INTEGER NOT NULL PRIMARY KEY, monitor_id INTEGER NOT NULL REFERENCES network_monitors(id), bucket_start DATETIME NOT NULL, bucket_seconds INTEGER NOT NULL, sample_count INTEGER DEFAULT 0 NOT NULL, up_count INTEGER DEFAULT 0 NOT NULL, avg_latency_ms INTEGER, max_latency_ms INTEGER, avg_packet_loss_percent INTEGER)"))
+            conn.execute(text("CREATE TABLE network_monitor_statistics (id INTEGER NOT NULL PRIMARY KEY, monitor_id INTEGER NOT NULL REFERENCES network_monitors(id), bucket_start DATETIME NOT NULL, bucket_seconds INTEGER NOT NULL, sample_count INTEGER DEFAULT 0 NOT NULL, up_count INTEGER DEFAULT 0 NOT NULL, latency_sample_count INTEGER DEFAULT 0 NOT NULL, avg_latency_ms FLOAT, min_latency_ms FLOAT, max_latency_ms FLOAT, jitter_sample_count INTEGER DEFAULT 0 NOT NULL, avg_jitter_ms FLOAT, max_jitter_ms FLOAT, loss_sample_count INTEGER DEFAULT 0 NOT NULL, avg_packet_loss_percent INTEGER, health_state VARCHAR(30))"))
             conn.execute(text("CREATE INDEX ix_network_monitor_statistics_monitor_id ON network_monitor_statistics (monitor_id)"))
             conn.execute(text("CREATE INDEX ix_network_monitor_statistics_bucket_start ON network_monitor_statistics (bucket_start)"))
+        else:
+            statistic_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(network_monitor_statistics)"))}
+            if "health_state" not in statistic_columns:
+                conn.execute(text("ALTER TABLE network_monitor_statistics ADD COLUMN health_state VARCHAR(30)"))
+            for column, definition in {
+                "latency_sample_count": "INTEGER DEFAULT 0 NOT NULL",
+                "min_latency_ms": "FLOAT",
+                "jitter_sample_count": "INTEGER DEFAULT 0 NOT NULL",
+                "avg_jitter_ms": "FLOAT",
+                "max_jitter_ms": "FLOAT",
+                "loss_sample_count": "INTEGER DEFAULT 0 NOT NULL",
+            }.items():
+                if column not in statistic_columns:
+                    conn.execute(text(f"ALTER TABLE network_monitor_statistics ADD COLUMN {column} {definition}"))
+            conn.execute(text("UPDATE network_monitor_statistics SET latency_sample_count = up_count WHERE latency_sample_count = 0 AND avg_latency_ms IS NOT NULL"))
+            conn.execute(text("UPDATE network_monitor_statistics SET loss_sample_count = sample_count WHERE loss_sample_count = 0 AND avg_packet_loss_percent IS NOT NULL"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_network_monitor_statistics_monitor_bucket_start ON network_monitor_statistics (monitor_id, bucket_start)"))
         remote_access_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(remote_access)"))}
         if not remote_access_columns:
             conn.execute(text("CREATE TABLE remote_access (id INTEGER NOT NULL PRIMARY KEY, ip_address_id INTEGER NOT NULL UNIQUE REFERENCES ip_addresses(id), display_name VARCHAR(255), is_enabled BOOLEAN DEFAULT 1 NOT NULL, protocol VARCHAR(20) DEFAULT 'ssh' NOT NULL, port INTEGER DEFAULT 22 NOT NULL, username VARCHAR(120), host_key_fingerprint VARCHAR(120), terminal_settings TEXT, rdp_settings TEXT, notes TEXT, created_at DATETIME, updated_at DATETIME)"))
@@ -871,6 +923,7 @@ app.include_router(licences.router)
 app.include_router(ip_addresses.router)
 app.include_router(hardware_assets.router)
 app.include_router(network_monitor.router)
+app.include_router(network_monitor.wallboard_router)
 app.include_router(remote_manager.router)
 app.include_router(runbooks.router)
 app.include_router(domain_manager.router)

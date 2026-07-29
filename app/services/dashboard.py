@@ -133,12 +133,21 @@ def save_preferences(db: Session, user: User, value: object) -> dict:
     canonical = normalise_layout(db, user, value)
     row = db.query(DashboardPreference).filter_by(user_id=user.id).first()
     if not row: row = DashboardPreference(user_id=user.id, preference_version=VERSION, layout_json="{}"); db.add(row)
-    row.preference_version = VERSION; row.layout_json = json.dumps(canonical, separators=(",", ":")); db.commit()
+    try: existing = json.loads(row.layout_json or "{}")
+    except (TypeError, json.JSONDecodeError): existing = {}
+    extensions = {key: item for key, item in existing.items() if key not in canonical} if isinstance(existing, dict) else {}
+    row.preference_version = VERSION; row.layout_json = json.dumps({**canonical, **extensions}, separators=(",", ":")); db.commit()
     return canonical
 
 def reset_preferences(db: Session, user: User) -> dict:
     row = db.query(DashboardPreference).filter_by(user_id=user.id).first()
-    if row: db.delete(row); db.commit()
+    if row:
+        try: existing = json.loads(row.layout_json or "{}")
+        except (TypeError, json.JSONDecodeError): existing = {}
+        extensions = {key: item for key, item in existing.items() if key not in {"version", "monitor_mode", "widgets"}} if isinstance(existing, dict) else {}
+        if extensions: row.layout_json = json.dumps(extensions, separators=(",", ":"))
+        else: db.delete(row)
+        db.commit()
     return default_layout(db, user)
 
 def _metric(label, value, target=None): return {"label": label, "value": value, "target": target}

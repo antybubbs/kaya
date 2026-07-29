@@ -1,9 +1,15 @@
 <aside class="remote-host-rail">
   <header class="remote-host-header">
-    <div>
+    <div class="remote-host-heading">
       <strong>Hosts</strong>
       <span>{{ rows|length }}</span>
     </div>
+    {% if user.role == 'admin' %}
+    <a class="button secondary remote-host-settings-link" href="/remote-manager/settings">
+      <span aria-hidden="true">&#9881;</span>
+      <span>Settings</span>
+    </a>
+    {% endif %}
   </header>
   <div class="remote-host-search">
     <label>
@@ -13,7 +19,6 @@
     <div class="remote-host-toolbar" aria-label="Host tools">
       {% if remote_label_fn is not defined %}<button class="button secondary" type="button" title="Group hosts by IP/WAN category" data-remote-group-toggle>Grp</button>{% endif %}
       <a class="button secondary" href="/networking/vlan-ip-manager/new" title="Add host" data-remote-host-add>+</a>
-      <a class="button secondary" href="/system/site-administration?tab=module-remote-manager" title="Remote settings">Set</a>
     </div>
   </div>
   <div class="remote-host-list">

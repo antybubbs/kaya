@@ -5,7 +5,7 @@
 
 ## Purpose
 
-Site Administration is the central admin area for settings, security, integrations, users, audit, import/export, custom fields, and managed lists.
+Site Administration is the central admin area for system settings, security, integrations, users, audit, and import/export. Module-owned categories and custom fields are managed from their module navigation bars.
 
 ## Routes
 
@@ -18,8 +18,6 @@ Site Administration is the central admin area for settings, security, integratio
 - `/team/users/{user_id}/edit`
 - `/team/users/{user_id}/reset-2fa`
 - `/data/import-export`
-- `/data/custom-fields`
-- `/data/categories`
 
 ## Models Used
 
@@ -47,6 +45,7 @@ Site Administration includes settings for:
 - DNS Manager / Pi-hole provider
 - Backup targets
 - SMTP and email templates
+- IP/WAN Monitor Wallboard sharing, restricted-session policy, monitor membership and display defaults
 
 Settings are stored primarily in `remote_manager_settings` as key/value rows. This table is used for more than remote manager settings, including global site settings, backup targets, DNS flags, SMTP configuration, and security configuration.
 
@@ -68,8 +67,6 @@ Settings are stored primarily in `remote_manager_settings` as key/value rows. Th
 - Test backup storage.
 - Test DNS provider.
 - Send test email.
-- Manage custom fields.
-- Manage categories/managed lists.
 - Import/export supported data.
 
 ## Edge Cases And Risks

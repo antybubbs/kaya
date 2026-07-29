@@ -141,7 +141,7 @@ The Clients tab and VLAN/IP enrichment read retained database data and never cal
 
 ## VLAN/IP Manager integration
 
-DNS Manager owns observed data; VLAN/IP Manager remains the source of truth for managed records. The managed hierarchy is VLAN → Category → allocation/device. VLANs, Categories, and DHCP ranges are configured under Site Administration → Module Settings → VLAN/IP Manager.
+DNS Manager owns observed data; VLAN/IP Manager remains the source of truth for managed records. The managed hierarchy is VLAN → Category → allocation/device. VLANs and DHCP ranges are configured under Site Administration → Module Settings → VLAN/IP Manager; Categories are managed from the VLAN/IP Manager navigation bar.
 
 A DNS client may hold one nullable `linked_ip_record_id`. Foreign-key deletion behaviour is `SET NULL`, so deleting either retained DNS data or a managed IP record never deletes the other.
 

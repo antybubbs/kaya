@@ -1,9 +1,17 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="module-header runbook-dashboard-header">
-  <div class="runbook-header-copy"><h1>Runbook Manager</h1><p class="muted">Store recovery procedures, service documentation and operational knowledge.</p></div>
-  <form class="runbook-global-search" method="get"><input name="q" aria-label="Search runbooks" placeholder="Search runbooks, spaces, tags or content..." value="{{ q }}"><button class="button secondary">Search</button></form>
-  <div class="runbook-header-actions">{% if user.role in ['admin','editor'] %}<a class="button secondary" href="/documentation/runbook-manager/import">Import</a><a class="button" href="/documentation/runbook-manager/new">+ New Runbook</a>{% endif %}</div>
+<section class="module-header">
+  <div class="module-title-row">
+    <div class="module-heading"><h1>Runbook Manager</h1><p class="muted">Store recovery procedures, service documentation and operational knowledge.</p></div>
+  </div>
+  <div class="module-toolbar">
+    <div class="module-primary-actions">
+      <form class="search list-search" method="get">
+        <input name="q" aria-label="Search runbooks" placeholder="Search runbooks..." value="{{ q }}">
+        <button>Search</button>
+      </form>
+    </div>
+  </div>
 </section>
 <div class="runbook-dashboard-shell">
   {% include "_runbook_nav.html" %}

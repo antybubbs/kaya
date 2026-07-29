@@ -70,7 +70,19 @@ def run_ha_sync_monitor_pass(session_factory=SessionLocal) -> int:
                 HACluster.status.in_(["HEALTHY", "DEGRADED", "ERROR"]),
             ).all()
             for cluster in clusters:
-                recovery = evaluate_recovery(db, cluster, now=now)
+                try:
+                    recovery = evaluate_recovery(db, cluster, now=now)
+                except Exception:
+                    # Recovery state grants extra synchronisation authority, so
+                    # fail closed to ordinary monitoring if it cannot be read.
+                    # A recovery-state fault must not starve the independent
+                    # five-minute configuration comparison.
+                    db.rollback()
+                    recovery = {}
+                    logger.exception(
+                        "HA recovery state evaluation failed; continuing with configuration monitoring only",
+                        extra={"cluster_id": cluster.public_id},
+                    )
                 interval = max(30, min(int(cluster.drift_check_interval_seconds or 300), 86400))
                 latest = db.query(HASyncRun).filter(HASyncRun.cluster_id == cluster.id).order_by(HASyncRun.created_at.desc()).first()
                 recovery_needing_sync = next((item for item in recovery.values() if item.state == "SYNCHRONISING"), None)
@@ -139,5 +151,14 @@ async def ha_sync_monitor_loop() -> None:
     await asyncio.sleep(STARTUP_DELAY_SECONDS)
     while True:
         started = monotonic()
-        delay = await asyncio.to_thread(run_ha_sync_monitor_pass)
+        try:
+            delay = await asyncio.to_thread(run_ha_sync_monitor_pass)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # This task is intentionally long-lived. A transient database or
+            # recovery-state failure must not permanently stop five-minute
+            # configuration checks while the rest of Kaya remains healthy.
+            logger.exception("HA configuration drift monitor pass failed; retrying")
+            delay = CHECK_INTERVAL_SECONDS
         await asyncio.sleep(max(1, delay - (monotonic() - started)))

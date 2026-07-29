@@ -355,6 +355,10 @@ def proxmox_backup_jobs(db: Session) -> list[dict]:
         comment = " ".join(raw_comment.split())[:255] if isinstance(raw_comment, str) else ""
         job_id = str(data.get("id") or item.external_id or item.name)[:500]
         last_task = data.get("last_task") if isinstance(data.get("last_task"), dict) else {}
+        history = host_metadata(host).get("backup_history")
+        history_warning = history.get("warning") if isinstance(history, dict) else None
+        history_unavailable = history_warning in {"task_history_unavailable", "task_logs_unavailable"}
+        last_status = data.get("last_status") or ("unavailable" if history_unavailable else "unknown")
         last_run_at = None
         if last_task.get("starttime"):
             try:
@@ -371,7 +375,7 @@ def proxmox_backup_jobs(db: Session) -> list[dict]:
             job_id,
             last_task.get("upid"),
             last_task.get("starttime"),
-            data.get("last_status") or "unknown",
+            last_status,
         )
         jobs.append(
             {
@@ -379,7 +383,7 @@ def proxmox_backup_jobs(db: Session) -> list[dict]:
                 "name": comment or item.name,
                 "job_id": job_id if comment else None,
                 "status": item.status or "unknown",
-                "last_status": data.get("last_status") or "unknown",
+                "last_status": last_status,
                 "last_run_at": last_run_at,
                 "schedule": data.get("schedule") or "-",
                 "storage": data.get("storage") or "-",
@@ -388,6 +392,27 @@ def proxmox_backup_jobs(db: Session) -> list[dict]:
             }
         )
     return jobs
+
+
+def proxmox_backup_history_warnings(db: Session) -> list[dict[str, str]]:
+    hosts = (
+        db.query(ComputeHost)
+        .filter(ComputeHost.platform == "proxmox")
+        .order_by(ComputeHost.name)
+        .all()
+    )
+    warnings = []
+    for host in hosts:
+        history = host_metadata(host).get("backup_history")
+        if not isinstance(history, dict) or history.get("warning") not in {"task_history_unavailable", "task_logs_unavailable"}:
+            continue
+        warning_code = history["warning"]
+        if warning_code == "task_history_unavailable":
+            detail = "Kaya cannot retrieve Proxmox vzdump task history. Check API permissions and application logs."
+        else:
+            detail = "Kaya can read task records but cannot read the task logs needed for exact job correlation. Check API permissions and application logs."
+        warnings.append({"host": host.name, "detail": detail})
+    return warnings
 
 
 @router.get("")
@@ -427,6 +452,7 @@ def backup_home(
             "latest_by_workload": latest_by_workload,
             "recent_jobs": recent_jobs,
             "proxmox_jobs": proxmox_backup_jobs(db),
+            "proxmox_history_warnings": proxmox_backup_history_warnings(db),
             "backup_target": backup_target_summary(db),
             "bytes_label": bytes_label,
             "agent_supports_docker_backups": agent_supports_docker_backups,

@@ -42,12 +42,19 @@
       <div class="service-card">
         <div><strong>IP/WAN Monitor</strong><span>Monitors uptime and latency for this IP address.</span></div>
         <span data-view class="service-pill {% if monitor and monitor.is_enabled %}on{% endif %}">{% if monitor and monitor.is_enabled %}Enabled{% else %}Disabled{% endif %}</span>
-        <label data-edit class="inline-toggle"><input name="monitor_enabled" type="checkbox" value="1" {% if monitor and monitor.is_enabled %}checked{% endif %}> Enabled</label>
+        <label data-edit class="inline-toggle"><input name="monitor_enabled" type="checkbox" value="1" {% if monitor and monitor.is_enabled %}checked{% endif %}> Enabled</label><label data-edit class="inline-toggle"><input name="monitor_maintenance_mode" type="checkbox" value="1" {% if monitor and monitor.is_in_maintenance %}checked{% endif %}> Maintenance</label>
       </div>
       <div data-edit class="record-edit-grid">
         <label>Monitor display name<input name="monitor_display_name" value="{{ monitor.display_name if monitor and monitor.display_name else '' }}"></label>
-        <label>Check interval<select name="monitor_interval_seconds">{% set interval = monitor.interval_seconds if monitor else 300 %}<option value="60" {% if interval == 60 %}selected{% endif %}>1 minute</option><option value="300" {% if interval == 300 %}selected{% endif %}>5 minutes</option><option value="900" {% if interval == 900 %}selected{% endif %}>15 minutes</option><option value="3600" {% if interval == 3600 %}selected{% endif %}>1 hour</option></select></label>
+        <label>Check interval<select name="monitor_interval_seconds">{% set interval = monitor.interval_seconds if monitor else 300 %}<option value="5" {% if interval == 5 %}selected{% endif %}>Live · 5 seconds</option><option value="60" {% if interval == 60 %}selected{% endif %}>1 minute</option><option value="300" {% if interval == 300 %}selected{% endif %}>5 minutes</option><option value="900" {% if interval == 900 %}selected{% endif %}>15 minutes</option><option value="3600" {% if interval == 3600 %}selected{% endif %}>1 hour</option></select></label>
         <label>Ping timeout<select name="monitor_timeout_ms">{% set timeout = monitor.timeout_ms if monitor else 2000 %}<option value="1000" {% if timeout == 1000 %}selected{% endif %}>1 second</option><option value="2000" {% if timeout == 2000 %}selected{% endif %}>2 seconds</option><option value="5000" {% if timeout == 5000 %}selected{% endif %}>5 seconds</option></select></label>
+      </div>
+      <div data-edit>
+        {% set monitor_field_prefix = 'monitor_' %}
+        {% include "_network_monitor_threshold_fields.html" %}
+      </div>
+      <div data-view class="service-card compact monitor-threshold-summary">
+        <div><strong>Health thresholds · {{ 'Inherited' if monitor_using_default_thresholds else 'Custom' }}</strong><span>Latency {{ monitor_thresholds.latency_warning_ms }}/{{ monitor_thresholds.latency_critical_ms }} ms · Packet loss {{ monitor_thresholds.packet_loss_warning_percent }}/{{ monitor_thresholds.packet_loss_critical_percent }}% · Confirm after {{ monitor_thresholds.degraded_threshold }} degraded, {{ monitor_thresholds.failure_threshold }} failed, {{ monitor_thresholds.recovery_threshold }} recovered checks.</span></div>
       </div>
       {% if monitor and monitor.is_enabled %}
       <div class="service-card compact">
