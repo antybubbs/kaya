@@ -17,6 +17,24 @@ def workflow_step(name: str) -> str:
     return match.group("body")
 
 
+def test_publish_permissions_are_job_scoped_and_least_privilege():
+    workflow_defaults, _, jobs = WORKFLOW.partition("jobs:")
+    assert re.search(r"^permissions: \{\}$", workflow_defaults, re.MULTILINE)
+    assert "packages: write" not in workflow_defaults
+
+    publish_job = re.search(
+        r"^  container:\n(?P<header>.*?)(?=^    steps:)",
+        jobs,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert publish_job is not None
+    assert "permissions:\n      contents: read\n      packages: write" in publish_job.group("header")
+    assert WORKFLOW.count("packages: write") == 1
+    assert "contents: write" not in WORKFLOW
+    assert "actions: write" not in WORKFLOW
+    assert "pull-requests: write" not in WORKFLOW
+
+
 def test_only_published_releases_can_reach_the_latest_tag():
     trigger = WORKFLOW.partition("permissions:")[0]
     assert "release:" in trigger

@@ -10,13 +10,14 @@ on:
     types:
       - published
 
-permissions:
-  contents: read
-  packages: write
+permissions: {}
 
 jobs:
   container:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       # PRODUCTION: vX.Y.Z GitHub release -> publishes vX.Y.Z + latest.
       # DEVELOPMENT: dev* branch -> publishes development tags only.
