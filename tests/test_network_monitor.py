@@ -452,6 +452,7 @@ def test_dashboard_uses_rolling_echarts_with_duplicate_and_visibility_guards():
     script = (root / "app" / "static" / "js" / "network_monitor.js").read_text(encoding="utf-8")
     wallboard_script = (root / "app" / "static" / "js" / "network_monitor_wallboard.js").read_text(encoding="utf-8")
     css = (root / "app" / "static" / "css" / "app.css").read_text(encoding="utf-8")
+    kaya_css = (root / "app" / "static" / "css" / "kaya.css").read_text(encoding="utf-8")
     assert "data-monitor-card-chart" in cards
     assert "latency-spark" not in cards and "uptime-strip" not in cards
     assert "card.seen.has" in script
@@ -493,6 +494,9 @@ def test_dashboard_uses_rolling_echarts_with_duplicate_and_visibility_guards():
     assert ".monitor-live-card.state-healthy{background:linear-gradient" in css
     assert ".monitor-live-card.state-offline,.monitor-live-card.monitor-card--offline" in css
     assert "rgba(127,29,29,.58)" in css
+    assert ".monitor-live-card.state-offline" in kaya_css
+    assert "rgba(127,29,29,.72)" in kaya_css
+    assert "#14171d!important" in kaya_css
     assert 'classList.toggle("monitor-card--offline", state === "offline")' in script
     assert "html[data-kaya-theme=light-ops] .monitor-live-card.monitor-card--offline" in css
     assert "box-shadow:inset 4px 0 0" in css
