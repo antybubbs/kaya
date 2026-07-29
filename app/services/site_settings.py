@@ -53,7 +53,7 @@ DEFAULT_SITE_SETTINGS = {
     "network_monitor_recovery_state_enabled": "1",
     "high_availability_enabled": "",
     "backup_manager_enabled": "1",
-    "dns_manager_enabled": "",
+    "dns_manager_enabled": "1",
     "dns_collector_enabled": "1",
     "dns_refresh_interval_seconds": "300",
     "dns_known_hostnames": "[]",
