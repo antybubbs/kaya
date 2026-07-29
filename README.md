@@ -390,7 +390,6 @@ Kaya
 - Use configurable health thresholds and stabilisation periods to avoid unnecessary failovers caused by short network interruptions or transient service restarts.
 - Preserve DNS and DHCP availability during planned maintenance by allowing administrators to intentionally move services to the standby node before taking the primary offline.
 - Integrate HA health and active-node state into the Kaya dashboard and Attention Required feed.
-- Keep the HA architecture extensible so additional supported services and providers can adopt the same health, orchestration and state-management framework in future.
 
 ## Domain Manager
 
