@@ -767,6 +767,7 @@
     const previousState = card.element.dataset.monitorState || "unknown";
     card.element.dataset.monitorState = state;
     card.element.dataset.state = state;
+    card.element.classList.toggle("monitor-card--offline", state === "offline");
     if (state !== previousState) {
       Array.from(card.element.classList).filter((name) => name.startsWith("state-")).forEach((name) => card.element.classList.remove(name));
       card.element.classList.add(`state-${state}`);

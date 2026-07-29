@@ -482,6 +482,7 @@ def test_dashboard_uses_rolling_echarts_with_duplicate_and_visibility_guards():
     assert "right: 20" in script
     assert "data-monitor-state-reason" in cards
     assert "state-{{ card_state }}" in cards
+    assert "monitor-card--offline" in cards
     assert 'data-state="{{ card_state }}"' in cards
     assert "monitor-card-chart-shell" in cards
     assert "monitor-last-result" in cards
@@ -490,7 +491,10 @@ def test_dashboard_uses_rolling_echarts_with_duplicate_and_visibility_guards():
     assert "@media(max-width:1650px)" in css and "@media(max-width:950px)" in css
     assert "@media(prefers-reduced-motion:reduce)" in css
     assert ".monitor-live-card.state-healthy{background:linear-gradient" in css
-    assert ".monitor-live-card.state-offline" in css
+    assert ".monitor-live-card.monitor-card--offline" in css
+    assert 'classList.toggle("monitor-card--offline", state === "offline")' in script
+    assert "html[data-kaya-theme=light-ops] .monitor-live-card.monitor-card--offline" in css
+    assert "box-shadow:inset 4px 0 0" in css
     assert ".monitor-live-card.state-warning .monitor-live-footer" not in css
     assert "min-width:calc(100% + 32px)" not in css
     assert ".monitor-live-footer{background:transparent;border:0" in css
@@ -524,6 +528,7 @@ def test_healthy_monitor_renders_state_on_the_full_card():
         user=SimpleNamespace(role="viewer"), csrf_token="fake-csrf-token",
     )
     assert 'class="monitor-card monitor-live-card state-healthy"' in rendered
+    assert "monitor-card--offline" not in rendered
     assert 'data-state="healthy"' in rendered
     assert "● Live" in rendered
     assert rendered.index('class="monitor-live-footer"') < rendered.index('class="monitor-card-actions"')
@@ -540,7 +545,19 @@ def test_healthy_monitor_renders_state_on_the_full_card():
         user=SimpleNamespace(role="viewer"), csrf_token="fake-csrf-token",
     )
     assert 'class="monitor-card monitor-live-card state-warning"' in warning_rendered
+    assert "monitor-card--offline" not in warning_rendered
     assert ">Warning</span>" in warning_rendered
+
+    row.state = "offline"
+    offline_rendered = template.render(
+        rows=[row], total=1, up_count=0, warning_count=0, critical_count=0, down_count=1, paused_count=0,
+        average_latency=1, availability_24h=0, checks_per_minute=12,
+        active_incidents=1, latest_observation_id=0, latency_label=network_monitor.latency_label,
+        live_latency_label=network_monitor.live_latency_label,
+        user=SimpleNamespace(role="viewer"), csrf_token="fake-csrf-token",
+    )
+    assert 'class="monitor-card monitor-live-card state-offline monitor-card--offline"' in offline_rendered
+    assert 'data-state="offline"' in offline_rendered
     assert "● Live" in warning_rendered
 
 
