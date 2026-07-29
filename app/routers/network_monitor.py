@@ -3,6 +3,7 @@ import io
 import json
 import math
 from datetime import datetime, timedelta
+from urllib.parse import quote
 
 from fastapi import APIRouter, Body, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
@@ -535,9 +536,10 @@ def authenticate_shared_wallboard(
     raw_token, csrf, session = start_session(db, row, remembered=remember_display == "1")
     session.display_options_json = json.dumps({"csrf": csrf}, separators=(",", ":"))
     db.commit()
-    response = RedirectResponse(f"/monitoring/ip-wan-monitor/wallboard/shared/{token}", status_code=303)
+    safe_token = quote(str(row.token), safe="")
+    response = RedirectResponse(f"/monitoring/ip-wan-monitor/wallboard/shared/{safe_token}", status_code=303)
     max_age = 315360000 if session.expires_at is None else max(1, int((session.expires_at - datetime.utcnow()).total_seconds()))
-    response.set_cookie(WALLBOARD_COOKIE, raw_token, max_age=max_age, httponly=True, secure=request.url.scheme == "https", samesite="lax", path=f"/monitoring/ip-wan-monitor/wallboard/shared/{token}")
+    response.set_cookie(WALLBOARD_COOKIE, raw_token, max_age=max_age, httponly=True, secure=request.url.scheme == "https", samesite="lax", path=f"/monitoring/ip-wan-monitor/wallboard/shared/{safe_token}")
     return response
 
 
@@ -622,8 +624,9 @@ def lock_shared_wallboard(token: str, request: Request, csrf_token: str = Form(.
     row, session = _shared_access(request, db, token)
     if not row or not session or not verify_session_csrf(session, csrf_token):
         raise HTTPException(status_code=403, detail="Forbidden")
-    response = RedirectResponse(f"/monitoring/ip-wan-monitor/wallboard/shared/{token}", status_code=303)
-    response.delete_cookie(WALLBOARD_COOKIE, path=f"/monitoring/ip-wan-monitor/wallboard/shared/{token}")
+    safe_token = row.token
+    response = RedirectResponse(f"/monitoring/ip-wan-monitor/wallboard/shared/{safe_token}", status_code=303)
+    response.delete_cookie(WALLBOARD_COOKIE, path=f"/monitoring/ip-wan-monitor/wallboard/shared/{safe_token}")
     return response
 
 
@@ -634,8 +637,9 @@ def forget_shared_wallboard(token: str, request: Request, csrf_token: str = Form
         raise HTTPException(status_code=403, detail="Forbidden")
     session.revoked_at = datetime.utcnow()
     db.commit()
-    response = RedirectResponse(f"/monitoring/ip-wan-monitor/wallboard/shared/{token}", status_code=303)
-    response.delete_cookie(WALLBOARD_COOKIE, path=f"/monitoring/ip-wan-monitor/wallboard/shared/{token}")
+    safe_token = row.token
+    response = RedirectResponse(f"/monitoring/ip-wan-monitor/wallboard/shared/{safe_token}", status_code=303)
+    response.delete_cookie(WALLBOARD_COOKIE, path=f"/monitoring/ip-wan-monitor/wallboard/shared/{safe_token}")
     return response
 
 
