@@ -29,6 +29,7 @@ from app.services.compute_monitor import (
     proxmox_backup_tasks,
     proxmox_matching_backup_task,
 )
+from app.services.modules import grant_all_registered_modules
 from app.services.site_settings import get_site_setting
 
 
@@ -90,6 +91,7 @@ def test_disable_requires_acknowledgement_and_preserves_backup_data():
         host = ComputeHost(name="Backup host", platform="docker_agent", base_url="https://backup.invalid")
         record = BackupRecord(name="Existing backup", target="/mnt/backups/existing.tar", source_type="manual")
         db.add_all([admin, host, record, RemoteManagerSetting(key="backup_manager_enabled", value="1")]); db.flush()
+        grant_all_registered_modules(db, admin)
         job = BackupJob(host_id=host.id, operation="backup", status="running", artifact_path="/mnt/backups/job.enc")
         db.add(job); db.commit()
         record_id, job_id = record.id, job.id

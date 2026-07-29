@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fixed
+
+- Corrected disabled-module dashboard coverage and Backup Manager
+  permission-test setup, and repaired shared Wallboard redirect and cookie
+  paths to use the validated public route token.
+
 ### Security
 
 - Upgraded `cryptography` from 48.0.1 to 49.0.0. Kaya does not use the raw

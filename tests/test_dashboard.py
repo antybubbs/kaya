@@ -58,8 +58,9 @@ def test_disabled_widget_is_excluded_from_snapshot(db):
     key=layout["widgets"][0]["key"]; save_preferences(db,account,layout)
     assert key not in snapshot(db,account)["widgets"]
 
-def test_module_disabled_is_available_with_reason_but_not_enabled(db):
+def test_module_disabled_is_not_exposed_or_enabled(db):
     account=user(db)
+    db.add(RemoteManagerSetting(key="dns_manager_enabled", value="")); db.commit()
     assert "dns_summary" not in {item["key"] for item in config(db,account)["widgets"]}
     assert "dns_summary" not in {item["key"] for item in preferences(db,account)["widgets"]}
 
