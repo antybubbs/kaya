@@ -46,6 +46,10 @@ Use it, dont use it. Its up to you really (but it is quite cool if I do say so m
 
 ------------------------------------------------------------------------
 
+# With thanks
+
+<img width="289" height="67" alt="image" src="https://github.com/user-attachments/assets/c9563e0e-b9bb-4e96-b33a-a8cabaccba1d" />
+
 # Features
 
 Kaya is more than a homelab inventory. It is a self-hosted operations hub for the infrastructure, access, documentation, monitoring and recovery information that usually ends up scattered across spreadsheets, bookmarks, terminals and password-protected files.
