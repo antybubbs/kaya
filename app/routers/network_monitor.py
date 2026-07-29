@@ -624,8 +624,9 @@ def lock_shared_wallboard(token: str, request: Request, csrf_token: str = Form(.
     row, session = _shared_access(request, db, token)
     if not row or not session or not verify_session_csrf(session, csrf_token):
         raise HTTPException(status_code=403, detail="Forbidden")
-    response = RedirectResponse(f"/monitoring/ip-wan-monitor/wallboard/shared/{token}", status_code=303)
-    response.delete_cookie(WALLBOARD_COOKIE, path=f"/monitoring/ip-wan-monitor/wallboard/shared/{token}")
+    safe_token = row.token
+    response = RedirectResponse(f"/monitoring/ip-wan-monitor/wallboard/shared/{safe_token}", status_code=303)
+    response.delete_cookie(WALLBOARD_COOKIE, path=f"/monitoring/ip-wan-monitor/wallboard/shared/{safe_token}")
     return response
 
 
@@ -636,8 +637,9 @@ def forget_shared_wallboard(token: str, request: Request, csrf_token: str = Form
         raise HTTPException(status_code=403, detail="Forbidden")
     session.revoked_at = datetime.utcnow()
     db.commit()
-    response = RedirectResponse(f"/monitoring/ip-wan-monitor/wallboard/shared/{token}", status_code=303)
-    response.delete_cookie(WALLBOARD_COOKIE, path=f"/monitoring/ip-wan-monitor/wallboard/shared/{token}")
+    safe_token = row.token
+    response = RedirectResponse(f"/monitoring/ip-wan-monitor/wallboard/shared/{safe_token}", status_code=303)
+    response.delete_cookie(WALLBOARD_COOKIE, path=f"/monitoring/ip-wan-monitor/wallboard/shared/{safe_token}")
     return response
 
 
