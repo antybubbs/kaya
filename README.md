@@ -65,6 +65,213 @@ Kaya is more than a homelab inventory. It is a self-hosted operations hub for th
 | **Team-ready access** | Local login, TOTP, OpenID Connect, roles, account linking and audit logs |
 | **Self-hosted by design** | Docker Compose, SQLite, persistent volumes, PWA support and no mandatory cloud service |
 
+------------------------------------------------------------------------
+
+# Live Demo
+
+Want to kick the tyres? Go ahead. https://demo.kaya-app.uk 
+
+However, a few caveats.
+- The demo does not have a functional Remote Manager module.
+- It does not have everything active - this is for security reasons.
+- The data resets every night.
+- Its probably (highly likley to be) rough around the edges, this is because its the main app with a few restrictions in place - I probably have not picked up everything and most likley broke things trying to "make it safe"
+
+My suggestion - install it in your own environment and throw the kitchen sink at it.
+
+If you need any support - come on over to our Dicord Server: https://discord.gg/2hn6G7Qr9N 
+
+------------------------------------------------------------------------
+
+# Quick Start
+
+## Prerequisites
+
+-   Docker
+-   Docker Compose
+*   Guacd (the below docker compose file includes a guacd container, however - you may have your own. Once you are in the app you can change the guacd server in remote settings.)
+
+Clone the repository:
+
+``` bash
+git clone https://github.com/antybubbs/kaya.git
+cd kaya
+```
+
+Start Kaya:
+
+``` bash
+docker compose up -d
+```
+
+Open your browser:
+
+``` text
+http://SERVER-IP:8080/setup
+```
+
+Kaya works without an environment file, I wanted this to be easier to install. By default it accepts the hostname or IP address you use to reach it, whether that is direct Docker port access or a reverse proxy such as NetBird.
+
+For hardened installs, set `ALLOWED_HOSTS` to your known hostnames or IPs in your compose file. When `ALLOWED_HOSTS` is blank, Kaya does not enforce host filtering.
+
+Complete the setup wizard to create your administrator account. Please note that you will need to copy the Secret Key from the container logs of Kaya to paste into the initial setup page.
+
+After first sign-in, open **System Settings -> Site Administration -> Security** to harden the install. This page lets you restrict trusted hostnames, tune frame-embedding rules, enable HTTPS security headers and shorten browser RDP token lifetime without editing an environment file.
+
+The Security tab includes a current-request check so you can confirm the host allow-list, inbound DNS, outbound public IP, frame policy, HSTS state and RDP token lifetime after saving.
+
+My suggestion, install Kaya and sort the settings out in your Site Administration. 
+
+------------------------------------------------------------------------
+
+# Docker Compose
+
+``` yaml
+name: kaya
+
+services:
+  kaya:
+    image: ${KAYA_IMAGE:-ghcr.io/antybubbs/kaya:latest}
+    container_name: kaya
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: sqlite:////app/data/kaya.db
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
+    ports:
+      - "${KAYA_PORT:-8080}:8080"
+    volumes:
+      - ./data:/app/data
+      - ./uploads:/app/uploads
+      - ./data/remote-recordings:/app/data/remote-recordings
+    security_opt:
+      - no-new-privileges:true
+    cap_add:
+      - NET_RAW
+    read_only: true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    tmpfs:
+      - /tmp:size=128m,noexec,nosuid
+  secure-send-gateway:
+    image: ${KAYA_IMAGE:-ghcr.io/antybubbs/kaya:latest}
+    container_name: kaya-secure-send
+    restart: unless-stopped
+    command: ["uvicorn", "app.security_gateway:app", "--host", "0.0.0.0", "--port", "8999", "--proxy-headers", "--forwarded-allow-ips", "${FORWARDED_ALLOW_IPS:-127.0.0.1}", "--no-access-log", "--no-server-header"]
+    environment:
+      DATABASE_URL: sqlite:////app/data/kaya.db
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
+      SKIP_DATABASE_MIGRATIONS: "true"
+      KAYA_GATEWAY_MODE: "true"
+      DEMO_MODE: ${DEMO_MODE:-false}
+    ports:
+      - "${KAYA_SECURE_SEND_PORT:-8999}:8999"
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      kaya:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid
+      - /app/data/secret-vault:size=1m,noexec,nosuid
+      - /app/data/remote-recordings:size=1m,noexec,nosuid
+  guacd:
+    image: guacamole/guacd:1.6.0
+    container_name: kaya-guacd
+    restart: unless-stopped
+
+networks:
+  default:
+    driver: bridge
+    driver_opts:
+      com.docker.network.driver.mtu: "1280"
+
+```
+
+Launch:
+
+``` bash
+docker compose up -d
+```
+
+------------------------------------------------------------------------
+
+# Persistent Data
+
+  | Path        | Description                    |
+  |-------------| -------------------------------|
+  |`./data`     | Database and application data  | 
+  |`./uploads`  | User uploads                   |
+  |`./data/remote-recordings`| SSH and RDP session recordings |
+
+Back up these folders regularly.
+
+------------------------------------------------------------------------
+
+# Updating
+
+``` bash
+docker compose pull
+docker compose up -d
+```
+
+------------------------------------------------------------------------
+
+# Reverse Proxy
+
+Kaya works behind Nginx, Caddy, Traefik, Netbird and Cloudflare.
+
+Typical environment variables:
+
+``` env
+BASE_URL=https://kaya.example.com
+ALLOWED_HOSTS=kaya.example.com
+SESSION_COOKIE_SECURE=true
+FORWARDED_ALLOW_IPS=172.20.0.0/16 (This is important)
+```
+
+These are optional hardening settings. Kaya will still work through a reverse proxy without them, but `BASE_URL` should be set before enabling password reset emails so links point at the public address.
+
+When Kaya sits behind a reverse proxy on the same host, you can bind the container to loopback with `127.0.0.1:8080:8080` and let the proxy be the public entry point.
+
+The same host allow-list and HTTPS hardening can also be managed from **System Settings -> Site Administration -> Security** after setup.
+
+`FORWARDED_ALLOW_IPS` must contain only the IP address or CIDR of the proxy that
+connects directly to Kaya. It secure default is `127.0.0.1`, suitable for
+direct LAN use. Docker proxy users normally set a dedicated Docker network
+CIDR; NetBird proxy users may use the proxy's single `100.x` address (or
+`100.64.0.0/10` only when all peers are trusted). For Cloudflare Tunnel, trust
+the local `cloudflared` container rather than Cloudflare's public ranges. Do not
+use `*`. See [Reverse proxies and real client IPs](docs/deployment.md#reverse-proxies-and-real-client-ips).
+
+This setting is separate from `ALLOWED_HOSTS`: trusted proxies control which
+machine may report client IP/protocol headers, while allowed hosts control the
+hostname entered in the browser.
+
+------------------------------------------------------------------------
+
+# Architecture
+
+``` text
+Browser
+   │
+Reverse Proxy
+   │
+Kaya
+├── SQLite Database
+├── Upload Storage
+└── Guacamole (SSH / RDP)
+```
+
+------------------------------------------------------------------------
+
+# Features in Detail....
+
 ## Live, customisable dashboard
 
 - A modular dashboard that brings infrastructure, compute, DNS, backups, networking, remote access, licences, documentation, users, audit activity and Secret Vault health into one view.
@@ -335,216 +542,6 @@ Kaya is more than a homelab inventory. It is a self-hosted operations hub for th
 - Docker Agent check-in API, Backup Agent job API, Remote Manager WebSockets and JSON helper endpoints for live module updates.
 - All core data stays on infrastructure you control: the database, uploads, encrypted vault data and recordings live in your mounted volumes.
 
-------------------------------------------------------------------------
-
-# Live Demo
-
-Want to kick the tyres? Go ahead. https://demo.kaya-app.uk 
-
-However, a few caveats.
-- The demo does not have a functional Remote Manager module.
-- It does not have everything active - this is for security reasons.
-- The data resets every night.
-- Its probably (highly likley to be) rough around the edges, this is because its the main app with a few restrictions in place - I probably have not picked up everything and most likley broke things trying to "make it safe"
-
-My suggestion - install it in your own environment and throw the kitchen sink at it.
-
-If you need any support - come on over to our Dicord Server: https://discord.gg/2hn6G7Qr9N 
-
-------------------------------------------------------------------------
-
-# Quick Start
-
-## Prerequisites
-
--   Docker
--   Docker Compose
-*   Guacd (the below docker compose file includes a guacd container, however - you may have your own. Once you are in the app you can change the guacd server in remote settings.)
-
-Clone the repository:
-
-``` bash
-git clone https://github.com/antybubbs/kaya.git
-cd kaya
-```
-
-Start Kaya:
-
-``` bash
-docker compose up -d
-```
-
-Open your browser:
-
-``` text
-http://SERVER-IP:8080/setup
-```
-
-Kaya works without an environment file, I wanted this to be easier to install. By default it accepts the hostname or IP address you use to reach it, whether that is direct Docker port access or a reverse proxy such as NetBird.
-
-For hardened installs, set `ALLOWED_HOSTS` to your known hostnames or IPs in your compose file. When `ALLOWED_HOSTS` is blank, Kaya does not enforce host filtering.
-
-Complete the setup wizard to create your administrator account. Please note that you will need to copy the Secret Key from the container logs of Kaya to paste into the initial setup page.
-
-After first sign-in, open **System Settings -> Site Administration -> Security** to harden the install. This page lets you restrict trusted hostnames, tune frame-embedding rules, enable HTTPS security headers and shorten browser RDP token lifetime without editing an environment file.
-
-The Security tab includes a current-request check so you can confirm the host allow-list, inbound DNS, outbound public IP, frame policy, HSTS state and RDP token lifetime after saving.
-
-My suggestion, install Kaya and sort the settings out in your Site Administration. 
-
-------------------------------------------------------------------------
-
-# Docker Compose
-
-``` yaml
-name: kaya
-
-services:
-  kaya:
-    image: ${KAYA_IMAGE:-ghcr.io/antybubbs/kaya:latest}
-    container_name: kaya
-    restart: unless-stopped
-    environment:
-      DATABASE_URL: sqlite:////app/data/kaya.db
-      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
-    ports:
-      - "${KAYA_PORT:-8080}:8080"
-    volumes:
-      - ./data:/app/data
-      - ./uploads:/app/uploads
-      - ./data/remote-recordings:/app/data/remote-recordings
-    security_opt:
-      - no-new-privileges:true
-    cap_add:
-      - NET_RAW
-    read_only: true
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-    tmpfs:
-      - /tmp:size=128m,noexec,nosuid
-  secure-send-gateway:
-    image: ${KAYA_IMAGE:-ghcr.io/antybubbs/kaya:latest}
-    container_name: kaya-secure-send
-    restart: unless-stopped
-    command: ["uvicorn", "app.security_gateway:app", "--host", "0.0.0.0", "--port", "8999", "--proxy-headers", "--forwarded-allow-ips", "${FORWARDED_ALLOW_IPS:-127.0.0.1}", "--no-access-log", "--no-server-header"]
-    environment:
-      DATABASE_URL: sqlite:////app/data/kaya.db
-      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
-      SKIP_DATABASE_MIGRATIONS: "true"
-      KAYA_GATEWAY_MODE: "true"
-      DEMO_MODE: ${DEMO_MODE:-false}
-    ports:
-      - "${KAYA_SECURE_SEND_PORT:-8999}:8999"
-    volumes:
-      - ./data:/app/data
-    depends_on:
-      kaya:
-        condition: service_healthy
-    security_opt:
-      - no-new-privileges:true
-    read_only: true
-    tmpfs:
-      - /tmp:size=64m,noexec,nosuid
-      - /app/data/secret-vault:size=1m,noexec,nosuid
-      - /app/data/remote-recordings:size=1m,noexec,nosuid
-  guacd:
-    image: guacamole/guacd:1.6.0
-    container_name: kaya-guacd
-    restart: unless-stopped
-
-networks:
-  default:
-    driver: bridge
-    driver_opts:
-      com.docker.network.driver.mtu: "1280"
-
-```
-
-Launch:
-
-``` bash
-docker compose up -d
-```
-
-------------------------------------------------------------------------
-
-# Persistent Data
-
-  | Path        | Description                    |
-  |-------------| -------------------------------|
-  |`./data`     | Database and application data  | 
-  |`./uploads`  | User uploads                   |
-  |`./data/remote-recordings`| SSH and RDP session recordings |
-
-Back up these folders regularly.
-
-------------------------------------------------------------------------
-
-# Updating
-
-``` bash
-docker compose pull
-docker compose up -d
-```
-
-------------------------------------------------------------------------
-
-# Reverse Proxy
-
-Kaya works behind Nginx, Caddy, Traefik, Netbird and Cloudflare.
-
-Typical environment variables:
-
-``` env
-BASE_URL=https://kaya.example.com
-ALLOWED_HOSTS=kaya.example.com
-SESSION_COOKIE_SECURE=true
-FORWARDED_ALLOW_IPS=172.20.0.0/16 (This is important)
-```
-
-These are optional hardening settings. Kaya will still work through a reverse proxy without them, but `BASE_URL` should be set before enabling password reset emails so links point at the public address.
-
-When Kaya sits behind a reverse proxy on the same host, you can bind the container to loopback with `127.0.0.1:8080:8080` and let the proxy be the public entry point.
-
-The same host allow-list and HTTPS hardening can also be managed from **System Settings -> Site Administration -> Security** after setup.
-
-`FORWARDED_ALLOW_IPS` must contain only the IP address or CIDR of the proxy that
-connects directly to Kaya. It secure default is `127.0.0.1`, suitable for
-direct LAN use. Docker proxy users normally set a dedicated Docker network
-CIDR; NetBird proxy users may use the proxy's single `100.x` address (or
-`100.64.0.0/10` only when all peers are trusted). For Cloudflare Tunnel, trust
-the local `cloudflared` container rather than Cloudflare's public ranges. Do not
-use `*`. See [Reverse proxies and real client IPs](docs/deployment.md#reverse-proxies-and-real-client-ips).
-
-This setting is separate from `ALLOWED_HOSTS`: trusted proxies control which
-machine may report client IP/protocol headers, while allowed hosts control the
-hostname entered in the browser.
-
-------------------------------------------------------------------------
-
-# Architecture
-
-``` text
-Browser
-   │
-Reverse Proxy
-   │
-Kaya
-├── SQLite Database
-├── Upload Storage
-└── Guacamole (SSH / RDP)
-```
-
-------------------------------------------------------------------------
-
-# Roadmap
-
-I mean, I could throw something here that looks like a roadmap. 
-
-But who am I kidding, the roadmap is like a pub crawl, we hopping all through them.
 
 ------------------------------------------------------------------------
 
