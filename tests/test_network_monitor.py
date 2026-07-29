@@ -491,7 +491,8 @@ def test_dashboard_uses_rolling_echarts_with_duplicate_and_visibility_guards():
     assert "@media(max-width:1650px)" in css and "@media(max-width:950px)" in css
     assert "@media(prefers-reduced-motion:reduce)" in css
     assert ".monitor-live-card.state-healthy{background:linear-gradient" in css
-    assert ".monitor-live-card.monitor-card--offline" in css
+    assert ".monitor-live-card.state-offline,.monitor-live-card.monitor-card--offline" in css
+    assert "rgba(127,29,29,.58)" in css
     assert 'classList.toggle("monitor-card--offline", state === "offline")' in script
     assert "html[data-kaya-theme=light-ops] .monitor-live-card.monitor-card--offline" in css
     assert "box-shadow:inset 4px 0 0" in css

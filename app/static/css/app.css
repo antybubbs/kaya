@@ -1555,7 +1555,7 @@ html[data-kaya-theme=light-ops] .dns-mini-table > div {
 .monitor-live-card.state-healthy{background:linear-gradient(135deg,rgba(34,197,94,.1) 0%,rgba(34,197,94,.035) 46%,var(--panel) 84%);border-color:rgba(34,197,94,.36)}
 .monitor-live-card.state-warning{background:linear-gradient(135deg,rgba(245,158,11,.1) 0%,rgba(245,158,11,.035) 46%,var(--panel) 84%);border-color:rgba(245,158,11,.38)}
 .monitor-live-card.state-critical{background:linear-gradient(135deg,rgba(239,68,68,.11) 0%,rgba(239,68,68,.04) 46%,var(--panel) 84%);border-color:rgba(239,68,68,.42)}
-.monitor-live-card.monitor-card--offline{background:linear-gradient(135deg,rgba(127,29,29,.28),rgba(69,10,10,.16));border-color:color-mix(in srgb,var(--danger) 70%,transparent);box-shadow:inset 4px 0 0 color-mix(in srgb,var(--danger) 85%,transparent)}
+.monitor-live-card.state-offline,.monitor-live-card.monitor-card--offline{background:linear-gradient(135deg,rgba(127,29,29,.58),rgba(69,10,10,.46)),var(--panel);border-color:color-mix(in srgb,var(--danger) 78%,transparent);box-shadow:inset 4px 0 0 color-mix(in srgb,var(--danger) 90%,transparent)}
 .monitor-card--offline .monitor-error{color:var(--danger)}
 .monitor-live-card.state-recovering{background:linear-gradient(135deg,rgba(245,158,11,.1) 0%,rgba(34,197,94,.04) 48%,var(--panel) 84%);border-color:rgba(245,158,11,.38)}
 .monitor-live-card.state-maintenance{background:linear-gradient(135deg,rgba(56,189,248,.1) 0%,rgba(56,189,248,.035) 46%,var(--panel) 84%);border-color:rgba(56,189,248,.38)}
