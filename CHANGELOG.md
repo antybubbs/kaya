@@ -2,8 +2,20 @@
 
 ## Unreleased
 
+### Fixed
+
+- Corrected disabled-module dashboard coverage and Backup Manager
+  permission-test setup, and repaired shared Wallboard redirect and cookie
+  paths to use the validated public route token.
+
 ### Security
 
+- Upgraded `cryptography` from 48.0.1 to 49.0.0. Kaya does not use the raw
+  `ChaCha20` API affected by the release's nonce/counter compatibility change;
+  its direct cryptographic integrations continue to use Fernet, AES-GCM,
+  Scrypt/HKDF, Ed25519, and RSA without changing stored ciphertext or key
+  formats. The upstream platform changes remove 32-bit Windows and Intel macOS
+  wheels; Kaya's supported Python 3.12 Linux container remains supported.
 - Remediated CVE-2026-48710 by pinning Starlette 1.3.1. This release contains
   the upstream malformed `Host` header fix introduced in Starlette 1.0.1 and
   later fixes for StaticFiles path validation, URL authority parsing, and form
