@@ -61,13 +61,44 @@
   </section>
 
   <section id="performance" class="monitor-tab-panel">
-    <article class="panel">
-      <div class="panel-heading"><div><h2>Performance analytics</h2><p class="muted">Statistics use raw observations and retained aggregate buckets in the selected range.</p></div><div class="range-links">{% for value,label in [('1h','1 hour'),('6h','6 hours'),('24h','24 hours'),('7d','7 days'),('30d','30 days'),('90d','90 days'),('1y','1 year')] %}<a class="button secondary {% if selected_range == value %}active{% endif %}" href="?range={{ value }}#performance">{{ label }}</a>{% endfor %}</div></div>
-      <div class="monitor-stat-grid">
-        {% for label,value in [('Availability', availability ~ '%' if availability is not none else '-'),('Average latency', latency_label(average_latency)),('Median latency', latency_label(median_latency)),('Minimum', latency_label(minimum_latency)),('Maximum', latency_label(maximum_latency)),('95th percentile', latency_label(p95_latency)),('99th percentile', latency_label(p99_latency)),('Packet loss', average_packet_loss ~ '%' if average_packet_loss is not none else '-'),('Jitter', latency_label(average_jitter)),('Successful checks', successful_checks),('Failed checks', failed_checks),('Downtime', downtime_seconds ~ ' sec'),('Recovery time', average_recovery_seconds ~ ' sec' if average_recovery_seconds is not none else '-'),('Incidents', outage_count)] %}<div><span>{{ label }}</span><strong>{{ value }}</strong></div>{% endfor %}
-      </div>
-    </article>
-    <div class="monitor-mini-chart-grid section-gap"><article class="panel"><h3>Latency</h3><div class="monitor-mini-chart" data-monitor-mini="latency"></div></article><article class="panel"><h3>Packet loss</h3><div class="monitor-mini-chart" data-monitor-mini="loss"></div></article><article class="panel"><h3>Jitter</h3><div class="monitor-mini-chart" data-monitor-mini="jitter"></div></article><article class="panel"><h3>Availability</h3><div class="monitor-mini-chart" data-monitor-mini="availability"></div></article></div>
+    <div class="monitor-performance" data-monitor-performance data-endpoint="/networking/ip-wan-monitor/{{ monitor.id }}/performance-data" data-export-endpoint="/networking/ip-wan-monitor/{{ monitor.id }}/performance.csv">
+      <article class="panel monitor-performance-controls">
+        <div class="panel-heading"><div><h2>Performance history</h2><p class="muted">Explore genuine observations and retained aggregate buckets on one shared timeline.</p></div><button class="button secondary" type="button" data-performance-export>Export CSV</button></div>
+        <div class="range-links" role="group" aria-label="Performance period">
+          {% for value,label in [('1h','1 hour'),('6h','6 hours'),('24h','24 hours'),('7d','7 days'),('30d','30 days'),('90d','90 days'),('1y','1 year'),('custom','Custom')] %}<button class="button secondary {% if value == '24h' %}active{% endif %}" type="button" data-performance-range="{{ value }}">{{ label }}</button>{% endfor %}
+        </div>
+        <form class="performance-custom-range" data-performance-custom hidden>
+          <label>Start date and time<input type="datetime-local" name="start" required></label>
+          <label>End date and time<input type="datetime-local" name="end" required></label>
+          <button class="button" type="submit">Apply range</button>
+        </form>
+        <div class="performance-range-summary" aria-live="polite">
+          <strong data-performance-range-label>Loading selected range…</strong>
+          <span class="muted" data-performance-aggregation></span>
+        </div>
+        <p class="alert warning" data-performance-partial hidden></p>
+        <p class="alert" data-performance-error hidden></p>
+      </article>
+
+      <section class="monitor-stat-grid performance-stat-grid" aria-label="Selected-period performance summary">
+        {% for key,label in [('availability','Availability'),('average_latency','Average latency'),('median_latency','Median latency'),('minimum_latency','Minimum latency'),('maximum_latency','Maximum latency'),('p95_latency','95th percentile'),('p99_latency','99th percentile'),('average_jitter','Average jitter'),('maximum_jitter','Maximum jitter'),('packet_loss','Packet loss'),('successful_checks','Successful checks'),('failed_checks','Failed checks'),('downtime_seconds','Downtime'),('longest_outage_seconds','Longest outage'),('average_recovery_seconds','Average recovery time'),('incident_count','Incident count')] %}<div class="panel"><span>{{ label }}</span><strong data-performance-stat="{{ key }}">No data</strong></div>{% endfor %}
+      </section>
+
+      <article class="panel monitor-performance-timeline">
+        <div class="panel-heading"><div><h2>Historical timeline</h2><p class="muted">Hover to inspect all visible metrics. Drag or use the wheel to zoom; use Reset zoom to return to the selected period.</p></div><button class="button secondary" type="button" data-performance-reset>Reset zoom</button></div>
+        <fieldset class="performance-overlays"><legend>Timeline overlays</legend>
+          {% for key,label,checked in [('latency','Latency',true),('loss','Packet loss',true),('jitter','Jitter',false),('availability','Availability',false),('incidents','Incidents',true),('thresholds','Thresholds',true),('maintenance','Maintenance / pause',false)] %}<label><input type="checkbox" value="{{ key }}" data-performance-overlay {% if checked %}checked{% endif %}> {{ label }}</label>{% endfor %}
+        </fieldset>
+        <div class="performance-chart" data-performance-chart role="img" aria-label="Interactive IP/WAN performance history"></div>
+        <div class="empty-state performance-empty" data-performance-empty hidden><h3>No monitoring observations are available for this period.</h3><p class="muted" data-performance-available></p></div>
+      </article>
+
+      <article class="panel monitor-performance-table-panel">
+        <div class="panel-heading"><div><h2>Historical data</h2><p class="muted" data-performance-table-summary>Loading observations…</p></div><form class="search list-search performance-table-filter" data-performance-filter><label class="sr-only" for="performance-history-search">Search historical data</label><input id="performance-history-search" type="search" name="q" maxlength="50" placeholder="Search time or status…"><button type="submit">Search</button></form></div>
+        <div class="table-wrap"><table class="performance-history-table" data-table-key="network-monitor-performance"><thead><tr><th scope="col" tabindex="0" role="button" data-col="time" data-performance-sort="time">Date/time</th><th scope="col" tabindex="0" role="button" data-col="latency-min" data-performance-sort="latency_min">Latency min</th><th scope="col" tabindex="0" role="button" data-col="latency-avg" data-performance-sort="latency_avg">Latency avg</th><th scope="col" tabindex="0" role="button" data-col="latency-max" data-performance-sort="latency_max">Latency max</th><th scope="col" tabindex="0" role="button" data-col="jitter" data-performance-sort="jitter_avg">Jitter</th><th scope="col" tabindex="0" role="button" data-col="packet-loss" data-performance-sort="packet_loss">Packet loss</th><th scope="col" tabindex="0" role="button" data-col="availability" data-performance-sort="availability">Availability</th><th scope="col" tabindex="0" role="button" data-col="successful" data-performance-sort="successful">Successful</th><th scope="col" tabindex="0" role="button" data-col="failed" data-performance-sort="failed">Failed</th><th scope="col" tabindex="0" role="button" data-col="status" data-performance-sort="status">Status</th></tr></thead><tbody data-performance-table-body><tr><td colspan="10" class="muted">Loading historical data…</td></tr></tbody></table></div>
+        <nav class="pagination" aria-label="Performance history pages"><button class="button secondary" type="button" data-performance-page="previous">Previous</button><span data-performance-page-label>Page 1 of 1</span><button class="button secondary" type="button" data-performance-page="next">Next</button></nav>
+      </article>
+    </div>
   </section>
 
   <section id="incidents" class="monitor-tab-panel">

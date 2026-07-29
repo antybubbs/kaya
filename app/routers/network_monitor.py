@@ -20,6 +20,7 @@ from app.services.network_monitor import (
     latency_label, live_latency_label, monitor_label, run_monitor_check_by_id, set_dashboard_interval_override,
     validate_monitor_timing, validate_threshold_values,
 )
+from app.services.network_monitor_history import performance_history
 from app.services.client_ip import client_ip as trusted_client_ip
 
 router = APIRouter(prefix="/networking/ip-wan-monitor", dependencies=[Depends(require_module_access("network_monitor"))])
@@ -417,6 +418,67 @@ def monitor_detail(
     })
 
 
+@router.get("/{monitor_id}/performance-data")
+def monitor_performance_data(
+    monitor_id: int,
+    range: str = Query("24h", max_length=10),
+    start: str | None = Query(None, max_length=40),
+    end: str | None = Query(None, max_length=40),
+    page: int = Query(1, ge=1, le=100000),
+    page_size: int = Query(50, ge=10, le=100),
+    sort: str = Query("time", max_length=20),
+    direction: str = Query("desc", max_length=4),
+    q: str = Query("", max_length=50),
+    db: Session = Depends(get_db),
+    user=Depends(require_user),
+):
+    monitor = db.get(NetworkMonitor, monitor_id)
+    if not monitor:
+        raise HTTPException(status_code=404, detail="Monitor not found")
+    return JSONResponse(
+        performance_history(db, monitor, range, start, end, page, page_size, sort, direction, q),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get("/{monitor_id}/performance.csv")
+def export_monitor_performance(
+    request: Request,
+    monitor_id: int,
+    range: str = Query("24h", max_length=10),
+    start: str | None = Query(None, max_length=40),
+    end: str | None = Query(None, max_length=40),
+    db: Session = Depends(get_db),
+    user=Depends(require_user),
+):
+    monitor = db.get(NetworkMonitor, monitor_id)
+    if not monitor:
+        raise HTTPException(status_code=404, detail="Monitor not found")
+    payload = performance_history(db, monitor, range, start, end, 1, 5000, "time", "asc")
+    output = io.StringIO(newline="")
+    writer = csv.writer(output)
+    writer.writerow([
+        "period_start_utc", "period_end_utc", "latency_min_ms", "latency_avg_ms",
+        "latency_max_ms", "jitter_avg_ms", "jitter_max_ms", "packet_loss_percent",
+        "availability_percent", "successful_checks", "failed_checks", "status",
+    ])
+    for row in payload["table"]["rows"]:
+        writer.writerow([
+            row["at"], row["end"], row["latency_min"], row["latency_avg"], row["latency_max"],
+            row["jitter_avg"], row["jitter_max"], row["packet_loss"], row["availability"],
+            row["successful"], row["failed"], csv_safe(row["status"]),
+        ])
+    write_audit(
+        db, user, "export", "network_monitor_performance", str(monitor.id), trusted_client_ip(request),
+        detail=f"Exported {len(payload['table']['rows'])} performance rows for {range}",
+    )
+    filename = f"network-monitor-{monitor.id}-performance-{range}.csv"
+    return Response(output.getvalue(), media_type="text/csv; charset=utf-8", headers={
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Cache-Control": "no-store",
+    })
+
+
 def csv_safe(value) -> str:
     text_value = "" if value is None else str(value)
     return f"'{text_value}" if text_value.startswith(("=", "+", "-", "@", "\t", "\r")) else text_value
@@ -448,13 +510,19 @@ def toggle_monitor(request: Request, monitor_id: int, csrf_token: str = Form(...
     monitor = db.get(NetworkMonitor, monitor_id)
     if not monitor:
         raise HTTPException(status_code=404, detail="Monitor not found")
+    changed_at = datetime.utcnow()
     monitor.is_enabled = not monitor.is_enabled
     monitor.last_status = "unknown" if monitor.is_enabled else "paused"
     monitor.state_reason = "Awaiting first check" if monitor.is_enabled else "Monitoring disabled"
-    monitor.state_changed_at = datetime.utcnow()
+    monitor.state_changed_at = changed_at
     monitor.consecutive_degraded = 0
     monitor.consecutive_failures = 0
     monitor.consecutive_successes = 0
+    db.add(NetworkMonitorEvent(
+        monitor_id=monitor.id, event_type="resumed" if monitor.is_enabled else "paused",
+        severity="info", message="Monitoring resumed" if monitor.is_enabled else "Monitoring paused",
+        occurred_at=changed_at,
+    ))
     db.commit()
     write_audit(db, user, "resume" if monitor.is_enabled else "pause", "network_monitor", str(monitor.id), trusted_client_ip(request), detail="Monitor collection state changed")
     return RedirectResponse(f"/networking/ip-wan-monitor/{monitor.id}", status_code=303)
@@ -505,6 +573,8 @@ def update_monitor_settings(
         "maintenance_mode": monitor.is_in_maintenance,
         **{key: getattr(monitor, key) for key in values},
     }
+    maintenance_changed = old_values["maintenance_mode"] != (maintenance_mode == "1")
+    maintenance_changed_at = datetime.utcnow() if maintenance_changed else None
     monitor.interval_seconds = interval
     monitor.timeout_ms = timeout
     monitor.is_in_maintenance = maintenance_mode == "1"
@@ -516,9 +586,19 @@ def update_monitor_settings(
         monitor.last_status = "unknown"
         monitor.state_reason = "Awaiting first check after maintenance"
         monitor.state_changed_at = datetime.utcnow()
+    if maintenance_changed:
+        monitor.state_changed_at = maintenance_changed_at
     monitor.use_default_thresholds = use_default_thresholds == "1"
     for key, value in values.items():
         setattr(monitor, key, value)
+    if maintenance_changed:
+        db.add(NetworkMonitorEvent(
+            monitor_id=monitor.id,
+            event_type="maintenance_started" if monitor.is_in_maintenance else "maintenance_ended",
+            severity="info",
+            message="Maintenance mode started" if monitor.is_in_maintenance else "Maintenance mode ended",
+            occurred_at=maintenance_changed_at,
+        ))
     db.commit()
     new_values = {
         "interval_seconds": monitor.interval_seconds,

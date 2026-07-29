@@ -288,12 +288,19 @@ def _aggregate_checks(db: Session, cutoff: datetime, bucket_seconds: int) -> Non
     for (monitor_id, bucket), checks in groups.items():
         if not db.query(NetworkMonitorStatistic.id).filter_by(monitor_id=monitor_id, bucket_start=bucket, bucket_seconds=bucket_seconds).first():
             latencies = [item.latency_ms for item in checks if item.latency_ms is not None]
+            jitters = [abs(current - previous) for previous, current in zip(latencies, latencies[1:])]
             losses = [item.packet_loss_percent for item in checks if item.packet_loss_percent is not None]
             db.add(NetworkMonitorStatistic(
                 monitor_id=monitor_id, bucket_start=bucket, bucket_seconds=bucket_seconds,
                 sample_count=len(checks), up_count=sum(1 for item in checks if item.status == "up"),
+                latency_sample_count=len(latencies),
                 avg_latency_ms=round(sum(latencies) / len(latencies), 3) if latencies else None,
+                min_latency_ms=min(latencies) if latencies else None,
                 max_latency_ms=max(latencies) if latencies else None,
+                jitter_sample_count=len(jitters),
+                avg_jitter_ms=round(sum(jitters) / len(jitters), 3) if jitters else None,
+                max_jitter_ms=max(jitters) if jitters else None,
+                loss_sample_count=len(losses),
                 avg_packet_loss_percent=round(sum(losses) / len(losses)) if losses else None,
                 health_state=_worst_health(item.health_state or ("healthy" if item.status == "up" else "offline") for item in checks),
             ))
@@ -313,14 +320,24 @@ def _rollup_statistics(db: Session, source_seconds: int, cutoff: datetime, targe
     for (monitor_id, bucket), rows in groups.items():
         if not db.query(NetworkMonitorStatistic.id).filter_by(monitor_id=monitor_id, bucket_start=bucket, bucket_seconds=target_seconds).first():
             samples = sum(row.sample_count for row in rows)
-            latency_samples = [row for row in rows if row.avg_latency_ms is not None and row.sample_count]
-            loss_samples = [row for row in rows if row.avg_packet_loss_percent is not None and row.sample_count]
+            latency_samples = [row for row in rows if row.avg_latency_ms is not None and (row.latency_sample_count or row.up_count)]
+            jitter_samples = [row for row in rows if row.avg_jitter_ms is not None and row.jitter_sample_count]
+            loss_samples = [row for row in rows if row.avg_packet_loss_percent is not None and (row.loss_sample_count or row.sample_count)]
+            latency_count = sum(row.latency_sample_count or row.up_count for row in latency_samples)
+            jitter_count = sum(row.jitter_sample_count for row in jitter_samples)
+            loss_count = sum(row.loss_sample_count or row.sample_count for row in loss_samples)
             db.add(NetworkMonitorStatistic(
                 monitor_id=monitor_id, bucket_start=bucket, bucket_seconds=target_seconds,
                 sample_count=samples, up_count=sum(row.up_count for row in rows),
-                avg_latency_ms=round(sum(row.avg_latency_ms * row.sample_count for row in latency_samples) / sum(row.sample_count for row in latency_samples), 3) if latency_samples else None,
+                latency_sample_count=latency_count,
+                avg_latency_ms=round(sum(row.avg_latency_ms * (row.latency_sample_count or row.up_count) for row in latency_samples) / latency_count, 3) if latency_count else None,
+                min_latency_ms=min((row.min_latency_ms for row in rows if row.min_latency_ms is not None), default=None),
                 max_latency_ms=max((row.max_latency_ms for row in rows if row.max_latency_ms is not None), default=None),
-                avg_packet_loss_percent=round(sum(row.avg_packet_loss_percent * row.sample_count for row in loss_samples) / sum(row.sample_count for row in loss_samples)) if loss_samples else None,
+                jitter_sample_count=jitter_count,
+                avg_jitter_ms=round(sum(row.avg_jitter_ms * row.jitter_sample_count for row in jitter_samples) / jitter_count, 3) if jitter_count else None,
+                max_jitter_ms=max((row.max_jitter_ms for row in rows if row.max_jitter_ms is not None), default=None),
+                loss_sample_count=loss_count,
+                avg_packet_loss_percent=round(sum(row.avg_packet_loss_percent * (row.loss_sample_count or row.sample_count) for row in loss_samples) / loss_count) if loss_count else None,
                 health_state=_worst_health(row.health_state for row in rows),
             ))
     if source_rows:

@@ -503,13 +503,26 @@ def migrate_existing_database():
             if "details_json" not in outage_columns:
                 conn.execute(text("ALTER TABLE network_monitor_outages ADD COLUMN details_json TEXT"))
         if not conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='network_monitor_statistics'" )).first():
-            conn.execute(text("CREATE TABLE network_monitor_statistics (id INTEGER NOT NULL PRIMARY KEY, monitor_id INTEGER NOT NULL REFERENCES network_monitors(id), bucket_start DATETIME NOT NULL, bucket_seconds INTEGER NOT NULL, sample_count INTEGER DEFAULT 0 NOT NULL, up_count INTEGER DEFAULT 0 NOT NULL, avg_latency_ms FLOAT, max_latency_ms FLOAT, avg_packet_loss_percent INTEGER, health_state VARCHAR(30))"))
+            conn.execute(text("CREATE TABLE network_monitor_statistics (id INTEGER NOT NULL PRIMARY KEY, monitor_id INTEGER NOT NULL REFERENCES network_monitors(id), bucket_start DATETIME NOT NULL, bucket_seconds INTEGER NOT NULL, sample_count INTEGER DEFAULT 0 NOT NULL, up_count INTEGER DEFAULT 0 NOT NULL, latency_sample_count INTEGER DEFAULT 0 NOT NULL, avg_latency_ms FLOAT, min_latency_ms FLOAT, max_latency_ms FLOAT, jitter_sample_count INTEGER DEFAULT 0 NOT NULL, avg_jitter_ms FLOAT, max_jitter_ms FLOAT, loss_sample_count INTEGER DEFAULT 0 NOT NULL, avg_packet_loss_percent INTEGER, health_state VARCHAR(30))"))
             conn.execute(text("CREATE INDEX ix_network_monitor_statistics_monitor_id ON network_monitor_statistics (monitor_id)"))
             conn.execute(text("CREATE INDEX ix_network_monitor_statistics_bucket_start ON network_monitor_statistics (bucket_start)"))
         else:
             statistic_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(network_monitor_statistics)"))}
             if "health_state" not in statistic_columns:
                 conn.execute(text("ALTER TABLE network_monitor_statistics ADD COLUMN health_state VARCHAR(30)"))
+            for column, definition in {
+                "latency_sample_count": "INTEGER DEFAULT 0 NOT NULL",
+                "min_latency_ms": "FLOAT",
+                "jitter_sample_count": "INTEGER DEFAULT 0 NOT NULL",
+                "avg_jitter_ms": "FLOAT",
+                "max_jitter_ms": "FLOAT",
+                "loss_sample_count": "INTEGER DEFAULT 0 NOT NULL",
+            }.items():
+                if column not in statistic_columns:
+                    conn.execute(text(f"ALTER TABLE network_monitor_statistics ADD COLUMN {column} {definition}"))
+            conn.execute(text("UPDATE network_monitor_statistics SET latency_sample_count = up_count WHERE latency_sample_count = 0 AND avg_latency_ms IS NOT NULL"))
+            conn.execute(text("UPDATE network_monitor_statistics SET loss_sample_count = sample_count WHERE loss_sample_count = 0 AND avg_packet_loss_percent IS NOT NULL"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_network_monitor_statistics_monitor_bucket_start ON network_monitor_statistics (monitor_id, bucket_start)"))
         remote_access_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(remote_access)"))}
         if not remote_access_columns:
             conn.execute(text("CREATE TABLE remote_access (id INTEGER NOT NULL PRIMARY KEY, ip_address_id INTEGER NOT NULL UNIQUE REFERENCES ip_addresses(id), display_name VARCHAR(255), is_enabled BOOLEAN DEFAULT 1 NOT NULL, protocol VARCHAR(20) DEFAULT 'ssh' NOT NULL, port INTEGER DEFAULT 22 NOT NULL, username VARCHAR(120), host_key_fingerprint VARCHAR(120), terminal_settings TEXT, rdp_settings TEXT, notes TEXT, created_at DATETIME, updated_at DATETIME)"))

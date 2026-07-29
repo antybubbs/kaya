@@ -295,14 +295,21 @@ class NetworkMonitorOutage(Base):
 
 class NetworkMonitorStatistic(Base):
     __tablename__ = "network_monitor_statistics"
+    __table_args__ = (Index("ix_network_monitor_statistics_monitor_bucket_start", "monitor_id", "bucket_start"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     monitor_id: Mapped[int] = mapped_column(ForeignKey("network_monitors.id"), index=True)
     bucket_start: Mapped[datetime] = mapped_column(DateTime, index=True)
     bucket_seconds: Mapped[int] = mapped_column(Integer, index=True)
     sample_count: Mapped[int] = mapped_column(Integer, default=0)
     up_count: Mapped[int] = mapped_column(Integer, default=0)
+    latency_sample_count: Mapped[int] = mapped_column(Integer, default=0)
     avg_latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    min_latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
     max_latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    jitter_sample_count: Mapped[int] = mapped_column(Integer, default=0)
+    avg_jitter_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_jitter_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    loss_sample_count: Mapped[int] = mapped_column(Integer, default=0)
     avg_packet_loss_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
     health_state: Mapped[str | None] = mapped_column(String(30), nullable=True)
     monitor = relationship("NetworkMonitor")

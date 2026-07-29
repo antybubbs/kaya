@@ -14,7 +14,15 @@ Default thresholds are managed under **Site Administration â†’ Module Settings â
 
 ## Detail workspace
 
-The monitor detail workspace presents current health, response time, packet loss, recent heartbeat observations, incidents, checks and settings. Apache ECharts 6.1.0 is vendored locally so interactive line charts, threshold and incident markers, zoom, pan and PNG export work under Kaya's self-only Content Security Policy and in offline deployments. The Performance tab supports 1-hour, 6-hour, 24-hour, 7-day, 30-day, 90-day and 1-year views. Longer browser views are reduced automatically to five-minute, hourly or daily points.
+The monitor detail workspace presents current health, response time, packet loss, recent heartbeat observations, incidents, checks and settings. Apache ECharts 6.1.0 is vendored locally so interactive charts work under Kaya's self-only Content Security Policy and in offline deployments.
+
+The Performance tab is a selected-period workspace with 1-hour, 6-hour, 24-hour, 7-day, 30-day, 90-day, 1-year and custom date/time ranges. It updates in place and shows the exact site-timezone range and active resolution. Preset resolutions progress from raw checks through 1-minute, 5-minute, 30-minute, 2-hour, 12-hour and daily buckets; custom ranges select the matching resolution automatically. Existing retained buckets are reused and coarser retained evidence is never presented as finer data.
+
+One shared timeline combines a latency average with its genuine minimum/maximum band, visually quiet packet-loss events, optional jitter and availability, configured threshold lines, incident/recovery markers and optional maintenance or paused periods. It retains one ECharts instance across range and theme changes, supports a shared crosshair, hover details, pan, zoom and reset, and resizes with its panel. Warning, critical and offline periods are shaded without changing incident evaluation. Missing retained measurements remain **No data** rather than becoming zero.
+
+The 16 selected-period summary values, incident evidence and paginated table come from the same bounded response. Raw periods use individual checks; longer periods use server-side aggregation and retained statistics. Older buckets created before minimum latency and jitter retention was added expose those fields as unavailable rather than fabricating them. Percentiles over retained periods are explicitly identified as weighted bucket-average percentiles. Partial ranges show the first available observation, and empty ranges show a purpose-built message.
+
+Performance-table filtering, sorting and pagination are server-side. Selected-period CSV export is bounded to 5,000 displayed buckets, neutralises spreadsheet formula prefixes in text fields, requires the existing IP/WAN Monitor viewer permission and creates the normal redacted export audit event. Changing range, overlays, table pages or zoom does not create audit noise.
 
 Raw checks are searched, state-filtered and paginated server-side in 50-row pages, and can be exported as CSV. Exports are limited to 10,000 rows, neutralise spreadsheet formula prefixes in text fields, require module access and produce an audit record.
 

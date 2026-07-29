@@ -1581,3 +1581,37 @@ html[data-kaya-theme=light-ops] .monitor-card-chart-shell{background:rgba(248,25
 @media(max-width:950px){.monitor-live-grid{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:620px){.monitor-meta,.monitor-threshold-grid{grid-template-columns:minmax(0,1fr)}.monitor-card-actions,.monitor-card-actions form,.monitor-card-actions .button{width:100%}.monitor-card-chart{height:clamp(180px,55vw,230px)}.monitor-last-result{flex-basis:100%;text-align:right}}
 @media(prefers-reduced-motion:reduce){.monitor-live-card{transition:none}.monitor-offline-attention{animation:none!important}}
+
+/* IP/WAN Monitor selected-period performance history */
+.monitor-performance{display:grid;gap:16px;min-width:0}
+.monitor-performance-controls{display:grid;gap:12px}
+.monitor-performance .range-links{gap:7px}
+.monitor-performance .range-links .button.active{background:var(--accent);border-color:var(--accent);color:#fff}
+.performance-custom-range{align-items:end;background:rgba(15,23,42,.18);border:1px solid var(--line);border-radius:10px;display:flex;flex-wrap:wrap;gap:9px;padding:10px}
+.performance-custom-range label{display:grid;flex:1 1 210px;font-size:12px;font-weight:800;gap:4px}
+.performance-range-summary{display:grid;font-size:13px;gap:3px;overflow-wrap:anywhere}
+.performance-stat-grid{display:grid;gap:9px;grid-template-columns:repeat(4,minmax(0,1fr))}
+.performance-stat-grid .panel{background:rgba(15,23,42,.16);min-width:0;padding:12px}
+.performance-stat-grid span{color:var(--muted);display:block;font-size:11px;font-weight:800;letter-spacing:.03em;text-transform:uppercase}
+.performance-stat-grid strong{display:block;font-size:18px;margin-top:4px;overflow-wrap:anywhere}
+.monitor-performance-timeline,.monitor-performance-table-panel{min-width:0}
+.performance-overlays{align-items:center;border:0;display:flex;flex-wrap:wrap;gap:8px 15px;margin:0 0 8px;padding:0}
+.performance-overlays legend{color:var(--muted);font-size:12px;font-weight:850;margin-right:8px}
+.performance-overlays label{align-items:center;color:var(--muted);display:inline-flex;font-size:12px;font-weight:800;gap:6px}
+.performance-overlays input[type=checkbox]{accent-color:var(--accent);flex:0 0 16px;height:16px;margin:0;min-height:0;padding:0;width:16px}
+.monitor-performance .performance-chart{display:block;height:clamp(400px,46vw,570px);margin:10px 0 0;min-width:0;overflow:hidden;padding:0;width:100%}
+.monitor-performance-table-panel>.panel-heading{align-items:center;gap:16px;margin-bottom:12px}
+.performance-table-filter{align-items:center;display:flex;flex:0 1 auto;flex-wrap:nowrap;gap:8px;margin-left:auto}
+.performance-table-filter.search{margin-bottom:0}
+.performance-table-filter input{flex:0 1 280px;min-width:200px;width:280px}
+.performance-table-filter button{align-self:center;flex:0 0 auto;min-height:32px}
+.performance-history-table{min-width:1050px;width:100%}
+.performance-history-table th[data-performance-sort]{cursor:pointer;user-select:none}
+.performance-history-table th[data-performance-sort]:focus-visible{outline:2px solid var(--accent);outline-offset:-3px}
+.performance-history-table th[aria-sort=ascending]::after{content:' \2191'}
+.performance-history-table th[aria-sort=descending]::after{content:' \2193'}
+html[data-kaya-theme=light-ops] .performance-custom-range,html[data-kaya-theme=light-ops] .performance-stat-grid .panel{background:rgba(248,250,252,.82)}
+@media(max-width:1100px){.performance-stat-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:760px){.performance-custom-range{align-items:stretch}.monitor-performance-timeline,.monitor-performance-table-panel{padding:10px}.monitor-performance .performance-chart{height:420px}.monitor-performance-table-panel>.panel-heading{align-items:stretch;flex-direction:column}.performance-table-filter{align-items:stretch;flex-wrap:wrap;margin-left:0;width:100%}.performance-table-filter input{flex:1 1 auto;min-width:0;width:100%}}
+@media(max-width:480px){.performance-stat-grid{grid-template-columns:minmax(0,1fr)}.monitor-performance .range-links .button{flex:1 1 58px}.performance-custom-range label,.performance-custom-range input,.performance-custom-range .button{width:100%}.monitor-performance .performance-chart{height:380px}}
+@media(prefers-reduced-motion:reduce){.monitor-performance .range-links .button{transition:none}}
