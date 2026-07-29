@@ -1,4 +1,4 @@
-<section class="cards monitor-summary-cards">
+<section class="cards monitor-summary-cards" data-wallboard-summary>
   <div class="card"><span>Total monitors</span><strong data-monitor-summary="total">{{ total }}</strong></div>
   <div class="card"><span>Healthy</span><strong data-monitor-summary="up_count">{{ up_count }}</strong></div>
   <div class="card"><span>Warning</span><strong data-monitor-summary="warning_count">{{ warning_count }}</strong></div>
@@ -19,14 +19,15 @@
   {% set card_state = row.state %}
   <article class="monitor-card monitor-live-card state-{{ card_state }}" data-monitor-card="{{ monitor.id }}" data-monitor-state="{{ card_state }}" data-state="{{ card_state }}" data-monitor-enabled="{{ 'true' if monitor.is_enabled else 'false' }}" data-monitor-interval="{{ row.effective_interval }}" data-monitor-warning="{{ row.thresholds.latency_warning_ms }}" data-monitor-critical="{{ row.thresholds.latency_critical_ms }}" data-monitor-series='{{ row.chart_points|tojson|forceescape }}'>
     <div class="monitor-card-header">
-      <div class="monitor-card-identity"><h2 title="{{ row.label }}"><a href="/networking/ip-wan-monitor/{{ monitor.id }}">{{ row.label }}</a></h2><p class="muted mono" title="{{ monitor.ip_address.address }}">{{ monitor.ip_address.address }}</p></div>
+      <div class="monitor-card-identity"><h2 title="{{ row.label }}">{% if shared and permissions.allow_detail_links %}<a href="/monitoring/ip-wan-monitor/wallboard/shared/{{ wallboard_token }}/monitors/{{ monitor.id }}">{{ row.label }}</a>{% elif not shared %}<a href="/networking/ip-wan-monitor/{{ monitor.id }}">{{ row.label }}</a>{% else %}{{ row.label }}{% endif %}</h2><p class="muted mono monitor-card-ip" title="{{ monitor.ip_address.address }}">{{ monitor.ip_address.address }}</p></div>
       <span class="status-pill {{ card_state }}" data-monitor-status>{{ card_state|capitalize }}</span>
+      <button class="monitor-drag-handle" type="button" aria-label="Move {{ row.label }}" title="Drag to reorder" data-monitor-drag-handle hidden disabled>::</button>
     </div>
     <p class="monitor-state-reason" data-monitor-state-reason>{{ 'Monitoring disabled' if not monitor.is_enabled else monitor.state_reason or 'Awaiting first check' }}</p>
     <div class="monitor-meta">
       <div><span>Current</span><strong data-monitor-current>{{ 'Unavailable' if monitor.last_latency_ms is none and card_state == 'offline' else live_latency_label(monitor.last_latency_ms) }}</strong></div>
-      <div><span>Rolling average</span><strong data-monitor-average>{{ latency_label(row.average_latency) }}</strong></div>
-      <div><span>Availability 24h</span><strong data-monitor-availability>{{ row.uptime ~ '%' if row.uptime is not none else '-' }}</strong></div>
+      <div class="monitor-rolling-average"><span>Rolling average</span><strong data-monitor-average>{{ latency_label(row.average_latency) }}</strong></div>
+      <div class="monitor-availability"><span>Availability 24h</span><strong data-monitor-availability>{{ row.uptime ~ '%' if row.uptime is not none else '-' }}</strong></div>
     </div>
     <div class="monitor-card-chart-shell">
       <div class="monitor-card-chart" data-monitor-card-chart role="img" aria-label="Live response time for {{ row.label }}"></div>
@@ -37,8 +38,10 @@
       <span class="monitor-last-result">Last result {% if monitor.last_checked_at %}<time data-monitor-last-result data-utc-time="{{ monitor.last_checked_at }}" data-time-format="relative">{{ monitor.last_checked_at }}</time>{% else %}<span data-monitor-last-result>never</span>{% endif %}</span>
     </div>
     <div class="monitor-card-actions">
-      <a class="button secondary" href="/networking/ip-wan-monitor/{{ monitor.id }}">View details</a>
-      {% if user.role in ['admin','editor'] %}<form class="monitor-refresh-form" method="post" action="/networking/ip-wan-monitor/{{ monitor.id }}/refresh"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit" {% if not monitor.is_enabled %}disabled{% endif %}>Check now</button></form><form method="post" action="/networking/ip-wan-monitor/{{ monitor.id }}/toggle"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit">{{ 'Pause' if monitor.is_enabled else 'Resume' }}</button></form>{% endif %}
+      {% if shared and permissions.allow_detail_links %}<a class="button secondary" href="/monitoring/ip-wan-monitor/wallboard/shared/{{ wallboard_token }}/monitors/{{ monitor.id }}">View details</a>{% elif not shared %}<a class="button secondary" href="/networking/ip-wan-monitor/{{ monitor.id }}">View details</a>{% endif %}
+      {% if shared and permissions.allow_check_now %}<form class="monitor-refresh-form" method="post" action="/monitoring/ip-wan-monitor/wallboard/shared/{{ wallboard_token }}/monitors/{{ monitor.id }}/refresh"><input type="hidden" name="csrf_token" value="{{ shared_csrf }}"><button class="button secondary" type="submit" {% if not monitor.is_enabled %}disabled{% endif %}>Check now</button></form>{% elif not shared and user.role in ['admin','editor'] %}<form class="monitor-refresh-form" method="post" action="/networking/ip-wan-monitor/{{ monitor.id }}/refresh"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit" {% if not monitor.is_enabled %}disabled{% endif %}>Check now</button></form>{% endif %}
+      {% if shared and permissions.allow_pause %}<form class="monitor-refresh-form" method="post" action="/monitoring/ip-wan-monitor/wallboard/shared/{{ wallboard_token }}/monitors/{{ monitor.id }}/toggle"><input type="hidden" name="csrf_token" value="{{ shared_csrf }}"><button class="button secondary" type="submit">{{ 'Pause' if monitor.is_enabled else 'Resume' }}</button></form>{% elif not shared and user.role in ['admin','editor'] %}<form method="post" action="/networking/ip-wan-monitor/{{ monitor.id }}/toggle"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit">{{ 'Pause' if monitor.is_enabled else 'Resume' }}</button></form>{% endif %}
+      <div class="monitor-keyboard-order" aria-label="Keyboard reorder controls" hidden><button type="button" class="button secondary" data-monitor-move="up" aria-label="Move {{ row.label }} earlier" disabled>&larr;</button><button type="button" class="button secondary" data-monitor-move="down" aria-label="Move {{ row.label }} later" disabled>&rarr;</button></div>
     </div>
   </article>
 {% endfor %}

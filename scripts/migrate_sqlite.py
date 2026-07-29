@@ -178,6 +178,23 @@ def main():
         if monitor_changed:
             migrations_applied.append("network_monitor_vnext")
 
+        if not table_exists(cur, "network_monitor_wallboards"):
+            cur.execute("CREATE TABLE network_monitor_wallboards (id INTEGER NOT NULL PRIMARY KEY, name VARCHAR(120) DEFAULT 'Network Operations Wallboard' NOT NULL, enabled BOOLEAN DEFAULT 0 NOT NULL, public_token_hash VARCHAR(64) UNIQUE, encrypted_public_token TEXT, passcode_hash VARCHAR(255), passcode_type VARCHAR(20) DEFAULT 'numeric' NOT NULL, session_lifetime_seconds INTEGER DEFAULT 86400 NOT NULL, remember_display_enabled BOOLEAN DEFAULT 0 NOT NULL, remember_display_lifetime_seconds INTEGER DEFAULT 2592000 NOT NULL, default_columns VARCHAR(10) DEFAULT 'auto' NOT NULL, default_density VARCHAR(20) DEFAULT 'comfortable' NOT NULL, display_options_json TEXT DEFAULT '{}' NOT NULL, all_active_monitors BOOLEAN DEFAULT 1 NOT NULL, show_paused_monitors BOOLEAN DEFAULT 1 NOT NULL, permissions_json TEXT DEFAULT '{}' NOT NULL, session_revision INTEGER DEFAULT 1 NOT NULL, updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL, created_at DATETIME, updated_at DATETIME)")
+            cur.execute("CREATE UNIQUE INDEX ix_network_monitor_wallboards_public_token_hash ON network_monitor_wallboards (public_token_hash)")
+            cur.execute("CREATE INDEX ix_network_monitor_wallboards_enabled ON network_monitor_wallboards (enabled)")
+            cur.execute("CREATE TABLE network_monitor_wallboard_memberships (id INTEGER NOT NULL PRIMARY KEY, wallboard_id INTEGER NOT NULL REFERENCES network_monitor_wallboards(id) ON DELETE CASCADE, monitor_id INTEGER NOT NULL REFERENCES network_monitors(id) ON DELETE CASCADE, display_order INTEGER DEFAULT 0 NOT NULL, CONSTRAINT uq_network_monitor_wallboard_membership UNIQUE (wallboard_id, monitor_id))")
+            cur.execute("CREATE INDEX ix_network_monitor_wallboard_memberships_wallboard_id ON network_monitor_wallboard_memberships (wallboard_id)")
+            cur.execute("CREATE INDEX ix_network_monitor_wallboard_memberships_monitor_id ON network_monitor_wallboard_memberships (monitor_id)")
+            cur.execute("CREATE INDEX ix_network_monitor_wallboard_memberships_display_order ON network_monitor_wallboard_memberships (display_order)")
+            cur.execute("CREATE TABLE network_monitor_wallboard_sessions (id INTEGER NOT NULL PRIMARY KEY, wallboard_id INTEGER NOT NULL REFERENCES network_monitor_wallboards(id) ON DELETE CASCADE, token_hash VARCHAR(64) NOT NULL UNIQUE, csrf_hash VARCHAR(64) NOT NULL, session_revision INTEGER NOT NULL, remembered BOOLEAN DEFAULT 0 NOT NULL, display_options_json TEXT DEFAULT '{}' NOT NULL, monitor_order_json TEXT DEFAULT '[]' NOT NULL, created_at DATETIME, last_seen_at DATETIME, expires_at DATETIME, revoked_at DATETIME)")
+            for column in ("wallboard_id", "token_hash", "created_at", "last_seen_at", "expires_at", "revoked_at"):
+                cur.execute(f"CREATE {'UNIQUE ' if column == 'token_hash' else ''}INDEX ix_network_monitor_wallboard_sessions_{column} ON network_monitor_wallboard_sessions ({column})")
+            cur.execute("CREATE TABLE network_monitor_wallboard_attempts (id INTEGER NOT NULL PRIMARY KEY, wallboard_id INTEGER NOT NULL REFERENCES network_monitor_wallboards(id) ON DELETE CASCADE, source_hash VARCHAR(64) NOT NULL, failed_attempts INTEGER DEFAULT 0 NOT NULL, window_started_at DATETIME, locked_until DATETIME, updated_at DATETIME, CONSTRAINT uq_network_monitor_wallboard_attempt_source UNIQUE (wallboard_id, source_hash))")
+            cur.execute("CREATE INDEX ix_network_monitor_wallboard_attempts_wallboard_id ON network_monitor_wallboard_attempts (wallboard_id)")
+            cur.execute("CREATE INDEX ix_network_monitor_wallboard_attempts_source_hash ON network_monitor_wallboard_attempts (source_hash)")
+            cur.execute("CREATE INDEX ix_network_monitor_wallboard_attempts_locked_until ON network_monitor_wallboard_attempts (locked_until)")
+            migrations_applied.append("network_monitor_wallboard")
+
     # Public releases before v0.18 do not have compute_hosts yet. In that case,
     # application startup creates the complete current table via SQLAlchemy.
     # May the migration God bless us all.

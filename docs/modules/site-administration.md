@@ -45,6 +45,7 @@ Site Administration includes settings for:
 - DNS Manager / Pi-hole provider
 - Backup targets
 - SMTP and email templates
+- IP/WAN Monitor Wallboard sharing, restricted-session policy, monitor membership and display defaults
 
 Settings are stored primarily in `remote_manager_settings` as key/value rows. This table is used for more than remote manager settings, including global site settings, backup targets, DNS flags, SMTP configuration, and security configuration.
 

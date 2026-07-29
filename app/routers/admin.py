@@ -47,6 +47,8 @@ from app.models.models import (
     ExternalIdentity,
     ManagedListItem,
     IPAddress,
+    NetworkMonitor,
+    NetworkMonitorWallboardMembership,
     RemoteManagerSetting,
     User,
     VLAN,
@@ -57,6 +59,13 @@ from app.services.about import collect_about
 from app.services.audit import write_audit
 from app.services.user_names import clean_name_part, first_name_contains_last_name
 from app.services.client_ip import client_ip as trusted_client_ip, client_ip_details, validate_trusted_proxies
+from app.services.network_monitor import monitor_label
+from app.services.network_monitor_wallboard import (
+    DISPLAY_DEFAULTS, PERMISSION_DEFAULTS, VALID_COLUMNS, VALID_DENSITIES,
+    VALID_LIFETIMES, clear_attempts, current_public_token, ensure_wallboard,
+    generate_public_token, get_wallboard, revoke_sessions, set_passcode,
+    wallboard_display, wallboard_permissions,
+)
 from app.services.custom_fields import FIELD_TYPES, make_field_key
 from app.services.exporter import export_ip_addresses_csv, export_licences_csv
 from app.services.importer import ImportCSVError, import_csv, import_ip_addresses_csv
@@ -113,6 +122,7 @@ MODULE_SETTINGS_TABS = {
     "module-backup-manager": "backup_manager",
     "module-dashboard": "dashboard",
     "module-dns-manager": "dns_manager",
+    "module-network-monitor": "network_monitor",
     "module-vlan-ip-manager": "vlan_ip_manager",
     "module-remote-manager": "remote_manager",
     "module-secret-vault": "secret_vault",
@@ -2301,6 +2311,27 @@ def about(
     )
 
 
+def wallboard_admin_context(request: Request, db: Session) -> dict:
+    wallboard = get_wallboard(db)
+    wallboard_token = current_public_token(wallboard)
+    wallboard_base = (load_site_settings(db).get("base_url") or str(request.base_url)).rstrip("/")
+    wallboard_memberships = {
+        item.monitor_id: item.display_order for item in (
+            db.query(NetworkMonitorWallboardMembership).filter_by(wallboard_id=wallboard.id).all() if wallboard else []
+        )
+    }
+    wallboard_monitors = db.query(NetworkMonitor).options(selectinload(NetworkMonitor.ip_address)).order_by(NetworkMonitor.display_name.asc(), NetworkMonitor.id.asc()).all()
+    return {
+        "wallboard": wallboard,
+        "wallboard_display": wallboard_display(wallboard),
+        "wallboard_permissions": wallboard_permissions(wallboard),
+        "wallboard_url": f"{wallboard_base}/monitoring/ip-wan-monitor/wallboard/shared/{wallboard_token}" if wallboard_token else None,
+        "wallboard_monitors": sorted(wallboard_monitors, key=lambda item: (wallboard_memberships.get(item.id, 1000000), monitor_label(item).lower(), item.id)),
+        "wallboard_memberships": wallboard_memberships,
+        "monitor_label": monitor_label,
+    }
+
+
 @router.get("/system/site-administration")
 def settings_page(
     request: Request,
@@ -2315,6 +2346,7 @@ def settings_page(
             "user": user,
             "module_access": granted_module_keys(db, user),
             "settings": load_site_settings(db),
+            **wallboard_admin_context(request, db),
             "ha_active_cluster_count": db.query(HACluster).filter(HACluster.deleted_at.is_(None)).count(),
             "backup_preserved_item_count": db.query(BackupRecord).count() + db.query(BackupJob).count(),
             "backup_inflight_job_count": db.query(BackupJob).filter(BackupJob.status.in_(["queued", "dispatched", "running"])).count(),
@@ -2591,6 +2623,136 @@ async def save_network_monitor_defaults(
         detail="Updated inherited IP/WAN Monitor health thresholds",
         metadata={"old": old_values, "new": values},
     )
+    return RedirectResponse("/system/site-administration?tab=module-network-monitor", status_code=303)
+
+
+@router.post("/system/site-administration/ip-wan-monitor/wallboard")
+async def save_network_monitor_wallboard(
+    request: Request,
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    require_module_settings_access(request, db, user, "network_monitor")
+    form = await request.form()
+    validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    action = str(form.get("wallboard_action") or "save")
+    row = ensure_wallboard(db, user.id)
+    audit_action = "wallboard_configuration_updated"
+    audit_detail = "Updated shared IP/WAN Wallboard configuration"
+    additional_audits = []
+    generated_token = None
+    regenerated = False
+
+    if action in {"generate", "regenerate"}:
+        existed = bool(row.public_token_hash)
+        revoke_sessions(db, row, bump_revision=False)
+        generated_token = generate_public_token(row)
+        regenerated = existed
+        row.updated_by = user.id
+        db.commit()
+        audit_action = "wallboard_url_regenerated" if existed else "wallboard_url_generated"
+        audit_detail = "Regenerated shared Wallboard URL" if existed else "Generated shared Wallboard URL"
+    elif action == "revoke":
+        revoke_sessions(db, row, bump_revision=True)
+        row.public_token_hash = None
+        row.encrypted_public_token = None
+        row.enabled = False
+        row.updated_by = user.id
+        db.commit()
+        audit_action, audit_detail = "wallboard_url_revoked", "Revoked shared Wallboard URL and sessions"
+    elif action == "invalidate_sessions":
+        count = revoke_sessions(db, row)
+        audit_action, audit_detail = "wallboard_sessions_invalidated", f"Invalidated {count} shared Wallboard sessions"
+    elif action == "clear_lockout":
+        count = clear_attempts(db, row.id)
+        audit_action, audit_detail = "wallboard_lockout_cleared", f"Cleared {count} shared Wallboard lockout records"
+    elif action == "save":
+        old_memberships = [item.monitor_id for item in db.query(NetworkMonitorWallboardMembership).filter_by(wallboard_id=row.id).order_by(NetworkMonitorWallboardMembership.display_order).all()]
+        old_display = wallboard_display(row)
+        old_permissions = wallboard_permissions(row)
+        old_scope_all = row.all_active_monitors
+        name = str(form.get("wallboard_name") or "").strip()
+        if not name or len(name) > 120:
+            raise HTTPException(status_code=400, detail="Wallboard name must contain 1 to 120 characters.")
+        columns = str(form.get("wallboard_columns") or "auto")
+        density = str(form.get("wallboard_density") or "comfortable")
+        if columns not in VALID_COLUMNS or density not in VALID_DENSITIES:
+            raise HTTPException(status_code=400, detail="Choose a supported Wallboard layout.")
+        try:
+            lifetime = int(str(form.get("wallboard_session_lifetime") or "86400"))
+            remembered_lifetime = int(str(form.get("wallboard_remember_lifetime") or "2592000"))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Choose a supported session lifetime.") from exc
+        if lifetime not in VALID_LIFETIMES or remembered_lifetime not in {86400, 604800, 2592000}:
+            raise HTTPException(status_code=400, detail="Choose a supported session lifetime.")
+        new_passcode = str(form.get("wallboard_passcode") or "")
+        if new_passcode:
+            if new_passcode != str(form.get("wallboard_passcode_confirm") or ""):
+                raise HTTPException(status_code=400, detail="The Wallboard passcodes do not match.")
+            set_passcode(row, new_passcode, str(form.get("wallboard_passcode_type") or "numeric"))
+            revoke_sessions(db, row, bump_revision=False)
+            audit_action = "wallboard_passcode_changed"
+            audit_detail = "Changed shared Wallboard passcode and invalidated sessions"
+        requested_ids = []
+        for value in form.getlist("wallboard_monitor_ids")[:1000]:
+            try: monitor_id = int(str(value))
+            except ValueError: continue
+            if monitor_id > 0 and monitor_id not in requested_ids: requested_ids.append(monitor_id)
+        scope_all = str(form.get("wallboard_monitor_scope") or "all") == "all"
+        if scope_all:
+            requested_ids = [item for item, in db.query(NetworkMonitor.id).order_by(NetworkMonitor.display_name.asc(), NetworkMonitor.id.asc()).all()]
+        existing_ids = {item for item, in db.query(NetworkMonitor.id).filter(NetworkMonitor.id.in_(requested_ids or [-1])).all()}
+        if any(item not in existing_ids for item in requested_ids):
+            raise HTTPException(status_code=400, detail="One or more selected monitors no longer exist.")
+        order_values = []
+        for value in str(form.get("wallboard_monitor_order") or "").split(","):
+            try: monitor_id = int(value)
+            except ValueError: continue
+            if monitor_id in requested_ids and monitor_id not in order_values: order_values.append(monitor_id)
+        order_values.extend(item for item in requested_ids if item not in order_values)
+        db.query(NetworkMonitorWallboardMembership).filter_by(wallboard_id=row.id).delete(synchronize_session=False)
+        for position, monitor_id in enumerate(order_values, 1):
+            db.add(NetworkMonitorWallboardMembership(wallboard_id=row.id, monitor_id=monitor_id, display_order=position))
+        display = {key: str(form.get(f"wallboard_{key}") or "") == "1" for key in DISPLAY_DEFAULTS}
+        permissions = {key: str(form.get(f"wallboard_{key}") or "") == "1" for key in PERMISSION_DEFAULTS}
+        enabled = str(form.get("wallboard_enabled") or "") == "1"
+        if enabled and (not row.public_token_hash or not row.passcode_hash):
+            raise HTTPException(status_code=400, detail="Generate a Wallboard URL and configure a passcode before enabling sharing.")
+        if row.enabled and not enabled:
+            revoke_sessions(db, row)
+            audit_action, audit_detail = "wallboard_disabled", "Disabled shared Wallboard and invalidated sessions"
+        elif not row.enabled and enabled:
+            audit_action, audit_detail = "wallboard_enabled", "Enabled shared Wallboard"
+        row.name, row.enabled = name, enabled
+        row.default_columns, row.default_density = columns, density
+        row.display_options_json = json.dumps(display, separators=(",", ":"))
+        row.permissions_json = json.dumps(permissions, separators=(",", ":"))
+        row.session_lifetime_seconds = lifetime
+        row.remember_display_enabled = str(form.get("wallboard_remember_enabled") or "") == "1"
+        row.remember_display_lifetime_seconds = remembered_lifetime
+        row.all_active_monitors = scope_all
+        row.show_paused_monitors = str(form.get("wallboard_show_paused_monitors") or "") == "1"
+        row.updated_by = user.id
+        db.commit()
+        if old_memberships != order_values or old_scope_all != scope_all:
+            additional_audits.append(("wallboard_monitor_membership_changed", "Changed shared Wallboard monitor membership and order", {"monitor_ids": order_values, "all_active": scope_all}))
+        if old_permissions != permissions:
+            additional_audits.append(("wallboard_permissions_changed", "Changed shared Wallboard action permissions", {"permissions": permissions}))
+        new_display = {"columns": columns, "density": density, **display}
+        if old_display != new_display:
+            additional_audits.append(("wallboard_defaults_changed", "Changed shared Wallboard display defaults", {"display": new_display}))
+    else:
+        raise HTTPException(status_code=400, detail="Choose a supported Wallboard action.")
+
+    write_audit(db, user, audit_action, "network_monitor_wallboard", str(row.id), trusted_client_ip(request), category="security", detail=audit_detail)
+    for event_action, event_detail, event_metadata in additional_audits:
+        write_audit(db, user, event_action, "network_monitor_wallboard", str(row.id), trusted_client_ip(request), category="security", detail=event_detail, metadata=event_metadata)
+    if generated_token and request.headers.get("x-requested-with") == "XMLHttpRequest":
+        wallboard_base = (load_site_settings(db).get("base_url") or str(request.base_url)).rstrip("/")
+        return JSONResponse(
+            {"ok": True, "url": f"{wallboard_base}/monitoring/ip-wan-monitor/wallboard/shared/{generated_token}", "regenerated": regenerated},
+            headers={"Cache-Control": "no-store"},
+        )
     return RedirectResponse("/system/site-administration?tab=module-network-monitor", status_code=303)
 
 
@@ -2940,6 +3102,7 @@ async def save_settings(
             "user": user,
             "module_access": module_settings_access,
             "settings": load_site_settings(db),
+            **wallboard_admin_context(request, db),
             "dns_providers": dns_providers_for_admin(db),
             "ha_dns_clusters": ha_dns_clusters_for_admin(db),
             **vlan_ip_admin_context(db),

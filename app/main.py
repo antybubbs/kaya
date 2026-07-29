@@ -1,5 +1,6 @@
 from pathlib import Path
 import asyncio
+import re
 from datetime import datetime
 from time import perf_counter
 from uuid import uuid4
@@ -184,16 +185,27 @@ def audit_entity_for_path(path: str) -> str:
     return parts[0].replace("-", "_") if parts else "application"
 
 
+def audit_safe_path(path: str) -> str:
+    """Redact bearer-like Wallboard URL identifiers before audit persistence."""
+    return re.sub(
+        r"(?<=/monitoring/ip-wan-monitor/wallboard/shared/)[A-Za-z0-9_-]{20,80}",
+        "[redacted]",
+        path,
+        count=1,
+    )
+
+
 @app.middleware("http")
 async def audit_requests(request: Request, call_next):
     path = request.url.path
     if path.startswith("/static/") or path == "/healthz":
         return await call_next(request)
     request_id = (request.headers.get("x-request-id") or uuid4().hex)[:64]
+    safe_path = audit_safe_path(path)
     token, context = begin_request_context(
         request_id=request_id,
         method=request.method,
-        path=path,
+        path=safe_path,
         ip_address=None if settings.demo_mode else client_ip(request),
         user_agent=None if settings.demo_mode else ((request.headers.get("user-agent") or "")[:2000] or None),
         redact_client=settings.demo_mode,
@@ -232,7 +244,7 @@ async def audit_requests(request: Request, call_next):
                     action,
                     audit_entity_for_path(path),
                     ip_address=context.get("ip_address"),
-                    detail=f"{request.method} {path} returned {response.status_code}",
+                    detail=f"{request.method} {safe_path} returned {response.status_code}",
                     status_code=response.status_code,
                     metadata={"duration_ms": duration_ms, "query_keys": sorted(request.query_params.keys())},
                 )
@@ -911,6 +923,7 @@ app.include_router(licences.router)
 app.include_router(ip_addresses.router)
 app.include_router(hardware_assets.router)
 app.include_router(network_monitor.router)
+app.include_router(network_monitor.wallboard_router)
 app.include_router(remote_manager.router)
 app.include_router(runbooks.router)
 app.include_router(domain_manager.router)

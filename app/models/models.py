@@ -315,6 +315,72 @@ class NetworkMonitorStatistic(Base):
     monitor = relationship("NetworkMonitor")
 
 
+class NetworkMonitorWallboard(Base):
+    __tablename__ = "network_monitor_wallboards"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), default="Network Operations Wallboard")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    public_token_hash: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True, index=True)
+    encrypted_public_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    passcode_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    passcode_type: Mapped[str] = mapped_column(String(20), default="numeric")
+    session_lifetime_seconds: Mapped[int] = mapped_column(Integer, default=86400)
+    remember_display_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    remember_display_lifetime_seconds: Mapped[int] = mapped_column(Integer, default=2592000)
+    default_columns: Mapped[str] = mapped_column(String(10), default="auto")
+    default_density: Mapped[str] = mapped_column(String(20), default="comfortable")
+    display_options_json: Mapped[str] = mapped_column(Text, default="{}")
+    all_active_monitors: Mapped[bool] = mapped_column(Boolean, default=True)
+    show_paused_monitors: Mapped[bool] = mapped_column(Boolean, default=True)
+    permissions_json: Mapped[str] = mapped_column(Text, default="{}")
+    session_revision: Mapped[int] = mapped_column(Integer, default=1)
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    memberships = relationship("NetworkMonitorWallboardMembership", cascade="all, delete-orphan", back_populates="wallboard")
+    sessions = relationship("NetworkMonitorWallboardSession", cascade="all, delete-orphan", back_populates="wallboard")
+
+
+class NetworkMonitorWallboardMembership(Base):
+    __tablename__ = "network_monitor_wallboard_memberships"
+    __table_args__ = (UniqueConstraint("wallboard_id", "monitor_id", name="uq_network_monitor_wallboard_membership"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    wallboard_id: Mapped[int] = mapped_column(ForeignKey("network_monitor_wallboards.id", ondelete="CASCADE"), index=True)
+    monitor_id: Mapped[int] = mapped_column(ForeignKey("network_monitors.id", ondelete="CASCADE"), index=True)
+    display_order: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    wallboard = relationship("NetworkMonitorWallboard", back_populates="memberships")
+    monitor = relationship("NetworkMonitor")
+
+
+class NetworkMonitorWallboardSession(Base):
+    __tablename__ = "network_monitor_wallboard_sessions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    wallboard_id: Mapped[int] = mapped_column(ForeignKey("network_monitor_wallboards.id", ondelete="CASCADE"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    csrf_hash: Mapped[str] = mapped_column(String(64))
+    session_revision: Mapped[int] = mapped_column(Integer)
+    remembered: Mapped[bool] = mapped_column(Boolean, default=False)
+    display_options_json: Mapped[str] = mapped_column(Text, default="{}")
+    monitor_order_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    wallboard = relationship("NetworkMonitorWallboard", back_populates="sessions")
+
+
+class NetworkMonitorWallboardAttempt(Base):
+    __tablename__ = "network_monitor_wallboard_attempts"
+    __table_args__ = (UniqueConstraint("wallboard_id", "source_hash", name="uq_network_monitor_wallboard_attempt_source"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    wallboard_id: Mapped[int] = mapped_column(ForeignKey("network_monitor_wallboards.id", ondelete="CASCADE"), index=True)
+    source_hash: Mapped[str] = mapped_column(String(64), index=True)
+    failed_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    window_started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class RemoteAccess(Base):
     __tablename__ = "remote_access"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

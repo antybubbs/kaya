@@ -7,6 +7,9 @@
       <p class="muted module-description">Background availability, latency, packet-loss, event and outage history for managed IP addresses.</p>
     </div>
     <div class="module-actions">
+      <a class="button secondary" href="/monitoring/ip-wan-monitor/wallboard">Wallboard</a>
+      <label class="checkbox-row monitor-layout-toggle"><input type="checkbox" data-wallboard-edit-layout> Edit layout</label>
+      <button class="button secondary" type="button" data-wallboard-reset>Reset layout</button>
       {% if user.role in ['admin','editor'] %}
       <label class="monitor-refresh-control"><span class="monitor-refresh-label">Active check rate</span>
         <select data-monitor-refresh-rate data-monitor-csrf="{{ csrf_token }}" aria-describedby="monitor-refresh-help">
@@ -25,9 +28,10 @@
 {{ module_navigation('IP/WAN Monitor navigation', [
   {'label': 'Overview', 'url': '/networking/ip-wan-monitor', 'active': true}
 ]) }}
-<div data-monitor-content>
+<div data-monitor-content data-dashboard-layout data-preferences-endpoint="/monitoring/ip-wan-monitor/wallboard/preferences" data-reset-endpoint="/monitoring/ip-wan-monitor/wallboard/preferences/reset" data-csrf="{{ csrf_token }}" data-shared="false" data-can-reorder="true" data-preferences='{{ wallboard_preferences|tojson|forceescape }}'>
   {% include "_network_monitor_cards.html" %}
 </div>
 <script src="/static/vendor/echarts/echarts.min.js?v=6.1.0" defer></script>
 <script src="/static/js/network_monitor.js?v={{ asset_version }}" defer></script>
+<script src="/static/js/network_monitor_wallboard.js?v={{ asset_version }}" defer></script>
 {% endblock %}

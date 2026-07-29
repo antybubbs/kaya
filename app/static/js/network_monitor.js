@@ -475,9 +475,12 @@
   }
 
   const liveWindowMs = 5 * 60 * 1000;
+  const liveEndpoint = container.dataset.liveEndpoint || "/networking/ip-wan-monitor/live";
   const refreshSelect = document.querySelector("[data-monitor-refresh-rate]");
-  const storageKey = "kaya.ipWanMonitor.dashboardRate";
-  const clientKey = "kaya.ipWanMonitor.dashboardClient";
+  const collectionRateEndpoint = refreshSelect?.dataset.monitorRateEndpoint || "/networking/ip-wan-monitor/collection-rate";
+  const sharedWallboard = container.dataset.shared === "true";
+  const storageKey = sharedWallboard ? "kaya.ipWanMonitor.wallboardRate" : "kaya.ipWanMonitor.dashboardRate";
+  const clientKey = sharedWallboard ? "kaya.ipWanMonitor.wallboardClient" : "kaya.ipWanMonitor.dashboardClient";
   const pollDelays = { live: 1000, five: 5000, ten: 10000, sixty: 60000 };
   let clientId = window.sessionStorage.getItem(clientKey);
   if (!clientId) {
@@ -822,12 +825,17 @@
     polling = true;
     activeRequest = new AbortController();
     try {
-      const response = await fetch(`/networking/ip-wan-monitor/live?after=${afterId}`, {
+      const separator = liveEndpoint.includes("?") ? "&" : "?";
+      const response = await fetch(`${liveEndpoint}${separator}after=${afterId}`, {
         headers: { "X-Requested-With": "fetch" }, cache: "no-store", signal: activeRequest.signal,
       });
       if (!response.ok) throw new Error("Live feed unavailable");
       const payload = await response.json();
       feedFailed = false;
+      const wallboardConnection = document.querySelector("[data-wallboard-connection]");
+      if (wallboardConnection) { wallboardConnection.className = "wallboard-connection live"; wallboardConnection.textContent = "Live"; }
+      const wallboardUpdated = document.querySelector("[data-wallboard-updated]");
+      if (wallboardUpdated) wallboardUpdated.textContent = `Updated ${new Date().toLocaleTimeString()}`;
       (payload.observations || []).forEach((observation) => {
         appendObservation(observation);
         afterId = Math.max(afterId, Number(observation.id) || 0);
@@ -844,6 +852,8 @@
     } catch (error) {
       if (error.name !== "AbortError") {
         feedFailed = true;
+        const wallboardConnection = document.querySelector("[data-wallboard-connection]");
+        if (wallboardConnection) { wallboardConnection.className = "wallboard-connection reconnecting"; wallboardConnection.textContent = "Reconnecting"; }
         cards.forEach((card) => updateFeedState(card, Date.now()));
       }
     } finally {
@@ -862,7 +872,7 @@
 
   async function renewOverride(mode = refreshSelect?.value || "paused") {
     if (!refreshSelect) return;
-    const response = await fetch("/networking/ip-wan-monitor/collection-rate", {
+    const response = await fetch(collectionRateEndpoint, {
       method: "POST", body: collectionRatePayload(mode), cache: "no-store",
     });
     if (!response.ok) throw new Error("Unable to update the active check rate");
@@ -871,7 +881,7 @@
   function releaseOverride() {
     if (!refreshSelect) return;
     window.navigator.sendBeacon(
-      "/networking/ip-wan-monitor/collection-rate",
+      collectionRateEndpoint,
       collectionRatePayload("paused"),
     );
   }

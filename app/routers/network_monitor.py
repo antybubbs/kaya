@@ -1,9 +1,10 @@
 import csv
 import io
+import json
 import math
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import case, func
@@ -12,7 +13,7 @@ from starlette import status
 
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.db.session import get_db
-from app.models.models import NetworkMonitor, NetworkMonitorCheck, NetworkMonitorEvent, NetworkMonitorOutage, NetworkMonitorStatistic, RemoteAccess
+from app.models.models import NetworkMonitor, NetworkMonitorCheck, NetworkMonitorEvent, NetworkMonitorOutage, NetworkMonitorStatistic, NetworkMonitorWallboardSession, RemoteAccess
 from app.routers.auth import require_editor, require_module_access, require_user
 from app.services.audit import write_audit
 from app.services.network_monitor import (
@@ -22,8 +23,16 @@ from app.services.network_monitor import (
 )
 from app.services.network_monitor_history import performance_history
 from app.services.client_ip import client_ip as trusted_client_ip
+from app.services.network_monitor_wallboard import (
+    DISPLAY_DEFAULTS, GENERIC_CREDENTIAL_ERROR, VALID_COLUMNS, VALID_DENSITIES,
+    WALLBOARD_COOKIE, active_session, allowed_monitor_ids, get_wallboard,
+    is_locked, normalise_display_options, reset_user_preferences, save_user_preferences,
+    start_session, user_preferences, verify_challenge, verify_session_csrf,
+    wallboard_display, wallboard_for_token, wallboard_permissions,
+)
 
 router = APIRouter(prefix="/networking/ip-wan-monitor", dependencies=[Depends(require_module_access("network_monitor"))])
+wallboard_router = APIRouter(prefix="/monitoring/ip-wan-monitor/wallboard")
 templates = Jinja2Templates(directory="app/templates")
 RANGES = {
     "1h": timedelta(hours=1), "6h": timedelta(hours=6), "24h": timedelta(hours=24),
@@ -40,8 +49,16 @@ def monitor_state(monitor: NetworkMonitor) -> str:
     )
 
 
-def monitor_rows(db: Session) -> tuple[list[dict], dict[str, int]]:
-    monitors = db.query(NetworkMonitor).options(selectinload(NetworkMonitor.ip_address)).order_by(NetworkMonitor.display_name.asc(), NetworkMonitor.id.asc()).all()
+def monitor_rows(db: Session, allowed_ids: list[int] | None = None) -> tuple[list[dict], dict[str, int]]:
+    query = db.query(NetworkMonitor).options(selectinload(NetworkMonitor.ip_address))
+    if allowed_ids is not None:
+        if not allowed_ids:
+            monitors = []
+        else:
+            found = {item.id: item for item in query.filter(NetworkMonitor.id.in_(allowed_ids)).all()}
+            monitors = [found[item] for item in allowed_ids if item in found]
+    else:
+        monitors = query.order_by(NetworkMonitor.display_name.asc(), NetworkMonitor.id.asc()).all()
     since = datetime.utcnow() - timedelta(hours=24)
     monitor_ids = [monitor.id for monitor in monitors]
     stats = {}
@@ -111,17 +128,20 @@ def monitor_rows(db: Session) -> tuple[list[dict], dict[str, int]]:
     return rows, state_counts
 
 
-def dashboard_context(db: Session) -> dict:
-    rows, state_counts = monitor_rows(db)
+def dashboard_context(db: Session, allowed_ids: list[int] | None = None) -> dict:
+    rows, state_counts = monitor_rows(db, allowed_ids)
     dashboard_interval = active_dashboard_interval()
     for row in rows:
         row["effective_interval"] = dashboard_interval or row["monitor"].interval_seconds
     since = datetime.utcnow() - timedelta(hours=24)
-    total_checks, up_checks, avg_latency = db.query(
+    aggregate = db.query(
         func.count(NetworkMonitorCheck.id),
         func.sum(case((NetworkMonitorCheck.status == "up", 1), else_=0)),
         func.avg(NetworkMonitorCheck.latency_ms),
-    ).filter(NetworkMonitorCheck.checked_at >= since).one()
+    ).filter(NetworkMonitorCheck.checked_at >= since)
+    if allowed_ids is not None:
+        aggregate = aggregate.filter(NetworkMonitorCheck.monitor_id.in_(allowed_ids or [-1]))
+    total_checks, up_checks, avg_latency = aggregate.one()
     checks_per_minute = round(sum(
         60 / max(row["effective_interval"], 5)
         for row in rows if row["monitor"].is_enabled
@@ -132,12 +152,17 @@ def dashboard_context(db: Session) -> dict:
         "recovering_count": state_counts["recovering"], "down_count": state_counts["offline"],
         "paused_count": state_counts["paused"], "maintenance_count": state_counts["maintenance"],
         "unknown_count": state_counts["unknown"],
-        "active_incidents": db.query(func.count(NetworkMonitorOutage.id)).filter(NetworkMonitorOutage.ended_at.is_(None)).scalar() or 0,
+        "active_incidents": db.query(func.count(NetworkMonitorOutage.id)).filter(
+            NetworkMonitorOutage.ended_at.is_(None),
+            *([NetworkMonitorOutage.monitor_id.in_(allowed_ids or [-1])] if allowed_ids is not None else []),
+        ).scalar() or 0,
         "average_latency": round(float(avg_latency), 1) if avg_latency is not None else None,
         "availability_24h": round((up_checks / total_checks) * 100, 2) if total_checks else None,
         "checks_per_minute": int(checks_per_minute) if checks_per_minute.is_integer() else checks_per_minute,
         "dashboard_interval": dashboard_interval,
-        "latest_observation_id": db.query(func.max(NetworkMonitorCheck.id)).scalar() or 0,
+        "latest_observation_id": db.query(func.max(NetworkMonitorCheck.id)).filter(
+            *([NetworkMonitorCheck.monitor_id.in_(allowed_ids or [-1])] if allowed_ids is not None else []),
+        ).scalar() or 0,
         "latency_label": latency_label,
         "live_latency_label": live_latency_label,
     }
@@ -291,31 +316,49 @@ def monitor_detail_context(
 
 @router.get("")
 def network_monitor(request: Request, db: Session = Depends(get_db), user=Depends(require_user)):
+    context = dashboard_context(db)
+    monitor_ids = [row["monitor"].id for row in context["rows"]]
+    preferences = user_preferences(db, user, monitor_ids, wallboard_display(get_wallboard(db)))
+    row_map = {row["monitor"].id: row for row in context["rows"]}
+    context["rows"] = [row_map[item] for item in preferences["monitor_order"] if item in row_map]
     return templates.TemplateResponse(request, "network_monitor.html", {
         "user": user,
-        **dashboard_context(db),
+        "wallboard_preferences": preferences,
+        **context,
         **csrf_context(request),
     })
 
 
 @router.get("/cards")
 def network_monitor_cards(request: Request, db: Session = Depends(get_db), user=Depends(require_user)):
+    context = dashboard_context(db)
+    monitor_ids = [row["monitor"].id for row in context["rows"]]
+    preferences = user_preferences(db, user, monitor_ids, wallboard_display(get_wallboard(db)))
+    row_map = {row["monitor"].id: row for row in context["rows"]}
+    context["rows"] = [row_map[item] for item in preferences["monitor_order"] if item in row_map]
     return templates.TemplateResponse(request, "_network_monitor_cards.html", {
         "user": user,
-        **dashboard_context(db),
+        **context,
         **csrf_context(request),
     })
 
 
 @router.get("/live")
 def live_dashboard_observations(after: int = Query(0, ge=0), db: Session = Depends(get_db), user=Depends(require_user)):
-    checks = db.query(NetworkMonitorCheck).filter(
+    return JSONResponse(live_dashboard_payload(db, after))
+
+
+def live_dashboard_payload(db: Session, after: int, allowed_ids: list[int] | None = None) -> dict:
+    checks_query = db.query(NetworkMonitorCheck).filter(
         NetworkMonitorCheck.id > after,
         NetworkMonitorCheck.checked_at >= datetime.utcnow() - timedelta(minutes=5),
-    ).order_by(NetworkMonitorCheck.id.asc()).limit(1000).all()
+    )
+    if allowed_ids is not None:
+        checks_query = checks_query.filter(NetworkMonitorCheck.monitor_id.in_(allowed_ids or [-1]))
+    checks = checks_query.order_by(NetworkMonitorCheck.id.asc()).limit(1000).all()
     monitor_ids = {check.monitor_id for check in checks}
     monitors = {row.id: row for row in db.query(NetworkMonitor).filter(NetworkMonitor.id.in_(monitor_ids)).all()} if monitor_ids else {}
-    context = dashboard_context(db)
+    context = dashboard_context(db, allowed_ids)
     open_incidents = {
         row.monitor_id: row for row in db.query(NetworkMonitorOutage).filter(NetworkMonitorOutage.ended_at.is_(None)).all()
     }
@@ -336,7 +379,7 @@ def live_dashboard_observations(after: int = Query(0, ge=0), db: Session = Depen
             "jitter_ms": jitter,
         })
         previous_latency[check.monitor_id] = check.latency_ms
-    return JSONResponse({
+    return {
         "observations": observations,
         "monitors": [{
             "id": row["monitor"].id, "enabled": row["monitor"].is_enabled,
@@ -355,7 +398,276 @@ def live_dashboard_observations(after: int = Query(0, ge=0), db: Session = Depen
             "active_incidents", "average_latency", "availability_24h", "checks_per_minute",
         )},
         "has_more": len(checks) == 1000,
+    }
+
+
+def _ordered_wallboard_context(db: Session, monitor_ids: list[int], preferences: dict) -> dict:
+    order = [item for item in preferences.get("monitor_order", []) if item in set(monitor_ids)]
+    order.extend(item for item in monitor_ids if item not in order)
+    context = dashboard_context(db, order)
+    return {**context, "wallboard_preferences": preferences}
+
+
+@wallboard_router.get("")
+def authenticated_wallboard(
+    request: Request,
+    db: Session = Depends(get_db),
+    user=Depends(require_module_access("network_monitor")),
+):
+    config = get_wallboard(db)
+    monitor_ids = [row.id for row in db.query(NetworkMonitor).order_by(NetworkMonitor.display_name.asc(), NetworkMonitor.id.asc()).all()]
+    site_defaults = wallboard_display(config)
+    preferences = user_preferences(db, user, monitor_ids, site_defaults)
+    return templates.TemplateResponse(request, "network_monitor_wallboard.html", {
+        "user": user, "shared": False, "wallboard_name": config.name if config else "IP/WAN Monitor Wallboard",
+        "permissions": {"allow_detail_links": True, "allow_check_now": user.role in {"admin", "editor"}, "allow_pause": user.role in {"admin", "editor"}, "allow_reorder": True, "allow_display_changes": True},
+        "live_endpoint": "/networking/ip-wan-monitor/live", "preferences_endpoint": "/monitoring/ip-wan-monitor/wallboard/preferences",
+        "reset_endpoint": "/monitoring/ip-wan-monitor/wallboard/preferences/reset", "lock_endpoint": None,
+        **_ordered_wallboard_context(db, monitor_ids, preferences), **csrf_context(request),
     })
+
+
+@wallboard_router.put("/preferences")
+def save_authenticated_wallboard_preferences(
+    request: Request,
+    payload: dict = Body(...),
+    db: Session = Depends(get_db),
+    user=Depends(require_module_access("network_monitor")),
+):
+    validate_csrf_token(request, request.headers.get("x-csrf-token"))
+    monitor_ids = [row.id for row in db.query(NetworkMonitor.id).order_by(NetworkMonitor.display_name.asc(), NetworkMonitor.id.asc()).all()]
+    return {"preferences": save_user_preferences(db, user, payload, monitor_ids, wallboard_display(get_wallboard(db)))}
+
+
+@wallboard_router.post("/preferences/reset")
+def reset_authenticated_wallboard_preferences(
+    request: Request,
+    db: Session = Depends(get_db),
+    user=Depends(require_module_access("network_monitor")),
+):
+    validate_csrf_token(request, request.headers.get("x-csrf-token"))
+    monitor_ids = [row.id for row in db.query(NetworkMonitor.id).order_by(NetworkMonitor.display_name.asc(), NetworkMonitor.id.asc()).all()]
+    return {"preferences": reset_user_preferences(db, user, monitor_ids, wallboard_display(get_wallboard(db)))}
+
+
+def _shared_access(request: Request, db: Session, token: str):
+    row = wallboard_for_token(db, token)
+    session = active_session(db, row, request.cookies.get(WALLBOARD_COOKIE)) if row else None
+    return row, session
+
+
+def _shared_error(request: Request, message: str, status_code: int = 404):
+    return templates.TemplateResponse(request, "network_monitor_wallboard_challenge.html", {
+        "wallboard": None, "error": message, "locked": False, **csrf_context(request),
+    }, status_code=status_code)
+
+
+@wallboard_router.get("/shared/{token}")
+def shared_wallboard(token: str, request: Request, db: Session = Depends(get_db)):
+    row, session = _shared_access(request, db, token)
+    if not row or not row.enabled or not row.public_token_hash:
+        return _shared_error(request, "This Wallboard link is no longer active.")
+    if not session:
+        return templates.TemplateResponse(request, "network_monitor_wallboard_challenge.html", {
+            "wallboard": row, "error": None, "locked": is_locked(db, row, trusted_client_ip(request)),
+            "remember_enabled": row.remember_display_enabled, **csrf_context(request),
+        })
+    monitor_ids = allowed_monitor_ids(db, row)
+    display = wallboard_display(row)
+    permissions = wallboard_permissions(row)
+    if permissions["allow_display_changes"]:
+        try:
+            session_display = json.loads(session.display_options_json or "{}")
+        except json.JSONDecodeError:
+            session_display = {}
+        display = {**display, **normalise_display_options(session_display, display)}
+        if isinstance(session_display, dict) and session_display.get("columns") in VALID_COLUMNS:
+            display["columns"] = session_display["columns"]
+        if isinstance(session_display, dict) and session_display.get("density") in VALID_DENSITIES:
+            display["density"] = session_display["density"]
+        try:
+            temporary = json.loads(session.monitor_order_json or "[]")
+        except json.JSONDecodeError:
+            temporary = []
+        if permissions["allow_reorder"] and isinstance(temporary, list):
+            order = [item for item in temporary if isinstance(item, int) and item in monitor_ids]
+            order.extend(item for item in monitor_ids if item not in order)
+            monitor_ids = order
+    preferences = {"monitor_order": monitor_ids, **display}
+    return templates.TemplateResponse(request, "network_monitor_wallboard.html", {
+        "user": None, "shared": True, "wallboard_name": row.name, "permissions": permissions,
+        "shared_csrf": _shared_csrf_value(session), "live_endpoint": f"/monitoring/ip-wan-monitor/wallboard/shared/{token}/data",
+        "preferences_endpoint": f"/monitoring/ip-wan-monitor/wallboard/shared/{token}/preferences",
+        "reset_endpoint": None, "lock_endpoint": f"/monitoring/ip-wan-monitor/wallboard/shared/{token}/lock",
+        "forget_endpoint": f"/monitoring/ip-wan-monitor/wallboard/shared/{token}/forget", "remembered": session.remembered,
+        "wallboard_token": token, **_ordered_wallboard_context(db, monitor_ids, preferences), **csrf_context(request),
+    })
+
+
+@wallboard_router.get("/shared/{token}/monitors/{monitor_id}/data")
+def shared_wallboard_monitor_data(token: str, monitor_id: int, request: Request, after: int = Query(0, ge=0), db: Session = Depends(get_db)):
+    row, session = _shared_access(request, db, token)
+    if not row or not session or not wallboard_permissions(row).get("allow_detail_links") or monitor_id not in allowed_monitor_ids(db, row):
+        raise HTTPException(status_code=404, detail="Monitor not found")
+    return JSONResponse(live_dashboard_payload(db, after, [monitor_id]))
+
+
+@wallboard_router.post("/shared/{token}/authenticate")
+def authenticate_shared_wallboard(
+    token: str,
+    request: Request,
+    passcode: str = Form(..., max_length=128),
+    remember_display: str = Form(""),
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    validate_csrf_token(request, csrf_token)
+    row = wallboard_for_token(db, token)
+    if not row or not row.enabled:
+        return _shared_error(request, GENERIC_CREDENTIAL_ERROR, 400)
+    valid, locked = verify_challenge(db, row, passcode, trusted_client_ip(request))
+    write_audit(db, None, "wallboard_challenge_succeeded" if valid else "wallboard_challenge_failed", "network_monitor_wallboard", str(row.id), trusted_client_ip(request), category="security", severity="info" if valid else "warning")
+    if not valid:
+        return templates.TemplateResponse(request, "network_monitor_wallboard_challenge.html", {
+            "wallboard": row, "error": "Too many attempts. Please try again later." if locked else GENERIC_CREDENTIAL_ERROR,
+            "locked": locked, "remember_enabled": row.remember_display_enabled, **csrf_context(request),
+        }, status_code=429 if locked else 400)
+    raw_token, csrf, session = start_session(db, row, remembered=remember_display == "1")
+    session.display_options_json = json.dumps({"csrf": csrf}, separators=(",", ":"))
+    db.commit()
+    response = RedirectResponse(f"/monitoring/ip-wan-monitor/wallboard/shared/{token}", status_code=303)
+    max_age = 315360000 if session.expires_at is None else max(1, int((session.expires_at - datetime.utcnow()).total_seconds()))
+    response.set_cookie(WALLBOARD_COOKIE, raw_token, max_age=max_age, httponly=True, secure=request.url.scheme == "https", samesite="lax", path=f"/monitoring/ip-wan-monitor/wallboard/shared/{token}")
+    return response
+
+
+def _shared_csrf_value(session: NetworkMonitorWallboardSession) -> str:
+    try:
+        value = json.loads(session.display_options_json or "{}").get("csrf", "")
+    except (json.JSONDecodeError, AttributeError):
+        value = ""
+    return str(value)
+
+
+@wallboard_router.get("/shared/{token}/data")
+def shared_wallboard_data(token: str, request: Request, after: int = Query(0, ge=0), db: Session = Depends(get_db)):
+    row, session = _shared_access(request, db, token)
+    if not row or not session:
+        raise HTTPException(status_code=401, detail="Wallboard session expired")
+    return JSONResponse(live_dashboard_payload(db, after, allowed_monitor_ids(db, row)))
+
+
+@wallboard_router.post("/shared/{token}/collection-rate")
+def set_shared_wallboard_collection_rate(
+    token: str,
+    request: Request,
+    mode: str = Form(..., max_length=20),
+    client_id: str = Form(..., min_length=1, max_length=80, pattern=r"^[A-Za-z0-9-]+$"),
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    row, session = _shared_access(request, db, token)
+    if not row or not session or not verify_session_csrf(session, csrf_token) or not wallboard_permissions(row).get("allow_display_changes"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    if mode not in {*DASHBOARD_INTERVALS, "paused"}:
+        raise HTTPException(status_code=400, detail="Unsupported collection rate")
+    lease_id = f"wallboard-{row.id}-{session.id}-{client_id}"
+    changed = set_dashboard_interval_override(lease_id, mode)
+    if changed:
+        interval = DASHBOARD_INTERVALS.get(mode)
+        detail = f"Shared Wallboard backend interval set to {interval} seconds" if interval else "Shared Wallboard backend interval override released"
+        write_audit(db, None, "update", "network_monitor_wallboard", str(row.id), trusted_client_ip(request), detail=detail, metadata={"mode": mode})
+    return JSONResponse({"ok": True, "mode": mode, "effective_interval_seconds": active_dashboard_interval()})
+
+
+@wallboard_router.get("/shared/{token}/monitors/{monitor_id}")
+def shared_wallboard_monitor(token: str, monitor_id: int, request: Request, db: Session = Depends(get_db)):
+    row, session = _shared_access(request, db, token)
+    permissions = wallboard_permissions(row) if row else {}
+    if not row or not session or not permissions.get("allow_detail_links") or monitor_id not in allowed_monitor_ids(db, row):
+        raise HTTPException(status_code=404, detail="Monitor not found")
+    display = {**wallboard_display(row), "show_summary": False, "show_actions": permissions.get("allow_check_now") or permissions.get("allow_pause")}
+    return templates.TemplateResponse(request, "network_monitor_wallboard.html", {
+        "user": None, "shared": True, "wallboard_name": f"{row.name} - Monitor detail", "permissions": {**permissions, "allow_detail_links": False, "allow_reorder": False, "allow_display_changes": False},
+        "shared_csrf": _shared_csrf_value(session), "live_endpoint": f"/monitoring/ip-wan-monitor/wallboard/shared/{token}/monitors/{monitor_id}/data",
+        "preferences_endpoint": "", "reset_endpoint": None, "lock_endpoint": f"/monitoring/ip-wan-monitor/wallboard/shared/{token}/lock",
+        "forget_endpoint": f"/monitoring/ip-wan-monitor/wallboard/shared/{token}/forget", "remembered": session.remembered,
+        "wallboard_token": token, **_ordered_wallboard_context(db, [monitor_id], {"monitor_order": [monitor_id], **display}), **csrf_context(request),
+    })
+
+
+@wallboard_router.put("/shared/{token}/preferences")
+def save_shared_wallboard_preferences(token: str, request: Request, payload: dict = Body(...), db: Session = Depends(get_db)):
+    row, session = _shared_access(request, db, token)
+    if not row or not session or not verify_session_csrf(session, request.headers.get("x-wallboard-csrf")):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    permissions = wallboard_permissions(row)
+    monitor_ids = allowed_monitor_ids(db, row)
+    if not permissions["allow_display_changes"] and not permissions["allow_reorder"]:
+        raise HTTPException(status_code=403, detail="Display changes are disabled")
+    if permissions["allow_display_changes"]:
+        columns = payload.get("columns") if payload.get("columns") in VALID_COLUMNS else row.default_columns
+        density = payload.get("density") if payload.get("density") in VALID_DENSITIES else row.default_density
+        session.display_options_json = json.dumps({"csrf": _shared_csrf_value(session), "columns": columns, "density": density, **normalise_display_options(payload, wallboard_display(row))}, separators=(",", ":"))
+    if permissions["allow_reorder"] and isinstance(payload.get("monitor_order"), list):
+        order = [item for item in payload["monitor_order"] if isinstance(item, int) and item in monitor_ids]
+        order.extend(item for item in monitor_ids if item not in order)
+        session.monitor_order_json = json.dumps(order, separators=(",", ":"))
+    db.commit()
+    return {"ok": True}
+
+
+@wallboard_router.post("/shared/{token}/lock")
+def lock_shared_wallboard(token: str, request: Request, csrf_token: str = Form(...), db: Session = Depends(get_db)):
+    row, session = _shared_access(request, db, token)
+    if not row or not session or not verify_session_csrf(session, csrf_token):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    response = RedirectResponse(f"/monitoring/ip-wan-monitor/wallboard/shared/{token}", status_code=303)
+    response.delete_cookie(WALLBOARD_COOKIE, path=f"/monitoring/ip-wan-monitor/wallboard/shared/{token}")
+    return response
+
+
+@wallboard_router.post("/shared/{token}/forget")
+def forget_shared_wallboard(token: str, request: Request, csrf_token: str = Form(...), db: Session = Depends(get_db)):
+    row, session = _shared_access(request, db, token)
+    if not row or not session or not verify_session_csrf(session, csrf_token):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    session.revoked_at = datetime.utcnow()
+    db.commit()
+    response = RedirectResponse(f"/monitoring/ip-wan-monitor/wallboard/shared/{token}", status_code=303)
+    response.delete_cookie(WALLBOARD_COOKIE, path=f"/monitoring/ip-wan-monitor/wallboard/shared/{token}")
+    return response
+
+
+def _shared_action_access(request: Request, db: Session, token: str, monitor_id: int, permission: str, csrf_token: str):
+    row, session = _shared_access(request, db, token)
+    if not row or not session or not verify_session_csrf(session, csrf_token) or not wallboard_permissions(row).get(permission):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    if monitor_id not in allowed_monitor_ids(db, row):
+        raise HTTPException(status_code=404, detail="Monitor not found")
+    monitor = db.get(NetworkMonitor, monitor_id)
+    if not monitor:
+        raise HTTPException(status_code=404, detail="Monitor not found")
+    return row, monitor
+
+
+@wallboard_router.post("/shared/{token}/monitors/{monitor_id}/refresh")
+def shared_check_now(token: str, monitor_id: int, request: Request, csrf_token: str = Form(...), db: Session = Depends(get_db)):
+    row, monitor = _shared_action_access(request, db, token, monitor_id, "allow_check_now", csrf_token)
+    if not monitor.is_enabled:
+        raise HTTPException(status_code=409, detail="Monitor is paused")
+    run_monitor_check_by_id(monitor.id)
+    write_audit(db, None, "check_now", "network_monitor_wallboard", str(row.id), trusted_client_ip(request), detail="Shared Wallboard monitor check requested", metadata={"monitor_id": monitor.id})
+    return {"ok": True}
+
+
+@wallboard_router.post("/shared/{token}/monitors/{monitor_id}/toggle")
+def shared_toggle_monitor(token: str, monitor_id: int, request: Request, csrf_token: str = Form(...), db: Session = Depends(get_db)):
+    row, monitor = _shared_action_access(request, db, token, monitor_id, "allow_pause", csrf_token)
+    monitor.is_enabled = not monitor.is_enabled
+    db.commit()
+    write_audit(db, None, "resume" if monitor.is_enabled else "pause", "network_monitor_wallboard", str(row.id), trusted_client_ip(request), detail="Shared Wallboard monitor collection state changed", metadata={"monitor_id": monitor.id})
+    return {"ok": True}
 
 
 @router.post("/collection-rate")

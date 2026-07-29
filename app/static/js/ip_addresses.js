@@ -109,9 +109,18 @@
 
       function updateDurations() {
         const seconds = Number(interval?.value || 300);
+        const durationLabel = (value, adjectival = false) => {
+          const unit = value >= 3600 && value % 3600 === 0 ? "hour" : value >= 60 && value % 60 === 0 ? "minute" : "second";
+          const amount = unit === "hour" ? value / 3600 : unit === "minute" ? value / 60 : value;
+          return adjectival ? `${amount}-${unit}` : `${amount} ${unit}${amount === 1 ? "" : "s"}`;
+        };
         fieldset.querySelectorAll("[data-monitor-count]").forEach((input) => {
           const output = input.parentElement?.querySelector("[data-monitor-duration]");
-          if (output) output.textContent = "Approximately " + (Number(input.value || 0) * seconds) + " seconds at the selected interval.";
+          if (!output) return;
+          const total = Number(input.value || 0) * seconds;
+          output.textContent = fieldset.hasAttribute("data-readable-duration")
+            ? `At the current ${durationLabel(seconds, true)} interval, this is approximately ${durationLabel(total)}.`
+            : `Approximately ${total} seconds at the selected interval.`;
         });
       }
 

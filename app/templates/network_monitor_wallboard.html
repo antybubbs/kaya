@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en" data-kaya-theme="command">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>{{ wallboard_name }} - {{ brand.name }}</title>
+  <link rel="icon" href="{{ brand.favicon }}" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/css/app.css?v={{ asset_version }}">
+  <link rel="stylesheet" href="/static/css/kaya.css?v={{ asset_version }}">
+  <link rel="stylesheet" href="/static/css/network_monitor_wallboard.css?v={{ asset_version }}">
+  <link rel="stylesheet" href="/static/css/responsive.css?v={{ asset_version }}">
+</head>
+<body class="network-wallboard" data-wallboard-columns="{{ wallboard_preferences.columns }}" data-wallboard-density="{{ wallboard_preferences.density }}"{% for key in ['show_graphs','show_summary','show_actions','show_ip_addresses','show_last_result','show_rolling_average','show_availability','show_header'] %} data-{{ key|replace('_','-') }}="{{ 'true' if wallboard_preferences[key] else 'false' }}"{% endfor %}>
+  <header class="wallboard-header" data-wallboard-header>
+    <div class="wallboard-brand"><img src="{{ brand.logo }}" alt=""><div><strong>{{ wallboard_name }}</strong><span>{{ brand.name }} IP/WAN Monitor</span></div></div>
+    <div class="wallboard-counts" aria-label="Monitor counts">
+      <span>Healthy <strong data-monitor-summary="up_count">{{ up_count }}</strong></span>
+      <span>Warning <strong data-monitor-summary="warning_count">{{ warning_count }}</strong></span>
+      <span>Critical <strong data-monitor-summary="critical_count">{{ critical_count }}</strong></span>
+      <span>Offline <strong data-monitor-summary="down_count">{{ down_count }}</strong></span>
+    </div>
+    <div class="wallboard-status"><span class="wallboard-connection live" data-wallboard-connection>Live</span><time data-wallboard-clock></time><span data-wallboard-updated>Waiting for update</span></div>
+    <div class="wallboard-header-actions">
+      <button class="button secondary" type="button" data-wallboard-controls-toggle aria-expanded="false">Controls</button>
+      <button class="button secondary" type="button" data-wallboard-fullscreen>Full screen</button>
+      {% if shared %}<form method="post" action="{{ lock_endpoint }}"><input type="hidden" name="csrf_token" value="{{ shared_csrf }}"><button class="button secondary" type="submit">Lock</button></form>{% if remembered %}<form method="post" action="{{ forget_endpoint }}"><input type="hidden" name="csrf_token" value="{{ shared_csrf }}"><button class="button secondary" type="submit">Forget this display</button></form>{% endif %}{% else %}<a class="button secondary" href="/networking/ip-wan-monitor">Exit Wallboard</a>{% endif %}
+    </div>
+  </header>
+  <button class="button wallboard-floating-controls" type="button" data-wallboard-controls-toggle aria-expanded="false">Controls</button>
+
+  <aside class="wallboard-controls" data-wallboard-controls hidden>
+    <div class="wallboard-controls-heading"><div><strong>Wallboard controls</strong><small>Changes apply immediately.</small></div><button type="button" class="icon-button" data-wallboard-controls-close aria-label="Close controls">&times;</button></div>
+    {% if permissions.allow_display_changes %}
+    {% if shared or user.role in ['admin','editor'] %}
+    <label class="wallboard-refresh-control">Refresh cycle<select data-monitor-refresh-rate data-monitor-csrf="{{ shared_csrf if shared else csrf_token }}" data-monitor-rate-endpoint="{{ '/monitoring/ip-wan-monitor/wallboard/shared/' ~ wallboard_token ~ '/collection-rate' if shared else '/networking/ip-wan-monitor/collection-rate' }}"><option value="live" selected>Live</option><option value="five">Every 5 seconds</option><option value="ten">Every 10 seconds</option><option value="sixty">Every 60 seconds</option></select><small>Temporarily overrides backend checks while this Wallboard is open.</small></label>
+    {% endif %}
+    <label>Columns<select data-wallboard-setting="columns">{% for value,label in [('auto','Auto'),('2','2'),('3','3'),('4','4'),('5','5'),('6','6'),('8','8')] %}<option value="{{ value }}" {% if wallboard_preferences.columns == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+    <label>Density<select data-wallboard-setting="density">{% for value in ['comfortable','compact','dense'] %}<option value="{{ value }}" {% if wallboard_preferences.density == value %}selected{% endif %}>{{ value|capitalize }}</option>{% endfor %}</select></label>
+    <div class="wallboard-toggle-list">
+      {% for key,label in [('show_graphs','Show graphs'),('show_summary','Show summary statistics'),('show_actions','Show action buttons'),('show_ip_addresses','Show IP addresses'),('show_last_result','Show last-result time'),('show_rolling_average','Show rolling average'),('show_availability','Show availability'),('show_header','Show Wallboard header')] %}
+      <label class="checkbox-row"><input type="checkbox" data-wallboard-setting="{{ key }}" {% if wallboard_preferences[key] %}checked{% endif %}>{{ label }}</label>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% if permissions.allow_reorder %}<label class="checkbox-row"><input type="checkbox" data-wallboard-edit-layout> Edit layout</label>{% endif %}
+    <div class="form-actions">
+      {% if reset_endpoint %}<button class="button secondary" type="button" data-wallboard-reset>Reset layout</button>{% endif %}
+      <button class="button secondary" type="button" data-wallboard-theme>Toggle theme</button>
+      <button class="button secondary" type="button" data-wallboard-fullscreen>Full screen</button>
+    </div>
+    {% if shared %}<div class="form-actions"><form method="post" action="{{ lock_endpoint }}"><input type="hidden" name="csrf_token" value="{{ shared_csrf }}"><button class="button secondary" type="submit">Lock Wallboard</button></form>{% if remembered %}<form method="post" action="{{ forget_endpoint }}"><input type="hidden" name="csrf_token" value="{{ shared_csrf }}"><button class="button secondary" type="submit">Forget this display</button></form>{% endif %}</div>{% else %}<a class="button secondary" href="/networking/ip-wan-monitor">Exit Wallboard</a>{% endif %}
+    <span class="muted" role="status" data-wallboard-save-state></span>
+  </aside>
+
+  <main class="wallboard-main" data-monitor-content data-wallboard
+        data-live-endpoint="{{ live_endpoint }}" data-preferences-endpoint="{{ preferences_endpoint }}"
+        data-reset-endpoint="{{ reset_endpoint or '' }}" data-csrf="{{ csrf_token }}" data-wallboard-csrf="{{ shared_csrf or '' }}"
+        data-shared="{{ 'true' if shared else 'false' }}" data-can-reorder="{{ 'true' if permissions.allow_reorder else 'false' }}" data-preferences='{{ wallboard_preferences|tojson|forceescape }}'>
+    {% include "_network_monitor_cards.html" %}
+  </main>
+  <script src="/static/vendor/echarts/echarts.min.js?v=6.1.0" defer></script>
+  <script src="/static/js/network_monitor.js?v={{ asset_version }}" defer></script>
+  <script src="/static/js/network_monitor_wallboard.js?v={{ asset_version }}" defer></script>
+</body>
+</html>

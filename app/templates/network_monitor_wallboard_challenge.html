@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en" data-kaya-theme="command">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>IP/WAN Wallboard - {{ brand.name }}</title>
+  <link rel="icon" href="{{ brand.favicon }}" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/css/app.css?v={{ asset_version }}">
+  <link rel="stylesheet" href="/static/css/kaya.css?v={{ asset_version }}">
+  <link rel="stylesheet" href="/static/css/network_monitor_wallboard.css?v={{ asset_version }}">
+</head>
+<body class="wallboard-challenge-page">
+  <main class="wallboard-challenge panel">
+    <div class="wallboard-challenge-brand"><img src="{{ brand.logo }}" alt=""><span>{{ brand.name }}</span></div>
+    <h1>{{ wallboard.name if wallboard else 'IP/WAN Wallboard' }}</h1>
+    {% if wallboard %}<p>Enter the Wallboard passcode to continue.</p>{% endif %}
+    {% if error %}<div class="alert" role="alert" aria-live="assertive">{{ error }}</div>{% endif %}
+    {% if wallboard %}
+    <form method="post" action="/monitoring/ip-wan-monitor/wallboard/shared/{{ request.path_params.token }}/authenticate">
+      <label>Wallboard {{ 'PIN' if wallboard.passcode_type == 'numeric' else 'passcode' }}<input name="passcode" type="password" maxlength="128" {% if wallboard.passcode_type == 'numeric' %}inputmode="numeric" pattern="[0-9]{6,32}"{% endif %} autocomplete="current-password" required autofocus></label>
+      {% if remember_enabled %}<label class="checkbox-row"><input type="checkbox" name="remember_display" value="1"> Remember this display</label>{% endif %}
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="button" type="submit" {% if locked %}disabled{% endif %}>Open Wallboard</button>
+    </form>
+    {% endif %}
+  </main>
+</body>
+</html>

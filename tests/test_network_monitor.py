@@ -450,6 +450,7 @@ def test_dashboard_uses_rolling_echarts_with_duplicate_and_visibility_guards():
     root = Path(__file__).resolve().parents[1]
     cards = (root / "app" / "templates" / "_network_monitor_cards.html").read_text(encoding="utf-8")
     script = (root / "app" / "static" / "js" / "network_monitor.js").read_text(encoding="utf-8")
+    wallboard_script = (root / "app" / "static" / "js" / "network_monitor_wallboard.js").read_text(encoding="utf-8")
     css = (root / "app" / "static" / "css" / "app.css").read_text(encoding="utf-8")
     assert "data-monitor-card-chart" in cards
     assert "latency-spark" not in cards and "uptime-strip" not in cards
@@ -496,6 +497,9 @@ def test_dashboard_uses_rolling_echarts_with_duplicate_and_visibility_guards():
     assert 'state.textContent = "● Live"' in script
     assert "stateLabels" not in script
     assert '"incidents", "checks"' in script
+    assert "handle.hidden = !enabled; handle.disabled = !enabled" in wallboard_script
+    assert "controls.hidden = !enabled" in wallboard_script
+    assert "button.disabled = !enabled" in wallboard_script
     assert "rgba(22,163,74,.04)" in css
 
 
@@ -523,6 +527,9 @@ def test_healthy_monitor_renders_state_on_the_full_card():
     assert 'data-state="healthy"' in rendered
     assert "● Live" in rendered
     assert rendered.index('class="monitor-live-footer"') < rendered.index('class="monitor-card-actions"')
+    assert 'data-monitor-drag-handle hidden disabled' in rendered
+    assert 'class="monitor-keyboard-order" aria-label="Keyboard reorder controls" hidden' in rendered
+    assert 'data-monitor-move="up" aria-label="Move Synthetic healthy host earlier" disabled' in rendered
 
     row.state = "warning"
     warning_rendered = template.render(
