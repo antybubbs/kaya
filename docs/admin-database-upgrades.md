@@ -1,10 +1,19 @@
 # Administrator Database Upgrades
 
-Pull and start the new Kaya image normally; routine upgrades do not require manual Alembic commands. Kaya upgrades its database automatically before user traffic or background services start. For SQLite, an existing database is integrity-checked and backed up before the first migration write. Backups are stored by default in `/app/data/backups`, which is inside the existing persistent data mount, with names such as `pre-migration-20260730_01-20260730-062300-000000.sqlite3`. A matching JSON file records the source and target revision without record contents or credentials.
+Pull and start the new Kaya image normally; routine upgrades do not require manual Alembic commands. Kaya upgrades its database automatically before user traffic or background services start. For a pre-Alembic SQLite database, Kaya confirms that SQLite can open and parse the schema, then creates and verifies a backup before the first migration write. Backups are stored by default in `/app/data/backups`, which is inside the existing persistent data mount, with names such as `pre-migration-20260730_01-20260730-062300-000000.sqlite3`. A matching JSON file records the source and target revision without record contents or credentials.
 
-Migration time depends on database size and storage speed. SQLite schema changes may hold an exclusive write lock; plan a maintenance window for large installations. Kaya logs concise transition milestones and one revision summary at info level. Per-operation validation timing, backup progress, and compatibility-object detail are available at debug level.
+Migration time depends on database size and storage speed. SQLite schema changes may hold an exclusive write lock; plan a maintenance window for large installations. Kaya logs concise transition milestones, bounded backup progress, and one revision summary at info level. Per-operation validation timing and compatibility-object detail are available at debug level.
 
-Startup validation opens a read-only SQLite connection, waits at most 5 seconds for a database lock, and limits each validation statement to 120 seconds. It uses `PRAGMA quick_check` for ordinary startup because SQLite documents it as providing most of `integrity_check`'s corruption detection while avoiding the much slower UNIQUE-index verification. Foreign-key consistency remains a separate mandatory `PRAGMA foreign_key_check`; clean starts also verify the revision and required table set without introspecting every column, index, and constraint. Full schema validation remains mandatory after a transition and available to tests and diagnostics. A migration backup has a 600-second limit and its resulting database is validated in the same way. Lock expiry, corruption, timeout, unreadable storage, and unexpected SQLite failures are reported separately and all stop startup.
+Startup validation opens a read-only SQLite connection, waits at most 15 seconds for a database lock, and limits targeted schema statements to 30 seconds each. Routine startup does not run `PRAGMA quick_check` or `PRAGMA foreign_key_check`: their full-database scans can be materially slower than targeted migration validation on large installations. A pre-Alembic transition instead requires a readable schema catalogue, a verified SQLite API backup, compatibility migration, full model-object/type/constraint validation, and a valid baseline revision before startup succeeds. A migration backup has a separate 600-second limit and logs periodic progress. Lock expiry, unreadable storage, targeted-validation timeout, and unexpected SQLite failures remain distinct fatal conditions.
+
+`PRAGMA quick_check` remains available as an explicit strict maintenance diagnostic with a 120-second default limit:
+
+```bash
+python -m app.db.cli --quick-check
+python -m app.db.cli --quick-check --quick-check-timeout 300
+```
+
+A strict diagnostic timeout means the scan did not finish; it is not reported as corruption. An actual non-`ok` result remains a corruption failure.
 
 Bind mounts do not change SQLite's validation algorithm, but their storage stack can materially change elapsed time. Windows Docker Desktop file sharing and synchronisation-backed directories such as Nextcloud can add metadata, antivirus, virtualisation, and sync latency. Keep the active SQLite database on local, container-supported storage where possible; exclude the live database, `-wal`, and `-shm` files from active synchronisation. Do not remove WAL sidecars to speed up validation. Kaya reads them as part of a WAL-mode database and preserves any sidecars encountered by the explicit demo reset workflow.
 
@@ -24,7 +33,7 @@ These declarations came from the original network-monitor schema and were change
 
 Verified migration-backup metadata includes a source database/WAL fingerprint and a digest of the backup. When an unchanged failed transition restarts with the same source and target revisions, Kaya revalidates and references that backup instead of creating unlimited duplicates. A changed source still receives a new pre-migration backup.
 
-If backup creation, integrity validation, compatibility, Alembic, or final validation fails, Kaya exits startup. Do not delete or edit the original database. Preserve the log and backup filenames, but redact host paths or other deployment details before posting publicly.
+If backup creation, compatibility, Alembic, or targeted final validation fails, Kaya exits startup. Do not delete or edit the original database. Preserve the log and backup filenames, but redact host paths or other deployment details before posting publicly.
 
 ## Inspect and diagnose
 
@@ -34,6 +43,7 @@ Inside the container:
 alembic -c /app/alembic.ini current
 alembic -c /app/alembic.ini history
 python -m app.db.cli
+python -m app.db.cli --quick-check
 ```
 
 ## Restore

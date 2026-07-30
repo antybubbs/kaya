@@ -14,7 +14,7 @@ from pathlib import Path
 from app.db.validation import (
     SQLITE_BUSY_TIMEOUT_MS,
     DatabaseValidationError,
-    validate_sqlite_integrity,
+    validate_sqlite_readable,
 )
 
 logger = logging.getLogger(__name__)
@@ -92,7 +92,7 @@ def _reusable_backup(
                     "Ignoring reusable migration backup candidate with failed digest verification"
                 )
                 continue
-            validate_sqlite_integrity(backup_path)
+            validate_sqlite_readable(backup_path)
         except (OSError, ValueError, DatabaseValidationError):
             logger.warning(
                 "Ignoring unreadable or invalid reusable migration backup candidate"
@@ -145,21 +145,29 @@ def create_sqlite_backup(
     if reusable is not None:
         return reusable
 
-    logger.debug("SQLite pre-migration backup starting")
+    logger.info("Kaya database: creating pre-migration backup")
     try:
         backup_started = time.monotonic()
         next_progress = backup_started + 5.0
+        next_milestone = 25
 
         def backup_progress(status: int, remaining: int, total: int) -> None:
-            nonlocal next_progress
+            nonlocal next_progress, next_milestone
             elapsed = time.monotonic() - backup_started
             if elapsed >= BACKUP_OPERATION_TIMEOUT_SECONDS:
                 raise DatabaseBackupError(
                     "SQLite backup timed out after "
                     f"{BACKUP_OPERATION_TIMEOUT_SECONDS:.0f}s."
                 )
-            if time.monotonic() >= next_progress:
-                logger.debug(
+            percent = int(((total - remaining) / total) * 100) if total else 100
+            if percent >= next_milestone:
+                while percent >= next_milestone:
+                    logger.info(
+                        "Kaya database: backup progress %s%%", next_milestone
+                    )
+                    next_milestone += 25
+            elif time.monotonic() >= next_progress:
+                logger.info(
                     "SQLite pre-migration backup still running: pages=%s/%s elapsed=%.3fs status=%s",
                     total - remaining,
                     total,
@@ -187,7 +195,7 @@ def create_sqlite_backup(
                     sleep=0.1,
                 )
         os.chmod(backup_path, 0o600)
-        validate_sqlite_integrity(backup_path)
+        validate_sqlite_readable(backup_path)
         backup_sha256 = _file_sha256(backup_path)
         metadata_path.write_text(
             json.dumps(
@@ -218,7 +226,11 @@ def create_sqlite_backup(
         raise DatabaseBackupError(
             "Could not create and verify the SQLite migration backup."
         ) from exc
-    logger.debug("SQLite pre-migration backup completed: %s", backup_path.name)
+    logger.info(
+        "Kaya database: backup verified filename=%s elapsed=%.3fs",
+        backup_path.name,
+        time.monotonic() - backup_started,
+    )
     return MigrationBackup(backup_path, metadata_path)
 
 

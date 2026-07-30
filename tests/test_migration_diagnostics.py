@@ -71,7 +71,9 @@ def test_every_fatal_migration_stage_emits_full_traceback_for_container_logs(
     monkeypatch.setattr(migrations, "_revision", revision)
     monkeypatch.setattr(migrations, "_has_application_tables", lambda _engine: True)
     monkeypatch.setattr(migrations, "validate_legacy_database", lambda _path: None)
-    monkeypatch.setattr(migrations, "_backup_if_enabled", lambda *_args: backup)
+    monkeypatch.setattr(
+        migrations, "_backup_if_enabled", lambda *_args, **_kwargs: backup
+    )
     monkeypatch.setattr(migrations, "migrate_pre_alembic_database", lambda _path: None)
     monkeypatch.setattr(
         migrations, "_apply_missing_baseline_objects", lambda _path: None

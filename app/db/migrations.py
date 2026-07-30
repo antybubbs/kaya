@@ -4,7 +4,7 @@ import logging
 import sqlite3
 import tempfile
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from time import perf_counter
 
@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BASELINE_REVISION = "20260730_01"
 STAGE_OPENING_DATABASE = "Opening database"
-STAGE_INTEGRITY_CHECKS = "Running integrity checks"
+STAGE_INTEGRITY_CHECKS = "Checking database readability"
 STAGE_CREATING_BACKUP = "Creating backup"
 STAGE_COMPATIBILITY = "Running compatibility migration"
 STAGE_ALEMBIC_MIGRATION = "Running Alembic migration"
@@ -58,10 +58,28 @@ class MigrationResult:
 @dataclass
 class MigrationProgress:
     stage: str = STAGE_OPENING_DATABASE
+    stage_started: float = field(default_factory=perf_counter)
+    entered: bool = False
 
     def enter(self, stage: str) -> None:
+        now = perf_counter()
+        if self.entered:
+            logger.info(
+                "Kaya database: stage complete: %s (elapsed %.3fs)",
+                self.stage,
+                now - self.stage_started,
+            )
         self.stage = stage
-        logger.debug("Database migration stage: %s", stage)
+        self.stage_started = now
+        self.entered = True
+        logger.info("Kaya database: %s", stage)
+
+    def finish(self) -> None:
+        logger.info(
+            "Kaya database: stage complete: %s (elapsed %.3fs)",
+            self.stage,
+            perf_counter() - self.stage_started,
+        )
 
 
 def _alembic_config(database_url: str) -> Config:
@@ -109,13 +127,22 @@ def _has_application_tables(engine: Engine) -> bool:
 
 
 def _backup_if_enabled(
-    settings: Settings, path: Path, source_revision: str | None, target_revision: str
+    settings: Settings,
+    path: Path,
+    source_revision: str | None,
+    target_revision: str,
+    *,
+    required: bool = False,
 ) -> MigrationBackup | None:
-    if not settings.migration_backups_enabled:
+    if not settings.migration_backups_enabled and not required:
         logger.warning(
             "Automatic SQLite migration backup disabled by explicit configuration"
         )
         return None
+    if not settings.migration_backups_enabled:
+        logger.warning(
+            "Pre-Alembic transition requires a verified backup; ignoring the disabled-backup setting for this transition"
+        )
     return create_sqlite_backup(
         path,
         Path(settings.migration_backup_dir),
@@ -183,7 +210,11 @@ def prepare_database(engine: Engine, settings: Settings) -> MigrationResult:
                 validate_legacy_database(database_path)
                 progress.enter(STAGE_CREATING_BACKUP)
                 backup = _backup_if_enabled(
-                    settings, database_path, None, BASELINE_REVISION
+                    settings,
+                    database_path,
+                    None,
+                    BASELINE_REVISION,
+                    required=True,
                 )
                 if backup:
                     logger.info(
@@ -191,6 +222,7 @@ def prepare_database(engine: Engine, settings: Settings) -> MigrationResult:
                         backup.database_path.name,
                     )
                 progress.enter(STAGE_COMPATIBILITY)
+                logger.info("Kaya database: running compatibility upgrade")
                 migrate_pre_alembic_database(database_path)
                 _apply_missing_baseline_objects(database_path)
                 compatibility_applied = True
@@ -240,6 +272,7 @@ def prepare_database(engine: Engine, settings: Settings) -> MigrationResult:
                 settings.migration_backup_retention_count,
             )
         progress.enter(STAGE_STARTUP_COMPLETE)
+        progress.finish()
     except Exception as exc:
         location = (
             backup.database_path.name if backup else "no verified backup was created"

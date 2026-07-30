@@ -25,8 +25,9 @@ logger = logging.getLogger(__name__)
 
 # SQLite's lock wait and VM execution limit are deliberately separate. A lock
 # should fail quickly, while a healthy large database gets enough time to scan.
-SQLITE_BUSY_TIMEOUT_MS = 5_000
-VALIDATION_OPERATION_TIMEOUT_SECONDS = 120.0
+SQLITE_BUSY_TIMEOUT_MS = 15_000
+TARGETED_VALIDATION_TIMEOUT_SECONDS = 30.0
+QUICK_CHECK_TIMEOUT_SECONDS = 120.0
 VALIDATION_PROGRESS_INTERVAL_SECONDS = 5.0
 _PROGRESS_HANDLER_INSTRUCTIONS = 1_000
 
@@ -181,7 +182,7 @@ def _rows(
     log_timing: bool = False,
 ) -> list[tuple]:
     if timeout_seconds is None:
-        timeout_seconds = VALIDATION_OPERATION_TIMEOUT_SECONDS
+        timeout_seconds = TARGETED_VALIDATION_TIMEOUT_SECONDS
     started = time.monotonic()
     deadline = started + timeout_seconds
     next_progress = started + VALIDATION_PROGRESS_INTERVAL_SECONDS
@@ -347,14 +348,34 @@ def _compatible_declared_type(
     return compatible_affinity
 
 
-def validate_sqlite_integrity(path: Path) -> None:
+def validate_sqlite_readable(path: Path) -> None:
+    """Confirm that SQLite can open and parse the database schema."""
     with _validation_connection(path) as connection:
-        quick_check = _rows(
+        _rows(
             connection,
-            "PRAGMA quick_check",
-            operation="Running PRAGMA quick_check",
+            "SELECT count(*) FROM sqlite_master",
+            operation="Reading SQLite schema catalogue",
             log_timing=True,
         )
+
+
+def validate_sqlite_integrity(
+    path: Path, *, quick_check_timeout_seconds: float = QUICK_CHECK_TIMEOUT_SECONDS
+) -> None:
+    """Run explicit strict integrity diagnostics; routine startup does not call this."""
+    with _validation_connection(path) as connection:
+        try:
+            quick_check = _rows(
+                connection,
+                "PRAGMA quick_check",
+                operation="Running PRAGMA quick_check",
+                timeout_seconds=quick_check_timeout_seconds,
+                log_timing=True,
+            )
+        except DatabaseValidationTimeoutError as exc:
+            raise DatabaseValidationTimeoutError(
+                "SQLite quick_check timed out; strict database validation aborted."
+            ) from exc
         if quick_check != [("ok",)]:
             raise DatabaseCorruptError("SQLite quick_check reported corruption.")
         foreign_keys = _rows(
@@ -370,7 +391,7 @@ def validate_sqlite_integrity(path: Path) -> None:
 
 
 def validate_legacy_database(path: Path) -> None:
-    validate_sqlite_integrity(path)
+    validate_sqlite_readable(path)
     with _validation_connection(path) as connection:
         tables = {
             row[0]
@@ -389,8 +410,8 @@ def validate_legacy_database(path: Path) -> None:
 def validate_startup_database(
     path: Path, *, required_tables: Iterable[str] = ()
 ) -> None:
-    """Run bounded integrity and object-presence checks for a clean startup."""
-    validate_sqlite_integrity(path)
+    """Run bounded object-presence checks for a clean startup."""
+    validate_sqlite_readable(path)
     with _validation_connection(path) as connection:
         actual_tables = {
             row[0]
@@ -414,7 +435,7 @@ def validate_schema(
     required_seed_tables: Iterable[str] = (),
     require_revision: bool = True,
 ) -> None:
-    validate_sqlite_integrity(path)
+    validate_sqlite_readable(path)
     with _validation_connection(path) as connection:
         actual_tables = {
             row[0]

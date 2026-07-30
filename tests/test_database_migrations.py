@@ -1,4 +1,5 @@
 import json
+import logging
 import shutil
 import sqlite3
 import textwrap
@@ -10,6 +11,7 @@ from sqlalchemy.orm import Session
 
 import app.db.backup as backup_module
 import app.db.migrations as migrations_module
+import app.db.validation as validation_module
 from app.core.config import Settings
 from app.db.backup import DatabaseBackupError, create_sqlite_backup
 from app.db.migrations import (
@@ -22,7 +24,7 @@ from app.db.validation import (
     validate_schema,
     validate_sqlite_integrity,
 )
-from app.models.models import IPAddress, NetworkMonitor
+from app.models.models import IPAddress, NetworkMonitor, User
 
 
 def settings_for(path: Path, backup_dir: Path) -> Settings:
@@ -287,6 +289,76 @@ def test_unchanged_failed_transition_reuses_verified_backup(tmp_path, monkeypatc
     assert list(backup_dir.glob("*.sqlite3")) == first_backups
 
 
+def test_pre_alembic_transition_backs_up_before_schema_changes(tmp_path, monkeypatch):
+    path = tmp_path / "kaya.db"
+    backup_dir = tmp_path / "backups"
+    settings = settings_for(path, backup_dir)
+    engine = engine_for(path)
+    prepare_database(engine, settings)
+    with Session(engine) as session:
+        session.add(
+            User(
+                email="backup-order@example.invalid",
+                password_hash="fake-hash",
+                role="admin",
+                is_active=True,
+            )
+        )
+        session.commit()
+    engine.dispose()
+    with sqlite3.connect(path) as connection:
+        connection.execute("DROP TABLE alembic_version")
+    events = []
+    original_backup = migrations_module._backup_if_enabled
+    original_compatibility = migrations_module.migrate_pre_alembic_database
+
+    def tracked_backup(*args, **kwargs):
+        result = original_backup(*args, **kwargs)
+        events.append("backup")
+        assert result and result.database_path.is_file()
+        return result
+
+    def tracked_compatibility(database_path):
+        events.append("compatibility")
+        return original_compatibility(database_path)
+
+    monkeypatch.setattr(migrations_module, "_backup_if_enabled", tracked_backup)
+    monkeypatch.setattr(
+        migrations_module, "migrate_pre_alembic_database", tracked_compatibility
+    )
+
+    result = prepare_database(engine_for(path), settings)
+
+    assert events[:2] == ["backup", "compatibility"]
+    assert result.backup is not None
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("SELECT count(*) FROM users").fetchone() == (1,)
+
+
+def test_slow_quick_check_cannot_block_pre_alembic_transition(tmp_path, monkeypatch):
+    path = tmp_path / "kaya.db"
+    settings = settings_for(path, tmp_path / "backups")
+    engine = engine_for(path)
+    prepare_database(engine, settings)
+    engine.dispose()
+    with sqlite3.connect(path) as connection:
+        connection.execute("DROP TABLE alembic_version")
+    monkeypatch.setattr(
+        validation_module,
+        "validate_sqlite_integrity",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("routine startup must not call strict quick_check")
+        ),
+    )
+
+    result = prepare_database(engine_for(path), settings)
+    repeated = prepare_database(engine_for(path), settings)
+
+    assert result.compatibility_applied is True
+    assert repeated.compatibility_applied is False
+    assert len(list((tmp_path / "backups").glob("*.sqlite3"))) == 1
+
+
 def test_corrupt_database_fails_without_starting_migration(tmp_path):
     path = tmp_path / "kaya.db"
     path.write_bytes(b"clearly-not-sqlite")
@@ -344,6 +416,43 @@ def test_backup_failure_is_fail_closed(tmp_path, monkeypatch):
         create_sqlite_backup(
             source, backup_dir, source_revision="old", target_revision="new"
         )
+
+
+def test_backup_logs_bounded_progress_and_verification(tmp_path, caplog):
+    source = tmp_path / "source.db"
+    with sqlite3.connect(source) as connection:
+        connection.execute("CREATE TABLE safe (id INTEGER PRIMARY KEY, payload BLOB)")
+        connection.execute("INSERT INTO safe (payload) VALUES (zeroblob(1048576))")
+    caplog.set_level(logging.INFO)
+
+    backup = create_sqlite_backup(
+        source,
+        tmp_path / "backups",
+        source_revision="pre-alembic",
+        target_revision=BASELINE_REVISION,
+    )
+
+    assert backup.database_path.is_file()
+    assert "Kaya database: creating pre-migration backup" in caplog.text
+    assert "Kaya database: backup progress 25%" in caplog.text
+    assert "Kaya database: backup verified" in caplog.text
+
+
+def test_pre_alembic_backup_is_mandatory_when_optional_backups_are_disabled(
+    tmp_path,
+):
+    path = tmp_path / "kaya.db"
+    backup_dir = tmp_path / "backups"
+    settings = settings_for(path, backup_dir)
+    prepare_database(engine_for(path), settings)
+    with sqlite3.connect(path) as connection:
+        connection.execute("DROP TABLE alembic_version")
+    settings.migration_backups_enabled = False
+
+    result = prepare_database(engine_for(path), settings)
+
+    assert result.backup is not None
+    assert len(list(backup_dir.glob("*.sqlite3"))) == 1
 
 
 def test_integrity_validation_rejects_missing_file(tmp_path):

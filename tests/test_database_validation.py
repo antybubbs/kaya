@@ -57,13 +57,53 @@ def test_locked_database_fails_after_finite_busy_timeout(tmp_path, monkeypatch):
 def test_slow_validation_is_interrupted_at_operation_deadline(tmp_path, monkeypatch):
     path = tmp_path / "slow.db"
     _database(path)
-    monkeypatch.setattr(validation, "VALIDATION_OPERATION_TIMEOUT_SECONDS", 0.0)
     monkeypatch.setattr(validation, "_PROGRESS_HANDLER_INSTRUCTIONS", 1)
 
     with pytest.raises(
-        validation.DatabaseValidationTimeoutError, match="validation timed out"
-    ):
+        validation.DatabaseValidationTimeoutError,
+        match="quick_check timed out; strict database validation aborted",
+    ) as failure:
+        validation.validate_sqlite_integrity(path, quick_check_timeout_seconds=0.0)
+
+    assert not isinstance(failure.value, validation.DatabaseCorruptError)
+
+
+def test_explicit_quick_check_error_is_still_corruption(tmp_path, monkeypatch):
+    path = tmp_path / "quick-check-error.db"
+    _database(path)
+    original_rows = validation._rows
+
+    def quick_check_error(connection, sql, **kwargs):
+        if sql == "PRAGMA quick_check":
+            return [("synthetic index inconsistency",)]
+        return original_rows(connection, sql, **kwargs)
+
+    monkeypatch.setattr(validation, "_rows", quick_check_error)
+
+    with pytest.raises(validation.DatabaseCorruptError, match="reported corruption"):
         validation.validate_sqlite_integrity(path)
+
+
+def test_targeted_schema_validation_does_not_run_quick_check(tmp_path, monkeypatch):
+    path = tmp_path / "targeted.db"
+    _database(path)
+    metadata = MetaData()
+    Table("parent", metadata, Column("id", Integer, primary_key=True))
+    Table(
+        "child",
+        metadata,
+        Column("id", Integer, primary_key=True),
+        Column("parent_id", Integer),
+    )
+    monkeypatch.setattr(
+        validation,
+        "validate_sqlite_integrity",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("targeted schema validation must not run quick_check")
+        ),
+    )
+
+    validation.validate_schema(path, metadata, require_revision=False)
 
 
 def test_corrupt_database_is_reported_distinctly(tmp_path):
