@@ -54,16 +54,56 @@ Use it, dont use it. Its up to you really (but it is quite cool if I do say so m
 
 Kaya is more than a homelab inventory. It is a self-hosted operations hub for the infrastructure, access, documentation, monitoring and recovery information that usually ends up scattered across spreadsheets, bookmarks, terminals and password-protected files.
 
-| Area | What Kaya gives you |
-|------|---------------------|
-| **One live operations dashboard** | Customisable widgets, health summaries, warnings, recent activity and monitor mode |
-| **Infrastructure visibility** | Proxmox hosts, Docker hosts, workloads, physical assets, racks and backups |
-| **Network intelligence** | VLANs, IPAM, DHCP history, DNS analytics, domains and WAN monitoring |
-| **Remote workspace** | Browser-based SSH and RDP, split-screen sessions and session recordings |
-| **Security workspace** | Private encrypted vaults, secure temporary delivery and encrypted licence keys |
-| **Operational knowledge** | Searchable Markdown runbooks, images, tags, spaces and page history |
-| **Team-ready access** | Local login, TOTP, OpenID Connect, roles, account linking and audit logs |
-| **Self-hosted by design** | Docker Compose, SQLite, persistent volumes, PWA support and no mandatory cloud service |
+### Infrastructure Management
+- Hardware Asset Manager
+- Rack Manager
+- IP & VLAN Management
+- Domain Manager
+- Licence Manager
+
+### Monitoring
+- Docker & Proxmox monitoring
+- IP/WAN monitoring
+- Historical performance
+- Dashboard & Wallboard
+- Live alerts
+
+### DNS & Networking
+- Pi-hole integration
+- DNS analytics
+- DHCP tracking
+- High Availability (Beta)
+- Client history
+
+### Documentation
+- Runbook Manager
+- Markdown editor
+- Image uploads
+- Search
+- Version history
+
+### Remote Access
+- Browser SSH
+- Browser RDP
+- Session recording
+- Split-screen console
+- Role-based permissions
+
+### Security
+- Secret Vault
+- Secure Send
+- MFA
+- OIDC / SSO
+- Audit logging
+- Encryption
+
+### Administration
+- User management
+- Module permissions
+- Custom fields
+- Categories
+- SMTP
+- Backup Manager
 
 ------------------------------------------------------------------------
 
@@ -267,64 +307,6 @@ Kaya
 ├── Upload Storage
 └── Guacamole (SSH / RDP)
 ```
-
-------------------------------------------------------------------------
-
-# Features in Detail....
-
-## Features
-
-### Infrastructure Management
-- Hardware Asset Manager
-- Rack Manager
-- IP & VLAN Management
-- Domain Manager
-- Licence Manager
-
-### Monitoring
-- Docker & Proxmox monitoring
-- IP/WAN monitoring
-- Historical performance
-- Dashboard & Wallboard
-- Live alerts
-
-### DNS & Networking
-- Pi-hole integration
-- DNS analytics
-- DHCP tracking
-- High Availability (Beta)
-- Client history
-
-### Documentation
-- Runbook Manager
-- Markdown editor
-- Image uploads
-- Search
-- Version history
-
-### Remote Access
-- Browser SSH
-- Browser RDP
-- Session recording
-- Split-screen console
-- Role-based permissions
-
-### Security
-- Secret Vault
-- Secure Send
-- MFA
-- OIDC / SSO
-- Audit logging
-- Encryption
-
-### Administration
-- User management
-- Module permissions
-- Custom fields
-- Categories
-- SMTP
-- Backup Manager
-
 
 ------------------------------------------------------------------------
 
