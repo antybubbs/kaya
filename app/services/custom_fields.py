@@ -20,7 +20,7 @@ def option_list(field: CustomField) -> list[str]:
 
 
 def active_fields(db: Session, module: str) -> list[CustomField]:
-    return db.query(CustomField).filter(CustomField.module == module, CustomField.is_active == True).order_by(CustomField.sort_order.asc(), CustomField.label.asc()).all()
+    return db.query(CustomField).filter(CustomField.module == module, CustomField.is_active).order_by(CustomField.sort_order.asc(), CustomField.label.asc()).all()
 
 
 def field_values(db: Session, module: str, entity_type: str, entity_id: int) -> dict[int, str]:

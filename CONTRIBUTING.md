@@ -27,6 +27,14 @@ Do not make assumptions from old screenshots, old discussions, old specification
 
 **The current repository is the source of truth.**
 
+Code must also be understandable to experienced public reviewers without private discussion history or undocumented assumptions. Prefer established tools and patterns—Alembic, Jinja, pathlib, pytest, the agreed lint/format tools, and ADRs—before custom infrastructure. A custom mechanism requires written justification.
+
+Use clear responsibility boundaries: do not accumulate unrelated work in `main.py`, generic service files, giant functions, or broad utility modules. Prefer descriptive names and readable control flow over compressed statements. Comments explain rationale, risk, or unusual constraints.
+
+Temporary compatibility code must document why it exists, supported versions, its removal condition and target review release, and must have regression tests. Broad `except Exception` is acceptable only at a genuine boundary that logs safely, handles failure explicitly, and preserves the original exception context.
+
+Existing installations and user data are preserved by default. Breaking changes require owner approval, upgrade and recovery guidance, release-note warnings, and upgrade tests. Every schema change is versioned with Alembic; `create_all()` is not an upgrade mechanism and normal startup must not perform ad hoc `ALTER TABLE` changes.
+
 ---
 
 ## 2. Core Contribution Rules
@@ -593,6 +601,37 @@ Depending on the contribution, consider:
 - destructive confirmation;
 - audit events.
 
+### Code quality checks
+
+Run these repository-wide checks before opening a pull request:
+
+```text
+ruff check .
+black --check .
+pytest
+git diff --check
+```
+
+Keep imports conventional and let Ruff report unused or misplaced imports. Do
+not compress suites onto the header line or join statements with semicolons.
+Use the shared binary byte formatter rather than introducing another KB/MB
+formatter with ambiguous units.
+
+Resolve packaged resources through `app.core.paths` (or a path derived from
+the owning module's `__file__`), never from the process working directory.
+Keep runtime data locations configurable and preserve the documented container
+volume defaults.
+
+Application pages belong in Jinja templates. Python may generate deliberately
+limited formats such as escaped email bodies or sanitised Markdown fragments
+when the reason is documented and covered by injection tests. A broad
+`except Exception` is reserved for genuine process, request, integration or
+background-task boundaries; it must log safe context and either fail clearly
+or implement an explicit best-effort contract.
+
+Run any configured type checker and security scanner when the repository adds
+one; do not imply type or security-tool coverage that is not configured.
+
 ### Integration changes
 
 Test both:
@@ -664,6 +703,7 @@ A contribution should normally not be considered complete until:
 - sensitive actions are audited;
 - secrets are not logged;
 - tests pass;
+- repository lint, formatting and diff checks pass;
 - debug code has been removed;
 - documentation is updated where setup or behaviour changed.
 

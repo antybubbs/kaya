@@ -1,26 +1,53 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
 import json
+from datetime import datetime, timedelta
 from typing import Any
-from urllib.parse import urlencode, urlparse
-
-from starlette.datastructures import URL
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload
+from starlette import status
+from starlette.datastructures import URL
 
 from app.core.config import get_settings
 from app.core.csrf import csrf_context, validate_csrf_token
+from app.core.templating import templates
 from app.db.session import get_db
-from app.models.models import DHCPLeaseHistory, DNSClientEvent, DNSClientHostnameHistory, DNSClientIPHistory, DNSClientObservation, DNSClientTrafficEvent, DNSInsight, DNSInvestigation, DNSProviderConfig, DNSRecognisedDevice, DNSStatisticsSnapshot, IPAddress, RemoteManagerSetting, VLAN
-from app.routers.auth import require_admin, require_editor, require_module_access, require_user
-from app.services.dns_providers import DNSProvider, DNSProviderResult, provider_for
+from app.models.models import (
+    VLAN,
+    DHCPLeaseHistory,
+    DNSClientEvent,
+    DNSClientHostnameHistory,
+    DNSClientIPHistory,
+    DNSClientObservation,
+    DNSClientTrafficEvent,
+    DNSInsight,
+    DNSInvestigation,
+    DNSProviderConfig,
+    DNSRecognisedDevice,
+    DNSStatisticsSnapshot,
+    IPAddress,
+    RemoteManagerSetting,
+)
+from app.routers.auth import (
+    require_admin,
+    require_editor,
+    require_module_access,
+    require_user,
+)
 from app.services.audit import write_audit
-from app.services.site_settings import get_site_setting
+from app.services.dns_clients import (
+    add_event,
+    client_display_name,
+    client_status,
+    dhcp_range_for_ip,
+    list_clients,
+    list_dhcp_leases,
+    normalise_mac,
+)
 from app.services.dns_insights import (
     CATEGORY_LABELS,
     SEVERITY_LABELS,
@@ -30,10 +57,10 @@ from app.services.dns_insights import (
     calculate_health_score,
     insight_action_target,
 )
-from app.services.dns_clients import add_event, client_display_name, client_status, dhcp_range_for_ip, list_clients, list_dhcp_leases, normalise_mac
+from app.services.dns_providers import DNSProvider, DNSProviderResult, provider_for
+from app.services.site_settings import get_site_setting
 
 router = APIRouter(prefix="/networking/dns-manager", dependencies=[Depends(require_module_access("dns_manager"))])
-templates = Jinja2Templates(directory="app/templates")
 
 DNS_TABS = ["dashboard", "insights", "reports", "query-log", "clients", "local-dns", "dhcp", "blocklists"]
 

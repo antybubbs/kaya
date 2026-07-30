@@ -36,11 +36,14 @@ def request(path="/login", method="GET"):
 
 def add_user(db, email="admin@example.com", password="correct horse battery staple", **values):
     row = User(email=email, password_hash=hash_password(password) if password else None, role=values.pop("role", "admin"), is_active=True, **values)
-    db.add(row); db.commit(); return row
+    db.add(row)
+    db.commit()
+    return row
 
 
 def setting(db, key, value):
-    db.add(RemoteManagerSetting(key=key, value=value)); db.commit()
+    db.add(RemoteManagerSetting(key=key, value=value))
+    db.commit()
 
 
 def test_login_page_modes_preserve_local_form_and_required_redirect():
@@ -172,7 +175,8 @@ def test_emergency_login_rejects_ordinary_non_break_glass_and_disabled_users(att
         role = attributes.pop("role")
         active = attributes.pop("is_active", True)
         user = User(email="candidate@example.com", password_hash=hash_password("correct horse battery staple"), role=role, is_active=active, **attributes)
-        db.add(user); db.commit()
+        db.add(user)
+        db.commit()
         incoming = request("/auth/local", "POST")
         response = emergency_login_submit(incoming, email=user.email, password="correct horse battery staple", totp_code="", csrf_token="csrf", db=db)
         assert response.status_code == 401
@@ -223,7 +227,9 @@ def validated_provider(db):
         discovery_status="ok", metadata_json='{"issuer":"https://id.example.com"}',
         metadata_fetched_at=datetime.utcnow(), test_login_succeeded_at=datetime.utcnow(),
     )
-    db.add(row); db.commit(); return row
+    db.add(row)
+    db.commit()
+    return row
 
 
 def test_cosmetic_provider_name_change_preserves_successful_validation():
@@ -349,7 +355,8 @@ def test_authenticated_link_callback_shows_safe_actionable_failure_reason():
 def vault_assurance_rows(db):
     user = add_user(db, "oidc@example.com", password=None, role="viewer", authentication_type="oidc")
     provider = OIDCProvider(name="Company SSO", issuer="https://id.example.com", client_id="kaya", is_enabled=True)
-    db.add(provider); db.flush()
+    db.add(provider)
+    db.flush()
     db.add(ExternalIdentity(user_id=user.id, provider_id=provider.id, issuer=provider.issuer, subject="subject-1", link_method="jit"))
     setting(db, "secret_vault_oidc_mfa_policy", "either")
     transaction = OIDCTransaction(
@@ -357,7 +364,8 @@ def vault_assurance_rows(db):
         provider_id=provider.id, flow_type="vault_setup", target_user_id=user.id, initiated_by_user_id=user.id,
         return_path="/security/secret-vault", expires_at=datetime.utcnow() + timedelta(minutes=5), used_at=datetime.utcnow(),
     )
-    db.add(transaction); db.commit()
+    db.add(transaction)
+    db.commit()
     return user, provider, transaction
 
 

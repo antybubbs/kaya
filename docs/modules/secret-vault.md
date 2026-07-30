@@ -66,7 +66,7 @@ No new environment variable is mandatory. `KAYA_VAULT_STORAGE_DIR` may override 
 
 ## Upgrade and rollback
 
-Startup creates the version-one vault tables without creating vaults for existing users. `scripts/migrate_sqlite.py` contains the equivalent idempotent migration for deployment entrypoints. Back up Kaya before upgrading.
+The Alembic baseline creates the version-one vault tables without creating vaults for existing users. Pre-Alembic installations use the idempotent compatibility bridge after a verified automatic backup. Vault contents and keys are never written to migration logs.
 
 To roll back the application, restore the pre-upgrade database and data snapshot. Do not drop vault tables or encrypted attachments as a routine rollback: older Kaya versions ignore them, and retaining them enables a forward upgrade without data loss.
 

@@ -3,6 +3,7 @@ uvicorn[standard]==0.34.0
 jinja2==3.1.6
 python-multipart==0.0.31
 sqlalchemy==2.0.36
+alembic==1.16.5
 pydantic-settings==2.14.2
 passlib[argon2]==1.7.4
 itsdangerous==2.2.0

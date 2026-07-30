@@ -48,15 +48,18 @@ def db():
 
 def add_user(db, email):
     row = User(email=email, password_hash=None, role="viewer", is_active=True)
-    db.add(row); db.commit()
+    db.add(row)
+    db.commit()
     return row
 
 
 def add_monitor(db, address, *, enabled=True, name=None):
     ip = IPAddress(address=address, name=name)
-    db.add(ip); db.flush()
+    db.add(ip)
+    db.flush()
     monitor = NetworkMonitor(ip_address_id=ip.id, display_name=name, is_enabled=enabled)
-    db.add(monitor); db.commit()
+    db.add(monitor)
+    db.commit()
     return monitor
 
 
@@ -163,7 +166,7 @@ def test_wallboard_preferences_coexist_with_main_dashboard_preferences(db):
 def test_shared_route_requires_challenge_and_filters_monitor_data(db):
     network_monitor_service._dashboard_interval_leases.clear()
     allowed = add_monitor(db, "192.0.2.20", name="Allowed target")
-    hidden = add_monitor(db, "192.0.2.21", name="Hidden target")
+    _hidden = add_monitor(db, "192.0.2.21", name="Hidden target")
     wallboard = ensure_wallboard(db)
     wallboard.enabled = True
     wallboard.all_active_monitors = False

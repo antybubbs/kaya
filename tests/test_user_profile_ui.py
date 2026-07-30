@@ -38,7 +38,8 @@ def test_display_name_handles_legacy_combined_first_name_without_hiding_normal_n
 def test_new_user_rejects_a_surname_duplicated_inside_first_name():
     with database() as db:
         admin = User(email="admin@example.com", password_hash=hash_password("correct horse battery staple"), role="admin", is_active=True)
-        db.add(admin); db.commit()
+        db.add(admin)
+        db.commit()
         response = create_user(
             request(), email="new@example.com", first_name="Anthony Hales", last_name="Hales",
             password="correct horse battery staple", role="viewer", csrf_token="csrf", db=db, user=admin,

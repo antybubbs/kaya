@@ -106,7 +106,7 @@ def run_ha_sync_monitor_pass(session_factory=SessionLocal) -> int:
                     _record_failed_check(db, cluster, str(exc))
                     logger.warning("HA configuration drift check was safely blocked", extra={"cluster_id": cluster.public_id})
                     continue
-                except Exception as exc:
+                except Exception:
                     db.rollback()
                     _record_failed_check(db, cluster, "Configuration check could not be completed.")
                     logger.exception("HA configuration drift check failed", extra={"cluster_id": cluster.public_id})

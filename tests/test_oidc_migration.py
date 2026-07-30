@@ -31,7 +31,8 @@ def test_existing_user_migration_preserves_local_account_and_makes_password_null
         "INSERT INTO network_monitor_checks (id, monitor_id, status, latency_ms, checked_at) "
         "VALUES (9, 7, 'up', 12, '2026-07-01 12:00:00')"
     )
-    connection.commit(); connection.close()
+    connection.commit()
+    connection.close()
     monkeypatch.setattr(migration, "DB_PATH", path)
 
     migration.main()

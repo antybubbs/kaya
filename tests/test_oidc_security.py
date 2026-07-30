@@ -8,7 +8,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.db.session import Base
-from app.models.models import OIDCProvider, RemoteManagerSetting, User
+from app.models.models import OIDCProvider, RemoteManagerSetting
 from app.services.oidc_client import OIDCFlowError, consume_transaction, create_transaction, provider_logout_redirect, safe_return_path, validate_id_token
 from app.services.oidc_discovery import OIDCDiscoveryError, normalise_issuer, validate_metadata
 from app.services.oidc_role_mapping import claim_groups, claim_value, email_is_allowed, mapped_role

@@ -10,6 +10,7 @@ Kaya is designed for Docker Compose deployment.
 - Image: `ghcr.io/antybubbs/kaya:latest` by default
 - Container port: `8080`
 - Host port: `${KAYA_PORT:-8080}`
+- Docker health probe: `http://127.0.0.1:8080/healthz`, checked every 15 seconds with a 5-second timeout, five retries, and a 120-second startup grace period for database preparation. Dependent services remain gated on a successful probe.
 - Entrypoint: `docker-entrypoint.sh`
 - Runtime: Uvicorn serving `app.main:app`
 - Filesystem: read-only container with writable volumes and tmpfs
@@ -33,7 +34,7 @@ Important persistent files:
 - `/app/data/.runtime.env`
 - `/app/uploads`
 - `/app/data/remote-recordings`
-- `/app/data/kaya.db.pre-migration` when created
+- `/app/data/backups/pre-migration-*.sqlite3` and matching revision metadata when an existing database requires migration
 
 ## Environment Settings
 
@@ -57,16 +58,17 @@ The entrypoint:
 - Creates persistent data/upload/recording directories.
 - Generates and preserves runtime secrets in `/app/data/.runtime.env` when not supplied.
 - Handles demo seed/reset behaviour when demo mode is enabled.
-- Optionally creates a pre-migration SQLite backup.
-- Runs `scripts/migrate_sqlite.py`.
+- Creates and verifies a timestamped pre-migration SQLite backup with SQLite's backup API before changing an existing database.
+- Runs the safe `app.db` Alembic preparation lifecycle.
 - Starts Uvicorn.
 
 ## Upgrade Considerations
 
+- For a routine container upgrade, run `docker compose pull` followed by `docker compose up -d`; Kaya performs any required backup and Alembic upgrade automatically.
 - Back up `data`, `uploads`, and recordings before upgrading.
 - Preserve `.runtime.env`; losing the encryption key can make encrypted secrets unrecoverable.
-- Migrations are manual and additive.
-- Docker entrypoint can create a pre-migration SQLite backup.
+- Normal startup runs the Alembic lifecycle automatically before application services.
+- Pre-Alembic installations use the retained compatibility bridge and are stamped only after full validation.
 
 ## Reverse proxies and real client IPs
 

@@ -13,8 +13,11 @@ from app.services.ha_failover import HAFailoverError, advance_failover, automati
 
 def database():
     engine = create_engine("sqlite:///:memory:")
+
     @event.listens_for(engine, "connect")
-    def foreign_keys(connection, record): connection.execute("PRAGMA foreign_keys=ON")
+    def foreign_keys(connection, record):
+        connection.execute("PRAGMA foreign_keys=ON")
+
     Base.metadata.create_all(engine)
     return Session(engine)
 
@@ -22,11 +25,13 @@ def database():
 def ready_pair(db, *, managed=True):
     user = User(email="failover@example.test", password_hash="x", role="admin", is_active=True)
     cluster = HACluster(name="Test Pair", provider_key="pihole", deployment_mode="DNS_DHCP" if managed else "DNS_ONLY", status="HEALTHY", virtual_ip="192.168.50.53", prefix_length=24, keepalived_status="DEPLOYED", keepalived_generation=4)
-    db.add_all([user, cluster]); db.flush()
+    db.add_all([user, cluster])
+    db.flush()
     now = datetime.utcnow()
     source = HANode(cluster_id=cluster.id, display_name="Primary", api_base_url="http://192.168.50.2", role="ACTIVE", desired_role="ACTIVE", vip_owned=True, dhcp_running=managed, dhcp_configured=managed, dhcp_listener_active=managed, ftl_active=True, dhcp_runtime_state="RUNNING" if managed else "STOPPED", dhcp_observation_status="FRESH", dhcp_observed_at=now, dns_healthy=True, keepalived_status="DEPLOYED", keepalived_runtime_state="RUNNING", config_generation=4, lease_generation=7, agent_version="0.2.13", last_heartbeat_at=now)
     target = HANode(cluster_id=cluster.id, display_name="Standby", api_base_url="http://192.168.50.3", role="STANDBY", desired_role="STANDBY", vip_owned=False, dhcp_running=False, dhcp_configured=False, dhcp_listener_active=False, ftl_active=True, dhcp_runtime_state="STOPPED", dhcp_observation_status="FRESH", dhcp_observed_at=now, dns_healthy=True, keepalived_status="DEPLOYED", keepalived_runtime_state="RUNNING", config_generation=4, lease_generation=7, agent_version="0.2.13", last_heartbeat_at=now)
-    db.add_all([source, target]); db.flush()
+    db.add_all([source, target])
+    db.flush()
     cluster.current_active_node_id = cluster.authoritative_node_id = cluster.preferred_node_id = source.id
     db.add(HALeaseReplicationState(cluster_id=cluster.id, source_node_id=source.id, target_node_id=target.id, status="CURRENT" if managed else "NOT_APPLICABLE", desired_generation=7 if managed else 0, applied_generation=7 if managed else 0))
     db.commit()
@@ -51,7 +56,9 @@ def test_preflight_requires_current_agent_and_exactly_one_dhcp_owner():
         assert failover_readiness(cluster).ready
         target.agent_version = "0.2.12"
         assert "agent 0.2.13" in " ".join(failover_readiness(cluster).blockers)
-        target.agent_version = "0.2.13"; target.dhcp_running = target.dhcp_configured = target.dhcp_listener_active = True; target.dhcp_runtime_state = "RUNNING"
+        target.agent_version = "0.2.13"
+        target.dhcp_running = target.dhcp_configured = target.dhcp_listener_active = True
+        target.dhcp_runtime_state = "RUNNING"
         assert "Exactly the current VIP owner" in " ".join(failover_readiness(cluster).blockers)
 
 
@@ -78,8 +85,10 @@ def test_managed_failover_orders_dhcp_stop_vip_move_then_dhcp_start(monkeypatch)
         assert run.phase == "MOVING_VIP" and source.dhcp_running is False
         assert desired_failover_action(cluster, target) is None
 
-        for node in cluster.nodes: node.keepalived_status = "DEPLOYED"
-        source.vip_owned = False; target.vip_owned = True
+        for node in cluster.nodes:
+            node.keepalived_status = "DEPLOYED"
+        source.vip_owned = False
+        target.vip_owned = True
         advance_failover(db, cluster)
         assert run.phase == "PROMOTING_TARGET"
         action = desired_failover_action(cluster, target)
@@ -401,8 +410,11 @@ def test_unhealthy_dns_cannot_complete_promotion(monkeypatch):
         run = start_controlled_failover(db, cluster, target, user, confirmation="Test Pair", acknowledged=True)
         run.phase = "VERIFYING_TARGET"
         run.report_json = '{"verification_started_at":"2020-01-01T00:00:00"}'
-        source.dhcp_running = False; source.vip_owned = False
-        target.dhcp_running = True; target.vip_owned = True; target.dns_healthy = False
+        source.dhcp_running = False
+        source.vip_owned = False
+        target.dhcp_running = True
+        target.vip_owned = True
+        target.dns_healthy = False
 
         advance_failover(db, cluster)
 
@@ -708,9 +720,14 @@ def test_completed_failover_can_return_safely_if_promoted_dns_later_fails(monkey
         user, cluster, source, target = ready_pair(db)
         monkeypatch.setattr("app.services.ha_failover.reconcile_cluster_leases", lambda db, cluster: cluster.lease_replication)
         run = start_controlled_failover(db, cluster, target, user, confirmation="Test Pair", acknowledged=True)
-        run.status = "SUCCEEDED"; run.phase = "COMPLETE"
-        source.vip_owned = False; source.dhcp_running = False; source.dns_healthy = True
-        target.vip_owned = True; target.dhcp_running = True; target.dns_healthy = False
+        run.status = "SUCCEEDED"
+        run.phase = "COMPLETE"
+        source.vip_owned = False
+        source.dhcp_running = False
+        source.dns_healthy = True
+        target.vip_owned = True
+        target.dhcp_running = True
+        target.dns_healthy = False
         db.commit()
 
         request_failover_rollback(db, run, acknowledged=True)

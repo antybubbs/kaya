@@ -42,7 +42,8 @@ def draft(**overrides):
 def test_new_cluster_persists_explicit_topology_without_exposing_credentials():
     with database() as db:
         admin = User(email="topology@example.invalid", password_hash="x", role="admin", is_active=True)
-        db.add(admin); db.commit()
+        db.add(admin)
+        db.commit()
         cluster = create_cluster_draft(db, draft(), admin)
         assert cluster.deployment_mode == DNS_DHCP
         assert cluster.gateway_address == "192.168.50.1"
@@ -53,7 +54,8 @@ def test_new_cluster_persists_explicit_topology_without_exposing_credentials():
 def test_dns_only_requires_a_known_external_dhcp_provider_and_same_network():
     with database() as db:
         admin = User(email="dns-only@example.invalid", password_hash="x", role="admin", is_active=True)
-        db.add(admin); db.commit()
+        db.add(admin)
+        db.commit()
         with pytest.raises(HADraftError, match="provides DHCP"):
             create_cluster_draft(db, draft(deployment_mode=DNS_ONLY), admin)
         with pytest.raises(HADraftError, match="same IPv4 network"):
@@ -65,10 +67,12 @@ def test_dns_only_requires_a_known_external_dhcp_provider_and_same_network():
 def test_explicit_dns_only_excludes_dhcp_from_sync_but_legacy_clusters_keep_discovery():
     with database() as db:
         cluster = HACluster(name="DNS only", provider_key="pihole", deployment_mode=DNS_ONLY, status="HEALTHY")
-        db.add(cluster); db.flush()
+        db.add(cluster)
+        db.flush()
         primary = HANode(cluster_id=cluster.id, display_name="A", api_base_url="https://192.168.1.2", role="ACTIVE", desired_role="ACTIVE", configuration_snapshot_json='{"dhcp":{"config":{"dhcp":{"active":true}}},"local_dns":{"hosts":[]}}')
         secondary = HANode(cluster_id=cluster.id, display_name="B", api_base_url="https://192.168.1.3", role="STANDBY", desired_role="STANDBY", configuration_snapshot_json='{"dhcp":{"config":{"dhcp":{"active":false}}},"local_dns":{"hosts":[]}}')
-        db.add_all([primary, secondary]); db.flush()
+        db.add_all([primary, secondary])
+        db.flush()
         cluster.authoritative_node_id = primary.id
         db.commit()
         assert sync_plan(cluster)["groups"] == []

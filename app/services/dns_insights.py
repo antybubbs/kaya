@@ -14,7 +14,7 @@ from urllib.parse import urlencode
 
 from sqlalchemy.orm import Session
 
-from app.models.models import DHCPLeaseHistory, DHCPRange, DNSClientTrafficEvent, DNSInsight, DNSProviderConfig, DNSRecognisedDevice, DNSStatisticsSnapshot
+from app.models.models import DHCPLeaseHistory, DHCPRange, DNSClientTrafficEvent, DNSInsight, DNSProviderConfig, DNSStatisticsSnapshot
 from app.services.dns_providers import DNSProvider, DNSProviderResult, provider_for, provider_snapshot_for_io
 from app.services.dns_clients import normalise_mac, observe_client
 from app.services.site_settings import get_site_settings

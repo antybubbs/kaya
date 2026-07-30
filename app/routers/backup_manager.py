@@ -1,24 +1,33 @@
-import json
 import hashlib
+import json
 import logging
 import secrets
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
+from starlette import status
 
 from app.core.csrf import csrf_context, validate_csrf_token
+from app.core.templating import templates
+from app.core.formatting import human_bytes
 from app.core.security import decrypt_secret, encrypt_secret
 from app.db.session import get_db
-from app.models.models import BackupJob, BackupRecord, ComputeHost, ComputeInventoryItem, ComputeWorkload, RemoteManagerSetting
+from app.models.models import (
+    BackupJob,
+    BackupRecord,
+    ComputeHost,
+    ComputeInventoryItem,
+    ComputeWorkload,
+    RemoteManagerSetting,
+)
 from app.routers.auth import require_editor, require_module_access, require_user
 from app.services.audit import write_audit
 from app.services.site_settings import get_site_setting
 
 router = APIRouter(prefix="/infrastructure/backup-manager", dependencies=[Depends(require_module_access("backup_manager"))])
-templates = Jinja2Templates(directory="app/templates")
+
 logger = logging.getLogger(__name__)
 
 
@@ -219,14 +228,7 @@ def set_workload_target(db: Session, workload_id: int, target_name: str) -> None
 
 
 def bytes_label(value: int | None) -> str:
-    if value is None:
-        return "-"
-    number = float(value)
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if abs(number) < 1024:
-            return f"{number:.1f} {unit}" if unit != "B" else f"{int(number)} B"
-        number /= 1024
-    return f"{number:.1f} PB"
+    return human_bytes(value, unknown="-")
 
 
 def latest_successful_backup(db: Session, workload_id: int) -> BackupJob | None:

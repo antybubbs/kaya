@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.core.kayavault import KayaVaultError, decrypt_package
+from app.core.kayavault import KayaVaultError, decrypt_package  # noqa: E402
 
 
 def safe_name(value: str, fallback: str) -> str:

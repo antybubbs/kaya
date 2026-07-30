@@ -1,6 +1,7 @@
 import os
 import subprocess
-from pathlib import Path
+
+from app.core.paths import SCRIPT_DIR
 
 
 _process: subprocess.Popen | None = None
@@ -24,9 +25,7 @@ def start_kaya_remote_service() -> None:
     if _process and _process.poll() is None:
         return
 
-    script = Path("/app/scripts/kaya-remote-manager.cjs")
-    if not script.exists():
-        script = Path("scripts/kaya-remote-manager.cjs")
+    script = SCRIPT_DIR / "kaya-remote-manager.cjs"
     if not script.exists():
         return
 

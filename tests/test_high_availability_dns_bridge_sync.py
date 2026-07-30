@@ -24,7 +24,7 @@ def test_dns_provider_actions_are_not_blocked_by_hidden_settings_panels():
     assert "event.submitter?.formNoValidate" in script
 
     router = Path("app/routers/admin.py").read_text(encoding="utf-8")
-    assert 'RedirectResponse("/system/site-administration?tab=module-dns-manager&provider_saved=1"' in router
+    assert '"/system/site-administration?tab=module-dns-manager&provider_saved=1"' in router
 
 
 def database():
@@ -43,10 +43,12 @@ def make_cluster(db: Session):
     cluster = HACluster(name="Home DNS", provider_key="pihole", status="HEALTHY", virtual_ip="192.0.2.53", keepalived_status="DEPLOYED", created_by=user)
     first_connection = HAProviderConnection(provider_key="pihole", name="One", api_base_url="http://one.invalid", encrypted_secret="one", created_by=user)
     second_connection = HAProviderConnection(provider_key="pihole", name="Two", api_base_url="http://two.invalid", encrypted_secret="two", created_by=user)
-    db.add_all([user, cluster, first_connection, second_connection]); db.flush()
+    db.add_all([user, cluster, first_connection, second_connection])
+    db.flush()
     first = HANode(cluster_id=cluster.id, display_name="One", api_base_url=first_connection.api_base_url, ha_connection_id=first_connection.id, role="ACTIVE", desired_role="ACTIVE", vip_owned=True, dns_healthy=True, keepalived_runtime_state="RUNNING")
     second = HANode(cluster_id=cluster.id, display_name="Two", api_base_url=second_connection.api_base_url, ha_connection_id=second_connection.id, role="STANDBY", desired_role="STANDBY", vip_owned=False, dns_healthy=True, keepalived_runtime_state="RUNNING")
-    db.add_all([first, second]); db.flush()
+    db.add_all([first, second])
+    db.flush()
     cluster.authoritative_node_id = first.id
     cluster.current_active_node_id = first.id
     db.commit()
@@ -57,11 +59,14 @@ def test_standalone_provider_path_is_unchanged_and_linking_preserves_history():
     with database() as db:
         _, cluster, _, _ = make_cluster(db)
         provider = DNSProviderConfig(name="Existing", provider_type="pihole", base_url="http://one.invalid")
-        db.add(provider); db.flush()
+        db.add(provider)
+        db.flush()
         client = DNSRecognisedDevice(provider_id=provider.id, identity_type="mac", identity_value="00:11:22:33:44:55")
-        db.add(client); db.flush()
+        db.add(client)
+        db.flush()
         history = DNSClientIPHistory(dns_client_id=client.id, provider_id=provider.id, ip_address="192.0.2.10")
-        db.add(history); db.commit()
+        db.add(history)
+        db.commit()
         provider_id, client_id, history_id = provider.id, client.id, history.id
         assert isinstance(provider_for(provider), PiHoleProvider)
 
@@ -87,11 +92,14 @@ def test_settings_can_convert_existing_provider_to_ha_without_losing_identity_or
     with database() as db:
         _, cluster, _, _ = make_cluster(db)
         provider = DNSProviderConfig(name="Existing", provider_type="pihole", base_url="http://one.invalid")
-        db.add(provider); db.flush()
+        db.add(provider)
+        db.flush()
         client = DNSRecognisedDevice(provider_id=provider.id, identity_type="mac", identity_value="00:11:22:33:44:55")
-        db.add(client); db.flush()
+        db.add(client)
+        db.flush()
         history = DNSClientIPHistory(dns_client_id=client.id, provider_id=provider.id, ip_address="192.0.2.10")
-        db.add(history); db.commit()
+        db.add(history)
+        db.commit()
         ids = provider.id, client.id, history.id
 
         saved = save_dns_manager_settings(db, **dns_settings(provider, cluster))
@@ -108,8 +116,10 @@ def test_settings_reject_unready_ha_cluster_instead_of_silently_ignoring_selecti
     with database() as db:
         _, cluster, _, _ = make_cluster(db)
         provider = DNSProviderConfig(name="Existing", provider_type="pihole", base_url="http://one.invalid")
-        db.add(provider); db.commit()
-        cluster.status = "DEGRADED"; db.commit()
+        db.add(provider)
+        db.commit()
+        cluster.status = "DEGRADED"
+        db.commit()
 
         with pytest.raises(DNSProviderSettingsError, match="not currently ready"):
             save_dns_manager_settings(db, **dns_settings(provider, cluster))
@@ -120,7 +130,8 @@ def test_ha_provider_keeps_safe_reads_available_through_vip_when_owner_is_ambigu
     with database() as db:
         _, cluster, _, second = make_cluster(db)
         provider = DNSProviderConfig(name="HA", provider_type="pihole", base_url="http://192.0.2.53", ha_cluster_id=cluster.id)
-        db.add(provider); db.commit()
+        db.add(provider)
+        db.commit()
         second.vip_owned = True
         cluster.current_active_node_id = None
         db.commit()

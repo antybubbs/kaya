@@ -23,6 +23,8 @@ RUN npm install --omit=dev --no-audit --no-fund
 
 COPY app ./app
 COPY scripts ./scripts
+COPY migrations ./migrations
+COPY alembic.ini ./alembic.ini
 COPY ha_agent ./ha_agent
 COPY docker-entrypoint.sh /usr/local/bin/kaya-entrypoint
 

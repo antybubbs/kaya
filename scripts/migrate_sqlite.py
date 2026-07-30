@@ -30,9 +30,10 @@ def table_exists(cursor, table):
     return cursor.fetchone() is not None
 
 
-def main():
+def main(*, quiet=False):
     if not DB_PATH.exists():
-        print("Database does not exist yet. Skipping migrations.")
+        if not quiet:
+            print("Database does not exist yet. Skipping migrations.")
         return
 
     conn = sqlite3.connect(DB_PATH)
@@ -561,12 +562,13 @@ def main():
     cur.execute("PRAGMA foreign_keys = ON")
     conn.close()
 
-    if migrations_applied:
-        print("Applied migrations:")
-        for migration in migrations_applied:
-            print(f" - {migration}")
-    else:
-        print("Database schema already up to date.")
+    if not quiet:
+        if migrations_applied:
+            print("Applied migrations:")
+            for migration in migrations_applied:
+                print(f" - {migration}")
+        else:
+            print("Database schema already up to date.")
 
 
 if __name__ == "__main__":

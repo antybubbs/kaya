@@ -86,7 +86,7 @@ def import_csv(db: Session, user: User, path: str, ip_address: str | None = None
 
     count = 0
     try:
-        custom_fields = db.query(CustomField).filter(CustomField.module == "licences", CustomField.is_active == True).all()
+        custom_fields = db.query(CustomField).filter(CustomField.module == "licences", CustomField.is_active).all()
         custom_field_columns = {f"Custom: {field.label}": field for field in custom_fields}
         for _, row in df.iterrows():
             product = clean(row.get("Product"))
@@ -146,7 +146,7 @@ def import_ip_addresses_csv(db: Session, user: User, path: str, ip_address: str 
 
     count = 0
     try:
-        custom_fields = db.query(CustomField).filter(CustomField.module == "ip_addresses", CustomField.is_active == True).all()
+        custom_fields = db.query(CustomField).filter(CustomField.module == "ip_addresses", CustomField.is_active).all()
         custom_field_columns = {f"Custom: {field.label}": field for field in custom_fields}
         for _, row in df.iterrows():
             address = clean_ip_address(row.get("IP Address"))

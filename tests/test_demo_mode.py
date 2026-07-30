@@ -7,7 +7,7 @@ import types
 config_stub = types.ModuleType("app.core.config")
 config_stub.get_settings = lambda: SimpleNamespace(demo_mode=False)
 sys.modules.setdefault("app.core.config", config_stub)
-from app.core.demo import demo_request_is_blocked
+from app.core.demo import demo_request_is_blocked  # noqa: E402
 
 
 class DemoModeSafetyTests(unittest.TestCase):

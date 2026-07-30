@@ -3,6 +3,8 @@ name: kaya
 services:
   kaya:
     image: ${KAYA_IMAGE:-ghcr.io/antybubbs/kaya:latest}
+    build:
+      context: .
     container_name: kaya
     restart: unless-stopped
     environment:
@@ -11,19 +13,20 @@ services:
     ports:
       - "${KAYA_PORT:-8080}:8080"
     volumes:
-      - ./data:/app/data
-      - ./uploads:/app/uploads
-      - ./data/remote-recordings:/app/data/remote-recordings
+      - ${KAYA_DATA_DIR:-./data}:/app/data
+      - ${KAYA_UPLOAD_DIR:-./uploads}:/app/uploads
+      - ${KAYA_DATA_DIR:-./data}/remote-recordings:/app/data/remote-recordings
     security_opt:
       - no-new-privileges:true
     cap_add:
       - NET_RAW
     read_only: true
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"]
+      test: ["CMD-SHELL", "python -c \"import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=5).status == 200 else 1)\" >/dev/null 2>&1"]
       interval: 15s
       timeout: 5s
       retries: 5
+      start_period: 120s
     tmpfs:
       - /tmp:size=128m,noexec,nosuid
   secure-send-gateway:
@@ -40,7 +43,7 @@ services:
     ports:
       - "${KAYA_SECURE_SEND_PORT:-8999}:8999"
     volumes:
-      - ./data:/app/data
+      - ${KAYA_DATA_DIR:-./data}:/app/data
     depends_on:
       kaya:
         condition: service_healthy

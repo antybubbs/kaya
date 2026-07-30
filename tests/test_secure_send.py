@@ -10,7 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.db.session import Base
-from app.models.models import SecureSendFile, SecureSendRecipientSession, User
+from app.models.models import SecureSendFile, User
 import app.services.secret_vault as vault_service
 import app.services.secure_send as send_service
 import app.routers.secure_send as send_router
@@ -35,7 +35,9 @@ def keys_and_storage(monkeypatch, tmp_path):
 
 def sender(db):
     row = User(email="sender@example.test", password_hash="unused", role="editor", is_active=True)
-    db.add(row); db.commit(); return row
+    db.add(row)
+    db.commit()
+    return row
 
 
 def package(db, *, expires_at=None, one_download=False):
@@ -81,7 +83,9 @@ def test_ciphertext_tampering_is_rejected(db):
     key = send_service.authenticate_package(row, token, "740196", passphrase)
     file_row = db.query(SecureSendFile).filter_by(package_id=row.id).one()
     path = send_service.ensure_storage() / file_row.storage_id
-    content = bytearray(path.read_bytes()); content[-1] ^= 1; path.write_bytes(content)
+    content = bytearray(path.read_bytes())
+    content[-1] ^= 1
+    path.write_bytes(content)
     with pytest.raises(send_service.SecureSendError):
         send_service.read_file(row, file_row, key)
 
@@ -104,7 +108,8 @@ def test_expiry_destroys_payload_and_revokes_sessions(db):
     _, _, session = send_service.start_recipient_session(db, row)
     assert path.exists()
     assert send_service.expire_and_cleanup(db) == 1
-    db.refresh(row); db.refresh(session)
+    db.refresh(row)
+    db.refresh(session)
     assert row.status == "expired" and row.cleaned_at and row.encrypted_note is None
     assert not path.exists() and not db.query(SecureSendFile).filter_by(package_id=row.id).count()
     assert session.revoked_at is not None
@@ -143,9 +148,15 @@ def test_gateway_health_reports_running_and_caches(monkeypatch):
 
     class Response:
         status = 200
-        def __enter__(self): return self
-        def __exit__(self, *_): return False
-        def read(self, _limit): return b'{"status":"ok"}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self, _limit):
+            return b'{"status":"ok"}'
 
     monkeypatch.setattr(send_service, "urlopen", lambda request, timeout: calls.append((request.full_url, timeout)) or Response())
     send_service._GATEWAY_HEALTH_CACHE.update({"expires": 0.0, "result": None})

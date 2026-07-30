@@ -26,6 +26,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.core.paths import DEFAULT_DATA_DIR, PROJECT_ROOT
 from app.core.kayavault import KayaVaultError, decrypt_package, encrypt_package
 from app.core.security import hash_password, verify_password
 from app.core.totp import decrypted_totp_secret, hotp
@@ -34,9 +35,11 @@ from app.models.models import User, Vault, VaultSession, VaultTotpUse
 FORMAT_VERSION = 1
 ABSOLUTE_SESSION_HOURS = 8
 SESSION_KEY = "vault_session_token"
-VAULT_STORAGE = Path(os.getenv("KAYA_VAULT_STORAGE_DIR", "/app/data/secret-vault"))
-if not Path("/app/data").exists():
-    VAULT_STORAGE = Path("data/secret-vault")
+VAULT_STORAGE = Path(
+    os.getenv("KAYA_VAULT_STORAGE_DIR", str(DEFAULT_DATA_DIR / "secret-vault"))
+)
+if not DEFAULT_DATA_DIR.exists():
+    VAULT_STORAGE = PROJECT_ROOT / "data" / "secret-vault"
 
 
 class VaultCryptoError(ValueError):

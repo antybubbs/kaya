@@ -74,9 +74,11 @@ def test_disabled_backup_manager_blocks_ui_and_stops_new_agent_dispatch():
         user = User(email="backup-viewer@example.com", password_hash="x", role="viewer", is_active=True)
         token = "agent-test-token"
         host = ComputeHost(name="Docker Agent", platform="docker_agent", base_url="https://docker.invalid", agent_token_hash=hash_agent_token(token))
-        db.add_all([user, host, RemoteManagerSetting(key="backup_manager_enabled", value="")]); db.flush()
+        db.add_all([user, host, RemoteManagerSetting(key="backup_manager_enabled", value="")])
+        db.flush()
         queued = BackupJob(host_id=host.id, operation="backup", status="queued")
-        db.add(queued); db.commit()
+        db.add(queued)
+        db.commit()
         with pytest.raises(HTTPException) as rejected:
             require_backup_user(request("/infrastructure/backup-manager"), db=db, user=user)
         assert rejected.value.status_code == 404
@@ -90,10 +92,12 @@ def test_disable_requires_acknowledgement_and_preserves_backup_data():
         admin = User(email="backup-admin@example.com", password_hash="x", role="admin", is_active=True)
         host = ComputeHost(name="Backup host", platform="docker_agent", base_url="https://backup.invalid")
         record = BackupRecord(name="Existing backup", target="/mnt/backups/existing.tar", source_type="manual")
-        db.add_all([admin, host, record, RemoteManagerSetting(key="backup_manager_enabled", value="1")]); db.flush()
+        db.add_all([admin, host, record, RemoteManagerSetting(key="backup_manager_enabled", value="1")])
+        db.flush()
         grant_all_registered_modules(db, admin)
         job = BackupJob(host_id=host.id, operation="backup", status="running", artifact_path="/mnt/backups/job.enc")
-        db.add(job); db.commit()
+        db.add(job)
+        db.commit()
         record_id, job_id = record.id, job.id
 
         rejected = asyncio.run(set_backup_manager_feature(

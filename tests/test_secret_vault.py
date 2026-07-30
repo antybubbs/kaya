@@ -8,7 +8,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.db.session import Base
-from app.models.models import User, VaultSession
+from app.models.models import User
 import app.services.secret_vault as vault_service
 
 
@@ -30,7 +30,9 @@ def app_key(monkeypatch, tmp_path):
 
 def account(db):
     user = User(email="vault@example.test", password_hash="unused", role="viewer", is_active=True, totp_enabled=True)
-    db.add(user); db.commit(); return user
+    db.add(user)
+    db.commit()
+    return user
 
 
 def test_pin_and_recovery_wrap_the_same_random_master_key(db):
@@ -63,7 +65,8 @@ def test_payload_encryption_rejects_tampering_and_wrong_associated_data():
     assert vault_service.decrypt_payload(key, 17, "item:2", encrypted)["secret"] == "value"
     with pytest.raises(vault_service.VaultCryptoError):
         vault_service.decrypt_payload(key, 18, "item:2", encrypted)
-    raw = bytearray(base64.urlsafe_b64decode(encrypted)); raw[-1] ^= 1
+    raw = bytearray(base64.urlsafe_b64decode(encrypted))
+    raw[-1] ^= 1
     with pytest.raises(vault_service.VaultCryptoError):
         vault_service.decrypt_payload(key, 17, "item:2", base64.urlsafe_b64encode(raw).decode())
 
@@ -73,7 +76,8 @@ def test_encrypted_files_reject_modified_ciphertext():
     encrypted = vault_service.encrypt_file(key, 3, "storage-id", b"private document")
     assert b"private document" not in encrypted
     assert vault_service.decrypt_file(key, 3, "storage-id", encrypted) == b"private document"
-    modified = bytearray(encrypted); modified[-2] ^= 4
+    modified = bytearray(encrypted)
+    modified[-2] ^= 4
     with pytest.raises(vault_service.VaultCryptoError):
         vault_service.decrypt_file(key, 3, "storage-id", bytes(modified))
 
@@ -85,7 +89,10 @@ def test_portable_export_is_independent_authenticated_and_versioned():
     assert vault_service.decrypt_portable_package(package, "a sufficiently long export passphrase") == payload
     with pytest.raises(vault_service.VaultCryptoError):
         vault_service.decrypt_portable_package(package, "wrong but sufficiently long password")
-    outer = json.loads(package); ciphertext = bytearray(base64.urlsafe_b64decode(outer["ciphertext"])); ciphertext[-1] ^= 1; outer["ciphertext"] = base64.urlsafe_b64encode(ciphertext).decode()
+    outer = json.loads(package)
+    ciphertext = bytearray(base64.urlsafe_b64decode(outer["ciphertext"]))
+    ciphertext[-1] ^= 1
+    outer["ciphertext"] = base64.urlsafe_b64encode(ciphertext).decode()
     with pytest.raises(vault_service.VaultCryptoError):
         vault_service.decrypt_portable_package(json.dumps(outer).encode(), "a sufficiently long export passphrase")
 
@@ -96,19 +103,23 @@ def test_weak_pin_patterns_are_rejected(weak):
 
 
 def test_vault_session_is_bound_to_kaya_session_and_expires(db):
-    user = account(db); vault, _ = vault_service.create_vault(db, user, "correct horse battery staple")
+    user = account(db)
+    vault, _ = vault_service.create_vault(db, user, "correct horse battery staple")
     request = type("Request", (), {"session": {"session_id": "kaya-session"}})()
     row = vault_service.start_vault_session(db, request, vault, user)
     assert vault_service.active_vault_session(db, request, user, touch=False).id == row.id
     request.session["session_id"] = "different-session"
     assert vault_service.active_vault_session(db, request, user, touch=False) is None
     request.session["session_id"] = "kaya-session"
-    row.expires_at = datetime.utcnow() - timedelta(seconds=1); db.commit()
+    row.expires_at = datetime.utcnow() - timedelta(seconds=1)
+    db.commit()
     assert vault_service.active_vault_session(db, request, user, touch=False) is None
 
 
 def test_totp_replay_is_rejected(db, monkeypatch):
-    user = account(db); user.totp_secret = "encrypted"; db.commit()
+    user = account(db)
+    user.totp_secret = "encrypted"
+    db.commit()
     secret = vault_service.base64.b32encode(b"s" * 20).decode().rstrip("=")
     monkeypatch.setattr(vault_service, "decrypted_totp_secret", lambda _: secret)
     monkeypatch.setattr(vault_service.time, "time", lambda: 1_800_000_000)

@@ -1,14 +1,15 @@
+import logging
 import os
-import signal
 import subprocess
-from pathlib import Path
 
 from app.core.config import get_settings
+from app.core.paths import SCRIPT_DIR
 from app.db.session import SessionLocal
 from app.models.models import RemoteManagerSetting
 
 BRIDGE_PORT = "30008"
 _process: subprocess.Popen | None = None
+logger = logging.getLogger(__name__)
 
 
 def _remote_settings() -> dict[str, str]:
@@ -37,11 +38,15 @@ def stop_guacamole_bridge() -> None:
         try:
             _process.terminate()
             _process.wait(timeout=5)
-        except Exception:
+        except (OSError, subprocess.TimeoutExpired):
+            logger.warning(
+                "Guacamole bridge did not stop cleanly; forcing termination",
+                exc_info=True,
+            )
             try:
-                os.kill(_process.pid, signal.SIGKILL)
-            except Exception:
-                pass
+                _process.kill()
+            except OSError:
+                logger.exception("Unable to force-stop the Guacamole bridge")
     _process = None
 
 
@@ -64,9 +69,7 @@ def start_guacamole_bridge() -> None:
             "ENCRYPTION_KEY": app_settings.encryption_key,
         }
     )
-    script = Path("/app/scripts/guacamole-server.cjs")
-    if not script.exists():
-        script = Path("scripts/guacamole-server.cjs")
+    script = SCRIPT_DIR / "guacamole-server.cjs"
     _process = subprocess.Popen(["node", str(script)], env=env)
 
 

@@ -10,9 +10,20 @@ from urllib.parse import urlparse
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.models.models import AuditLog, CustomField, HardwareAsset, IPAddress, Licence, ManagedListItem, NetworkMonitor, RemoteAccess, User
+from app.core.formatting import human_bytes
+from app.core.paths import PACKAGE_ROOT, STATIC_DIR
+from app.models.models import (
+    AuditLog,
+    CustomField,
+    HardwareAsset,
+    IPAddress,
+    Licence,
+    ManagedListItem,
+    NetworkMonitor,
+    RemoteAccess,
+    User,
+)
 from app.services.version import version_status
-from app.services.site_settings import get_site_setting
 
 PACKAGE_NAMES = [
     "fastapi",
@@ -20,23 +31,13 @@ PACKAGE_NAMES = [
     "uvicorn",
     "jinja2",
     "sqlalchemy",
+    "alembic",
     "pydantic-settings",
     "cryptography",
     "pandas",
     "openpyxl",
     "qrcode",
 ]
-
-
-def human_bytes(value: int | None) -> str:
-    if value is None:
-        return "unknown"
-    size = float(value)
-    for unit in ["B", "KB", "MB", "GB", "TB"]:
-        if size < 1024 or unit == "TB":
-            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
-        size /= 1024
-    return f"{size:.1f} TB"
 
 
 def directory_size(path: Path) -> int:
@@ -64,14 +65,14 @@ def sqlite_path(database_url: str) -> Path | None:
 
 
 def sqlite_version() -> str:
-    try:
-        return sqlite3.sqlite_version
-    except Exception:
-        return "unknown"
+    return sqlite3.sqlite_version
 
 
 def package_versions() -> list[dict[str, str]]:
-    rows = [{"name": "Python", "version": platform.python_version()}, {"name": "SQLite", "version": sqlite_version()}]
+    rows = [
+        {"name": "Python", "version": platform.python_version()},
+        {"name": "SQLite", "version": sqlite_version()},
+    ]
     for name in PACKAGE_NAMES:
         try:
             version = metadata.version(name)
@@ -123,7 +124,11 @@ def uptime() -> str:
 
 
 def cpu_info() -> dict[str, str | int]:
-    model = proc_first_value(Path("/proc/cpuinfo"), "model name") or platform.processor() or "unknown"
+    model = (
+        proc_first_value(Path("/proc/cpuinfo"), "model name")
+        or platform.processor()
+        or "unknown"
+    )
     try:
         load_average = " / ".join(f"{value:.2f}" for value in os.getloadavg())
     except (AttributeError, OSError):
@@ -142,18 +147,27 @@ def disk_info(path: Path) -> dict[str, str]:
         total, used, free = shutil.disk_usage(target)
     except OSError:
         return {"total": "unknown", "used": "unknown", "free": "unknown"}
-    return {"total": human_bytes(total), "used": human_bytes(used), "free": human_bytes(free)}
+    return {
+        "total": human_bytes(total),
+        "used": human_bytes(used),
+        "free": human_bytes(free),
+    }
 
 
 def storage_rows() -> list[dict[str, str]]:
     settings = get_settings()
     db_path = sqlite_path(settings.database_url)
     upload_path = Path(settings.upload_dir)
-    data_path = db_path.parent if db_path else Path("/app/data")
-    static_path = Path("app/static")
-    app_path = Path("app")
+    data_path = db_path.parent if db_path else Path(settings.data_dir)
+    static_path = STATIC_DIR
+    app_path = PACKAGE_ROOT
     rows = [
-        {"label": "Database", "size": human_bytes(directory_size(db_path)) if db_path else "external database"},
+        {
+            "label": "Database",
+            "size": (
+                human_bytes(directory_size(db_path)) if db_path else "external database"
+            ),
+        },
         {"label": "Uploads", "size": human_bytes(directory_size(upload_path))},
         {"label": "Data directory", "size": human_bytes(directory_size(data_path))},
         {"label": "Static assets", "size": human_bytes(directory_size(static_path))},
@@ -180,14 +194,18 @@ def collect_about(db: Session) -> dict:
     settings = get_settings()
     version = version_status()
     db_path = sqlite_path(settings.database_url)
-    data_path = db_path.parent if db_path else Path("/app/data")
+    data_path = db_path.parent if db_path else Path(settings.data_dir)
     return {
         "version": version,
         "app": {
             "name": settings.app_name,
             "environment": settings.app_env,
             "repository": settings.github_repo,
-            "database": "SQLite" if settings.database_url.startswith("sqlite") else "External database",
+            "database": (
+                "SQLite"
+                if settings.database_url.startswith("sqlite")
+                else "External database"
+            ),
         },
         "system": {
             "hostname": platform.node() or "unknown",

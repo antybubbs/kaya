@@ -17,19 +17,25 @@ def database():
 
 def add_provider(db, **values):
     row = OIDCProvider(name="SSO", issuer="https://id.example.com", client_id="kaya", is_enabled=True, **values)
-    db.add(row); db.flush(); return row
+    db.add(row)
+    db.flush()
+    return row
 
 
 def add_user(db, email="user@example.com", **values):
     row = User(email=email, password_hash=values.pop("password_hash", "local-hash"), role=values.pop("role", "viewer"), is_active=values.pop("is_active", True), **values)
-    db.add(row); db.flush(); return row
+    db.add(row)
+    db.flush()
+    return row
 
 
 def transaction(db, provider, **values):
     transaction_hash = values.pop("transaction_hash", "a" * 64)
     state_hash = values.pop("state_hash", "b" * 64)
     row = OIDCTransaction(transaction_hash=transaction_hash, state_hash=state_hash, encrypted_nonce="x", encrypted_code_verifier="x", provider_id=provider.id, expires_at=datetime.utcnow(), **values)
-    db.add(row); db.flush(); return row
+    db.add(row)
+    db.flush()
+    return row
 
 
 def claims(email="user@example.com", subject="subject-1", groups=None):
@@ -65,7 +71,8 @@ def test_jit_is_disabled_by_default_and_creates_oidc_only_viewer_when_enabled():
 def test_unverified_and_disallowed_email_are_rejected():
     with database() as db:
         provider = add_provider(db, allow_jit_provisioning=True, allowed_email_domains="example.com")
-        unverified = claims(); unverified["email_verified"] = False
+        unverified = claims()
+        unverified["email_verified"] = False
         with pytest.raises(OIDCIdentityError) as failure:
             resolve_login(db, provider, transaction(db, provider), unverified)
         assert failure.value.category == "unverified_email"
@@ -94,14 +101,16 @@ def test_oidc_only_user_cannot_unlink_and_local_user_can():
         provider = add_provider(db)
         oidc_user = add_user(db, password_hash=None, authentication_type="oidc")
         identity = ExternalIdentity(user_id=oidc_user.id, provider_id=provider.id, issuer=provider.issuer, subject="one", current_email=oidc_user.email, link_method="jit_provisioning")
-        db.add(identity); db.flush()
+        db.add(identity)
+        db.flush()
         with pytest.raises(OIDCIdentityError) as failure:
             unlink_identity(db, identity, oidc_user)
         assert failure.value.category == "no_remaining_login_method"
 
         local = add_user(db, "local@example.com", authentication_type="local_and_oidc")
         linked = ExternalIdentity(user_id=local.id, provider_id=provider.id, issuer=provider.issuer, subject="two", current_email=local.email, link_method="self_service")
-        db.add(linked); db.commit()
+        db.add(linked)
+        db.commit()
         unlink_identity(db, linked, local)
         assert local.authentication_type == "local"
 
@@ -111,7 +120,8 @@ def test_role_sync_cannot_demote_last_active_administrator():
         provider = add_provider(db, sync_roles_on_login=True, role_mappings_json='[{"group":"Users","role":"viewer"}]')
         admin = add_user(db, role="admin", role_source="oidc")
         identity = ExternalIdentity(user_id=admin.id, provider_id=provider.id, issuer=provider.issuer, subject="subject-1", current_email=admin.email, link_method="admin", role_management="oidc")
-        db.add(identity); db.flush()
+        db.add(identity)
+        db.flush()
         with pytest.raises(OIDCIdentityError) as failure:
             resolve_login(db, provider, transaction(db, provider), claims(groups=["Users"]))
         assert failure.value.category == "last_administrator_protection"
