@@ -13,11 +13,18 @@
   let dragged = null;
   let touchDragging = false;
   let saveTimer = null;
+  let saveStateTimer = null;
   let initialPreferences = {};
   try { initialPreferences = JSON.parse(root.dataset.preferences || "{}"); } catch (_) {}
 
+  function setSaveState(message, clearAfter = 0) {
+    if (!saveState) return;
+    window.clearTimeout(saveStateTimer);
+    saveState.textContent = message;
+    if (clearAfter) saveStateTimer = window.setTimeout(() => { saveState.textContent = ""; }, clearAfter);
+  }
   function preferences() {
-    const value = { ...initialPreferences, monitor_order: grid ? [...grid.querySelectorAll("[data-monitor-card]")].map(card => Number(card.dataset.monitorCard)) : (initialPreferences.monitor_order || []) };
+    const value = { ...initialPreferences, monitor_order: grid ? [...grid.querySelectorAll("[data-monitor-id]")].map(card => Number(card.dataset.monitorId)) : (initialPreferences.monitor_order || []) };
     if (body.dataset.wallboardColumns) value.columns = body.dataset.wallboardColumns;
     if (body.dataset.wallboardDensity) value.density = body.dataset.wallboardDensity;
     document.querySelectorAll("[data-wallboard-setting]").forEach(control => { value[control.dataset.wallboardSetting] = control.type === "checkbox" ? control.checked : control.value; });
@@ -25,12 +32,14 @@
   }
   async function save() {
     if (!root.dataset.preferencesEndpoint) return;
-    saveState.textContent = "Saving...";
+    setSaveState("Saving...");
     try {
       const response = await fetch(root.dataset.preferencesEndpoint, { method: "PUT", headers, body: JSON.stringify(preferences()), cache: "no-store" });
       if (!response.ok) throw new Error();
-      saveState.textContent = "Saved";
-    } catch (_) { saveState.textContent = "Could not save layout"; }
+      const payload = await response.json();
+      initialPreferences = payload.preferences || initialPreferences;
+      setSaveState("Layout saved", 2500);
+    } catch (_) { setSaveState("Layout changed, but Kaya could not save it. Please try again."); }
   }
   function queueSave() { window.clearTimeout(saveTimer); saveTimer = window.setTimeout(save, 250); }
   function applySetting(control) {
@@ -72,5 +81,13 @@
   if (grid) grid.addEventListener("dragover", event => { if (!dragged) return; event.preventDefault(); const target = event.target.closest("[data-monitor-card]"); if (!target || target === dragged) return; const box = target.getBoundingClientRect(); const after = event.clientY > box.top + box.height / 2 || (Math.abs(event.clientY - (box.top + box.height / 2)) < box.height / 3 && event.clientX > box.left + box.width / 2); grid.insertBefore(dragged, after ? target.nextSibling : target); });
   if (grid) grid.addEventListener("dragend", () => { if (dragged) dragged.classList.remove("is-dragging"); dragged = null; dragAllowed = false; queueSave(); });
   if (grid) grid.addEventListener("click", event => { const button = event.target.closest("[data-monitor-move]"); if (!button || !editMode) return; const card = button.closest("[data-monitor-card]"); if (button.dataset.monitorMove === "up" && card.previousElementSibling) grid.insertBefore(card, card.previousElementSibling); else if (button.dataset.monitorMove === "down" && card.nextElementSibling) grid.insertBefore(card.nextElementSibling, card); else return; button.focus(); queueSave(); });
-  document.querySelector("[data-wallboard-reset]")?.addEventListener("click", async () => { if (!confirm("Reset your IP/WAN Wallboard layout?")) return; const response = await fetch(root.dataset.resetEndpoint, { method: "POST", headers: { "X-CSRF-Token": root.dataset.csrf }, cache: "no-store" }); if (response.ok) location.reload(); });
+  document.querySelector("[data-wallboard-reset]")?.addEventListener("click", async () => {
+    if (!confirm("Reset your IP/WAN Wallboard layout?")) return;
+    setSaveState("Resetting...");
+    try {
+      const response = await fetch(root.dataset.resetEndpoint, { method: "POST", headers: { "X-CSRF-Token": root.dataset.csrf }, cache: "no-store" });
+      if (!response.ok) throw new Error();
+      location.reload();
+    } catch (_) { setSaveState("Kaya could not reset the layout. Please try again."); }
+  });
 })();

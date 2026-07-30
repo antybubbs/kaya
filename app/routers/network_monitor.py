@@ -465,7 +465,13 @@ def save_authenticated_wallboard_preferences(
 ):
     validate_csrf_token(request, request.headers.get("x-csrf-token"))
     monitor_ids = [row.id for row in db.query(NetworkMonitor.id).order_by(NetworkMonitor.display_name.asc(), NetworkMonitor.id.asc()).all()]
-    return {"preferences": save_user_preferences(db, user, payload, monitor_ids, wallboard_display(get_wallboard(db)))}
+    try:
+        preferences = save_user_preferences(
+            db, user, payload, monitor_ids, wallboard_display(get_wallboard(db))
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"preferences": preferences}
 
 
 @wallboard_router.post("/preferences/reset")

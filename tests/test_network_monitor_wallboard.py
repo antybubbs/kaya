@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import PlainTextResponse
 from fastapi.testclient import TestClient
 from jinja2 import Environment, FileSystemLoader
@@ -28,6 +28,7 @@ from app.services.network_monitor_wallboard import (
 )
 from app.services import network_monitor as network_monitor_service
 from app.db.session import get_db
+from app.routers import network_monitor as network_monitor_router
 from app.routers.network_monitor import wallboard_router
 from app.routers.auth import require_user
 from app.routers import admin as admin_module
@@ -151,6 +152,50 @@ def test_preferences_are_per_user_append_new_monitors_and_remove_deleted_ids(db)
     reset = reset_user_preferences(db, first, [2, 3], site)
     assert reset["monitor_order"] == [2, 3]
     assert reset["columns"] == "4" and reset["density"] == "dense"
+    stored = json.loads(
+        db.query(DashboardPreference).filter_by(user_id=first.id).one().layout_json
+    )
+    assert "monitor_order" not in stored["ip_wan_dashboard"]
+
+
+def test_monitor_order_sanitises_duplicates_and_unknown_ids(db):
+    user = add_user(db, "sanitise@example.test")
+    site = wallboard_display(None)
+
+    saved = save_user_preferences(
+        db,
+        user,
+        {"monitor_order": [2, 2, 999, 1]},
+        [1, 2, 3],
+        site,
+    )
+
+    assert saved["monitor_order"] == [2, 1, 3]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"monitor_order": "2,1"},
+        {"monitor_order": [2, "1"]},
+        {"monitor_order": [True, 2]},
+    ],
+)
+def test_malformed_monitor_order_is_rejected_without_overwriting_preferences(
+    db, payload
+):
+    user = add_user(db, "invalid-order@example.test")
+    site = wallboard_display(None)
+    save_user_preferences(db, user, {"monitor_order": [2, 1]}, [1, 2], site)
+    before = db.query(DashboardPreference).filter_by(user_id=user.id).one().layout_json
+
+    with pytest.raises(ValueError, match="monitor_order"):
+        save_user_preferences(db, user, payload, [1, 2], site)
+
+    db.expire_all()
+    after = db.query(DashboardPreference).filter_by(user_id=user.id).one().layout_json
+    assert after == before
 
 
 def test_wallboard_preferences_coexist_with_main_dashboard_preferences(db):
@@ -161,6 +206,77 @@ def test_wallboard_preferences_coexist_with_main_dashboard_preferences(db):
     stored = json.loads(db.query(DashboardPreference).filter_by(user_id=user.id).one().layout_json)
     assert stored["widgets"] == []
     assert stored["ip_wan_dashboard"]["monitor_order"] == [4]
+
+
+def test_dashboard_and_authenticated_wallboard_expose_shared_persisted_order(db):
+    user = add_user(db, "shared-order@example.test")
+    first = add_monitor(db, "192.0.2.31", name="First")
+    second = add_monitor(db, "192.0.2.32", name="Second")
+    save_user_preferences(
+        db,
+        user,
+        {"monitor_order": [second.id, first.id]},
+        [first.id, second.id],
+        wallboard_display(None),
+    )
+
+    restored = user_preferences(
+        db, user, [first.id, second.id], wallboard_display(None)
+    )
+
+    assert restored["monitor_order"] == [second.id, first.id]
+
+
+def test_dashboard_layout_markup_has_stable_ids_and_a_save_status_target():
+    root = Path(__file__).resolve().parents[1]
+    dashboard = (root / "app" / "templates" / "network_monitor.html").read_text(
+        encoding="utf-8"
+    )
+    cards = (
+        root / "app" / "templates" / "_network_monitor_cards.html"
+    ).read_text(encoding="utf-8")
+    script = (
+        root / "app" / "static" / "js" / "network_monitor_wallboard.js"
+    ).read_text(encoding="utf-8")
+
+    assert "data-wallboard-save-state" in dashboard
+    assert 'data-monitor-id="{{ monitor.id }}"' in cards
+    assert 'querySelectorAll("[data-monitor-id]")' in script
+    assert "if (!saveState) return" in script
+    assert "Layout changed, but Kaya could not save it" in script
+
+
+def test_authenticated_preference_endpoint_validates_csrf_and_payload(
+    db, monkeypatch
+):
+    user = add_user(db, "endpoint-order@example.test")
+    first = add_monitor(db, "192.0.2.41", name="First")
+    second = add_monitor(db, "192.0.2.42", name="Second")
+    seen_tokens = []
+    monkeypatch.setattr(
+        network_monitor_router,
+        "validate_csrf_token",
+        lambda _request, token: seen_tokens.append(token),
+    )
+    request = SimpleNamespace(headers={"x-csrf-token": "fake-csrf-token"})
+
+    result = network_monitor_router.save_authenticated_wallboard_preferences(
+        request,
+        {"monitor_order": [second.id, second.id, 999, first.id]},
+        db,
+        user,
+    )
+
+    assert seen_tokens == ["fake-csrf-token"]
+    assert result["preferences"]["monitor_order"] == [second.id, first.id]
+    with pytest.raises(HTTPException) as failure:
+        network_monitor_router.save_authenticated_wallboard_preferences(
+            request,
+            {"monitor_order": ["not-an-id"]},
+            db,
+            user,
+        )
+    assert failure.value.status_code == 422
 
 
 def test_shared_route_requires_challenge_and_filters_monitor_data(db):

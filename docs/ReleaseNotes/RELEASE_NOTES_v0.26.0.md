@@ -11,3 +11,5 @@ Migration runs before user traffic and background services. Pre-Alembic upgrades
 Administrators can inspect the current revision with `alembic -c /app/alembic.ini current` inside the container. Backups may contain sensitive application data and remain private files on the existing persistent data volume.
 
 Kaya now labels values calculated in powers of 1,024 as KiB, MiB, GiB, and TiB.
+
+IP/WAN Monitor card ordering now persists per user across the dashboard and authenticated Wallboard. Reordering either view updates one shared server-side preference; new monitors append automatically, deleted monitors are ignored, and Reset layout restores the canonical monitor order without changing other Wallboard display settings.
