@@ -87,9 +87,21 @@ if [ "${DEMO_MODE:-false}" = "true" ] && [ "${KAYA_GATEWAY_MODE:-false}" != "tru
 
     if [ "${DEMO_RESET_ON_START:-false}" = "true" ] || [ ! -f "$DEMO_DATABASE" ]; then
         echo "Resetting public demo from seed..."
+        if [ -f /app/data/kaya.db-wal ] || [ -f /app/data/kaya.db-shm ]; then
+            SIDECAR_ARCHIVE="/app/data/backups/demo-reset-sidecars-$(date +%s)-$$"
+            mkdir -p "$SIDECAR_ARCHIVE"
+            if [ -f /app/data/kaya.db-wal ]; then
+                mv /app/data/kaya.db-wal "$SIDECAR_ARCHIVE/"
+            fi
+            if [ -f /app/data/kaya.db-shm ]; then
+                mv /app/data/kaya.db-shm "$SIDECAR_ARCHIVE/"
+            fi
+            chown -R kaya:kaya "$SIDECAR_ARCHIVE"
+            chmod 700 "$SIDECAR_ARCHIVE"
+            echo "Preserved existing SQLite WAL sidecars before demo reset: $SIDECAR_ARCHIVE"
+        fi
         cp "$DEMO_SEED_DATABASE" "$DEMO_DATABASE"
         chown kaya:kaya "$DEMO_DATABASE"
-        rm -f /app/data/kaya.db-wal /app/data/kaya.db-shm
         find /app/uploads -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
         if [ -d "$DEMO_SEED_DIR/uploads" ]; then
             cp -a "$DEMO_SEED_DIR/uploads/." /app/uploads/
@@ -105,18 +117,9 @@ fi
 
 echo "Starting Kaya with ENCRYPTION_KEY length: ${#ENCRYPTION_KEY}"
 
-if [ "${KAYA_GATEWAY_MODE:-false}" != "true" ] && [ ! -s /app/data/kaya.db ]; then
-    echo "Initialising new Kaya database schema..."
-    gosu kaya python -c "from app.db.session import Base, engine; import app.models.models; Base.metadata.create_all(bind=engine)"
-fi
-
 if [ "${SKIP_DATABASE_MIGRATIONS:-false}" != "true" ]; then
-    echo "Running database migrations..."
-    if [ "${SQLITE_PRE_MIGRATION_BACKUP:-true}" = "true" ] && [ -f /app/data/kaya.db ]; then
-        cp /app/data/kaya.db /app/data/kaya.db.pre-migration
-        chown kaya:kaya /app/data/kaya.db.pre-migration
-    fi
-    gosu kaya python /app/scripts/migrate_sqlite.py
+    echo "Preparing Kaya database..."
+    gosu kaya python -m app.db.cli
 fi
 
 if gosu kaya python -c "from app.db.session import SessionLocal; from app.models.models import User; db=SessionLocal(); found=db.query(User.id).filter(User.role == 'admin').first(); db.close(); raise SystemExit(0 if found is None else 1)"; then

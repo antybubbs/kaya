@@ -49,7 +49,8 @@ def test_oidc_only_readiness_is_bound_to_active_provider_and_current_admin():
             name="Authentik", issuer="https://id.example.com", client_id="kaya", is_enabled=True,
             discovery_status="ok", test_login_succeeded_at=datetime.utcnow(),
         )
-        db.add_all([admin, provider]); db.flush()
+        db.add_all([admin, provider])
+        db.flush()
         db.add(ExternalIdentity(user_id=admin.id, provider_id=provider.id, issuer=provider.issuer, subject="admin", link_method="self_service"))
         db.commit()
         readiness = oidc_only_readiness(db, admin, emergency_enabled=True)

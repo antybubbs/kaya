@@ -1,9 +1,13 @@
 from functools import lru_cache
+from pathlib import Path
 from urllib.parse import urlparse
 
 from cryptography.fernet import Fernet
 from pydantic_settings import BaseSettings
+from sqlalchemy.engine import make_url
+
 from app.core.branding import APP_BRAND_NAME
+from app.core.paths import DEFAULT_DATA_DIR, DEFAULT_RECORDING_DIR, DEFAULT_UPLOAD_DIR
 
 
 class InvalidConfigurationError(RuntimeError):
@@ -16,12 +20,17 @@ class Settings(BaseSettings):
     app_env: str = "production"
     base_url: str = "http://localhost:8080"
     root_path: str = ""
-    database_url: str = "sqlite:////app/data/kaya.db"
+    database_url: str = f"sqlite:///{DEFAULT_DATA_DIR / 'kaya.db'}"
+    data_dir: str = str(DEFAULT_DATA_DIR)
+    migration_backup_dir: str = str(DEFAULT_DATA_DIR / "backups")
+    migration_backups_enabled: bool = True
+    migration_backup_retention_count: int = 10
     secret_key: str = ""
     encryption_key: str = ""
     setup_token: str = ""
     session_cookie_secure: bool = False
-    upload_dir: str = "/app/uploads"
+    upload_dir: str = str(DEFAULT_UPLOAD_DIR)
+    recording_dir: str = str(DEFAULT_RECORDING_DIR)
     max_upload_mb: int = 25
     max_recording_upload_mb: int = 1024
     min_recording_free_mb: int = 256
@@ -33,12 +42,10 @@ class Settings(BaseSettings):
     version_check_interval_seconds: int = 1800
     demo_mode: bool = False
     demo_reset_schedule: str = "03:00 UTC"
-    demo_generation_file: str = "/app/data/.demo-generation"
+    demo_generation_file: str = str(DEFAULT_DATA_DIR / ".demo-generation")
     performance_diagnostics: bool = False
 
-    model_config = {
-    "extra": "ignore"
-    }
+    model_config = {"extra": "ignore"}
 
 
 def trusted_hosts(settings: Settings) -> list[str]:
@@ -52,9 +59,7 @@ def trusted_hosts(settings: Settings) -> list[str]:
         hosts.add(parsed_host)
 
     hosts.update(
-        host.strip()
-        for host in settings.allowed_hosts.split(",")
-        if host.strip()
+        host.strip() for host in settings.allowed_hosts.split(",") if host.strip()
     )
     return sorted(hosts)
 
@@ -75,9 +80,23 @@ def get_settings() -> Settings:
 
     try:
         Fernet(settings.encryption_key.encode())
-    except Exception as exc:
+    except (TypeError, ValueError) as exc:
         raise InvalidConfigurationError(
             "ENCRYPTION_KEY must be a valid Fernet key."
         ) from exc
 
     return settings
+
+
+def sqlite_database_path(database_url: str) -> Path | None:
+    """Return the local path for a SQLite URL without exposing URL credentials."""
+    url = make_url(database_url)
+    if url.get_backend_name() != "sqlite":
+        return None
+    if url.host:
+        raise InvalidConfigurationError(
+            "SQLite database URLs must reference a local file."
+        )
+    if url.database in {None, "", ":memory:"}:
+        return None
+    return Path(url.database).resolve()

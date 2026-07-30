@@ -30,10 +30,12 @@ def test_parent_page_must_belong_to_selected_space_and_cycles_are_rejected():
     with database() as db:
         first = RunbookSpace(name="First")
         second = RunbookSpace(name="Second")
-        db.add_all([first, second]); db.flush()
+        db.add_all([first, second])
+        db.flush()
         parent = RunbookPage(title="Parent", slug="parent", space_id=first.id)
         child = RunbookPage(title="Child", slug="child", space_id=first.id, parent=parent)
-        db.add_all([parent, child]); db.commit()
+        db.add_all([parent, child])
+        db.commit()
         validate_page_relationships(db, first.id, parent.id, child.id)
         with pytest.raises(HTTPException, match="selected space"):
             validate_page_relationships(db, second.id, parent.id, child.id)
@@ -68,18 +70,24 @@ def test_dashboard_and_editor_expose_requested_navigation_and_workspace_controls
 
 def test_view_tracking_uses_additive_fields_with_safe_migration_guards():
     model = Path("app/models/models.py").read_text(encoding="utf-8")
-    migration = Path("app/main.py").read_text(encoding="utf-8")
+    baseline = Path(
+        "migrations/versions/20260730_01_kaya_schema_baseline.py"
+    ).read_text(encoding="utf-8")
+    compatibility = Path("app/db/compatibility.py").read_text(encoding="utf-8")
     assert "view_count: Mapped[int]" in model
     assert "last_viewed_at: Mapped[datetime | None]" in model
-    assert 'if "view_count" not in runbook_page_columns' in migration
-    assert 'if "last_viewed_at" not in runbook_page_columns' in migration
+    assert 'sa.Column("view_count", sa.Integer(), nullable=False)' in baseline
+    assert 'sa.Column("last_viewed_at", sa.DateTime(), nullable=True)' in baseline
+    assert "if column_name in target_columns:" in compatibility
+    assert "ALTER TABLE" in compatibility
 
 
 def test_redesigned_runbook_pages_render_with_empty_and_populated_data():
     with database() as db:
         user = User(email="editor@example.com", password_hash="x", role="editor", is_active=True)
         space = RunbookSpace(name="Network", description="Network operations")
-        db.add_all([user, space]); db.flush()
+        db.add_all([user, space])
+        db.flush()
         db.add(RunbookPage(title="VPN recovery", slug="vpn-recovery", summary="Restore the VPN", body="# Recover", tags="VPN, Network", is_pinned=True, view_count=3, space_id=space.id, created_by_id=user.id, updated_by_id=user.id))
         db.commit()
         responses = [

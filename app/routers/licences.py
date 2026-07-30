@@ -1,20 +1,27 @@
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from starlette import status
+
 from app.core.csrf import csrf_context, validate_csrf_token
+from app.core.templating import templates
 from app.core.security import decrypt_secret, encrypt_secret, mask_key
 from app.db.session import get_db
 from app.models.models import CustomFieldValue, Licence
 from app.routers.auth import require_editor, require_module_access, require_user
 from app.services.audit import write_audit
-from app.services.custom_fields import active_fields, field_values, option_list, save_custom_values, validate_custom_values
+from app.services.custom_fields import (
+    active_fields,
+    field_values,
+    option_list,
+    save_custom_values,
+    validate_custom_values,
+)
 from app.services.managed_lists import list_values
 
 router = APIRouter(prefix="/security/license-keys", dependencies=[Depends(require_module_access("licence_manager"))])
-templates = Jinja2Templates(directory="app/templates")
+
 MODULE = "licences"
 ENTITY_TYPE = "licence"
 
@@ -55,7 +62,7 @@ def list_licences(request: Request, q: str = Query("", max_length=200), licence_
         like = f"%{clean_q}%"
         query = query.filter(or_(Licence.product.ilike(like), Licence.licence_type.ilike(like), Licence.licence_id.ilike(like), Licence.vendor.ilike(like)))
     rows = query.order_by(Licence.product.asc()).limit(500).all()
-    favourites = db.query(Licence).filter(Licence.is_favourite == True).order_by(Licence.product.asc()).limit(50).all()
+    favourites = db.query(Licence).filter(Licence.is_favourite).order_by(Licence.product.asc()).limit(50).all()
     total = db.query(Licence).count()
     return templates.TemplateResponse(request, "licences.html", {"user": user, "rows": rows, "favourites": favourites, "total": total, "q": clean_q, "licence_types": licence_types, "active_licence_type": active_licence_type, "mask_key": lambda encrypted: mask_key(decrypt_secret(encrypted)), **csrf_context(request)})
 

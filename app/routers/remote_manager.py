@@ -2,6 +2,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
 import re
 import secrets
 import shutil
@@ -10,30 +11,54 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlencode, urlparse
 from uuid import uuid4
-from urllib.parse import urlparse
-from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
 from starlette import status
 
 from app.core.config import get_settings
 from app.core.csrf import csrf_context, validate_csrf_token
+from app.core.templating import templates
 from app.core.security import encrypt_secret
 from app.db.session import SessionLocal, get_db
-from app.models.models import RemoteAccess, RemoteManagerSetting, RemoteSessionRecording, User
-from app.routers.auth import require_admin, require_editor, require_module_access, require_user
+from app.models.models import (
+    RemoteAccess,
+    RemoteManagerSetting,
+    RemoteSessionRecording,
+    User,
+)
+from app.routers.auth import (
+    require_admin,
+    require_editor,
+    require_module_access,
+    require_user,
+)
 from app.services.audit import write_audit
-from app.services.guacamole_bridge import restart_guacamole_bridge, start_guacamole_bridge
-from app.services.site_settings import get_site_setting
+from app.services.guacamole_bridge import (
+    restart_guacamole_bridge,
+    start_guacamole_bridge,
+)
 from app.services.sessions import active_user_session
+from app.services.site_settings import get_site_setting
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/remote-manager", dependencies=[Depends(require_module_access("remote_manager"))])
-templates = Jinja2Templates(directory="app/templates")
+
 PROTOCOLS = {"ssh", "rdp"}
 SSH_HOST_KEY_ALGORITHMS = {
     "ssh-ed25519",
@@ -87,7 +112,7 @@ RDP_SETTING_KEYS = [key for key in SETTINGS if key.startswith("rdp_")]
 SETTING_KEYS = set(SETTINGS)
 DEFAULT_RDP_TOKEN_TTL_MINUTES = 10
 GUACAMOLE_LITE_URL = "ws://127.0.0.1:30008"
-RECORDING_ROOT = Path("/app/data/remote-recordings")
+RECORDING_ROOT = Path(get_settings().recording_dir)
 
 
 @dataclass
@@ -595,7 +620,7 @@ def authenticated_websocket_user(db: Session, websocket: WebSocket) -> User | No
         return None
     user_id = websocket.session.get("user_id")
     session_id = websocket.session.get("session_id")
-    user = db.query(User).filter(User.id == user_id, User.is_active == True).first() if user_id else None
+    user = db.query(User).filter(User.id == user_id, User.is_active).first() if user_id else None
     app_session = active_user_session(db, session_id, user.id if user else None)
     if not user or not app_session:
         return None
@@ -690,7 +715,7 @@ async def tcp_check(host: str, port: int, timeout: float = 5) -> tuple[bool, str
 @router.get("")
 def remote_list(request: Request, db: Session = Depends(get_db), user=Depends(require_user)):
     demo_mode = get_settings().demo_mode
-    rows = [] if demo_mode else db.query(RemoteAccess).filter(RemoteAccess.is_enabled == True).options(selectinload(RemoteAccess.ip_address)).order_by(RemoteAccess.protocol.asc(), RemoteAccess.display_name.asc(), RemoteAccess.id.asc()).all()
+    rows = [] if demo_mode else db.query(RemoteAccess).filter(RemoteAccess.is_enabled).options(selectinload(RemoteAccess.ip_address)).order_by(RemoteAccess.protocol.asc(), RemoteAccess.display_name.asc(), RemoteAccess.id.asc()).all()
     settings = settings_map(db)
     return templates.TemplateResponse(request, "remote_manager.html", {"user": user, "rows": rows, "remote_label": remote_label, "remote_manager_locked": demo_mode, "split_screen_enabled": settings.get("split_screen_enabled", "1") == "1", **csrf_context(request)})
 
@@ -824,7 +849,7 @@ def delete_recording(request: Request, recording_id: int, csrf_token: str = Form
 @router.get("/{remote_id}/session")
 def remote_session(request: Request, remote_id: int, db: Session = Depends(get_db), user=Depends(require_user)):
     row = require_remote_session(db, remote_id)
-    rows = db.query(RemoteAccess).filter(RemoteAccess.is_enabled == True).options(selectinload(RemoteAccess.ip_address)).order_by(RemoteAccess.protocol.asc(), RemoteAccess.display_name.asc(), RemoteAccess.id.asc()).all()
+    rows = db.query(RemoteAccess).filter(RemoteAccess.is_enabled).options(selectinload(RemoteAccess.ip_address)).order_by(RemoteAccess.protocol.asc(), RemoteAccess.display_name.asc(), RemoteAccess.id.asc()).all()
     settings = settings_map(db)
     remote_settings = effective_remote_settings(row, settings)
     title = remote_label(row)
@@ -1236,7 +1261,7 @@ async def ssh_websocket(websocket: WebSocket, remote_id: int):
                     message = await upstream.recv()
                     await websocket.send_text(message)
             except Exception:
-                pass
+                logger.debug("SSH upstream read loop ended", exc_info=True)
 
         async def write_loop():
             try:
@@ -1256,7 +1281,7 @@ async def ssh_websocket(websocket: WebSocket, remote_id: int):
             try:
                 await upstream.close()
             except Exception:
-                pass
+                logger.debug("SSH upstream cleanup failed", exc_info=True)
 
 
 @router.websocket("/{remote_id}/rdp/ws")
@@ -1352,7 +1377,7 @@ async def rdp_websocket(websocket: WebSocket, remote_id: int):
                     else:
                         await websocket.send_text(message)
             except Exception:
-                pass
+                logger.debug("RDP upstream read loop ended", exc_info=True)
 
         async def browser_to_upstream():
             try:
@@ -1367,7 +1392,7 @@ async def rdp_websocket(websocket: WebSocket, remote_id: int):
             except WebSocketDisconnect:
                 pass
             except Exception:
-                pass
+                logger.debug("RDP browser write loop ended", exc_info=True)
 
         tasks = {asyncio.create_task(upstream_to_browser()), asyncio.create_task(browser_to_upstream())}
         await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -1379,7 +1404,7 @@ async def rdp_websocket(websocket: WebSocket, remote_id: int):
             try:
                 await upstream.close()
             except Exception:
-                pass
+                logger.debug("RDP upstream cleanup failed", exc_info=True)
         if connected:
             audit_db = SessionLocal()
             try:

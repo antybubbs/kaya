@@ -50,7 +50,7 @@ The current application is a FastAPI/Jinja/SQLAlchemy application with SQLite as
 ## Current Limitations And Technical Debt
 
 - SQLite-first design.
-- No formal Alembic migration system.
+- Alembic provides the versioned migration history and current baseline.
 - Limited automated tests.
 - Import/export only supports licences and IP addresses.
 - RBAC is coarse-grained.
@@ -59,7 +59,7 @@ The current application is a FastAPI/Jinja/SQLAlchemy application with SQLite as
 - No queue system for backup jobs beyond database state.
 - No antivirus/content scanning for uploads.
 - No full REST API for most modules.
-- Manual migration logic is duplicated across runtime startup and `scripts/migrate_sqlite.py`.
+- A temporary, tested compatibility bridge retains the historical additive migration logic for pre-Alembic installations.
 - `RemoteManagerSetting` stores many unrelated site-wide settings.
 - Several routers are large, especially `admin.py` and `compute_manager.py`.
 - The Markdown renderer, remote access flows, backup agent dispatch, DNS provider parsing, and compute metadata parsing are areas that need dedicated tests.

@@ -3,13 +3,13 @@ from datetime import datetime, time
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy import or_
-from app.core.config import get_settings
 from sqlalchemy.orm import Session
 from starlette import status
 
+from app.core.config import get_settings
 from app.core.csrf import csrf_context, validate_csrf_token
+from app.core.templating import templates
 from app.db.session import get_db
 from app.models.models import DomainRecord, DomainRecordHistory
 from app.routers.auth import require_editor, require_module_access, require_user
@@ -22,7 +22,6 @@ from app.services.domain_polling import (
 )
 
 router = APIRouter(prefix="/networking/domain-manager", dependencies=[Depends(require_module_access("domain_manager"))])
-templates = Jinja2Templates(directory="app/templates")
 
 
 def json_list(value: str | None) -> list[str]:

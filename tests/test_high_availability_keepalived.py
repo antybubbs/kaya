@@ -30,10 +30,12 @@ def database():
 def ready_cluster(db: Session) -> HACluster:
     admin = User(email="keepalived@example.test", password_hash="x", role="admin", is_active=True)
     cluster = HACluster(name="DNS Pair", provider_key="pihole", status="VALIDATED", virtual_ip="192.168.50.53", prefix_length=24, vrrp_router_id=51, created_by=admin)
-    db.add_all([admin, cluster]); db.flush()
+    db.add_all([admin, cluster])
+    db.flush()
     primary = HANode(cluster_id=cluster.id, display_name="Primary", management_host="192.168.50.2", api_base_url="https://192.168.50.2", network_interface="ens18", role="ACTIVE", desired_role="ACTIVE", last_heartbeat_at=datetime.utcnow(), dns_healthy=True, peer_reachable=True)
     standby = HANode(cluster_id=cluster.id, display_name="Standby", management_host="192.168.50.3", api_base_url="https://192.168.50.3", network_interface="ens18", role="STANDBY", desired_role="STANDBY", last_heartbeat_at=datetime.utcnow(), dns_healthy=True, peer_reachable=True)
-    db.add_all([primary, standby]); db.flush()
+    db.add_all([primary, standby])
+    db.flush()
     db.add_all([HAAgentCredential(node_id=primary.id, agent_id=primary.public_id, public_key="a" * 43, registered_at=datetime.utcnow()), HAAgentCredential(node_id=standby.id, agent_id=standby.public_id, public_key="b" * 43, registered_at=datetime.utcnow())])
     db.commit()
     return cluster
@@ -159,9 +161,11 @@ def test_action_results_are_generation_and_checksum_bound_then_reconcile_one_own
 def test_manual_vip_move_is_explicit_and_blocked_when_dhcp_is_reported():
     with database() as db:
         cluster = ready_cluster(db)
-        cluster.keepalived_status = "DEPLOYED"; cluster.status = "HEALTHY"
+        cluster.keepalived_status = "DEPLOYED"
+        cluster.status = "HEALTHY"
         primary, standby = sorted(cluster.nodes, key=lambda node: 0 if node.role == "ACTIVE" else 1)
-        for node in cluster.nodes: node.keepalived_status = "DEPLOYED"
+        for node in cluster.nodes:
+            node.keepalived_status = "DEPLOYED"
         primary.vip_owned = True
         primary.dhcp_running = primary.dhcp_configured = primary.dhcp_listener_active = primary.ftl_active = True
         primary.dhcp_runtime_state = "RUNNING"
@@ -214,14 +218,21 @@ def test_agent_validates_and_applies_only_fixed_keepalived_action(tmp_path):
 def test_root_helper_rolls_back_invalid_config_and_preserves_unrelated_content(tmp_path, monkeypatch, capsys):
     import ha_agent.kaya_ha_keepalived_helper as helper
 
-    source = tmp_path / "pending-keepalived.conf"; main = tmp_path / "keepalived.conf"; target = tmp_path / "conf.d" / "kaya-ha.conf"; backups = tmp_path / "backups"
+    source = tmp_path / "pending-keepalived.conf"
+    main = tmp_path / "keepalived.conf"
+    target = tmp_path / "conf.d" / "kaya-ha.conf"
+    backups = tmp_path / "backups"
     with database() as db:
         cluster = prepare_deployment(db, ready_cluster(db), 51, True)
         generated = render_keepalived_config(cluster, cluster.nodes[0]).content
     source.write_text(generated, encoding="utf-8")
     main.write_text("global_defs { router_id EXISTING }\n", encoding="utf-8")
-    target.parent.mkdir(); target.write_text("# previous Kaya include\n", encoding="utf-8")
-    monkeypatch.setattr(helper, "SOURCE", source); monkeypatch.setattr(helper, "MAIN", main); monkeypatch.setattr(helper, "TARGET", target); monkeypatch.setattr(helper, "BACKUPS", backups)
+    target.parent.mkdir()
+    target.write_text("# previous Kaya include\n", encoding="utf-8")
+    monkeypatch.setattr(helper, "SOURCE", source)
+    monkeypatch.setattr(helper, "MAIN", main)
+    monkeypatch.setattr(helper, "TARGET", target)
+    monkeypatch.setattr(helper, "BACKUPS", backups)
     monkeypatch.setattr(helper, "command", lambda argv, timeout=15: subprocess.CompletedProcess(argv, 1, "", "invalid"))
     assert helper.apply(str(source)) == 1
     result = json.loads(capsys.readouterr().out)

@@ -2,7 +2,6 @@ from datetime import datetime, timedelta
 import json
 from pathlib import Path
 
-import pytest
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session
 

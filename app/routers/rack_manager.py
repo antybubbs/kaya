@@ -1,16 +1,17 @@
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session, joinedload
 from starlette import status
+
 from app.core.csrf import csrf_context, validate_csrf_token
+from app.core.templating import templates
 from app.db.session import get_db
 from app.models.models import HardwareAsset, Rack, RackItem
 from app.routers.auth import require_editor, require_module_access, require_user
 from app.services.audit import write_audit
 
 router = APIRouter(prefix="/infrastructure/rack-manager", dependencies=[Depends(require_module_access("rack_manager"))])
-templates = Jinja2Templates(directory="app/templates")
+
 MOUNT_SIDES = {"front", "rear", "both"}
 ITEM_COLORS = {
     "server": "#2563eb",

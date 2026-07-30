@@ -53,8 +53,8 @@ To run without Docker, install Python dependencies and Node dependencies, then r
 ## Adding A New Module
 
 1. Add SQLAlchemy models in `app/models/models.py`.
-2. Add migration logic in `app/main.py`.
-3. Add matching migration logic in `scripts/migrate_sqlite.py` if needed for container startup upgrades.
+2. Create and manually review an Alembic revision as described in `docs/developer-migrations.md`.
+3. Add fresh-install, previous-revision, preservation, repeated-start, and relevant failure tests.
 4. Create a router in `app/routers`.
 5. Include the router in `app/main.py`.
 6. Add templates under `app/templates`.
@@ -82,7 +82,7 @@ To run without Docker, install Python dependencies and Node dependencies, then r
 ## Adding A Database Field Or Table
 
 1. Update `app/models/models.py`.
-2. Add additive SQLite migration logic.
+2. Add a reviewed Alembic revision; never add startup-time schema DDL.
 3. Consider indexes and uniqueness.
 4. Update import/export, seed demo data, templates, forms, and tests as needed.
 5. Avoid destructive migrations without a backup/restore plan.

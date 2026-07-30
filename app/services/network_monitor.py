@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import re
 import subprocess
 import time
@@ -7,7 +8,6 @@ import threading
 from datetime import datetime, timedelta
 from ipaddress import ip_address
 
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal
@@ -16,6 +16,8 @@ from app.models.models import (
     NetworkMonitorOutage, NetworkMonitorStatistic,
 )
 from app.services.site_settings import get_site_settings
+
+logger = logging.getLogger(__name__)
 
 CHECK_INTERVAL_SECONDS = 1
 STARTUP_DELAY_SECONDS = 45
@@ -229,7 +231,7 @@ def ping_ipv4_samples(address: str, timeout_ms: int, samples: int = 4) -> tuple[
 def fallback_due_monitors(db: Session) -> list[NetworkMonitor]:
     now = datetime.utcnow()
     dashboard_interval = active_dashboard_interval()
-    rows = db.query(NetworkMonitor).join(IPAddress).filter(NetworkMonitor.is_enabled == True).order_by(NetworkMonitor.last_checked_at.asc()).limit(250).all()
+    rows = db.query(NetworkMonitor).join(IPAddress).filter(NetworkMonitor.is_enabled).order_by(NetworkMonitor.last_checked_at.asc()).limit(250).all()
     return [
         row for row in rows
         if row.last_checked_at is None or row.last_checked_at <= now - timedelta(seconds=dashboard_interval or clamp_interval(row.interval_seconds))
@@ -547,7 +549,7 @@ async def monitor_loop() -> None:
                 try:
                     task.result()
                 except Exception:
-                    pass
+                    logger.exception("Network monitor task failed")
             in_flight = {
                 monitor_id: task for monitor_id, task in in_flight.items()
                 if not task.done()

@@ -3,32 +3,63 @@ import secrets
 import smtplib
 import time
 from datetime import datetime, timedelta
-from fastapi import APIRouter, Depends, Form, Request, WebSocketException, status
+
+from fastapi import APIRouter, Depends, Form, Request, WebSocketException
 from fastapi.responses import RedirectResponse
-from fastapi.templating import Jinja2Templates
-from sqlalchemy.orm import Session
 from sqlalchemy import or_, text
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import Session
 from starlette.requests import HTTPConnection
+
 from app.core.config import get_settings
 from app.core.csrf import csrf_context, validate_csrf_token
+from app.core.templating import templates
 from app.core.demo import DEMO_ACCOUNTS, demo_generation, demo_login_email
 from app.core.security import decrypt_secret, hash_password, verify_password
-from app.core.totp import decrypted_totp_secret, encrypted_totp_secret, generate_totp_secret, provisioning_uri, qr_code_data_uri, verify_totp
+from app.core.totp import (
+    decrypted_totp_secret,
+    encrypted_totp_secret,
+    generate_totp_secret,
+    provisioning_uri,
+    qr_code_data_uri,
+    verify_totp,
+)
 from app.db.session import get_db
-from app.models.models import AppSession, AuditLog, ExternalIdentity, OIDCProvider, PasswordResetToken, User, VaultSession
+from app.models.models import (
+    AppSession,
+    AuditLog,
+    ExternalIdentity,
+    OIDCProvider,
+    PasswordResetToken,
+    User,
+    VaultSession,
+)
 from app.services.audit import write_audit
-from app.services.mail import MailConfigurationError, render_email_template, send_mail
-from app.services.sessions import active_user_session, end_user_session, revoke_user_sessions, start_user_session, touch_user_session
-from app.services.site_settings import get_site_setting
-from app.services.oidc_client import safe_return_path
-from app.services.user_names import clean_name_part, first_name_contains_last_name
-from app.services.authentication_policy import get_authentication_policy, normal_local_login_allowed
-from app.services.modules import accessible_module_keys, grant_all_registered_modules, has_module_access, module_landing_url
+from app.services.authentication_policy import (
+    get_authentication_policy,
+    normal_local_login_allowed,
+)
 from app.services.client_ip import client_ip
+from app.services.mail import MailConfigurationError, render_email_template, send_mail
+from app.services.modules import (
+    accessible_module_keys,
+    grant_all_registered_modules,
+    has_module_access,
+    module_landing_url,
+)
+from app.services.oidc_client import safe_return_path
+from app.services.sessions import (
+    active_user_session,
+    end_user_session,
+    revoke_user_sessions,
+    start_user_session,
+    touch_user_session,
+)
+from app.services.site_settings import get_site_setting
+from app.services.user_names import clean_name_part, first_name_contains_last_name
 
 router = APIRouter()
-templates = Jinja2Templates(directory="app/templates")
+
 MAX_LOGIN_ATTEMPTS = 5
 LOGIN_WINDOW_SECONDS = 15 * 60
 LOGIN_FAILURES: dict[str, list[float]] = {}
@@ -159,7 +190,7 @@ def current_user(request: Request, db: Session = Depends(get_db)) -> User | None
     if settings.demo_mode and request.session.get("demo_generation") != demo_generation():
         request.session.clear()
         return None
-    user = db.query(User).filter(User.id == user_id, User.is_active == True).first()
+    user = db.query(User).filter(User.id == user_id, User.is_active).first()
     app_session = active_user_session(db, session_id, user.id if user else None)
     if not user or not app_session:
         request.session.clear()
@@ -304,7 +335,7 @@ def forgot_password_submit(
         return RedirectResponse("/login", status_code=303)
 
     clean_email = email.strip().lower()
-    user = db.query(User).filter(User.email == clean_email, User.is_active == True).first()
+    user = db.query(User).filter(User.email == clean_email, User.is_active).first()
     key = client_key(request)
     limited = password_reset_is_limited(db, user, clean_email, key)
     record_password_reset_attempt(clean_email, key)
@@ -626,7 +657,7 @@ def login(request: Request, email: str = Form(""), password: str = Form(""), tot
 
     pending_user_id = request.session.get("pending_2fa_user_id")
     if pending_user_id:
-        user = db.query(User).filter(User.id == pending_user_id, User.is_active == True).first()
+        user = db.query(User).filter(User.id == pending_user_id, User.is_active).first()
         if not user or not user.totp_enabled or not verify_totp(decrypted_totp_secret(user.totp_secret), totp_code):
             record_login_failure(key)
             write_audit(
@@ -654,7 +685,7 @@ def login(request: Request, email: str = Form(""), password: str = Form(""), tot
         return RedirectResponse(module_landing_url(db, user), status_code=303)
 
     login_email = demo_login_email(email) if settings.demo_mode else email.strip().lower()
-    user = db.query(User).filter(User.email == login_email, User.is_active == True).first()
+    user = db.query(User).filter(User.email == login_email, User.is_active).first()
     password_hash = user.password_hash if user and user.authentication_type != "oidc" else DUMMY_PASSWORD_HASH
     if not verify_password(password, password_hash) or not user or not user.password_hash or user.authentication_type == "oidc":
         record_login_failure(key)

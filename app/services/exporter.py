@@ -8,7 +8,7 @@ from app.models.models import CustomField, CustomFieldValue, IPAddress, Licence
 def export_licences_csv(db: Session) -> str:
     output = io.StringIO()
     writer = csv.writer(output)
-    custom_fields = db.query(CustomField).filter(CustomField.module == "licences", CustomField.is_active == True).order_by(CustomField.sort_order.asc(), CustomField.label.asc()).all()
+    custom_fields = db.query(CustomField).filter(CustomField.module == "licences", CustomField.is_active).order_by(CustomField.sort_order.asc(), CustomField.label.asc()).all()
     writer.writerow([
         "License ID",
         "Parent Program",
@@ -40,7 +40,7 @@ def export_licences_csv(db: Session) -> str:
 def export_ip_addresses_csv(db: Session) -> str:
     output = io.StringIO()
     writer = csv.writer(output)
-    custom_fields = db.query(CustomField).filter(CustomField.module == "ip_addresses", CustomField.is_active == True).order_by(CustomField.sort_order.asc(), CustomField.label.asc()).all()
+    custom_fields = db.query(CustomField).filter(CustomField.module == "ip_addresses", CustomField.is_active).order_by(CustomField.sort_order.asc(), CustomField.label.asc()).all()
     writer.writerow([
         "IP Address",
         "VLAN",

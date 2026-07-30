@@ -152,7 +152,8 @@ def test_draft_reuses_two_unique_pihole_integrations_without_copying_secrets(mon
         admin = User(email="draft-admin@example.com", password_hash="x", role="admin", is_active=True)
         first = DNSProviderConfig(name="Primary", provider_type="pihole", base_url="https://pi-one.invalid", encrypted_secret="encrypted-one")
         second = DNSProviderConfig(name="Standby", provider_type="pihole", base_url="https://pi-two.invalid", encrypted_secret="encrypted-two")
-        db.add_all([admin, first, second]); db.commit()
+        db.add_all([admin, first, second])
+        db.commit()
         cluster = create_cluster_draft(
             db,
             HAClusterDraftCreate(
@@ -188,7 +189,8 @@ def test_draft_reuses_two_unique_pihole_integrations_without_copying_secrets(mon
 def test_new_ha_connections_are_encrypted_and_do_not_create_dns_manager_providers():
     with database() as db:
         admin = User(email="admin-two@example.com", password_hash="x", role="admin", is_active=True)
-        db.add(admin); db.commit()
+        db.add(admin)
+        db.commit()
         cluster = create_cluster_draft(
             db,
             HAClusterDraftCreate(
@@ -212,7 +214,8 @@ def test_draft_requires_two_different_nodes_and_admin_creation_permission():
         admin = User(email="admin-three@example.com", password_hash="x", role="admin", is_active=True)
         viewer = User(email="viewer@example.com", password_hash="x", role="viewer", is_active=True)
         provider = DNSProviderConfig(name="Only Pi-hole", provider_type="pihole", base_url="https://only.invalid")
-        db.add_all([admin, viewer, provider]); db.commit()
+        db.add_all([admin, viewer, provider])
+        db.commit()
         with pytest.raises(HADraftError, match="two different"):
             create_cluster_draft(
                 db,
@@ -268,7 +271,8 @@ def test_setup_menu_is_not_clipped_or_forced_open():
 def test_draft_connection_route_returns_inline_result_and_audits_without_secret(monkeypatch):
     with database() as db:
         admin = User(email="connection-test-admin@example.com", password_hash="x", role="admin", is_active=True)
-        db.add(admin); db.commit()
+        db.add(admin)
+        db.commit()
         monkeypatch.setattr("app.routers.high_availability.test_draft_node_connection", lambda *args, **kwargs: DNSProviderResult(True, "Pi-hole connection test passed."))
         response = asyncio.run(
             connection_route(
@@ -310,7 +314,8 @@ def test_disabling_with_a_cluster_requires_acknowledgement_and_preserves_draft()
     with database() as db:
         admin = User(email="disable-admin@example.com", password_hash="x", role="admin", is_active=True)
         cluster = HACluster(name="Preserve me", provider_key="pihole", status="DRAFT", created_by=admin)
-        db.add_all([admin, cluster, RemoteManagerSetting(key="high_availability_enabled", value="1")]); db.commit()
+        db.add_all([admin, cluster, RemoteManagerSetting(key="high_availability_enabled", value="1")])
+        db.commit()
         cluster_id = cluster.id
 
         rejected = asyncio.run(
@@ -348,14 +353,18 @@ def test_cluster_danger_zone_requires_exact_confirmation_and_soft_deletes_withou
         provider = DNSProviderConfig(name="Preserved DNS", provider_type="pihole", base_url="https://preserved.invalid", encrypted_secret="encrypted")
         linked_ip = IPAddress(address="192.0.2.88", assignment_type="Static")
         cluster = HACluster(name="Critical DNS Pair", provider_key="pihole", status="VALIDATED", created_by=admin)
-        db.add_all([admin, provider, linked_ip, cluster]); db.flush()
+        db.add_all([admin, provider, linked_ip, cluster])
+        db.flush()
         client = DNSRecognisedDevice(provider_id=provider.id, identity_type="mac", identity_value="00:aa:bb:cc:dd:ee", current_ip=linked_ip.address, linked_ip_record_id=linked_ip.id)
-        db.add(client); db.flush()
+        db.add(client)
+        db.flush()
         history = DNSClientIPHistory(dns_client_id=client.id, ip_address=linked_ip.address, provider_id=provider.id)
         node = HANode(cluster_id=cluster.id, display_name="Primary", management_host="preserved.invalid", api_base_url=provider.base_url, integration_reference_id=provider.id, role="ACTIVE", desired_role="ACTIVE", status="VALIDATED")
-        db.add_all([history, node]); db.flush()
+        db.add_all([history, node])
+        db.flush()
         check = HAHealthCheck(cluster_id=cluster.id, node_id=node.id, check_key="api_authentication", status="PASS", severity="info", summary="Preserve this result")
-        db.add(check); db.commit()
+        db.add(check)
+        db.commit()
         ids = {"cluster": cluster.id, "provider": provider.id, "ip": linked_ip.id, "client": client.id, "history": history.id, "node": node.id, "check": check.id}
 
         with pytest.raises(HADraftError, match="exact cluster name"):

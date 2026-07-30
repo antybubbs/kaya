@@ -1,30 +1,43 @@
-from pathlib import Path
-import io
-import tempfile
 import json
+import logging
 import re
-import socket
 import smtplib
+import socket
+import tempfile
 from datetime import datetime, timedelta
 from ipaddress import ip_address, ip_network
+from pathlib import Path
+from urllib.parse import urlencode
 from urllib.request import urlopen
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
-from sqlalchemy import func, or_
-from sqlalchemy.orm import Session
-from sqlalchemy.orm import selectinload
-from starlette import status
-from urllib.parse import urlencode
 import smbclient
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
+from sqlalchemy import func, or_
+from sqlalchemy.orm import Session, selectinload
+from starlette import status
 
-from app.core.config import get_settings
-from app.core.performance import external_call
 from app.core.branding import APP_BRAND_NAME
+from app.core.config import get_settings
 from app.core.csrf import csrf_context, validate_csrf_token
-from app.core.security import decrypt_secret, encrypt_secret, hash_password, verify_password
+from app.core.templating import templates
+from app.core.performance import external_call
+from app.core.security import (
+    decrypt_secret,
+    encrypt_secret,
+    hash_password,
+    verify_password,
+)
 from app.core.totp import (
     decrypted_totp_secret,
     encrypted_totp_secret,
@@ -35,43 +48,50 @@ from app.core.totp import (
 )
 from app.db.session import get_db
 from app.models.models import (
+    VLAN,
     AppSession,
     AuditLog,
     BackupJob,
     BackupRecord,
     CustomField,
     CustomFieldValue,
-    DNSProviderConfig,
-    HACluster,
     DHCPRange,
+    DNSProviderConfig,
     ExternalIdentity,
-    ManagedListItem,
+    HACluster,
     IPAddress,
+    ManagedListItem,
     NetworkMonitor,
     NetworkMonitorWallboardMembership,
     RemoteManagerSetting,
     User,
-    VLAN,
     VaultSession,
 )
 from app.routers.auth import require_admin
+from app.routers.remote_manager import (
+    RDP_SETTING_KEYS,
+    TERMINAL_SETTING_KEYS,
+    clean_global_setting,
+)
+from app.routers.remote_manager import (
+    SETTINGS as REMOTE_MANAGER_SETTINGS,
+)
 from app.services.about import collect_about
 from app.services.audit import write_audit
-from app.services.user_names import clean_name_part, first_name_contains_last_name
-from app.services.client_ip import client_ip as trusted_client_ip, client_ip_details, validate_trusted_proxies
-from app.services.network_monitor import monitor_label
-from app.services.network_monitor_wallboard import (
-    DISPLAY_DEFAULTS, PERMISSION_DEFAULTS, VALID_COLUMNS, VALID_DENSITIES,
-    VALID_LIFETIMES, clear_attempts, current_public_token, ensure_wallboard,
-    generate_public_token, get_wallboard, revoke_sessions, set_passcode,
-    wallboard_display, wallboard_permissions,
+from app.services.client_ip import (
+    client_ip as trusted_client_ip,
+)
+from app.services.client_ip import (
+    client_ip_details,
+    validate_trusted_proxies,
 )
 from app.services.custom_fields import FIELD_TYPES, make_field_key
+from app.services.dns_providers import provider_for
 from app.services.exporter import export_ip_addresses_csv, export_licences_csv
+from app.services.guacamole_bridge import restart_guacamole_bridge
 from app.services.importer import ImportCSVError, import_csv, import_ip_addresses_csv
-from app.services.managed_lists import MANAGED_LIST_MODULES, MANAGED_LISTS, list_label
 from app.services.mail import MailConfigurationError, render_email_template, send_mail
-from app.services.network_monitor import validate_threshold_values
+from app.services.managed_lists import MANAGED_LIST_MODULES, MANAGED_LISTS, list_label
 from app.services.modules import (
     MODULE_KEYS,
     accessible_module_keys,
@@ -81,30 +101,40 @@ from app.services.modules import (
     module_access_counts,
     replace_module_access,
 )
-from app.services.sessions import active_since
-from app.services.dns_providers import provider_for
-from app.services.guacamole_bridge import restart_guacamole_bridge
+from app.services.network_monitor import monitor_label, validate_threshold_values
+from app.services.network_monitor_wallboard import (
+    DISPLAY_DEFAULTS,
+    PERMISSION_DEFAULTS,
+    VALID_COLUMNS,
+    VALID_DENSITIES,
+    VALID_LIFETIMES,
+    clear_attempts,
+    current_public_token,
+    ensure_wallboard,
+    generate_public_token,
+    get_wallboard,
+    revoke_sessions,
+    set_passcode,
+    wallboard_display,
+    wallboard_permissions,
+)
+from app.services.sessions import active_since, revoke_user_sessions
 from app.services.site_settings import (
     effective_allowed_hosts,
     frame_ancestor_directive,
     get_site_setting,
-    host_without_port,
     host_is_allowed,
+    host_without_port,
     hsts_header_value,
     load_security_settings,
     split_hosts,
     validate_allowed_hosts,
 )
-from app.services.sessions import revoke_user_sessions
-from app.routers.remote_manager import (
-    RDP_SETTING_KEYS,
-    SETTINGS as REMOTE_MANAGER_SETTINGS,
-    TERMINAL_SETTING_KEYS,
-    clean_global_setting,
-)
+from app.services.user_names import clean_name_part, first_name_contains_last_name
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
-templates = Jinja2Templates(directory="app/templates")
 
 ROLES = {"admin", "editor", "viewer"}
 
@@ -130,11 +160,15 @@ MODULE_SETTINGS_TABS = {
 }
 
 
-def module_form_context(db: Session, target: User | None, selected: set[str] | None = None) -> dict:
+def module_form_context(
+    db: Session, target: User | None, selected: set[str] | None = None
+) -> dict:
     return {
         "modules": enabled_modules(db),
-        "selected_module_keys": selected if selected is not None else (
-            set(accessible_module_keys(db, target)) if target else set()
+        "selected_module_keys": (
+            selected
+            if selected is not None
+            else (set(accessible_module_keys(db, target)) if target else set())
         ),
     }
 
@@ -142,7 +176,9 @@ def module_form_context(db: Session, target: User | None, selected: set[str] | N
 def selected_module_keys(values) -> set[str]:
     if not isinstance(values, list):
         return set()
-    if len(values) > len(MODULE_KEYS) or any(not isinstance(value, str) or len(value) > 80 for value in values):
+    if len(values) > len(MODULE_KEYS) or any(
+        not isinstance(value, str) or len(value) > 80 for value in values
+    ):
         raise ValueError("One or more selected modules are invalid.")
     selected = set(values)
     if selected - MODULE_KEYS:
@@ -150,7 +186,9 @@ def selected_module_keys(values) -> set[str]:
     return selected
 
 
-def require_data_module(request: Request, db: Session, user: User, module: str) -> tuple[str, str]:
+def require_data_module(
+    request: Request, db: Session, user: User, module: str
+) -> tuple[str, str]:
     mapping = {
         "licences": ("licences", "licence_manager"),
         "ip-addresses": ("ip-addresses", "vlan_ip_manager"),
@@ -160,7 +198,11 @@ def require_data_module(request: Request, db: Session, user: User, module: str) 
         raise HTTPException(status_code=404, detail="Module not found")
     if not has_module_access(db, user, resolved[1]):
         write_audit(
-            db, user, "module_access_denied", "module_permission", resolved[1],
+            db,
+            user,
+            "module_access_denied",
+            "module_permission",
+            resolved[1],
             trusted_client_ip(request),
             detail=f"Access denied to module {resolved[1]}",
             status_code=403,
@@ -170,13 +212,19 @@ def require_data_module(request: Request, db: Session, user: User, module: str) 
     return resolved
 
 
-def require_internal_module(request: Request, db: Session, user: User, module: str) -> str:
+def require_internal_module(
+    request: Request, db: Session, user: User, module: str
+) -> str:
     module_key = INTERNAL_MODULE_KEYS.get(module)
     if not module_key:
         raise HTTPException(status_code=404, detail="Module not found")
     if not has_module_access(db, user, module_key):
         write_audit(
-            db, user, "module_access_denied", "module_permission", module_key,
+            db,
+            user,
+            "module_access_denied",
+            "module_permission",
+            module_key,
             trusted_client_ip(request),
             detail=f"Access denied to module {module_key}",
             status_code=403,
@@ -199,13 +247,19 @@ def require_module_settings_tab(request: Request, db: Session, user: User) -> No
     require_module_settings_access(request, db, user, module_key)
 
 
-def require_module_settings_access(request: Request, db: Session, user: User, module_key: str) -> None:
+def require_module_settings_access(
+    request: Request, db: Session, user: User, module_key: str
+) -> None:
     if module_key not in MODULE_KEYS:
         raise HTTPException(status_code=404, detail="Module settings not found")
     if module_key in granted_module_keys(db, user):
         return
     write_audit(
-        db, user, "module_access_denied", "module_permission", module_key,
+        db,
+        user,
+        "module_access_denied",
+        "module_permission",
+        module_key,
         trusted_client_ip(request),
         detail=f"Access denied to module settings {module_key}",
         status_code=403,
@@ -214,12 +268,15 @@ def require_module_settings_access(request: Request, db: Session, user: User, mo
     raise PermissionError("Module access required")
 
 
-def permitted_internal_modules(db: Session, user: User, choices: dict[str, str]) -> dict[str, str]:
+def permitted_internal_modules(
+    db: Session, user: User, choices: dict[str, str]
+) -> dict[str, str]:
     return {
         module: label
         for module, label in choices.items()
         if has_module_access(db, user, INTERNAL_MODULE_KEYS[module])
     }
+
 
 SITE_SETTING_KEYS = {
     "app_name": APP_BRAND_NAME,
@@ -343,7 +400,8 @@ def save_site_setting(db: Session, key: str, value: str) -> None:
 
     row = next(
         (
-            obj for obj in db.new
+            obj
+            for obj in db.new
             if isinstance(obj, RemoteManagerSetting) and obj.key == key
         ),
         None,
@@ -400,7 +458,10 @@ class DNSProviderSettingsError(ValueError):
 def vlan_ip_admin_context(db: Session) -> dict:
     return {
         "vlan_options": db.query(VLAN).order_by(VLAN.name.asc()).all(),
-        "vlan_ip_categories": db.query(ManagedListItem).filter_by(module="ip_addresses", list_key="category").order_by(ManagedListItem.sort_order.asc(), ManagedListItem.value.asc()).all(),
+        "vlan_ip_categories": db.query(ManagedListItem)
+        .filter_by(module="ip_addresses", list_key="category")
+        .order_by(ManagedListItem.sort_order.asc(), ManagedListItem.value.asc())
+        .all(),
         "dhcp_ranges": db.query(DHCPRange).order_by(DHCPRange.name.asc()).all(),
     }
 
@@ -491,8 +552,13 @@ def save_dns_manager_settings(
     if connection_mode not in {"standalone", "ha_cluster"}:
         raise DNSProviderSettingsError("Choose a valid Pi-hole connection source.")
     requested_cluster = None
-    if connection_mode == "ha_cluster" and not dns_provider_ha_cluster_id.strip().isdigit():
-        raise DNSProviderSettingsError("Choose a healthy Kaya HA Pi-hole cluster before saving.")
+    if (
+        connection_mode == "ha_cluster"
+        and not dns_provider_ha_cluster_id.strip().isdigit()
+    ):
+        raise DNSProviderSettingsError(
+            "Choose a healthy Kaya HA Pi-hole cluster before saving."
+        )
     if connection_mode == "ha_cluster":
         requested_cluster = (
             db.query(HACluster)
@@ -507,32 +573,54 @@ def save_dns_manager_settings(
             .first()
         )
         if requested_cluster is None:
-            raise DNSProviderSettingsError("That HA cluster is not currently ready for DNS Manager. Confirm it is healthy, deployed, and has exactly one virtual-IP owner.")
+            raise DNSProviderSettingsError(
+                "That HA cluster is not currently ready for DNS Manager. Confirm it is healthy, deployed, and has exactly one virtual-IP owner."
+            )
     base_url = dns_provider_base_url.strip().rstrip("/")
     if requested_cluster is not None:
-        base_url = f"http://{requested_cluster.virtual_ip}" if requested_cluster.virtual_ip else ""
+        base_url = (
+            f"http://{requested_cluster.virtual_ip}"
+            if requested_cluster.virtual_ip
+            else ""
+        )
     if not name or not base_url:
-        save_site_setting(db, "dns_default_provider_id", dns_default_provider_id.strip())
+        save_site_setting(
+            db, "dns_default_provider_id", dns_default_provider_id.strip()
+        )
         if connection_mode == "ha_cluster":
-            raise DNSProviderSettingsError("Enter a display name and choose a cluster with a virtual IP.")
+            raise DNSProviderSettingsError(
+                "Enter a display name and choose a cluster with a virtual IP."
+            )
         return None
 
     if not provider:
-        provider = DNSProviderConfig(name=name, provider_type="pihole", base_url=base_url)
+        provider = DNSProviderConfig(
+            name=name, provider_type="pihole", base_url=base_url
+        )
         db.add(provider)
         db.flush()
 
     provider.name = name
-    provider.provider_type = dns_provider_type if dns_provider_type in {"pihole"} else "pihole"
-    provider.ha_cluster_id = requested_cluster.id if requested_cluster is not None else None
+    provider.provider_type = (
+        dns_provider_type if dns_provider_type in {"pihole"} else "pihole"
+    )
+    provider.ha_cluster_id = (
+        requested_cluster.id if requested_cluster is not None else None
+    )
     provider.base_url = base_url
     if requested_cluster is None:
-        provider.auth_method = dns_provider_auth_method if dns_provider_auth_method in {"password", "api_token"} else "password"
+        provider.auth_method = (
+            dns_provider_auth_method
+            if dns_provider_auth_method in {"password", "api_token"}
+            else "password"
+        )
         if dns_provider_secret.strip():
             provider.encrypted_secret = encrypt_secret(dns_provider_secret.strip())
         provider.ssl_verify = bool(dns_provider_ssl_verify)
         try:
-            provider.timeout_seconds = max(1, min(int(dns_provider_timeout_seconds or "10"), 60))
+            provider.timeout_seconds = max(
+                1, min(int(dns_provider_timeout_seconds or "10"), 60)
+            )
         except ValueError:
             provider.timeout_seconds = 10
     provider.is_enabled = bool(dns_provider_enabled)
@@ -550,12 +638,16 @@ def save_remote_manager_settings(db: Session, form) -> bool:
     guacamole_enabled = "1" if form.get("guacamole_enabled") else "0"
     guacd_host = str(form.get("guacd_host", "")).strip()
     try:
-        guacd_port = max(1, min(int(str(form.get("guacd_port", "4822")) or "4822"), 65535))
+        guacd_port = max(
+            1, min(int(str(form.get("guacd_port", "4822")) or "4822"), 65535)
+        )
     except ValueError:
         guacd_port = 4822
 
     save_site_setting(db, "guacamole_enabled", guacamole_enabled)
-    save_site_setting(db, "split_screen_enabled", "1" if form.get("split_screen_enabled") else "0")
+    save_site_setting(
+        db, "split_screen_enabled", "1" if form.get("split_screen_enabled") else "0"
+    )
     save_site_setting(db, "guacd_host", guacd_host)
     save_site_setting(db, "guacd_port", str(guacd_port))
     for key in (
@@ -696,10 +788,16 @@ def test_directory_read_write(path_value: str) -> tuple[bool, str]:
             handle.write("kaya storage test")
 
         if test_file.read_text(encoding="utf-8") != "kaya storage test":
-            return False, f"Kaya wrote to {target}, but could not read the same data back."
+            return (
+                False,
+                f"Kaya wrote to {target}, but could not read the same data back.",
+            )
         test_file.unlink()
     except OSError as exc:
-        return False, f"Kaya could not write, read and delete a test file in {target}: {exc}"
+        return (
+            False,
+            f"Kaya could not write, read and delete a test file in {target}: {exc}",
+        )
     finally:
         if test_file and test_file.exists():
             try:
@@ -732,7 +830,9 @@ def smb_unc_path(host: str, remote_share: str, *children: str) -> str:
     share = parts[0]
     path_parts = parts[1:]
     for child in children:
-        path_parts.extend(part for part in str(child).replace("\\", "/").split("/") if part)
+        path_parts.extend(
+            part for part in str(child).replace("\\", "/").split("/") if part
+        )
     suffix = ("\\" + "\\".join(path_parts)) if path_parts else ""
     return f"\\\\{host}\\{share}{suffix}"
 
@@ -753,22 +853,30 @@ def test_smb_storage(
     payload = b"kaya storage test"
     test_path = smb_unc_path(host, remote_share, marker)
     try:
-        smbclient.register_session(host.strip(), username=username.strip() or None, password=password or None)
+        smbclient.register_session(
+            host.strip(), username=username.strip() or None, password=password or None
+        )
         with smbclient.open_file(test_path, mode="wb") as handle:
             handle.write(payload)
         with smbclient.open_file(test_path, mode="rb") as handle:
             downloaded = handle.read()
         smbclient.remove(test_path)
     except Exception as exc:
-        return False, f"Kaya could not write, read and delete a test file on SMB target {target}: {exc}"
+        return (
+            False,
+            f"Kaya could not write, read and delete a test file on SMB target {target}: {exc}",
+        )
     finally:
         try:
             smbclient.delete_session(host.strip())
         except Exception:
-            pass
+            logger.debug("SMB verification session cleanup failed", exc_info=True)
 
     if downloaded != payload:
-        return False, f"Kaya wrote to SMB target {target}, but the downloaded data did not match."
+        return (
+            False,
+            f"Kaya wrote to SMB target {target}, but the downloaded data did not match.",
+        )
     return True, f"Kaya can write, read and delete files on SMB target {target}."
 
 
@@ -782,7 +890,9 @@ def test_backup_storage_target(
     remote_username: str,
     remote_password: str,
 ) -> tuple[bool, str]:
-    storage_type = storage_type if storage_type in {"local", "smb", "ftp", "sftp"} else "local"
+    storage_type = (
+        storage_type if storage_type in {"local", "smb", "ftp", "sftp"} else "local"
+    )
 
     if storage_type == "local":
         return test_directory_read_write(storage_path)
@@ -796,7 +906,10 @@ def test_backup_storage_target(
 
     mounted_ok, mounted_detail = test_directory_read_write(storage_path)
     if mounted_ok:
-        return True, f"{mounted_detail} This is the path Kaya will use for {storage_type.upper()} storage."
+        return (
+            True,
+            f"{mounted_detail} This is the path Kaya will use for {storage_type.upper()} storage.",
+        )
 
     if storage_type == "smb":
         password = read_saved_backup_password(db, remote_password)
@@ -908,6 +1021,7 @@ def save_security_settings(
     for key, value in settings_to_save.items():
         save_site_setting(db, key, value)
 
+
 def include_current_host(allowed_hosts: str, request: Request) -> str:
     host = host_without_port(request.headers.get("host", ""))
 
@@ -918,22 +1032,29 @@ def include_current_host(allowed_hosts: str, request: Request) -> str:
 
     return "\n".join(hosts)
 
+
 def security_check_context(request: Request, db: Session) -> dict[str, object]:
     app_settings = get_settings()
     security = load_security_settings(db)
     allowed_hosts = effective_allowed_hosts(security, app_settings)
     current_host = host_without_port(request.headers.get("host", ""))
-    host_filter_enabled = security.get("trusted_hosts_enabled") == "1" or bool(app_settings.allowed_hosts.strip())
+    host_filter_enabled = security.get("trusted_hosts_enabled") == "1" or bool(
+        app_settings.allowed_hosts.strip()
+    )
     request_is_https = (
         request.url.scheme == "https"
-        or request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip() == "https"
+        or request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip()
+        == "https"
     )
-    hsts_enabled = security.get("hsts_enabled") == "1" or app_settings.session_cookie_secure
+    hsts_enabled = (
+        security.get("hsts_enabled") == "1" or app_settings.session_cookie_secure
+    )
     proxy = client_ip_details(request)
     return {
         "current_host": current_host,
         "host_filter_enabled": host_filter_enabled,
-        "host_allowed": (not host_filter_enabled) or host_is_allowed(current_host, allowed_hosts),
+        "host_allowed": (not host_filter_enabled)
+        or host_is_allowed(current_host, allowed_hosts),
         "allowed_hosts": allowed_hosts,
         "frame_ancestors": frame_ancestor_directive(security),
         "hsts_enabled": hsts_enabled,
@@ -946,7 +1067,9 @@ def security_check_context(request: Request, db: Session) -> dict[str, object]:
         "forwarded_for": proxy.forwarded_for,
         "trusted_proxy": proxy.trusted_proxy,
         "trusted_proxy_config": proxy.trusted_proxy_config,
-        "trusted_proxy_config_errors": validate_trusted_proxies(proxy.trusted_proxy_config),
+        "trusted_proxy_config_errors": validate_trusted_proxies(
+            proxy.trusted_proxy_config
+        ),
         "client_ip_source": proxy.source,
     }
 
@@ -991,7 +1114,7 @@ def admin_home(
     user=Depends(require_admin),
 ):
     users = db.query(User).count()
-    enabled_2fa = db.query(User).filter(User.totp_enabled == True).count()
+    enabled_2fa = db.query(User).filter(User.totp_enabled).count()
     audit_events = db.query(AuditLog).count()
 
     return templates.TemplateResponse(
@@ -1075,8 +1198,12 @@ def create_user(
             request,
             "user_form.html",
             {
-                "user": user, "target": None, "roles": sorted(ROLES), "error": str(exc),
-                "field_errors": {}, "form_values": {},
+                "user": user,
+                "target": None,
+                "roles": sorted(ROLES),
+                "error": str(exc),
+                "field_errors": {},
+                "form_values": {},
                 **module_form_context(db, None),
                 **csrf_context(request),
             },
@@ -1088,11 +1215,22 @@ def create_user(
 
     if first_name_contains_last_name(first_name, last_name):
         return templates.TemplateResponse(
-            request, "user_form.html",
+            request,
+            "user_form.html",
             {
-                "user": user, "target": None, "roles": sorted(ROLES), "error": None,
-                "field_errors": {"first_name": "Enter only the given name here; the surname is already in the last name field."},
-                "form_values": {"email": email, "first_name": first_name, "last_name": last_name, "role": role},
+                "user": user,
+                "target": None,
+                "roles": sorted(ROLES),
+                "error": None,
+                "field_errors": {
+                    "first_name": "Enter only the given name here; the surname is already in the last name field."
+                },
+                "form_values": {
+                    "email": email,
+                    "first_name": first_name,
+                    "last_name": last_name,
+                    "role": role,
+                },
                 **module_form_context(db, None, selected_modules),
                 **csrf_context(request),
             },
@@ -1109,7 +1247,12 @@ def create_user(
                 "roles": sorted(ROLES),
                 "error": "A user with that email already exists.",
                 "field_errors": {"email": "This email address is already in use."},
-                "form_values": {"email": email, "first_name": first_name, "last_name": last_name, "role": role},
+                "form_values": {
+                    "email": email,
+                    "first_name": first_name,
+                    "last_name": last_name,
+                    "role": role,
+                },
                 **module_form_context(db, None, selected_modules),
                 **csrf_context(request),
             },
@@ -1142,7 +1285,11 @@ def create_user(
     )
     for module_key in sorted(added_modules):
         write_audit(
-            db, user, "module_access_granted", "module_permission", f"{row.id}:{module_key}",
+            db,
+            user,
+            "module_access_granted",
+            "module_permission",
+            f"{row.id}:{module_key}",
             trusted_client_ip(request),
             detail=f"Granted {module_key} to user {row.id}",
             metadata={"target_user_id": row.id, "module_key": module_key},
@@ -1216,8 +1363,12 @@ def update_user(
             request,
             "user_form.html",
             {
-                "user": user, "target": target, "roles": sorted(ROLES), "error": str(exc),
-                "field_errors": {}, "form_values": {},
+                "user": user,
+                "target": target,
+                "roles": sorted(ROLES),
+                "error": str(exc),
+                "field_errors": {},
+                "form_values": {},
                 **module_form_context(db, target),
                 **csrf_context(request),
             },
@@ -1244,13 +1395,24 @@ def update_user(
     clean_last_name = clean_name_part(last_name)
     if first_name_contains_last_name(clean_first_name, clean_last_name):
         return templates.TemplateResponse(
-            request, "user_form.html",
+            request,
+            "user_form.html",
             {
-                "user": user, "target": target, "roles": sorted(ROLES), "error": None,
-                "field_errors": {"first_name": "Enter only the given name here; the surname is already in the last name field."},
+                "user": user,
+                "target": target,
+                "roles": sorted(ROLES),
+                "error": None,
+                "field_errors": {
+                    "first_name": "Enter only the given name here; the surname is already in the last name field."
+                },
                 "form_values": {
-                    "email": email.strip().lower(), "first_name": clean_first_name, "last_name": clean_last_name,
-                    "role": role, "is_active": bool(is_active), "is_break_glass": is_break_glass == "1", "role_source": role_source,
+                    "email": email.strip().lower(),
+                    "first_name": clean_first_name,
+                    "last_name": clean_last_name,
+                    "role": role,
+                    "is_active": bool(is_active),
+                    "is_break_glass": is_break_glass == "1",
+                    "role_source": role_source,
                 },
                 **module_form_context(db, target, selected_modules),
                 **csrf_context(request),
@@ -1264,11 +1426,18 @@ def update_user(
     target.role = role
     target.is_active = bool(is_active)
     requested_break_glass = is_break_glass == "1"
-    if requested_break_glass and (role != "admin" or not target.is_active or not (password or target.password_hash)):
+    if requested_break_glass and (
+        role != "admin"
+        or not target.is_active
+        or not (password or target.password_hash)
+    ):
         return templates.TemplateResponse(
-            request, "user_form.html",
+            request,
+            "user_form.html",
             {
-                "user": user, "target": target, "roles": sorted(ROLES),
+                "user": user,
+                "target": target,
+                "roles": sorted(ROLES),
                 "error": "Break-glass access requires an active administrator with a local password.",
                 **module_form_context(db, target, selected_modules),
                 **csrf_context(request),
@@ -1300,12 +1469,18 @@ def update_user(
         target.password_hash = hash_password(password)
         target.authentication_type = "local_and_oidc" if identity else "local"
 
-    granted_modules, removed_modules = replace_module_access(db, target, selected_modules, user)
-    db.query(VaultSession).filter(VaultSession.user_id == target.id, VaultSession.revoked_at.is_(None)).update({VaultSession.revoked_at: datetime.utcnow()}, synchronize_session=False)
+    granted_modules, removed_modules = replace_module_access(
+        db, target, selected_modules, user
+    )
+    db.query(VaultSession).filter(
+        VaultSession.user_id == target.id, VaultSession.revoked_at.is_(None)
+    ).update({VaultSession.revoked_at: datetime.utcnow()}, synchronize_session=False)
     revoke_user_sessions(
         db,
         target.id,
-        except_session_id=request.session.get("session_id") if target.id == user.id else None,
+        except_session_id=(
+            request.session.get("session_id") if target.id == user.id else None
+        ),
     )
     db.commit()
 
@@ -1317,19 +1492,30 @@ def update_user(
         str(target.id),
         request.client.host if request.client else None,
         detail=target.email,
-        metadata={"modules_granted": sorted(granted_modules), "modules_removed": sorted(removed_modules)},
+        metadata={
+            "modules_granted": sorted(granted_modules),
+            "modules_removed": sorted(removed_modules),
+        },
     )
 
     for module_key in sorted(granted_modules):
         write_audit(
-            db, user, "module_access_granted", "module_permission", f"{target.id}:{module_key}",
+            db,
+            user,
+            "module_access_granted",
+            "module_permission",
+            f"{target.id}:{module_key}",
             trusted_client_ip(request),
             detail=f"Granted {module_key} to user {target.id}",
             metadata={"target_user_id": target.id, "module_key": module_key},
         )
     for module_key in sorted(removed_modules):
         write_audit(
-            db, user, "module_access_removed", "module_permission", f"{target.id}:{module_key}",
+            db,
+            user,
+            "module_access_removed",
+            "module_permission",
+            f"{target.id}:{module_key}",
             trusted_client_ip(request),
             detail=f"Removed {module_key} from user {target.id}",
             metadata={"target_user_id": target.id, "module_key": module_key},
@@ -1358,11 +1544,15 @@ def reset_user_2fa(
 
     target.totp_secret = None
     target.totp_enabled = False
-    db.query(VaultSession).filter(VaultSession.user_id == target.id, VaultSession.revoked_at.is_(None)).update({VaultSession.revoked_at: datetime.utcnow()}, synchronize_session=False)
+    db.query(VaultSession).filter(
+        VaultSession.user_id == target.id, VaultSession.revoked_at.is_(None)
+    ).update({VaultSession.revoked_at: datetime.utcnow()}, synchronize_session=False)
     revoke_user_sessions(
         db,
         target.id,
-        except_session_id=request.session.get("session_id") if target.id == user.id else None,
+        except_session_id=(
+            request.session.get("session_id") if target.id == user.id else None
+        ),
     )
     db.commit()
 
@@ -1683,6 +1873,7 @@ def create_custom_field(
         status_code=303,
     )
 
+
 @router.post("/data/custom-fields/{field_id}/toggle")
 def toggle_custom_field(
     request: Request,
@@ -1722,18 +1913,36 @@ def toggle_custom_field(
 
 
 @router.post("/data/custom-fields/{field_id}/delete")
-def delete_custom_field(request: Request, field_id: int, csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_admin)):
+def delete_custom_field(
+    request: Request,
+    field_id: int,
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
     validate_csrf_token(request, csrf_token)
     row = db.get(CustomField, field_id)
     if not row:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Custom field not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Custom field not found"
+        )
     require_internal_module(request, db, user, row.module)
     module = row.module
     label = row.label
-    db.query(CustomFieldValue).filter(CustomFieldValue.field_id == row.id).delete(synchronize_session=False)
+    db.query(CustomFieldValue).filter(CustomFieldValue.field_id == row.id).delete(
+        synchronize_session=False
+    )
     db.delete(row)
     db.commit()
-    write_audit(db, user, "delete", "custom_field", str(field_id), request.client.host if request.client else None, detail=label)
+    write_audit(
+        db,
+        user,
+        "delete",
+        "custom_field",
+        str(field_id),
+        request.client.host if request.client else None,
+        detail=label,
+    )
     return RedirectResponse(f"/data/custom-fields?module={module}", status_code=303)
 
 
@@ -1984,19 +2193,37 @@ def edit_category(
 
 
 @router.post("/data/categories/{item_id}/delete")
-def delete_category(request: Request, item_id: int, csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_admin)):
+def delete_category(
+    request: Request,
+    item_id: int,
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
     validate_csrf_token(request, csrf_token)
     row = db.get(ManagedListItem, item_id)
     if not row:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Category not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Category not found"
+        )
     require_internal_module(request, db, user, row.module)
     module = row.module
     list_key = row.list_key
     value = row.value
     db.delete(row)
     db.commit()
-    write_audit(db, user, "delete", "category", str(item_id), request.client.host if request.client else None, detail=value)
-    return RedirectResponse(f"/data/categories?module={module}&list_key={list_key}", status_code=303)
+    write_audit(
+        db,
+        user,
+        "delete",
+        "category",
+        str(item_id),
+        request.client.host if request.client else None,
+        detail=value,
+    )
+    return RedirectResponse(
+        f"/data/categories?module={module}&list_key={list_key}", status_code=303
+    )
 
 
 @router.get("/admin/security")
@@ -2194,12 +2421,17 @@ def audit_logs(
         query = query.filter(AuditLog.user.has(User.email == actor))
     if date_from:
         try:
-            query = query.filter(AuditLog.created_at >= datetime.strptime(date_from, "%Y-%m-%d"))
+            query = query.filter(
+                AuditLog.created_at >= datetime.strptime(date_from, "%Y-%m-%d")
+            )
         except ValueError:
             date_from = ""
     if date_to:
         try:
-            query = query.filter(AuditLog.created_at < datetime.strptime(date_to, "%Y-%m-%d") + timedelta(days=1))
+            query = query.filter(
+                AuditLog.created_at
+                < datetime.strptime(date_to, "%Y-%m-%d") + timedelta(days=1)
+            )
         except ValueError:
             date_to = ""
 
@@ -2207,8 +2439,7 @@ def audit_logs(
     pages = max(1, (filtered_total + per_page - 1) // per_page)
     page = min(page, pages)
     logs = (
-        query
-        .options(selectinload(AuditLog.user))
+        query.options(selectinload(AuditLog.user))
         .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
         .offset((page - 1) * per_page)
         .limit(per_page)
@@ -2217,21 +2448,52 @@ def audit_logs(
     for log in logs:
         try:
             parsed_metadata = json.loads(log.metadata_json or "{}")
-            log.metadata_data = parsed_metadata if isinstance(parsed_metadata, dict) else {"value": parsed_metadata}
+            log.metadata_data = (
+                parsed_metadata
+                if isinstance(parsed_metadata, dict)
+                else {"value": parsed_metadata}
+            )
         except json.JSONDecodeError:
             log.metadata_data = {"raw": log.metadata_json}
 
     now = datetime.utcnow()
     summary = {
         "total": db.query(func.count(AuditLog.id)).scalar() or 0,
-        "last_24h": db.query(func.count(AuditLog.id)).filter(AuditLog.created_at >= now - timedelta(days=1)).scalar() or 0,
-        "attention": db.query(func.count(AuditLog.id)).filter(AuditLog.severity.in_(["warning", "error", "critical"])).scalar() or 0,
-        "actors": db.query(func.count(func.distinct(AuditLog.user_id))).filter(AuditLog.user_id.is_not(None)).scalar() or 0,
+        "last_24h": db.query(func.count(AuditLog.id))
+        .filter(AuditLog.created_at >= now - timedelta(days=1))
+        .scalar()
+        or 0,
+        "attention": db.query(func.count(AuditLog.id))
+        .filter(AuditLog.severity.in_(["warning", "error", "critical"]))
+        .scalar()
+        or 0,
+        "actors": db.query(func.count(func.distinct(AuditLog.user_id)))
+        .filter(AuditLog.user_id.is_not(None))
+        .scalar()
+        or 0,
     }
-    categories = [value for value, in db.query(AuditLog.category).distinct().order_by(AuditLog.category) if value]
-    actions = [value for value, in db.query(AuditLog.action).distinct().order_by(AuditLog.action) if value]
-    entities = [value for value, in db.query(AuditLog.entity).distinct().order_by(AuditLog.entity) if value]
-    actors = [email for email, in db.query(User.email).join(AuditLog, AuditLog.user_id == User.id).distinct().order_by(User.email)]
+    categories = [
+        value
+        for value, in db.query(AuditLog.category).distinct().order_by(AuditLog.category)
+        if value
+    ]
+    actions = [
+        value
+        for value, in db.query(AuditLog.action).distinct().order_by(AuditLog.action)
+        if value
+    ]
+    entities = [
+        value
+        for value, in db.query(AuditLog.entity).distinct().order_by(AuditLog.entity)
+        if value
+    ]
+    actors = [
+        email
+        for email, in db.query(User.email)
+        .join(AuditLog, AuditLog.user_id == User.id)
+        .distinct()
+        .order_by(User.email)
+    ]
     params = {
         "q": clean_q,
         "category": category,
@@ -2244,7 +2506,10 @@ def audit_logs(
         "per_page": per_page,
     }
     params = {key: value for key, value in params.items() if value not in ("", None)}
-    page_url = lambda target: "/system/audit-logs?" + urlencode({**params, "page": target})
+    def page_url(target):
+        return "/system/audit-logs?" + urlencode(
+            {**params, "page": target}
+        )
     return templates.TemplateResponse(
         request,
         "audit.html",
@@ -2314,19 +2579,42 @@ def about(
 def wallboard_admin_context(request: Request, db: Session) -> dict:
     wallboard = get_wallboard(db)
     wallboard_token = current_public_token(wallboard)
-    wallboard_base = (load_site_settings(db).get("base_url") or str(request.base_url)).rstrip("/")
+    wallboard_base = (
+        load_site_settings(db).get("base_url") or str(request.base_url)
+    ).rstrip("/")
     wallboard_memberships = {
-        item.monitor_id: item.display_order for item in (
-            db.query(NetworkMonitorWallboardMembership).filter_by(wallboard_id=wallboard.id).all() if wallboard else []
+        item.monitor_id: item.display_order
+        for item in (
+            db.query(NetworkMonitorWallboardMembership)
+            .filter_by(wallboard_id=wallboard.id)
+            .all()
+            if wallboard
+            else []
         )
     }
-    wallboard_monitors = db.query(NetworkMonitor).options(selectinload(NetworkMonitor.ip_address)).order_by(NetworkMonitor.display_name.asc(), NetworkMonitor.id.asc()).all()
+    wallboard_monitors = (
+        db.query(NetworkMonitor)
+        .options(selectinload(NetworkMonitor.ip_address))
+        .order_by(NetworkMonitor.display_name.asc(), NetworkMonitor.id.asc())
+        .all()
+    )
     return {
         "wallboard": wallboard,
         "wallboard_display": wallboard_display(wallboard),
         "wallboard_permissions": wallboard_permissions(wallboard),
-        "wallboard_url": f"{wallboard_base}/monitoring/ip-wan-monitor/wallboard/shared/{wallboard_token}" if wallboard_token else None,
-        "wallboard_monitors": sorted(wallboard_monitors, key=lambda item: (wallboard_memberships.get(item.id, 1000000), monitor_label(item).lower(), item.id)),
+        "wallboard_url": (
+            f"{wallboard_base}/monitoring/ip-wan-monitor/wallboard/shared/{wallboard_token}"
+            if wallboard_token
+            else None
+        ),
+        "wallboard_monitors": sorted(
+            wallboard_monitors,
+            key=lambda item: (
+                wallboard_memberships.get(item.id, 1000000),
+                monitor_label(item).lower(),
+                item.id,
+            ),
+        ),
         "wallboard_memberships": wallboard_memberships,
         "monitor_label": monitor_label,
     }
@@ -2347,9 +2635,14 @@ def settings_page(
             "module_access": granted_module_keys(db, user),
             "settings": load_site_settings(db),
             **wallboard_admin_context(request, db),
-            "ha_active_cluster_count": db.query(HACluster).filter(HACluster.deleted_at.is_(None)).count(),
-            "backup_preserved_item_count": db.query(BackupRecord).count() + db.query(BackupJob).count(),
-            "backup_inflight_job_count": db.query(BackupJob).filter(BackupJob.status.in_(["queued", "dispatched", "running"])).count(),
+            "ha_active_cluster_count": db.query(HACluster)
+            .filter(HACluster.deleted_at.is_(None))
+            .count(),
+            "backup_preserved_item_count": db.query(BackupRecord).count()
+            + db.query(BackupJob).count(),
+            "backup_inflight_job_count": db.query(BackupJob)
+            .filter(BackupJob.status.in_(["queued", "dispatched", "running"]))
+            .count(),
             "dns_providers": dns_providers_for_admin(db),
             "ha_dns_clusters": ha_dns_clusters_for_admin(db),
             **vlan_ip_admin_context(db),
@@ -2387,7 +2680,12 @@ async def set_high_availability_feature(
         "experimental_feature",
         entity_id="high_availability",
         detail=f"High Availability {'enabled' if enabled else 'disabled'}.",
-        metadata={"feature": "high_availability", "previous_enabled": previous, "enabled": enabled, "preserved_cluster_count": active_clusters},
+        metadata={
+            "feature": "high_availability",
+            "previous_enabled": previous,
+            "enabled": enabled,
+            "preserved_cluster_count": active_clusters,
+        },
     )
     state = "enabled" if enabled else "disabled"
     return RedirectResponse(
@@ -2408,7 +2706,11 @@ async def set_backup_manager_feature(
     enabled = str(form.get("enabled") or "") == "1"
     previous = get_site_setting(db, "backup_manager_enabled") == "1"
     preserved_items = db.query(BackupRecord).count() + db.query(BackupJob).count()
-    inflight_jobs = db.query(BackupJob).filter(BackupJob.status.in_(["queued", "dispatched", "running"])).count()
+    inflight_jobs = (
+        db.query(BackupJob)
+        .filter(BackupJob.status.in_(["queued", "dispatched", "running"]))
+        .count()
+    )
     acknowledged = str(form.get("acknowledge_backup_disable") or "") == "1"
     if not enabled and preserved_items and not acknowledged:
         return RedirectResponse(
@@ -2424,7 +2726,13 @@ async def set_backup_manager_feature(
         "experimental_feature",
         entity_id="backup_manager",
         detail=f"Backup Manager {'enabled' if enabled else 'disabled'}.",
-        metadata={"feature": "backup_manager", "previous_enabled": previous, "enabled": enabled, "preserved_item_count": preserved_items, "inflight_job_count": inflight_jobs},
+        metadata={
+            "feature": "backup_manager",
+            "previous_enabled": previous,
+            "enabled": enabled,
+            "preserved_item_count": preserved_items,
+            "inflight_job_count": inflight_jobs,
+        },
     )
     state = "enabled" if enabled else "disabled"
     return RedirectResponse(
@@ -2434,7 +2742,9 @@ async def set_backup_manager_feature(
 
 
 @router.post("/system/site-administration/vlan-ip-manager")
-async def manage_vlan_ip_options(request: Request, db: Session = Depends(get_db), user=Depends(require_admin)):
+async def manage_vlan_ip_options(
+    request: Request, db: Session = Depends(get_db), user=Depends(require_admin)
+):
     require_module_settings_access(request, db, user, "vlan_ip_manager")
     form = await request.form()
     validate_csrf_token(request, str(form.get("csrf_token") or ""))
@@ -2450,47 +2760,82 @@ async def manage_vlan_ip_options(request: Request, db: Session = Depends(get_db)
             try:
                 subnet = str(ip_network(subnet, strict=False))
             except ValueError as exc:
-                raise HTTPException(status_code=400, detail="Enter a valid VLAN subnet in CIDR notation.") from exc
+                raise HTTPException(
+                    status_code=400,
+                    detail="Enter a valid VLAN subnet in CIDR notation.",
+                ) from exc
         return name, description, subnet or None
 
-    def clean_scope_fields(suffix: str = "") -> tuple[str, str, str, int | None, str, bool]:
+    def clean_scope_fields(
+        suffix: str = "",
+    ) -> tuple[str, str, str, int | None, str, bool]:
         name = str(form.get(f"scope_name{suffix}") or "").strip()
         start_raw = str(form.get(f"scope_start{suffix}") or "").strip()
         end_raw = str(form.get(f"scope_end{suffix}") or "").strip()
         description = str(form.get(f"scope_description{suffix}") or "").strip()
         vlan_raw = str(form.get(f"scope_vlan_id{suffix}") or "").strip()
         if not name or not start_raw or not end_raw:
-            raise HTTPException(status_code=400, detail="DHCP range name, start address, and end address are required.")
+            raise HTTPException(
+                status_code=400,
+                detail="DHCP range name, start address, and end address are required.",
+            )
         try:
             start, end = ip_address(start_raw), ip_address(end_raw)
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail="Enter valid DHCP start and end addresses.") from exc
+            raise HTTPException(
+                status_code=400, detail="Enter valid DHCP start and end addresses."
+            ) from exc
         if start.version != end.version or int(start) > int(end):
-            raise HTTPException(status_code=400, detail="The DHCP range end must be after its start and use the same IP version.")
+            raise HTTPException(
+                status_code=400,
+                detail="The DHCP range end must be after its start and use the same IP version.",
+            )
         vlan_id = int(vlan_raw) if vlan_raw.isdigit() else None
         if vlan_id and not db.get(VLAN, vlan_id):
-            raise HTTPException(status_code=400, detail="Choose a valid VLAN for this DHCP range.")
+            raise HTTPException(
+                status_code=400, detail="Choose a valid VLAN for this DHCP range."
+            )
         enabled = str(form.get(f"scope_enabled{suffix}") or "") == "1"
         return name, str(start), str(end), vlan_id, description, enabled
 
-    def validate_scope_bounds(start_raw: str, end_raw: str, vlan_id: int | None, enabled: bool, exclude_id: int | None = None) -> None:
+    def validate_scope_bounds(
+        start_raw: str,
+        end_raw: str,
+        vlan_id: int | None,
+        enabled: bool,
+        exclude_id: int | None = None,
+    ) -> None:
         start, end = ip_address(start_raw), ip_address(end_raw)
         vlan = db.get(VLAN, vlan_id) if vlan_id else None
         if vlan and vlan.subnet_cidr:
             network = ip_network(vlan.subnet_cidr, strict=False)
             if start not in network or end not in network:
-                raise HTTPException(status_code=400, detail=f"The DHCP range must fit inside {vlan.name} ({network}).")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"The DHCP range must fit inside {vlan.name} ({network}).",
+                )
         if not enabled:
             return
-        for existing in db.query(DHCPRange).filter(DHCPRange.is_enabled == True).all():  # noqa: E712
+        for existing in (
+            db.query(DHCPRange).filter(DHCPRange.is_enabled).all()
+        ):  # noqa: E712
             if exclude_id and existing.id == exclude_id:
                 continue
             try:
-                existing_start, existing_end = ip_address(existing.start_address), ip_address(existing.end_address)
+                existing_start, existing_end = ip_address(
+                    existing.start_address
+                ), ip_address(existing.end_address)
             except ValueError:
                 continue
-            if existing_start.version == start.version and start <= existing_end and existing_start <= end:
-                raise HTTPException(status_code=409, detail=f"This range overlaps the enabled DHCP range {existing.name}.")
+            if (
+                existing_start.version == start.version
+                and start <= existing_end
+                and existing_start <= end
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"This range overlaps the enabled DHCP range {existing.name}.",
+                )
 
     detail = action
     if action == "create_vlan":
@@ -2504,7 +2849,11 @@ async def manage_vlan_ip_options(request: Request, db: Session = Depends(get_db)
         if not row:
             raise HTTPException(status_code=404, detail="VLAN not found.")
         name, description, subnet = clean_vlan_fields(f"_{row_id}")
-        duplicate = db.query(VLAN).filter(func.lower(VLAN.name) == name.lower(), VLAN.id != row.id).first()
+        duplicate = (
+            db.query(VLAN)
+            .filter(func.lower(VLAN.name) == name.lower(), VLAN.id != row.id)
+            .first()
+        )
         if duplicate:
             raise HTTPException(status_code=409, detail="That VLAN already exists.")
         row.name, row.description, row.subnet_cidr = name, description or None, subnet
@@ -2513,17 +2862,44 @@ async def manage_vlan_ip_options(request: Request, db: Session = Depends(get_db)
         row = db.get(VLAN, row_id)
         if not row:
             raise HTTPException(status_code=404, detail="VLAN not found.")
-        if db.query(IPAddress).filter_by(vlan_id=row.id).first() or db.query(DHCPRange).filter_by(vlan_id=row.id).first():
-            raise HTTPException(status_code=409, detail="Move its IP records and DHCP ranges before deleting this VLAN.")
+        if (
+            db.query(IPAddress).filter_by(vlan_id=row.id).first()
+            or db.query(DHCPRange).filter_by(vlan_id=row.id).first()
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Move its IP records and DHCP ranges before deleting this VLAN.",
+            )
         db.delete(row)
     elif action == "create_category":
         value = str(form.get("category_value") or "").strip()
         if not value:
             raise HTTPException(status_code=400, detail="Category name is required.")
-        if db.query(ManagedListItem).filter(ManagedListItem.module == "ip_addresses", ManagedListItem.list_key == "category", func.lower(ManagedListItem.value) == value.lower()).first():
+        if (
+            db.query(ManagedListItem)
+            .filter(
+                ManagedListItem.module == "ip_addresses",
+                ManagedListItem.list_key == "category",
+                func.lower(ManagedListItem.value) == value.lower(),
+            )
+            .first()
+        ):
             raise HTTPException(status_code=409, detail="That Category already exists.")
-        order = db.query(func.max(ManagedListItem.sort_order)).filter_by(module="ip_addresses", list_key="category").scalar() or 0
-        db.add(ManagedListItem(module="ip_addresses", list_key="category", value=value, sort_order=order + 10, is_active=True))
+        order = (
+            db.query(func.max(ManagedListItem.sort_order))
+            .filter_by(module="ip_addresses", list_key="category")
+            .scalar()
+            or 0
+        )
+        db.add(
+            ManagedListItem(
+                module="ip_addresses",
+                list_key="category",
+                value=value,
+                sort_order=order + 10,
+                is_active=True,
+            )
+        )
     elif action.startswith("update_category:"):
         row_id = int(action.split(":", 1)[1])
         row = db.get(ManagedListItem, row_id)
@@ -2532,40 +2908,81 @@ async def manage_vlan_ip_options(request: Request, db: Session = Depends(get_db)
         value = str(form.get(f"category_value_{row_id}") or "").strip()
         if not value:
             raise HTTPException(status_code=400, detail="Category name is required.")
-        duplicate = db.query(ManagedListItem).filter(ManagedListItem.module == "ip_addresses", ManagedListItem.list_key == "category", func.lower(ManagedListItem.value) == value.lower(), ManagedListItem.id != row.id).first()
+        duplicate = (
+            db.query(ManagedListItem)
+            .filter(
+                ManagedListItem.module == "ip_addresses",
+                ManagedListItem.list_key == "category",
+                func.lower(ManagedListItem.value) == value.lower(),
+                ManagedListItem.id != row.id,
+            )
+            .first()
+        )
         if duplicate:
             raise HTTPException(status_code=409, detail="That Category already exists.")
         old = row.value
         row.value = value
         row.is_active = str(form.get(f"category_enabled_{row_id}") or "") == "1"
         if old != value:
-            db.query(IPAddress).filter(IPAddress.category == old).update({IPAddress.category: value}, synchronize_session=False)
+            db.query(IPAddress).filter(IPAddress.category == old).update(
+                {IPAddress.category: value}, synchronize_session=False
+            )
     elif action.startswith("delete_category:"):
         row_id = int(action.split(":", 1)[1])
         row = db.get(ManagedListItem, row_id)
         if not row or row.module != "ip_addresses" or row.list_key != "category":
             raise HTTPException(status_code=404, detail="Category not found.")
         if db.query(IPAddress).filter_by(category=row.value).first():
-            raise HTTPException(status_code=409, detail="Reassign records before deleting this Category. You can disable it instead.")
+            raise HTTPException(
+                status_code=409,
+                detail="Reassign records before deleting this Category. You can disable it instead.",
+            )
         db.delete(row)
     elif action == "create_scope":
         name, start, end, vlan_id, description, enabled = clean_scope_fields()
         validate_scope_bounds(start, end, vlan_id, enabled)
-        if db.query(DHCPRange).filter(func.lower(DHCPRange.name) == name.lower()).first():
-            raise HTTPException(status_code=409, detail="That DHCP range already exists.")
-        db.add(DHCPRange(name=name, start_address=start, end_address=end, vlan_id=vlan_id, description=description or None, is_enabled=enabled))
+        if (
+            db.query(DHCPRange)
+            .filter(func.lower(DHCPRange.name) == name.lower())
+            .first()
+        ):
+            raise HTTPException(
+                status_code=409, detail="That DHCP range already exists."
+            )
+        db.add(
+            DHCPRange(
+                name=name,
+                start_address=start,
+                end_address=end,
+                vlan_id=vlan_id,
+                description=description or None,
+                is_enabled=enabled,
+            )
+        )
     elif action.startswith("update_scope:"):
         row_id = int(action.split(":", 1)[1])
         row = db.get(DHCPRange, row_id)
         if not row:
             raise HTTPException(status_code=404, detail="DHCP range not found.")
-        name, start, end, vlan_id, description, enabled = clean_scope_fields(f"_{row_id}")
+        name, start, end, vlan_id, description, enabled = clean_scope_fields(
+            f"_{row_id}"
+        )
         validate_scope_bounds(start, end, vlan_id, enabled, row_id)
-        duplicate = db.query(DHCPRange).filter(func.lower(DHCPRange.name) == name.lower(), DHCPRange.id != row.id).first()
+        duplicate = (
+            db.query(DHCPRange)
+            .filter(func.lower(DHCPRange.name) == name.lower(), DHCPRange.id != row.id)
+            .first()
+        )
         if duplicate:
-            raise HTTPException(status_code=409, detail="That DHCP range already exists.")
+            raise HTTPException(
+                status_code=409, detail="That DHCP range already exists."
+            )
         row.name, row.start_address, row.end_address = name, start, end
-        row.vlan_id, row.description, row.is_enabled = vlan_id, description or None, enabled
+        row.vlan_id, row.description, row.is_enabled = (
+            vlan_id,
+            description or None,
+            enabled,
+        )
     elif action.startswith("delete_scope:"):
         row = db.get(DHCPRange, int(action.split(":", 1)[1]))
         if not row:
@@ -2575,8 +2992,18 @@ async def manage_vlan_ip_options(request: Request, db: Session = Depends(get_db)
         raise HTTPException(status_code=400, detail="Choose a VLAN/IP Manager action.")
 
     db.commit()
-    write_audit(db, user, "update", "vlan_ip_settings", None, request.client.host if request.client else None, detail=detail)
-    return RedirectResponse("/system/site-administration?tab=module-vlan-ip-manager", status_code=303)
+    write_audit(
+        db,
+        user,
+        "update",
+        "vlan_ip_settings",
+        None,
+        request.client.host if request.client else None,
+        detail=detail,
+    )
+    return RedirectResponse(
+        "/system/site-administration?tab=module-vlan-ip-manager", status_code=303
+    )
 
 
 @router.post("/system/site-administration/ip-wan-monitor")
@@ -2589,18 +3016,41 @@ async def save_network_monitor_defaults(
     form = await request.form()
     validate_csrf_token(request, str(form.get("csrf_token") or ""))
     try:
-        values = validate_threshold_values({
-            "latency_warning_ms": int(str(form.get("network_monitor_latency_warning_ms") or "")),
-            "latency_critical_ms": int(str(form.get("network_monitor_latency_critical_ms") or "")),
-            "packet_loss_warning_percent": int(str(form.get("network_monitor_packet_loss_warning_percent") or "")),
-            "packet_loss_critical_percent": int(str(form.get("network_monitor_packet_loss_critical_percent") or "")),
-            "degraded_threshold": int(str(form.get("network_monitor_degraded_threshold") or "")),
-            "failure_threshold": int(str(form.get("network_monitor_failure_threshold") or "")),
-            "recovery_threshold": int(str(form.get("network_monitor_recovery_threshold") or "")),
-            "recovery_state_enabled": str(form.get("network_monitor_recovery_state_enabled") or "") == "1",
-        })
+        values = validate_threshold_values(
+            {
+                "latency_warning_ms": int(
+                    str(form.get("network_monitor_latency_warning_ms") or "")
+                ),
+                "latency_critical_ms": int(
+                    str(form.get("network_monitor_latency_critical_ms") or "")
+                ),
+                "packet_loss_warning_percent": int(
+                    str(form.get("network_monitor_packet_loss_warning_percent") or "")
+                ),
+                "packet_loss_critical_percent": int(
+                    str(form.get("network_monitor_packet_loss_critical_percent") or "")
+                ),
+                "degraded_threshold": int(
+                    str(form.get("network_monitor_degraded_threshold") or "")
+                ),
+                "failure_threshold": int(
+                    str(form.get("network_monitor_failure_threshold") or "")
+                ),
+                "recovery_threshold": int(
+                    str(form.get("network_monitor_recovery_threshold") or "")
+                ),
+                "recovery_state_enabled": str(
+                    form.get("network_monitor_recovery_state_enabled") or ""
+                )
+                == "1",
+            }
+        )
     except (TypeError, ValueError) as exc:
-        message = str(exc) if isinstance(exc, ValueError) and str(exc) else "Enter valid numeric monitor thresholds."
+        message = (
+            str(exc)
+            if isinstance(exc, ValueError) and str(exc)
+            else "Enter valid numeric monitor thresholds."
+        )
         raise HTTPException(status_code=400, detail=message) from exc
     setting_map = {
         "latency_warning_ms": "network_monitor_latency_warning_ms",
@@ -2612,18 +3062,31 @@ async def save_network_monitor_defaults(
         "recovery_threshold": "network_monitor_recovery_threshold",
         "recovery_state_enabled": "network_monitor_recovery_state_enabled",
     }
-    old_values = {key: get_site_setting(db, setting_key) for key, setting_key in setting_map.items()}
+    old_values = {
+        key: get_site_setting(db, setting_key)
+        for key, setting_key in setting_map.items()
+    }
     for key, setting_key in setting_map.items():
-        value = "1" if key == "recovery_state_enabled" and values[key] else "" if key == "recovery_state_enabled" else str(values[key])
+        value = (
+            "1"
+            if key == "recovery_state_enabled" and values[key]
+            else "" if key == "recovery_state_enabled" else str(values[key])
+        )
         save_site_setting(db, setting_key, value)
     db.commit()
     write_audit(
-        db, user, "update", "network_monitor_defaults", None,
+        db,
+        user,
+        "update",
+        "network_monitor_defaults",
+        None,
         trusted_client_ip(request),
         detail="Updated inherited IP/WAN Monitor health thresholds",
         metadata={"old": old_values, "new": values},
     )
-    return RedirectResponse("/system/site-administration?tab=module-network-monitor", status_code=303)
+    return RedirectResponse(
+        "/system/site-administration?tab=module-network-monitor", status_code=303
+    )
 
 
 @router.post("/system/site-administration/ip-wan-monitor/wallboard")
@@ -2650,8 +3113,14 @@ async def save_network_monitor_wallboard(
         regenerated = existed
         row.updated_by = user.id
         db.commit()
-        audit_action = "wallboard_url_regenerated" if existed else "wallboard_url_generated"
-        audit_detail = "Regenerated shared Wallboard URL" if existed else "Generated shared Wallboard URL"
+        audit_action = (
+            "wallboard_url_regenerated" if existed else "wallboard_url_generated"
+        )
+        audit_detail = (
+            "Regenerated shared Wallboard URL"
+            if existed
+            else "Generated shared Wallboard URL"
+        )
     elif action == "revoke":
         revoke_sessions(db, row, bump_revision=True)
         row.public_token_hash = None
@@ -2659,68 +3128,138 @@ async def save_network_monitor_wallboard(
         row.enabled = False
         row.updated_by = user.id
         db.commit()
-        audit_action, audit_detail = "wallboard_url_revoked", "Revoked shared Wallboard URL and sessions"
+        audit_action, audit_detail = (
+            "wallboard_url_revoked",
+            "Revoked shared Wallboard URL and sessions",
+        )
     elif action == "invalidate_sessions":
         count = revoke_sessions(db, row)
-        audit_action, audit_detail = "wallboard_sessions_invalidated", f"Invalidated {count} shared Wallboard sessions"
+        audit_action, audit_detail = (
+            "wallboard_sessions_invalidated",
+            f"Invalidated {count} shared Wallboard sessions",
+        )
     elif action == "clear_lockout":
         count = clear_attempts(db, row.id)
-        audit_action, audit_detail = "wallboard_lockout_cleared", f"Cleared {count} shared Wallboard lockout records"
+        audit_action, audit_detail = (
+            "wallboard_lockout_cleared",
+            f"Cleared {count} shared Wallboard lockout records",
+        )
     elif action == "save":
-        old_memberships = [item.monitor_id for item in db.query(NetworkMonitorWallboardMembership).filter_by(wallboard_id=row.id).order_by(NetworkMonitorWallboardMembership.display_order).all()]
+        old_memberships = [
+            item.monitor_id
+            for item in db.query(NetworkMonitorWallboardMembership)
+            .filter_by(wallboard_id=row.id)
+            .order_by(NetworkMonitorWallboardMembership.display_order)
+            .all()
+        ]
         old_display = wallboard_display(row)
         old_permissions = wallboard_permissions(row)
         old_scope_all = row.all_active_monitors
         name = str(form.get("wallboard_name") or "").strip()
         if not name or len(name) > 120:
-            raise HTTPException(status_code=400, detail="Wallboard name must contain 1 to 120 characters.")
+            raise HTTPException(
+                status_code=400,
+                detail="Wallboard name must contain 1 to 120 characters.",
+            )
         columns = str(form.get("wallboard_columns") or "auto")
         density = str(form.get("wallboard_density") or "comfortable")
         if columns not in VALID_COLUMNS or density not in VALID_DENSITIES:
-            raise HTTPException(status_code=400, detail="Choose a supported Wallboard layout.")
+            raise HTTPException(
+                status_code=400, detail="Choose a supported Wallboard layout."
+            )
         try:
             lifetime = int(str(form.get("wallboard_session_lifetime") or "86400"))
-            remembered_lifetime = int(str(form.get("wallboard_remember_lifetime") or "2592000"))
+            remembered_lifetime = int(
+                str(form.get("wallboard_remember_lifetime") or "2592000")
+            )
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail="Choose a supported session lifetime.") from exc
-        if lifetime not in VALID_LIFETIMES or remembered_lifetime not in {86400, 604800, 2592000}:
-            raise HTTPException(status_code=400, detail="Choose a supported session lifetime.")
+            raise HTTPException(
+                status_code=400, detail="Choose a supported session lifetime."
+            ) from exc
+        if lifetime not in VALID_LIFETIMES or remembered_lifetime not in {
+            86400,
+            604800,
+            2592000,
+        }:
+            raise HTTPException(
+                status_code=400, detail="Choose a supported session lifetime."
+            )
         new_passcode = str(form.get("wallboard_passcode") or "")
         if new_passcode:
             if new_passcode != str(form.get("wallboard_passcode_confirm") or ""):
-                raise HTTPException(status_code=400, detail="The Wallboard passcodes do not match.")
-            set_passcode(row, new_passcode, str(form.get("wallboard_passcode_type") or "numeric"))
+                raise HTTPException(
+                    status_code=400, detail="The Wallboard passcodes do not match."
+                )
+            set_passcode(
+                row, new_passcode, str(form.get("wallboard_passcode_type") or "numeric")
+            )
             revoke_sessions(db, row, bump_revision=False)
             audit_action = "wallboard_passcode_changed"
             audit_detail = "Changed shared Wallboard passcode and invalidated sessions"
         requested_ids = []
         for value in form.getlist("wallboard_monitor_ids")[:1000]:
-            try: monitor_id = int(str(value))
-            except ValueError: continue
-            if monitor_id > 0 and monitor_id not in requested_ids: requested_ids.append(monitor_id)
+            try:
+                monitor_id = int(str(value))
+            except ValueError:
+                continue
+            if monitor_id > 0 and monitor_id not in requested_ids:
+                requested_ids.append(monitor_id)
         scope_all = str(form.get("wallboard_monitor_scope") or "all") == "all"
         if scope_all:
-            requested_ids = [item for item, in db.query(NetworkMonitor.id).order_by(NetworkMonitor.display_name.asc(), NetworkMonitor.id.asc()).all()]
-        existing_ids = {item for item, in db.query(NetworkMonitor.id).filter(NetworkMonitor.id.in_(requested_ids or [-1])).all()}
+            requested_ids = [
+                item
+                for item, in db.query(NetworkMonitor.id)
+                .order_by(NetworkMonitor.display_name.asc(), NetworkMonitor.id.asc())
+                .all()
+            ]
+        existing_ids = {
+            item
+            for item, in db.query(NetworkMonitor.id)
+            .filter(NetworkMonitor.id.in_(requested_ids or [-1]))
+            .all()
+        }
         if any(item not in existing_ids for item in requested_ids):
-            raise HTTPException(status_code=400, detail="One or more selected monitors no longer exist.")
+            raise HTTPException(
+                status_code=400, detail="One or more selected monitors no longer exist."
+            )
         order_values = []
         for value in str(form.get("wallboard_monitor_order") or "").split(","):
-            try: monitor_id = int(value)
-            except ValueError: continue
-            if monitor_id in requested_ids and monitor_id not in order_values: order_values.append(monitor_id)
+            try:
+                monitor_id = int(value)
+            except ValueError:
+                continue
+            if monitor_id in requested_ids and monitor_id not in order_values:
+                order_values.append(monitor_id)
         order_values.extend(item for item in requested_ids if item not in order_values)
-        db.query(NetworkMonitorWallboardMembership).filter_by(wallboard_id=row.id).delete(synchronize_session=False)
+        db.query(NetworkMonitorWallboardMembership).filter_by(
+            wallboard_id=row.id
+        ).delete(synchronize_session=False)
         for position, monitor_id in enumerate(order_values, 1):
-            db.add(NetworkMonitorWallboardMembership(wallboard_id=row.id, monitor_id=monitor_id, display_order=position))
-        display = {key: str(form.get(f"wallboard_{key}") or "") == "1" for key in DISPLAY_DEFAULTS}
-        permissions = {key: str(form.get(f"wallboard_{key}") or "") == "1" for key in PERMISSION_DEFAULTS}
+            db.add(
+                NetworkMonitorWallboardMembership(
+                    wallboard_id=row.id, monitor_id=monitor_id, display_order=position
+                )
+            )
+        display = {
+            key: str(form.get(f"wallboard_{key}") or "") == "1"
+            for key in DISPLAY_DEFAULTS
+        }
+        permissions = {
+            key: str(form.get(f"wallboard_{key}") or "") == "1"
+            for key in PERMISSION_DEFAULTS
+        }
         enabled = str(form.get("wallboard_enabled") or "") == "1"
         if enabled and (not row.public_token_hash or not row.passcode_hash):
-            raise HTTPException(status_code=400, detail="Generate a Wallboard URL and configure a passcode before enabling sharing.")
+            raise HTTPException(
+                status_code=400,
+                detail="Generate a Wallboard URL and configure a passcode before enabling sharing.",
+            )
         if row.enabled and not enabled:
             revoke_sessions(db, row)
-            audit_action, audit_detail = "wallboard_disabled", "Disabled shared Wallboard and invalidated sessions"
+            audit_action, audit_detail = (
+                "wallboard_disabled",
+                "Disabled shared Wallboard and invalidated sessions",
+            )
         elif not row.enabled and enabled:
             audit_action, audit_detail = "wallboard_enabled", "Enabled shared Wallboard"
         row.name, row.enabled = name, enabled
@@ -2728,32 +3267,83 @@ async def save_network_monitor_wallboard(
         row.display_options_json = json.dumps(display, separators=(",", ":"))
         row.permissions_json = json.dumps(permissions, separators=(",", ":"))
         row.session_lifetime_seconds = lifetime
-        row.remember_display_enabled = str(form.get("wallboard_remember_enabled") or "") == "1"
+        row.remember_display_enabled = (
+            str(form.get("wallboard_remember_enabled") or "") == "1"
+        )
         row.remember_display_lifetime_seconds = remembered_lifetime
         row.all_active_monitors = scope_all
-        row.show_paused_monitors = str(form.get("wallboard_show_paused_monitors") or "") == "1"
+        row.show_paused_monitors = (
+            str(form.get("wallboard_show_paused_monitors") or "") == "1"
+        )
         row.updated_by = user.id
         db.commit()
         if old_memberships != order_values or old_scope_all != scope_all:
-            additional_audits.append(("wallboard_monitor_membership_changed", "Changed shared Wallboard monitor membership and order", {"monitor_ids": order_values, "all_active": scope_all}))
+            additional_audits.append(
+                (
+                    "wallboard_monitor_membership_changed",
+                    "Changed shared Wallboard monitor membership and order",
+                    {"monitor_ids": order_values, "all_active": scope_all},
+                )
+            )
         if old_permissions != permissions:
-            additional_audits.append(("wallboard_permissions_changed", "Changed shared Wallboard action permissions", {"permissions": permissions}))
+            additional_audits.append(
+                (
+                    "wallboard_permissions_changed",
+                    "Changed shared Wallboard action permissions",
+                    {"permissions": permissions},
+                )
+            )
         new_display = {"columns": columns, "density": density, **display}
         if old_display != new_display:
-            additional_audits.append(("wallboard_defaults_changed", "Changed shared Wallboard display defaults", {"display": new_display}))
+            additional_audits.append(
+                (
+                    "wallboard_defaults_changed",
+                    "Changed shared Wallboard display defaults",
+                    {"display": new_display},
+                )
+            )
     else:
-        raise HTTPException(status_code=400, detail="Choose a supported Wallboard action.")
+        raise HTTPException(
+            status_code=400, detail="Choose a supported Wallboard action."
+        )
 
-    write_audit(db, user, audit_action, "network_monitor_wallboard", str(row.id), trusted_client_ip(request), category="security", detail=audit_detail)
+    write_audit(
+        db,
+        user,
+        audit_action,
+        "network_monitor_wallboard",
+        str(row.id),
+        trusted_client_ip(request),
+        category="security",
+        detail=audit_detail,
+    )
     for event_action, event_detail, event_metadata in additional_audits:
-        write_audit(db, user, event_action, "network_monitor_wallboard", str(row.id), trusted_client_ip(request), category="security", detail=event_detail, metadata=event_metadata)
+        write_audit(
+            db,
+            user,
+            event_action,
+            "network_monitor_wallboard",
+            str(row.id),
+            trusted_client_ip(request),
+            category="security",
+            detail=event_detail,
+            metadata=event_metadata,
+        )
     if generated_token and request.headers.get("x-requested-with") == "XMLHttpRequest":
-        wallboard_base = (load_site_settings(db).get("base_url") or str(request.base_url)).rstrip("/")
+        wallboard_base = (
+            load_site_settings(db).get("base_url") or str(request.base_url)
+        ).rstrip("/")
         return JSONResponse(
-            {"ok": True, "url": f"{wallboard_base}/monitoring/ip-wan-monitor/wallboard/shared/{generated_token}", "regenerated": regenerated},
+            {
+                "ok": True,
+                "url": f"{wallboard_base}/monitoring/ip-wan-monitor/wallboard/shared/{generated_token}",
+                "regenerated": regenerated,
+            },
             headers={"Cache-Control": "no-store"},
         )
-    return RedirectResponse("/system/site-administration?tab=module-network-monitor", status_code=303)
+    return RedirectResponse(
+        "/system/site-administration?tab=module-network-monitor", status_code=303
+    )
 
 
 @router.get("/system/site-administration/security/public-ip")
@@ -2773,7 +3363,10 @@ def inbound_check(request: Request, user=Depends(require_admin)):
     host = host_without_port(request.headers.get("host", ""))
     if not host:
         return JSONResponse(
-            {"ok": False, "error": "Kaya could not read a Host header from this request."},
+            {
+                "ok": False,
+                "error": "Kaya could not read a Host header from this request.",
+            },
             status_code=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -2781,7 +3374,11 @@ def inbound_check(request: Request, user=Depends(require_admin)):
         addresses = lookup_inbound_addresses(host)
     except OSError as exc:
         return JSONResponse(
-            {"ok": False, "host": host, "error": f"DNS lookup failed: {type(exc).__name__}"},
+            {
+                "ok": False,
+                "host": host,
+                "error": f"DNS lookup failed: {type(exc).__name__}",
+            },
             status_code=status.HTTP_502_BAD_GATEWAY,
         )
 
@@ -2895,7 +3492,11 @@ async def save_settings(
         guacd_host = get_site_setting(db, "guacd_host")
         guacd_port = get_site_setting(db, "guacd_port")
     timezone_region = timezone_region.strip()
-    if not timezone_region or len(timezone_region) > 100 or not re.fullmatch(r"[A-Za-z0-9_+\-/]+", timezone_region):
+    if (
+        not timezone_region
+        or len(timezone_region) > 100
+        or not re.fullmatch(r"[A-Za-z0-9_+\-/]+", timezone_region)
+    ):
         timezone_region = "UTC"
     save_site_setting(db, "timezone_region", timezone_region)
 
@@ -2917,7 +3518,9 @@ async def save_settings(
         for key, value in form.items():
             if key in submitted_settings and key not in {"csrf_token", "smtp_password"}:
                 submitted_settings[key] = str(value)
-        submitted_settings["trusted_hosts_enabled"] = "1" if trusted_hosts_enabled else ""
+        submitted_settings["trusted_hosts_enabled"] = (
+            "1" if trusted_hosts_enabled else ""
+        )
         submitted_settings["allowed_hosts"] = allowed_hosts
         return templates.TemplateResponse(
             request,
@@ -2983,15 +3586,45 @@ async def save_settings(
             backup_remote_username=backup_remote_username,
             backup_remote_password=backup_remote_password,
         )
-        save_site_setting(db, "backup_targets_json", normalize_backup_targets_json(backup_targets_json))
-        save_site_setting(db, "backup_default_target_name", backup_default_target_name.strip())
+        save_site_setting(
+            db,
+            "backup_targets_json",
+            normalize_backup_targets_json(backup_targets_json),
+        )
+        save_site_setting(
+            db, "backup_default_target_name", backup_default_target_name.strip()
+        )
     if "dashboard" in module_settings_access:
-        save_site_setting(db, "dashboard_customisation_enabled", "1" if dashboard_customisation_enabled else "")
-        save_site_setting(db, "dashboard_monitor_mode_enabled", "1" if dashboard_monitor_mode_enabled else "")
-        save_site_setting(db, "dashboard_show_source_age", "1" if dashboard_show_source_age else "")
-        save_site_setting(db, "dashboard_attention_required", "1" if dashboard_attention_required else "")
-        disabled_widget_keys = ",".join(sorted({key.strip() for key in dashboard_globally_disabled_widgets.split(",") if re.fullmatch(r"[a-z0-9_]+", key.strip())}))
-        save_site_setting(db, "dashboard_globally_disabled_widgets", disabled_widget_keys)
+        save_site_setting(
+            db,
+            "dashboard_customisation_enabled",
+            "1" if dashboard_customisation_enabled else "",
+        )
+        save_site_setting(
+            db,
+            "dashboard_monitor_mode_enabled",
+            "1" if dashboard_monitor_mode_enabled else "",
+        )
+        save_site_setting(
+            db, "dashboard_show_source_age", "1" if dashboard_show_source_age else ""
+        )
+        save_site_setting(
+            db,
+            "dashboard_attention_required",
+            "1" if dashboard_attention_required else "",
+        )
+        disabled_widget_keys = ",".join(
+            sorted(
+                {
+                    key.strip()
+                    for key in dashboard_globally_disabled_widgets.split(",")
+                    if re.fullmatch(r"[a-z0-9_]+", key.strip())
+                }
+            )
+        )
+        save_site_setting(
+            db, "dashboard_globally_disabled_widgets", disabled_widget_keys
+        )
         try:
             dashboard_poll_interval_seconds = str(int(dashboard_poll_interval_seconds))
         except ValueError:
@@ -2999,11 +3632,17 @@ async def save_settings(
         if dashboard_poll_interval_seconds not in {"10", "30", "60", "300"}:
             dashboard_poll_interval_seconds = "10"
         try:
-            dashboard_recent_activity_limit = str(max(1, min(int(dashboard_recent_activity_limit), 20)))
+            dashboard_recent_activity_limit = str(
+                max(1, min(int(dashboard_recent_activity_limit), 20))
+            )
         except ValueError:
             dashboard_recent_activity_limit = "10"
-        save_site_setting(db, "dashboard_poll_interval_seconds", dashboard_poll_interval_seconds)
-        save_site_setting(db, "dashboard_recent_activity_limit", dashboard_recent_activity_limit)
+        save_site_setting(
+            db, "dashboard_poll_interval_seconds", dashboard_poll_interval_seconds
+        )
+        save_site_setting(
+            db, "dashboard_recent_activity_limit", dashboard_recent_activity_limit
+        )
     if "secret_vault" in module_settings_access:
         try:
             vault_min_pin = str(max(6, min(int(secret_vault_min_pin_length), 20)))
@@ -3012,28 +3651,66 @@ async def save_settings(
         if secret_vault_max_auto_lock_minutes not in {"5", "10", "15", "30", "60"}:
             secret_vault_max_auto_lock_minutes = "60"
         save_site_setting(db, "secret_vault_min_pin_length", vault_min_pin)
-        save_site_setting(db, "secret_vault_max_auto_lock_minutes", secret_vault_max_auto_lock_minutes)
-        save_site_setting(db, "secret_vault_sharing_enabled", "1" if secret_vault_sharing_enabled else "")
+        save_site_setting(
+            db, "secret_vault_max_auto_lock_minutes", secret_vault_max_auto_lock_minutes
+        )
+        save_site_setting(
+            db,
+            "secret_vault_sharing_enabled",
+            "1" if secret_vault_sharing_enabled else "",
+        )
         if secret_vault_oidc_mfa_policy not in {"kaya_totp", "idp_mfa", "either"}:
             secret_vault_oidc_mfa_policy = "either"
-        save_site_setting(db, "secret_vault_oidc_mfa_policy", secret_vault_oidc_mfa_policy)
-        save_site_setting(db, "secret_vault_oidc_accepted_acr", secret_vault_oidc_accepted_acr.strip()[:500])
+        save_site_setting(
+            db, "secret_vault_oidc_mfa_policy", secret_vault_oidc_mfa_policy
+        )
+        save_site_setting(
+            db,
+            "secret_vault_oidc_accepted_acr",
+            secret_vault_oidc_accepted_acr.strip()[:500],
+        )
     if "secure_send" in module_settings_access:
         save_site_setting(db, "secure_send_enabled", "1" if secure_send_enabled else "")
-        save_site_setting(db, "secure_send_default_expiry", secure_send_default_expiry if secure_send_default_expiry in {"15m", "1h", "4h", "24h", "3d", "7d"} else "24h")
+        save_site_setting(
+            db,
+            "secure_send_default_expiry",
+            (
+                secure_send_default_expiry
+                if secure_send_default_expiry in {"15m", "1h", "4h", "24h", "3d", "7d"}
+                else "24h"
+            ),
+        )
         try:
-            secure_send_max_expiry_days = str(max(1, min(int(secure_send_max_expiry_days), 30)))
+            secure_send_max_expiry_days = str(
+                max(1, min(int(secure_send_max_expiry_days), 30))
+            )
         except ValueError:
             secure_send_max_expiry_days = "7"
         try:
-            secure_send_max_upload_mb = str(max(1, min(int(secure_send_max_upload_mb), 250)))
+            secure_send_max_upload_mb = str(
+                max(1, min(int(secure_send_max_upload_mb), 250))
+            )
         except ValueError:
             secure_send_max_upload_mb = "25"
-        save_site_setting(db, "secure_send_max_expiry_days", secure_send_max_expiry_days)
+        save_site_setting(
+            db, "secure_send_max_expiry_days", secure_send_max_expiry_days
+        )
         save_site_setting(db, "secure_send_max_upload_mb", secure_send_max_upload_mb)
-        save_site_setting(db, "secure_send_allow_one_download", "1" if secure_send_allow_one_download else "")
-        save_site_setting(db, "secure_send_vault_integration", "1" if secure_send_vault_integration else "")
-        save_site_setting(db, "secure_send_email_notifications", "1" if secure_send_email_notifications else "")
+        save_site_setting(
+            db,
+            "secure_send_allow_one_download",
+            "1" if secure_send_allow_one_download else "",
+        )
+        save_site_setting(
+            db,
+            "secure_send_vault_integration",
+            "1" if secure_send_vault_integration else "",
+        )
+        save_site_setting(
+            db,
+            "secure_send_email_notifications",
+            "1" if secure_send_email_notifications else "",
+        )
         gateway_hostname = secure_send_gateway_hostname.strip().rstrip("/")[:500]
         if not re.fullmatch(r"https?://[^\s/]+(?::\d+)?", gateway_hostname):
             gateway_hostname = "http://localhost:8999"
@@ -3074,7 +3751,23 @@ async def save_settings(
             )
         except DNSProviderSettingsError as exc:
             db.rollback()
-            return templates.TemplateResponse(request, "settings.html", {"user": user, "module_access": module_settings_access, "settings": load_site_settings(db), "dns_providers": dns_providers_for_admin(db), "ha_dns_clusters": ha_dns_clusters_for_admin(db), **vlan_ip_admin_context(db), "security_check": security_check_context(request, db), "message": None, "error": str(exc), **csrf_context(request)}, status_code=422)
+            return templates.TemplateResponse(
+                request,
+                "settings.html",
+                {
+                    "user": user,
+                    "module_access": module_settings_access,
+                    "settings": load_site_settings(db),
+                    "dns_providers": dns_providers_for_admin(db),
+                    "ha_dns_clusters": ha_dns_clusters_for_admin(db),
+                    **vlan_ip_admin_context(db),
+                    "security_check": security_check_context(request, db),
+                    "message": None,
+                    "error": str(exc),
+                    **csrf_context(request),
+                },
+                status_code=422,
+            )
     guacamole_bridge_changed = (
         save_remote_manager_settings(db, form)
         if "remote_manager" in module_settings_access
@@ -3146,8 +3839,12 @@ def test_backup_storage(
         backup_remote_username=backup_remote_username,
         backup_remote_password="",
     )
-    save_site_setting(db, "backup_targets_json", normalize_backup_targets_json(backup_targets_json))
-    save_site_setting(db, "backup_default_target_name", backup_default_target_name.strip())
+    save_site_setting(
+        db, "backup_targets_json", normalize_backup_targets_json(backup_targets_json)
+    )
+    save_site_setting(
+        db, "backup_default_target_name", backup_default_target_name.strip()
+    )
     db.commit()
 
     passed, detail = test_backup_storage_target(
@@ -3262,14 +3959,34 @@ def test_dns_provider(
         )
     except DNSProviderSettingsError as exc:
         db.rollback()
-        return templates.TemplateResponse(request, "settings.html", {"user": user, "module_access": granted_module_keys(db, user), "settings": load_site_settings(db), "dns_providers": dns_providers_for_admin(db), "ha_dns_clusters": ha_dns_clusters_for_admin(db), **vlan_ip_admin_context(db), "security_check": security_check_context(request, db), "message": None, "error": str(exc), **csrf_context(request)}, status_code=422)
+        return templates.TemplateResponse(
+            request,
+            "settings.html",
+            {
+                "user": user,
+                "module_access": granted_module_keys(db, user),
+                "settings": load_site_settings(db),
+                "dns_providers": dns_providers_for_admin(db),
+                "ha_dns_clusters": ha_dns_clusters_for_admin(db),
+                **vlan_ip_admin_context(db),
+                "security_check": security_check_context(request, db),
+                "message": None,
+                "error": str(exc),
+                **csrf_context(request),
+            },
+            status_code=422,
+        )
     db.commit()
 
     provider_id = (get_site_setting(db, "dns_default_provider_id") or "").strip()
-    provider = db.get(DNSProviderConfig, int(provider_id)) if provider_id.isdigit() else None
+    provider = (
+        db.get(DNSProviderConfig, int(provider_id)) if provider_id.isdigit() else None
+    )
     if not provider:
         passed = False
-        detail = "DNS provider settings were saved, but no provider is configured to test."
+        detail = (
+            "DNS provider settings were saved, but no provider is configured to test."
+        )
     else:
         result = provider_for(provider).test_connection()
         passed = result.ok
@@ -3336,20 +4053,30 @@ def save_dns_provider(
             dns_manager_enabled=current.get("dns_manager_enabled", ""),
             dns_collector_enabled=current.get("dns_collector_enabled", ""),
             dns_default_provider_id=current.get("dns_default_provider_id", ""),
-            dns_refresh_interval_seconds=current.get("dns_refresh_interval_seconds", "300"),
+            dns_refresh_interval_seconds=current.get(
+                "dns_refresh_interval_seconds", "300"
+            ),
             dns_cache_enabled=current.get("dns_cache_enabled", ""),
-            dns_vlan_integration_enabled=current.get("dns_vlan_integration_enabled", ""),
-            dns_match_suggestions_enabled=current.get("dns_match_suggestions_enabled", ""),
+            dns_vlan_integration_enabled=current.get(
+                "dns_vlan_integration_enabled", ""
+            ),
+            dns_match_suggestions_enabled=current.get(
+                "dns_match_suggestions_enabled", ""
+            ),
             dns_auto_link_exact_mac=current.get("dns_auto_link_exact_mac", ""),
             dns_auto_update_dynamic_ip=current.get("dns_auto_update_dynamic_ip", ""),
             dns_stale_client_days=current.get("dns_stale_client_days", "30"),
             dns_retain_client_history=current.get("dns_retain_client_history", ""),
             dns_client_history_days=current.get("dns_client_history_days", "365"),
-            dns_observation_history_days=current.get("dns_observation_history_days", "30"),
+            dns_observation_history_days=current.get(
+                "dns_observation_history_days", "30"
+            ),
             dns_dhcp_history_days=current.get("dns_dhcp_history_days", "90"),
             dns_traffic_history_days=current.get("dns_traffic_history_days", "30"),
             dns_vlan_enrichment_enabled=current.get("dns_vlan_enrichment_enabled", ""),
-            dns_update_empty_managed_hostname=current.get("dns_update_empty_managed_hostname", ""),
+            dns_update_empty_managed_hostname=current.get(
+                "dns_update_empty_managed_hostname", ""
+            ),
             dns_provider_id=dns_provider_id,
             dns_provider_name=dns_provider_name,
             dns_provider_type=dns_provider_type,
@@ -3364,13 +4091,49 @@ def save_dns_provider(
             dns_provider_description=dns_provider_description,
         )
         if provider is None:
-            raise DNSProviderSettingsError("Enter a display name and Pi-hole connection details before saving.")
+            raise DNSProviderSettingsError(
+                "Enter a display name and Pi-hole connection details before saving."
+            )
         db.commit()
     except DNSProviderSettingsError as exc:
         db.rollback()
-        return templates.TemplateResponse(request, "settings.html", {"user": user, "module_access": granted_module_keys(db, user), "settings": load_site_settings(db), "dns_providers": dns_providers_for_admin(db), "ha_dns_clusters": ha_dns_clusters_for_admin(db), **vlan_ip_admin_context(db), "security_check": security_check_context(request, db), "message": None, "error": str(exc), **csrf_context(request)}, status_code=422)
-    write_audit(db, user, "update", "dns_provider", str(provider.id), request.client.host if request.client else None, detail=f"Saved DNS provider {provider.name}.", metadata={"ha_cluster_id": provider.ha_cluster.public_id if provider.ha_cluster else None, "history_preserved": True})
-    return RedirectResponse("/system/site-administration?tab=module-dns-manager&provider_saved=1", status_code=303)
+        return templates.TemplateResponse(
+            request,
+            "settings.html",
+            {
+                "user": user,
+                "module_access": granted_module_keys(db, user),
+                "settings": load_site_settings(db),
+                "dns_providers": dns_providers_for_admin(db),
+                "ha_dns_clusters": ha_dns_clusters_for_admin(db),
+                **vlan_ip_admin_context(db),
+                "security_check": security_check_context(request, db),
+                "message": None,
+                "error": str(exc),
+                **csrf_context(request),
+            },
+            status_code=422,
+        )
+    write_audit(
+        db,
+        user,
+        "update",
+        "dns_provider",
+        str(provider.id),
+        request.client.host if request.client else None,
+        detail=f"Saved DNS provider {provider.name}.",
+        metadata={
+            "ha_cluster_id": (
+                provider.ha_cluster.public_id if provider.ha_cluster else None
+            ),
+            "history_preserved": True,
+        },
+    )
+    return RedirectResponse(
+        "/system/site-administration?tab=module-dns-manager&provider_saved=1",
+        status_code=303,
+    )
+
 
 @router.post("/system/site-administration/test-email")
 def send_test_email(
@@ -3461,8 +4224,16 @@ def send_test_email(
         "reset_link": f"{(base_url.strip() or 'http://localhost:8080').rstrip('/')}/reset-password?token=example-test-token",
         "user_email": recipient,
     }
-    subject = render_email_template(email_template_password_reset_subject or SITE_SETTING_KEYS["email_template_password_reset_subject"], **template_values)
-    body = render_email_template(email_template_password_reset_body or SITE_SETTING_KEYS["email_template_password_reset_body"], **template_values)
+    subject = render_email_template(
+        email_template_password_reset_subject
+        or SITE_SETTING_KEYS["email_template_password_reset_subject"],
+        **template_values,
+    )
+    body = render_email_template(
+        email_template_password_reset_body
+        or SITE_SETTING_KEYS["email_template_password_reset_body"],
+        **template_values,
+    )
 
     try:
         send_mail(db, recipient, f"[Test] {subject}", body)

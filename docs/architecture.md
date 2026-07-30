@@ -23,7 +23,8 @@ Kaya is a FastAPI application using server-rendered Jinja templates, SQLAlchemy 
 
 ## Folder Structure
 
-- `app/main.py`: FastAPI app setup, middleware, router registration, startup/shutdown, database bootstrap/migrations
+- `app/main.py`: FastAPI app setup, middleware, router registration, and startup/shutdown sequencing
+- `app/db/`: database sessions, Alembic orchestration, pre-Alembic compatibility, backup, validation, and default data
 - `app/models/models.py`: SQLAlchemy models
 - `app/db/session.py`: database engine and session factory
 - `app/core/`: configuration, security, CSRF, demo mode, branding, TOTP helpers
@@ -98,3 +99,7 @@ The FastAPI process starts background work on application startup:
 - Guacamole bridge service when enabled
 
 These workers run in-process. Multi-instance deployments can duplicate work unless this architecture is changed.
+
+## Database startup sequence
+
+The container entrypoint calls `python -m app.db.cli` before querying application tables. FastAPI calls the same idempotent preparation boundary before starting any worker. Preparation detects the revision, backs up a database that requires writes, validates, runs the compatibility bridge or Alembic, and validates again. Application defaults and process-bound vault-session revocation run only after schema success. Any migration exception prevents user traffic and all background work.

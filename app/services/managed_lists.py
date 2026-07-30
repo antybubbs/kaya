@@ -28,7 +28,7 @@ def active_values(db: Session, module: str, list_key: str) -> list[str]:
     rows = db.query(ManagedListItem).filter(
         ManagedListItem.module == module,
         ManagedListItem.list_key == list_key,
-        ManagedListItem.is_active == True,
+        ManagedListItem.is_active,
     ).order_by(ManagedListItem.sort_order.asc(), ManagedListItem.value.asc()).all()
     return [row.value for row in rows]
 

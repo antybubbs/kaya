@@ -400,7 +400,7 @@ def reconcile_desired(state: State, desired: dict, *, helper_runner=None) -> Non
 
 def run_once(state: State) -> None:
     state.telemetry_deferred = False
-    config = json.loads(state.config_path.read_text(encoding="utf-8"))
+    _config = json.loads(state.config_path.read_text(encoding="utf-8"))
     try:
         try:
             from .keepalived_runtime import refresh_vip_state

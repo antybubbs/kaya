@@ -4,11 +4,24 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.schemas.high_availability import HAAgentActionResult, HAAgentEvents, HAAgentHeartbeat, HAAgentRegister
-from app.services.ha_agents import HAAgentError, AuthenticatedAgent, authenticate_agent_request, desired_state, ingest_events, record_action_result, record_heartbeat, register_agent
+from app.schemas.high_availability import (
+    HAAgentActionResult,
+    HAAgentEvents,
+    HAAgentHeartbeat,
+    HAAgentRegister,
+)
 from app.services.ha_agent_installer import agent_file
+from app.services.ha_agents import (
+    AuthenticatedAgent,
+    HAAgentError,
+    authenticate_agent_request,
+    desired_state,
+    ingest_events,
+    record_action_result,
+    record_heartbeat,
+    register_agent,
+)
 from app.services.ha_leases import HALeaseError, snapshot_for_agent
-
 
 router = APIRouter(prefix="/api/ha/agent/v1", tags=["ha-agent"])
 _registration_attempts: dict[str, list[datetime]] = {}

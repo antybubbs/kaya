@@ -1,29 +1,69 @@
 from datetime import datetime, timedelta
 from ipaddress import ip_address
+
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
 from starlette import status
+
 from app.core.csrf import csrf_context, validate_csrf_token
+from app.core.templating import templates
 from app.db.session import get_db
-from app.models.models import CustomFieldValue, ComputeWorkload, DHCPLeaseHistory, DHCPRange, DNSClientTrafficEvent, DNSRecognisedDevice, IPAddress, NetworkMonitor, NetworkMonitorCheck, NetworkMonitorEvent, NetworkMonitorOutage, NetworkMonitorStatistic, RemoteAccess, RemoteSessionRecording, VLAN
+from app.models.models import (
+    VLAN,
+    ComputeWorkload,
+    CustomFieldValue,
+    DHCPLeaseHistory,
+    DHCPRange,
+    DNSClientTrafficEvent,
+    DNSRecognisedDevice,
+    IPAddress,
+    NetworkMonitor,
+    NetworkMonitorCheck,
+    NetworkMonitorEvent,
+    NetworkMonitorOutage,
+    NetworkMonitorStatistic,
+    RemoteAccess,
+    RemoteSessionRecording,
+)
 from app.routers.auth import require_editor, require_module_access, require_user
 from app.routers.compute_manager import uptime_label, workload_addresses
-from app.routers.remote_manager import RDP_SETTING_KEYS, SETTINGS as REMOTE_MANAGER_DEFAULTS, TERMINAL_SETTING_KEYS, clean_global_setting, decode_settings_blob, encode_settings_blob
+from app.routers.remote_manager import (
+    RDP_SETTING_KEYS,
+    TERMINAL_SETTING_KEYS,
+    clean_global_setting,
+    decode_settings_blob,
+    encode_settings_blob,
+)
+from app.routers.remote_manager import SETTINGS as REMOTE_MANAGER_DEFAULTS
 from app.services.audit import write_audit
-from app.services.custom_fields import active_fields, field_values, option_list, save_custom_values, validate_custom_values
+from app.services.custom_fields import (
+    active_fields,
+    field_values,
+    option_list,
+    save_custom_values,
+    validate_custom_values,
+)
+from app.services.dns_clients import (
+    add_event,
+    client_display_name,
+    client_status,
+    dhcp_range_for_ip,
+    normalise_mac,
+)
 from app.services.managed_lists import list_values
 from app.services.network_monitor import (
-    MONITOR_THRESHOLD_DEFAULTS, effective_monitor_thresholds, ping_ipv4,
-    validate_monitor_timing, validate_threshold_values,
+    MONITOR_THRESHOLD_DEFAULTS,
+    effective_monitor_thresholds,
+    ping_ipv4,
+    validate_monitor_timing,
+    validate_threshold_values,
 )
-from app.services.dns_clients import add_event, client_display_name, client_status, dhcp_range_for_ip, normalise_mac
 from app.services.site_settings import get_site_setting
 
 router = APIRouter(prefix="/networking/vlan-ip-manager", dependencies=[Depends(require_module_access("vlan_ip_manager"))])
-templates = Jinja2Templates(directory="app/templates")
+
 ASSIGNMENT_TYPES = {"Static", "Dynamic"}
 REMOTE_PROTOCOLS = {"ssh", "rdp"}
 
@@ -242,7 +282,6 @@ def list_ip_addresses(request: Request, q: str = Query("", max_length=200), cate
     active_vlan_id = clean_vlan_filter(vlan_id)
     query = db.query(IPAddress).options(joinedload(IPAddress.vlan))
     categories = list_values(db, MODULE).get("category", [])
-    vlans = db.query(VLAN).order_by(VLAN.name.asc()).all()
     active_category = category.strip()
     if active_category:
         query = query.filter(IPAddress.category == active_category)
@@ -254,6 +293,7 @@ def list_ip_addresses(request: Request, q: str = Query("", max_length=200), cate
         query = query.outerjoin(VLAN).filter(or_(IPAddress.address.ilike(like), IPAddress.mac_address.ilike(like), IPAddress.category.ilike(like), IPAddress.name.ilike(like), IPAddress.description.ilike(like), IPAddress.assignment_type.ilike(like), IPAddress.notes.ilike(like), VLAN.name.ilike(like)))
     rows = [] if view in {"observed", "leases"} else sorted(query.limit(500).all(), key=ip_sort_key)
     total = db.query(IPAddress).count()
+    vlans = db.query(VLAN).order_by(VLAN.name.asc()).all()
     enrichment_enabled = get_site_setting(db, "dns_vlan_enrichment_enabled") == "1"
     dns_rows = db.query(DNSRecognisedDevice).filter(DNSRecognisedDevice.linked_ip_record_id.in_([row.id for row in rows])).all() if enrichment_enabled and rows else []
     dns_by_ip = {row.linked_ip_record_id: row for row in dns_rows}
@@ -438,7 +478,6 @@ def detail_ip_address(request: Request, record_id: int, db: Session = Depends(ge
     fields = active_fields(db, MODULE)
     values = field_values(db, MODULE, ENTITY_TYPE, row.id)
     categories = list_values(db, MODULE).get("category", [])
-    vlans = db.query(VLAN).order_by(VLAN.name.asc()).all()
     target_address = str(ip_address(row.address))
     compute_matches = [
         workload

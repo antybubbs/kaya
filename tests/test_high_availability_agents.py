@@ -489,7 +489,9 @@ def test_verified_automatic_failover_event_immediately_adopts_the_surviving_owne
 
         completed = HAAgentEventItem(event_id="automatic-completed-001", event_type="automatic_failover_completed", severity="warning", message="Local failover completed without requiring Kaya.", occurred_at=datetime.utcnow(), details={"generation": 8, "automatic": True})
         assert ingest_events(db, standby, [completed]) == (1, 0)
-        db.refresh(cluster); db.refresh(primary); db.refresh(standby)
+        db.refresh(cluster)
+        db.refresh(primary)
+        db.refresh(standby)
         assert cluster.status == "DEGRADED"
         assert cluster.current_active_node_id == standby.id
         assert cluster.authoritative_node_id == standby.id
@@ -547,7 +549,8 @@ def test_stale_cached_owner_recovers_on_the_next_surviving_heartbeat():
         db.commit()
 
         reconcile_vip_ownership(db, cluster)
-        db.refresh(cluster); db.refresh(primary)
+        db.refresh(cluster)
+        db.refresh(primary)
         assert cluster.status == "DEGRADED"
         assert cluster.current_active_node_id == standby.id
         assert primary.vip_owned is False
@@ -584,7 +587,9 @@ def test_completed_managed_failover_adopts_active_node_despite_stale_peer_dhcp_c
         db.commit()
 
         reconcile_vip_ownership(db, cluster)
-        db.refresh(cluster); db.refresh(primary); db.refresh(standby)
+        db.refresh(cluster)
+        db.refresh(primary)
+        db.refresh(standby)
         assert cluster.status == "DEGRADED"
         assert cluster.current_active_node_id == standby.id
         assert cluster.authoritative_node_id == standby.id

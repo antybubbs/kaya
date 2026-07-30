@@ -1,0 +1,10 @@
+extend-exclude = [".agent-inspect"]
+
+[lint]
+# Keep the enforced baseline small and reviewable. Broader rule families can be
+# adopted incrementally without turning unrelated feature work into a rewrite.
+select = ["E4", "E7", "E9", "F"]
+# Windows bind mounts present regular source files as executable inside Linux
+# containers. Git records these files as non-executable, so EXE002 would be a
+# platform artefact rather than a repository defect.
+ignore = ["EXE002"]

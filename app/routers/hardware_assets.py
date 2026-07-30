@@ -1,24 +1,47 @@
+import shutil
 from datetime import datetime
 from pathlib import Path
-import shutil
 from uuid import uuid4
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
 from fastapi.responses import FileResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from starlette import status
+
 from app.core.config import get_settings
 from app.core.csrf import csrf_context, validate_csrf_token
+from app.core.templating import templates
 from app.db.session import get_db
-from app.models.models import CustomFieldValue, DNSRecognisedDevice, HardwareAsset, HardwareAssetAttachment, RackItem
+from app.models.models import (
+    CustomFieldValue,
+    DNSRecognisedDevice,
+    HardwareAsset,
+    HardwareAssetAttachment,
+    RackItem,
+)
 from app.routers.auth import require_editor, require_module_access, require_user
 from app.services.audit import write_audit
-from app.services.custom_fields import active_fields, field_values, option_list, save_custom_values, validate_custom_values
+from app.services.custom_fields import (
+    active_fields,
+    field_values,
+    option_list,
+    save_custom_values,
+    validate_custom_values,
+)
 from app.services.managed_lists import list_values
 
 router = APIRouter(prefix="/infrastructure/asset-manager", dependencies=[Depends(require_module_access("asset_manager"))])
-templates = Jinja2Templates(directory="app/templates")
+
 MODULE = "hardware_assets"
 ENTITY_TYPE = "hardware_asset"
 ALLOWED_PHOTO_TYPES = {

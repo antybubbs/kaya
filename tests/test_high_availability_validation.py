@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 
 from sqlalchemy import create_engine, event
@@ -31,7 +30,8 @@ def cluster_with_connections(db: Session) -> HACluster:
     cluster = HACluster(name="Validated DNS", provider_key="pihole", status="DRAFT", created_by=admin)
     primary = HAProviderConnection(provider_key="pihole", name="Primary connection", api_base_url="https://primary.invalid", encrypted_secret="encrypted-one", created_by=admin)
     secondary = HAProviderConnection(provider_key="pihole", name="Secondary connection", api_base_url="https://secondary.invalid", encrypted_secret="encrypted-two", created_by=admin)
-    db.add_all([admin, cluster, primary, secondary]); db.flush()
+    db.add_all([admin, cluster, primary, secondary])
+    db.flush()
     db.add_all(
         [
             HANode(cluster_id=cluster.id, display_name="Primary", management_host="primary.invalid", api_base_url=primary.api_base_url, ha_connection_id=primary.id, role="ACTIVE", desired_role="ACTIVE"),
@@ -372,10 +372,12 @@ def test_rotating_reused_dns_credential_creates_ha_connection_without_changing_d
         )
         cluster = HACluster(name="Separated", provider_key="pihole", status="DRAFT", created_by=admin)
         peer_connection = HAProviderConnection(provider_key="pihole", name="Peer", api_base_url="https://peer.invalid", encrypted_secret=encrypt_secret("peer-secret"), created_by=admin)
-        db.add_all([admin, provider, cluster, peer_connection]); db.flush()
+        db.add_all([admin, provider, cluster, peer_connection])
+        db.flush()
         node = HANode(cluster_id=cluster.id, display_name="Shared", management_host="shared.invalid", api_base_url=provider.base_url, integration_reference_id=provider.id, role="ACTIVE", desired_role="ACTIVE")
         peer = HANode(cluster_id=cluster.id, display_name="Peer", management_host="peer.invalid", api_base_url=peer_connection.api_base_url, ha_connection_id=peer_connection.id, role="STANDBY", desired_role="STANDBY")
-        db.add_all([node, peer]); db.commit()
+        db.add_all([node, peer])
+        db.commit()
         provider_secret = provider.encrypted_secret
 
         updated, credential_changed = update_cluster_node(
@@ -467,5 +469,5 @@ def test_cluster_tabs_are_routed_pages_and_connection_test_preserves_form_state(
     assert 'fetch("/high-availability/clusters/test-connection"' in javascript
     assert "window.location" not in javascript
     assert ".reset(" not in javascript
-    assert 'return RedirectResponse(f"/high-availability/clusters/{cluster.public_id}/validation?validated=1"' in routes
-    assert 'return RedirectResponse(f"/high-availability/clusters/{cluster.public_id}/nodes?node_updated=1"' in routes
+    assert 'f"/high-availability/clusters/{cluster.public_id}/validation?validated=1"' in routes
+    assert 'f"/high-availability/clusters/{cluster.public_id}/nodes?node_updated=1"' in routes

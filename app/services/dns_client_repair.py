@@ -101,7 +101,6 @@ def repair_dns_client_identities(dbapi_connection: Any) -> dict[str, int]:
     raw_rows = cur.execute("SELECT * FROM dns_recognised_devices ORDER BY id").fetchall()
     names = [item[0] for item in cur.description]
     rows = [dict(zip(names, row)) for row in raw_rows]
-    by_id = {row["id"]: row for row in rows}
     before = len(rows)
 
     for row in rows:

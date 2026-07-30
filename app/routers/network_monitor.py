@@ -7,34 +7,62 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Body, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
-from fastapi.templating import Jinja2Templates
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session, selectinload
 from starlette import status
 
 from app.core.csrf import csrf_context, validate_csrf_token
+from app.core.templating import templates
 from app.db.session import get_db
-from app.models.models import NetworkMonitor, NetworkMonitorCheck, NetworkMonitorEvent, NetworkMonitorOutage, NetworkMonitorStatistic, NetworkMonitorWallboardSession, RemoteAccess
+from app.models.models import (
+    NetworkMonitor,
+    NetworkMonitorCheck,
+    NetworkMonitorEvent,
+    NetworkMonitorOutage,
+    NetworkMonitorStatistic,
+    NetworkMonitorWallboardSession,
+    RemoteAccess,
+)
 from app.routers.auth import require_editor, require_module_access, require_user
 from app.services.audit import write_audit
+from app.services.client_ip import client_ip as trusted_client_ip
 from app.services.network_monitor import (
-    DASHBOARD_INTERVALS, active_dashboard_interval, effective_monitor_thresholds,
-    latency_label, live_latency_label, monitor_label, run_monitor_check_by_id, set_dashboard_interval_override,
-    validate_monitor_timing, validate_threshold_values,
+    DASHBOARD_INTERVALS,
+    active_dashboard_interval,
+    effective_monitor_thresholds,
+    latency_label,
+    live_latency_label,
+    monitor_label,
+    run_monitor_check_by_id,
+    set_dashboard_interval_override,
+    validate_monitor_timing,
+    validate_threshold_values,
 )
 from app.services.network_monitor_history import performance_history
-from app.services.client_ip import client_ip as trusted_client_ip
 from app.services.network_monitor_wallboard import (
-    DISPLAY_DEFAULTS, GENERIC_CREDENTIAL_ERROR, VALID_COLUMNS, VALID_DENSITIES,
-    WALLBOARD_COOKIE, active_session, allowed_monitor_ids, get_wallboard,
-    is_locked, normalise_display_options, reset_user_preferences, save_user_preferences,
-    start_session, user_preferences, verify_challenge, verify_session_csrf,
-    wallboard_display, wallboard_for_token, wallboard_permissions,
+    GENERIC_CREDENTIAL_ERROR,
+    VALID_COLUMNS,
+    VALID_DENSITIES,
+    WALLBOARD_COOKIE,
+    active_session,
+    allowed_monitor_ids,
+    get_wallboard,
+    is_locked,
+    normalise_display_options,
+    reset_user_preferences,
+    save_user_preferences,
+    start_session,
+    user_preferences,
+    verify_challenge,
+    verify_session_csrf,
+    wallboard_display,
+    wallboard_for_token,
+    wallboard_permissions,
 )
 
 router = APIRouter(prefix="/networking/ip-wan-monitor", dependencies=[Depends(require_module_access("network_monitor"))])
 wallboard_router = APIRouter(prefix="/monitoring/ip-wan-monitor/wallboard")
-templates = Jinja2Templates(directory="app/templates")
+
 RANGES = {
     "1h": timedelta(hours=1), "6h": timedelta(hours=6), "24h": timedelta(hours=24),
     "7d": timedelta(days=7), "30d": timedelta(days=30), "90d": timedelta(days=90),

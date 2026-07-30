@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 
 from sqlalchemy.orm import Session
 
-from app.models.models import HACluster, HAEvent, HAFailoverRun, HANode, HASyncRun
+from app.models.models import HACluster, HAEvent, HANode, HASyncRun
 from app.services.audit import write_audit
 from app.services.ha_topology import dhcp_observation, pihole_manages_dhcp, reconcile_topology
 

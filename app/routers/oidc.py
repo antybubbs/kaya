@@ -1,36 +1,64 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import secrets
-from urllib.parse import urlencode, urlsplit
+from datetime import datetime, timedelta, timezone
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, Form, Query, Request
 from fastapi.responses import RedirectResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.csrf import csrf_context, validate_csrf_token
-from app.core.security import decrypt_secret, encrypt_secret, verify_password
+from app.core.templating import templates
+from app.core.security import encrypt_secret, verify_password
 from app.core.totp import decrypted_totp_secret, verify_totp
 from app.db.session import get_db
-from app.models.models import ExternalIdentity, OIDCLinkInvitation, OIDCProvider, OIDCTransaction, RemoteManagerSetting, User
-from app.routers.auth import client_key, login_is_limited, record_login_failure, require_admin, require_user
+from app.models.models import (
+    ExternalIdentity,
+    OIDCLinkInvitation,
+    OIDCProvider,
+    OIDCTransaction,
+    RemoteManagerSetting,
+    User,
+)
+from app.routers.auth import (
+    client_key,
+    login_is_limited,
+    record_login_failure,
+    require_admin,
+    require_user,
+)
 from app.services.audit import write_audit
-from app.services.authentication_policy import AUTHENTICATION_MODES, get_authentication_policy, oidc_only_readiness
-from app.services.oidc_client import OIDCFlowError, authorization_redirect, claims_preview, consume_transaction, exchange_and_validate, safe_return_path
+from app.services.authentication_policy import (
+    AUTHENTICATION_MODES,
+    get_authentication_policy,
+    oidc_only_readiness,
+)
+from app.services.modules import has_module_access, module_for_path, module_landing_url
+from app.services.oidc_client import (
+    OIDCFlowError,
+    authorization_redirect,
+    claims_preview,
+    consume_transaction,
+    exchange_and_validate,
+    safe_return_path,
+)
 from app.services.oidc_discovery import OIDCDiscoveryError, test_and_store_discovery
-from app.services.oidc_identity import OIDCIdentityError, confirm_transaction_link, resolve_login, unlink_identity
+from app.services.oidc_identity import (
+    OIDCIdentityError,
+    confirm_transaction_link,
+    resolve_login,
+    unlink_identity,
+)
 from app.services.sessions import start_user_session
 from app.services.site_settings import get_site_setting
-from app.services.modules import has_module_access, module_for_path, module_landing_url
-
 
 router = APIRouter()
-templates = Jinja2Templates(directory="app/templates")
+
 settings = get_settings()
 ACTION_ATTEMPTS: dict[str, list[datetime]] = {}
 LINK_ERROR_MESSAGES = {

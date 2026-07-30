@@ -77,21 +77,13 @@ Major tables:
 - `DNSInvestigation` references `DNSProviderConfig` and optionally creator user.
 - `CustomFieldValue` uses polymorphic `entity_type` and `entity_id`.
 
-## Migrations
+## Schema authority and migrations
 
-Tables are created with `Base.metadata.create_all()` and evolved through manual SQLite migration logic in:
+The SQLAlchemy models define the current schema contract. Static, reviewed Alembic revisions under `migrations/versions` are the authoritative creation and upgrade history, beginning with baseline `20260730_01`. The baseline explicitly contains every current table, column, type, nullability, server default, primary/foreign key, unique constraint, and index emitted by the models. SQLite partial indexes declared by the models are included. Kaya validates those objects after migration.
 
-- `app/main.py`
-- `scripts/migrate_sqlite.py`
+Application-side Python defaults are intentionally not treated as database server defaults. They are defined on the corresponding model columns and applied by SQLAlchemy. Required business records are owned by `app/db/seeds.py`; currently this includes the idempotent `VLAN 1` record, historical module-access preservation, and process-bound vault-session revocation. These assumptions are application invariants rather than check constraints.
 
-There is no Alembic migration system.
-
-Current migration risks:
-
-- Runtime and script migrations can drift.
-- Most migrations are additive.
-- SQLite-specific assumptions are present.
-- Model definitions and manual DDL must be kept in sync.
+Fresh databases are created by `alembic upgrade head`. Existing databases without Alembic metadata are backed up and brought to the baseline contract by the temporary compatibility bridge before being stamped. They are never blindly stamped and are not recreated from models. See [the assessment](database-migration-assessment.md) for deployed/model irregularities and [developer workflow](developer-migrations.md) for future changes.
 
 ## Seed And Default Data
 
@@ -111,6 +103,6 @@ DNS Manager adds three additive tables:
 - `dns_client_observations` stores bounded raw sightings linked to logical recognised devices.
 - `dhcp_lease_history` stores time-bounded active and ended DHCP address assignments.
 
-Existing databases are upgraded idempotently during normal application bootstrap. Existing DNS providers, investigations and recognised-hostname settings are preserved; recognised hostname settings are imported lazily into stable device records when a successful analysis observes the device.
+Pre-Alembic databases receive these additive changes through the retained compatibility bridge before baseline stamping. Existing DNS providers, investigations and recognised-hostname settings are preserved; recognised hostname settings are imported lazily into stable device records when a successful analysis observes the device.
 
 Existing users are backfilled with every registered module when `user_module_permissions` is first introduced, preserving upgrade access. Users created afterwards receive no module grants by default; the first setup administrator is explicitly granted every registered module.
