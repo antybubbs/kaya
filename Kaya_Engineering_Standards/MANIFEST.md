@@ -1,0 +1,30 @@
+# Documentation Pack Manifest
+
+- `docs/engineering/CONTRIBUTING.md`
+- `docs/engineering/ENGINEERING_PRINCIPLES.md`
+- `docs/engineering/GLOSSARY.md`
+- `docs/engineering/KAYA_ENGINEERING_STANDARDS.md`
+- `docs/engineering/README.md`
+- `docs/engineering/adr/ADR-0001-engineering-standards-as-source-of-truth.md`
+- `docs/engineering/adr/README.md`
+- `docs/engineering/architecture/AUTHENTICATION.md`
+- `docs/engineering/architecture/AUTHORIZATION.md`
+- `docs/engineering/architecture/BACKGROUND_TASKS.md`
+- `docs/engineering/architecture/DEPLOYMENT_ARCHITECTURE.md`
+- `docs/engineering/architecture/MODULE_ARCHITECTURE.md`
+- `docs/engineering/architecture/OVERVIEW.md`
+- `docs/engineering/architecture/REQUEST_LIFECYCLE.md`
+- `docs/engineering/standards/ACCESSIBILITY_STANDARD.md`
+- `docs/engineering/standards/CODING_STANDARDS.md`
+- `docs/engineering/standards/DATABASE_STANDARD.md`
+- `docs/engineering/standards/DOCUMENTATION_STANDARD.md`
+- `docs/engineering/standards/GIT_AND_RELEASE_STANDARD.md`
+- `docs/engineering/standards/LOGGING_AND_AUDITING.md`
+- `docs/engineering/standards/PERFORMANCE_STANDARD.md`
+- `docs/engineering/standards/SECURITY_STANDARD.md`
+- `docs/engineering/standards/TESTING_STANDARD.md`
+- `docs/engineering/standards/UI_DESIGN_STANDARD.md`
+- `docs/engineering/templates/ADR_TEMPLATE.md`
+- `docs/engineering/templates/MODULE_REVIEW_TEMPLATE.md`
+- `docs/engineering/templates/PULL_REQUEST_CHECKLIST.md`
+- `docs/engineering/templates/SECURITY_REVIEW_TEMPLATE.md`
