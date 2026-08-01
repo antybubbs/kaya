@@ -29,6 +29,10 @@ class WebPushConfigurationError(ValueError):
     pass
 
 
+class WebPushEncryptionUnavailableError(WebPushConfigurationError):
+    pass
+
+
 @dataclass(frozen=True)
 class VapidCredentials:
     public_key: str
@@ -99,7 +103,12 @@ def validate_key_pair(public_key: str, private_key: str) -> None:
     expected_public = _decode_public_key(public_key)
     try:
         from py_vapid import Vapid
+    except ImportError as exc:
+        raise WebPushConfigurationError(
+            "The Web Push key validation library is unavailable"
+        ) from exc
 
+    try:
         clean_private = private_key.strip()
         if clean_private.startswith("-----BEGIN PRIVATE KEY-----"):
             loaded = serialization.load_pem_private_key(
@@ -151,6 +160,19 @@ def generate_key_pair() -> tuple[str, str]:
     )
     validate_key_pair(public, private_encoded)
     return public, private_encoded
+
+
+def _verify_encryption_dependency() -> None:
+    probe = "kaya-web-push-encryption-readiness-check"
+    try:
+        ciphertext = encrypt_secret(probe)
+        if not ciphertext or decrypt_secret(ciphertext) != probe:
+            raise ValueError("encryption round trip failed")
+    except Exception as exc:
+        raise WebPushEncryptionUnavailableError(
+            "Kaya cannot securely store the Web Push private key because the "
+            "installation encryption key is unavailable or invalid."
+        ) from exc
 
 
 def _deployment_values() -> tuple[str, str, str] | None:
@@ -270,10 +292,19 @@ def create_ui_configuration(
         raise WebPushConfigurationError("Web Push keys are already configured")
     if rotate and not existing:
         raise WebPushConfigurationError("No UI-managed Web Push keys exist to rotate")
+    # Verify Fernet before generating any key material so an unusable installation
+    # never generates a private key that it cannot securely retain.
+    _verify_encryption_dependency()
     public, private = generate_key_pair()
     now = datetime.utcnow()
     row = existing or WebPushConfiguration(id=1, encrypted_private_key="")
-    row.encrypted_private_key = encrypt_secret(private)
+    try:
+        row.encrypted_private_key = encrypt_secret(private)
+    except Exception as exc:
+        raise WebPushEncryptionUnavailableError(
+            "Kaya cannot securely store the Web Push private key because the "
+            "installation encryption key is unavailable or invalid."
+        ) from exc
     row.public_key = public
     row.public_key_fingerprint = public_key_fingerprint(public)
     row.subject = subject

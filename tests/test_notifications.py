@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 import inspect
 import json
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -332,15 +333,20 @@ def test_unavailable_push_preference_cannot_be_saved(db):
     assert "Web Push is unavailable" in getattr(exc.value, "detail", "")
 
 
-def test_admin_generates_encrypted_ui_vapid_configuration_without_secret_response(db):
+def test_admin_generates_encrypted_ui_vapid_configuration_without_secret_response(
+    db, caplog
+):
     admin = user(db, "vapid-admin@example.invalid", role="admin")
+    request = csrf_request()
+    request.state.request_id = "synthetic-request-id"
+    caplog.set_level(logging.INFO, logger="app.routers.notifications")
     result = notification_router.generate_web_push_keys(
         WebPushKeyRequest(
             contact_email="admin@example.com",
             installation_label="Synthetic installation",
             confirmation="GENERATE",
         ),
-        csrf_request(),
+        request,
         db=db,
         user=admin,
     )
@@ -360,6 +366,63 @@ def test_admin_generates_encrypted_ui_vapid_configuration_without_secret_respons
     audit = db.query(AuditLog).filter_by(action="web_push_keys_generated").one()
     assert recovered_private not in (audit.metadata_json or "")
     assert recovered_private not in (audit.detail or "")
+    assert "vapid.generate.requested" in caplog.text
+    assert "vapid.generate.completed" in caplog.text
+    assert "request_id=synthetic-request-id" in caplog.text
+    assert recovered_private not in caplog.text
+
+
+def test_generation_fails_visibly_before_key_creation_when_encryption_is_unavailable(
+    db, monkeypatch, caplog
+):
+    admin = user(db, "encryption-failure@example.invalid", role="admin")
+    monkeypatch.setattr(
+        "app.services.web_push_config.encrypt_secret",
+        lambda _value: (_ for _ in ()).throw(ValueError("synthetic key failure")),
+    )
+    monkeypatch.setattr(
+        "app.services.web_push_config.generate_key_pair",
+        lambda: (_ for _ in ()).throw(AssertionError("key generation must not run")),
+    )
+    caplog.set_level(logging.INFO, logger="app.routers.notifications")
+
+    with pytest.raises(Exception) as exc:
+        notification_router.generate_web_push_keys(
+            WebPushKeyRequest(
+                contact_email="admin@example.com", confirmation="GENERATE"
+            ),
+            csrf_request(),
+            db=db,
+            user=admin,
+        )
+
+    assert getattr(exc.value, "status_code", None) == 503
+    assert "installation encryption key is unavailable or invalid" in getattr(
+        exc.value, "detail", ""
+    )
+    assert db.get(WebPushConfiguration, 1) is None
+    assert "vapid.generate.failed" in caplog.text
+    assert "reason=encryption_unavailable" in caplog.text
+
+
+def test_generation_validation_failure_is_safe_and_logged(db, caplog):
+    admin = user(db, "validation-failure@example.invalid", role="admin")
+    caplog.set_level(logging.INFO, logger="app.routers.notifications")
+
+    with pytest.raises(Exception) as exc:
+        notification_router.generate_web_push_keys(
+            WebPushKeyRequest(
+                contact_email="not-an-email", confirmation="GENERATE"
+            ),
+            csrf_request(),
+            db=db,
+            user=admin,
+        )
+
+    assert getattr(exc.value, "status_code", None) == 400
+    assert "Invalid contact email" in getattr(exc.value, "detail", "")
+    assert "vapid.generate.validation_failed" in caplog.text
+    assert "not-an-email" not in caplog.text
 
 
 def test_web_push_key_management_routes_are_admin_only():
@@ -634,3 +697,56 @@ def test_push_assets_never_trust_payload_urls_or_prompt_on_load():
     assert client.index("Notification.requestPermission()") > client.index(
         'addEventListener("click"'
     )
+
+
+def test_web_push_modal_is_inside_admin_js_scope_and_has_mobile_safe_feedback():
+    root = Path(__file__).resolve().parents[1]
+    template = (root / "app/templates/notification_admin.html").read_text(
+        encoding="utf-8"
+    )
+    client = (root / "app/static/js/notifications.js").read_text(encoding="utf-8")
+    css = (root / "app/static/css/notifications.css").read_text(encoding="utf-8")
+    base = (root / "app/templates/base.html").read_text(encoding="utf-8")
+    worker = (root / "app/static/service-worker.js").read_text(encoding="utf-8")
+
+    scope_start = template.index('data-notification-admin data-csrf-token=')
+    scope_end = template.rindex("</div>\n{% endblock %}")
+    web_push_card = template.index('class="panel web-push-configuration"')
+    general_form_end = template.index("</form></section>")
+    assert scope_start < general_form_end < web_push_card < scope_end
+    assert '<button type="button" data-web-push-open="generate">' in template
+    assert "data-web-push-form-status" in template
+    assert "openWebPushDialog" in client
+    assert 'keyForm.dataset.submitting==="1"' in client
+    assert 'submit.textContent=mode==="rotate"?"Rotating…":"Generating…"' in client
+    assert "100dvh" in css
+    assert "safe-area-inset-top" in css
+    assert "js/notifications.js') }}?v={{ asset_version }}" in base
+    navigate_handler = worker.index('if (request.mode === "navigate")')
+    assert worker.index("fetch(request).catch", navigate_handler) > navigate_handler
+
+
+def test_generate_api_is_post_only_and_csrf_protected(db):
+    route = next(
+        item
+        for item in notification_router.router.routes
+        if item.path == "/api/admin/web-push/generate"
+    )
+    assert route.methods == {"POST"}
+    admin = user(db, "csrf-vapid-admin@example.invalid", role="admin")
+    request = csrf_request()
+    request.headers["x-csrf-token"] = "wrong-token"
+
+    with pytest.raises(Exception) as exc:
+        notification_router.generate_web_push_keys(
+            WebPushKeyRequest(
+                contact_email="admin@example.com", confirmation="GENERATE"
+            ),
+            request,
+            db=db,
+            user=admin,
+        )
+
+    assert getattr(exc.value, "status_code", None) == 400
+    assert getattr(exc.value, "detail", "") == "Invalid form token"
+    assert db.get(WebPushConfiguration, 1) is None

@@ -243,6 +243,7 @@ async def audit_requests(request: Request, call_next):
     if path.startswith("/static/") or path == "/healthz":
         return await call_next(request)
     request_id = (request.headers.get("x-request-id") or uuid4().hex)[:64]
+    request.state.request_id = request_id
     safe_path = audit_safe_path(path)
     token, context = begin_request_context(
         request_id=request_id,

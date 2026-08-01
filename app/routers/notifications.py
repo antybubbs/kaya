@@ -37,6 +37,7 @@ from app.services.notifications import (
 )
 from app.services.site_settings import get_site_setting
 from app.services.web_push_config import (
+    WebPushEncryptionUnavailableError,
     WebPushConfigurationError,
     configuration_status,
     create_ui_configuration,
@@ -138,6 +139,10 @@ def _audit_or_fail(db: Session, *args, **kwargs) -> None:
     kwargs.setdefault("category", "security")
     if write_audit(db, *args, **kwargs) is None:
         raise HTTPException(500, "The operation could not be recorded safely")
+
+
+def _safe_request_id(request: Request) -> str:
+    return str(getattr(request.state, "request_id", "unavailable"))[:64]
 
 
 def _serialise(
@@ -837,6 +842,20 @@ def generate_web_push_keys(
         limit=3,
         minutes=60,
     )
+    request_id = _safe_request_id(request)
+    source = "unknown"
+    try:
+        source = str(configuration_status(db)["source"])
+    except Exception:
+        # The operation itself will produce the safe failure response and log
+        # below (including when the schema migration has not been applied).
+        db.rollback()
+    logger.info(
+        "vapid.generate.requested user_id=%s request_id=%s configuration_source=%s",
+        user.id,
+        request_id,
+        source,
+    )
     try:
         subject = normalise_subject(payload.contact_email, payload.contact_url)
         row = create_ui_configuration(
@@ -860,17 +879,45 @@ def generate_web_push_keys(
                 "key_source": "kaya",
             },
         )
+    except WebPushEncryptionUnavailableError as exc:
+        db.rollback()
+        logger.error(
+            "vapid.generate.failed user_id=%s request_id=%s "
+            "configuration_source=%s reason=encryption_unavailable",
+            user.id,
+            request_id,
+            source,
+        )
+        raise HTTPException(503, str(exc)) from exc
     except WebPushConfigurationError as exc:
         db.rollback()
-        logger.warning("web_push.configuration.generate_failed reason=validation")
+        logger.warning(
+            "vapid.generate.validation_failed user_id=%s request_id=%s "
+            "configuration_source=%s reason=invalid_configuration",
+            user.id,
+            request_id,
+            source,
+        )
         raise HTTPException(400, str(exc)) from exc
     except HTTPException:
         raise
     except Exception as exc:
         db.rollback()
-        logger.exception("web_push.configuration.generate_failed reason=internal")
+        logger.error(
+            "vapid.generate.failed user_id=%s request_id=%s "
+            "configuration_source=%s reason=internal",
+            user.id,
+            request_id,
+            source,
+        )
         raise HTTPException(500, "Web Push keys could not be generated safely") from exc
-    return configuration_status(db)
+    result = configuration_status(db)
+    logger.info(
+        "vapid.generate.completed user_id=%s request_id=%s configuration_source=kaya",
+        user.id,
+        request_id,
+    )
+    return result
 
 
 @router.post("/api/admin/web-push/rotate")
@@ -927,6 +974,15 @@ def rotate_web_push_keys(
                 "affected_subscriptions": affected,
             },
         )
+    except WebPushEncryptionUnavailableError as exc:
+        db.rollback()
+        logger.error(
+            "vapid.rotate.failed user_id=%s request_id=%s "
+            "reason=encryption_unavailable",
+            user.id,
+            _safe_request_id(request),
+        )
+        raise HTTPException(503, str(exc)) from exc
     except WebPushConfigurationError as exc:
         db.rollback()
         logger.warning("web_push.configuration.rotate_failed reason=validation")
@@ -935,7 +991,7 @@ def rotate_web_push_keys(
         raise
     except Exception as exc:
         db.rollback()
-        logger.exception("web_push.configuration.rotate_failed reason=internal")
+        logger.error("web_push.configuration.rotate_failed reason=internal")
         raise HTTPException(500, "Web Push keys could not be rotated safely") from exc
     result = configuration_status(db)
     result["affected_subscriptions"] = affected
