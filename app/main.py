@@ -70,7 +70,7 @@ from app.services.kaya_remote_service import (
     stop_kaya_remote_service,
 )
 from app.services.modules import enabled_modules
-from app.services.network_monitor import monitor_loop
+from app.services.network_monitor import start_monitor_scheduler, stop_monitor_scheduler
 from app.services.secure_send import cleanup_loop as secure_send_cleanup_loop
 from app.services.site_settings import (
     effective_allowed_hosts,
@@ -92,7 +92,6 @@ app = FastAPI(
     docs_url=None if settings.app_env == "production" else "/docs",
     root_path=settings.root_path,
 )
-monitor_task = None
 domain_poll_task = None
 compute_monitor_task = None
 dns_collector_task = None
@@ -386,8 +385,8 @@ async def on_startup():
     if settings.demo_mode:
         return
     start_kaya_remote_service()
-    global monitor_task, domain_poll_task, compute_monitor_task, dns_collector_task, secure_send_cleanup_task, ha_lease_reconciliation_task, ha_sync_monitor_task, ha_watchdog_task
-    monitor_task = asyncio.create_task(monitor_loop())
+    global domain_poll_task, compute_monitor_task, dns_collector_task, secure_send_cleanup_task, ha_lease_reconciliation_task, ha_sync_monitor_task, ha_watchdog_task
+    start_monitor_scheduler()
     domain_poll_task = asyncio.create_task(domain_poll_loop())
     compute_monitor_task = asyncio.create_task(compute_monitor_loop())
     dns_collector_task = asyncio.create_task(dns_collector_loop())
@@ -401,8 +400,7 @@ async def on_startup():
 async def on_shutdown():
     if version_check_task:
         version_check_task.cancel()
-    if monitor_task:
-        monitor_task.cancel()
+    await stop_monitor_scheduler()
     if domain_poll_task:
         domain_poll_task.cancel()
     if compute_monitor_task:

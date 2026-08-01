@@ -1,3 +1,4 @@
+import asyncio
 import inspect
 import json
 from datetime import datetime, timedelta
@@ -16,7 +17,7 @@ from app.db.session import Base
 from app.models.models import IPAddress, NetworkMonitor, NetworkMonitorCheck, NetworkMonitorEvent, NetworkMonitorOutage, NetworkMonitorStatistic, RemoteManagerSetting
 from app.services import network_monitor, network_monitor_history
 from app.routers import network_monitor as network_monitor_router
-from app.routers.auth import require_editor
+from app.routers.auth import require_admin, require_editor
 
 
 def session_factory():
@@ -260,6 +261,42 @@ def test_monitor_lock_skips_overlapping_checks(monkeypatch):
         assert db.query(NetworkMonitorCheck).count() == 0
 
 
+def test_cancelled_monitor_task_is_reaped_without_cancelling_scheduler():
+    async def exercise():
+        task = asyncio.create_task(asyncio.sleep(60))
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        assert network_monitor._reap_finished_monitor_tasks({17: task}) == {}
+
+    asyncio.run(exercise())
+
+
+def test_watchdog_recreates_a_failed_scheduler_task(monkeypatch):
+    async def exercise():
+        async def fail():
+            raise RuntimeError("synthetic scheduler failure")
+
+        async def replacement():
+            await asyncio.Event().wait()
+
+        failed = asyncio.create_task(fail(), name="failed-scheduler")
+        await asyncio.gather(failed, return_exceptions=True)
+        monkeypatch.setattr(network_monitor, "monitor_loop", replacement)
+        network_monitor._scheduler_task = failed
+        network_monitor._scheduler_shutdown_requested = False
+
+        recreated = network_monitor.supervise_monitor_scheduler()
+
+        assert recreated is network_monitor._scheduler_task
+        assert recreated is not None and not recreated.done()
+        assert recreated.get_name().startswith("ip-wan-monitor-scheduler-")
+        recreated.cancel()
+        await asyncio.gather(recreated, return_exceptions=True)
+        network_monitor._scheduler_task = None
+
+    asyncio.run(exercise())
+
+
 def test_five_second_monitor_becomes_due_without_backlog():
     network_monitor._dashboard_interval_leases.clear()
     factory = session_factory()
@@ -325,6 +362,21 @@ def test_monitor_network_actions_require_editor_access():
     for action in (network_monitor_router.refresh_monitor, network_monitor_router.set_collection_rate):
         dependency = inspect.signature(action).parameters["user"].default
         assert dependency.dependency is require_editor
+
+
+def test_scheduler_diagnostics_are_admin_only_and_not_cacheable():
+    dependency = inspect.signature(network_monitor_router.scheduler_diagnostics).parameters["user"].default
+    assert dependency.dependency is require_admin
+
+    response = network_monitor_router.scheduler_diagnostics(user=object())
+    payload = json.loads(response.body)
+
+    assert response.headers["cache-control"] == "no-store"
+    assert set(payload) == {
+        "scheduler_running", "task_id", "last_scheduler_heartbeat",
+        "last_monitor_execution", "last_observation_written", "pending_monitors",
+        "pending_monitor_count", "current_loop_iteration", "worker_uptime_seconds",
+    }
 
 
 def test_live_feed_returns_only_new_genuine_observations():

@@ -23,7 +23,7 @@ from app.models.models import (
     NetworkMonitorWallboardSession,
     RemoteAccess,
 )
-from app.routers.auth import require_editor, require_module_access, require_user
+from app.routers.auth import require_admin, require_editor, require_module_access, require_user
 from app.services.audit import write_audit
 from app.services.client_ip import client_ip as trusted_client_ip
 from app.services.network_monitor import (
@@ -33,6 +33,7 @@ from app.services.network_monitor import (
     latency_label,
     live_latency_label,
     monitor_label,
+    monitor_scheduler_diagnostics,
     run_monitor_check_by_id,
     set_dashboard_interval_override,
     validate_monitor_timing,
@@ -726,6 +727,15 @@ def set_collection_rate(
         detail = f"Dashboard backend interval set to {interval} seconds" if interval else "Dashboard backend interval override released"
         write_audit(db, user, "update", "network_monitor_collection_rate", None, trusted_client_ip(request), detail=detail)
     return JSONResponse({"ok": True, "mode": mode, "effective_interval_seconds": active_dashboard_interval()})
+
+
+@router.get("/diagnostics")
+def scheduler_diagnostics(user=Depends(require_admin)):
+    """Expose non-secret scheduler liveness data to site administrators."""
+    return JSONResponse(
+        monitor_scheduler_diagnostics(),
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.post("/{monitor_id}/refresh")
