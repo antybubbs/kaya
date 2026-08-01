@@ -114,6 +114,16 @@ DEFAULT_SITE_SETTINGS = {
         "Expires: {expiry_utc}\n\n"
         "For your security, obtain the PIN and passphrase from the sender separately."
     ),
+    "notifications_enabled": "1",
+    "notifications_in_app_enabled": "1",
+    "notifications_push_enabled": "",
+    "notifications_email_enabled": "",
+    "notifications_allow_customisation": "1",
+    "notifications_allow_push_registration": "1",
+    "notifications_read_retention_days": "90",
+    "notifications_unread_retention_days": "365",
+    "notifications_default_severity": "info",
+    "notifications_max_per_event": "250",
 }
 
 SECURITY_SETTING_KEYS = {

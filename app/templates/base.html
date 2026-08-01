@@ -26,12 +26,14 @@
   {% block extra_head %}{% endblock %}
   <link rel="stylesheet" href="{{ request.url_for('static', path='css/sidebar.css') }}?v={{ asset_version }}">
   <link rel="stylesheet" href="{{ request.url_for('static', path='css/secret_vault.css') }}?v={{ asset_version }}">
+  <link rel="stylesheet" href="{{ request.url_for('static', path='css/notifications.css') }}?v={{ asset_version }}">
   <link rel="stylesheet" href="{{ request.url_for('static', path='css/responsive.css') }}?v={{ asset_version }}">
   <script src="/static/js/sidebar.js?v={{ asset_version }}" defer></script>
   <script src="/static/js/tables.js?v={{ asset_version }}" defer></script>
   <script src="/static/js/inline_edit.js?v={{ asset_version }}" defer></script>
   <script src="/static/js/module_access.js?v={{ asset_version }}" defer></script>
   <script src="{{ request.url_for('static', path='js/pwa.js') }}?v={{ asset_version }}" defer></script>
+  {% if user %}<script src="{{ request.url_for('static', path='js/notifications.js') }}?v={{ asset_version }}" defer></script>{% endif %}
 </head>
 <body data-app-root="{{ request.scope.get('root_path', '') }}">
 {% if request.app.state.demo_mode %}
@@ -71,6 +73,17 @@
         <button type="button" data-kaya-theme-choice="command" aria-pressed="true">Command</button>
         <button type="button" data-kaya-theme-choice="light-ops" aria-pressed="false">Light Ops</button>
       </div>
+      <details class="notification-menu" data-notification-menu data-csrf-token="{{ csrf_token }}">
+        <summary aria-label="Notifications" aria-haspopup="true">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"></path></svg>
+          <span class="notification-badge" data-notification-badge hidden></span>
+        </summary>
+        <section class="notification-popover" aria-label="Recent notifications">
+          <header><div><strong>Notifications</strong><span data-notification-summary>Loading…</span></div><button class="ghost" type="button" data-notification-mark-all>Mark all as read</button></header>
+          <div class="notification-recent" data-notification-list aria-live="polite"><p class="muted">Loading notifications…</p></div>
+          <footer><a href="/notifications">View all notifications</a><a href="/profile/notifications">Preferences</a></footer>
+        </section>
+      </details>
       <details class="account-menu">
         <summary>
           <span class="avatar">{{ (user.first_name[:1] if user.first_name else user.email[:1])|upper }}</span>
@@ -81,6 +94,7 @@
             <span>{{ user.email }}</span>
           </div>
           <a class="account-link" href="/profile">Profile Settings</a>
+          <a class="account-link" href="/profile/notifications">Notification Settings</a>
           <button class="account-link ghost" type="button" data-install-kaya hidden>Install Kaya</button>
           <form method="post" action="/logout">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

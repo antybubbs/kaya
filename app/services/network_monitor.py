@@ -12,10 +12,11 @@ from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal
 from app.models.models import (
-    IPAddress, NetworkMonitor, NetworkMonitorCheck, NetworkMonitorEvent,
+    IPAddress, NetworkMonitor, NetworkMonitorCheck, NetworkMonitorEvent, NotificationEvent,
     NetworkMonitorOutage, NetworkMonitorStatistic,
 )
 from app.services.site_settings import get_site_settings
+from app.services.notifications import publish as publish_notification
 
 logger = logging.getLogger(__name__)
 
@@ -375,6 +376,82 @@ def _event(db: Session, monitor: NetworkMonitor, event_type: str, severity: str,
     db.add(NetworkMonitorEvent(monitor_id=monitor.id, event_type=event_type, severity=severity, message=message[:500], occurred_at=now))
 
 
+def _publish_monitor_notification(
+    db: Session,
+    monitor: NetworkMonitor,
+    event_type_id: str,
+    title: str,
+    message: str,
+    deduplication_key: str,
+    *,
+    resolved: bool = False,
+) -> NotificationEvent | None:
+    """Publish without allowing an optional notification failure to stop monitoring."""
+    try:
+        return publish_notification(
+            db,
+            event_type_id=event_type_id,
+            title=title,
+            message=message,
+            target_route=f"/networking/ip-wan-monitor/{monitor.id}",
+            source_entity_type="network_monitor",
+            source_entity_id=monitor.id,
+            deduplication_key=deduplication_key,
+            resolved=resolved,
+        )
+    except Exception:
+        db.rollback()
+        logger.exception(
+            "notification.publish.failed module=network_monitor event_type=%s source_entity_id=%s",
+            event_type_id,
+            monitor.id,
+        )
+        return None
+
+
+def reconcile_offline_notifications(db: Session) -> dict[str, int]:
+    """Create one real notification for confirmed offline monitors lacking one."""
+    monitors = (
+        db.query(NetworkMonitor)
+        .filter(
+            NetworkMonitor.is_enabled.is_(True),
+            NetworkMonitor.is_in_maintenance.is_(False),
+            NetworkMonitor.last_status.in_(["offline", "down"]),
+        )
+        .order_by(NetworkMonitor.id.asc())
+        .limit(1000)
+        .all()
+    )
+    created = 0
+    existing = 0
+    for monitor in monitors:
+        key = f"ipwan:host:{monitor.id}:offline"
+        active = db.query(NotificationEvent.id).filter_by(
+            deduplication_key=key, resolved_at=None
+        ).first()
+        if active:
+            existing += 1
+            continue
+        label = monitor_label(monitor)
+        row = _publish_monitor_notification(
+            db,
+            monitor,
+            "ipwan.host.offline",
+            "Host offline",
+            f"{label} is no longer responding.",
+            key,
+        )
+        if row:
+            created += 1
+    logger.info(
+        "notification.reconcile.completed module=network_monitor candidates=%s created=%s existing=%s",
+        len(monitors),
+        created,
+        existing,
+    )
+    return {"candidates": len(monitors), "created": created, "existing": existing}
+
+
 def record_monitor_result(
     db: Session,
     monitor: NetworkMonitor,
@@ -505,6 +582,41 @@ def record_monitor_result(
         _event(db, monitor, "state_changed", state, f"State changed to {state}: {reason}", now)
     enforce_retention(db)
     db.commit()
+    # The central category policy and per-user preferences now own notification
+    # enablement. ``notify_enabled`` was a hidden legacy flag defaulting to false,
+    # so retaining it here silently disabled every newly-created monitor.
+    label = monitor_label(monitor)
+    if state == "offline":
+        _publish_monitor_notification(
+            db,
+            monitor,
+            "ipwan.host.offline",
+            "Host offline",
+            f"{label} is no longer responding.",
+            f"ipwan:host:{monitor.id}:offline",
+        )
+    elif (
+        changed
+        and previous_state in {"offline", "recovering"}
+        and state not in {"offline", "recovering"}
+    ):
+        active = db.query(NotificationEvent).filter(
+            NotificationEvent.deduplication_key
+            == f"ipwan:host:{monitor.id}:offline",
+            NotificationEvent.resolved_at.is_(None),
+        ).all()
+        for notification_event in active:
+            notification_event.resolved_at = now
+        db.commit()
+        _publish_monitor_notification(
+            db,
+            monitor,
+            "ipwan.host.recovered",
+            "Host recovered",
+            f"{label} is responding again.",
+            f"ipwan:host:{monitor.id}:recovered",
+            resolved=True,
+        )
     with _scheduler_state_guard:
         global _last_observation_written
         _last_observation_written = datetime.utcnow()
@@ -701,6 +813,14 @@ async def _run_monitor_loop() -> None:
     logger.info("IP/WAN scheduler sleeping seconds=%s reason=startup_delay", STARTUP_DELAY_SECONDS)
     await asyncio.sleep(STARTUP_DELAY_SECONDS)
     logger.info("IP/WAN scheduler resumed reason=startup_delay_complete")
+    reconciliation_db = SessionLocal()
+    try:
+        reconcile_offline_notifications(reconciliation_db)
+    except Exception:
+        reconciliation_db.rollback()
+        logger.exception("notification.reconcile.failed module=network_monitor")
+    finally:
+        reconciliation_db.close()
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_CHECKS)
     in_flight: dict[int, asyncio.Task] = {}
     next_tick = time.monotonic()

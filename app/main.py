@@ -44,6 +44,7 @@ from app.routers import (
     ip_addresses,
     licences,
     network_monitor,
+    notifications,
     oidc,
     rack_manager,
     remote_manager,
@@ -71,6 +72,8 @@ from app.services.kaya_remote_service import (
 )
 from app.services.modules import enabled_modules
 from app.services.network_monitor import start_monitor_scheduler, stop_monitor_scheduler
+from app.services.notification_delivery import notification_delivery_loop
+from app.services.notifications import cleanup_retention
 from app.services.secure_send import cleanup_loop as secure_send_cleanup_loop
 from app.services.site_settings import (
     effective_allowed_hosts,
@@ -100,6 +103,8 @@ secure_send_cleanup_task = None
 ha_lease_reconciliation_task = None
 ha_sync_monitor_task = None
 ha_watchdog_task = None
+notification_delivery_task = None
+notification_retention_task = None
 app.state.demo_mode = settings.demo_mode
 app.state.demo_reset_schedule = settings.demo_reset_schedule
 
@@ -385,7 +390,7 @@ async def on_startup():
     if settings.demo_mode:
         return
     start_kaya_remote_service()
-    global domain_poll_task, compute_monitor_task, dns_collector_task, secure_send_cleanup_task, ha_lease_reconciliation_task, ha_sync_monitor_task, ha_watchdog_task
+    global domain_poll_task, compute_monitor_task, dns_collector_task, secure_send_cleanup_task, ha_lease_reconciliation_task, ha_sync_monitor_task, ha_watchdog_task, notification_delivery_task, notification_retention_task
     start_monitor_scheduler()
     domain_poll_task = asyncio.create_task(domain_poll_loop())
     compute_monitor_task = asyncio.create_task(compute_monitor_loop())
@@ -394,6 +399,13 @@ async def on_startup():
     ha_lease_reconciliation_task = asyncio.create_task(ha_lease_reconciliation_loop())
     ha_sync_monitor_task = asyncio.create_task(ha_sync_monitor_loop())
     ha_watchdog_task = asyncio.create_task(ha_watchdog_loop())
+    notification_delivery_task = asyncio.create_task(notification_delivery_loop())
+    async def notification_retention_loop():
+        while True:
+            await asyncio.sleep(3600)
+            with SessionLocal() as notification_db:
+                cleanup_retention(notification_db)
+    notification_retention_task = asyncio.create_task(notification_retention_loop())
 
 
 @app.on_event("shutdown")
@@ -415,6 +427,10 @@ async def on_shutdown():
         ha_sync_monitor_task.cancel()
     if ha_watchdog_task:
         ha_watchdog_task.cancel()
+    if notification_delivery_task:
+        notification_delivery_task.cancel()
+    if notification_retention_task:
+        notification_retention_task.cancel()
     stop_kaya_remote_service()
     stop_guacamole_bridge()
 
@@ -439,6 +455,7 @@ app.include_router(secret_vault.router)
 app.include_router(secure_send.router)
 app.include_router(high_availability.router)
 app.include_router(ha_agent_api.router)
+app.include_router(notifications.router)
 app.include_router(admin.router)
 
 @app.get("/healthz", include_in_schema=False)

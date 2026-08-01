@@ -14,9 +14,22 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.db.session import Base
-from app.models.models import IPAddress, NetworkMonitor, NetworkMonitorCheck, NetworkMonitorEvent, NetworkMonitorOutage, NetworkMonitorStatistic, RemoteManagerSetting
+from app.models.models import (
+    IPAddress,
+    NetworkMonitor,
+    NetworkMonitorCheck,
+    NetworkMonitorEvent,
+    NetworkMonitorOutage,
+    NetworkMonitorStatistic,
+    NotificationDeliveryAttempt,
+    NotificationEvent,
+    RemoteManagerSetting,
+    User,
+    UserModulePermission,
+    UserNotification,
+)
 from app.services import network_monitor, network_monitor_history
-from app.routers import network_monitor as network_monitor_router
+from app.routers import network_monitor as network_monitor_router, notifications as notification_router
 from app.routers.auth import require_admin, require_editor
 
 
@@ -37,6 +50,97 @@ def add_monitor(factory, **values):
         db.add(monitor)
         db.commit()
         return monitor.id
+
+
+def add_monitor_recipient(factory):
+    with factory() as db:
+        recipient = User(
+            email="monitor-recipient@example.invalid",
+            password_hash="clearly-fake-hash",
+            role="admin",
+            is_active=True,
+        )
+        db.add(recipient)
+        db.flush()
+        db.add(
+            UserModulePermission(
+                user_id=recipient.id,
+                module_key="network_monitor",
+                allowed=True,
+                created_by=recipient.id,
+            )
+        )
+        db.commit()
+        return recipient.id
+
+
+def test_monitor_transition_creates_in_app_notification_without_vapid_or_legacy_flag():
+    factory = session_factory()
+    recipient_id = add_monitor_recipient(factory)
+    monitor_id = add_monitor(
+        factory,
+        failure_threshold=1,
+        recovery_threshold=1,
+        notify_enabled=False,
+    )
+
+    with factory() as db:
+        monitor = db.get(NetworkMonitor, monitor_id)
+        network_monitor.record_monitor_result(
+            db, monitor, False, None, 100, "Synthetic timeout"
+        )
+        offline = db.query(NotificationEvent).filter_by(
+            event_type="ipwan.host.offline"
+        ).one()
+        user_notification = db.query(UserNotification).filter_by(
+            notification_event_id=offline.id, user_id=recipient_id
+        ).one()
+        assert user_notification.read_at is None
+        assert db.query(NotificationDeliveryAttempt).count() == 0
+        assert notification_router.unread_count(db=db, user=db.get(User, recipient_id)) == {
+            "count": 1,
+            "critical": True,
+        }
+        listed = notification_router.list_notifications(
+            limit=10, db=db, user=db.get(User, recipient_id)
+        )
+        assert [item["event_type"] for item in listed["notifications"]] == [
+            "ipwan.host.offline"
+        ]
+
+        offline.created_at = datetime.utcnow() - timedelta(days=1)
+        db.commit()
+        network_monitor.record_monitor_result(
+            db, monitor, False, None, 100, "Synthetic timeout"
+        )
+        assert db.query(NotificationEvent).filter_by(
+            event_type="ipwan.host.offline"
+        ).count() == 1
+
+        network_monitor.record_monitor_result(db, monitor, True, 8, 0, None)
+        assert db.query(NotificationEvent).filter_by(
+            event_type="ipwan.host.recovered"
+        ).count() == 1
+        assert db.query(UserNotification).filter_by(user_id=recipient_id).count() == 2
+
+
+def test_existing_offline_monitor_is_reconciled_once():
+    factory = session_factory()
+    add_monitor_recipient(factory)
+    monitor_id = add_monitor(
+        factory,
+        last_status="offline",
+        consecutive_failures=20,
+        notify_enabled=False,
+    )
+    with factory() as db:
+        first = network_monitor.reconcile_offline_notifications(db)
+        second = network_monitor.reconcile_offline_notifications(db)
+        assert first == {"candidates": 1, "created": 1, "existing": 0}
+        assert second == {"candidates": 1, "created": 0, "existing": 1}
+        assert db.query(NotificationEvent).filter_by(
+            source_entity_id=str(monitor_id), event_type="ipwan.host.offline"
+        ).count() == 1
 
 
 def test_failure_threshold_opens_outage_and_recovery_closes_it(monkeypatch):

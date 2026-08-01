@@ -1425,6 +1425,11 @@ def update_user(
     target.last_name = clean_last_name
     target.role = role
     target.is_active = bool(is_active)
+    if not target.is_active:
+        from app.models.models import PushSubscription
+        db.query(PushSubscription).filter_by(user_id=target.id, status="active", revoked_at=None).update(
+            {PushSubscription.status: "revoked", PushSubscription.revoked_at: datetime.utcnow()}, synchronize_session=False
+        )
     requested_break_glass = is_break_glass == "1"
     if requested_break_glass and (
         role != "admin"

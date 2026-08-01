@@ -1462,6 +1462,115 @@ class AuditLog(Base):
     user = relationship("User")
 
 
+class NotificationEvent(Base):
+    __tablename__ = "notification_events"
+    __table_args__ = (
+        Index("ix_notification_events_deduplication_active", "deduplication_key", "resolved_at"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    event_type: Mapped[str] = mapped_column(String(120), index=True)
+    module: Mapped[str] = mapped_column(String(80), index=True)
+    category: Mapped[str] = mapped_column(String(80), index=True)
+    severity: Mapped[str] = mapped_column(String(20), index=True)
+    title: Mapped[str] = mapped_column(String(160))
+    message: Mapped[str] = mapped_column(String(500))
+    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    target_route: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    source_entity_type: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    source_entity_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    deduplication_key: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    correlation_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+
+
+class UserNotification(Base):
+    __tablename__ = "user_notifications"
+    __table_args__ = (
+        UniqueConstraint("notification_event_id", "user_id", name="uq_user_notification_event_user"),
+        Index("ix_user_notifications_user_unread_created", "user_id", "read_at", "dismissed_at", "created_at"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    notification_event_id: Mapped[int] = mapped_column(ForeignKey("notification_events.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    dismissed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    event = relationship("NotificationEvent")
+    user = relationship("User")
+
+
+class NotificationPreference(Base):
+    __tablename__ = "notification_preferences"
+    __table_args__ = (UniqueConstraint("user_id", "event_type", name="uq_notification_preference_user_event"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    event_type: Mapped[str] = mapped_column(String(120), index=True)
+    in_app_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    push_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    email_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    minimum_severity: Mapped[str] = mapped_column(String(20), default="info")
+    recovery_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    quiet_hours_start: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    quiet_hours_end: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    timezone: Mapped[str] = mapped_column(String(80), default="UTC")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class NotificationCategoryPolicy(Base):
+    __tablename__ = "notification_category_policies"
+    event_type: Mapped[str] = mapped_column(String(120), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    in_app_allowed: Mapped[bool] = mapped_column(Boolean, default=True)
+    push_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
+    email_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
+    minimum_severity: Mapped[str] = mapped_column(String(20), default="info")
+    user_can_opt_out: Mapped[bool] = mapped_column(Boolean, default=True)
+    recovery_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    default_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    cooldown_seconds: Mapped[int] = mapped_column(Integer, default=300)
+    repeat_interval_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    acknowledgement_required: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class PushSubscription(Base):
+    __tablename__ = "push_subscriptions"
+    __table_args__ = (UniqueConstraint("user_id", "endpoint_hash", name="uq_push_subscription_user_endpoint"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    endpoint_hash: Mapped[str] = mapped_column(String(64), index=True)
+    encrypted_subscription: Mapped[str] = mapped_column(Text)
+    device_label: Mapped[str] = mapped_column(String(120), default="Browser")
+    browser_family: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    operating_system: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default="active", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_failure_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    failure_count: Mapped[int] = mapped_column(Integer, default=0)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+
+
+class NotificationDeliveryAttempt(Base):
+    __tablename__ = "notification_delivery_attempts"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_notification_id: Mapped[int] = mapped_column(ForeignKey("user_notifications.id", ondelete="CASCADE"), index=True)
+    channel: Mapped[str] = mapped_column(String(20), index=True)
+    push_subscription_id: Mapped[int | None] = mapped_column(ForeignKey("push_subscriptions.id", ondelete="SET NULL"), nullable=True, index=True)
+    attempted_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    status: Mapped[str] = mapped_column(String(30), default="queued", index=True)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    failure_reason_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+
+
 # Secret Vault stores only encrypted user-facing values.  The small amount of
 # plaintext metadata below is deliberately limited to identifiers, versions,
 # sizes and access-control state needed before a vault is unlocked.

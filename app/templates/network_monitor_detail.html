@@ -114,7 +114,7 @@
   </section>
 
   <section id="settings" class="monitor-tab-panel panel">
-    <div class="panel-heading"><div><h2>Settings</h2><p class="muted">Collection and incident thresholds. Notifications remain reserved for a future release.</p></div></div>
+    <div class="panel-heading"><div><h2>Settings</h2><p class="muted">Collection and incident thresholds. Notification delivery follows Site Administration policy and each eligible user's preferences.</p></div></div>
     {% if user.role in ['admin','editor'] %}
     <form method="post" action="/networking/ip-wan-monitor/{{ monitor.id }}/settings" class="monitor-detail-settings">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

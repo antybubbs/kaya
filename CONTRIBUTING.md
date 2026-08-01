@@ -386,6 +386,12 @@ Destructive actions should be clearly identified and confirmed.
 
 ## 11. Performance and Background Collection
 
+### Notification architecture
+
+All user notifications are registered in `app.services.notification_registry` and published through `app.services.notifications`. Modules must not send Web Push or email directly, create module-private notification tables, or infer severity from display text. Publishers commit the source state transition first, use stable deduplication keys for repeated conditions, and publish recovery transitions where supported. Recipient resolution must preserve module and object-level permissions; a notification link never substitutes for authorisation at its destination.
+
+Notification text is untrusted output and must remain plain, bounded text. Security-sensitive modules use the registry's payload minimisation rules. Push routes are Kaya-relative paths without query strings or fragments. Delivery workers must keep endpoint/key material encrypted and out of logs.
+
 Do not perform expensive infrastructure polling simply because a user opens a page.
 
 Prefer:

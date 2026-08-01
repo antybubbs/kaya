@@ -743,10 +743,15 @@ def logout(request: Request, csrf_token: str = Form(...), db: Session = Depends(
     app_session = db.query(AppSession).filter_by(session_id=session_id).first() if session_id else None
     id_token_hint = decrypt_secret(app_session.encrypted_oidc_id_token) if app_session and app_session.encrypted_oidc_id_token else None
     if user:
-        from app.models.models import Vault
+        from app.models.models import PushSubscription, Vault
         from app.services.secret_vault import lock_vault
         if db.query(Vault.id).filter_by(owner_id=user.id).first():
             lock_vault(db, request, user)
+        now = datetime.utcnow()
+        db.query(PushSubscription).filter_by(user_id=user.id, status="active", revoked_at=None).update(
+            {PushSubscription.status: "revoked", PushSubscription.revoked_at: now}, synchronize_session=False
+        )
+        db.commit()
     end_user_session(db, request)
     write_audit(
         db,

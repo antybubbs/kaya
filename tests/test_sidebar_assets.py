@@ -16,6 +16,6 @@ def test_sidebar_illustration_has_core_theme_fallback_and_valid_asset():
 def test_sidebar_assets_rotate_and_precache_with_service_worker():
     worker = Path("app/static/service-worker.js").read_text(encoding="utf-8")
 
-    assert 'CACHE_VERSION = "kaya-static-v2"' in worker
+    assert 'CACHE_VERSION = "kaya-static-v3"' in worker
     assert "`${staticPath}/css/sidebar.css`" in worker
     assert "`${staticPath}/images/sidebar/sidebar-infrastructure-bg.webp`" in worker
