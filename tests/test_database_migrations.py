@@ -439,6 +439,43 @@ def test_backup_logs_bounded_progress_and_verification(tmp_path, caplog):
     assert "Kaya database: backup verified" in caplog.text
 
 
+def test_database_backup_includes_encrypted_web_push_configuration(tmp_path):
+    source = tmp_path / "kaya.db"
+    settings = settings_for(source, tmp_path / "migration-backups")
+    prepare_database(engine_for(source), settings)
+    fake_ciphertext = "gAAAAABsynthetic-fernet-ciphertext-not-a-real-secret"
+    with sqlite3.connect(source) as connection:
+        connection.execute(
+            """
+            INSERT INTO web_push_configurations (
+                id, encrypted_private_key, public_key, public_key_fingerprint,
+                subject, installation_label, enabled, generated_at, updated_at
+            ) VALUES (1, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """,
+            (
+                fake_ciphertext,
+                "synthetic-public-key",
+                "SHA256:SYNTHETIC",
+                "mailto:backup@example.invalid",
+                "Backup test",
+            ),
+        )
+
+    backup = create_sqlite_backup(
+        source,
+        tmp_path / "backups",
+        source_revision=CURRENT_REVISION,
+        target_revision="synthetic-next-revision",
+    )
+
+    with sqlite3.connect(backup.database_path) as restored:
+        row = restored.execute(
+            "SELECT encrypted_private_key, public_key_fingerprint "
+            "FROM web_push_configurations WHERE id = 1"
+        ).fetchone()
+    assert row == (fake_ciphertext, "SHA256:SYNTHETIC")
+
+
 def test_pre_alembic_backup_is_mandatory_when_optional_backups_are_disabled(
     tmp_path,
 ):

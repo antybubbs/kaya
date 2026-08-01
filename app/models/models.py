@@ -1571,6 +1571,24 @@ class NotificationDeliveryAttempt(Base):
     failure_reason_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
 
 
+class WebPushConfiguration(Base):
+    """Singleton UI-managed VAPID configuration; private material is ciphertext only."""
+
+    __tablename__ = "web_push_configurations"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    encrypted_private_key: Mapped[str] = mapped_column(Text)
+    public_key: Mapped[str] = mapped_column(String(180))
+    public_key_fingerprint: Mapped[str] = mapped_column(String(120))
+    subject: Mapped[str] = mapped_column(String(500))
+    installation_label: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    generated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    rotated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
 # Secret Vault stores only encrypted user-facing values.  The small amount of
 # plaintext metadata below is deliberately limited to identifiers, versions,
 # sizes and access-control state needed before a vault is unlocked.

@@ -47,6 +47,10 @@ Do not expose full models, internal fields or secrets merely because they are av
 
 Passwords, tokens, session cookies, encryption keys, TOTP seeds, recovery values and credentials must be redacted. Audit that a secret changed, never the secret itself.
 
+Application-managed credentials must use a dedicated schema and Kaya's reviewed encryption helpers. Store ciphertext and only the minimum non-sensitive metadata; never store plaintext alongside it. Deployment-managed credentials take precedence over application-managed values, and incomplete or invalid deployment configuration must fail closed rather than falling back to the database. Before committing generated asymmetric credentials, validate the complete key pair with the production library that will consume it.
+
+Database backups include application-managed encrypted credentials. Restore procedures must separately protect and restore the original `ENCRYPTION_KEY`; a database backup without that key is intentionally insufficient to recover encrypted material. Never place the plaintext credential or `ENCRYPTION_KEY` in backup metadata, manifests, logs, diagnostics, URLs, process arguments or audit records.
+
 ### 8. Use safe primitives
 
 Use parameterised database queries, reviewed cryptographic libraries, secure random generation and structured process execution. Never invent custom cryptography. Never construct a shell command from untrusted strings.

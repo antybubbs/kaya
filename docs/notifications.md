@@ -8,7 +8,11 @@ Open **Site Administration → Notifications**. In-application notifications are
 
 Use **Send in-app test** on that page to verify the central publication path for the signed-in administrator. The result reports in-app creation separately from Push and Email, so missing VAPID or mail configuration cannot mask a working in-app channel.
 
-Web Push requires an HTTPS Kaya origin (browser localhost exceptions are suitable only for development) and these environment variables:
+Web Push requires an HTTPS Kaya origin (browser localhost exceptions are suitable only for development). From **Site Administration → Notifications**, an administrator can generate a P-256 VAPID key pair by supplying either a contact email or an HTTPS contact URL. Kaya validates the pair with its Web Push library before committing it, encrypts the private key with the installation's Fernet `ENCRYPTION_KEY`, and stores only ciphertext plus the public key, fingerprint, subject, label and lifecycle timestamps.
+
+Generate, rotate, enable, disable, delete, test and revoke-all actions are administrator-only, CSRF-protected, rate-limited and security-audited. Rotation and deletion atomically revoke existing browser subscriptions. Disablement preserves the key pair, subscriptions, user preferences and notification history so it can be reversed without data loss.
+
+Deployments may instead provide these environment variables:
 
 ```text
 VAPID_PUBLIC_KEY=<URL-safe public application server key>
@@ -16,7 +20,7 @@ VAPID_PRIVATE_KEY=<private VAPID key or key file accepted by pywebpush>
 VAPID_SUBJECT=mailto:admin@example.invalid
 ```
 
-Generate VAPID keys with a reviewed Web Push/VAPID tool outside Kaya. Never commit private keys. Restart Kaya after changing the environment. The administration page displays only a short public-key identifier; it never returns or renders the private key.
+Environment-managed VAPID configuration always takes precedence over the database. All three values must be valid; partial or malformed deployment configuration fails closed and cannot be bypassed by a UI-managed key. Generate deployment keys with a reviewed Web Push/VAPID tool, never commit private keys, and restart Kaya after changing the environment. The administration page displays only non-sensitive status and public-key fingerprint data; it never returns or renders the private key.
 
 Reverse proxies must preserve the real HTTPS scheme using Kaya's trusted-proxy configuration. If the browser does not consider the page a secure context, Kaya explains that push is unavailable and does not open a permission prompt.
 
@@ -42,7 +46,9 @@ Delivery is asynchronous, bounded to four retries with backoff, and permanently 
 
 Read notifications default to 90 days. Unread notifications have a 365-day safety limit. The cleanup worker runs hourly. Dismissal or retention does not remove the corresponding security/audit record.
 
-The notification tables and non-secret policy are part of the normal database backup. Push subscriptions are present only as encrypted ciphertext. `VAPID_PRIVATE_KEY` is deliberately outside the database and must follow the deployment's secret backup process. After a restore to a different origin or after VAPID rotation, revoke old devices and have users register again.
+The notification tables, UI-managed encrypted VAPID private key and non-secret policy are part of the normal database backup. Push subscriptions are also present only as encrypted ciphertext. A successful restore of UI-managed VAPID material and subscriptions requires the original separately protected `ENCRYPTION_KEY`, consistent with Kaya's other encrypted secrets. Never store that key only inside the database backup.
+
+Environment-managed `VAPID_PRIVATE_KEY` remains outside the database and must follow the deployment's secret backup process. After a restore to a different origin, key rotation or key deletion, revoke stale devices as needed and have users register again.
 
 ## Developer integration
 
@@ -69,8 +75,9 @@ IP/WAN offline notifications use `ipwan:host:{monitor_id}:offline` for the full 
 
 ## Troubleshooting
 
-- **Push disabled:** enable the channel and browser registration in Site Administration.
-- **Not configured:** provide both VAPID keys and restart Kaya.
+- **Push disabled:** enable Web Push in Site Administration; disabling preserves keys, devices, preferences and history.
+- **Not configured:** generate keys in Site Administration, or provide a complete valid deployment-managed VAPID configuration and restart Kaya.
+- **Invalid deployment configuration:** correct or remove all deployment VAPID values. Kaya deliberately will not fall back to UI-managed keys.
 - **Permission denied:** reset the notification permission in browser site settings.
 - **iPhone/iPad guidance:** launch the installed Home Screen PWA.
 - **No delivery:** confirm HTTPS/proxy scheme, active device state, category/user policy, and worker health. Provider failures are classified in delivery records without sensitive response content.

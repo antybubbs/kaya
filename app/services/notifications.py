@@ -204,6 +204,7 @@ def publish(
     created_by_user_id: int | None = None,
     correlation_id: str | None = None,
     resolved: bool = False,
+    commit: bool = True,
 ) -> NotificationEvent | None:
     safe_log_fields = {
         "event_type": str(event_type_id)[:120],
@@ -344,7 +345,10 @@ def publish(
                     )
                 )
                 queued_channels["email"] += 1
-        db.commit()
+        if commit:
+            db.commit()
+        else:
+            db.flush()
     except Exception:
         db.rollback()
         logger.exception("notification.publish.failed reason=persistence_error %s", safe_log_fields)

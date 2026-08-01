@@ -7,7 +7,6 @@ import json
 import logging
 from datetime import datetime, timedelta
 
-from app.core.config import get_settings
 from app.core.security import decrypt_secret
 from app.db.session import SessionLocal
 from app.models.models import (
@@ -18,12 +17,19 @@ from app.models.models import (
 from app.services.mail import MailConfigurationError, send_mail
 from app.services.site_settings import get_site_setting
 from app.services.notifications import validate_push_endpoint
+from app.services.web_push_config import (
+    VapidCredentials,
+    WebPushConfigurationError,
+    effective_credentials,
+)
 
 logger = logging.getLogger(__name__)
 MAX_RETRIES = 4
 
 
-def _send_push(subscription: dict, payload: dict) -> None:
+def _send_push(
+    subscription: dict, payload: dict, credentials: VapidCredentials
+) -> None:
     from pywebpush import webpush
     import requests
 
@@ -32,20 +38,18 @@ def _send_push(subscription: dict, payload: dict) -> None:
             kwargs["allow_redirects"] = False
             return super().request(method, url, **kwargs)
 
-    settings = get_settings()
     validate_push_endpoint(str(subscription.get("endpoint") or ""))
     webpush(
         subscription_info=subscription,
         data=json.dumps(payload, separators=(",", ":")),
-        vapid_private_key=settings.vapid_private_key,
-        vapid_claims={"sub": settings.vapid_subject},
+        vapid_private_key=credentials.private_key,
+        vapid_claims={"sub": credentials.subject},
         timeout=10,
         requests_session=NoRedirectSession(),
     )
 
 
 def deliver_queued() -> int:
-    settings = get_settings()
     db = SessionLocal()
     delivered = 0
     try:
@@ -92,12 +96,15 @@ def deliver_queued() -> int:
             }
             try:
                 if attempt.channel == "push":
-                    if not settings.vapid_private_key or not settings.vapid_public_key:
+                    if get_site_setting(db, "notifications_push_enabled") != "1":
+                        raise RuntimeError("push_not_configured")
+                    credentials = effective_credentials(db)
+                    if not credentials:
                         raise RuntimeError("push_not_configured")
                     decoded = json.loads(
                         decrypt_secret(subscription.encrypted_subscription)
                     )
-                    _send_push(decoded, payload)
+                    _send_push(decoded, payload, credentials)
                     subscription.last_success_at = now
                     subscription.last_used_at = now
                     subscription.failure_count = 0
@@ -131,7 +138,7 @@ def deliver_queued() -> int:
                     subscription.last_failure_at = now
                     subscription.failure_count = (subscription.failure_count or 0) + 1
                 if (
-                    isinstance(exc, MailConfigurationError)
+                    isinstance(exc, (MailConfigurationError, WebPushConfigurationError))
                     or str(exc) == "push_not_configured"
                 ):
                     attempt.status = "failed"

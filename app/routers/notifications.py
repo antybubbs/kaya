@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -10,7 +11,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, joinedload
 
-from app.core.config import get_settings
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.core.security import encrypt_secret
 from app.core.templating import templates
@@ -27,6 +27,7 @@ from app.models.models import (
 )
 from app.routers.auth import require_admin, require_user
 from app.services.audit import write_audit
+from app.services.client_ip import client_ip as trusted_client_ip
 from app.services.modules import has_module_access
 from app.services.notification_registry import EVENT_TYPES, SEVERITY_ORDER
 from app.services.notifications import (
@@ -35,9 +36,19 @@ from app.services.notifications import (
     validate_push_endpoint,
 )
 from app.services.site_settings import get_site_setting
+from app.services.web_push_config import (
+    WebPushConfigurationError,
+    configuration_status,
+    create_ui_configuration,
+    effective_credentials,
+    normalise_subject,
+    revoke_all_subscriptions,
+    ui_configuration,
+)
 
 router = APIRouter()
 TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+logger = logging.getLogger(__name__)
 
 
 class PreferenceUpdate(BaseModel):
@@ -63,10 +74,10 @@ class SubscriptionCreate(BaseModel):
 class AdminSettingsUpdate(BaseModel):
     enabled: bool = True
     in_app_enabled: bool = True
-    push_enabled: bool = False
+    push_enabled: bool | None = None
     email_enabled: bool = False
     allow_customisation: bool = True
-    allow_push_registration: bool = True
+    allow_push_registration: bool | None = None
     read_retention_days: int = Field(default=90, ge=1, le=3650)
     unread_retention_days: int = Field(default=365, ge=1, le=3650)
     default_severity: str = Field(default="info", max_length=20)
@@ -87,8 +98,46 @@ class CategoryUpdate(BaseModel):
     acknowledgement_required: bool = False
 
 
+class WebPushKeyRequest(BaseModel):
+    contact_email: str | None = Field(default=None, max_length=254)
+    contact_url: str | None = Field(default=None, max_length=500)
+    installation_label: str | None = Field(default=None, max_length=120)
+    confirmation: str = Field(min_length=1, max_length=40)
+
+
+class ConfirmedWebPushAction(BaseModel):
+    confirmation: str = Field(min_length=1, max_length=40)
+
+
 def _csrf(request: Request) -> None:
     validate_csrf_token(request, request.headers.get("x-csrf-token"))
+
+
+def _admin_rate_limit(
+    db: Session,
+    user_id: int,
+    actions: tuple[str, ...],
+    *,
+    limit: int,
+    minutes: int,
+) -> None:
+    recent = (
+        db.query(AuditLog)
+        .filter(
+            AuditLog.user_id == user_id,
+            AuditLog.action.in_(actions),
+            AuditLog.created_at >= datetime.utcnow() - timedelta(minutes=minutes),
+        )
+        .count()
+    )
+    if recent >= limit:
+        raise HTTPException(429, "Web Push administration rate limit reached")
+
+
+def _audit_or_fail(db: Session, *args, **kwargs) -> None:
+    kwargs.setdefault("category", "security")
+    if write_audit(db, *args, **kwargs) is None:
+        raise HTTPException(500, "The operation could not be recorded safely")
 
 
 def _serialise(
@@ -202,6 +251,7 @@ def notification_preferences_page(
         .order_by(PushSubscription.created_at.desc())
         .all()
     )
+    push_status = configuration_status(db)
     return templates.TemplateResponse(
         request,
         "notification_preferences.html",
@@ -211,9 +261,10 @@ def notification_preferences_page(
             "preferences": preferences,
             "devices": devices,
             "settings": _settings(db),
-            "vapid_configured": bool(
-                get_settings().vapid_public_key and get_settings().vapid_private_key
-            ),
+            "vapid_configured": push_status["valid"],
+            "push_registration_available": push_status[
+                "browser_registration_available"
+            ],
             **csrf_context(request),
         },
     )
@@ -255,7 +306,7 @@ def notification_admin_page(
             "active_devices": active_devices,
             "accepted_today": accepted,
             "failed_today": failed,
-            "vapid_public_key": get_settings().vapid_public_key,
+            "web_push": configuration_status(db),
             **csrf_context(request),
         },
     )
@@ -457,11 +508,10 @@ def update_preference(
     policy = db.get(NotificationCategoryPolicy, identifier)
     if policy and not policy.user_can_opt_out and not payload.in_app_enabled:
         raise HTTPException(400, "This notification is mandatory")
-    settings = get_settings()
+    push_status = configuration_status(db)
     if payload.push_enabled and (
         get_site_setting(db, "notifications_push_enabled") != "1"
-        or not settings.vapid_public_key
-        or not settings.vapid_private_key
+        or not push_status["valid"]
         or (policy and not policy.push_allowed)
     ):
         raise HTTPException(400, "Web Push is unavailable for this event")
@@ -544,6 +594,7 @@ def create_subscription(
     if (
         get_site_setting(db, "notifications_push_enabled") != "1"
         or get_site_setting(db, "notifications_allow_push_registration") != "1"
+        or not configuration_status(db)["valid"]
     ):
         raise HTTPException(403, "Push registration is disabled")
     safe = _valid_subscription(payload)
@@ -599,13 +650,15 @@ def delete_subscription(
 
 @router.get("/api/notifications/vapid-public-key")
 def vapid_public_key(db: Session = Depends(get_db), user=Depends(require_user)):
-    settings = get_settings()
-    if (
-        get_site_setting(db, "notifications_push_enabled") != "1"
-        or not settings.vapid_public_key
-    ):
+    if get_site_setting(db, "notifications_push_enabled") != "1":
         raise HTTPException(404, "Web Push is not configured")
-    return {"public_key": settings.vapid_public_key}
+    try:
+        credentials = effective_credentials(db)
+    except WebPushConfigurationError as exc:
+        raise HTTPException(503, "Web Push configuration is invalid") from exc
+    if not credentials:
+        raise HTTPException(404, "Web Push is not configured")
+    return {"public_key": credentials.public_key}
 
 
 @router.post("/api/notifications/test")
@@ -647,7 +700,7 @@ def test_notification(
         if user_notification
         else []
     )
-    configured = get_settings()
+    push_status = configuration_status(db)
     write_audit(
         db,
         user,
@@ -666,7 +719,7 @@ def test_notification(
             "queued"
             if any(item.channel == "push" for item in attempts)
             else "skipped: not configured"
-            if not configured.vapid_public_key or not configured.vapid_private_key
+            if not push_status["valid"]
             else "skipped: disabled or no enabled subscription"
         ),
         "email": (
@@ -725,15 +778,25 @@ def update_admin_settings(
     values = {
         "notifications_enabled": payload.enabled,
         "notifications_in_app_enabled": payload.in_app_enabled,
-        "notifications_push_enabled": payload.push_enabled,
         "notifications_email_enabled": payload.email_enabled,
         "notifications_allow_customisation": payload.allow_customisation,
-        "notifications_allow_push_registration": payload.allow_push_registration,
         "notifications_read_retention_days": payload.read_retention_days,
         "notifications_unread_retention_days": payload.unread_retention_days,
         "notifications_default_severity": payload.default_severity,
         "notifications_max_per_event": payload.maximum_per_event,
     }
+    if payload.push_enabled is not None or payload.allow_push_registration is not None:
+        push_status = configuration_status(db)
+        if (payload.push_enabled or payload.allow_push_registration) and not push_status[
+            "valid"
+        ]:
+            raise HTTPException(400, "Valid VAPID keys are required before enabling Web Push")
+    if payload.push_enabled is not None:
+        values["notifications_push_enabled"] = payload.push_enabled
+    if payload.allow_push_registration is not None:
+        values["notifications_allow_push_registration"] = (
+            payload.allow_push_registration
+        )
     for key, value in values.items():
         _save_setting(
             db, key, "1" if value is True else "" if value is False else str(value)
@@ -748,6 +811,363 @@ def update_admin_settings(
         metadata={"changed_keys": sorted(values)},
     )
     return _settings(db)
+
+
+@router.get("/api/admin/web-push")
+def admin_web_push_status(
+    db: Session = Depends(get_db), user=Depends(require_admin)
+):
+    return configuration_status(db)
+
+
+@router.post("/api/admin/web-push/generate")
+def generate_web_push_keys(
+    payload: WebPushKeyRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    _csrf(request)
+    if payload.confirmation != "GENERATE":
+        raise HTTPException(400, "Explicit generation confirmation is required")
+    _admin_rate_limit(
+        db,
+        user.id,
+        ("web_push_keys_generated", "web_push_keys_rotated"),
+        limit=3,
+        minutes=60,
+    )
+    try:
+        subject = normalise_subject(payload.contact_email, payload.contact_url)
+        row = create_ui_configuration(
+            db,
+            subject=subject,
+            installation_label=payload.installation_label,
+            rotate=False,
+        )
+        _save_setting(db, "notifications_push_enabled", "1")
+        _save_setting(db, "notifications_allow_push_registration", "1")
+        _audit_or_fail(
+            db,
+            user,
+            "web_push_keys_generated",
+            "web_push_configuration",
+            "1",
+            trusted_client_ip(request),
+            detail="UI-managed Web Push keys generated and enabled",
+            metadata={
+                "public_key_fingerprint": row.public_key_fingerprint,
+                "key_source": "kaya",
+            },
+        )
+    except WebPushConfigurationError as exc:
+        db.rollback()
+        logger.warning("web_push.configuration.generate_failed reason=validation")
+        raise HTTPException(400, str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        db.rollback()
+        logger.exception("web_push.configuration.generate_failed reason=internal")
+        raise HTTPException(500, "Web Push keys could not be generated safely") from exc
+    return configuration_status(db)
+
+
+@router.post("/api/admin/web-push/rotate")
+def rotate_web_push_keys(
+    payload: WebPushKeyRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    _csrf(request)
+    if payload.confirmation != "ROTATE":
+        raise HTTPException(400, "Explicit rotation confirmation is required")
+    _admin_rate_limit(
+        db,
+        user.id,
+        ("web_push_keys_generated", "web_push_keys_rotated"),
+        limit=3,
+        minutes=60,
+    )
+    try:
+        subject = normalise_subject(payload.contact_email, payload.contact_url)
+        row = create_ui_configuration(
+            db,
+            subject=subject,
+            installation_label=payload.installation_label,
+            rotate=True,
+        )
+        affected = revoke_all_subscriptions(db, "vapid_key_rotated")
+        _save_setting(db, "notifications_push_enabled", "1")
+        _save_setting(db, "notifications_allow_push_registration", "1")
+        publish(
+            db,
+            event_type_id="system.web_push.keys_rotated",
+            title="Web Push keys rotated",
+            message=f"Web Push keys were rotated; {affected} browser subscription(s) require renewal.",
+            target_route="/system/site-administration/notifications",
+            source_entity_type="web_push_configuration",
+            source_entity_id=1,
+            created_by_user_id=user.id,
+            metadata={"affected_subscriptions": affected},
+            commit=False,
+        )
+        _audit_or_fail(
+            db,
+            user,
+            "web_push_keys_rotated",
+            "web_push_configuration",
+            "1",
+            trusted_client_ip(request),
+            detail="UI-managed Web Push keys rotated",
+            metadata={
+                "public_key_fingerprint": row.public_key_fingerprint,
+                "key_source": "kaya",
+                "affected_subscriptions": affected,
+            },
+        )
+    except WebPushConfigurationError as exc:
+        db.rollback()
+        logger.warning("web_push.configuration.rotate_failed reason=validation")
+        raise HTTPException(400, str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        db.rollback()
+        logger.exception("web_push.configuration.rotate_failed reason=internal")
+        raise HTTPException(500, "Web Push keys could not be rotated safely") from exc
+    result = configuration_status(db)
+    result["affected_subscriptions"] = affected
+    return result
+
+
+@router.post("/api/admin/web-push/disable")
+def disable_web_push(
+    payload: ConfirmedWebPushAction,
+    request: Request,
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    _csrf(request)
+    if payload.confirmation != "DISABLE":
+        raise HTTPException(400, "Explicit disable confirmation is required")
+    _admin_rate_limit(
+        db, user.id, ("web_push_disabled",), limit=10, minutes=10
+    )
+    row = ui_configuration(db)
+    if row:
+        row.enabled = False
+    _save_setting(db, "notifications_push_enabled", "")
+    _save_setting(db, "notifications_allow_push_registration", "")
+    _audit_or_fail(
+        db,
+        user,
+        "web_push_disabled",
+        "web_push_configuration",
+        "1" if row else None,
+        trusted_client_ip(request),
+        detail="Web Push disabled; keys and subscriptions preserved",
+        metadata={"key_source": configuration_status(db)["source"]},
+    )
+    return configuration_status(db)
+
+
+@router.post("/api/admin/web-push/enable")
+def enable_web_push(
+    payload: ConfirmedWebPushAction,
+    request: Request,
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    _csrf(request)
+    if payload.confirmation != "ENABLE":
+        raise HTTPException(400, "Explicit enable confirmation is required")
+    _admin_rate_limit(db, user.id, ("web_push_enabled",), limit=10, minutes=10)
+    try:
+        credentials = effective_credentials(db)
+    except WebPushConfigurationError as exc:
+        raise HTTPException(400, "Web Push configuration is invalid") from exc
+    if not credentials:
+        raise HTTPException(400, "Web Push keys are not configured")
+    row = ui_configuration(db)
+    if row and credentials.source == "kaya":
+        row.enabled = True
+    _save_setting(db, "notifications_push_enabled", "1")
+    _save_setting(db, "notifications_allow_push_registration", "1")
+    _audit_or_fail(
+        db,
+        user,
+        "web_push_enabled",
+        "web_push_configuration",
+        "1" if row else None,
+        trusted_client_ip(request),
+        detail="Web Push enabled",
+        metadata={"key_source": credentials.source},
+    )
+    return configuration_status(db)
+
+
+@router.delete("/api/admin/web-push")
+def delete_web_push_configuration(
+    payload: ConfirmedWebPushAction,
+    request: Request,
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    _csrf(request)
+    if payload.confirmation != "DELETE":
+        raise HTTPException(400, "Explicit deletion confirmation is required")
+    _admin_rate_limit(
+        db, user.id, ("web_push_configuration_deleted",), limit=3, minutes=60
+    )
+    status = configuration_status(db)
+    if status["source"] == "deployment":
+        raise HTTPException(409, "Deployment-managed Web Push keys cannot be deleted")
+    row = ui_configuration(db)
+    if not row:
+        raise HTTPException(404, "UI-managed Web Push configuration was not found")
+    affected = revoke_all_subscriptions(db, "vapid_configuration_deleted")
+    db.delete(row)
+    _save_setting(db, "notifications_push_enabled", "")
+    _save_setting(db, "notifications_allow_push_registration", "")
+    _audit_or_fail(
+        db,
+        user,
+        "web_push_configuration_deleted",
+        "web_push_configuration",
+        "1",
+        trusted_client_ip(request),
+        detail="UI-managed Web Push configuration deleted",
+        metadata={"key_source": "kaya", "affected_subscriptions": affected},
+    )
+    result = configuration_status(db)
+    result["affected_subscriptions"] = affected
+    return result
+
+
+@router.post("/api/admin/web-push/revoke-subscriptions")
+def revoke_web_push_subscriptions(
+    payload: ConfirmedWebPushAction,
+    request: Request,
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    _csrf(request)
+    if payload.confirmation != "REVOKE ALL":
+        raise HTTPException(400, "Explicit subscription revocation confirmation is required")
+    _admin_rate_limit(
+        db, user.id, ("web_push_subscriptions_revoked",), limit=5, minutes=10
+    )
+    affected = revoke_all_subscriptions(db, "revoked_by_administrator")
+    _audit_or_fail(
+        db,
+        user,
+        "web_push_subscriptions_revoked",
+        "push_subscription",
+        None,
+        trusted_client_ip(request),
+        detail="All browser push subscriptions revoked",
+        metadata={"affected_subscriptions": affected},
+    )
+    return {"ok": True, "affected_subscriptions": affected}
+
+
+@router.post("/api/admin/web-push/test")
+def admin_push_test(
+    request: Request,
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    _csrf(request)
+    _admin_rate_limit(
+        db,
+        user.id,
+        ("web_push_test_sent", "web_push_test_failed"),
+        limit=5,
+        minutes=10,
+    )
+    status = configuration_status(db)
+    subscriptions = (
+        db.query(PushSubscription)
+        .filter_by(user_id=user.id, status="active", revoked_at=None)
+        .limit(20)
+        .all()
+    )
+    if not status["enabled"] or not subscriptions:
+        reason = "not_enabled" if not status["enabled"] else "no_active_subscription"
+        _audit_or_fail(
+            db,
+            user,
+            "web_push_test_failed",
+            "web_push_configuration",
+            None,
+            trusted_client_ip(request),
+            detail="Administrator Web Push test was not queued",
+            metadata={"reason": reason},
+        )
+        raise HTTPException(
+            409,
+            "Web Push is not enabled"
+            if reason == "not_enabled"
+            else "No active browser subscription is registered for this administrator",
+        )
+    event = publish(
+        db,
+        event_type_id="system.notification.test",
+        title="Kaya Web Push test",
+        message="This is a Web Push test requested from Kaya.",
+        target_route="/notifications",
+        recipient_ids=[user.id],
+        created_by_user_id=user.id,
+        commit=False,
+    )
+    user_notification = (
+        db.query(UserNotification)
+        .filter_by(notification_event_id=event.id, user_id=user.id)
+        .first()
+        if event
+        else None
+    )
+    if not user_notification:
+        db.rollback()
+        raise HTTPException(409, "The in-app test notification was suppressed by policy")
+    queued = 0
+    for subscription in subscriptions:
+        exists = db.query(NotificationDeliveryAttempt.id).filter_by(
+            user_notification_id=user_notification.id,
+            channel="push",
+            push_subscription_id=subscription.id,
+        ).first()
+        if not exists:
+            db.add(
+                NotificationDeliveryAttempt(
+                    user_notification_id=user_notification.id,
+                    channel="push",
+                    push_subscription_id=subscription.id,
+                )
+            )
+            queued += 1
+    queued_devices = len(subscriptions)
+    _audit_or_fail(
+        db,
+        user,
+        "web_push_test_sent",
+        "notification",
+        str(event.id),
+        trusted_client_ip(request),
+        detail="Administrator Web Push test queued",
+        metadata={
+            "queued_devices": queued_devices,
+            "new_delivery_attempts": queued,
+            "key_source": status["source"],
+        },
+    )
+    return {
+        "ok": True,
+        "queued_devices": queued_devices,
+        "notification_id": user_notification.id,
+    }
 
 
 @router.get("/api/admin/notification-categories")

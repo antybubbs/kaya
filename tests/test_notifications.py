@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 import inspect
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,6 +11,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.db.session import Base
 from app.models.models import (
+    AuditLog,
     NotificationCategoryPolicy,
     NotificationDeliveryAttempt,
     NotificationEvent,
@@ -19,11 +21,17 @@ from app.models.models import (
     User,
     UserModulePermission,
     UserNotification,
+    WebPushConfiguration,
 )
-from app.core.security import encrypt_secret
+from app.core.security import decrypt_secret, encrypt_secret
 from app.routers import notifications as notification_router
 from app.routers.auth import require_admin
-from app.routers.notifications import PreferenceUpdate, _owned
+from app.routers.notifications import (
+    ConfirmedWebPushAction,
+    PreferenceUpdate,
+    WebPushKeyRequest,
+    _owned,
+)
 from app.services.notification_registry import EVENT_TYPES
 from app.services.notifications import (
     cleanup_retention,
@@ -31,6 +39,13 @@ from app.services.notifications import (
     publish,
     safe_target_route,
     validate_push_endpoint,
+)
+from app.services.web_push_config import (
+    WebPushConfigurationError,
+    configuration_status,
+    create_ui_configuration,
+    effective_credentials,
+    generate_key_pair,
 )
 
 
@@ -58,6 +73,15 @@ def user(db: Session, email: str, role: str = "viewer", modules=()) -> User:
         )
     db.commit()
     return row
+
+
+def csrf_request():
+    return SimpleNamespace(
+        headers={"x-csrf-token": "fake-csrf-token"},
+        session={"csrf_token": "fake-csrf-token"},
+        state=SimpleNamespace(),
+        scope={"client": ("127.0.0.1", 12345), "headers": []},
+    )
 
 
 def test_event_registry_is_central_and_structured():
@@ -306,6 +330,260 @@ def test_unavailable_push_preference_cannot_be_saved(db):
         )
     assert getattr(exc.value, "status_code", None) == 400
     assert "Web Push is unavailable" in getattr(exc.value, "detail", "")
+
+
+def test_admin_generates_encrypted_ui_vapid_configuration_without_secret_response(db):
+    admin = user(db, "vapid-admin@example.invalid", role="admin")
+    result = notification_router.generate_web_push_keys(
+        WebPushKeyRequest(
+            contact_email="admin@example.com",
+            installation_label="Synthetic installation",
+            confirmation="GENERATE",
+        ),
+        csrf_request(),
+        db=db,
+        user=admin,
+    )
+    row = db.get(WebPushConfiguration, 1)
+    recovered_private = decrypt_secret(row.encrypted_private_key)
+    assert result["state"] == "configured"
+    assert result["source"] == "kaya"
+    assert result["browser_registration_available"] is True
+    assert result["public_key_fingerprint"].startswith("SHA256:")
+    assert "private" not in json.dumps(result).lower()
+    assert row.encrypted_private_key != recovered_private
+    assert len(recovered_private) == 43
+    assert recovered_private not in row.encrypted_private_key
+    assert notification_router.vapid_public_key(db=db, user=admin) == {
+        "public_key": row.public_key
+    }
+    audit = db.query(AuditLog).filter_by(action="web_push_keys_generated").one()
+    assert recovered_private not in (audit.metadata_json or "")
+    assert recovered_private not in (audit.detail or "")
+
+
+def test_web_push_key_management_routes_are_admin_only():
+    for endpoint in (
+        notification_router.admin_web_push_status,
+        notification_router.generate_web_push_keys,
+        notification_router.rotate_web_push_keys,
+        notification_router.disable_web_push,
+        notification_router.enable_web_push,
+        notification_router.delete_web_push_configuration,
+        notification_router.revoke_web_push_subscriptions,
+        notification_router.admin_push_test,
+    ):
+        dependency = inspect.signature(endpoint).parameters["user"].default
+        assert dependency.dependency is require_admin
+
+
+def test_ui_vapid_configuration_survives_a_new_database_session(db):
+    create_ui_configuration(
+        db,
+        subject="mailto:restart@example.com",
+        installation_label="Restart test",
+        rotate=False,
+    )
+    db.commit()
+    with Session(db.get_bind()) as restarted:
+        credentials = effective_credentials(restarted)
+        assert credentials is not None
+        assert credentials.source == "kaya"
+        assert credentials.subject == "mailto:restart@example.com"
+
+
+def test_rotation_revokes_subscriptions_and_notifies_administrators(db):
+    admin = user(db, "rotate-admin@example.invalid", role="admin")
+    notification_router.generate_web_push_keys(
+        WebPushKeyRequest(
+            contact_email="rotate@example.com", confirmation="GENERATE"
+        ),
+        csrf_request(),
+        db=db,
+        user=admin,
+    )
+    original = db.get(WebPushConfiguration, 1).public_key_fingerprint
+    subscription = PushSubscription(
+        user_id=admin.id,
+        endpoint_hash="a" * 64,
+        encrypted_subscription=encrypt_secret(
+            '{"endpoint":"https://fcm.googleapis.com/fcm/send/fake","keys":{"p256dh":"fake","auth":"fake"}}'
+        ),
+    )
+    db.add(subscription)
+    db.commit()
+    result = notification_router.rotate_web_push_keys(
+        WebPushKeyRequest(
+            contact_email="rotate@example.com", confirmation="ROTATE"
+        ),
+        csrf_request(),
+        db=db,
+        user=admin,
+    )
+    db.refresh(subscription)
+    assert result["affected_subscriptions"] == 1
+    assert result["public_key_fingerprint"] != original
+    assert subscription.status == "revoked" and subscription.revoked_at is not None
+    assert db.query(NotificationEvent).filter_by(
+        event_type="system.web_push.keys_rotated"
+    ).count() == 1
+
+
+def test_disable_preserves_keys_subscriptions_preferences_and_in_app(db):
+    admin = user(db, "disable-admin@example.invalid", role="admin")
+    notification_router.generate_web_push_keys(
+        WebPushKeyRequest(
+            contact_email="disable@example.com", confirmation="GENERATE"
+        ),
+        csrf_request(),
+        db=db,
+        user=admin,
+    )
+    subscription = PushSubscription(
+        user_id=admin.id,
+        endpoint_hash="b" * 64,
+        encrypted_subscription=encrypt_secret("{}"),
+    )
+    preference = NotificationPreference(
+        user_id=admin.id,
+        event_type="system.notification.test",
+        in_app_enabled=True,
+        push_enabled=True,
+    )
+    db.add_all([subscription, preference])
+    db.commit()
+    notification_router.disable_web_push(
+        ConfirmedWebPushAction(confirmation="DISABLE"),
+        csrf_request(),
+        db=db,
+        user=admin,
+    )
+    assert db.get(WebPushConfiguration, 1) is not None
+    assert db.get(PushSubscription, subscription.id).status == "active"
+    assert db.get(NotificationPreference, preference.id).push_enabled is True
+    event = publish(
+        db,
+        event_type_id="system.notification.test",
+        title="Synthetic in-app test",
+        message="In-app remains available.",
+        recipient_ids=[admin.id],
+    )
+    assert db.query(UserNotification).filter_by(
+        notification_event_id=event.id, user_id=admin.id
+    ).count() == 1
+    assert db.query(NotificationDeliveryAttempt).filter_by(
+        user_notification_id=db.query(UserNotification.id).filter_by(
+            notification_event_id=event.id, user_id=admin.id
+        ).scalar()
+    ).count() == 0
+
+
+def test_delete_removes_ui_keys_and_revokes_subscriptions(db):
+    admin = user(db, "delete-admin@example.invalid", role="admin")
+    notification_router.generate_web_push_keys(
+        WebPushKeyRequest(
+            contact_email="delete@example.com", confirmation="GENERATE"
+        ),
+        csrf_request(),
+        db=db,
+        user=admin,
+    )
+    subscription = PushSubscription(
+        user_id=admin.id,
+        endpoint_hash="c" * 64,
+        encrypted_subscription=encrypt_secret("{}"),
+    )
+    db.add(subscription)
+    db.commit()
+    result = notification_router.delete_web_push_configuration(
+        ConfirmedWebPushAction(confirmation="DELETE"),
+        csrf_request(),
+        db=db,
+        user=admin,
+    )
+    assert result["state"] == "not_configured"
+    assert result["affected_subscriptions"] == 1
+    assert db.get(WebPushConfiguration, 1) is None
+    assert db.get(PushSubscription, subscription.id).status == "revoked"
+
+
+def test_environment_keys_override_ui_and_invalid_environment_fails_closed(
+    db, monkeypatch
+):
+    ui_public, ui_private = generate_key_pair()
+    db.add(
+        WebPushConfiguration(
+            id=1,
+            encrypted_private_key=encrypt_secret(ui_private),
+            public_key=ui_public,
+            public_key_fingerprint="SHA256:UI",
+            subject="mailto:ui@example.com",
+        )
+    )
+    db.commit()
+    deployment_public, deployment_private = generate_key_pair()
+    monkeypatch.setattr(
+        "app.services.web_push_config.get_settings",
+        lambda: SimpleNamespace(
+            vapid_public_key=deployment_public,
+            vapid_private_key=deployment_private,
+            vapid_subject="mailto:deployment@example.com",
+        ),
+    )
+    credentials = effective_credentials(db)
+    assert credentials.source == "deployment"
+    assert credentials.public_key == deployment_public
+    assert configuration_status(db)["state"] == "managed_by_deployment"
+    admin = user(db, "deployment-admin@example.invalid", role="admin")
+    with pytest.raises(Exception) as exc:
+        notification_router.delete_web_push_configuration(
+            ConfirmedWebPushAction(confirmation="DELETE"),
+            csrf_request(),
+            db=db,
+            user=admin,
+        )
+    assert getattr(exc.value, "status_code", None) == 409
+
+    monkeypatch.setattr(
+        "app.services.web_push_config.get_settings",
+        lambda: SimpleNamespace(
+            vapid_public_key=deployment_public,
+            vapid_private_key="",
+            vapid_subject="mailto:deployment@example.com",
+        ),
+    )
+    assert configuration_status(db)["state"] == "invalid_configuration"
+    with pytest.raises(WebPushConfigurationError):
+        effective_credentials(db)
+
+
+def test_admin_push_test_distinguishes_missing_and_active_subscription(db):
+    admin = user(db, "push-test-admin@example.invalid", role="admin")
+    notification_router.generate_web_push_keys(
+        WebPushKeyRequest(
+            contact_email="push-test@example.com", confirmation="GENERATE"
+        ),
+        csrf_request(),
+        db=db,
+        user=admin,
+    )
+    with pytest.raises(Exception) as missing:
+        notification_router.admin_push_test(csrf_request(), db=db, user=admin)
+    assert getattr(missing.value, "status_code", None) == 409
+    assert "No active browser subscription" in getattr(missing.value, "detail", "")
+    db.add(
+        PushSubscription(
+            user_id=admin.id,
+            endpoint_hash="d" * 64,
+            encrypted_subscription=encrypt_secret("{}"),
+        )
+    )
+    db.commit()
+    result = notification_router.admin_push_test(csrf_request(), db=db, user=admin)
+    assert result["queued_devices"] == 1
+    assert db.query(NotificationDeliveryAttempt).filter_by(
+        channel="push", status="queued"
+    ).count() == 1
 
 
 def test_retention_removes_old_read_records_but_keeps_recent_unread(db):

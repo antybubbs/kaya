@@ -24,6 +24,13 @@ _ROWS = (
         "Notification diagnostic",
         "info",
     ),
+    (
+        "system.web_push.keys_rotated",
+        "system",
+        "security",
+        "Web Push keys rotated",
+        "warning",
+    ),
     ("system.update.available", "system", "system", "Kaya update available", "info"),
     (
         "system.background_task.failed",
