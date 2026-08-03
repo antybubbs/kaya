@@ -136,14 +136,27 @@ def _recovery_validation_progressing(cluster: HACluster, node: HANode, current: 
         key=lambda run: run.created_at or datetime.min,
         default=None,
     )
-    return bool(
-        latest
-        and latest.status in {"PENDING", "RUNNING"}
-        and (latest.started_at or latest.created_at) >= progress_cutoff
-    )
+    if latest is None or latest.status not in {
+        "PENDING",
+        "CHECKING",
+        "PLANNED",
+        "RUNNING",
+        "VERIFYING",
+        "IN_SYNC",
+        "SUCCEEDED",
+    }:
+        return False
+    progress_at = latest.completed_at or latest.started_at or latest.created_at
+    return bool(progress_at and progress_at >= progress_cutoff)
 
 
-def inspect_cluster(cluster: HACluster, *, now: datetime | None = None, since: datetime | None = None) -> ClusterInspection:
+def inspect_cluster(
+    cluster: HACluster,
+    *,
+    now: datetime | None = None,
+    since: datetime | None = None,
+    recovery: dict[int, Any] | None = None,
+) -> ClusterInspection:
     current = now or datetime.utcnow()
     managed = pihole_manages_dhcp(cluster)
     topology = reconcile_topology(cluster, now=current, since=since, freshness_seconds=FRESH_SECONDS)
@@ -164,6 +177,13 @@ def inspect_cluster(cluster: HACluster, *, now: datetime | None = None, since: d
     for node in fresh_nodes:
         if (
             node.recovery_state in {"RECOVERING", "SYNCHRONISING", "VERIFYING"}
+            and (
+                recovery is None
+                or (
+                    recovery.get(node.id) is not None
+                    and recovery[node.id].operationally_ready
+                )
+            )
             and node.recovery_started_at
             and node.recovery_started_at < current - RECOVERY_PROGRESS_TIMEOUT
             and not _recovery_validation_progressing(cluster, node, current)
