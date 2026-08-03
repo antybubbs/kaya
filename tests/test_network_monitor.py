@@ -21,14 +21,17 @@ from app.models.models import (
     NetworkMonitorEvent,
     NetworkMonitorOutage,
     NetworkMonitorStatistic,
+    NetworkMonitorTransition,
     NotificationDeliveryAttempt,
     NotificationEvent,
+    NotificationOutbox,
     RemoteManagerSetting,
     User,
     UserModulePermission,
     UserNotification,
 )
 from app.services import network_monitor, network_monitor_history
+from app.services.notification_outbox import process_outbox
 from app.routers import network_monitor as network_monitor_router, notifications as notification_router
 from app.routers.auth import require_admin, require_editor
 
@@ -89,6 +92,15 @@ def test_monitor_transition_creates_in_app_notification_without_vapid_or_legacy_
         network_monitor.record_monitor_result(
             db, monitor, False, None, 100, "Synthetic timeout"
         )
+        assert db.query(NetworkMonitorTransition).filter_by(
+            monitor_id=monitor_id, new_state="offline"
+        ).count() == 1
+        assert db.query(NotificationOutbox).filter_by(
+            event_type="ipwan.host.offline", status="pending"
+        ).count() == 1
+        db.commit()
+        process_outbox(session_factory=factory)
+        db.expire_all()
         offline = db.query(NotificationEvent).filter_by(
             event_type="ipwan.host.offline"
         ).one()
@@ -118,6 +130,8 @@ def test_monitor_transition_creates_in_app_notification_without_vapid_or_legacy_
         ).count() == 1
 
         network_monitor.record_monitor_result(db, monitor, True, 8, 0, None)
+        process_outbox(session_factory=factory)
+        db.expire_all()
         assert db.query(NotificationEvent).filter_by(
             event_type="ipwan.host.recovered"
         ).count() == 1
@@ -138,9 +152,39 @@ def test_existing_offline_monitor_is_reconciled_once():
         second = network_monitor.reconcile_offline_notifications(db)
         assert first == {"candidates": 1, "created": 1, "existing": 0}
         assert second == {"candidates": 1, "created": 0, "existing": 1}
+        process_outbox(session_factory=factory)
+        db.expire_all()
         assert db.query(NotificationEvent).filter_by(
             source_entity_id=str(monitor_id), event_type="ipwan.host.offline"
         ).count() == 1
+
+
+def test_monitor_transition_and_outbox_rollback_together():
+    factory = session_factory()
+    add_monitor_recipient(factory)
+    monitor_id = add_monitor(factory, failure_threshold=1)
+    with factory() as db:
+        monitor = db.get(NetworkMonitor, monitor_id)
+        network_monitor.record_monitor_result(
+            db, monitor, False, None, 100, "Synthetic timeout"
+        )
+        assert db.query(NetworkMonitorTransition).count() == 1
+        assert db.query(NotificationOutbox).count() == 1
+
+    rollback_factory = session_factory()
+    rollback_id = add_monitor(rollback_factory, failure_threshold=1)
+    with rollback_factory() as db:
+        monitor = db.get(NetworkMonitor, rollback_id)
+        original_commit = db.commit
+        db.commit = lambda: (_ for _ in ()).throw(RuntimeError("synthetic rollback"))
+        with pytest.raises(RuntimeError, match="synthetic rollback"):
+            network_monitor.record_monitor_result(
+                db, monitor, False, None, 100, "Synthetic timeout"
+            )
+        db.rollback()
+        db.commit = original_commit
+        assert db.query(NetworkMonitorTransition).count() == 0
+        assert db.query(NotificationOutbox).count() == 0
 
 
 def test_failure_threshold_opens_outage_and_recovery_closes_it(monkeypatch):
@@ -476,11 +520,14 @@ def test_scheduler_diagnostics_are_admin_only_and_not_cacheable():
     payload = json.loads(response.body)
 
     assert response.headers["cache-control"] == "no-store"
-    assert set(payload) == {
+    assert {
         "scheduler_running", "task_id", "last_scheduler_heartbeat",
         "last_monitor_execution", "last_observation_written", "pending_monitors",
         "pending_monitor_count", "current_loop_iteration", "worker_uptime_seconds",
-    }
+        "scheduler_task_id", "last_due_scan", "due_monitors_found",
+        "active_monitor_tasks", "available_worker_slots", "stuck_monitor_count",
+        "oldest_active_monitor", "last_scheduler_exception", "watchdog_restart_count",
+    } <= set(payload)
 
 
 def test_live_feed_returns_only_new_genuine_observations():

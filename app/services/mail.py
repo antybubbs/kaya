@@ -82,6 +82,7 @@ def send_mail(
     *,
     action_url: str | None = None,
     action_label: str | None = None,
+    before_send=None,
 ) -> None:
     get_site_settings(db, {
         "smtp_enabled", "smtp_host", "smtp_from_email", "smtp_port", "smtp_username",
@@ -137,6 +138,8 @@ def send_mail(
             )
 
     smtp_class = smtplib.SMTP_SSL if use_ssl else smtplib.SMTP
+    if before_send:
+        before_send()
     with external_call():
         with smtp_class(host, port, timeout=15) as smtp:
             if use_tls and not use_ssl:

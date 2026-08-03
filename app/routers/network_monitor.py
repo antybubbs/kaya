@@ -20,8 +20,13 @@ from app.models.models import (
     NetworkMonitorEvent,
     NetworkMonitorOutage,
     NetworkMonitorStatistic,
+    NetworkMonitorTransition,
     NetworkMonitorWallboardSession,
+    NotificationDeliveryAttempt,
+    NotificationEvent,
+    NotificationOutbox,
     RemoteAccess,
+    UserNotification,
 )
 from app.routers.auth import require_admin, require_editor, require_module_access, require_user
 from app.services.audit import write_audit
@@ -271,6 +276,106 @@ def monitor_detail_context(
         (NetworkMonitorOutage.ended_at.is_(None)) | (NetworkMonitorOutage.ended_at >= start),
     ).order_by(NetworkMonitorOutage.started_at.desc()).all()
     latest_incident = db.query(NetworkMonitorOutage).filter(NetworkMonitorOutage.monitor_id == monitor.id).order_by(NetworkMonitorOutage.started_at.desc()).first()
+    latest_offline_transition = (
+        db.query(NetworkMonitorTransition)
+        .filter_by(monitor_id=monitor.id, new_state="offline")
+        .order_by(NetworkMonitorTransition.transitioned_at.desc())
+        .first()
+    )
+    notification_timing = {
+        "probe_interval_seconds": monitor.interval_seconds,
+        "failure_threshold": thresholds["failure_threshold"],
+        "expected_alert_delay_seconds": monitor.interval_seconds
+        * thresholds["failure_threshold"],
+        "last_successful_check": None,
+        "first_failed_check": None,
+        "marked_offline": latest_offline_transition.transitioned_at
+        if latest_offline_transition
+        else None,
+        "outbox_created": None,
+        "event_created": None,
+        "user_notification_created": None,
+        "push_queued": None,
+        "push_accepted": None,
+    }
+    if latest_offline_transition:
+        trigger = db.get(
+            NetworkMonitorCheck, latest_offline_transition.triggering_observation_id
+        )
+        first_failed = (
+            db.query(NetworkMonitorCheck)
+            .filter(
+                NetworkMonitorCheck.monitor_id == monitor.id,
+                NetworkMonitorCheck.status == "down",
+                NetworkMonitorCheck.checked_at <= latest_offline_transition.transitioned_at,
+            )
+            .order_by(NetworkMonitorCheck.checked_at.desc())
+            .limit(max(1, latest_offline_transition.consecutive_failures))
+            .all()
+        )
+        last_success = (
+            db.query(NetworkMonitorCheck)
+            .filter(
+                NetworkMonitorCheck.monitor_id == monitor.id,
+                NetworkMonitorCheck.status == "up",
+                NetworkMonitorCheck.checked_at
+                < (trigger.checked_at if trigger else latest_offline_transition.transitioned_at),
+            )
+            .order_by(NetworkMonitorCheck.checked_at.desc())
+            .first()
+        )
+        notification_timing["last_successful_check"] = (
+            last_success.checked_at if last_success else None
+        )
+        notification_timing["first_failed_check"] = min(
+            (item.checked_at for item in first_failed), default=None
+        )
+        outbox = (
+            db.query(NotificationOutbox)
+            .filter_by(correlation_id=latest_offline_transition.correlation_id)
+            .order_by(NotificationOutbox.created_at.asc())
+            .first()
+        )
+        if outbox:
+            notification_timing["outbox_created"] = outbox.created_at
+            event = (
+                db.get(NotificationEvent, outbox.notification_event_id)
+                if outbox.notification_event_id
+                else None
+            )
+            if event:
+                notification_timing["event_created"] = event.created_at
+                notification_timing["user_notification_created"] = (
+                    db.query(func.min(UserNotification.created_at))
+                    .filter_by(notification_event_id=event.id)
+                    .scalar()
+                )
+                notification_ids = db.query(UserNotification.id).filter_by(
+                    notification_event_id=event.id
+                )
+                notification_timing["push_queued"] = (
+                    db.query(func.min(NotificationDeliveryAttempt.created_at))
+                    .filter(
+                        NotificationDeliveryAttempt.channel == "push",
+                        NotificationDeliveryAttempt.user_notification_id.in_(
+                            notification_ids
+                        ),
+                    )
+                    .scalar()
+                )
+                notification_timing["push_accepted"] = (
+                    db.query(func.min(NotificationDeliveryAttempt.accepted_at))
+                    .filter(
+                        NotificationDeliveryAttempt.channel == "push",
+                        NotificationDeliveryAttempt.status.in_(
+                            ["accepted", "accepted_by_push_service"]
+                        ),
+                        NotificationDeliveryAttempt.user_notification_id.in_(
+                            notification_ids
+                        ),
+                    )
+                    .scalar()
+                )
     sample_count = len(checks) + sum(row.sample_count for row in statistics)
     up_count = sum(1 for row in checks if row.status == "up") + sum(row.up_count for row in statistics)
     latencies = [row.latency_ms for row in checks if row.latency_ms is not None]
@@ -335,6 +440,7 @@ def monitor_detail_context(
         "successful_checks": up_count, "failed_checks": failed_checks, "downtime_seconds": round(downtime_seconds),
         "average_recovery_seconds": round(sum(incident_durations) / len(incident_durations)) if incident_durations else None,
         "last_incident": latest_incident,
+        "notification_timing": notification_timing,
         "thresholds": thresholds,
         "outage_count": len(outages),
         "latency_label": latency_label,

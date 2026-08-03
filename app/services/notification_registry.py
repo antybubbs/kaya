@@ -14,6 +14,11 @@ class NotificationType:
     user_configurable: bool = True
     recovery: bool = False
     sensitive_payload: bool = False
+    supported_channels: tuple[str, ...] = ("in_app", "push", "email")
+    recipient_strategy: str = "module_access"
+    deduplication_strategy: str = "operation_specific"
+    implemented_publisher: str | None = None
+    automated_test_present: bool = False
 
 
 _ROWS = (
@@ -97,7 +102,7 @@ _ROWS = (
         "high_availability",
         "pihole",
         "Pi-hole cluster degraded",
-        "critical",
+        "warning",
     ),
     (
         "pihole.cluster.recovered",
@@ -114,6 +119,13 @@ _ROWS = (
         "critical",
     ),
     (
+        "pihole.failover.started",
+        "high_availability",
+        "pihole",
+        "Failover started",
+        "warning",
+    ),
+    (
         "pihole.failover.completed",
         "high_availability",
         "pihole",
@@ -126,6 +138,20 @@ _ROWS = (
         "pihole",
         "Failover failed",
         "critical",
+    ),
+    (
+        "pihole.failback.started",
+        "high_availability",
+        "pihole",
+        "Failback started",
+        "warning",
+    ),
+    (
+        "pihole.failback.completed",
+        "high_availability",
+        "pihole",
+        "Failback completed",
+        "success",
     ),
     (
         "pihole.failback.failed",
@@ -194,11 +220,50 @@ _ROWS = (
     ),
 )
 
+_IMPLEMENTED_PUBLISHERS = {
+    "system.notification.test": "notification_outbox",
+    "system.web_push.keys_rotated": "notification_service",
+    "system.background_task.failed": "notification_supervisor_outbox",
+    "ipwan.host.offline": "network_monitor_transition_outbox",
+    "ipwan.host.recovered": "network_monitor_transition_outbox",
+    "backup.job.failed": "backup_job_outbox",
+    "pihole.cluster.degraded": "ha_outbox",
+    "pihole.cluster.recovered": "ha_outbox",
+    "pihole.node.unreachable": "ha_outbox",
+    "pihole.failover.started": "ha_outbox",
+    "pihole.failover.completed": "ha_outbox",
+    "pihole.failover.failed": "ha_outbox",
+    "pihole.failback.started": "ha_outbox",
+    "pihole.failback.completed": "ha_outbox",
+    "pihole.failback.failed": "ha_outbox",
+    "pihole.sync.failed": "ha_outbox",
+}
+_ACTIVE_CONDITION_EVENTS = {
+    "ipwan.host.offline",
+    "ipwan.wan.offline",
+    "pihole.cluster.degraded",
+    "pihole.node.unreachable",
+    "backup.job.overdue",
+    "certificate.expiring",
+    "certificate.expired",
+    "licence.expiring",
+    "licence.expired",
+}
+
+
 EVENT_TYPES = {
     row[0]: NotificationType(
         *row,
         recovery=row[0].endswith(".recovered"),
-        sensitive_payload=row[0].startswith(("secure_vault.", "secure_send."))
+        sensitive_payload=row[0].startswith(("secure_vault.", "secure_send.")),
+        recipient_strategy="administrators" if row[1] == "system" else "module_access",
+        deduplication_strategy=(
+            "active_condition"
+            if row[0] in _ACTIVE_CONDITION_EVENTS
+            else "operation_specific"
+        ),
+        implemented_publisher=_IMPLEMENTED_PUBLISHERS.get(row[0]),
+        automated_test_present=row[0] in _IMPLEMENTED_PUBLISHERS,
     )
     for row in _ROWS
 }

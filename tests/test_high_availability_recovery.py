@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, event
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.session import Base
 from app.models.models import (
@@ -13,10 +13,12 @@ from app.models.models import (
     HALeaseReplicationState,
     HANode,
     HASyncRun,
+    NotificationEvent,
     User,
 )
-from app.services.ha_failover import HAFailoverError, failover_status, start_controlled_failover
+from app.services.ha_failover import HAFailoverError, advance_failover, failover_status, start_controlled_failover
 from app.services.ha_recovery import evaluate_recovery, peer_diagnostic, preferred_node
+from app.services.notification_outbox import process_outbox
 
 
 def database():
@@ -136,12 +138,20 @@ def test_recovered_node_advances_only_after_sync_and_stability():
     with database() as db:
         _, cluster, recovered, active = recovered_pair(db, now)
         assert evaluate_recovery(db, cluster, now=now)[recovered.id].state == "OFFLINE"
+        process_outbox(session_factory=sessionmaker(bind=db.bind))
+        db.expire_all()
+        unreachable = db.query(NotificationEvent).filter_by(event_type="pihole.node.unreachable").one()
+        assert unreachable.resolved_at is None
 
         recovered.last_heartbeat_at = now + timedelta(seconds=1)
         db.commit()
         result = evaluate_recovery(db, cluster, now=now + timedelta(seconds=1))[recovered.id]
+        process_outbox(session_factory=sessionmaker(bind=db.bind))
+        db.expire_all()
         assert result.state == "SYNCHRONISING"
         assert not result.ready
+        db.refresh(unreachable)
+        assert unreachable.resolved_at is not None
 
         db.add(
             HASyncRun(
@@ -240,8 +250,35 @@ def test_ready_preferred_node_reuses_the_existing_controlled_transition(monkeypa
 
         assert run.phase == "DEMOTING_SOURCE"
         assert failover_status(run)["transition_kind"] == "FAILBACK"
+        process_outbox(session_factory=sessionmaker(bind=db.bind))
+        db.expire_all()
+        assert db.query(NotificationEvent).filter_by(
+            event_type="pihole.failback.started",
+            correlation_id=run.public_id,
+        ).one()
         assert run.source_node_id == active.id
         assert run.target_node_id == recovered.id
+
+        active.vip_owned = False
+        active.dhcp_running = active.dhcp_configured = active.dhcp_listener_active = False
+        active.dhcp_runtime_state = "STOPPED"
+        active.dhcp_observation_status = "FRESH"
+        active.dhcp_observed_at = active.last_heartbeat_at = datetime.utcnow()
+        recovered.vip_owned = True
+        recovered.dhcp_running = recovered.dhcp_configured = recovered.dhcp_listener_active = True
+        recovered.ftl_active = True
+        recovered.dhcp_runtime_state = "RUNNING"
+        recovered.dhcp_observation_status = "FRESH"
+        recovered.dhcp_observed_at = recovered.last_heartbeat_at = datetime.utcnow()
+        advance_failover(db, cluster)
+        process_outbox(session_factory=sessionmaker(bind=db.bind))
+        db.expire_all()
+
+        assert run.status == "SUCCEEDED"
+        assert db.query(NotificationEvent).filter_by(
+            event_type="pihole.failback.completed",
+            correlation_id=run.public_id,
+        ).one()
 
 
 def test_preferred_node_does_not_follow_current_active_role():

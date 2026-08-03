@@ -270,6 +270,35 @@ class NetworkMonitorCheck(Base):
     monitor = relationship("NetworkMonitor")
 
 
+class NetworkMonitorTransition(Base):
+    """A durable derived-state change linked to the observation that caused it."""
+
+    __tablename__ = "network_monitor_transitions"
+    __table_args__ = (
+        Index(
+            "ix_network_monitor_transitions_monitor_transitioned",
+            "monitor_id",
+            "transitioned_at",
+        ),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    monitor_id: Mapped[int] = mapped_column(
+        ForeignKey("network_monitors.id", ondelete="CASCADE"), index=True
+    )
+    previous_state: Mapped[str] = mapped_column(String(30))
+    new_state: Mapped[str] = mapped_column(String(30), index=True)
+    transitioned_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, index=True
+    )
+    # Retained as an immutable audit reference even after raw observation
+    # retention compacts the corresponding check row.
+    triggering_observation_id: Mapped[int] = mapped_column(Integer, index=True)
+    consecutive_successes: Mapped[int] = mapped_column(Integer, default=0)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
+    reason: Mapped[str] = mapped_column(String(500))
+    correlation_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+
+
 class NetworkMonitorEvent(Base):
     __tablename__ = "network_monitor_events"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -1486,6 +1515,48 @@ class NotificationEvent(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
 
 
+class NotificationOutbox(Base):
+    """Durable request to publish an operational event after its source commits."""
+
+    __tablename__ = "notification_outbox"
+    __table_args__ = (
+        Index("ix_notification_outbox_due", "status", "next_retry_at", "created_at"),
+        Index("ix_notification_outbox_dedup_status", "deduplication_key", "status"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    event_type: Mapped[str] = mapped_column(String(120), index=True)
+    title: Mapped[str] = mapped_column(String(160))
+    message: Mapped[str] = mapped_column(String(500))
+    target_route: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    source_entity_type: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    source_entity_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    deduplication_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    resolve_deduplication_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    recipient_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    severity: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    correlation_id: Mapped[str] = mapped_column(String(64), index=True)
+    resolved: Mapped[bool] = mapped_column(Boolean, default=False)
+    status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    quarantined_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    failure_reason_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    notification_event_id: Mapped[int | None] = mapped_column(
+        ForeignKey("notification_events.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
 class UserNotification(Base):
     __tablename__ = "user_notifications"
     __table_args__ = (
@@ -1565,6 +1636,9 @@ class NotificationDeliveryAttempt(Base):
     channel: Mapped[str] = mapped_column(String(20), index=True)
     push_subscription_id: Mapped[int | None] = mapped_column(ForeignKey("push_subscriptions.id", ondelete="SET NULL"), nullable=True, index=True)
     attempted_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    processing_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     status: Mapped[str] = mapped_column(String(30), default="queued", index=True)
     retry_count: Mapped[int] = mapped_column(Integer, default=0)
     next_retry_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)

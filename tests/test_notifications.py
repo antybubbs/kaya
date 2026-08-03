@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.db.session import Base
@@ -16,6 +16,7 @@ from app.models.models import (
     NotificationCategoryPolicy,
     NotificationDeliveryAttempt,
     NotificationEvent,
+    NotificationOutbox,
     NotificationPreference,
     PushSubscription,
     RemoteManagerSetting,
@@ -34,6 +35,9 @@ from app.routers.notifications import (
     _owned,
 )
 from app.services.notification_registry import EVENT_TYPES
+from app.services.notification_outbox import enqueue_notification, process_outbox
+from app.services import notification_outbox
+from app.services import notification_delivery
 from app.services.notifications import (
     cleanup_retention,
     preference_allows,
@@ -90,6 +94,8 @@ def test_event_registry_is_central_and_structured():
     assert EVENT_TYPES["ipwan.host.offline"].default_severity == "critical"
     assert EVENT_TYPES["secure_vault.security_event"].sensitive_payload is True
     assert EVENT_TYPES["system.notification.test"].module == "system"
+    assert EVENT_TYPES["pihole.failover.started"].module == "high_availability"
+    assert EVENT_TYPES["pihole.failback.completed"].default_severity == "success"
 
 
 def test_unknown_event_is_rejected_with_structured_log(db, caplog):
@@ -163,6 +169,19 @@ def test_publish_filters_inactive_and_unauthorised_recipients(db):
     assert recipients == {allowed.id}
 
 
+def test_infrastructure_events_include_active_administrator_without_module_row(db):
+    admin = user(db, "implicit-admin@example.invalid", role="admin")
+    event = publish(
+        db,
+        event_type_id="ipwan.host.offline",
+        title="Host offline",
+        message="Synthetic target is unavailable.",
+    )
+    assert db.query(UserNotification).filter_by(
+        notification_event_id=event.id, user_id=admin.id
+    ).count() == 1
+
+
 def test_deduplication_prevents_polling_storms(db):
     allowed = user(db, "monitor@example.invalid", modules=("network_monitor",))
     first = publish(
@@ -186,6 +205,44 @@ def test_deduplication_prevents_polling_storms(db):
     assert db.query(UserNotification).count() == 1
 
 
+def test_outbox_survives_session_boundary_and_retries_publication(db, monkeypatch):
+    recipient = user(db, "outbox-retry@example.invalid", role="admin")
+    outbox = enqueue_notification(
+        db,
+        event_type_id="system.notification.test",
+        title="Synthetic durable notification",
+        message="This synthetic event verifies restart-safe retry.",
+        recipient_ids=[recipient.id],
+    )
+    db.commit()
+    outbox_id = outbox.id
+    factory = sessionmaker(bind=db.bind)
+    original_publish = notification_outbox.publish
+    calls = 0
+
+    def transient_publish(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("synthetic transient publication failure")
+        return original_publish(*args, **kwargs)
+
+    monkeypatch.setattr(notification_outbox, "publish", transient_publish)
+    assert process_outbox(session_factory=factory) == 0
+    db.expire_all()
+    failed = db.get(NotificationOutbox, outbox_id)
+    assert failed.status == "retry"
+    assert failed.failure_reason_code == "publication_error"
+    failed.next_retry_at = datetime.utcnow()
+    db.commit()
+
+    assert process_outbox(session_factory=factory) == 1
+    db.expire_all()
+    completed = db.get(NotificationOutbox, outbox_id)
+    assert completed.status == "processed"
+    assert completed.notification_event_id is not None
+
+
 def test_sensitive_event_payload_is_minimised(db):
     recipient = user(db, "vault@example.invalid", modules=("secret_vault",))
     event = publish(
@@ -197,6 +254,16 @@ def test_sensitive_event_payload_is_minimised(db):
     )
     assert event.title == "Vault security event"
     assert event.message == "Open Kaya to review this security-sensitive event."
+
+    outbox = enqueue_notification(
+        db,
+        event_type_id="secure_vault.security_event",
+        title="Synthetic secret name",
+        message="Synthetic secret value must not persist",
+        recipient_ids=[recipient.id],
+    )
+    assert outbox.title == "Vault security event"
+    assert outbox.message == "Open Kaya to review this security-sensitive event."
 
 
 def test_mandatory_policy_cannot_be_opted_out(db):
@@ -273,6 +340,69 @@ def test_enabled_user_channels_create_delivery_jobs_without_exposing_secrets(db)
     assert attempts == {"push", "email"}
 
 
+def test_one_invalid_push_device_does_not_block_another(db, monkeypatch):
+    recipient = user(db, "push-isolation@example.invalid", role="admin")
+    db.add_all(
+        [
+            RemoteManagerSetting(key="notifications_push_enabled", value="1"),
+            NotificationCategoryPolicy(
+                event_type="system.security.warning",
+                enabled=True,
+                in_app_allowed=True,
+                push_allowed=True,
+            ),
+            NotificationPreference(
+                user_id=recipient.id,
+                event_type="system.security.warning",
+                push_enabled=True,
+            ),
+            PushSubscription(
+                user_id=recipient.id,
+                endpoint_hash="1" * 64,
+                encrypted_subscription=encrypt_secret(
+                    '{"endpoint":"https://fcm.googleapis.com/bad","keys":{}}'
+                ),
+            ),
+            PushSubscription(
+                user_id=recipient.id,
+                endpoint_hash="2" * 64,
+                encrypted_subscription=encrypt_secret(
+                    '{"endpoint":"https://fcm.googleapis.com/good","keys":{}}'
+                ),
+            ),
+        ]
+    )
+    db.commit()
+    publish(
+        db,
+        event_type_id="system.security.warning",
+        title="Synthetic warning",
+        message="Review Kaya.",
+        recipient_ids=[recipient.id],
+    )
+    factory = sessionmaker(bind=db.bind)
+    monkeypatch.setattr(notification_delivery, "SessionLocal", factory)
+    monkeypatch.setattr(
+        notification_delivery,
+        "effective_credentials",
+        lambda _db: SimpleNamespace(private_key="fake", subject="mailto:fake@example.invalid"),
+    )
+
+    def fake_send(subscription, _payload, _credentials):
+        if subscription["endpoint"].endswith("/bad"):
+            raise RuntimeError("synthetic provider failure")
+
+    monkeypatch.setattr(notification_delivery, "_send_push", fake_send)
+    assert notification_delivery.deliver_queued() == 1
+    db.expire_all()
+    statuses = sorted(
+        row.status for row in db.query(NotificationDeliveryAttempt).order_by(
+            NotificationDeliveryAttempt.id
+        )
+    )
+    assert statuses == ["accepted_by_push_service", "temporary_failure"]
+
+
 def test_notification_lookup_is_object_scoped(db):
     first = user(db, "first@example.invalid", role="admin")
     second = user(db, "second@example.invalid", role="admin")
@@ -301,13 +431,16 @@ def test_admin_in_app_diagnostic_uses_registered_event_and_reports_channels(db):
     result = notification_router.test_notification(request, db=db, user=admin)
     assert result == {
         "ok": True,
-        "event_created": True,
-        "recipient_resolved": True,
-        "user_notification_created": True,
-        "in_app": "available",
-        "push": "skipped: not configured",
-        "email": "skipped: disabled",
+        "outbox_created": True,
+        "outbox_id": 1,
+        "status": "queued",
+        "in_app": "pending outbox processing",
+        "push": "pending policy and subscription evaluation",
+        "email": "pending policy evaluation",
     }
+    assert db.query(NotificationOutbox).filter_by(status="pending").count() == 1
+    process_outbox(session_factory=sessionmaker(bind=db.bind))
+    db.expire_all()
     event = db.query(NotificationEvent).one()
     assert event.event_type == "system.notification.test"
     dependency = inspect.signature(notification_router.test_notification).parameters[
@@ -644,9 +777,8 @@ def test_admin_push_test_distinguishes_missing_and_active_subscription(db):
     db.commit()
     result = notification_router.admin_push_test(csrf_request(), db=db, user=admin)
     assert result["queued_devices"] == 1
-    assert db.query(NotificationDeliveryAttempt).filter_by(
-        channel="push", status="queued"
-    ).count() == 1
+    assert result["status"] == "queued"
+    assert db.query(NotificationOutbox).filter_by(status="pending").count() == 1
 
 
 def test_retention_removes_old_read_records_but_keeps_recent_unread(db):

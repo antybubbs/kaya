@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.models.models import HACluster, HAEvent, HAFailoverRun, HANode, User
 from app.services.ha_dhcp_safety import OWNER_PROTECTION_AGENT_VERSION, authorise_dhcp_demotion
 from app.services.ha_leases import HALeaseError, reconcile_cluster_leases
+from app.services.ha_notifications import publish_ha_notification, record_run_notification_diagnostic, refresh_notification_diagnostics
 from app.services.ha_recovery import failback_target
 from app.services.ha_sync import HASyncError, create_live_sync_plan, execute_sync
 from app.services.ha_topology import dhcp_observation, pihole_manages_dhcp, reconcile_topology
@@ -168,6 +169,48 @@ def _event(db: Session, run: HAFailoverRun, event_type: str, severity: str, mess
     db.add(HAEvent(cluster_id=run.cluster_id, node_id=None, event_type=event_type, severity=severity, source="kaya", message=message, details_json_redacted=json.dumps({"run_id": run.public_id, "phase": run.phase, "role_generation": run.role_generation}, sort_keys=True), occurred_at=datetime.utcnow()))
 
 
+def _publish_transition_notification(db: Session, run: HAFailoverRun, stage: str) -> None:
+    kind = _transition_kind(run).lower()
+    if stage not in {"started", "completed", "failed"}:
+        return
+    event_type_id = f"pihole.{kind}.{stage}"
+    active_name = run.target_node.display_name if stage == "completed" else None
+    messages = {
+        "started": f"Controlled {kind} started for {run.cluster.name}.",
+        "completed": f"Controlled {kind} completed for {run.cluster.name} with {active_name} active.",
+        "failed": f"Controlled {kind} for {run.cluster.name} stopped safely. Review the HA operation history.",
+    }
+    diagnostic = publish_ha_notification(
+        db,
+        run.cluster,
+        event_type_id=event_type_id,
+        title=f"Pi-hole {kind} {stage}",
+        message=messages[stage],
+        deduplication_key=f"pihole:cluster:{run.cluster.public_id}:{kind}:{run.public_id}:{stage}",
+        source_entity_type="ha_failover_run",
+        source_entity_id=run.public_id,
+        correlation_id=run.public_id,
+        created_by_user_id=run.requested_by_user_id,
+        metadata={"cluster_id": run.cluster.public_id, "transition": kind, "stage": stage},
+    )
+    record_run_notification_diagnostic(db, run.id, stage, diagnostic)
+    if stage == "failed":
+        degraded = publish_ha_notification(
+            db,
+            run.cluster,
+            event_type_id="pihole.cluster.degraded",
+            title="Pi-hole cluster degraded",
+            message=f"{run.cluster.name} is degraded after a controlled {kind} stopped safely.",
+            deduplication_key=f"pihole:cluster:{run.cluster.public_id}:degraded",
+            source_entity_type="ha_cluster",
+            source_entity_id=run.cluster.public_id,
+            correlation_id=run.public_id,
+            created_by_user_id=run.requested_by_user_id,
+            metadata={"cluster_id": run.cluster.public_id, "transition": kind},
+        )
+        record_run_notification_diagnostic(db, run.id, "cluster_degraded", degraded)
+
+
 def _move_vip(db: Session, run: HAFailoverRun, target: HANode) -> None:
     cluster = run.cluster
     for node in cluster.nodes:
@@ -235,6 +278,8 @@ def start_controlled_failover(db: Session, cluster: HACluster, target: HANode, u
         _move_vip(db, run, target)
     _event(db, run, "controlled_failback_started" if is_failback else "controlled_failover_started", "warning", f"Controlled {'failback' if is_failback else 'failover'} started from {readiness.source.display_name} to {target.display_name}.")
     db.commit()
+    db.refresh(run)
+    _publish_transition_notification(db, run, "started")
     db.refresh(run)
     return run
 
@@ -536,6 +581,7 @@ def advance_failover(db: Session, cluster: HACluster) -> HAFailoverRun | None:
     run = active_failover(cluster)
     if run is None:
         return None
+    initial_status = run.status
     if not run.dhcp_managed and pihole_manages_dhcp(cluster):
         # Legacy clusters could previously be misclassified from a temporary
         # inactive flag while DHCP was moving. Stop instead of continuing a
@@ -549,6 +595,7 @@ def advance_failover(db: Session, cluster: HACluster) -> HAFailoverRun | None:
             "change was attempted. Use safe rollback to return to the last owner.",
         )
         db.commit()
+        _publish_transition_notification(db, run, "failed")
         return run
     state = cluster.lease_replication
     # A process restart, delayed result, or transient helper error must not
@@ -556,6 +603,7 @@ def advance_failover(db: Session, cluster: HACluster) -> HAFailoverRun | None:
     if run.status == "RUNNING" and _requested_topology_is_verified(run):
         _complete(db, run, rolled_back=False)
         db.commit()
+        _publish_transition_notification(db, run, "completed")
         return run
     if run.status == "ROLLING_BACK" and _requested_topology_is_verified(run, rolled_back=True):
         _complete(db, run, rolled_back=True)
@@ -631,6 +679,10 @@ def advance_failover(db: Session, cluster: HACluster) -> HAFailoverRun | None:
             if not _queue_safe_dhcp_repair(db, run, active=run.source_node, standby=run.target_node, rolled_back=True):
                 _safe_failure(db, run, f"{run.source_node.display_name} did not report a fully restored DNS and DHCP topology within 30 seconds during rollback. Manual recovery is required; Kaya will not enable another DHCP owner.")
     db.commit()
+    if initial_status in ACTIVE_RUN_STATUSES and run.status == "SUCCEEDED":
+        _publish_transition_notification(db, run, "completed")
+    elif initial_status in ACTIVE_RUN_STATUSES and run.status == "FAILED_SAFE":
+        _publish_transition_notification(db, run, "failed")
     return run
 
 
@@ -664,7 +716,7 @@ def request_failover_rollback(db: Session, run: HAFailoverRun, *, acknowledged: 
     return run
 
 
-def failover_status(run: HAFailoverRun | None) -> dict[str, Any]:
+def failover_status(run: HAFailoverRun | None, *, db: Session | None = None) -> dict[str, Any]:
     if run is None:
         return {"running": False, "status": "NOT_STARTED", "phase": "READY", "message": "No controlled failover has been run.", "warnings": []}
     labels = {"WAITING_FOR_LEASES": "Capturing the final lease snapshot", "DEMOTING_SOURCE": "Stopping DHCP on the current active node", "VERIFYING_SOURCE_DHCP_RELEASE": f"Waiting for {run.source_node.display_name} to release UDP port 67", "MOVING_VIP": "Moving the virtual IP", "PROMOTING_TARGET": "Importing leases and starting DHCP on the target", "VERIFYING_TARGET": "Verifying the final DNS, DHCP and VIP topology", "COMPLETE": "Controlled failover completed", "FAILED_SAFE": "Transition stopped safely", "ROLLBACK_DEMOTING_TARGET": "Ensuring DHCP is stopped on the target", "VERIFYING_ROLLBACK_TARGET_RELEASE": f"Waiting for {run.target_node.display_name} to release UDP port 67", "ROLLBACK_MOVING_VIP": "Returning the virtual IP", "ROLLBACK_PROMOTING_SOURCE": "Restoring DHCP on the original node", "ROLLBACK_VERIFYING_SOURCE": "Verifying the restored final topology", "ROLLED_BACK": "Original node restored"}
@@ -692,6 +744,7 @@ def failover_status(run: HAFailoverRun | None) -> dict[str, Any]:
         "message": labels.get(run.phase, run.phase.replace("_", " ").title()),
         "error": run.error_redacted,
         "warnings": warnings,
+        "notifications": refresh_notification_diagnostics(db, dict(report.get("notifications") or {})) if db else dict(report.get("notifications") or {}),
         "source": run.source_node.display_name,
         "target": run.target_node.display_name,
         "dhcp_managed": run.dhcp_managed,

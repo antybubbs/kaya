@@ -105,9 +105,11 @@ def preference_allows(
     db: Session, user_id: int, identifier: str, severity: str, channel: str
 ) -> bool:
     policy = policy_for(db, identifier)
+    definition = event_type(identifier)
     if policy and (
         not policy.enabled
         or SEVERITY_ORDER[severity] < SEVERITY_ORDER.get(policy.minimum_severity, 0)
+        or (definition.recovery and not policy.recovery_enabled)
     ):
         return False
     allowed = {"in_app": True, "push": False, "email": False}
@@ -123,6 +125,8 @@ def preference_allows(
         .first()
     )
     if preference:
+        if definition.recovery and not preference.recovery_enabled:
+            return False
         if SEVERITY_ORDER[severity] < SEVERITY_ORDER.get(
             preference.minimum_severity, 0
         ):
@@ -185,7 +189,14 @@ def resolve_recipients(
         return [user for user in users if user.role == "admin"]
     if module == "system":
         return users
-    return [user for user in users if has_module_access(db, user, module)]
+    # Administrators are infrastructure-wide notification recipients even when
+    # an older installation lacks a materialised module-allocation row. This
+    # does not grant route or object access; those checks remain independent.
+    return [
+        user
+        for user in users
+        if user.role == "admin" or has_module_access(db, user, module)
+    ]
 
 
 def publish(
@@ -205,7 +216,11 @@ def publish(
     correlation_id: str | None = None,
     resolved: bool = False,
     commit: bool = True,
+    diagnostics: dict | None = None,
 ) -> NotificationEvent | None:
+    if diagnostics is not None:
+        diagnostics.clear()
+        diagnostics["event_registered"] = False
     safe_log_fields = {
         "event_type": str(event_type_id)[:120],
         "source_entity_type": str(source_entity_type or "")[:80],
@@ -221,6 +236,8 @@ def publish(
         )
         raise
     safe_log_fields["module"] = definition.module
+    if diagnostics is not None:
+        diagnostics["event_registered"] = True
     logger.info("notification.publish.started %s", safe_log_fields)
     resolved_severity = severity or definition.default_severity
     if resolved_severity not in SEVERITY_ORDER:
@@ -236,6 +253,12 @@ def publish(
             else "channel_disabled",
             safe_log_fields,
         )
+        if diagnostics is not None:
+            diagnostics["suppression_reason"] = (
+                "framework_disabled"
+                if get_site_setting(db, "notifications_enabled") == "0"
+                else "channel_disabled"
+            )
         return None
     policy = policy_for(db, event_type_id)
     if policy and not policy.enabled:
@@ -243,6 +266,8 @@ def publish(
             "notification.publish.suppressed reason=category_disabled %s",
             safe_log_fields,
         )
+        if diagnostics is not None:
+            diagnostics["suppression_reason"] = "category_disabled"
         return None
     target_route = safe_target_route(target_route)
     title = _clean_text(title, 160, "title")
@@ -264,6 +289,13 @@ def publish(
                 active.id,
                 safe_log_fields,
             )
+            if diagnostics is not None:
+                diagnostics.update(
+                    {
+                        "duplicate_event": True,
+                        "notification_event_id": active.id,
+                    }
+                )
             return active
     safe_metadata = {}
     for key, value in list((metadata or {}).items())[:20]:
@@ -362,6 +394,20 @@ def publish(
             len(recipients),
             safe_log_fields,
         )
+        if diagnostics is not None:
+            diagnostics["suppression_reason"] = reason
+    if diagnostics is not None:
+        diagnostics.update(
+            {
+                "candidate_recipients": candidate_count,
+                "eligible_recipients": len(recipients),
+                "suppressed_recipients": max(0, candidate_count - created_count),
+                "user_notifications_created": created_count,
+                "push_queued": queued_channels["push"],
+                "email_queued": queued_channels["email"],
+                "notification_event_id": row.id,
+            }
+        )
     logger.info(
         "notification.publish.completed event_id=%s candidate_recipients=%s eligible_recipients=%s suppressed_recipients=%s user_notifications_created=%s channels_queued=%s %s",
         row.id,
@@ -421,6 +467,8 @@ def cleanup_retention(db: Session) -> dict[str, int]:
 def registered_categories(db: Session) -> list[dict]:
     result = []
     for definition in EVENT_TYPES.values():
+        if not definition.implemented_publisher:
+            continue
         if definition.module != "system" and definition.module not in {
             module for (module,) in db.query(NotificationEvent.module).distinct()
         }:

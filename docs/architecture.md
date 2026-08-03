@@ -43,6 +43,12 @@ Kaya is a FastAPI application using server-rendered Jinja templates, SQLAlchemy 
 - `/dashboard` for the authenticated landing page
 - `/healthz` for health checks
 
+## Durable Notification Pipeline
+
+Operational producers own detection and derived state; the notification framework owns recipient history and optional delivery. A producer writes its source transition and `notification_outbox` row in one transaction. The supervised outbox worker creates the central event, recipient-specific in-app records and durable Push/email attempts. A separate supervised delivery worker performs provider network calls with bounded retry and per-device failure isolation. Five-minute reconciliation repairs missing IP/WAN alerts and stale active conditions. These workers do not depend on HTTP requests, active sessions, browser tabs, WebSockets or service-worker lifetime.
+
+Notification correlation IDs are safe opaque identifiers. Logs and administration diagnostics expose stage, count, status and reason-code metadata only; subscription endpoints, keys, credentials, addresses and sensitive payload contents remain excluded.
+
 ## Routing
 
 Routing is modular but centrally registered in `app/main.py`. Routers are included for:

@@ -11,14 +11,15 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import HTTPException
 from sqlalchemy import create_engine, event
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 from starlette.requests import Request
 
 from app.db.session import Base
-from app.models.models import HAAgentCredential, HAAgentRequest, HACluster, HAEvent, HALeaseReplicationState, HANode
+from app.models.models import HAAgentCredential, HAAgentRequest, HACluster, HAEvent, HALeaseReplicationState, HANode, NotificationEvent
 from app.schemas.high_availability import HAAgentActionResult, HAAgentEventItem, HAAgentHeartbeat, HAAgentRegister
 from app.services.ha_agents import HAAgentError, authenticate_agent_request, create_bootstrap_token, desired_state, ingest_events, reconcile_vip_ownership, record_action_result, record_heartbeat, register_agent, revoke_agent
 from app.services.ha_clusters import soft_delete_cluster
+from app.services.notification_outbox import process_outbox
 from app.services.ha_topology import reconcile_topology
 from ha_agent.kaya_ha_agent import AgentRequestError, ICMP_AVAILABLE, ICMP_NO_REPLY, ICMP_UNAVAILABLE, State, probe_icmp, reconcile_desired
 
@@ -356,6 +357,7 @@ def test_icmp_transition_is_informational_and_does_not_degrade_cluster():
     with database() as db:
         cluster, primary, standby = cluster_with_nodes(db)
         cluster.status = "HEALTHY"
+        cluster.deployment_mode = "DNS_ONLY"
         for node in (primary, standby):
             node.last_heartbeat_at = datetime.utcnow()
             node.dns_healthy = True
@@ -555,6 +557,43 @@ def test_stale_cached_owner_recovers_on_the_next_surviving_heartbeat():
         assert cluster.current_active_node_id == standby.id
         assert primary.vip_owned is False
         assert db.query(HAEvent).filter_by(event_type="ownership_reconciled", severity="info").one()
+
+
+def test_cluster_degraded_and_recovered_notifications_follow_verified_topology():
+    with database() as db:
+        cluster, primary, standby = cluster_with_nodes(db)
+        now = datetime.utcnow()
+        cluster.deployment_mode = "DNS_ONLY"
+        cluster.status = "HEALTHY"
+        cluster.keepalived_status = "DEPLOYED"
+        cluster.keepalived_generation = 4
+        cluster.current_active_node_id = cluster.authoritative_node_id = primary.id
+        for node in (primary, standby):
+            node.keepalived_status = "DEPLOYED"
+            node.keepalived_runtime_state = "RUNNING"
+            node.config_generation = 4
+            node.dns_healthy = True
+            node.vip_owned = node.id == primary.id
+        primary.last_heartbeat_at = now
+        standby.last_heartbeat_at = now - timedelta(minutes=5)
+        db.commit()
+
+        reconcile_vip_ownership(db, cluster)
+        process_outbox(session_factory=sessionmaker(bind=db.bind))
+        db.expire_all()
+        degraded = db.query(NotificationEvent).filter_by(event_type="pihole.cluster.degraded").one()
+        assert cluster.status == "DEGRADED"
+        assert degraded.resolved_at is None
+
+        standby.last_heartbeat_at = datetime.utcnow()
+        db.commit()
+        reconcile_vip_ownership(db, cluster)
+        process_outbox(session_factory=sessionmaker(bind=db.bind))
+        db.expire_all()
+        db.refresh(degraded)
+        assert cluster.status == "HEALTHY"
+        assert degraded.resolved_at is not None
+        assert db.query(NotificationEvent).filter_by(event_type="pihole.cluster.recovered").one()
 
 
 def test_completed_managed_failover_adopts_active_node_despite_stale_peer_dhcp_cache():

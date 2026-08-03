@@ -7,15 +7,16 @@ from urllib.parse import urlencode
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 from starlette.requests import Request
 
 from app.db.session import Base
 from app.main import app
-from app.models.models import AuditLog, BackupJob, BackupRecord, ComputeHost, ComputeInventoryItem, RemoteManagerSetting, User
+from app.models.models import AuditLog, BackupJob, BackupRecord, ComputeHost, ComputeInventoryItem, NotificationEvent, NotificationOutbox, RemoteManagerSetting, User, UserNotification
 from app.routers.admin import set_backup_manager_feature
 from app.routers.backup_manager import (
     agent_jobs,
+    agent_job_status,
     hash_agent_token,
     proxmox_backup_history_warnings,
     proxmox_backup_jobs,
@@ -31,6 +32,7 @@ from app.services.compute_monitor import (
 )
 from app.services.modules import grant_all_registered_modules
 from app.services.site_settings import get_site_setting
+from app.services.notification_outbox import process_outbox
 
 
 def database():
@@ -64,6 +66,33 @@ def request(path: str, values: dict[str, str] | None = None, *, authorization: s
     )
 
 
+def json_request(path: str, values: dict, *, authorization: str = ""):
+    body = json.dumps(values).encode()
+    sent = False
+
+    async def receive():
+        nonlocal sent
+        if sent:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        sent = True
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    return Request(
+        {
+            "type": "http", "method": "POST", "scheme": "https", "path": path,
+            "raw_path": path.encode(), "query_string": b"",
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(body)).encode()),
+                (b"authorization", authorization.encode()),
+            ],
+            "client": ("198.51.100.3", 1234),
+            "server": ("kaya.example.com", 443), "app": app,
+        },
+        receive,
+    )
+
+
 def test_backup_manager_is_enabled_by_default_for_existing_installations():
     with database() as db:
         assert get_site_setting(db, "backup_manager_enabled") == "1"
@@ -85,6 +114,58 @@ def test_disabled_backup_manager_blocks_ui_and_stops_new_agent_dispatch():
         response = agent_jobs(request("/infrastructure/backup-manager/api/agent/jobs", authorization=f"Bearer {token}"), db=db)
         assert response == {"ok": True, "jobs": []}
         assert db.get(BackupJob, queued.id).status == "queued"
+
+
+def test_failed_agent_job_commits_outbox_with_source_and_uses_durable_pipeline():
+    with database() as db:
+        token = "clearly-fake-agent-token"
+        admin = User(
+            email="backup-notification-admin@example.invalid",
+            password_hash="x",
+            role="admin",
+            is_active=True,
+        )
+        host = ComputeHost(
+            name="Synthetic backup agent",
+            platform="docker_agent",
+            base_url="https://backup.invalid",
+            agent_token_hash=hash_agent_token(token),
+        )
+        db.add_all([admin, host])
+        db.flush()
+        job = BackupJob(
+            host_id=host.id,
+            requested_by_id=admin.id,
+            operation="backup",
+            status="running",
+        )
+        db.add(job)
+        db.commit()
+
+        asyncio.run(
+            agent_job_status(
+                job.id,
+                json_request(
+                    f"/infrastructure/backup-manager/api/agent/jobs/{job.id}/status",
+                    {"status": "failed", "error": "Synthetic safe failure"},
+                    authorization=f"Bearer {token}",
+                ),
+                db=db,
+            )
+        )
+
+        assert db.get(BackupJob, job.id).status == "failed"
+        assert db.query(NotificationOutbox).filter_by(
+            event_type="backup.job.failed", status="pending"
+        ).count() == 1
+        process_outbox(session_factory=sessionmaker(bind=db.bind))
+        db.expire_all()
+        event = db.query(NotificationEvent).filter_by(
+            event_type="backup.job.failed"
+        ).one()
+        assert db.query(UserNotification).filter_by(
+            notification_event_id=event.id, user_id=admin.id
+        ).count() == 1
 
 
 def test_disable_requires_acknowledgement_and_preserves_backup_data():

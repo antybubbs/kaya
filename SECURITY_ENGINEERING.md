@@ -103,6 +103,12 @@ Compatibility matters, but it does not override a Critical or High risk. Provide
 
 Security reviews and release notes must state their scope, assumptions and limitations. Automated scans are evidence, not proof of security.
 
+### 21. Make operational notifications durable
+
+Security and infrastructure notifications are backend-owned operational records. A source-state transition and its notification outbox row must commit in the same database transaction where the workflow supports transactions. Browser state, active sessions, WebSockets and request-scoped background tasks must never be required for event creation or delivery.
+
+Notification implementations must keep the source action independent from provider availability, create recipient-specific in-application history before attempting optional channels, store delivery work durably, retry bounded transient failures, quarantine exhausted work visibly, and preserve a redacted correlation ID across source transition, outbox, event and delivery attempt. Workers require retained tasks, heartbeats, exception isolation, restart supervision and safe backlog health. Diagnostic notifications must use the same durable pipeline as production events. Logs, diagnostics and history must never expose subscription endpoints, keys, secrets or sensitive payloads.
+
 ## Required engineering checks
 
 For every feature or fix, determine and document as applicable:

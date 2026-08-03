@@ -1,6 +1,12 @@
 # Kaya notifications
 
-Kaya has one central notification framework for in-application history, optional PWA Web Push, and future delivery channels. Modules publish registered events through `app.services.notifications.publish`; modules must not contact push or email providers directly.
+Kaya has one central, backend-driven notification framework for in-application history, optional PWA Web Push, and email. Operational modules enqueue registered events through `app.services.notification_outbox.enqueue_notification` in the same transaction as their source transition; modules must not contact Push or email providers directly.
+
+The durable pipeline is:
+
+`source observation → committed state transition + outbox → notification event → user notification → channel delivery attempt → provider acceptance`
+
+The browser and PWA are delivery clients only. The retained outbox, delivery and reconciliation workers run without logged-in users or open Kaya clients. Worker heartbeats, restarts, queue age, retry state and quarantined work are shown under **Site Administration → Notifications**.
 
 ## Administrator setup
 
@@ -52,12 +58,12 @@ Environment-managed `VAPID_PRIVATE_KEY` remains outside the database and must fo
 
 ## Developer integration
 
-Register the event contract in `app/services/notification_registry.py`, then publish only after the source state transition has been committed:
+Register the event contract in `app/services/notification_registry.py`, then enqueue it before committing the source state transition:
 
 ```python
-from app.services.notifications import publish
+from app.services.notification_outbox import enqueue_notification
 
-publish(
+enqueue_notification(
     db,
     event_type_id="ipwan.host.offline",
     title="Host offline",
@@ -67,11 +73,24 @@ publish(
     target_route=f"/networking/ip-wan-monitor/{monitor.id}",
     deduplication_key=f"ipwan:host:{monitor.id}:offline",
 )
+db.commit()
 ```
 
-The source module must use a stable deduplication key, publish a recovery transition where applicable, and provide only text safe for every resolved recipient. Recipient resolution filters inactive accounts and users without module allocation. Resource-specific features must supply explicit recipient IDs only after performing their own object-level access check.
+The source module must use a stable active-condition key or operation-specific key, publish a recovery transition where applicable, and provide only text safe for every resolved recipient. Recipient resolution filters inactive accounts and users without module allocation; active administrators are infrastructure-wide recipients even on older installations missing a materialised allocation row. Resource-specific features must supply explicit recipient IDs only after performing their own object-level access check.
 
-IP/WAN offline notifications use `ipwan:host:{monitor_id}:offline` for the full lifetime of an outage. The scheduler reconciles confirmed offline monitors once after startup and creates only a missing active event. Both scheduled checks and **Check now** call the same result handler, so their transition and notification rules are identical.
+High Availability publishes the Pi-hole-specific `pihole.*` event family only after its source transition has committed. Controlled failover and failback use the failover run UUID plus lifecycle stage in their deduplication keys. A notification persistence or delivery failure cannot roll back a completed network transition. The operation page retains only safe diagnostic counts (event status, recipients, and queued/delivery status by channel), never subscription endpoints or provider output.
+
+IP/WAN offline notifications use `ipwan:host:{monitor_id}:offline` for the full lifetime of an outage. Every changed derived state is recorded in `network_monitor_transitions` and references its triggering observation. The offline transition and notification outbox commit together. Startup and five-minute reconciliation create only a missing active event and resolve stale active conditions. Both scheduled checks and **Check now** call the same result handler, so their transition and notification rules are identical.
+
+## Delivery semantics
+
+Push state is reported accurately as `queued`, `processing`, `accepted_by_push_service`, `temporary_failure`, `expired_subscription`, `cancelled`, or `retry_exhausted`. Provider acceptance does not prove that iOS displayed the notification. A failed Push or email attempt never removes the in-application record.
+
+Kaya currently supports one application process per SQLite database. Workers use durable claims and recover stale claims after restart, but multiple application replicas sharing the same SQLite file are not a supported deployment topology.
+
+## Diagnostics
+
+The administrator in-app test, immediate Push test, delayed 30–60 second test, and simulated production event all enter the notification outbox. The safe pipeline report exposes stage counts and reason codes without endpoints, subscription keys, VAPID material, addresses or payload secrets. Registered event types without a proven production publisher remain visible in the registry report as unavailable and are not offered as configurable categories.
 
 ## Troubleshooting
 

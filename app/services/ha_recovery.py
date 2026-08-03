@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.models.models import HACluster, HAEvent, HANode, HASyncRun
 from app.services.audit import write_audit
+from app.services.ha_notifications import publish_ha_notification, resolve_ha_notification
 from app.services.ha_topology import dhcp_observation, pihole_manages_dhcp, reconcile_topology
 
 
@@ -320,6 +321,25 @@ def evaluate_recovery(
             _event_for_transition(db, cluster, node, previous, state, current)
 
     db.commit()
+    previous_by_node = {node.id: previous for node, previous, _state in changed}
+    for result in results.values():
+        node, state = result.node, result.state
+        incident_key = f"pihole:cluster:{cluster.public_id}:node:{node.public_id}:unreachable"
+        if state == "OFFLINE":
+            publish_ha_notification(
+                db,
+                cluster,
+                event_type_id="pihole.node.unreachable",
+                title="Pi-hole node unreachable",
+                message=f"{node.display_name} stopped reporting to Kaya.",
+                deduplication_key=incident_key,
+                source_entity_type="ha_node",
+                source_entity_id=node.public_id,
+                correlation_id=cluster.public_id,
+                metadata={"cluster_id": cluster.public_id, "node_id": node.public_id},
+            )
+        elif previous_by_node.get(node.id) == "OFFLINE":
+            resolve_ha_notification(db, incident_key)
     for node, previous, state in changed:
         write_audit(
             db,

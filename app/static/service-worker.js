@@ -1,4 +1,4 @@
-const CACHE_VERSION = "kaya-static-v3";
+const CACHE_VERSION = "kaya-static-v4";
 const scopePath = new URL(self.registration.scope).pathname.replace(/\/$/, "");
 const staticPath = `${scopePath}/static`;
 const OFFLINE_URL = `${staticPath}/offline.html`;

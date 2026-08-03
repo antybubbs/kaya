@@ -5,8 +5,10 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.db.session import Base
-from app.models.models import HACluster, HANode, HASyncRun, User
+from app.models.models import HACluster, HANode, HASyncRun, NotificationEvent, User
 from app.services import ha_sync_monitor
+from app.services.notification_outbox import process_outbox
+from app.services.ha_sync import HASyncError
 
 
 def monitor_database():
@@ -103,6 +105,34 @@ def test_opted_in_monitor_applies_safe_drift_from_current_vip_owner(monkeypatch)
 
     assert len(applied) == 1
     assert applied[0][2] is False
+
+
+def test_failed_automatic_sync_publishes_registered_safe_notification(monkeypatch):
+    factory = monitor_database()
+    with factory() as db:
+        db.query(HACluster).one().automatic_sync_enabled = True
+        db.commit()
+
+    def create_plan(db, cluster):
+        source = next(node for node in cluster.nodes if node.id == cluster.authoritative_node_id)
+        target = next(node for node in cluster.nodes if node.id != source.id)
+        run = HASyncRun(cluster_id=cluster.id, source_node_id=source.id, target_node_id=target.id, status="PLANNED", plan_json='{"blocked_groups":[],"deletion_count":0,"groups":[{"key":"local_dns"}]}')
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+        return run
+
+    monkeypatch.setattr(ha_sync_monitor, "get_site_setting", lambda db, key: "1")
+    monkeypatch.setattr(ha_sync_monitor, "create_live_sync_plan", create_plan)
+    monkeypatch.setattr(ha_sync_monitor, "execute_sync", lambda *args, **kwargs: (_ for _ in ()).throw(HASyncError("synthetic safe failure")))
+
+    ha_sync_monitor.run_ha_sync_monitor_pass(factory)
+    process_outbox(session_factory=factory)
+
+    with factory() as db:
+        event = db.query(NotificationEvent).filter_by(event_type="pihole.sync.failed").one()
+        assert event.message == "Automatic configuration synchronisation for HA DNS stopped safely. Review the HA sync history."
+        assert "synthetic" not in event.message
 
 
 def test_monitor_loop_retries_after_unexpected_pass_failure(monkeypatch):

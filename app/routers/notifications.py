@@ -19,6 +19,7 @@ from app.models.models import (
     NotificationCategoryPolicy,
     NotificationDeliveryAttempt,
     NotificationEvent,
+    NotificationOutbox,
     NotificationPreference,
     AuditLog,
     PushSubscription,
@@ -30,6 +31,8 @@ from app.services.audit import write_audit
 from app.services.client_ip import client_ip as trusted_client_ip
 from app.services.modules import has_module_access
 from app.services.notification_registry import EVENT_TYPES, SEVERITY_ORDER
+from app.services.notification_outbox import enqueue_notification
+from app.services.notification_runtime import notification_health
 from app.services.notifications import (
     publish,
     registered_categories,
@@ -97,6 +100,14 @@ class CategoryUpdate(BaseModel):
     cooldown_seconds: int = Field(default=300, ge=0, le=604800)
     repeat_interval_seconds: int | None = Field(default=None, ge=60, le=2592000)
     acknowledgement_required: bool = False
+
+
+class DelayedDiagnostic(BaseModel):
+    delay_seconds: int = Field(default=45, ge=30, le=60)
+
+
+class ProductionEventDiagnostic(BaseModel):
+    event_type: str = Field(default="ipwan.host.offline", max_length=120)
 
 
 class WebPushKeyRequest(BaseModel):
@@ -286,7 +297,10 @@ def notification_admin_page(
     accepted = (
         db.query(NotificationDeliveryAttempt)
         .filter(
-            NotificationDeliveryAttempt.status == "accepted",
+            NotificationDeliveryAttempt.status.in_(
+                ["accepted", "accepted_by_push_service"]
+            ),
+            NotificationDeliveryAttempt.channel == "push",
             NotificationDeliveryAttempt.attempted_at
             >= now.replace(hour=0, minute=0, second=0),
         )
@@ -295,7 +309,15 @@ def notification_admin_page(
     failed = (
         db.query(NotificationDeliveryAttempt)
         .filter(
-            NotificationDeliveryAttempt.status.in_(["failed", "permanent_failure"]),
+            NotificationDeliveryAttempt.status.in_(
+                [
+                    "failed",
+                    "permanent_failure",
+                    "expired_subscription",
+                    "retry_exhausted",
+                ]
+            ),
+            NotificationDeliveryAttempt.channel == "push",
             NotificationDeliveryAttempt.attempted_at
             >= now.replace(hour=0, minute=0, second=0),
         )
@@ -311,6 +333,7 @@ def notification_admin_page(
             "active_devices": active_devices,
             "accepted_today": accepted,
             "failed_today": failed,
+            "delivery_health": notification_health(),
             "web_push": configuration_status(db),
             **csrf_context(request),
         },
@@ -682,7 +705,7 @@ def test_notification(
     )
     if recent_tests >= 5:
         raise HTTPException(429, "Notification test limit reached; try again later")
-    row = publish(
+    outbox = enqueue_notification(
         db,
         event_type_id="system.notification.test",
         title="Kaya test notification",
@@ -691,50 +714,108 @@ def test_notification(
         recipient_ids=[user.id],
         created_by_user_id=user.id,
     )
-    user_notification = (
-        db.query(UserNotification)
-        .filter_by(notification_event_id=row.id, user_id=user.id)
-        .first()
-        if row
-        else None
-    )
-    attempts = (
-        db.query(NotificationDeliveryAttempt)
-        .filter_by(user_notification_id=user_notification.id)
-        .all()
-        if user_notification
-        else []
-    )
-    push_status = configuration_status(db)
     write_audit(
         db,
         user,
         "notification_test_sent",
         "notification",
-        str(row.id) if row else None,
+        str(outbox.id),
         detail="User requested a notification test",
     )
     return {
-        "ok": bool(user_notification),
-        "event_created": bool(row),
-        "recipient_resolved": bool(user_notification),
-        "user_notification_created": bool(user_notification),
-        "in_app": "available" if user_notification else "suppressed",
-        "push": (
-            "queued"
-            if any(item.channel == "push" for item in attempts)
-            else "skipped: not configured"
-            if not push_status["valid"]
-            else "skipped: disabled or no enabled subscription"
-        ),
-        "email": (
-            "queued"
-            if any(item.channel == "email" for item in attempts)
-            else "skipped: disabled"
-            if get_site_setting(db, "notifications_email_enabled") != "1"
-            else "skipped: user preference or delivery unavailable"
-        ),
+        "ok": True,
+        "outbox_created": True,
+        "outbox_id": outbox.id,
+        "status": "queued",
+        "in_app": "pending outbox processing",
+        "push": "pending policy and subscription evaluation",
+        "email": "pending policy evaluation",
     }
+
+
+@router.post("/api/admin/notifications/test-delayed")
+def delayed_background_test(
+    payload: DelayedDiagnostic,
+    request: Request,
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    _csrf(request)
+    _admin_rate_limit(
+        db, user.id, ("notification_delayed_test_queued",), limit=5, minutes=10
+    )
+    available_at = datetime.utcnow() + timedelta(seconds=payload.delay_seconds)
+    outbox = enqueue_notification(
+        db,
+        event_type_id="system.notification.test",
+        title="Kaya delayed background test",
+        message="This delayed test used Kaya's durable background notification pipeline.",
+        target_route="/notifications",
+        recipient_ids=[user.id],
+        created_by_user_id=user.id,
+        metadata={"diagnostic": True, "delayed": True},
+        available_at=available_at,
+    )
+    write_audit(
+        db,
+        user,
+        "notification_delayed_test_queued",
+        "notification_outbox",
+        str(outbox.id),
+        trusted_client_ip(request),
+        detail="Administrator queued a delayed background notification test",
+        metadata={"delay_seconds": payload.delay_seconds},
+    )
+    return {
+        "ok": True,
+        "outbox_id": outbox.id,
+        "status": "scheduled",
+        "available_at": available_at.isoformat() + "Z",
+        "instruction": "Close Kaya, lock the phone, and wait for the notification.",
+    }
+
+
+@router.post("/api/admin/notifications/simulate-production-event")
+def simulate_production_event(
+    payload: ProductionEventDiagnostic,
+    request: Request,
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    _csrf(request)
+    allowed = {"ipwan.host.offline", "backup.job.failed", "pihole.cluster.degraded"}
+    if payload.event_type not in allowed:
+        raise HTTPException(400, "Unsupported diagnostic production event")
+    _admin_rate_limit(
+        db, user.id, ("notification_production_test_queued",), limit=5, minutes=10
+    )
+    correlation_id = f"diagnostic-{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}"
+    definition = EVENT_TYPES[payload.event_type]
+    outbox = enqueue_notification(
+        db,
+        event_type_id=payload.event_type,
+        title=f"Diagnostic: {definition.display_name}",
+        message="This is a simulated production event. No infrastructure state was changed.",
+        target_route="/notifications",
+        source_entity_type="notification_diagnostic",
+        source_entity_id=correlation_id,
+        deduplication_key=f"diagnostic:{payload.event_type}:{correlation_id}",
+        recipient_ids=[user.id],
+        created_by_user_id=user.id,
+        correlation_id=correlation_id,
+        metadata={"diagnostic": True},
+    )
+    write_audit(
+        db,
+        user,
+        "notification_production_test_queued",
+        "notification_outbox",
+        str(outbox.id),
+        trusted_client_ip(request),
+        detail="Administrator queued a simulated production notification event",
+        metadata={"event_type": payload.event_type},
+    )
+    return {"ok": True, "outbox_id": outbox.id, "status": "queued"}
 
 
 def _settings(db: Session) -> dict:
@@ -765,6 +846,11 @@ def _save_setting(db: Session, key: str, value: str) -> None:
 @router.get("/api/admin/notification-settings")
 def admin_settings(db: Session = Depends(get_db), user=Depends(require_admin)):
     return _settings(db)
+
+
+@router.get("/api/admin/notifications/delivery-health")
+def admin_delivery_health(user=Depends(require_admin)):
+    return notification_health()
 
 
 @router.put("/api/admin/notification-settings")
@@ -1168,7 +1254,7 @@ def admin_push_test(
             if reason == "not_enabled"
             else "No active browser subscription is registered for this administrator",
         )
-    event = publish(
+    outbox = enqueue_notification(
         db,
         event_type_id="system.notification.test",
         title="Kaya Web Push test",
@@ -1176,53 +1262,27 @@ def admin_push_test(
         target_route="/notifications",
         recipient_ids=[user.id],
         created_by_user_id=user.id,
-        commit=False,
     )
-    user_notification = (
-        db.query(UserNotification)
-        .filter_by(notification_event_id=event.id, user_id=user.id)
-        .first()
-        if event
-        else None
-    )
-    if not user_notification:
-        db.rollback()
-        raise HTTPException(409, "The in-app test notification was suppressed by policy")
-    queued = 0
-    for subscription in subscriptions:
-        exists = db.query(NotificationDeliveryAttempt.id).filter_by(
-            user_notification_id=user_notification.id,
-            channel="push",
-            push_subscription_id=subscription.id,
-        ).first()
-        if not exists:
-            db.add(
-                NotificationDeliveryAttempt(
-                    user_notification_id=user_notification.id,
-                    channel="push",
-                    push_subscription_id=subscription.id,
-                )
-            )
-            queued += 1
     queued_devices = len(subscriptions)
     _audit_or_fail(
         db,
         user,
         "web_push_test_sent",
         "notification",
-        str(event.id),
+        str(outbox.id),
         trusted_client_ip(request),
         detail="Administrator Web Push test queued",
         metadata={
             "queued_devices": queued_devices,
-            "new_delivery_attempts": queued,
+            "outbox_id": outbox.id,
             "key_source": status["source"],
         },
     )
     return {
         "ok": True,
         "queued_devices": queued_devices,
-        "notification_id": user_notification.id,
+        "outbox_id": outbox.id,
+        "status": "queued",
     }
 
 
@@ -1237,6 +1297,138 @@ def admin_categories(db: Session = Depends(get_db), user=Depends(require_admin))
             }
             for item in registered_categories(db)
         ]
+    }
+
+
+@router.get("/api/admin/notifications/registry-report")
+def notification_registry_report(
+    db: Session = Depends(get_db), user=Depends(require_admin)
+):
+    return {
+        "events": [
+            {
+                "event_type": item.identifier,
+                "module": item.module,
+                "friendly_name": item.display_name,
+                "default_severity": item.default_severity,
+                "supported_channels": list(item.supported_channels),
+                "default_channels": list(item.default_channels),
+                "user_configurable": item.user_configurable,
+                "recovery_event": item.recovery,
+                "deduplication_strategy": item.deduplication_strategy,
+                "recipient_strategy": item.recipient_strategy,
+                "implemented_publisher": item.implemented_publisher,
+                "automated_test_present": item.automated_test_present,
+                "available": bool(item.implemented_publisher),
+            }
+            for item in EVENT_TYPES.values()
+        ]
+    }
+
+
+@router.get("/api/admin/notifications/outbox/{outbox_id}")
+def notification_pipeline_report(
+    outbox_id: int, db: Session = Depends(get_db), user=Depends(require_admin)
+):
+    row = db.get(NotificationOutbox, outbox_id)
+    if not row:
+        raise HTTPException(404, "Notification outbox item not found")
+    event = db.get(NotificationEvent, row.notification_event_id) if row.notification_event_id else None
+    user_notifications = (
+        db.query(UserNotification).filter_by(notification_event_id=event.id).all()
+        if event
+        else []
+    )
+    user_notification_ids = [item.id for item in user_notifications]
+    attempts = (
+        db.query(NotificationDeliveryAttempt)
+        .filter(NotificationDeliveryAttempt.user_notification_id.in_(user_notification_ids))
+        .all()
+        if user_notification_ids
+        else []
+    )
+    try:
+        outbox_result = json.loads(row.result_json or "{}")
+    except (TypeError, json.JSONDecodeError):
+        outbox_result = {}
+    return {
+        "event_registered": row.event_type in EVENT_TYPES,
+        "outbox_created": True,
+        "outbox_status": row.status,
+        "outbox_processed": row.status in {"processed", "suppressed"},
+        "reason_code": row.failure_reason_code,
+        "event_created": bool(event),
+        "candidate_recipients": outbox_result.get("candidate_recipients"),
+        "eligible_recipients": outbox_result.get("eligible_recipients"),
+        "user_notifications_created": len(user_notifications),
+        "push_queued": sum(item.channel == "push" for item in attempts),
+        "push_accepted": sum(
+            item.channel == "push"
+            and item.status in {"accepted", "accepted_by_push_service"}
+            for item in attempts
+        ),
+        "email_queued": sum(item.channel == "email" for item in attempts),
+        "email_accepted": sum(
+            item.channel == "email" and item.status == "accepted_by_email_service"
+            for item in attempts
+        ),
+        "correlation_id": row.correlation_id,
+    }
+
+
+@router.get("/api/admin/notifications/{notification_id}/delivery-history")
+def notification_delivery_history(
+    notification_id: int,
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    row = (
+        db.query(UserNotification)
+        .options(joinedload(UserNotification.event))
+        .filter_by(id=notification_id)
+        .first()
+    )
+    if not row:
+        raise HTTPException(404, "Notification not found")
+    attempts = (
+        db.query(NotificationDeliveryAttempt)
+        .filter_by(user_notification_id=row.id)
+        .order_by(NotificationDeliveryAttempt.created_at.asc())
+        .all()
+    )
+    history = []
+    for attempt in attempts:
+        subscription = (
+            db.get(PushSubscription, attempt.push_subscription_id)
+            if attempt.push_subscription_id
+            else None
+        )
+        history.append(
+            {
+                "channel": attempt.channel,
+                "status": attempt.status,
+                "queued_at": attempt.created_at.isoformat() + "Z",
+                "last_attempt_at": attempt.attempted_at.isoformat() + "Z",
+                "accepted_at": (
+                    attempt.accepted_at.isoformat() + "Z"
+                    if attempt.accepted_at
+                    else None
+                ),
+                "next_retry_at": (
+                    attempt.next_retry_at.isoformat() + "Z"
+                    if attempt.next_retry_at
+                    else None
+                ),
+                "reason_code": attempt.failure_reason_code,
+                "retry_count": attempt.retry_count,
+                "device_label": subscription.device_label if subscription else None,
+            }
+        )
+    return {
+        "event_created_at": row.event.created_at.isoformat() + "Z",
+        "user_notification_created_at": row.created_at.isoformat() + "Z",
+        "in_app": "available",
+        "deliveries": history,
     }
 
 

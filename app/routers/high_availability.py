@@ -632,7 +632,7 @@ def cluster_detail_context(
         cluster_section="overview",
         failover_readiness=readiness,
         failover_run=latest_transition,
-        failover_state=failover_status(latest_transition),
+        failover_state=failover_status(latest_transition, db=db),
         automatic_blockers=automatic_failover_blockers(cluster),
         sync_summary=sync_operational_summary(db, cluster),
         recovery=recovery,
@@ -1503,7 +1503,7 @@ def cluster_live_status(
                     ),
                 }
             ),
-            "failover": failover_status(run),
+            "failover": failover_status(run, db=db),
             "readiness": {
                 "ready": action_ready,
                 "blockers": action_blockers,
@@ -1715,7 +1715,7 @@ def failover_page_context(
         cluster_section="testing",
         failover_readiness=readiness,
         failover_run=run,
-        failover_state=failover_status(run),
+        failover_state=failover_status(run, db=db),
         failover_error=error,
         recovery=recovery,
         preferred_node=preferred,
@@ -1770,7 +1770,7 @@ async def start_cluster_failover(
             failover_page_context(request, user, cluster, db, str(exc)),
             status_code=409,
         )
-    transition_kind = failover_status(run).get("transition_kind", "FAILOVER")
+    transition_kind = failover_status(run, db=db).get("transition_kind", "FAILOVER")
     write_audit(
         db,
         user,
@@ -1846,7 +1846,7 @@ def cluster_failover_status(
     user=Depends(require_high_availability),
 ):
     cluster = cluster_or_404(db, public_id)
-    return JSONResponse(failover_status(latest_failover(cluster)))
+    return JSONResponse(failover_status(latest_failover(cluster), db=db))
 
 
 def lease_page_context(
