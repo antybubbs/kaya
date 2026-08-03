@@ -18,3 +18,4 @@ smbprotocol==1.15.0
 Authlib==1.6.12
 httpx==0.28.1
 httpx2==2.9.1
+pywebpush==2.3.0

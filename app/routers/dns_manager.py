@@ -59,10 +59,69 @@ from app.services.dns_insights import (
 )
 from app.services.dns_providers import DNSProvider, DNSProviderResult, provider_for
 from app.services.site_settings import get_site_setting
+from app.services.table_export import export_row_matches, table_export_response, validate_export_columns, validate_export_filters, validate_export_format
 
 router = APIRouter(prefix="/networking/dns-manager", dependencies=[Depends(require_module_access("dns_manager"))])
 
 DNS_TABS = ["dashboard", "insights", "reports", "query-log", "clients", "local-dns", "dhcp", "blocklists"]
+
+
+@router.get("/export/{resource}")
+def export_retained_table(
+    resource: str, request: Request,
+    client_q: str = Query("", max_length=200), client_status_filter: str = Query("", alias="client_status", max_length=40),
+    dhcp_status: str = Query("current", max_length=20),
+    format: str = Query("csv", max_length=8), columns: str = Query("", max_length=300),
+    filters: str = Query("", max_length=2000),
+    db: Session = Depends(get_db), user=Depends(require_user),
+):
+    format = validate_export_format(format)
+    if resource not in {"clients", "dhcp"}:
+        raise HTTPException(status_code=404, detail="Export table not found")
+    provider = selected_provider(db)
+    provider_id = provider.id if provider else None
+    if resource == "clients":
+        if client_status_filter not in {"", "linked", "known", "unmanaged", "suggested-match", "conflict", "ignored", "stale"}:
+            raise HTTPException(status_code=422, detail="Invalid DNS client status filter")
+        first_rows, total = list_clients(db, provider_id=provider_id, search=client_q, status=client_status_filter, limit=1)
+        if total > 100000:
+            raise HTTPException(status_code=413, detail="Narrow the table filters before exporting more than 100,000 rows")
+        rows = first_rows if total <= 1 else list_clients(db, provider_id=provider_id, search=client_q, status=client_status_filter, limit=min(total, 100000))[0]
+        column_map = {
+            "client": ("Client", client_display_name), "ip": ("Observed IP", lambda row: row.current_ip or ""),
+            "mac": ("MAC Address", lambda row: row.normalised_mac or ""),
+            "provider": ("Provider", lambda row: row.provider.name if row.provider else row.provider_type),
+            "first-seen": ("First Seen", lambda row: row.first_seen_at.isoformat() if row.first_seen_at else ""),
+            "last-seen": ("Last Seen", lambda row: row.last_seen_at.isoformat() if row.last_seen_at else ""),
+            "observations": ("Observations", lambda row: row.observation_count or 0),
+            "managed": ("Possible Managed Match", lambda row: (row.linked_ip_record.name or row.linked_ip_record.address) if row.linked_ip_record else "Suggested match" if row.match_confidence else "Not managed"),
+            "status": ("Status", client_status),
+        }
+        filters_applied = bool(client_q.strip() or client_status_filter)
+    else:
+        clean_status = dhcp_status if dhcp_status in {"current", "active", "recent", "history", "all"} else "current"
+        first_rows, total = list_dhcp_leases(db, provider_id=provider_id, status=clean_status, limit=1)
+        if total > 100000:
+            raise HTTPException(status_code=413, detail="Narrow the table filters before exporting more than 100,000 rows")
+        rows = first_rows if total <= 1 else list_dhcp_leases(db, provider_id=provider_id, status=clean_status, limit=min(total, 100000))[0]
+        column_map = {
+            "status": ("Status", lambda row: "Active" if row.is_active else "Ended"),
+            "hostname": ("Hostname", lambda row: row.hostname or ""), "ip": ("IP Address", lambda row: row.ip_address),
+            "mac": ("MAC Address", lambda row: row.mac_address or ""),
+            "lease-start": ("Lease Start", lambda row: row.lease_started_at.isoformat() if row.lease_started_at else ""),
+            "last-seen": ("Last Seen", lambda row: row.last_seen_at.isoformat() if row.last_seen_at else ""),
+            "lease-end": ("Lease End / Expiry", lambda row: (row.expires_at if row.is_active else row.ended_at).isoformat() if (row.expires_at if row.is_active else row.ended_at) else ""),
+            "range": ("VLAN / Range", lambda row: " / ".join(value for value in (row.dhcp_range.vlan.name if row.dhcp_range and row.dhcp_range.vlan else "", row.dhcp_range.name if row.dhcp_range else "") if value)),
+        }
+        filters_applied = clean_status != "current"
+    selected_columns = validate_export_columns(columns, list(column_map))
+    active_filters = validate_export_filters(filters, list(column_map))
+    rows = [row for row in rows if export_row_matches(row, column_map, active_filters)]
+    write_audit(db, user, "export", f"dns_{resource}", None, request.client.host if request.client else None, detail=f"Exported {len(rows)} rows as {format}; filters applied={filters_applied}")
+    return table_export_response(
+        table_name=f"dns-{resource}", headers=[column_map[key][0] for key in selected_columns],
+        rows=([column_map[key][1](row) for key in selected_columns] for row in rows), export_format=format,
+    )
 
 
 def dns_manager_enabled(db: Session) -> bool:

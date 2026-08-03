@@ -47,6 +47,10 @@ Do not expose full models, internal fields or secrets merely because they are av
 
 Passwords, tokens, session cookies, encryption keys, TOTP seeds, recovery values and credentials must be redacted. Audit that a secret changed, never the secret itself.
 
+Application-managed credentials must use a dedicated schema and Kaya's reviewed encryption helpers. Store ciphertext and only the minimum non-sensitive metadata; never store plaintext alongside it. Deployment-managed credentials take precedence over application-managed values, and incomplete or invalid deployment configuration must fail closed rather than falling back to the database. Before committing generated asymmetric credentials, validate the complete key pair with the production library that will consume it.
+
+Database backups include application-managed encrypted credentials. Restore procedures must separately protect and restore the original `ENCRYPTION_KEY`; a database backup without that key is intentionally insufficient to recover encrypted material. Never place the plaintext credential or `ENCRYPTION_KEY` in backup metadata, manifests, logs, diagnostics, URLs, process arguments or audit records.
+
 ### 8. Use safe primitives
 
 Use parameterised database queries, reviewed cryptographic libraries, secure random generation and structured process execution. Never invent custom cryptography. Never construct a shell command from untrusted strings.
@@ -99,6 +103,12 @@ Compatibility matters, but it does not override a Critical or High risk. Provide
 
 Security reviews and release notes must state their scope, assumptions and limitations. Automated scans are evidence, not proof of security.
 
+### 21. Make operational notifications durable
+
+Security and infrastructure notifications are backend-owned operational records. A source-state transition and its notification outbox row must commit in the same database transaction where the workflow supports transactions. Browser state, active sessions, WebSockets and request-scoped background tasks must never be required for event creation or delivery.
+
+Notification implementations must keep the source action independent from provider availability, create recipient-specific in-application history before attempting optional channels, store delivery work durably, retry bounded transient failures, quarantine exhausted work visibly, and preserve a redacted correlation ID across source transition, outbox, event and delivery attempt. Workers require retained tasks, heartbeats, exception isolation, restart supervision and safe backlog health. Diagnostic notifications must use the same durable pipeline as production events. Logs, diagnostics and history must never expose subscription endpoints, keys, secrets or sensitive payloads.
+
 ## Required engineering checks
 
 For every feature or fix, determine and document as applicable:
@@ -114,6 +124,10 @@ For every feature or fix, determine and document as applicable:
 - Safe errors: no stack traces, SQL errors, paths, secrets or raw credential-bearing upstream responses.
 - Audit events for successful and failed security-sensitive actions.
 - Docker, proxy, dependency, migration and backwards-compatibility impact.
+
+### Generic table export
+
+Treat every table export as a protected data read. A shared export may include only the current user's authorised query result and server-approved visible columns; client-selected model fields, hidden metadata, credentials and decrypted secrets are forbidden. Server-paginated or large tables must reuse the authorised query builder, remove pagination without removing filters/sort/object scope, validate format and columns against allowlists, apply a documented resource bound or streaming strategy, prevent spreadsheet formula injection, return `no-store` downloads, and audit administrative or security-sensitive exports without row contents. Secure Vault, authentication material and other separately protected secret stores require purpose-built export designs and must never inherit generic export automatically.
 
 ## Security Impact completion format
 

@@ -78,5 +78,6 @@ IP/WAN Monitor's authenticated internal UI surface includes:
 - `POST /networking/ip-wan-monitor/collection-rate` for an editor/admin dashboard lease. The mode and opaque client ID are allowlisted, CSRF validation is required, and the lease expires automatically.
 - `GET /networking/ip-wan-monitor/{monitor_id}?check_page={page}&check_status={state}&check_q={query}` for authenticated, server-filtered 50-row check-history pages.
 - `GET /networking/ip-wan-monitor/{monitor_id}/checks.csv` for an audited export capped at 10,000 rows.
+- `GET /networking/ip-wan-monitor/diagnostics` for administrator-only, non-cacheable scheduler liveness and bounded pending-monitor state. It exposes no target addresses, credentials or exception text.
 
 These are internal UI endpoints rather than a stable public API.

@@ -21,6 +21,7 @@ from app.db.compatibility import (
     migrate_pre_alembic_database,
 )
 from app.db.validation import (
+    DatabaseValidationError,
     SQLITE_BUSY_TIMEOUT_MS,
     classify_sqlite_error,
     validate_legacy_database,
@@ -32,6 +33,7 @@ from app.models.models import Base
 logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BASELINE_REVISION = "20260730_01"
+CURRENT_REVISION = "20260803_02"
 STAGE_OPENING_DATABASE = "Opening database"
 STAGE_INTEGRITY_CHECKS = "Checking database readability"
 STAGE_CREATING_BACKUP = "Creating backup"
@@ -228,11 +230,23 @@ def prepare_database(engine: Engine, settings: Settings) -> MigrationResult:
                 compatibility_applied = True
                 logger.info("Kaya database: compatibility upgrade complete")
                 progress.enter(STAGE_SCHEMA_VALIDATION)
-                validate_schema(database_path, Base.metadata, require_revision=False)
-                schema_fully_validated = True
-                progress.enter(STAGE_STAMPING_REVISION)
-                command.stamp(config, BASELINE_REVISION)
-                logger.info("Kaya database: baseline stamped")
+                try:
+                    validate_schema(database_path, Base.metadata, require_revision=False)
+                except DatabaseValidationError:
+                    # A historical database now has the complete baseline schema,
+                    # but legitimately lacks objects introduced after that baseline.
+                    progress.enter(STAGE_STAMPING_REVISION)
+                    command.stamp(config, BASELINE_REVISION)
+                    logger.info("Kaya database: baseline stamped")
+                    progress.enter(STAGE_ALEMBIC_MIGRATION)
+                    command.upgrade(config, "head")
+                else:
+                    # The revision table alone was lost from an otherwise current
+                    # database. Stamping head avoids replaying already-present DDL.
+                    progress.enter(STAGE_STAMPING_REVISION)
+                    command.stamp(config, target_revision)
+                    logger.info("Kaya database: current schema stamped")
+                    schema_fully_validated = True
             elif previous_revision != target_revision:
                 # ScriptDirectory rejects an unknown revision before any write.
                 script.get_revision(previous_revision)

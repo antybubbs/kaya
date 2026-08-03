@@ -3,12 +3,27 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, event
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.session import Base
-from app.models.models import HACluster, HAFailoverRun, HALeaseReplicationState, HANode, User
+from app.models.models import (
+    HACluster,
+    HAFailoverRun,
+    HALeaseReplicationState,
+    HANode,
+    NotificationCategoryPolicy,
+    NotificationDeliveryAttempt,
+    NotificationEvent,
+    NotificationPreference,
+    PushSubscription,
+    RemoteManagerSetting,
+    User,
+    UserModulePermission,
+    UserNotification,
+)
 from app.services.ha_dhcp_safety import authorise_dhcp_demotion
-from app.services.ha_failover import HAFailoverError, advance_failover, automatic_failover_blockers, desired_failover_action, failover_readiness, record_failover_action_result, request_failover_rollback, set_automatic_failover, start_controlled_failover
+from app.services.ha_failover import HAFailoverError, advance_failover, automatic_failover_blockers, desired_failover_action, failover_readiness, failover_status, record_failover_action_result, request_failover_rollback, set_automatic_failover, start_controlled_failover
+from app.services.notification_outbox import process_outbox
 
 
 def database():
@@ -48,6 +63,115 @@ def observe_dhcp(node, running: bool):
     node.dhcp_observation_status = "FRESH"
     node.dhcp_observed_at = now
     node.last_heartbeat_at = now
+
+
+def enable_ha_notifications(db, recipient, event_types):
+    db.add(UserModulePermission(user_id=recipient.id, module_key="high_availability", allowed=True, created_by=recipient.id))
+    db.add_all([
+        RemoteManagerSetting(key="high_availability_enabled", value="1"),
+        RemoteManagerSetting(key="notifications_push_enabled", value="1"),
+        RemoteManagerSetting(key="notifications_email_enabled", value="1"),
+        PushSubscription(
+            user_id=recipient.id,
+            endpoint_hash="a" * 64,
+            encrypted_subscription="clearly-fake-encrypted-subscription",
+            status="active",
+        ),
+    ])
+    for identifier in event_types:
+        db.add(NotificationCategoryPolicy(
+            event_type=identifier,
+            enabled=True,
+            in_app_allowed=True,
+            push_allowed=True,
+            email_allowed=True,
+            default_enabled=True,
+        ))
+        db.add(NotificationPreference(
+            user_id=recipient.id,
+            event_type=identifier,
+            in_app_enabled=True,
+            push_enabled=True,
+            email_enabled=True,
+        ))
+    db.commit()
+
+
+def test_controlled_failover_publishes_each_lifecycle_stage_once_with_channel_diagnostics(monkeypatch):
+    with database() as db:
+        user, cluster, source, target = ready_pair(db)
+        excluded_admin = User(email="excluded@example.test", password_hash="x", role="admin", is_active=True)
+        db.add(excluded_admin)
+        db.flush()
+        enable_ha_notifications(db, user, {"pihole.failover.started", "pihole.failover.completed"})
+        monkeypatch.setattr("app.services.ha_failover.reconcile_cluster_leases", lambda db, cluster: cluster.lease_replication)
+
+        run = start_controlled_failover(db, cluster, target, user, confirmation=cluster.name, acknowledged=True)
+        source.vip_owned = False
+        observe_dhcp(source, False)
+        target.vip_owned = True
+        observe_dhcp(target, True)
+        advance_failover(db, cluster)
+        advance_failover(db, cluster)
+        process_outbox(session_factory=sessionmaker(bind=db.bind))
+        db.expire_all()
+
+        events = db.query(NotificationEvent).filter_by(correlation_id=run.public_id).order_by(NotificationEvent.id).all()
+        assert [event.event_type for event in events] == ["pihole.failover.started", "pihole.failover.completed"]
+        assert all(db.query(UserNotification).filter_by(notification_event_id=event.id, user_id=user.id).count() == 1 for event in events)
+        assert all(db.query(UserNotification).filter_by(notification_event_id=event.id, user_id=excluded_admin.id).count() == 1 for event in events)
+        for event in events:
+            notification = db.query(UserNotification).filter_by(notification_event_id=event.id, user_id=user.id).one()
+            assert {row.channel for row in db.query(NotificationDeliveryAttempt).filter_by(user_notification_id=notification.id)} == {"push", "email"}
+        diagnostics = failover_status(run, db=db)["notifications"]
+        assert diagnostics["started"]["delivery"]["push"]["queued"] == 1
+        assert diagnostics["completed"]["delivery"]["email"]["queued"] == 2
+
+
+def test_notification_failure_does_not_roll_back_failover_state(monkeypatch):
+    with database() as db:
+        user, cluster, source, target = ready_pair(db)
+        monkeypatch.setattr("app.services.ha_failover.reconcile_cluster_leases", lambda db, cluster: cluster.lease_replication)
+        monkeypatch.setattr("app.services.ha_notifications.enqueue_notification", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("synthetic notification failure")))
+
+        run = start_controlled_failover(db, cluster, target, user, confirmation=cluster.name, acknowledged=True)
+        assert run.status == "RUNNING"
+        assert failover_status(run)["notifications"]["started"] == {
+            "event_type": "pihole.failover.started",
+            "status": "failed",
+            "reason": "publication_error",
+        }
+        source.vip_owned = False
+        observe_dhcp(source, False)
+        target.vip_owned = True
+        observe_dhcp(target, True)
+        advance_failover(db, cluster)
+        process_outbox(session_factory=sessionmaker(bind=db.bind))
+        db.expire_all()
+        assert db.get(HAFailoverRun, run.id).status == "SUCCEEDED"
+
+
+def test_failed_controlled_failover_publishes_failure_and_degraded_events(monkeypatch):
+    with database() as db:
+        user, cluster, _source, target = ready_pair(db, managed=False)
+        monkeypatch.setattr("app.services.ha_failover.reconcile_cluster_leases", lambda db, cluster: cluster.lease_replication)
+        run = start_controlled_failover(db, cluster, target, user, confirmation=cluster.name, acknowledged=True)
+
+        # Simulate discovering that a legacy DNS-only transition was actually
+        # operating a Pi-hole-managed DHCP topology. The state machine fails safe.
+        cluster.deployment_mode = "DNS_DHCP"
+        advance_failover(db, cluster)
+        process_outbox(session_factory=sessionmaker(bind=db.bind))
+        db.expire_all()
+
+        assert run.status == "FAILED_SAFE"
+        event_types = {
+            row.event_type
+            for row in db.query(NotificationEvent).filter_by(correlation_id=run.public_id)
+        }
+        assert {"pihole.failover.failed", "pihole.cluster.degraded"} <= event_types
+        assert failover_status(run, db=db)["notifications"]["failed"]["status"] == "created"
+        assert failover_status(run, db=db)["notifications"]["cluster_degraded"]["status"] == "created"
 
 
 def test_preflight_requires_current_agent_and_exactly_one_dhcp_owner():

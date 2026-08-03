@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.models.models import HACluster, HAEvent, HANode, HASyncRun
 from app.services.audit import write_audit
+from app.services.ha_notifications import publish_ha_notification, resolve_ha_notification
 from app.services.ha_topology import dhcp_observation, pihole_manages_dhcp, reconcile_topology
 
 
@@ -46,6 +47,26 @@ class NodeRecovery:
     @property
     def ready(self) -> bool:
         return self.state == "STANDBY_READY"
+
+    @property
+    def operational_blockers(self) -> tuple[str, ...]:
+        return tuple(
+            check.detail for check in self.checks if check.required and not check.passed
+        )
+
+    @property
+    def operational_readiness(self) -> str:
+        required = {check.key: check for check in self.checks if check.required}
+        if any(
+            key not in required or not required[key].passed
+            for key in ("kaya_heartbeat", "agent_identity")
+        ):
+            return "UNKNOWN"
+        return "READY" if not self.operational_blockers else "NOT_READY"
+
+    @property
+    def operationally_ready(self) -> bool:
+        return self.operational_readiness == "READY"
 
 
 def _fresh(node: HANode, now: datetime) -> bool:
@@ -208,7 +229,7 @@ def recovery_checks(db: Session, cluster: HACluster, node: HANode, *, now: datet
         return (
             RecoveryCheck("kaya_heartbeat", "Kaya heartbeat", heartbeat, "The HA Agent has reported to Kaya recently."),
             RecoveryCheck("agent_identity", "HA Agent identity", agent, "The registered, non-revoked agent identity is reporting."),
-            RecoveryCheck("dns", "Local DNS and Pi-hole FTL", node.dns_healthy is True, "Pi-hole answered the agent's local DNS probe."),
+            RecoveryCheck("dns", "Local DNS and Pi-hole FTL", node.dns_healthy is True and node.ftl_active is True, "Pi-hole answered the agent's local DNS probe and FTL is active."),
             RecoveryCheck("network_interface", "Expected network interface", bool(node.network_interface), "The node has the configured HA network interface."),
             RecoveryCheck("keepalived", "Local failover service", keepalived, "Keepalived is deployed and running."),
             RecoveryCheck("cluster_generation", "Cluster generation", generation, "The node recognises the current configuration and role generations."),
@@ -226,7 +247,7 @@ def recovery_checks(db: Session, cluster: HACluster, node: HANode, *, now: datet
     return (
         RecoveryCheck("kaya_heartbeat", "Kaya heartbeat", heartbeat, "The HA Agent has reported to Kaya recently."),
         RecoveryCheck("agent_identity", "HA Agent identity", agent, "The registered, non-revoked agent identity is reporting."),
-        RecoveryCheck("dns", "Local DNS and Pi-hole FTL", node.dns_healthy is True, "Pi-hole answered the agent's local DNS probe."),
+        RecoveryCheck("dns", "Local DNS and Pi-hole FTL", node.dns_healthy is True and node.ftl_active is True, "Pi-hole answered the agent's local DNS probe and FTL is active."),
         RecoveryCheck("network_interface", "Expected network interface", bool(node.network_interface), "The node has the configured HA network interface."),
         RecoveryCheck("keepalived", "Local failover service", keepalived, "Keepalived is deployed and running."),
         RecoveryCheck("cluster_generation", "Cluster generation", generation, "The node recognises the current configuration and role generations."),
@@ -320,6 +341,25 @@ def evaluate_recovery(
             _event_for_transition(db, cluster, node, previous, state, current)
 
     db.commit()
+    previous_by_node = {node.id: previous for node, previous, _state in changed}
+    for result in results.values():
+        node, state = result.node, result.state
+        incident_key = f"pihole:cluster:{cluster.public_id}:node:{node.public_id}:unreachable"
+        if state == "OFFLINE":
+            publish_ha_notification(
+                db,
+                cluster,
+                event_type_id="pihole.node.unreachable",
+                title="Pi-hole node unreachable",
+                message=f"{node.display_name} stopped reporting to Kaya.",
+                deduplication_key=incident_key,
+                source_entity_type="ha_node",
+                source_entity_id=node.public_id,
+                correlation_id=cluster.public_id,
+                metadata={"cluster_id": cluster.public_id, "node_id": node.public_id},
+            )
+        elif previous_by_node.get(node.id) == "OFFLINE":
+            resolve_ha_notification(db, incident_key)
     for node, previous, state in changed:
         write_audit(
             db,

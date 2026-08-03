@@ -24,6 +24,7 @@ from app.models.models import (
 )
 from app.routers.auth import require_editor, require_module_access, require_user
 from app.services.audit import write_audit
+from app.services.notification_outbox import enqueue_notification
 from app.services.site_settings import get_site_setting
 
 router = APIRouter(prefix="/infrastructure/backup-manager", dependencies=[Depends(require_module_access("backup_manager"))])
@@ -699,6 +700,7 @@ async def agent_job_status(job_id: int, request: Request, db: Session = Depends(
     if status not in {"queued", "dispatched", "running", "successful", "failed"}:
         raise HTTPException(400, "Invalid backup job status")
     now = datetime.utcnow()
+    previous_status = job.status
     job.status = status
     job.updated_at = now
     if status == "running" and not job.started_at:
@@ -720,6 +722,18 @@ async def agent_job_status(job_id: int, request: Request, db: Session = Depends(
         existing = metadata(job.metadata_json)
         existing.update(payload["metadata"])
         job.metadata_json = json.dumps(existing)
+    if status == "failed" and previous_status != "failed":
+        enqueue_notification(
+            db,
+            event_type_id="backup.job.failed",
+            title="Backup failed",
+            message="A Kaya-managed backup job failed. Open Backup Manager to review it.",
+            target_route="/infrastructure/backup-manager",
+            source_entity_type="backup_job",
+            source_entity_id=job.id,
+            deduplication_key=f"backup:job:{job.id}:failed",
+            recipient_ids=[job.requested_by_id] if job.requested_by_id else None,
+        )
     db.commit()
     write_audit(
         db,

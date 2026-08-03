@@ -1,9 +1,10 @@
+import json
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, event
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.session import Base
 from app.models.models import (
@@ -13,10 +14,14 @@ from app.models.models import (
     HALeaseReplicationState,
     HANode,
     HASyncRun,
+    NotificationEvent,
+    NotificationOutbox,
     User,
 )
-from app.services.ha_failover import HAFailoverError, failover_status, start_controlled_failover
+from app.routers.high_availability import cluster_live_status
+from app.services.ha_failover import HAFailoverError, advance_failover, failover_status, start_controlled_failover
 from app.services.ha_recovery import evaluate_recovery, peer_diagnostic, preferred_node
+from app.services.notification_outbox import process_outbox
 
 
 def database():
@@ -136,12 +141,20 @@ def test_recovered_node_advances_only_after_sync_and_stability():
     with database() as db:
         _, cluster, recovered, active = recovered_pair(db, now)
         assert evaluate_recovery(db, cluster, now=now)[recovered.id].state == "OFFLINE"
+        process_outbox(session_factory=sessionmaker(bind=db.bind))
+        db.expire_all()
+        unreachable = db.query(NotificationEvent).filter_by(event_type="pihole.node.unreachable").one()
+        assert unreachable.resolved_at is None
 
         recovered.last_heartbeat_at = now + timedelta(seconds=1)
         db.commit()
         result = evaluate_recovery(db, cluster, now=now + timedelta(seconds=1))[recovered.id]
+        process_outbox(session_factory=sessionmaker(bind=db.bind))
+        db.expire_all()
         assert result.state == "SYNCHRONISING"
         assert not result.ready
+        db.refresh(unreachable)
+        assert unreachable.resolved_at is not None
 
         db.add(
             HASyncRun(
@@ -181,7 +194,30 @@ def test_dhcp_generation_mismatch_prevents_standby_ready():
         db.commit()
         result = evaluate_recovery(db, cluster, now=now)[recovered.id]
         assert result.state == "SYNCHRONISING"
+        assert result.operational_readiness == "NOT_READY"
         assert not next(check for check in result.checks if check.key == "lease_sync").passed
+
+
+def test_inactive_ftl_prevents_operational_standby_readiness():
+    now = datetime.utcnow()
+    with database() as db:
+        _, cluster, standby, active = recovered_pair(db, now)
+        standby.last_heartbeat_at = now
+        standby.ftl_active = False
+        db.add(HASyncRun(
+            cluster_id=cluster.id,
+            source_node_id=active.id,
+            target_node_id=standby.id,
+            status="IN_SYNC",
+            plan_json="{}",
+            completed_at=now,
+        ))
+        db.commit()
+
+        result = evaluate_recovery(db, cluster, now=now)[standby.id]
+
+        assert result.operational_readiness == "NOT_READY"
+        assert not next(check for check in result.checks if check.key == "dns").passed
 
 
 def test_controlled_failback_is_blocked_until_preferred_node_is_ready():
@@ -240,8 +276,35 @@ def test_ready_preferred_node_reuses_the_existing_controlled_transition(monkeypa
 
         assert run.phase == "DEMOTING_SOURCE"
         assert failover_status(run)["transition_kind"] == "FAILBACK"
+        process_outbox(session_factory=sessionmaker(bind=db.bind))
+        db.expire_all()
+        assert db.query(NotificationEvent).filter_by(
+            event_type="pihole.failback.started",
+            correlation_id=run.public_id,
+        ).one()
         assert run.source_node_id == active.id
         assert run.target_node_id == recovered.id
+
+        active.vip_owned = False
+        active.dhcp_running = active.dhcp_configured = active.dhcp_listener_active = False
+        active.dhcp_runtime_state = "STOPPED"
+        active.dhcp_observation_status = "FRESH"
+        active.dhcp_observed_at = active.last_heartbeat_at = datetime.utcnow()
+        recovered.vip_owned = True
+        recovered.dhcp_running = recovered.dhcp_configured = recovered.dhcp_listener_active = True
+        recovered.ftl_active = True
+        recovered.dhcp_runtime_state = "RUNNING"
+        recovered.dhcp_observation_status = "FRESH"
+        recovered.dhcp_observed_at = recovered.last_heartbeat_at = datetime.utcnow()
+        advance_failover(db, cluster)
+        process_outbox(session_factory=sessionmaker(bind=db.bind))
+        db.expire_all()
+
+        assert run.status == "SUCCEEDED"
+        assert db.query(NotificationEvent).filter_by(
+            event_type="pihole.failback.completed",
+            correlation_id=run.public_id,
+        ).one()
 
 
 def test_preferred_node_does_not_follow_current_active_role():
@@ -364,7 +427,69 @@ def test_ready_standby_ignores_later_failed_sync_check_without_recovery_loop():
         assert db.query(HAEvent).filter(HAEvent.node_id == standby.id).count() == event_count
 
 
-def test_ready_standby_remains_quiescent_through_twelve_hours_of_observation_then_real_drift():
+def test_live_snapshot_separates_operational_readiness_from_routine_sync_workflow():
+    now = datetime.utcnow()
+    with database() as db:
+        user, cluster, standby, active = recovered_pair(db, now)
+        standby.last_heartbeat_at = standby.dhcp_observed_at = now
+        standby.recovery_started_at = now - timedelta(minutes=10)
+        standby.recovery_stable_since = now - timedelta(minutes=2)
+        standby.recovery_state = "SYNCHRONISING"
+        db.add(HASyncRun(
+            cluster_id=cluster.id,
+            source_node_id=active.id,
+            target_node_id=standby.id,
+            status="IN_SYNC",
+            plan_json='{"groups":[],"required_sync_generation":0,"verified_sync_generation":0}',
+            created_at=now - timedelta(minutes=2),
+            completed_at=now - timedelta(minutes=2),
+        ))
+        db.commit()
+
+        routine = HASyncRun(
+            cluster_id=cluster.id,
+            source_node_id=active.id,
+            target_node_id=standby.id,
+            status="PENDING",
+            plan_json='{"groups":[],"required_sync_generation":0}',
+            created_at=now,
+        )
+        db.add(routine)
+        db.commit()
+
+        for status, expected_sync_state in (
+            ("PENDING", "CHECKING"),
+            ("RUNNING", "RUNNING"),
+            ("IN_SYNC", "IN_SYNC"),
+        ):
+            routine.status = status
+            if status == "IN_SYNC":
+                routine.plan_json = '{"groups":[],"required_sync_generation":0,"verified_sync_generation":0}'
+                routine.completed_at = now + timedelta(seconds=15)
+            standby.last_heartbeat_at = standby.dhcp_observed_at = now + timedelta(seconds=15)
+            active.last_heartbeat_at = active.dhcp_observed_at = now + timedelta(seconds=15)
+            db.commit()
+
+            payload = json.loads(cluster_live_status(cluster.public_id, db, user).body)
+            standby_payload = next(node for node in payload["nodes"] if node["id"] == standby.public_id)
+
+            assert payload["cluster"]["operational_readiness"] == "READY"
+            assert payload["cluster"]["ha_readiness"] == "READY"
+            assert payload["operational_readiness"]["ready"] is True
+            assert payload["readiness"]["ready"] is False
+            assert payload["sync"]["sync_state"] == expected_sync_state
+            assert standby_payload["operational_readiness"] == "READY"
+            assert standby_payload["recovery_workflow_state"] == "SYNCHRONISING"
+            assert standby_payload["sync_state"] == expected_sync_state
+            assert payload["consistency"]["issues"] == []
+            assert payload["cluster"]["unacknowledged_alerts"] == 0
+
+        assert db.query(HAEvent).count() == 0
+        assert db.query(NotificationEvent).count() == 0
+        assert db.query(NotificationOutbox).count() == 0
+
+
+def test_ready_standby_remains_quiescent_through_a_week_of_observation_then_real_drift():
     start = datetime.utcnow()
     with database() as db:
         _, cluster, standby, active = recovered_pair(db, start)
@@ -394,9 +519,9 @@ def test_ready_standby_remains_quiescent_through_twelve_hours_of_observation_the
         ).count()
 
         observed = start
-        # 960 complete PENDING -> RUNNING -> SUCCEEDED checks at 15-second
-        # intervals simulate twelve hours of heartbeat and monitoring passes.
-        for _ in range(960):
+        # Hourly PENDING -> RUNNING -> SUCCEEDED checks exercise a simulated
+        # week without coupling this state-machine regression to wall time.
+        for _ in range(24 * 7):
             run = HASyncRun(
                 cluster_id=cluster.id,
                 source_node_id=active.id,
@@ -406,7 +531,7 @@ def test_ready_standby_remains_quiescent_through_twelve_hours_of_observation_the
             )
             db.add(run)
             for status in ("PENDING", "RUNNING", "SUCCEEDED"):
-                observed += timedelta(seconds=15)
+                observed += timedelta(minutes=20)
                 run.status = status
                 if status == "SUCCEEDED":
                     run.plan_json = '{"groups":[],"required_sync_generation":0,"verified_sync_generation":0}'
@@ -416,6 +541,7 @@ def test_ready_standby_remains_quiescent_through_twelve_hours_of_observation_the
                 db.commit()
                 result = evaluate_recovery(db, cluster, now=observed)[standby.id]
                 assert result.state == "STANDBY_READY"
+                assert result.operational_readiness == "READY"
                 assert standby.recovery_stable_since == stable_since
             # Exercise the existing periodic reconciliation path as a no-op.
             from app.services.ha_watchdog import reconcile_cluster
@@ -449,6 +575,10 @@ def test_ready_standby_remains_quiescent_through_twelve_hours_of_observation_the
 
         degraded = evaluate_recovery(db, cluster, now=observed)[standby.id]
         assert degraded.state == "SYNCHRONISING"
+        assert degraded.operational_readiness == "NOT_READY"
+        assert not next(
+            check for check in degraded.checks if check.key == "configuration_sync"
+        ).passed
         assert standby.recovery_stable_since is None
 
         cluster.desired_sync_generation = 1

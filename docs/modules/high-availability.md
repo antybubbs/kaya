@@ -38,6 +38,8 @@ Future integrations may use different node counts, service-address mechanisms, d
 - Ambiguous ownership, stale continuity data, or split-brain evidence blocks DHCP activation.
 - DNS, DHCP, Keepalived, and local agent operation do not depend on Kaya remaining online.
 - DNS Manager consumes a healthy HA Pi-hole cluster as one logical provider through its virtual IP.
+- Live cluster status separates operational standby readiness from recovery workflow and configuration-sync state. Routine comparisons can report checking or running while the standby remains operationally ready; controlled handover still requires its independent recovery stability gate.
+- Controlled failover/failback started, completed, and safely failed outcomes publish through Kaya's central notification framework after the HA state commit. Operation history shows redacted per-channel counts for diagnosis; notification failure never reverses a verified network transition.
 
 ## Data retention
 

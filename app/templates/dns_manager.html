@@ -525,7 +525,7 @@
     <button type="submit">Filter</button>
   </form>
   {% endif %}
-  <table data-table-key="dns-clients">
+  <table data-table-key="dns-clients"{% if not demo_mode %} data-export-url="/networking/dns-manager/export/clients"{% endif %}>
       <thead><tr><th data-col="client">Client</th><th data-col="ip">Observed IP</th><th data-col="mac">MAC Address</th><th data-col="provider">Provider</th><th data-col="first-seen">First Seen</th><th data-col="last-seen">Last Seen</th><th data-col="observations">Observations</th><th data-col="managed">Possible Managed Match</th><th data-col="status">Status</th><th data-col="actions">Action</th></tr></thead>
     <tbody>
       {% if demo_mode %}{% set rows = network_client_inventory(clients.data if clients and clients.ok else {}, dhcp.data if dhcp and dhcp.ok else {}, queries.data if queries and queries.ok else {}, recognised_hostnames) %}{% else %}{% set rows = retained_client_rows %}{% endif %}
@@ -606,8 +606,8 @@
   </label>
 </form>
 {% endif %}
-  <table data-table-key="dns-dhcp">
-    <thead><tr><th>Status</th><th>Hostname</th><th>IP Address</th><th>MAC Address</th><th>Lease Start</th><th>Last Seen</th><th>Lease End / Expiry</th><th>VLAN / Range</th></tr></thead>
+  <table data-table-key="dns-dhcp"{% if not demo_mode %} data-export-url="/networking/dns-manager/export/dhcp"{% endif %}>
+    <thead><tr><th data-col="status">Status</th><th data-col="hostname">Hostname</th><th data-col="ip">IP Address</th><th data-col="mac">MAC Address</th><th data-col="lease-start">Lease Start</th><th data-col="last-seen">Last Seen</th><th data-col="lease-end">Lease End / Expiry</th><th data-col="range">VLAN / Range</th></tr></thead>
     <tbody>
       {% for row in rows %}
       {% if demo_mode %}<tr><td><span class="table-chip good">Active</span></td><td><strong>{{ row.name if row.name is defined else row.hostname if row.hostname is defined else '-' }}</strong></td><td>{{ row.ip if row.ip is defined else '-' }}</td><td>{{ row.mac if row.mac is defined else '-' }}</td><td>-</td><td>-</td><td>{{ timestamp_display(row.expires if row.expires is defined else row.expiry if row.expiry is defined else none) }}</td><td>-</td></tr>

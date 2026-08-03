@@ -1,3 +1,4 @@
+import asyncio
 import inspect
 import json
 from datetime import datetime, timedelta
@@ -13,10 +14,26 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.db.session import Base
-from app.models.models import IPAddress, NetworkMonitor, NetworkMonitorCheck, NetworkMonitorEvent, NetworkMonitorOutage, NetworkMonitorStatistic, RemoteManagerSetting
+from app.models.models import (
+    IPAddress,
+    NetworkMonitor,
+    NetworkMonitorCheck,
+    NetworkMonitorEvent,
+    NetworkMonitorOutage,
+    NetworkMonitorStatistic,
+    NetworkMonitorTransition,
+    NotificationDeliveryAttempt,
+    NotificationEvent,
+    NotificationOutbox,
+    RemoteManagerSetting,
+    User,
+    UserModulePermission,
+    UserNotification,
+)
 from app.services import network_monitor, network_monitor_history
-from app.routers import network_monitor as network_monitor_router
-from app.routers.auth import require_editor
+from app.services.notification_outbox import process_outbox
+from app.routers import network_monitor as network_monitor_router, notifications as notification_router
+from app.routers.auth import require_admin, require_editor
 
 
 def session_factory():
@@ -36,6 +53,138 @@ def add_monitor(factory, **values):
         db.add(monitor)
         db.commit()
         return monitor.id
+
+
+def add_monitor_recipient(factory):
+    with factory() as db:
+        recipient = User(
+            email="monitor-recipient@example.invalid",
+            password_hash="clearly-fake-hash",
+            role="admin",
+            is_active=True,
+        )
+        db.add(recipient)
+        db.flush()
+        db.add(
+            UserModulePermission(
+                user_id=recipient.id,
+                module_key="network_monitor",
+                allowed=True,
+                created_by=recipient.id,
+            )
+        )
+        db.commit()
+        return recipient.id
+
+
+def test_monitor_transition_creates_in_app_notification_without_vapid_or_legacy_flag():
+    factory = session_factory()
+    recipient_id = add_monitor_recipient(factory)
+    monitor_id = add_monitor(
+        factory,
+        failure_threshold=1,
+        recovery_threshold=1,
+        notify_enabled=False,
+    )
+
+    with factory() as db:
+        monitor = db.get(NetworkMonitor, monitor_id)
+        network_monitor.record_monitor_result(
+            db, monitor, False, None, 100, "Synthetic timeout"
+        )
+        assert db.query(NetworkMonitorTransition).filter_by(
+            monitor_id=monitor_id, new_state="offline"
+        ).count() == 1
+        assert db.query(NotificationOutbox).filter_by(
+            event_type="ipwan.host.offline", status="pending"
+        ).count() == 1
+        db.commit()
+        process_outbox(session_factory=factory)
+        db.expire_all()
+        offline = db.query(NotificationEvent).filter_by(
+            event_type="ipwan.host.offline"
+        ).one()
+        user_notification = db.query(UserNotification).filter_by(
+            notification_event_id=offline.id, user_id=recipient_id
+        ).one()
+        assert user_notification.read_at is None
+        assert db.query(NotificationDeliveryAttempt).count() == 0
+        assert notification_router.unread_count(db=db, user=db.get(User, recipient_id)) == {
+            "count": 1,
+            "critical": True,
+        }
+        listed = notification_router.list_notifications(
+            limit=10, db=db, user=db.get(User, recipient_id)
+        )
+        assert [item["event_type"] for item in listed["notifications"]] == [
+            "ipwan.host.offline"
+        ]
+
+        offline.created_at = datetime.utcnow() - timedelta(days=1)
+        db.commit()
+        network_monitor.record_monitor_result(
+            db, monitor, False, None, 100, "Synthetic timeout"
+        )
+        assert db.query(NotificationEvent).filter_by(
+            event_type="ipwan.host.offline"
+        ).count() == 1
+
+        network_monitor.record_monitor_result(db, monitor, True, 8, 0, None)
+        process_outbox(session_factory=factory)
+        db.expire_all()
+        assert db.query(NotificationEvent).filter_by(
+            event_type="ipwan.host.recovered"
+        ).count() == 1
+        assert db.query(UserNotification).filter_by(user_id=recipient_id).count() == 2
+
+
+def test_existing_offline_monitor_is_reconciled_once():
+    factory = session_factory()
+    add_monitor_recipient(factory)
+    monitor_id = add_monitor(
+        factory,
+        last_status="offline",
+        consecutive_failures=20,
+        notify_enabled=False,
+    )
+    with factory() as db:
+        first = network_monitor.reconcile_offline_notifications(db)
+        second = network_monitor.reconcile_offline_notifications(db)
+        assert first == {"candidates": 1, "created": 1, "existing": 0}
+        assert second == {"candidates": 1, "created": 0, "existing": 1}
+        process_outbox(session_factory=factory)
+        db.expire_all()
+        assert db.query(NotificationEvent).filter_by(
+            source_entity_id=str(monitor_id), event_type="ipwan.host.offline"
+        ).count() == 1
+
+
+def test_monitor_transition_and_outbox_rollback_together():
+    factory = session_factory()
+    add_monitor_recipient(factory)
+    monitor_id = add_monitor(factory, failure_threshold=1)
+    with factory() as db:
+        monitor = db.get(NetworkMonitor, monitor_id)
+        network_monitor.record_monitor_result(
+            db, monitor, False, None, 100, "Synthetic timeout"
+        )
+        assert db.query(NetworkMonitorTransition).count() == 1
+        assert db.query(NotificationOutbox).count() == 1
+
+    rollback_factory = session_factory()
+    rollback_id = add_monitor(rollback_factory, failure_threshold=1)
+    with rollback_factory() as db:
+        monitor = db.get(NetworkMonitor, rollback_id)
+        original_commit = db.commit
+        db.commit = lambda: (_ for _ in ()).throw(RuntimeError("synthetic rollback"))
+        with pytest.raises(RuntimeError, match="synthetic rollback"):
+            network_monitor.record_monitor_result(
+                db, monitor, False, None, 100, "Synthetic timeout"
+            )
+        db.rollback()
+        db.commit = original_commit
+        assert db.query(NetworkMonitorTransition).count() == 0
+        assert db.query(NotificationOutbox).count() == 0
 
 
 def test_failure_threshold_opens_outage_and_recovery_closes_it(monkeypatch):
@@ -260,6 +409,42 @@ def test_monitor_lock_skips_overlapping_checks(monkeypatch):
         assert db.query(NetworkMonitorCheck).count() == 0
 
 
+def test_cancelled_monitor_task_is_reaped_without_cancelling_scheduler():
+    async def exercise():
+        task = asyncio.create_task(asyncio.sleep(60))
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        assert network_monitor._reap_finished_monitor_tasks({17: task}) == {}
+
+    asyncio.run(exercise())
+
+
+def test_watchdog_recreates_a_failed_scheduler_task(monkeypatch):
+    async def exercise():
+        async def fail():
+            raise RuntimeError("synthetic scheduler failure")
+
+        async def replacement():
+            await asyncio.Event().wait()
+
+        failed = asyncio.create_task(fail(), name="failed-scheduler")
+        await asyncio.gather(failed, return_exceptions=True)
+        monkeypatch.setattr(network_monitor, "monitor_loop", replacement)
+        network_monitor._scheduler_task = failed
+        network_monitor._scheduler_shutdown_requested = False
+
+        recreated = network_monitor.supervise_monitor_scheduler()
+
+        assert recreated is network_monitor._scheduler_task
+        assert recreated is not None and not recreated.done()
+        assert recreated.get_name().startswith("ip-wan-monitor-scheduler-")
+        recreated.cancel()
+        await asyncio.gather(recreated, return_exceptions=True)
+        network_monitor._scheduler_task = None
+
+    asyncio.run(exercise())
+
+
 def test_five_second_monitor_becomes_due_without_backlog():
     network_monitor._dashboard_interval_leases.clear()
     factory = session_factory()
@@ -325,6 +510,24 @@ def test_monitor_network_actions_require_editor_access():
     for action in (network_monitor_router.refresh_monitor, network_monitor_router.set_collection_rate):
         dependency = inspect.signature(action).parameters["user"].default
         assert dependency.dependency is require_editor
+
+
+def test_scheduler_diagnostics_are_admin_only_and_not_cacheable():
+    dependency = inspect.signature(network_monitor_router.scheduler_diagnostics).parameters["user"].default
+    assert dependency.dependency is require_admin
+
+    response = network_monitor_router.scheduler_diagnostics(user=object())
+    payload = json.loads(response.body)
+
+    assert response.headers["cache-control"] == "no-store"
+    assert {
+        "scheduler_running", "task_id", "last_scheduler_heartbeat",
+        "last_monitor_execution", "last_observation_written", "pending_monitors",
+        "pending_monitor_count", "current_loop_iteration", "worker_uptime_seconds",
+        "scheduler_task_id", "last_due_scan", "due_monitors_found",
+        "active_monitor_tasks", "available_worker_slots", "stuck_monitor_count",
+        "oldest_active_monitor", "last_scheduler_exception", "watchdog_restart_count",
+    } <= set(payload)
 
 
 def test_live_feed_returns_only_new_genuine_observations():
@@ -759,7 +962,8 @@ def test_performance_workspace_uses_one_reusable_theme_aware_chart_without_navig
     assert "fetch(`${performance.dataset.endpoint}" in script
     assert "if (!performanceState.chart)" in script
     assert "ResizeObserver" in script and "data-kaya-theme" in script
-    assert 'window.location.assign(`${performance.dataset.exportEndpoint}' in script
+    assert 'updatePerformanceExportUrl()' in script
+    assert 'dataset.exportUrl = `${performance.dataset.exportEndpoint}' in script
     assert 'window.location.assign(`${performance.dataset.endpoint}' not in script
     assert "axisPointer: { type: \"cross\" }" in script
     assert "performanceState.chart.setOption" in script

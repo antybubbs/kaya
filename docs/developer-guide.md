@@ -99,6 +99,10 @@ To run without Docker, install Python dependencies and Node dependencies, then r
 - Managed lists/custom fields for configurable user-facing categories.
 - Local static assets rather than CDN dependencies.
 
+### Shared data tables
+
+All genuine user-facing data tables use the shared enhancer in `app/static/js/tables.js`. Give each table a stable `data-table-key`, stable `data-col` identifiers, and explicit non-exportable action/control columns. Tables with server pagination or large queries must provide a permission-checked `data-export-url` backed by the allowlisted streaming helpers in `app/services/table_export.py`; never fetch every page from browser JavaScript. See [Table export](table-export.md) for security rules, backend requirements and the coverage inventory.
+
 ## Things Not To Break
 
 - Existing SQLite databases.

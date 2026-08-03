@@ -17,6 +17,7 @@ from app.schemas.high_availability import HAAgentActionResult, HAAgentEventItem,
 from app.services.ha_keepalived import desired_keepalived_action
 from app.services.ha_leases import HALeaseError, desired_lease_action, record_lease_stage_result
 from app.services.ha_failover import AUTOMATIC_AGENT_VERSION, HAFailoverError, advance_failover, desired_failover_action, record_failover_action_result
+from app.services.ha_notifications import publish_ha_notification, resolve_ha_notification
 from app.services.ha_agent_installer import CURRENT_AGENT_VERSION, version_tuple
 from app.services.audit import write_audit
 from app.services.ha_topology import dhcp_observation, pihole_manages_dhcp, reconcile_topology
@@ -532,6 +533,33 @@ def reconcile_vip_ownership(db: Session, cluster: HACluster, reporting_node: HAN
             transient.severity = "info"
             transient.message = f"Kaya reconciled cached ownership after verified automatic failover. {current.display_name} is the exclusive virtual-IP owner."
     db.commit()
+    incident_key = f"pihole:cluster:{cluster.public_id}:degraded"
+    if previous_status == "HEALTHY" and cluster.status in {"DEGRADED", "ERROR"}:
+        publish_ha_notification(
+            db,
+            cluster,
+            event_type_id="pihole.cluster.degraded",
+            title="Pi-hole cluster degraded",
+            message=f"{cluster.name} is degraded. Review the HA topology and node health.",
+            deduplication_key=incident_key,
+            source_entity_type="ha_cluster",
+            source_entity_id=cluster.public_id,
+            correlation_id=cluster.public_id,
+            metadata={"cluster_id": cluster.public_id, "status": cluster.status},
+        )
+    elif cluster.status == "HEALTHY" and resolve_ha_notification(db, incident_key):
+        publish_ha_notification(
+            db,
+            cluster,
+            event_type_id="pihole.cluster.recovered",
+            title="Pi-hole cluster recovered",
+            message=f"{cluster.name} returned to a verified healthy topology.",
+            deduplication_key=f"{incident_key}:recovered:{cluster.cluster_generation}",
+            source_entity_type="ha_cluster",
+            source_entity_id=cluster.public_id,
+            correlation_id=cluster.public_id,
+            metadata={"cluster_id": cluster.public_id, "status": cluster.status},
+        )
 
 
 def _adopt_verified_automatic_owner(db: Session, node: HANode, event: HAAgentEventItem) -> None:
@@ -691,14 +719,30 @@ def _redacted_details(details: dict) -> str:
 def ingest_events(db: Session, node: HANode, events: list[HAAgentEventItem]) -> tuple[int, int]:
     accepted = 0
     duplicates = 0
+    completed_failovers: list[HAAgentEventItem] = []
     for event in events:
         if db.query(HAEvent.id).filter(HAEvent.agent_event_id == event.event_id).first():
             duplicates += 1
             continue
         db.add(HAEvent(cluster_id=node.cluster_id, node_id=node.id, event_type=event.event_type, severity=event.severity, source="agent", message=event.message, details_json_redacted=_redacted_details(event.details), agent_event_id=event.event_id, occurred_at=event.occurred_at.replace(tzinfo=None)))
         _adopt_verified_automatic_owner(db, node, event)
+        if event.event_type == "automatic_failover_completed":
+            completed_failovers.append(event)
         accepted += 1
     db.commit()
+    for event in completed_failovers:
+        publish_ha_notification(
+            db,
+            node.cluster,
+            event_type_id="pihole.failover.completed",
+            title="Pi-hole automatic failover completed",
+            message=f"Automatic failover completed for {node.cluster.name} with {node.display_name} active. Automatic failback remains disabled.",
+            deduplication_key=f"pihole:cluster:{node.cluster.public_id}:automatic-failover:{event.event_id}:completed",
+            source_entity_type="ha_event",
+            source_entity_id=event.event_id,
+            correlation_id=event.event_id,
+            metadata={"cluster_id": node.cluster.public_id, "node_id": node.public_id, "automatic": True},
+        )
     return accepted, duplicates
 
 

@@ -29,7 +29,7 @@
   <article><span>Service availability</span><strong data-ha-cluster-field="service_availability">{{ 'Healthy' if active_node and active_node.dns_healthy else 'Checking' }}</strong><small>Can clients use the clustered service?</small></article>
   <article><span>Redundancy</span><strong data-ha-cluster-field="redundancy">Checking</strong><small>Can another node failure be tolerated?</small></article>
   <article><span>Control plane</span><strong data-ha-cluster-field="control_plane">Checking</strong><small>Is the active service reporting signed live state?</small></article>
-  <article><span>HA readiness</span><strong data-ha-cluster-field="ha_readiness">{{ 'Needs attention' if resolver_attention else 'Ready' if action_ready else 'Recovering' if failback_recovery else 'Needs attention' }}</strong><small>Can the other node take over safely?</small></article>
+  <article><span>HA readiness</span><strong data-ha-cluster-field="ha_readiness">{{ 'Ready' if operational_status.state == 'READY' else 'Unknown' if operational_status.state == 'UNKNOWN' else 'Needs attention' }}</strong><small>Can the other node take over safely?</small></article>
   <article><span>HA configuration</span><strong data-ha-cluster-field="ha_configuration">{{ consistency.configuration_state|replace('_', ' ')|title }}</strong><small>Do VIP, DHCP, and stored roles agree?</small></article>
   <article title="The single DNS address used by your devices."><span>DNS Virtual IP</span><strong class="mono">{{ cluster.virtual_ip }}/{{ cluster.prefix_length }}</strong><small>The stable DNS address</small></article>
   <article><span>Current active node</span><strong data-ha-cluster-field="active_node">{{ active_node.display_name if active_node else 'Confirming ownership' }}</strong><small>Currently owns the virtual IP</small></article>
@@ -104,7 +104,9 @@
       </dl>
       <h4>High availability</h4>
       <dl class="ha-node-facts">
-        <div><dt>Recovery state</dt><dd data-ha-node-field="recovery_state">{{ node_recovery.state|replace('_', ' ')|title }}</dd></div>
+        <div><dt>Operational readiness</dt><dd data-ha-node-field="operational_readiness">{{ node_recovery.operational_readiness|replace('_', ' ')|title }}</dd></div>
+        <div><dt>Recovery workflow</dt><dd data-ha-node-field="recovery_workflow_state">{{ node_recovery.state|replace('_', ' ')|title }}</dd></div>
+        <div><dt>Sync state</dt><dd data-ha-node-field="sync_state">{{ sync_summary.sync_state|replace('_', ' ')|title if failover_readiness.target and node.id == failover_readiness.target.id else 'Idle' }}</dd></div>
         <div><dt>Kaya connection</dt><dd data-ha-kaya-connection>{{ 'Reporting' if node.last_heartbeat_at else 'Waiting' }}</dd></div>
         <div><dt>Last Kaya heartbeat</dt><dd data-ha-node-field="last_heartbeat_at">{{ local_time(node.last_heartbeat_at, 'friendly') if node.last_heartbeat_at else 'Never' }}</dd></div>
         <div><dt>Host DNS resolver</dt><dd data-ha-node-field="resolver_nameservers">{% if node.resolver_nameservers_json %}{{ node.resolver_nameservers_json|replace('[', '')|replace(']', '')|replace('"', '') }}{% else %}Awaiting agent data{% endif %}</dd></div>

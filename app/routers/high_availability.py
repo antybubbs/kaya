@@ -95,6 +95,7 @@ from app.services.ha_maintenance import (
     start_reinitialisation,
 )
 from app.services.ha_recovery import (
+    NodeRecovery,
     current_active_node,
     peer_diagnostic,
     preferred_node,
@@ -281,6 +282,18 @@ def sync_operational_summary(db: Session, cluster: HACluster) -> dict[str, objec
     state, label = state_map.get(
         latest.status if latest else "", ("WAITING", "First check pending")
     )
+    sync_state_map = {
+        "PENDING": "CHECKING",
+        "CHECKING": "CHECKING",
+        "VERIFYING": "CHECKING",
+        "IN_SYNC": "IN_SYNC",
+        "SUCCEEDED": "IN_SYNC",
+        "PLANNED": "DRIFT",
+        "RUNNING": "RUNNING",
+        "FAILED": "FAILED",
+        "ROLLED_BACK": "FAILED",
+        "CHECK_FAILED": "FAILED",
+    }
     next_check = (
         (latest.created_at + timedelta(seconds=interval))
         if latest
@@ -305,6 +318,7 @@ def sync_operational_summary(db: Session, cluster: HACluster) -> dict[str, objec
         "automatic_sync_enabled": bool(cluster.automatic_sync_enabled),
         "automatic_sync_allow_deletions": bool(cluster.automatic_sync_allow_deletions),
         "state": state,
+        "sync_state": sync_state_map.get(latest.status if latest else "", "IDLE"),
         "state_label": label,
         "drift_count": drift_count,
         "last_checked_at": latest.created_at if latest else None,
@@ -318,6 +332,28 @@ def sync_operational_summary(db: Session, cluster: HACluster) -> dict[str, objec
             if latest and latest.status in {"FAILED", "ROLLED_BACK", "CHECK_FAILED"}
             else None
         ),
+    }
+
+
+def operational_readiness_summary(
+    readiness, recovery: dict[int, NodeRecovery]
+) -> dict[str, object]:
+    """Project operational safety independently from recovery workflow labels."""
+    target_recovery = recovery.get(readiness.target.id) if readiness.target else None
+    blockers = list(readiness.blockers)
+    if target_recovery is not None:
+        blockers.extend(target_recovery.operational_blockers)
+    blockers = list(dict.fromkeys(blockers))
+    if target_recovery is None or target_recovery.operational_readiness == "UNKNOWN":
+        state = "UNKNOWN"
+    else:
+        state = "READY" if not blockers else "NOT_READY"
+    return {
+        "state": state,
+        "ready": state == "READY",
+        "blockers": blockers,
+        "target_id": readiness.target.public_id if readiness.target else None,
+        "target_name": readiness.target.display_name if readiness.target else None,
     }
 
 
@@ -597,11 +633,13 @@ def cluster_detail(
 def cluster_detail_context(
     request: Request, user, db: Session, cluster: HACluster, **extra
 ):
-    readiness = failover_readiness(cluster)
-    recovery = recovery_snapshot(db, cluster)
+    now = datetime.utcnow()
+    readiness = failover_readiness(cluster, now=now)
+    recovery = recovery_snapshot(db, cluster, now=now)
     preferred = preferred_node(cluster)
-    active = current_active_node(cluster)
-    consistency = inspect_cluster(cluster)
+    active = current_active_node(cluster, now=now)
+    consistency = inspect_cluster(cluster, now=now, recovery=recovery)
+    operational_status = operational_readiness_summary(readiness, recovery)
     failback_recovery = (
         recovery.get(preferred.id)
         if preferred and active and preferred.id != active.id
@@ -619,11 +657,6 @@ def cluster_detail_context(
         None,
     )
     latest_transition = latest_failover(cluster)
-    resolver_attention = any(
-        check.key == "host_dns_resolver" and not check.passed
-        for item in recovery.values()
-        for check in item.checks
-    )
     return ha_context(
         request,
         user,
@@ -632,9 +665,10 @@ def cluster_detail_context(
         cluster_section="overview",
         failover_readiness=readiness,
         failover_run=latest_transition,
-        failover_state=failover_status(latest_transition),
+        failover_state=failover_status(latest_transition, db=db),
         automatic_blockers=automatic_failover_blockers(cluster),
         sync_summary=sync_operational_summary(db, cluster),
+        operational_status=operational_status,
         recovery=recovery,
         peer_diagnostics={
             node.id: peer_diagnostic(
@@ -647,7 +681,6 @@ def cluster_detail_context(
         failback_recovery=failback_recovery,
         action_ready=readiness.ready
         and (failback_recovery is None or failback_recovery.ready),
-        resolver_attention=resolver_attention,
         consistency=consistency,
         consistency_json=inspection_json(cluster, consistency),
         maintenance_run=latest_maintenance(cluster),
@@ -1182,13 +1215,14 @@ def cluster_live_status(
         if node.last_heartbeat_at
         and node.last_heartbeat_at >= now - timedelta(seconds=HEARTBEAT_FRESH_SECONDS)
     ]
-    consistency = inspect_cluster(cluster, now=now)
+    recovery = recovery_snapshot(db, cluster, now=now)
+    consistency = inspect_cluster(cluster, now=now, recovery=recovery)
     active_node = next(
         (node for node in cluster.nodes if consistency.vip_owner_ids == (node.id,)),
         None,
     )
-    readiness = failover_readiness(cluster)
-    recovery = recovery_snapshot(db, cluster, now=now)
+    readiness = failover_readiness(cluster, now=now)
+    operational_status = operational_readiness_summary(readiness, recovery)
     preferred = preferred_node(cluster)
     failback_recovery = (
         recovery.get(preferred.id)
@@ -1258,11 +1292,6 @@ def cluster_live_status(
         for item in recovery.values()
         if item.state in {"RECOVERING", "SYNCHRONISING", "VERIFYING"}
     ]
-    resolver_attention = any(
-        check.key == "host_dns_resolver" and not check.passed
-        for item in recovery.values()
-        for check in item.checks
-    )
     redundancy = (
         "AVAILABLE"
         if len(current_nodes) == 2
@@ -1370,14 +1399,13 @@ def cluster_live_status(
                 "service_status_message": service_message,
                 "ha_configuration": consistency.configuration_state,
                 "consistency_issue_count": len(consistency.issues),
+                "operational_readiness": operational_status["state"],
                 "ha_readiness": (
-                    "NEEDS_ATTENTION"
-                    if resolver_attention
-                    else (
-                        "READY"
-                        if action_ready
-                        else "RECOVERING" if failback_recovery else "NEEDS_ATTENTION"
-                    )
+                    "READY"
+                    if operational_status["state"] == "READY"
+                    else "UNKNOWN"
+                    if operational_status["state"] == "UNKNOWN"
+                    else "NEEDS_ATTENTION"
                 ),
                 "ping_unavailable_count": ping_unavailable,
                 "recovering_nodes": recovering_nodes,
@@ -1461,6 +1489,11 @@ def cluster_live_status(
                     "keepalived_last_error": node.keepalived_last_error,
                     "lease_generation": node.lease_generation,
                     "config_generation": node.config_generation,
+                    "operational_readiness": recovery[node.id].operational_readiness,
+                    "operational_readiness_blockers": list(
+                        recovery[node.id].operational_blockers
+                    ),
+                    "recovery_workflow_state": recovery[node.id].state,
                     "recovery_state": recovery[node.id].state,
                     "recovery_ready": recovery[node.id].ready,
                     "recovery_stability_seconds": recovery[node.id].stability_seconds,
@@ -1484,6 +1517,11 @@ def cluster_live_status(
                         ),
                         now=now,
                     ),
+                    "sync_state": (
+                        sync_summary["sync_state"]
+                        if readiness.target and node.id == readiness.target.id
+                        else "IDLE"
+                    ),
                 }
                 for node in cluster.nodes
             ],
@@ -1503,7 +1541,7 @@ def cluster_live_status(
                     ),
                 }
             ),
-            "failover": failover_status(run),
+            "failover": failover_status(run, db=db),
             "readiness": {
                 "ready": action_ready,
                 "blockers": action_blockers,
@@ -1518,6 +1556,7 @@ def cluster_live_status(
                     else "Fail over safely"
                 ),
             },
+            "operational_readiness": operational_status,
             "deployment": {"ready": not deployment_items, "blockers": deployment_items},
             "sync": sync_json,
             "consistency": inspection_json(cluster, consistency),
@@ -1715,7 +1754,7 @@ def failover_page_context(
         cluster_section="testing",
         failover_readiness=readiness,
         failover_run=run,
-        failover_state=failover_status(run),
+        failover_state=failover_status(run, db=db),
         failover_error=error,
         recovery=recovery,
         preferred_node=preferred,
@@ -1770,7 +1809,7 @@ async def start_cluster_failover(
             failover_page_context(request, user, cluster, db, str(exc)),
             status_code=409,
         )
-    transition_kind = failover_status(run).get("transition_kind", "FAILOVER")
+    transition_kind = failover_status(run, db=db).get("transition_kind", "FAILOVER")
     write_audit(
         db,
         user,
@@ -1846,7 +1885,7 @@ def cluster_failover_status(
     user=Depends(require_high_availability),
 ):
     cluster = cluster_or_404(db, public_id)
-    return JSONResponse(failover_status(latest_failover(cluster)))
+    return JSONResponse(failover_status(latest_failover(cluster), db=db))
 
 
 def lease_page_context(

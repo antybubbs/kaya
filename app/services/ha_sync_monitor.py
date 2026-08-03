@@ -14,6 +14,7 @@ from app.models.models import HACluster, HAEvent, HASyncRun
 from app.services.audit import write_audit
 from app.services.ha_sync import HASyncError, authority_and_target, create_live_sync_plan, execute_sync
 from app.services.ha_recovery import evaluate_recovery
+from app.services.ha_notifications import publish_ha_notification
 from app.services.site_settings import get_site_setting
 
 
@@ -139,6 +140,18 @@ def run_ha_sync_monitor_pass(session_factory=SessionLocal) -> int:
                     write_audit(db, None, "completed", "ha_recovery_configuration_sync" if recovery_sync else "ha_automatic_configuration_sync", entity_id=run.public_id, detail=f"Automatically synchronised allowlisted Pi-hole configuration for {cluster.name}.", metadata={"cluster_id": cluster.public_id, "backup_created": True, "verified": True, "lease_replication": False, "recovery": recovery_sync})
                 except HASyncError as exc:
                     _record_automation_event(db, cluster, succeeded=False, message=f"Automatic configuration synchronisation stopped safely: {exc}", run=run)
+                    publish_ha_notification(
+                        db,
+                        cluster,
+                        event_type_id="pihole.sync.failed",
+                        title="Pi-hole synchronisation failed",
+                        message=f"Automatic configuration synchronisation for {cluster.name} stopped safely. Review the HA sync history.",
+                        deduplication_key=f"pihole:cluster:{cluster.public_id}:sync:{run.public_id}:failed",
+                        source_entity_type="ha_sync_run",
+                        source_entity_id=run.public_id,
+                        correlation_id=run.public_id,
+                        metadata={"cluster_id": cluster.public_id, "recovery": recovery_sync},
+                    )
                     write_audit(db, None, "failed", "ha_recovery_configuration_sync" if recovery_sync else "ha_automatic_configuration_sync", entity_id=run.public_id, detail=f"Automatic configuration synchronisation for {cluster.name} did not complete.", severity="warning", metadata={"cluster_id": cluster.public_id, "error": str(exc)[:300], "backup_preserved": bool(run.backups), "lease_replication": False, "recovery": recovery_sync})
         finally:
             db.close()

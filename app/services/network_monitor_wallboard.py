@@ -23,6 +23,7 @@ from app.models.models import (
 
 WALLBOARD_COOKIE = "kaya_ip_wan_wallboard"
 WALLBOARD_PREFERENCE_KEY = "ip_wan_dashboard"
+MAX_MONITOR_ORDER_ITEMS = 10_000
 VALID_COLUMNS = {"auto", "2", "3", "4", "5", "6", "8"}
 VALID_DENSITIES = {"comfortable", "compact", "dense"}
 VALID_LIFETIMES = {3600, 28800, 86400, 604800, 2592000, 0}
@@ -289,7 +290,7 @@ def normalise_user_preferences(value: object, valid_monitor_ids: list[int], site
     allowed = set(valid_monitor_ids)
     order = []
     for item in raw.get("monitor_order", []) if isinstance(raw.get("monitor_order"), list) else []:
-        if isinstance(item, int) and item in allowed and item not in order:
+        if isinstance(item, int) and not isinstance(item, bool) and item in allowed and item not in order:
             order.append(item)
     order.extend(item for item in valid_monitor_ids if item not in order)
     columns = raw.get("columns", site_defaults["columns"])
@@ -309,6 +310,15 @@ def user_preferences(db: Session, user: User, valid_monitor_ids: list[int], site
 
 
 def save_user_preferences(db: Session, user: User, value: object, valid_monitor_ids: list[int], site_defaults: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("Preferences must be a JSON object.")
+    submitted_order = value.get("monitor_order")
+    if not isinstance(submitted_order, list):
+        raise ValueError("monitor_order must be a list of monitor IDs.")
+    if len(submitted_order) > MAX_MONITOR_ORDER_ITEMS:
+        raise ValueError("monitor_order contains too many entries.")
+    if any(not isinstance(item, int) or isinstance(item, bool) for item in submitted_order):
+        raise ValueError("monitor_order must contain integer monitor IDs only.")
     canonical = normalise_user_preferences(value, valid_monitor_ids, site_defaults)
     row, root = _raw_user_preferences(db, user)
     if not row:
@@ -316,16 +326,25 @@ def save_user_preferences(db: Session, user: User, value: object, valid_monitor_
         db.add(row)
     root[WALLBOARD_PREFERENCE_KEY] = canonical
     row.layout_json = json.dumps(root, separators=(",", ":"))
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     return canonical
 
 
 def reset_user_preferences(db: Session, user: User, valid_monitor_ids: list[int], site_defaults: dict[str, Any]) -> dict[str, Any]:
     row, root = _raw_user_preferences(db, user)
     existing = root.get(WALLBOARD_PREFERENCE_KEY) if isinstance(root.get(WALLBOARD_PREFERENCE_KEY), dict) else {}
-    canonical = normalise_user_preferences({key: value for key, value in existing.items() if key != "monitor_order"}, valid_monitor_ids, site_defaults)
+    retained = {key: value for key, value in existing.items() if key != "monitor_order"}
+    canonical = normalise_user_preferences(retained, valid_monitor_ids, site_defaults)
     if row and WALLBOARD_PREFERENCE_KEY in root:
-        root[WALLBOARD_PREFERENCE_KEY] = canonical
+        root[WALLBOARD_PREFERENCE_KEY] = retained
         row.layout_json = json.dumps(root, separators=(",", ":"))
-        db.commit()
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
     return canonical

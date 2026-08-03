@@ -10,6 +10,7 @@
       <a class="button secondary" href="/monitoring/ip-wan-monitor/wallboard">Wallboard</a>
       <label class="checkbox-row monitor-layout-toggle"><input type="checkbox" data-wallboard-edit-layout> Edit layout</label>
       <button class="button secondary" type="button" data-wallboard-reset>Reset layout</button>
+      <span class="muted" role="status" aria-live="polite" data-wallboard-save-state></span>
       {% if user.role in ['admin','editor'] %}
       <label class="monitor-refresh-control"><span class="monitor-refresh-label">Active check rate</span>
         <select data-monitor-refresh-rate data-monitor-csrf="{{ csrf_token }}" aria-describedby="monitor-refresh-help">

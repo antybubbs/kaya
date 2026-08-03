@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block content %}
+<header class="module-header notification-hero"><div><p class="eyebrow">Account activity</p><h1>Notifications</h1><p>Review operational events available to your account.</p></div><div class="form-actions"><button class="secondary" data-notification-page-mark-all>Mark all as read</button><button class="secondary" data-notification-clear-read>Clear read</button><a class="button" href="/profile/notifications">Preferences</a></div></header>
+<form class="panel notification-filters" method="get">
+  <label>Status<select name="state"><option value="all">All</option><option value="unread" {% if state=='unread' %}selected{% endif %}>Unread</option><option value="read" {% if state=='read' %}selected{% endif %}>Read</option></select></label>
+  <label>Severity<select name="severity"><option value="">All</option>{% for value in ['info','success','warning','critical'] %}<option value="{{ value }}" {% if active_severity==value %}selected{% endif %}>{{ value|title }}</option>{% endfor %}</select></label>
+  <label>Module<select name="module"><option value="">All</option>{% for value in modules %}<option value="{{ value }}" {% if active_module==value %}selected{% endif %}>{{ value|replace('_',' ')|title }}</option>{% endfor %}</select></label>
+  <button type="submit">Apply filters</button>
+</form>
+<section class="panel notification-centre-list" data-notification-page data-csrf-token="{{ csrf_token }}">
+{% for row in rows %}{% set policy=policies.get(row.event.event_type) %}<article class="notification-centre-item severity-{{ row.event.severity }} {% if not row.read_at %}unread{% endif %}" data-notification-id="{{ row.id }}">
+  <span class="notification-severity" aria-label="{{ row.event.severity }} notification"></span>
+  <div><span class="notification-module">{{ row.event.module|replace('_',' ')|title }}</span><h2>{{ row.event.title }}</h2><p>{{ row.event.message }}</p><time data-utc-time="{{ row.event.created_at.isoformat() }}Z" data-time-format="friendly">{{ row.event.created_at.strftime('%Y-%m-%d %H:%M') }}</time></div>
+  <div class="notification-item-actions">{% if row.event.target_route %}<a class="button small" href="{{ row.event.target_route }}" data-notification-open>Open</a>{% endif %}{% if policy and policy.acknowledgement_required and not row.acknowledged_at %}<button data-notification-acknowledge>Acknowledge</button>{% endif %}<button class="ghost" data-notification-toggle-read>{{ 'Mark unread' if row.read_at else 'Mark read' }}</button><button class="ghost danger-text" data-notification-dismiss>Dismiss</button></div>
+</article>{% else %}<div class="empty-state"><h2>No notifications</h2><p>There are no notifications matching these filters.</p></div>{% endfor %}
+</section>
+<nav class="notification-pagination" aria-label="Notification pages">{% if page > 1 %}<a class="button secondary" href="?state={{ state }}&severity={{ active_severity }}&module={{ active_module }}&page={{ page-1 }}">Previous</a>{% endif %}<span>Page {{ page }} of {{ pages }}</span>{% if page < pages %}<a class="button secondary" href="?state={{ state }}&severity={{ active_severity }}&module={{ active_module }}&page={{ page+1 }}">Next</a>{% endif %}</nav>
+{% endblock %}

@@ -16,6 +16,7 @@ from app.core.config import Settings
 from app.db.backup import DatabaseBackupError, create_sqlite_backup
 from app.db.migrations import (
     BASELINE_REVISION,
+    CURRENT_REVISION,
     DatabaseMigrationError,
     prepare_database,
 )
@@ -55,12 +56,12 @@ def test_fresh_install_and_repeated_start_are_idempotent(tmp_path):
         ).fetchone()[0]
         integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
         foreign_keys = connection.execute("PRAGMA foreign_key_check").fetchall()
-    assert first.current_revision == BASELINE_REVISION
-    assert second.current_revision == BASELINE_REVISION
+    assert first.current_revision == CURRENT_REVISION
+    assert second.current_revision == CURRENT_REVISION
     assert first.backup is None and second.backup is None
     assert list((tmp_path / "backups").glob("*.sqlite3")) == []
     assert path.stat().st_size == first_stat.st_size
-    assert revision == BASELINE_REVISION
+    assert revision == CURRENT_REVISION
     assert integrity == "ok"
     assert foreign_keys == []
 
@@ -80,7 +81,7 @@ def test_clean_restart_uses_lightweight_startup_validation(tmp_path, monkeypatch
 
     result = prepare_database(engine_for(path), settings)
 
-    assert result.current_revision == BASELINE_REVISION
+    assert result.current_revision == CURRENT_REVISION
     assert result.backup is None
 
 
@@ -102,7 +103,7 @@ def test_future_revision_upgrades_once_with_backup(tmp_path, monkeypatch):
             import sqlalchemy as sa
 
             revision = "{revision}"
-            down_revision = "{BASELINE_REVISION}"
+            down_revision = "{CURRENT_REVISION}"
             branch_labels = None
             depends_on = None
 
@@ -131,7 +132,7 @@ def test_future_revision_upgrades_once_with_backup(tmp_path, monkeypatch):
         probe_count = connection.execute(
             "SELECT count(*) FROM migration_workflow_probe"
         ).fetchone()[0]
-    assert upgraded.previous_revision == BASELINE_REVISION
+    assert upgraded.previous_revision == CURRENT_REVISION
     assert upgraded.current_revision == revision
     assert upgraded.backup is not None
     assert repeated.current_revision == revision
@@ -180,7 +181,7 @@ def test_reconstructed_historical_upgrade_creates_backup_and_preserves_user(
             "SELECT version_num FROM alembic_version"
         ).fetchone()[0]
     assert user == (f"{historical_release}@example.invalid", "fake-hash")
-    assert revision == BASELINE_REVISION
+    assert revision == CURRENT_REVISION
     with sqlite3.connect(result.backup.database_path) as restored:
         restored_user = restored.execute(
             "SELECT email, password_hash FROM users WHERE id=1"
@@ -202,7 +203,7 @@ def test_current_pre_alembic_schema_is_validated_then_stamped(tmp_path):
     result = prepare_database(engine_for(path), settings)
 
     assert result.previous_revision is None
-    assert result.current_revision == BASELINE_REVISION
+    assert result.current_revision == CURRENT_REVISION
     assert result.compatibility_applied is True
     assert result.backup is not None
 
@@ -242,7 +243,7 @@ def test_historical_integer_latency_is_backed_up_validated_stamped_and_preserved
     repeated = prepare_database(engine_for(path), settings)
 
     assert result.previous_revision is None
-    assert result.current_revision == BASELINE_REVISION
+    assert result.current_revision == CURRENT_REVISION
     assert result.compatibility_applied is True
     assert result.backup is not None
     assert repeated.compatibility_applied is False
@@ -260,7 +261,7 @@ def test_historical_integer_latency_is_backed_up_validated_stamped_and_preserved
         ).fetchone()[0]
     assert declared["last_latency_ms"] == "INTEGER"
     assert latency == (12.75, "real")
-    assert revision == BASELINE_REVISION
+    assert revision == CURRENT_REVISION
 
 
 def test_unchanged_failed_transition_reuses_verified_backup(tmp_path, monkeypatch):
@@ -436,6 +437,43 @@ def test_backup_logs_bounded_progress_and_verification(tmp_path, caplog):
     assert "Kaya database: creating pre-migration backup" in caplog.text
     assert "Kaya database: backup progress 25%" in caplog.text
     assert "Kaya database: backup verified" in caplog.text
+
+
+def test_database_backup_includes_encrypted_web_push_configuration(tmp_path):
+    source = tmp_path / "kaya.db"
+    settings = settings_for(source, tmp_path / "migration-backups")
+    prepare_database(engine_for(source), settings)
+    fake_ciphertext = "gAAAAABsynthetic-fernet-ciphertext-not-a-real-secret"
+    with sqlite3.connect(source) as connection:
+        connection.execute(
+            """
+            INSERT INTO web_push_configurations (
+                id, encrypted_private_key, public_key, public_key_fingerprint,
+                subject, installation_label, enabled, generated_at, updated_at
+            ) VALUES (1, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """,
+            (
+                fake_ciphertext,
+                "synthetic-public-key",
+                "SHA256:SYNTHETIC",
+                "mailto:backup@example.invalid",
+                "Backup test",
+            ),
+        )
+
+    backup = create_sqlite_backup(
+        source,
+        tmp_path / "backups",
+        source_revision=CURRENT_REVISION,
+        target_revision="synthetic-next-revision",
+    )
+
+    with sqlite3.connect(backup.database_path) as restored:
+        row = restored.execute(
+            "SELECT encrypted_private_key, public_key_fingerprint "
+            "FROM web_push_configurations WHERE id = 1"
+        ).fetchone()
+    assert row == (fake_ciphertext, "SHA256:SYNTHETIC")
 
 
 def test_pre_alembic_backup_is_mandatory_when_optional_backups_are_disabled(

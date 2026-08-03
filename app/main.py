@@ -44,6 +44,7 @@ from app.routers import (
     ip_addresses,
     licences,
     network_monitor,
+    notifications,
     oidc,
     rack_manager,
     remote_manager,
@@ -70,7 +71,12 @@ from app.services.kaya_remote_service import (
     stop_kaya_remote_service,
 )
 from app.services.modules import enabled_modules
-from app.services.network_monitor import monitor_loop
+from app.services.network_monitor import start_monitor_scheduler, stop_monitor_scheduler
+from app.services.notification_runtime import (
+    start_notification_runtime,
+    stop_notification_runtime,
+)
+from app.services.notifications import cleanup_retention
 from app.services.secure_send import cleanup_loop as secure_send_cleanup_loop
 from app.services.site_settings import (
     effective_allowed_hosts,
@@ -92,7 +98,6 @@ app = FastAPI(
     docs_url=None if settings.app_env == "production" else "/docs",
     root_path=settings.root_path,
 )
-monitor_task = None
 domain_poll_task = None
 compute_monitor_task = None
 dns_collector_task = None
@@ -101,6 +106,8 @@ secure_send_cleanup_task = None
 ha_lease_reconciliation_task = None
 ha_sync_monitor_task = None
 ha_watchdog_task = None
+notification_runtime_task = None
+notification_retention_task = None
 app.state.demo_mode = settings.demo_mode
 app.state.demo_reset_schedule = settings.demo_reset_schedule
 
@@ -239,6 +246,7 @@ async def audit_requests(request: Request, call_next):
     if path.startswith("/static/") or path == "/healthz":
         return await call_next(request)
     request_id = (request.headers.get("x-request-id") or uuid4().hex)[:64]
+    request.state.request_id = request_id
     safe_path = audit_safe_path(path)
     token, context = begin_request_context(
         request_id=request_id,
@@ -386,8 +394,8 @@ async def on_startup():
     if settings.demo_mode:
         return
     start_kaya_remote_service()
-    global monitor_task, domain_poll_task, compute_monitor_task, dns_collector_task, secure_send_cleanup_task, ha_lease_reconciliation_task, ha_sync_monitor_task, ha_watchdog_task
-    monitor_task = asyncio.create_task(monitor_loop())
+    global domain_poll_task, compute_monitor_task, dns_collector_task, secure_send_cleanup_task, ha_lease_reconciliation_task, ha_sync_monitor_task, ha_watchdog_task, notification_runtime_task, notification_retention_task
+    start_monitor_scheduler()
     domain_poll_task = asyncio.create_task(domain_poll_loop())
     compute_monitor_task = asyncio.create_task(compute_monitor_loop())
     dns_collector_task = asyncio.create_task(dns_collector_loop())
@@ -395,14 +403,20 @@ async def on_startup():
     ha_lease_reconciliation_task = asyncio.create_task(ha_lease_reconciliation_loop())
     ha_sync_monitor_task = asyncio.create_task(ha_sync_monitor_loop())
     ha_watchdog_task = asyncio.create_task(ha_watchdog_loop())
+    notification_runtime_task = start_notification_runtime()
+    async def notification_retention_loop():
+        while True:
+            await asyncio.sleep(3600)
+            with SessionLocal() as notification_db:
+                cleanup_retention(notification_db)
+    notification_retention_task = asyncio.create_task(notification_retention_loop())
 
 
 @app.on_event("shutdown")
 async def on_shutdown():
     if version_check_task:
         version_check_task.cancel()
-    if monitor_task:
-        monitor_task.cancel()
+    await stop_monitor_scheduler()
     if domain_poll_task:
         domain_poll_task.cancel()
     if compute_monitor_task:
@@ -417,6 +431,9 @@ async def on_shutdown():
         ha_sync_monitor_task.cancel()
     if ha_watchdog_task:
         ha_watchdog_task.cancel()
+    await stop_notification_runtime()
+    if notification_retention_task:
+        notification_retention_task.cancel()
     stop_kaya_remote_service()
     stop_guacamole_bridge()
 
@@ -441,6 +458,7 @@ app.include_router(secret_vault.router)
 app.include_router(secure_send.router)
 app.include_router(high_availability.router)
 app.include_router(ha_agent_api.router)
+app.include_router(notifications.router)
 app.include_router(admin.router)
 
 @app.get("/healthz", include_in_schema=False)

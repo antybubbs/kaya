@@ -59,8 +59,8 @@
     <span>Page {{ page }} of {{ pages }}</span>
   </div>
   <div class="audit-table-wrap">
-    <table class="audit-table">
-      <thead><tr><th>Time</th><th>Level</th><th>Actor</th><th>Event</th><th>Target</th><th>Request</th>{% if not request.app.state.demo_mode %}<th>Source</th>{% endif %}<th>Detail</th></tr></thead>
+    <table class="audit-table" data-table-key="audit-logs" data-export-url="/system/audit-logs/export">
+      <thead><tr><th data-col="time">Time</th><th data-col="level">Level</th><th data-col="actor">Actor</th><th data-col="event">Event</th><th data-col="target">Target</th><th data-col="request">Request</th>{% if not request.app.state.demo_mode %}<th data-col="source">Source</th>{% endif %}<th data-col="detail">Detail</th></tr></thead>
       <tbody>
       {% for log in logs %}
         <tr>

@@ -7,14 +7,17 @@ import time
 import threading
 from datetime import datetime, timedelta
 from ipaddress import ip_address
+from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal
 from app.models.models import (
     IPAddress, NetworkMonitor, NetworkMonitorCheck, NetworkMonitorEvent,
-    NetworkMonitorOutage, NetworkMonitorStatistic,
+    NetworkMonitorOutage, NetworkMonitorStatistic, NetworkMonitorTransition,
+    NotificationEvent, NotificationOutbox,
 )
+from app.services.notification_outbox import enqueue_notification
 from app.services.site_settings import get_site_settings
 
 logger = logging.getLogger(__name__)
@@ -22,6 +25,8 @@ logger = logging.getLogger(__name__)
 CHECK_INTERVAL_SECONDS = 1
 STARTUP_DELAY_SECONDS = 45
 MAX_CONCURRENT_CHECKS = 5
+SCHEDULER_HEARTBEAT_SECONDS = 60
+WATCHDOG_INTERVAL_SECONDS = 60
 PING_TIME_PATTERN = re.compile(r"time[=<]([0-9.]+)")
 PING_AVERAGE_PATTERN = re.compile(r"= [0-9.]+/([0-9.]+)/")
 PING_LOSS_PATTERN = re.compile(r"([0-9.]+)% packet loss")
@@ -30,6 +35,22 @@ _monitor_check_locks: dict[int, threading.Lock] = {}
 _monitor_check_locks_guard = threading.Lock()
 _dashboard_interval_leases: dict[str, tuple[str, int, datetime]] = {}
 _dashboard_interval_leases_guard = threading.Lock()
+_scheduler_state_guard = threading.Lock()
+_scheduler_task: asyncio.Task | None = None
+_scheduler_watchdog_task: asyncio.Task | None = None
+_scheduler_shutdown_requested = False
+_scheduler_generation = 0
+_worker_started_at: datetime | None = None
+_last_scheduler_heartbeat: datetime | None = None
+_last_monitor_execution: datetime | None = None
+_last_observation_written: datetime | None = None
+_last_due_scan: datetime | None = None
+_due_monitors_found = 0
+_active_monitor_started_at: dict[int, datetime] = {}
+_last_scheduler_exception: str | None = None
+_watchdog_restart_count = 0
+_current_loop_iteration = 0
+_pending_monitor_ids: set[int] = set()
 DASHBOARD_INTERVALS = {"live": 1, "five": 5, "ten": 10, "sixty": 60}
 MONITOR_THRESHOLD_DEFAULTS = {
     "latency_warning_ms": 100,
@@ -362,6 +383,84 @@ def _event(db: Session, monitor: NetworkMonitor, event_type: str, severity: str,
     db.add(NetworkMonitorEvent(monitor_id=monitor.id, event_type=event_type, severity=severity, message=message[:500], occurred_at=now))
 
 
+def _enqueue_monitor_notification(
+    db: Session,
+    monitor: NetworkMonitor,
+    event_type_id: str,
+    title: str,
+    message: str,
+    deduplication_key: str,
+    *,
+    resolved: bool = False,
+    resolve_deduplication_key: str | None = None,
+    correlation_id: str | None = None,
+) -> NotificationOutbox:
+    return enqueue_notification(
+        db,
+        event_type_id=event_type_id,
+        title=title,
+        message=message,
+        target_route=f"/networking/ip-wan-monitor/{monitor.id}",
+        source_entity_type="network_monitor",
+        source_entity_id=monitor.id,
+        deduplication_key=deduplication_key,
+        resolve_deduplication_key=resolve_deduplication_key,
+        correlation_id=correlation_id,
+        resolved=resolved,
+    )
+
+
+def reconcile_offline_notifications(db: Session) -> dict[str, int]:
+    """Create one real notification for confirmed offline monitors lacking one."""
+    monitors = (
+        db.query(NetworkMonitor)
+        .filter(
+            NetworkMonitor.is_enabled.is_(True),
+            NetworkMonitor.is_in_maintenance.is_(False),
+            NetworkMonitor.last_status.in_(["offline", "down"]),
+        )
+        .order_by(NetworkMonitor.id.asc())
+        .limit(1000)
+        .all()
+    )
+    created = 0
+    existing = 0
+    for monitor in monitors:
+        key = f"ipwan:host:{monitor.id}:offline"
+        active = db.query(NotificationEvent.id).filter_by(
+            deduplication_key=key, resolved_at=None
+        ).first()
+        if active:
+            existing += 1
+            continue
+        label = monitor_label(monitor)
+        pending = db.query(NotificationOutbox.id).filter(
+            NotificationOutbox.deduplication_key == key,
+            NotificationOutbox.status.in_(["pending", "processing", "retry"]),
+        ).first()
+        if pending:
+            existing += 1
+            continue
+        row = _enqueue_monitor_notification(
+            db,
+            monitor,
+            "ipwan.host.offline",
+            "Host offline",
+            f"{label} is no longer responding.",
+            key,
+        )
+        if row:
+            created += 1
+    db.commit()
+    logger.info(
+        "notification.reconcile.completed module=network_monitor candidates=%s created=%s existing=%s",
+        len(monitors),
+        created,
+        existing,
+    )
+    return {"candidates": len(monitors), "created": created, "existing": existing}
+
+
 def record_monitor_result(
     db: Session,
     monitor: NetworkMonitor,
@@ -425,7 +524,7 @@ def record_monitor_result(
     monitor.last_packet_loss_percent = packet_loss
     monitor.last_error = error
     monitor.last_checked_at = now
-    db.add(NetworkMonitorCheck(
+    observation = NetworkMonitorCheck(
         monitor_id=monitor.id,
         status="up" if ok else "down",
         health_state="maintenance" if monitor.is_in_maintenance else raw_state,
@@ -434,7 +533,9 @@ def record_monitor_result(
         response_time_ms=latency_ms,
         error=error,
         checked_at=now,
-    ))
+    )
+    db.add(observation)
+    db.flush()
 
     if not monitor.is_in_maintenance:
         if state == "offline" and not offline_incident:
@@ -490,8 +591,62 @@ def record_monitor_result(
 
     if changed:
         _event(db, monitor, "state_changed", state, f"State changed to {state}: {reason}", now)
+        correlation_id = uuid4().hex
+        db.add(
+            NetworkMonitorTransition(
+                monitor_id=monitor.id,
+                previous_state=previous_state,
+                new_state=state,
+                transitioned_at=now,
+                triggering_observation_id=observation.id,
+                consecutive_successes=monitor.consecutive_successes or 0,
+                consecutive_failures=monitor.consecutive_failures or 0,
+                reason=reason[:500],
+                correlation_id=correlation_id,
+            )
+        )
+        label = monitor_label(monitor)
+        if state == "offline":
+            _enqueue_monitor_notification(
+                db,
+                monitor,
+                "ipwan.host.offline",
+                "Host offline",
+                f"{label} is no longer responding.",
+                f"ipwan:host:{monitor.id}:offline",
+                correlation_id=correlation_id,
+            )
+        elif (
+            previous_state in {"offline", "recovering"}
+            and state not in {"offline", "recovering"}
+        ):
+            _enqueue_monitor_notification(
+                db,
+                monitor,
+                "ipwan.host.recovered",
+                "Host recovered",
+                f"{label} is responding again.",
+                f"ipwan:host:{monitor.id}:recovered:{correlation_id}",
+                resolve_deduplication_key=f"ipwan:host:{monitor.id}:offline",
+                correlation_id=correlation_id,
+                resolved=True,
+            )
     enforce_retention(db)
     db.commit()
+    if changed:
+        logger.info(
+            "monitor.transition.committed monitor_id=%s previous_state=%s new_state=%s "
+            "observation_id=%s correlation_id=%s",
+            monitor.id,
+            previous_state,
+            state,
+            observation.id,
+            correlation_id,
+        )
+    with _scheduler_state_guard:
+        global _last_observation_written
+        _last_observation_written = datetime.utcnow()
+    logger.info("IP/WAN observation written monitor_id=%s", monitor.id)
 
 
 def run_monitor_check(db: Session, monitor: NetworkMonitor) -> None:
@@ -533,42 +688,304 @@ def run_monitor_check_by_id(monitor_id: int) -> bool:
         lock.release()
 
 
-async def monitor_loop() -> None:
+def _utc_iso(value: datetime | None) -> str | None:
+    return value.isoformat(timespec="seconds") + "Z" if value else None
+
+
+def monitor_scheduler_diagnostics() -> dict:
+    """Return a minimal, thread-safe snapshot of the scheduler's runtime state."""
+    with _scheduler_state_guard:
+        task = _scheduler_task
+        started_at = _worker_started_at
+        pending = sorted(_pending_monitor_ids)
+        active_started = dict(_active_monitor_started_at)
+        oldest_started = min(active_started.values(), default=None)
+        now = datetime.utcnow()
+        return {
+            "scheduler_running": bool(task and not task.done()),
+            "scheduler_task_id": task.get_name() if task else None,
+            "task_id": task.get_name() if task else None,
+            "last_scheduler_heartbeat": _utc_iso(_last_scheduler_heartbeat),
+            "last_due_scan": _utc_iso(_last_due_scan),
+            "due_monitors_found": _due_monitors_found,
+            "last_monitor_execution": _utc_iso(_last_monitor_execution),
+            "last_observation_written": _utc_iso(_last_observation_written),
+            "pending_monitors": pending,
+            "pending_monitor_count": len(pending),
+            "active_monitor_tasks": len(active_started),
+            "available_worker_slots": max(0, MAX_CONCURRENT_CHECKS - len(active_started)),
+            "stuck_monitor_count": sum(
+                1
+                for started in active_started.values()
+                if started < now - timedelta(minutes=5)
+            ),
+            "oldest_active_monitor": _utc_iso(oldest_started),
+            "last_scheduler_exception": _last_scheduler_exception,
+            "watchdog_restart_count": _watchdog_restart_count,
+            "current_loop_iteration": _current_loop_iteration,
+            "worker_uptime_seconds": max(0, int((datetime.utcnow() - started_at).total_seconds())) if started_at else None,
+        }
+
+
+def _scheduler_disappearance_reason(task: asyncio.Task | None) -> str:
+    if task is None:
+        return "task reference is missing"
+    if task.cancelled():
+        return "task was cancelled"
+    if not task.done():
+        return "task is running"
+    try:
+        exception = task.exception()
+    except asyncio.CancelledError:
+        return "task was cancelled"
+    if exception:
+        return f"task failed with {type(exception).__name__}"
+    return "task exited without an exception"
+
+
+def _queue_scheduler_failure_notification(reason: str) -> None:
+    try:
+        with SessionLocal() as db:
+            enqueue_notification(
+                db,
+                event_type_id="system.background_task.failed",
+                title="IP/WAN scheduler failure",
+                message="The monitoring scheduler stopped and Kaya initiated recovery.",
+                target_route="/system/site-administration/notifications",
+                source_entity_type="background_worker",
+                source_entity_id="ip_wan_scheduler",
+                deduplication_key="system:background-worker:ip-wan-scheduler:failed",
+                correlation_id=uuid4().hex,
+                metadata={"worker": "ip_wan_scheduler", "reason_code": reason[:80]},
+            )
+            db.commit()
+    except Exception:
+        logger.exception("IP/WAN scheduler failure notification could not be queued")
+
+
+def _create_scheduler_task(reason: str) -> asyncio.Task:
+    global _scheduler_task, _scheduler_generation, _current_loop_iteration, _last_scheduler_heartbeat
+    _scheduler_generation += 1
+    task = asyncio.create_task(
+        monitor_loop(), name=f"ip-wan-monitor-scheduler-{_scheduler_generation}"
+    )
+    with _scheduler_state_guard:
+        _scheduler_task = task
+        _current_loop_iteration = 0
+        _last_scheduler_heartbeat = None
+    logger.info("IP/WAN scheduler task created reason=%s task_id=%s", reason, task.get_name())
+    return task
+
+
+def start_monitor_scheduler() -> tuple[asyncio.Task, asyncio.Task]:
+    """Start the supervised scheduler and its independently-owned watchdog."""
+    global _scheduler_shutdown_requested, _scheduler_watchdog_task, _worker_started_at
+    with _scheduler_state_guard:
+        scheduler = _scheduler_task if _scheduler_task and not _scheduler_task.done() else None
+        watchdog = (
+            _scheduler_watchdog_task
+            if _scheduler_watchdog_task and not _scheduler_watchdog_task.done()
+            else None
+        )
+        if scheduler and watchdog:
+            return scheduler, watchdog
+        _scheduler_shutdown_requested = False
+        if not _worker_started_at:
+            _worker_started_at = datetime.utcnow()
+    if not scheduler:
+        scheduler = _create_scheduler_task("application startup")
+    if not watchdog:
+        watchdog = asyncio.create_task(
+            monitor_scheduler_watchdog(), name="ip-wan-monitor-watchdog"
+        )
+        with _scheduler_state_guard:
+            _scheduler_watchdog_task = watchdog
+    return scheduler, watchdog
+
+
+def supervise_monitor_scheduler() -> asyncio.Task | None:
+    """Recreate a missing scheduler; called by the watchdog every minute."""
+    with _scheduler_state_guard:
+        task = _scheduler_task
+        shutting_down = _scheduler_shutdown_requested
+    if shutting_down or (task and not task.done()):
+        return None
+    global _last_scheduler_exception, _watchdog_restart_count
+    reason = _scheduler_disappearance_reason(task)
+    _last_scheduler_exception = reason
+    _watchdog_restart_count += 1
+    _queue_scheduler_failure_notification(reason)
+    if task and task.done() and not task.cancelled():
+        exception = task.exception()
+        if exception:
+            logger.error(
+                "IP/WAN scheduler disappeared: %s", reason,
+                exc_info=(type(exception), exception, exception.__traceback__),
+            )
+        else:
+            logger.error("IP/WAN scheduler disappeared: %s", reason, stack_info=True)
+    else:
+        logger.error("IP/WAN scheduler disappeared: %s", reason, stack_info=True)
+    return _create_scheduler_task(reason)
+
+
+async def monitor_scheduler_watchdog() -> None:
+    logger.info("IP/WAN scheduler watchdog started")
+    try:
+        while True:
+            await asyncio.sleep(WATCHDOG_INTERVAL_SECONDS)
+            try:
+                with _scheduler_state_guard:
+                    task = _scheduler_task
+                    heartbeat = _last_scheduler_heartbeat
+                    shutting_down = _scheduler_shutdown_requested
+                stale = bool(
+                    task
+                    and not task.done()
+                    and heartbeat
+                    and heartbeat < datetime.utcnow() - timedelta(seconds=120)
+                )
+                if stale and not shutting_down:
+                    global _last_scheduler_exception, _watchdog_restart_count
+                    logger.critical(
+                        "IP/WAN scheduler heartbeat stale; watchdog is restarting the scheduler"
+                    )
+                    _last_scheduler_exception = "stale_heartbeat"
+                    _watchdog_restart_count += 1
+                    await asyncio.to_thread(
+                        _queue_scheduler_failure_notification, "stale_heartbeat"
+                    )
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+                    _create_scheduler_task("stale heartbeat")
+                    continue
+                supervise_monitor_scheduler()
+            except Exception:
+                logger.exception("IP/WAN scheduler watchdog exception")
+    except asyncio.CancelledError:
+        logger.info("IP/WAN scheduler watchdog cancelled")
+        raise
+
+
+async def stop_monitor_scheduler() -> None:
+    global _scheduler_shutdown_requested, _scheduler_task, _scheduler_watchdog_task, _worker_started_at
+    with _scheduler_state_guard:
+        _scheduler_shutdown_requested = True
+        scheduler = _scheduler_task
+        watchdog = _scheduler_watchdog_task
+    for task in (watchdog, scheduler):
+        if task and not task.done():
+            task.cancel()
+    await asyncio.gather(*(task for task in (watchdog, scheduler) if task), return_exceptions=True)
+    with _scheduler_state_guard:
+        _scheduler_task = None
+        _scheduler_watchdog_task = None
+        _worker_started_at = None
+        _pending_monitor_ids.clear()
+        _active_monitor_started_at.clear()
+
+
+def _reap_finished_monitor_tasks(in_flight: dict[int, asyncio.Task]) -> dict[int, asyncio.Task]:
+    for monitor_id, task in list(in_flight.items()):
+        if not task.done():
+            continue
+        if task.cancelled():
+            logger.warning("IP/WAN monitor task cancelled monitor_id=%s", monitor_id)
+            continue
+        try:
+            task.result()
+        except Exception:
+            logger.exception("IP/WAN monitor task failed monitor_id=%s", monitor_id)
+    return {monitor_id: task for monitor_id, task in in_flight.items() if not task.done()}
+
+
+async def _run_monitor_loop() -> None:
+    logger.info("IP/WAN scheduler started")
+    logger.info("IP/WAN scheduler sleeping seconds=%s reason=startup_delay", STARTUP_DELAY_SECONDS)
     await asyncio.sleep(STARTUP_DELAY_SECONDS)
+    logger.info("IP/WAN scheduler resumed reason=startup_delay_complete")
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_CHECKS)
     in_flight: dict[int, asyncio.Task] = {}
     next_tick = time.monotonic()
+    last_heartbeat = 0.0
 
     async def checked_monitor(monitor_id: int) -> None:
-        async with semaphore:
-            await asyncio.to_thread(run_monitor_check_by_id, monitor_id)
+        try:
+            async with semaphore:
+                with _scheduler_state_guard:
+                    _active_monitor_started_at[monitor_id] = datetime.utcnow()
+                completed = await asyncio.to_thread(run_monitor_check_by_id, monitor_id)
+                if completed:
+                    with _scheduler_state_guard:
+                        global _last_monitor_execution
+                        _last_monitor_execution = datetime.utcnow()
+                logger.info("IP/WAN monitor completed monitor_id=%s executed=%s", monitor_id, completed)
+        finally:
+            with _scheduler_state_guard:
+                _pending_monitor_ids.discard(monitor_id)
+                _active_monitor_started_at.pop(monitor_id, None)
 
     try:
         while True:
-            for task in (task for task in in_flight.values() if task.done()):
-                try:
-                    task.result()
-                except Exception:
-                    logger.exception("Network monitor task failed")
-            in_flight = {
-                monitor_id: task for monitor_id, task in in_flight.items()
-                if not task.done()
-            }
+            iteration_started = time.monotonic()
+            with _scheduler_state_guard:
+                global _current_loop_iteration, _last_scheduler_heartbeat
+                _current_loop_iteration += 1
+                iteration = _current_loop_iteration
+                _last_scheduler_heartbeat = datetime.utcnow()
+            if iteration_started - last_heartbeat >= SCHEDULER_HEARTBEAT_SECONDS:
+                logger.info("IP/WAN scheduler heartbeat iteration=%s pending=%s", iteration, len(in_flight))
+                last_heartbeat = iteration_started
+            logger.info("IP/WAN scheduler iteration started iteration=%s", iteration)
+            in_flight = _reap_finished_monitor_tasks(in_flight)
             db = SessionLocal()
             try:
                 monitor_ids = [
                     monitor.id for monitor in fallback_due_monitors(db)
                     if monitor.id not in in_flight
                 ]
+                with _scheduler_state_guard:
+                    global _last_due_scan, _due_monitors_found
+                    _last_due_scan = datetime.utcnow()
+                    _due_monitors_found = len(monitor_ids)
+            except Exception as exc:
+                with _scheduler_state_guard:
+                    global _last_scheduler_exception
+                    _last_scheduler_exception = type(exc).__name__
+                logger.exception("IP/WAN scheduler due scan failed")
+                monitor_ids = []
             finally:
                 db.close()
             for monitor_id in monitor_ids:
+                with _scheduler_state_guard:
+                    _pending_monitor_ids.add(monitor_id)
+                logger.info("IP/WAN monitor queued monitor_id=%s", monitor_id)
                 in_flight[monitor_id] = asyncio.create_task(checked_monitor(monitor_id))
+            logger.info("IP/WAN scheduler iteration finished iteration=%s queued=%s pending=%s", iteration, len(monitor_ids), len(in_flight))
             next_tick += CHECK_INTERVAL_SECONDS
-            await asyncio.sleep(max(0, next_tick - time.monotonic()))
+            sleep_seconds = max(0, next_tick - time.monotonic())
+            logger.info("IP/WAN scheduler sleeping seconds=%.3f", sleep_seconds)
+            await asyncio.sleep(sleep_seconds)
+            logger.info("IP/WAN scheduler resumed")
             if next_tick < time.monotonic() - CHECK_INTERVAL_SECONDS:
                 next_tick = time.monotonic()
     finally:
         for task in in_flight.values():
             task.cancel()
         await asyncio.gather(*in_flight.values(), return_exceptions=True)
+        with _scheduler_state_guard:
+            _pending_monitor_ids.clear()
+            _active_monitor_started_at.clear()
+
+
+async def monitor_loop() -> None:
+    try:
+        await _run_monitor_loop()
+    except asyncio.CancelledError:
+        logger.info("IP/WAN scheduler cancelled", stack_info=True)
+        raise
+    except BaseException:
+        logger.exception("IP/WAN scheduler exception")
+        raise
+    finally:
+        logger.info("IP/WAN scheduler exiting", stack_info=True)
