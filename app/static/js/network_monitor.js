@@ -388,7 +388,15 @@
       return parameters;
     }
 
+    function updatePerformanceExportUrl() {
+      const parameters = performanceParameters(true);
+      parameters.delete("page");
+      parameters.delete("page_size");
+      performance.querySelector("[data-table-key=network-monitor-performance]").dataset.exportUrl = `${performance.dataset.exportEndpoint}?${parameters}`;
+    }
+
     async function loadPerformance() {
+      updatePerformanceExportUrl();
       performanceState.request?.abort();
       const request = new AbortController();
       performanceState.request = request;
@@ -450,9 +458,6 @@
       performanceState.page += button.dataset.performancePage === "next" ? 1 : -1;
       void loadPerformance();
     }));
-    performance.querySelector("[data-performance-export]").addEventListener("click", () => {
-      window.location.assign(`${performance.dataset.exportEndpoint}?${performanceParameters(false)}`);
-    });
     window.addEventListener("hashchange", () => { if (window.location.hash === "#performance") renderPerformanceChart(); });
     const performanceResize = new ResizeObserver(() => performanceState.chart?.resize());
     performanceResize.observe(chartElement);

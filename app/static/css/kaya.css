@@ -1338,3 +1338,5 @@ html[data-kaya-theme=light-ops] .ha-sync-intro{background:linear-gradient(135deg
 .ha-node-diagnostics .ha-node-facts {
   margin-top: 8px;
 }
+/* Shared table export follows Kaya's command/light control palette. */
+.table-export>summary{background:#18140f;border-color:rgba(255,138,0,.28);color:#f5f5f2}.table-export>summary:hover,.table-export>summary:focus-visible{background:rgba(255,138,0,.13);border-color:rgba(255,138,0,.34);color:#fff}html[data-kaya-theme=light-ops] .table-export>summary,html[data-theme=light] .table-export>summary{background:#fff8f0;border-color:rgba(255,138,0,.3);color:#7a3b00}html[data-kaya-theme=light-ops] .table-export-panel{background:#fff;border-color:#d8dee8}

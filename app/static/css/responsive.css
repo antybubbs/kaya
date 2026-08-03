@@ -232,3 +232,4 @@
 [role="tab"][aria-selected="true"] {
   box-shadow: none;
 }
+@media(max-width:850px){.table-export{margin-left:auto}.table-settings{margin-left:0}.table-export-panel{background:var(--panel);max-height:70dvh;max-width:calc(100vw - 36px);min-width:min(280px,calc(100vw - 36px));position:fixed;right:18px;top:calc(var(--mobile-header-height) + env(safe-area-inset-top) + 8px)}.table-export>summary{min-height:44px}}

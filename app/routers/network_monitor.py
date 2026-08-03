@@ -1,12 +1,10 @@
-import csv
-import io
 import json
 import math
 from datetime import datetime, timedelta
 from urllib.parse import quote
 
 from fastapi import APIRouter, Body, Depends, Form, HTTPException, Query, Request
-from fastapi.responses import JSONResponse, RedirectResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session, selectinload
 from starlette import status
@@ -45,6 +43,7 @@ from app.services.network_monitor import (
     validate_threshold_values,
 )
 from app.services.network_monitor_history import performance_history
+from app.services.table_export import csv_safe, export_row_matches, table_export_response, validate_export_columns, validate_export_filters, validate_export_format
 from app.services.network_monitor_wallboard import (
     GENERIC_CREDENTIAL_ERROR,
     VALID_COLUMNS,
@@ -914,44 +913,57 @@ def export_monitor_performance(
     range: str = Query("24h", max_length=10),
     start: str | None = Query(None, max_length=40),
     end: str | None = Query(None, max_length=40),
+    format: str = Query("csv", max_length=8),
+    columns: str = Query("", max_length=300),
+    filters: str = Query("", max_length=2000),
+    sort: str = Query("time", max_length=20),
+    direction: str = Query("asc", max_length=4),
+    q: str = Query("", max_length=50),
     db: Session = Depends(get_db),
     user=Depends(require_user),
 ):
+    format = validate_export_format(format)
     monitor = db.get(NetworkMonitor, monitor_id)
     if not monitor:
         raise HTTPException(status_code=404, detail="Monitor not found")
-    payload = performance_history(db, monitor, range, start, end, 1, 5000, "time", "asc")
-    output = io.StringIO(newline="")
-    writer = csv.writer(output)
-    writer.writerow([
-        "period_start_utc", "period_end_utc", "latency_min_ms", "latency_avg_ms",
-        "latency_max_ms", "jitter_avg_ms", "jitter_max_ms", "packet_loss_percent",
-        "availability_percent", "successful_checks", "failed_checks", "status",
-    ])
-    for row in payload["table"]["rows"]:
-        writer.writerow([
-            row["at"], row["end"], row["latency_min"], row["latency_avg"], row["latency_max"],
-            row["jitter_avg"], row["jitter_max"], row["packet_loss"], row["availability"],
-            row["successful"], row["failed"], csv_safe(row["status"]),
-        ])
+    column_map = {
+        "time": ("Date/time", lambda row: row["at"]),
+        "latency-min": ("Latency min", lambda row: row["latency_min"]),
+        "latency-avg": ("Latency avg", lambda row: row["latency_avg"]),
+        "latency-max": ("Latency max", lambda row: row["latency_max"]),
+        "jitter": ("Jitter", lambda row: row["jitter_avg"]),
+        "packet-loss": ("Packet loss", lambda row: row["packet_loss"]),
+        "availability": ("Availability", lambda row: row["availability"]),
+        "successful": ("Successful", lambda row: row["successful"]),
+        "failed": ("Failed", lambda row: row["failed"]),
+        "status": ("Status", lambda row: row["status"]),
+    }
+    selected_columns = validate_export_columns(columns, list(column_map))
+    active_filters = validate_export_filters(filters, list(column_map))
+    payload = performance_history(db, monitor, range, start, end, 1, 1000000, sort, direction, q)
+    table_rows = payload["table"]["rows"]
+    table_rows = [row for row in table_rows if export_row_matches(row, column_map, active_filters)]
     write_audit(
         db, user, "export", "network_monitor_performance", str(monitor.id), trusted_client_ip(request),
-        detail=f"Exported {len(payload['table']['rows'])} performance rows for {range}",
+        detail=f"Exported {len(table_rows)} performance rows as {format} for {range}; search applied={bool(q.strip())}",
     )
-    filename = f"network-monitor-{monitor.id}-performance-{range}.csv"
-    return Response(output.getvalue(), media_type="text/csv; charset=utf-8", headers={
-        "Content-Disposition": f'attachment; filename="{filename}"',
-        "Cache-Control": "no-store",
-    })
-
-
-def csv_safe(value) -> str:
-    text_value = "" if value is None else str(value)
-    return f"'{text_value}" if text_value.startswith(("=", "+", "-", "@", "\t", "\r")) else text_value
-
-
+    return table_export_response(
+        table_name=f"ip-wan-monitor-{monitor.id}-performance",
+        headers=[column_map[key][0] for key in selected_columns],
+        rows=([column_map[key][1](row) for key in selected_columns] for row in table_rows),
+        export_format=format,
+    )
 @router.get("/{monitor_id}/checks.csv")
-def export_monitor_checks(request: Request, monitor_id: int, range: str = Query("24h", max_length=8), db: Session = Depends(get_db), user=Depends(require_user)):
+def export_monitor_checks(
+    request: Request, monitor_id: int, range: str = Query("24h", max_length=8),
+    check_status: str = Query("all", max_length=20), check_q: str = Query("", max_length=100),
+    format: str = Query("csv", max_length=8), columns: str = Query("", max_length=200),
+    filters: str = Query("", max_length=2000),
+    db: Session = Depends(get_db), user=Depends(require_user),
+):
+    format = validate_export_format(format)
+    if check_status not in {"all", "healthy", "warning", "critical", "offline", "maintenance"}:
+        raise HTTPException(status_code=422, detail="Invalid monitor check status filter")
     monitor = db.get(NetworkMonitor, monitor_id)
     if not monitor:
         raise HTTPException(status_code=404, detail="Monitor not found")
@@ -960,14 +972,32 @@ def export_monitor_checks(request: Request, monitor_id: int, range: str = Query(
         NetworkMonitorCheck.monitor_id == monitor.id,
         NetworkMonitorCheck.checked_at >= start,
     ).order_by(NetworkMonitorCheck.checked_at.desc()).limit(10000).all()
-    output = io.StringIO(newline="")
-    writer = csv.writer(output)
-    writer.writerow(["timestamp_utc", "status", "latency_ms", "packet_loss_percent", "response_time_ms", "failure_reason"])
+    thresholds = effective_monitor_thresholds(db, monitor)
+    filtered_rows = []
+    clean_query = check_q.strip().lower()
     for row in rows:
-        writer.writerow([row.checked_at.isoformat() + "Z", row.status, row.latency_ms, row.packet_loss_percent, row.response_time_ms, csv_safe(row.error)])
-    write_audit(db, user, "export", "network_monitor_checks", str(monitor.id), trusted_client_ip(request), detail=f"Exported {len(rows)} checks for {range}")
-    filename = f"network-monitor-{monitor.id}-{range}.csv"
-    return Response(output.getvalue(), media_type="text/csv; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+        row.export_health = row.health_state or point_health(thresholds, row.latency_ms, row.packet_loss_percent, row.status == "up")
+        searchable = " ".join(str(value or "") for value in (row.checked_at, row.export_health, row.status, row.latency_ms, row.packet_loss_percent, row.error)).lower()
+        if (check_status == "all" or row.export_health == check_status) and (not clean_query or clean_query in searchable):
+            filtered_rows.append(row)
+    column_map = {
+        "timestamp": ("Timestamp", lambda row: row.checked_at.isoformat() + "Z"),
+        "status": ("Status", lambda row: row.export_health.title()),
+        "latency": ("Latency", lambda row: row.latency_ms),
+        "packet-loss": ("Packet loss", lambda row: row.packet_loss_percent),
+        "response": ("Response", lambda row: row.response_time_ms),
+        "failure-reason": ("Failure reason", lambda row: row.error or ""),
+    }
+    selected_columns = validate_export_columns(columns, list(column_map))
+    active_filters = validate_export_filters(filters, list(column_map))
+    filtered_rows = [row for row in filtered_rows if export_row_matches(row, column_map, active_filters)]
+    write_audit(db, user, "export", "network_monitor_checks", str(monitor.id), trusted_client_ip(request), detail=f"Exported {len(filtered_rows)} checks as {format} for {range}; filters applied={bool(clean_query or check_status != 'all')}")
+    return table_export_response(
+        table_name=f"ip-wan-monitor-{monitor.id}-checks",
+        headers=[column_map[key][0] for key in selected_columns],
+        rows=([column_map[key][1](row) for key in selected_columns] for row in filtered_rows),
+        export_format=format,
+    )
 
 
 @router.post("/{monitor_id}/toggle")

@@ -2,7 +2,7 @@
 {% block content %}
 <div class="topbar"><div><h1>User Management</h1><p class="muted">Control local accounts, roles and module access.</p></div><div><a class="button" href="/team/users/new">Add user</a></div></div>
 <section class="panel">
-<div class="table-scroll"><table><thead><tr><th>Name</th><th>Email</th><th>Login method</th><th>OIDC provider</th><th>Last OIDC login</th><th>Role</th><th>Modules</th><th>Role source</th><th>Status</th><th>Break glass</th><th>2FA</th><th>Created</th><th></th></tr></thead><tbody>
+<div class="table-scroll"><table data-table-key="users" data-export-url="/team/users/export"><thead><tr><th data-col="name">Name</th><th data-col="email">Email</th><th data-col="login-method">Login method</th><th data-col="oidc-provider">OIDC provider</th><th data-col="last-oidc-login">Last OIDC login</th><th data-col="role">Role</th><th data-col="modules">Modules</th><th data-col="role-source">Role source</th><th data-col="status">Status</th><th data-col="break-glass">Break glass</th><th data-col="two-factor">2FA</th><th data-col="created">Created</th><th data-col="actions"></th></tr></thead><tbody>
 {% for row in rows %}
 <tr>
   <td>{{ row.display_name }}</td>

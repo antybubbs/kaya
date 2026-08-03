@@ -48,6 +48,9 @@ Kaya v0.26.0 introduces the Notification Centre, optional PWA Web Push, durable 
 
 ## Interface and documentation
 
+- Applicable Kaya data tables now provide a shared **Export** menu immediately before **Table settings**, with UTF-8 CSV and tab-delimited text downloads that respect visible columns, current filters and sorting.
+- Server-paginated Audit Logs, User Management, retained DNS clients/leases, and IP/WAN history export their complete filtered query rather than only the active page. Existing role/module checks remain server-side, requested columns are allowlisted, and sensitive exports create redacted audit events.
+- CSV output safely quotes special characters and neutralises spreadsheet formula prefixes. Secure Vault, Secure Send package data, active sessions and linked identities remain outside generic export by design.
 - Values calculated in powers of 1,024 are labelled KiB, MiB, GiB, and TiB.
 - The README now includes a fuller capability guide across Kaya's modules and deployment model.
 - Notification documentation covers setup, Web Push, privacy, retention, backup and restore, delivery semantics, diagnostics, and troubleshooting.

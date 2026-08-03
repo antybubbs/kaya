@@ -102,6 +102,7 @@ from app.services.modules import (
     replace_module_access,
 )
 from app.services.network_monitor import monitor_label, validate_threshold_values
+from app.services.table_export import export_row_matches, table_export_response, validate_export_columns, validate_export_filters, validate_export_format
 from app.services.network_monitor_wallboard import (
     DISPLAY_DEFAULTS,
     PERMISSION_DEFAULTS,
@@ -1150,6 +1151,54 @@ def users(
             "enabled_module_count": enabled_module_count,
             **csrf_context(request),
         },
+    )
+
+
+@router.get("/team/users/export")
+def export_users_table(
+    request: Request,
+    format: str = Query("csv", max_length=8),
+    columns: str = Query("", max_length=300),
+    filters: str = Query("", max_length=2000),
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    format = validate_export_format(format)
+    column_map = {
+        "name": ("Name", lambda row, counts, total: row.display_name),
+        "email": ("Email", lambda row, counts, total: row.email),
+        "login-method": ("Login method", lambda row, counts, total: row.authentication_type.replace("_", " ").title()),
+        "oidc-provider": ("OIDC provider", lambda row, counts, total: row.external_identities[0].provider.name if row.external_identities else ""),
+        "last-oidc-login": ("Last OIDC login", lambda row, counts, total: row.external_identities[0].last_login_at.isoformat() if row.external_identities and row.external_identities[0].last_login_at else "Never"),
+        "role": ("Role", lambda row, counts, total: row.role),
+        "modules": ("Modules", lambda row, counts, total: "All" if total and counts.get(row.id, 0) == total else counts.get(row.id, 0)),
+        "role-source": ("Role source", lambda row, counts, total: row.role_source.title()),
+        "status": ("Status", lambda row, counts, total: "Active" if row.is_active else "Disabled"),
+        "break-glass": ("Break glass", lambda row, counts, total: "Yes" if row.is_break_glass else "No"),
+        "two-factor": ("2FA", lambda row, counts, total: "Enabled" if row.totp_enabled else "Off"),
+        "created": ("Created", lambda row, counts, total: row.created_at.isoformat() if row.created_at else ""),
+    }
+    selected_columns = validate_export_columns(columns, list(column_map))
+    active_filters = validate_export_filters(filters, list(column_map))
+    rows = db.query(User).order_by(User.email.asc()).all()
+    module_counts = module_access_counts(db, rows)
+    enabled_module_count = len(enabled_modules(db))
+    rows = [
+        row for row in rows
+        if all(needle in str(column_map[key][1](row, module_counts, enabled_module_count) or "").casefold() for key, needle in active_filters.items())
+    ]
+    write_audit(
+        db, user, "export", "users", None, trusted_client_ip(request),
+        detail=f"Exported {len(rows)} user rows as {format}; columns={len(selected_columns)}",
+    )
+    return table_export_response(
+        table_name="users",
+        headers=[column_map[key][0] for key in selected_columns],
+        rows=(
+            [column_map[key][1](row, module_counts, enabled_module_count) for key in selected_columns]
+            for row in rows
+        ),
+        export_format=format,
     )
 
 
@@ -2379,6 +2428,47 @@ def legacy_audit(user=Depends(require_admin)):
     return RedirectResponse("/system/audit-logs", status_code=302)
 
 
+def audit_log_query(
+    db: Session, *, q: str = "", category: str = "", severity: str = "",
+    action: str = "", entity: str = "", actor: str = "",
+    date_from: str = "", date_to: str = "",
+):
+    query = db.query(AuditLog)
+    clean_q = q.strip()
+    if clean_q:
+        like = f"%{clean_q}%"
+        search_fields = [
+            AuditLog.action.ilike(like), AuditLog.entity.ilike(like),
+            AuditLog.entity_id.ilike(like), AuditLog.detail.ilike(like),
+            AuditLog.request_path.ilike(like), AuditLog.request_id.ilike(like),
+            AuditLog.user.has(User.email.ilike(like)),
+        ]
+        if not get_settings().demo_mode:
+            search_fields.append(AuditLog.ip_address.ilike(like))
+        query = query.filter(or_(*search_fields))
+    if category:
+        query = query.filter(AuditLog.category == category)
+    if severity:
+        query = query.filter(AuditLog.severity == severity)
+    if action:
+        query = query.filter(AuditLog.action == action)
+    if entity:
+        query = query.filter(AuditLog.entity == entity)
+    if actor:
+        query = query.filter(AuditLog.user.has(User.email == actor))
+    try:
+        if date_from:
+            query = query.filter(AuditLog.created_at >= datetime.strptime(date_from, "%Y-%m-%d"))
+    except ValueError:
+        date_from = ""
+    try:
+        if date_to:
+            query = query.filter(AuditLog.created_at < datetime.strptime(date_to, "%Y-%m-%d") + timedelta(days=1))
+    except ValueError:
+        date_to = ""
+    return query, clean_q, date_from, date_to
+
+
 @router.get("/system/audit-logs")
 def audit_logs(
     request: Request,
@@ -2397,48 +2487,10 @@ def audit_logs(
 ):
     if per_page not in {25, 50, 100}:
         per_page = 50
-    query = db.query(AuditLog)
-    settings = get_settings()
-    clean_q = q.strip()
-    if clean_q:
-        like = f"%{clean_q}%"
-        search_fields = [
-            AuditLog.action.ilike(like),
-            AuditLog.entity.ilike(like),
-            AuditLog.entity_id.ilike(like),
-            AuditLog.detail.ilike(like),
-            AuditLog.request_path.ilike(like),
-            AuditLog.request_id.ilike(like),
-            AuditLog.user.has(User.email.ilike(like)),
-        ]
-        if not settings.demo_mode:
-            search_fields.append(AuditLog.ip_address.ilike(like))
-        query = query.filter(or_(*search_fields))
-    if category:
-        query = query.filter(AuditLog.category == category)
-    if severity:
-        query = query.filter(AuditLog.severity == severity)
-    if action:
-        query = query.filter(AuditLog.action == action)
-    if entity:
-        query = query.filter(AuditLog.entity == entity)
-    if actor:
-        query = query.filter(AuditLog.user.has(User.email == actor))
-    if date_from:
-        try:
-            query = query.filter(
-                AuditLog.created_at >= datetime.strptime(date_from, "%Y-%m-%d")
-            )
-        except ValueError:
-            date_from = ""
-    if date_to:
-        try:
-            query = query.filter(
-                AuditLog.created_at
-                < datetime.strptime(date_to, "%Y-%m-%d") + timedelta(days=1)
-            )
-        except ValueError:
-            date_to = ""
+    query, clean_q, date_from, date_to = audit_log_query(
+        db, q=q, category=category, severity=severity, action=action,
+        entity=entity, actor=actor, date_from=date_from, date_to=date_to,
+    )
 
     filtered_total = query.count()
     pages = max(1, (filtered_total + per_page - 1) // per_page)
@@ -2542,6 +2594,52 @@ def audit_logs(
             "next_url": page_url(page + 1) if page < pages else None,
             **csrf_context(request),
         },
+    )
+
+
+@router.get("/system/audit-logs/export")
+def export_audit_logs(
+    request: Request,
+    q: str = Query("", max_length=200), category: str = Query("", max_length=40),
+    severity: str = Query("", max_length=20), action: str = Query("", max_length=80),
+    entity: str = Query("", max_length=80), actor: str = Query("", max_length=255),
+    date_from: str = Query("", max_length=10), date_to: str = Query("", max_length=10),
+    format: str = Query("csv", max_length=8), columns: str = Query("", max_length=300),
+    filters: str = Query("", max_length=2000),
+    db: Session = Depends(get_db), user=Depends(require_admin),
+):
+    format = validate_export_format(format)
+    column_map = {
+        "time": ("Time", lambda row: row.created_at.isoformat() if row.created_at else ""),
+        "level": ("Level", lambda row: row.severity),
+        "actor": ("Actor", lambda row: row.user.email if row.user else "System / anonymous"),
+        "event": ("Event", lambda row: f"{row.action.replace('_', ' ').title()} ({row.category.replace('_', ' ').title()})"),
+        "target": ("Target", lambda row: f"{row.entity.replace('_', ' ').title()}{f' #{row.entity_id}' if row.entity_id else ''}"),
+        "request": ("Request", lambda row: " ".join(value for value in (row.request_method, row.request_path, f"HTTP {row.status_code}" if row.status_code else "") if value)),
+        "source": ("Source", lambda row: row.ip_address or ""),
+        "detail": ("Detail", lambda row: row.detail or ""),
+    }
+    if get_settings().demo_mode:
+        column_map.pop("source")
+    selected_columns = validate_export_columns(columns, list(column_map))
+    active_filters = validate_export_filters(filters, list(column_map))
+    query, clean_q, clean_from, clean_to = audit_log_query(
+        db, q=q, category=category, severity=severity, action=action,
+        entity=entity, actor=actor, date_from=date_from, date_to=date_to,
+    )
+    total = query.count()
+    if total > 100000:
+        raise HTTPException(status_code=413, detail="Narrow the audit filters before exporting more than 100,000 rows")
+    rows = query.options(selectinload(AuditLog.user)).order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).all()
+    rows = [row for row in rows if export_row_matches(row, column_map, active_filters)]
+    write_audit(
+        db, user, "export", "audit_log", None, trusted_client_ip(request),
+        detail=f"Exported {len(rows)} audit rows as {format}; filters applied={any((clean_q, category, severity, action, entity, actor, clean_from, clean_to))}",
+    )
+    return table_export_response(
+        table_name="audit-logs", headers=[column_map[key][0] for key in selected_columns],
+        rows=([column_map[key][1](row) for key in selected_columns] for row in rows),
+        export_format=format,
     )
 
 

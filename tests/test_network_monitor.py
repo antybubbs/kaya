@@ -962,7 +962,8 @@ def test_performance_workspace_uses_one_reusable_theme_aware_chart_without_navig
     assert "fetch(`${performance.dataset.endpoint}" in script
     assert "if (!performanceState.chart)" in script
     assert "ResizeObserver" in script and "data-kaya-theme" in script
-    assert 'window.location.assign(`${performance.dataset.exportEndpoint}' in script
+    assert 'updatePerformanceExportUrl()' in script
+    assert 'dataset.exportUrl = `${performance.dataset.exportEndpoint}' in script
     assert 'window.location.assign(`${performance.dataset.endpoint}' not in script
     assert "axisPointer: { type: \"cross\" }" in script
     assert "performanceState.chart.setOption" in script

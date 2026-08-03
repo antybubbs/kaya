@@ -125,6 +125,10 @@ For every feature or fix, determine and document as applicable:
 - Audit events for successful and failed security-sensitive actions.
 - Docker, proxy, dependency, migration and backwards-compatibility impact.
 
+### Generic table export
+
+Treat every table export as a protected data read. A shared export may include only the current user's authorised query result and server-approved visible columns; client-selected model fields, hidden metadata, credentials and decrypted secrets are forbidden. Server-paginated or large tables must reuse the authorised query builder, remove pagination without removing filters/sort/object scope, validate format and columns against allowlists, apply a documented resource bound or streaming strategy, prevent spreadsheet formula injection, return `no-store` downloads, and audit administrative or security-sensitive exports without row contents. Secure Vault, authentication material and other separately protected secret stores require purpose-built export designs and must never inherit generic export automatically.
+
 ## Security Impact completion format
 
 Every feature or bug-fix completion summary must include:
