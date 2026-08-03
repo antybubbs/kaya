@@ -92,6 +92,14 @@ Kaya currently supports one application process per SQLite database. Workers use
 
 The administrator in-app test, immediate Push test, delayed 30–60 second test, and simulated production event all enter the notification outbox. The safe pipeline report exposes stage counts and reason codes without endpoints, subscription keys, VAPID material, addresses or payload secrets. Registered event types without a proven production publisher remain visible in the registry report as unavailable and are not offered as configurable categories.
 
+## Worker health and reconciliation failures
+
+The notification supervisor identifies the outbox, delivery, and reconciliation workers separately. A heartbeat records a completed loop; an idle worker remains healthy until its recorded `next_run_at` plus bounded scheduling grace. This prevents the five-minute reconciliation schedule from being mistaken for a stalled 120-second operation.
+
+Unexpected task exits use controlled restart backoff. Normal application shutdown cancellation is not reported as a worker failure. Failure alerts use one active-condition deduplication key and are resolved only after sustained successful processing.
+
+Reconciliation processes each monitor independently with a fresh worker-owned database session. A failed source item is retried with bounded backoff and then quarantined for administrator review; it is never silently deleted. Delivery Health exposes safe task identities, completed-loop times, restart and failure counts, queue age, and quarantine records. Correlation IDs map the redacted UI summary to full server-side exception tracebacks.
+
 ## Troubleshooting
 
 - **Push disabled:** enable Web Push in Site Administration; disabling preserves keys, devices, preferences and history.

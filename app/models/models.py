@@ -1557,6 +1557,41 @@ class NotificationOutbox(Base):
     )
 
 
+class NotificationReconciliationFailure(Base):
+    """Durable retry/quarantine state for one reconciliation source item."""
+
+    __tablename__ = "notification_reconciliation_failures"
+    __table_args__ = (
+        UniqueConstraint(
+            "item_type",
+            "item_id",
+            "operation",
+            name="uq_notification_reconciliation_failure_item",
+        ),
+        Index(
+            "ix_notification_reconciliation_failures_due",
+            "status",
+            "next_retry_at",
+        ),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    item_type: Mapped[str] = mapped_column(String(80), index=True)
+    item_id: Mapped[str] = mapped_column(String(120), index=True)
+    operation: Mapped[str] = mapped_column(String(80), index=True)
+    status: Mapped[str] = mapped_column(String(30), default="retry", index=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_exception_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    correlation_id: Mapped[str] = mapped_column(String(64), index=True)
+    quarantined_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
 class UserNotification(Base):
     __tablename__ = "user_notifications"
     __table_args__ = (

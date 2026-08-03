@@ -18,6 +18,7 @@ from app.models.models import (
     NotificationEvent,
     NotificationOutbox,
     NotificationPreference,
+    NotificationReconciliationFailure,
     PushSubscription,
     RemoteManagerSetting,
     User,
@@ -31,6 +32,7 @@ from app.routers.auth import require_admin
 from app.routers.notifications import (
     ConfirmedWebPushAction,
     PreferenceUpdate,
+    ReconciliationFailureAction,
     WebPushKeyRequest,
     _owned,
 )
@@ -779,6 +781,39 @@ def test_admin_push_test_distinguishes_missing_and_active_subscription(db):
     assert result["queued_devices"] == 1
     assert result["status"] == "queued"
     assert db.query(NotificationOutbox).filter_by(status="pending").count() == 1
+
+
+def test_admin_can_retry_quarantined_reconciliation_item_with_csrf_and_audit(db):
+    admin = user(db, "reconciliation-admin@example.invalid", role="admin")
+    failure = NotificationReconciliationFailure(
+        item_type="network_monitor",
+        item_id="42",
+        operation="offline",
+        status="quarantined",
+        attempt_count=5,
+        last_exception_type="ValueError",
+        last_error_code="reconciliation_item_error",
+        correlation_id="d" * 32,
+        quarantined_at=datetime.utcnow(),
+    )
+    db.add(failure)
+    db.commit()
+
+    result = notification_router.update_reconciliation_failure(
+        failure.id,
+        ReconciliationFailureAction(action="retry"),
+        csrf_request(),
+        db=db,
+        user=admin,
+    )
+
+    db.refresh(failure)
+    assert result == {"ok": True, "status": "retry"}
+    assert failure.attempt_count == 0
+    assert failure.quarantined_at is None
+    assert db.query(AuditLog).filter_by(
+        action="notification_reconciliation_failure_retried"
+    ).count() == 1
 
 
 def test_retention_removes_old_read_records_but_keeps_recent_unread(db):

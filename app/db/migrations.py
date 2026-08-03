@@ -33,7 +33,7 @@ from app.models.models import Base
 logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BASELINE_REVISION = "20260730_01"
-CURRENT_REVISION = "20260803_01"
+CURRENT_REVISION = "20260803_02"
 STAGE_OPENING_DATABASE = "Opening database"
 STAGE_INTEGRITY_CHECKS = "Checking database readability"
 STAGE_CREATING_BACKUP = "Creating backup"

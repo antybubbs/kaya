@@ -21,6 +21,7 @@ from app.models.models import (
     NotificationEvent,
     NotificationOutbox,
     NotificationPreference,
+    NotificationReconciliationFailure,
     AuditLog,
     PushSubscription,
     RemoteManagerSetting,
@@ -119,6 +120,10 @@ class WebPushKeyRequest(BaseModel):
 
 class ConfirmedWebPushAction(BaseModel):
     confirmation: str = Field(min_length=1, max_length=40)
+
+
+class ReconciliationFailureAction(BaseModel):
+    action: str = Field(min_length=5, max_length=7)
 
 
 def _csrf(request: Request) -> None:
@@ -851,6 +856,68 @@ def admin_settings(db: Session = Depends(get_db), user=Depends(require_admin)):
 @router.get("/api/admin/notifications/delivery-health")
 def admin_delivery_health(user=Depends(require_admin)):
     return notification_health()
+
+
+@router.put("/api/admin/notifications/reconciliation-failures/{failure_id}")
+def update_reconciliation_failure(
+    failure_id: int,
+    payload: ReconciliationFailureAction,
+    request: Request,
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    _csrf(request)
+    _admin_rate_limit(
+        db,
+        user.id,
+        ("notification_reconciliation_failure_retried", "notification_reconciliation_failure_dismissed"),
+        limit=30,
+        minutes=10,
+    )
+    if payload.action not in {"retry", "dismiss"}:
+        raise HTTPException(400, "Invalid reconciliation failure action")
+    row = db.get(NotificationReconciliationFailure, failure_id)
+    if not row or row.status not in {"retry", "quarantined"}:
+        raise HTTPException(404, "Active reconciliation failure not found")
+    if payload.action == "retry":
+        row.status = "retry"
+        row.attempt_count = 0
+        row.next_retry_at = datetime.utcnow()
+        row.quarantined_at = None
+        row.resolved_at = None
+        action = "notification_reconciliation_failure_retried"
+    else:
+        row.status = "dismissed"
+        row.next_retry_at = None
+        row.resolved_at = datetime.utcnow()
+        db.query(NotificationEvent).filter(
+            NotificationEvent.deduplication_key
+            == (
+                "system:notification-reconciliation-item:"
+                f"{row.item_type}:{row.item_id}:{row.operation}:quarantined"
+            ),
+            NotificationEvent.resolved_at.is_(None),
+        ).update(
+            {NotificationEvent.resolved_at: datetime.utcnow()},
+            synchronize_session=False,
+        )
+        action = "notification_reconciliation_failure_dismissed"
+    db.commit()
+    _audit_or_fail(
+        db,
+        user,
+        action,
+        "notification_reconciliation_failure",
+        str(row.id),
+        ip_address=trusted_client_ip(request),
+        detail=f"Administrator requested {payload.action} for a reconciliation failure",
+        metadata={
+            "item_type": row.item_type,
+            "operation": row.operation,
+            "correlation_id": row.correlation_id,
+        },
+    )
+    return {"ok": True, "status": row.status}
 
 
 @router.put("/api/admin/notification-settings")
