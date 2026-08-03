@@ -45,6 +45,7 @@ logger = logging.getLogger(__name__)
 
 
 FRESH_SECONDS = 45
+RECOVERY_PROGRESS_TIMEOUT = timedelta(minutes=5)
 PROCESS_STARTED_AT = datetime.utcnow()
 ACTIVE_STATUSES = {"RUNNING", "PAUSED"}
 TERMINAL_STATUSES = {"SUCCEEDED", "FAILED_SAFE", "CANCELLED"}
@@ -123,6 +124,25 @@ def _dhcp_released(node: HANode) -> bool:
     return dhcp_observation(node, datetime.utcnow(), freshness_seconds=FRESH_SECONDS).released
 
 
+def _recovery_validation_progressing(cluster: HACluster, node: HANode, current: datetime) -> bool:
+    """Keep an active recovery validation window informational, not stale."""
+    progress_cutoff = current - RECOVERY_PROGRESS_TIMEOUT
+    if node.recovery_state == "VERIFYING" and node.recovery_stable_since:
+        return node.recovery_stable_since >= progress_cutoff
+    if node.recovery_state != "SYNCHRONISING":
+        return False
+    latest = max(
+        (run for run in cluster.sync_runs if run.target_node_id == node.id),
+        key=lambda run: run.created_at or datetime.min,
+        default=None,
+    )
+    return bool(
+        latest
+        and latest.status in {"PENDING", "RUNNING"}
+        and (latest.started_at or latest.created_at) >= progress_cutoff
+    )
+
+
 def inspect_cluster(cluster: HACluster, *, now: datetime | None = None, since: datetime | None = None) -> ClusterInspection:
     current = now or datetime.utcnow()
     managed = pihole_manages_dhcp(cluster)
@@ -145,7 +165,8 @@ def inspect_cluster(cluster: HACluster, *, now: datetime | None = None, since: d
         if (
             node.recovery_state in {"RECOVERING", "SYNCHRONISING", "VERIFYING"}
             and node.recovery_started_at
-            and node.recovery_started_at < current - timedelta(minutes=5)
+            and node.recovery_started_at < current - RECOVERY_PROGRESS_TIMEOUT
+            and not _recovery_validation_progressing(cluster, node, current)
             and node.dns_healthy is True
             and node.keepalived_runtime_state == "RUNNING"
             and (

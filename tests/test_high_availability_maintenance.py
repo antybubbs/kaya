@@ -258,6 +258,68 @@ def test_reconciliation_clears_stale_recovery_metadata_without_service_move():
         assert not second.vip_owned and not second.dhcp_running
 
 
+def test_active_recovery_validation_is_not_reported_as_stale():
+    with database() as db:
+        _, cluster, first, second = pair(db)
+        now = datetime.utcnow()
+        second.recovery_state = "SYNCHRONISING"
+        second.recovery_started_at = now - timedelta(minutes=10)
+        db.add(HASyncRun(
+            cluster_id=cluster.id,
+            source_node_id=first.id,
+            target_node_id=second.id,
+            status="RUNNING",
+            plan_json='{"groups":[{"key":"local_dns","writable":true}]}',
+            created_at=now - timedelta(seconds=30),
+            started_at=now - timedelta(seconds=20),
+        ))
+        db.commit()
+
+        inspection = inspect_cluster(cluster, now=now)
+
+        assert "STALE_RECOVERY_STATE" not in {issue.code for issue in inspection.issues}
+        assert inspection.consistent is True
+
+
+def test_active_stability_window_is_not_reported_as_stale():
+    with database() as db:
+        _, cluster, _, second = pair(db)
+        now = datetime.utcnow()
+        second.recovery_state = "VERIFYING"
+        second.recovery_started_at = now - timedelta(minutes=10)
+        second.recovery_stable_since = now - timedelta(seconds=30)
+        db.commit()
+
+        inspection = inspect_cluster(cluster, now=now)
+
+        assert "STALE_RECOVERY_STATE" not in {issue.code for issue in inspection.issues}
+        assert inspection.consistent is True
+
+
+def test_recovery_validation_without_recent_progress_is_reported_as_stale():
+    with database() as db:
+        _, cluster, first, second = pair(db)
+        now = datetime.utcnow()
+        second.recovery_state = "SYNCHRONISING"
+        second.recovery_started_at = now - timedelta(minutes=10)
+        db.add(HASyncRun(
+            cluster_id=cluster.id,
+            source_node_id=first.id,
+            target_node_id=second.id,
+            status="RUNNING",
+            plan_json='{"groups":[{"key":"local_dns","writable":true}]}',
+            created_at=now - timedelta(minutes=9),
+            started_at=now - timedelta(minutes=9),
+        ))
+        db.commit()
+
+        inspection = inspect_cluster(cluster, now=now)
+
+        issue = next(issue for issue in inspection.issues if issue.code == "STALE_RECOVERY_STATE")
+        assert issue.title == "Recovery state appears stale"
+        assert issue.severity == "warning"
+
+
 def test_reconciliation_adopts_newer_generation_reported_by_both_nodes():
     with database() as db:
         user, cluster, first, second = pair(db)

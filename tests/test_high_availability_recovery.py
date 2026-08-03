@@ -401,7 +401,7 @@ def test_ready_standby_ignores_later_failed_sync_check_without_recovery_loop():
         assert db.query(HAEvent).filter(HAEvent.node_id == standby.id).count() == event_count
 
 
-def test_ready_standby_remains_quiescent_through_twelve_hours_of_observation_then_real_drift():
+def test_ready_standby_remains_quiescent_through_a_week_of_observation_then_real_drift():
     start = datetime.utcnow()
     with database() as db:
         _, cluster, standby, active = recovered_pair(db, start)
@@ -431,9 +431,9 @@ def test_ready_standby_remains_quiescent_through_twelve_hours_of_observation_the
         ).count()
 
         observed = start
-        # 960 complete PENDING -> RUNNING -> SUCCEEDED checks at 15-second
-        # intervals simulate twelve hours of heartbeat and monitoring passes.
-        for _ in range(960):
+        # Hourly PENDING -> RUNNING -> SUCCEEDED checks exercise a simulated
+        # week without coupling this state-machine regression to wall time.
+        for _ in range(24 * 7):
             run = HASyncRun(
                 cluster_id=cluster.id,
                 source_node_id=active.id,
@@ -443,7 +443,7 @@ def test_ready_standby_remains_quiescent_through_twelve_hours_of_observation_the
             )
             db.add(run)
             for status in ("PENDING", "RUNNING", "SUCCEEDED"):
-                observed += timedelta(seconds=15)
+                observed += timedelta(minutes=20)
                 run.status = status
                 if status == "SUCCEEDED":
                     run.plan_json = '{"groups":[],"required_sync_generation":0,"verified_sync_generation":0}'
