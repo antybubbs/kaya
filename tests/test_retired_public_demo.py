@@ -9,6 +9,18 @@ def test_demo_configuration_is_not_part_of_the_product():
     assert "demo_generation_file" not in Settings.model_fields
 
 
+def test_legacy_demo_environment_variable_is_ignored(monkeypatch):
+    monkeypatch.setenv("DEMO_MODE", "true")
+    settings = Settings(
+        app_env="test",
+        secret_key="fake-test-secret-key-only-for-retirement-regression",
+        encryption_key="MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=",
+        setup_token="fake-test-setup-token-only-for-retirement-regression",
+    )
+
+    assert not hasattr(settings, "demo_mode")
+
+
 def test_demo_runtime_and_deployment_assets_are_removed():
     removed = (
         Path("app/core/demo.py"),
