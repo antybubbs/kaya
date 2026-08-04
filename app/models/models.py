@@ -1491,6 +1491,85 @@ class BackupJob(Base):
     requested_by = relationship("User")
 
 
+class BackupAgentIdentity(Base):
+    __tablename__ = "backup_agent_identities"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    host_id: Mapped[int] = mapped_column(ForeignKey("compute_hosts.id", ondelete="CASCADE"), unique=True, index=True)
+    state: Mapped[str] = mapped_column(String(30), default="pending", index=True)
+    scopes_json: Mapped[str] = mapped_column(Text, default="[]")
+    envelope_public_key: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    host = relationship("ComputeHost")
+
+
+class BackupAgentKey(Base):
+    __tablename__ = "backup_agent_keys"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    identity_id: Mapped[str] = mapped_column(ForeignKey("backup_agent_identities.id", ondelete="CASCADE"), index=True)
+    key_id: Mapped[str] = mapped_column(String(36), unique=True, index=True)
+    signing_public_key: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(20), default="active", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    identity = relationship("BackupAgentIdentity")
+
+
+class BackupAgentBootstrap(Base):
+    __tablename__ = "backup_agent_bootstraps"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    host_id: Mapped[int] = mapped_column(ForeignKey("compute_hosts.id", ondelete="CASCADE"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class BackupAgentRequest(Base):
+    __tablename__ = "backup_agent_requests"
+    __table_args__ = (UniqueConstraint("identity_id", "request_id", name="uq_backup_agent_request_replay"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    identity_id: Mapped[str] = mapped_column(ForeignKey("backup_agent_identities.id", ondelete="CASCADE"), index=True)
+    request_id: Mapped[str] = mapped_column(String(36), index=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class BackupAgentDispatch(Base):
+    __tablename__ = "backup_agent_dispatches"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    backup_job_id: Mapped[int] = mapped_column(ForeignKey("backup_jobs.id", ondelete="CASCADE"), unique=True, index=True)
+    identity_id: Mapped[str | None] = mapped_column(ForeignKey("backup_agent_identities.id", ondelete="SET NULL"), nullable=True, index=True)
+    claim_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    state: Mapped[str] = mapped_column(String(30), default="offered", index=True)
+    grant_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True, index=True)
+    grant_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    envelope_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    job = relationship("BackupJob")
+
+
+class BackupAgentServerKey(Base):
+    __tablename__ = "backup_agent_server_keys"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    key_id: Mapped[str] = mapped_column(String(36), unique=True, index=True)
+    public_key: Mapped[str] = mapped_column(String(64))
+    wrapped_private_key: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(20), default="active", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class BackupAgentMigrationWindow(Base):
+    __tablename__ = "backup_agent_migration_window"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime)
+    cutoff_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    legacy_hashes_cleared_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

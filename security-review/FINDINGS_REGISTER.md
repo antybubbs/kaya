@@ -7,10 +7,10 @@
 
 - **Total tracked:** 9: 1 Emergency, 3 Critical and 5 High.
 - **Contained:** 0.
-- **Resolved:** 4 (`KAYA-DEM-001`, `KAYA-DEM-002`, `KAYA-OIDC-001`, `KAYA-RDP-002`).
+- **Resolved:** 5 (`KAYA-DEM-001`, `KAYA-DEM-002`, `KAYA-OIDC-001`, `KAYA-RDP-002`, `KAYA-BAK-001`).
 - **Remediated, pending independent re-verification:** 0.
 - **Changes required:** 0.
-- **Fully open or blocked:** 5 (`KAYA-RDP-001`, `KAYA-BAK-001`, `KAYA-HA-001`, `KAYA-BG-001`, `KAYA-DB-001`).
+- **Fully open or blocked:** 4 (`KAYA-RDP-001`, `KAYA-HA-001`, `KAYA-BG-001`, `KAYA-DB-001`).
 
 ## Summary
 
@@ -21,7 +21,7 @@
 | KAYA-OIDC-001 | Administrator-link invitation is a bearer account-takeover capability | Critical | High | Resolved; independently verified at corrective commit `b5f53ce` in PR [#61](https://github.com/antybubbs/kaya/pull/61) |
 | KAYA-RDP-001 | Credential-bearing RDP token is exposed in WebSocket query strings and is replayable | High | High | Confirmed; not remediated |
 | KAYA-RDP-002 | RDP certificate verification is hard-disabled | Critical | High | Resolved; independently verified with conditions at corrective commit `8ae6fbe` in PR [#60](https://github.com/antybubbs/kaya/pull/60) |
-| KAYA-BAK-001 | Backup-agent bearer protocol returns plaintext credentials and data keys without replay resistance | Critical | High | Blocked; production agent source repository has not been identified |
+| KAYA-BAK-001 | Backup-agent bearer protocol returns plaintext credentials and data keys without replay resistance | Critical | High | Resolved; coordinated server/production-agent protocol v2 independently verified with conditions |
 | KAYA-HA-001 | Keepalived hook holds an exclusive lock during hold-down and slow probes | High | High | Confirmed; not remediated |
 | KAYA-BG-001 | HA watchdog and lease reconciliation can terminate permanently on outer-loop exception | High | High | Confirmed; not remediated |
 | KAYA-DB-001 | SQLite connection policy is inconsistent and lacks main-engine WAL/busy timeout | High | High | Confirmed configuration defect; deployment impact unverified |
@@ -95,7 +95,7 @@
 - **Affected component:** Compute/backup agent enrollment and Backup Manager agent API.
 - **Severity:** Critical.
 - **Confidence:** High.
-- **Status:** Critical and blocked. The genuine external Docker-agent production source repository has not been identified, so coordinated protocol-v2 implementation and interoperability verification cannot proceed safely.
+- **Status:** Resolved. The genuine production source `antybubbs/Kaya-Docker-Agent` and Kaya now implement coordinated protocol v2. Deterministic interoperability, direct server-agent integration and adversarial review passed with the conditions in `security-review/reviews/BACKUP_AGENT_PROTOCOL_V2_INDEPENDENT_REVIEW.md`.
 - **Evidence:** `require_agent_host` hashes a reusable Authorization bearer value and looks up a `docker_agent` host. It has no signature, timestamp, nonce, session grant, explicit scope, or `is_enabled` check. `agent_jobs` decrypts the selected target's `remote_password` and each job's `encrypted_backup_key` into the JSON response. Tokens are long-lived until regeneration.
 - **Safe reproduction:** In an in-memory database, create a fake docker agent, target password ciphertext and queued job, call `agent_jobs` with the fake bearer, and observe plaintext fake values. Repeat or set `host.is_enabled=False`; authentication logic remains token-based. Existing tests already construct this boundary without live secrets.
 - **Affected files:** `app/routers/backup_manager.py:69-87, 176-194, 610-689`, `app/routers/compute_manager.py`, `app/models/models.py:1334-1362, 1449-1471`, agent implementation outside repository if applicable.
@@ -104,7 +104,7 @@
 - **Remediation:** New machine-auth ADR; secure enrollment; per-agent signing key or mTLS; signed method/path/body/timestamp/nonce; bounded skew and replay cache; short-lived scoped dispatch grant; explicit active/revoked/decommissioned state; rate limits; key rotation; response minimisation; envelope encryption separating authentication and data keys; auditable acknowledgements.
 - **Tests:** Missing/invalid/revoked/disabled identity, wrong scope/host/job, stale/future timestamp, nonce replay, signature/body/path modification, concurrent dispatch, token/key rotation, decommission denial, least-data response, and log/traceback redaction.
 - **Migration impact:** Requires a coordinated server/production-agent rollout or forced re-enrollment with a deadline. Do not silently retain bearer fallback for secret delivery. Existing queued jobs and agents need an operator-visible migration state.
-- **Blocker:** Identify and obtain the production Docker-agent source repository, then record its repository, branch and release ownership. No replacement, stub or fake agent implementation may be used to claim remediation.
+- **Resolution evidence:** Separate unmerged implementation branches and draft PRs; shared vector reproduction in both repositories; encrypted claim interoperability; v1 inventory-only cutoff; full details in `security-review/BACKUP_AGENT_PROTOCOL_V2_VERIFICATION.md`.
 - **Residual risk:** A fully compromised enrolled agent can access secrets legitimately dispatched to it. Containment depends on scopes, rotation, job-level grants and minimal secret lifetime.
 
 ## KAYA-HA-001 — Keepalived hook holds an exclusive lock during hold-down and slow probes

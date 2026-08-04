@@ -1,6 +1,5 @@
 import hashlib
 import json
-import secrets
 from datetime import datetime, timedelta
 from ipaddress import ip_address
 
@@ -291,8 +290,6 @@ def create_host(
             context(user=user, host=None, error=error, **csrf_context(request)),
             status_code=400,
         )
-    agent_token = secrets.token_urlsafe(32) if platform == "docker_agent" else None
-
     row = ComputeHost(
         name=clean_name,
         platform=platform,
@@ -301,7 +298,7 @@ def create_host(
         encrypted_token=(
             encrypt_secret(token_secret.strip()) if token_secret.strip() else None
         ),
-        agent_token_hash=hash_agent_token(agent_token) if agent_token else None,
+        agent_token_hash=None,
         verify_tls=bool(verify_tls),
         is_enabled=bool(is_enabled),
         poll_interval_seconds=max(15, min(poll_interval_seconds, 3600)),
@@ -319,10 +316,6 @@ def create_host(
         request.client.host if request.client else None,
         detail=row.name,
     )
-    if agent_token:
-        return render_host_detail(
-            request, row, db, user, agent_token=agent_token, status_code=201
-        )
     return RedirectResponse(
         f"/infrastructure/vm-docker-manager/hosts/{row.id}", status_code=303
     )
@@ -444,12 +437,7 @@ def update_host(
         host.encrypted_token = None
     elif token_secret.strip():
         host.encrypted_token = encrypt_secret(token_secret.strip())
-    if platform == "docker_agent" and not host.agent_token_hash:
-        agent_token = secrets.token_urlsafe(32)
-        host.agent_token_hash = hash_agent_token(agent_token)
-        host.encrypted_agent_token = None
-    else:
-        agent_token = None
+    agent_token = None
     host.verify_tls = bool(verify_tls)
     host.is_enabled = bool(is_enabled)
     host.poll_interval_seconds = max(15, min(poll_interval_seconds, 3600))
@@ -486,20 +474,7 @@ def regenerate_agent_token(
         raise HTTPException(404, "Host not found")
     if host.platform != "docker_agent":
         raise HTTPException(400, "Host does not use a Docker agent")
-    agent_token = secrets.token_urlsafe(32)
-    host.agent_token_hash = hash_agent_token(agent_token)
-    host.encrypted_agent_token = None
-    db.commit()
-    write_audit(
-        db,
-        user,
-        "regenerate_agent_token",
-        "compute_host",
-        str(host.id),
-        request.client.host if request.client else None,
-        detail=host.name,
-    )
-    return render_host_detail(request, host, db, user, agent_token=agent_token)
+    raise HTTPException(426, "Legacy bearer issuance is permanently disabled; issue a protocol-v2 bootstrap")
 
 
 @router.post("/hosts/{host_id}/sync")
@@ -575,6 +550,10 @@ async def agent_checkin(
     request: Request,
     db: Session = Depends(get_db),
 ):
+    from app.services.backup_agent_protocol import allow_legacy_inventory
+
+    if not allow_legacy_inventory(db):
+        raise HTTPException(426, "Legacy agent migration window has closed")
     auth = request.headers.get("authorization", "")
 
     if not auth.lower().startswith("bearer "):

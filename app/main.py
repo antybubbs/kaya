@@ -32,6 +32,7 @@ from app.routers import (
     admin,
     auth,
     backup_manager,
+    backup_agent_v2,
     compute_manager,
     dashboard,
     dns_manager,
@@ -354,6 +355,9 @@ def bootstrap():
             initialise_application_defaults(
                 db, module_permissions_existed=module_permissions_existed
             )
+            from app.services.backup_agent_protocol import allow_legacy_inventory
+            allow_legacy_inventory(db)
+            db.commit()
         stage = "Startup complete"
         logger.debug("Database migration stage: %s", stage)
     except Exception:
@@ -429,6 +433,7 @@ app.include_router(compute_manager.router)
 app.include_router(compute_manager.agent_router)
 app.include_router(rack_manager.router)
 app.include_router(backup_manager.router)
+app.include_router(backup_agent_v2.router)
 app.include_router(dns_manager.router)
 app.include_router(secret_vault.router)
 app.include_router(secure_send.router)
