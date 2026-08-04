@@ -18,7 +18,6 @@ Trust boundaries:
 6. Kaya process to SQLite and persistent files.
 7. Keepalived/root helpers to the unprivileged HA agent state database.
 8. Public Secure Send recipient to the isolated gateway.
-9. Public demo user to shared synthetic application state.
 
 ## STRIDE legend
 
@@ -57,7 +56,6 @@ Trust boundaries:
 | Shared collection member upgrades permission or moves an item to escape scope | T, E | Enumerated member levels and route checks | Test contributor/manager/viewer boundaries and concurrent membership removal. |
 | Vault plaintext leaks to logs, audit, export, exception, or temporary file | I | Encrypted payloads/files, safe audit helper, source tests | Add runtime log-capture tests and failure-injection cleanup tests. Portable export remains highly sensitive. |
 | Stolen session unlocks or reveals secrets without fresh assurance | S, I | Separate Vault sessions, PIN plus TOTP/OIDC assurance, TOTP replay rejection | Validate reauthentication for every reveal/export/recovery action and disabled-user revocation. |
-| Public demo user creates, restores, exports, shares, or changes Vault state | T, I | Emergency central prefix containment now blocks non-safe methods | GET secret retrieval remains allowed for seeded user-owned material; Phase 4 must decide explicit safe demo views. |
 
 ## Secure Send
 
@@ -117,13 +115,10 @@ Trust boundaries:
 | Stored HTML/SVG/Markdown causes XSS | I, E | Jinja autoescaping and content-type handling | Review runbook rendering, uploaded active content, filename headers, and inline media CSP. |
 | Archive/import contains formulas, malicious paths, or excessive records | T, D | CSV/import validation exists per module | Add row/column/size bounds and formula/archive traversal tests consistently. |
 
-## Demo mode
+## Retired shared evaluation boundary
 
-| Threat / abuse case | STRIDE | Current controls | Gap / required treatment |
-|---|---|---|---|
-| Malicious shared admin invokes a new mutation absent from prefix allowlist | T, E, D | Central middleware plus hand-maintained prefixes/suffixes | Policy is allowlist-by-omission, not deny-by-default; confirmed `KAYA-DEM-002`. Generate policy from declarative route metadata and fail tests on unclassified routes. |
-| Demo user stores real credentials/secrets that another visitor retrieves | I | Reset schedule, some module locks, new Vault mutation containment | Licence, compute-agent, notification, upload/import and other paths require classification. UI hiding is insufficient. |
-| Shared demo exposes visitor IP/user-agent to the next visitor | I | Demo audit/session code removes these values | Existing client-IP tests should remain release gates. |
+The former shared public evaluation boundary and its parallel route policy were removed for v0.27. All remaining application paths use the normal production authentication, authorisation, CSRF, validation and audit boundaries.
+
 
 ## SQLite concurrency and encryption-key management
 
@@ -151,13 +146,11 @@ Trust boundaries:
 4. Proxy/access tooling captures and replays an RDP credential-bearing WebSocket URL.
 5. A quick MASTER-to-BACKUP change blocks behind the transition hook's lock-held hold-down and delays safe DHCP demotion.
 6. A database/session-factory exception permanently kills HA watchdog or lease reconciliation without a health signal.
-7. A newly added demo mutation is public because no developer remembered to add its path prefix.
-8. Concurrent SQLite writers cause lock errors, partial operational workflows, or silent background-service death.
+7. Concurrent SQLite writers cause lock errors, partial operational workflows, or silent background-service death.
 
 ## Assumptions requiring owner validation
 
 - Supported production deployment is one Kaya application process using a local SQLite file on a filesystem with reliable POSIX/SQLite locking semantics.
 - TLS terminates at a trusted proxy or Kaya is accessed on a trusted local network; forwarded headers are accepted only from configured proxies.
-- The public demo contains synthetic data only, but must still prevent storage/retrieval of visitor-supplied secrets and external side effects.
 - Backup-agent code and its local secret handling may live outside this repository and were not reviewed here.
 - IdP administrators and OIDC signing keys are trusted; provider compromise is outside Kaya's preventable boundary but must be containable and auditable.

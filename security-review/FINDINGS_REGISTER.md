@@ -1,62 +1,46 @@
 # Kaya Initial Findings Register
 
-**State:** Phase 3 validation, 2026-08-04
+**State:** v0.27 hardening checkpoint, 2026-08-04
 **Scope:** The eight reported starting points plus wider-pattern findings discovered while validating them. Severity follows the hardening programme. “Confirmed” means current source demonstrates the condition; it does not mean a production exploit was attempted.
 
 ## Checkpoint totals
 
 - **Total tracked:** 9: 1 Emergency, 3 Critical and 5 High.
-- **Contained:** 1 (`KAYA-DEM-001`).
-- **Resolved:** 2 (`KAYA-OIDC-001`, `KAYA-RDP-002`).
+- **Contained:** 0.
+- **Resolved:** 4 (`KAYA-DEM-001`, `KAYA-DEM-002`, `KAYA-OIDC-001`, `KAYA-RDP-002`).
 - **Remediated, pending independent re-verification:** 0.
 - **Changes required:** 0.
-- **Fully open:** 6 (`KAYA-DEM-002`, `KAYA-RDP-001`, `KAYA-BAK-001`, `KAYA-HA-001`, `KAYA-BG-001`, `KAYA-DB-001`).
+- **Fully open or blocked:** 5 (`KAYA-RDP-001`, `KAYA-BAK-001`, `KAYA-HA-001`, `KAYA-BG-001`, `KAYA-DB-001`).
 
 ## Summary
 
 | ID | Finding | Severity | Confidence | Status |
 |---|---|---:|---:|---|
-| KAYA-DEM-001 | Public demo allowed Secret Vault mutations | Emergency | High | Confirmed; emergency containment applied |
-| KAYA-DEM-002 | Demo policy is allowlist-by-path and leaves other mutations unclassified | High | High | Confirmed design defect; not remediated |
+| KAYA-DEM-001 | Public demo allowed Secret Vault mutations | Emergency | High | Resolved through permanent removal of the hosted demo and all demo-mode functionality |
+| KAYA-DEM-002 | Demo policy is allowlist-by-path and leaves other mutations unclassified | High | High | Resolved as no longer applicable; the cross-cutting demo policy was removed |
 | KAYA-OIDC-001 | Administrator-link invitation is a bearer account-takeover capability | Critical | High | Resolved; independently verified at corrective commit `b5f53ce` in PR [#61](https://github.com/antybubbs/kaya/pull/61) |
 | KAYA-RDP-001 | Credential-bearing RDP token is exposed in WebSocket query strings and is replayable | High | High | Confirmed; not remediated |
 | KAYA-RDP-002 | RDP certificate verification is hard-disabled | Critical | High | Resolved; independently verified with conditions at corrective commit `8ae6fbe` in PR [#60](https://github.com/antybubbs/kaya/pull/60) |
-| KAYA-BAK-001 | Backup-agent bearer protocol returns plaintext credentials and data keys without replay resistance | Critical | High | Confirmed; not remediated |
+| KAYA-BAK-001 | Backup-agent bearer protocol returns plaintext credentials and data keys without replay resistance | Critical | High | Blocked; production agent source repository has not been identified |
 | KAYA-HA-001 | Keepalived hook holds an exclusive lock during hold-down and slow probes | High | High | Confirmed; not remediated |
 | KAYA-BG-001 | HA watchdog and lease reconciliation can terminate permanently on outer-loop exception | High | High | Confirmed; not remediated |
 | KAYA-DB-001 | SQLite connection policy is inconsistent and lacks main-engine WAL/busy timeout | High | High | Confirmed configuration defect; deployment impact unverified |
 
 ## KAYA-DEM-001 — Public demo allowed Secret Vault mutations
 
-- **Affected component:** Demo middleware and all `/security/secret-vault` non-safe-method routes.
 - **Severity:** Emergency.
-- **Confidence:** High.
-- **Status:** Confirmed and temporarily contained in this review.
-- **Evidence:** `app/main.py` sends every HTTP request through `demo_request_is_blocked`. Before containment, `app/core/demo.py` protected Secure Send, HA, remote and backup paths but had no Secret Vault prefix. `app/routers/secret_vault.py` exposes POST setup, item create/update/delete/reveal, collection sharing, export, restore, recovery and settings routes. These routes enforce normal authentication, module access, CSRF and object rules, but none supplied the missing demo denial.
-- **Safe reproduction:** With `get_settings().demo_mode=True`, `demo_request_is_blocked("POST", "/security/secret-vault/items")` returned `False` before the patch. No secret value or production system was used.
-- **Affected files:** `app/core/demo.py`, `app/main.py`, `app/routers/secret_vault.py`, `tests/test_demo_mode.py`.
-- **Root cause:** Demo safety is a manually maintained path-prefix allowlist. A sensitive module was added without classifying its routes.
-- **Wider pattern search:** See `KAYA-DEM-002`; Secret Vault was not unique.
-- **Remediation:** Emergency containment adds `/security/secret-vault` to the central non-safe-method prefixes. Phase 4 must replace the design with declarative deny-by-default route classification and decide whether any Vault GET is safe in a shared demo.
-- **Tests:** Added `DemoModeSafetyTests.test_blocks_secret_vault_mutations`, covering setup, items, reveal, collections, export, restore, settings, and preservation of the GET landing page. `python -m pytest tests/test_demo_mode.py -q` passed: 10 tests, 31 subtests.
-- **Migration impact:** None. Behaviour change only when `DEMO_MODE=true`.
-- **Residual risk:** Sensitive GET routes such as attachment download remain reachable under normal Vault authorisation; seeded/shared-demo data assumptions require an owner decision. Other unclassified routes remain.
+- **Status:** Resolved through permanent removal.
+- **Resolution:** The shared hosted environment, its middleware, path policy, configuration, accounts, seed/reset lifecycle, user-interface behavior and deployment assets were removed. Secret Vault continues to use its normal authentication, module, object-authorisation, fresh-assurance and CSRF controls.
+- **Tests:** Production-path regressions cover authentication, audit/session context, dashboard controls, DNS refresh behavior, module enablement and the existing Secret Vault security suites.
+- **Residual risk:** None from the retired cross-cutting mode. Ordinary production security controls remain in scope for ongoing review.
 
 ## KAYA-DEM-002 — Demo policy is allowlist-by-path and leaves other mutations unclassified
 
-- **Affected component:** `demo_request_is_blocked` and repository-wide HTTP routes.
-- **Severity:** High. Some individual unclassified routes may become Emergency/Critical after behavioural testing.
-- **Confidence:** High for design defect; Medium for each route’s reachable impact until integration-tested.
-- **Status:** Confirmed; documented for Phase 4, not broadly remediated in the Phase 1–3 pass.
-- **Evidence:** `app/core/demo.py:28-66` returns `False` unless a route matches selected prefixes, delete suffixes, or network-action fragments. Static enumeration shows non-safe methods outside those rules, including notification and Web Push administration (`/api/admin/...`), notification preferences/subscriptions, licence-key create/edit/reveal, compute-host creation and agent-token regeneration, hardware/runbook uploads/imports, and ordinary operational edits. Some routes may add local demo checks, but there is no authoritative route classification.
-- **Safe reproduction:** Compare `rg -n '^@(?:router|app)\\.(post|put|patch|delete)' app -g '*.py'` output with the prefixes in `app/core/demo.py`. For example, the notification administration and licence reveal prefixes do not match any current demo rule.
-- **Affected files:** `app/core/demo.py`, `app/main.py`, most router modules, `tests/test_demo_mode.py`.
-- **Root cause:** Security depends on developers remembering path strings. HTTP method, side effect, secret exposure and external-call classification are not route metadata.
-- **Wider pattern search:** Unclassified GET routes also perform sensitive reads or network work. Suffix matching (`action in path`) can overblock or underblock unrelated routes.
-- **Remediation:** Phase 4 should define a central declarative policy with explicit safe exceptions, classify every route (including WebSockets and side-effecting GETs), deny unknown state-changing routes, and add route-enumeration tests that fail on unclassified additions.
-- **Tests:** No broad regression test was committed because current policy would intentionally fail it. Phase 4 must first land the policy contract and an exhaustive route-classification test. The focused Vault test is active now.
-- **Migration impact:** Demo-only behaviour; may remove existing “editable sample data” behaviour. Release notes and owner-approved safe simulations are required.
-- **Residual risk:** Until Phase 4, public demo deployments should be treated as capable of unreviewed mutations and should not have real credentials, external reachability, or durable visitor data.
+- **Severity:** High.
+- **Status:** Resolved as no longer applicable.
+- **Resolution:** The manually maintained route allowlist/denylist and its middleware were deleted with the retired product mode. New routes no longer depend on a parallel path-string policy and must satisfy the normal authentication, authorisation, CSRF, validation and audit requirements.
+- **Residual risk:** No cross-cutting demo-policy risk remains. This does not reduce the need for repository-wide production route and object-authorisation review.
+
 
 ## KAYA-OIDC-001 — Administrator-link invitation is a bearer account-takeover capability
 
@@ -79,7 +63,7 @@
 - **Affected component:** RDP start endpoint, browser client, Kaya RDP WebSocket, and Guacamole bridge.
 - **Severity:** High.
 - **Confidence:** High.
-- **Status:** Remediation implemented on `security/rdp-certificate-validation`; supported-Linux and independent review pending.
+- **Status:** High and open. This finding was deliberately not remediated in the current checkpoint.
 - **Evidence:** `create_rdp_guacamole_token` serialises hostname, username and password into a Fernet token. The start route returns that token to JavaScript. `remote_rdp.js` puts it into `URLSearchParams` passed to `client.connect`; Kaya reads `websocket.query_params["token"]` and forwards it in the bridge URL. The token is also the in-memory dictionary key. Default lifetime is 10 minutes and it is not consumed on an ordinary initial connection; only a handoff path pops it.
 - **Safe reproduction:** Use clearly fake credentials, call the token helper, and inspect the constructed browser/Kaya/upstream WebSocket URLs. Reconnect using the same token and active matching session before expiry; current lookup accepts it.
 - **Affected files:** `app/routers/remote_manager.py:481-608, 1145-1185, 1287-1340`, `app/static/js/remote_rdp.js:410-487`, `scripts/guacamole-server.cjs`.
@@ -88,7 +72,7 @@
 - **Remediation:** Authenticated POST creates an opaque random grant ID; encrypted credential stays server-side; WebSocket requires active session plus origin and one-time grant; grant is atomically consumed, short-lived, remote/user/connection-bound and never forwarded in a URL. Bridge connection data should use an internal non-URL channel.
 - **Tests:** Add URL/log absence, wrong user/remote, expired, single-use, replay, concurrent consume, revoked session, bad Origin, handoff, disconnect cleanup and audit-redaction tests.
 - **Migration impact:** Browser/bridge protocol changes must be deployed atomically. Existing in-memory grants can expire on restart; no persistent data migration is needed.
-- **Residual risk:** WebSocket paths are still visible to proxies; they must contain only opaque, non-secret identifiers and be redacted defensively.
+- **Residual risk:** Encrypted credential-bearing connection data remains present in WebSocket query data and is replayable within its validity and session constraints. Operators should restrict proxy/access logging, protect browser sessions, limit network exposure and treat captured RDP connection URLs as sensitive until opaque one-time grants are implemented.
 
 ## KAYA-RDP-002 — RDP certificate verification is hard-disabled
 
@@ -111,7 +95,7 @@
 - **Affected component:** Compute/backup agent enrollment and Backup Manager agent API.
 - **Severity:** Critical.
 - **Confidence:** High.
-- **Status:** Confirmed; no remediation applied.
+- **Status:** Critical and blocked. The genuine external Docker-agent production source repository has not been identified, so coordinated protocol-v2 implementation and interoperability verification cannot proceed safely.
 - **Evidence:** `require_agent_host` hashes a reusable Authorization bearer value and looks up a `docker_agent` host. It has no signature, timestamp, nonce, session grant, explicit scope, or `is_enabled` check. `agent_jobs` decrypts the selected target's `remote_password` and each job's `encrypted_backup_key` into the JSON response. Tokens are long-lived until regeneration.
 - **Safe reproduction:** In an in-memory database, create a fake docker agent, target password ciphertext and queued job, call `agent_jobs` with the fake bearer, and observe plaintext fake values. Repeat or set `host.is_enabled=False`; authentication logic remains token-based. Existing tests already construct this boundary without live secrets.
 - **Affected files:** `app/routers/backup_manager.py:69-87, 176-194, 610-689`, `app/routers/compute_manager.py`, `app/models/models.py:1334-1362, 1449-1471`, agent implementation outside repository if applicable.
@@ -119,7 +103,8 @@
 - **Wider pattern search:** Status updates are host-bound, which is positive. HA agents already implement per-agent signed requests, replay tracking, rotation and revocation and provide an architectural precedent. Legacy `encrypted_agent_token` is intentionally not written for new agents.
 - **Remediation:** New machine-auth ADR; secure enrollment; per-agent signing key or mTLS; signed method/path/body/timestamp/nonce; bounded skew and replay cache; short-lived scoped dispatch grant; explicit active/revoked/decommissioned state; rate limits; key rotation; response minimisation; envelope encryption separating authentication and data keys; auditable acknowledgements.
 - **Tests:** Missing/invalid/revoked/disabled identity, wrong scope/host/job, stale/future timestamp, nonce replay, signature/body/path modification, concurrent dispatch, token/key rotation, decommission denial, least-data response, and log/traceback redaction.
-- **Migration impact:** Requires dual-protocol rollout or forced re-enrollment with a deadline. Do not silently retain bearer fallback for secret delivery. Existing queued jobs and agents need an operator-visible migration state.
+- **Migration impact:** Requires a coordinated server/production-agent rollout or forced re-enrollment with a deadline. Do not silently retain bearer fallback for secret delivery. Existing queued jobs and agents need an operator-visible migration state.
+- **Blocker:** Identify and obtain the production Docker-agent source repository, then record its repository, branch and release ownership. No replacement, stub or fake agent implementation may be used to claim remediation.
 - **Residual risk:** A fully compromised enrolled agent can access secrets legitimately dispatched to it. Containment depends on scopes, rotation, job-level grants and minimal secret lifetime.
 
 ## KAYA-HA-001 — Keepalived hook holds an exclusive lock during hold-down and slow probes
@@ -156,13 +141,13 @@
 
 ## KAYA-DB-001 — SQLite connection policy is inconsistent and lacks main-engine WAL/busy timeout
 
-- **Affected component:** Main SQLAlchemy engine, direct SQLite utilities, demo seeding, legacy migration, backup and HA agent databases.
+- **Affected component:** Main SQLAlchemy engine, direct SQLite utilities, legacy migration, backup and HA agent databases.
 - **Severity:** High.
 - **Confidence:** High for configuration inconsistency; Medium for deployment-specific corruption/availability impact.
 - **Status:** Confirmed; no configuration change applied pending deployment tests.
-- **Evidence:** `app/db/session.py` sets only `check_same_thread=False`, `pool_pre_ping`, and `PRAGMA foreign_keys=ON`. It does not set `busy_timeout` or WAL. Migration and backup direct connections set a busy timeout. HA agent state explicitly sets WAL and busy timeout. `scripts/seed_demo.py` creates a separate engine without the central policy; `scripts/migrate_sqlite.py` uses a direct connection and temporarily disables foreign keys.
+- **Evidence:** `app/db/session.py` sets only `check_same_thread=False`, `pool_pre_ping`, and `PRAGMA foreign_keys=ON`. It does not set `busy_timeout` or WAL. Migration and backup direct connections set a busy timeout. HA agent state explicitly sets WAL and busy timeout. `scripts/migrate_sqlite.py` uses a direct connection and temporarily disables foreign keys.
 - **Safe reproduction:** Create a temporary file database through `app.db.session`-equivalent engine settings and inspect `PRAGMA journal_mode` and `PRAGMA busy_timeout`; then hold a writer transaction and attempt a second write. Production bind/network mounts were not tested.
-- **Affected files:** `app/db/session.py`, `app/db/migrations.py`, `app/db/backup.py`, `app/db/validation.py`, `scripts/seed_demo.py`, `scripts/migrate_sqlite.py`, HA agent SQLite code, deployment/database docs and tests.
+- **Affected files:** `app/db/session.py`, `app/db/migrations.py`, `app/db/backup.py`, `app/db/validation.py`, `scripts/migrate_sqlite.py`, HA agent SQLite code, deployment/database docs and tests.
 - **Root cause:** Connection policy evolved separately in runtime, migration, backup, agent and legacy scripts. SQLite concurrency requirements are not a central contract.
 - **Wider pattern search:** Tests create many independent in-memory engines, often with foreign-key hooks but no common helper, so runtime PRAGMA regressions are easy to miss.
 - **Remediation:** First qualify WAL on supported local filesystems and Docker bind mounts; centralise SQLite engine/connect PRAGMAs and busy timeout; keep transactions short; add narrowly bounded lock retries at idempotent boundaries; define checkpoint/backup/shutdown/integrity policy; document unsupported network filesystems and PostgreSQL threshold.
@@ -172,4 +157,4 @@
 
 ## Cross-finding release position
 
-Emergency containment is limited to `KAYA-DEM-001`. Critical and remaining High findings are not fixed by the existence of this register. No fixed release should be declared until remediation tests, migration/rollback validation, full suite and security gates pass, followed by a separate human/adversarial review that attempts to disprove the controls.
+`KAYA-DEM-001`, `KAYA-DEM-002`, `KAYA-OIDC-001` and `KAYA-RDP-002` are resolved. `KAYA-BAK-001` remains Critical and blocked pending identification of the genuine production agent source. `KAYA-RDP-001` and the other deferred High findings remain open. No release-readiness claim is made by this checkpoint.

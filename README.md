@@ -107,17 +107,9 @@ Kaya is more than a homelab inventory. It is a self-hosted operations hub for th
 
 ------------------------------------------------------------------------
 
-# Live Demo
+# Try Kaya
 
-Want to kick the tyres? Go ahead. https://demo.kaya-app.uk 
-
-However, a few caveats.
-- The demo does not have a functional Remote Manager module.
-- It does not have everything active - this is for security reasons.
-- The data resets every night.
-- Its probably (highly likley to be) rough around the edges, this is because its the main app with a few restrictions in place - I probably have not picked up everything and most likley broke things trying to "make it safe"
-
-My suggestion - install it in your own environment and throw the kitchen sink at it.
+Install Kaya in an environment you control and evaluate it with synthetic data.
 
 If you need any support - come on over to our Dicord Server: https://discord.gg/2hn6G7Qr9N 
 
@@ -205,7 +197,6 @@ services:
       FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
       SKIP_DATABASE_MIGRATIONS: "true"
       KAYA_GATEWAY_MODE: "true"
-      DEMO_MODE: ${DEMO_MODE:-false}
     ports:
       - "${KAYA_SECURE_SEND_PORT:-8999}:8999"
     volumes:

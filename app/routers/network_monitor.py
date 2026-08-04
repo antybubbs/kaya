@@ -43,7 +43,14 @@ from app.services.network_monitor import (
     validate_threshold_values,
 )
 from app.services.network_monitor_history import performance_history
-from app.services.table_export import csv_safe, export_row_matches, table_export_response, validate_export_columns, validate_export_filters, validate_export_format
+from app.services.table_export import (
+    csv_safe as csv_safe,
+    export_row_matches,
+    table_export_response,
+    validate_export_columns,
+    validate_export_filters,
+    validate_export_format,
+)
 from app.services.network_monitor_wallboard import (
     GENERIC_CREDENTIAL_ERROR,
     VALID_COLUMNS,

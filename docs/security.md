@@ -55,26 +55,10 @@ Security headers are applied by middleware and include content security policy, 
 
 Trusted host behaviour is configurable through site settings and environment settings.
 
-## Demo Mode
+## Retired hosted evaluation environment
 
-Demo mode:
+The shared public evaluation deployment and its cross-cutting application mode were permanently removed for v0.27. Kaya now exposes only the ordinary production paths, protected by their normal authentication, module permissions, role and object authorisation, CSRF validation, input validation, and audit controls. Operators should evaluate Kaya in an isolated environment they control, using synthetic data.
 
-- Creates synthetic admin/editor/viewer accounts.
-- Can reset the demo database on a schedule.
-- Blocks remote access paths, backup agent APIs, Secret Vault mutations, and many mutating admin/network/security routes.
-- Invalidates demo sessions when the demo generation marker changes.
-
-Any new route that mutates data, reaches into the network, performs remote access, or exposes secrets must be reviewed against demo-mode restrictions.
-
-The Secret Vault restriction is an emergency containment, not proof that the
-current path-based demo policy is deny-by-default. The hardening review tracks
-the remaining route-classification work in
-`security-review/FINDINGS_REGISTER.md` as `KAYA-DEM-002`.
-
-Demo mode also redacts client IP addresses and user agents from request audit
-records and does not store client IP addresses in login sessions. The public
-demo uses shared accounts, so visitor network identifiers must not be persisted
-where another demo user could view them.
 
 ## Current Risks
 

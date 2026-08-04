@@ -20,7 +20,6 @@ from fastapi import (
 from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.core.templating import templates
 from app.db.session import get_db
@@ -75,19 +74,14 @@ def person_name(first_name: str | None, last_name: str | None, fallback: str) ->
 
 
 
-settings = get_settings()
 EXPIRY_CHOICES = {"15m": 15, "1h": 60, "4h": 240, "24h": 1440, "3d": 4320, "7d": 10080}
 
 
 def module_enabled(db: Session) -> bool:
-    return not settings.demo_mode and get_site_setting(db, "secure_send_enabled") == "1"
+    return get_site_setting(db, "secure_send_enabled") == "1"
 
 
 def require_module(db: Session, *, creation: bool = False) -> None:
-    if settings.demo_mode and creation:
-        raise HTTPException(
-            403, "Secure Send package creation is disabled in the public demo."
-        )
     if not module_enabled(db):
         raise HTTPException(404, "Secure Send is not available")
 
@@ -158,10 +152,6 @@ def home(
     db: Session = Depends(get_db),
     user: User = Depends(require_user),
 ):
-    if settings.demo_mode:
-        return templates.TemplateResponse(
-            request, "secure_send_disabled.html", page_context(request, user)
-        )
     require_module(db)
     expire_and_cleanup(db)
     sent = (

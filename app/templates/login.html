@@ -40,9 +40,9 @@
       <section class="login-form-panel" aria-labelledby="login-heading">
         <div class="login-form-inner">
           <div class="login-form-heading">
-            <p class="login-kicker">{{ 'Demo access' if demo_accounts else ('Secure verification' if requires_2fa else 'Welcome back') }}</p>
-            <h2 id="login-heading">{{ 'Enter your authentication code' if requires_2fa else ('Sign in to the demo' if demo_accounts else 'Sign in to ' ~ brand.name) }}</h2>
-            <p>{{ 'Complete the second sign-in step to continue.' if requires_2fa else ('Choose a role or use your account below.' if demo_accounts else 'Use your account to continue') }}</p>
+            <p class="login-kicker">{{ 'Secure verification' if requires_2fa else 'Welcome back' }}</p>
+            <h2 id="login-heading">{{ 'Enter your authentication code' if requires_2fa else 'Sign in to ' ~ brand.name }}</h2>
+            <p>{{ 'Complete the second sign-in step to continue.' if requires_2fa else 'Use your account to continue' }}</p>
           </div>
 
           {% if success %}<div class="success" role="status">{{ success }}</div>{% endif %}
@@ -51,19 +51,6 @@
           {% endif %}
           {% if error %}<div class="alert" role="alert" aria-live="assertive">{{ error }}</div>{% endif %}
 
-          {% if demo_accounts and not requires_2fa %}
-          <div class="demo-login-grid" aria-label="Demo accounts">
-            {% for name, account in demo_accounts.items() %}
-            <form method="post" action="/login" class="demo-login-option" data-login-form>
-              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-              <input type="hidden" name="email" value="{{ name|title }}">
-              <input type="hidden" name="password" value="{{ account.password }}">
-              <span><strong>{{ name|title }}</strong><small>{{ account.role|title }} access</small></span>
-              <button type="submit" aria-label="Sign in as {{ name|title }}" data-submit-button data-loading-label="Signing in…">Use {{ name|title }}</button>
-            </form>
-            {% endfor %}
-          </div>
-          {% endif %}
 
           {% if oidc_available and authentication_mode != 'local_only' and not requires_2fa %}
           <a class="button login-oidc-button" id="login-oidc" href="/auth/oidc/login">
@@ -84,9 +71,9 @@
             </div>
             <button class="login-submit" type="submit" data-submit-button data-loading-label="Verifying…">Verify code</button>
             {% else %}
-            <label for="login-email">{{ 'Username or email' if demo_accounts else 'Email' }}</label>
+            <label for="login-email">Email</label>
             <div class="login-input-shell">
-              <input id="login-email" name="email" type="{{ 'text' if demo_accounts else 'email' }}" placeholder="{{ 'Username or email' if demo_accounts else 'you@example.com' }}" autocomplete="username" required autofocus>
+              <input id="login-email" name="email" type="email" placeholder="you@example.com" autocomplete="username" required autofocus>
               <svg class="login-field-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"></rect><path d="m4 7 8 6 8-6"></path></svg>
             </div>
 
@@ -99,7 +86,7 @@
               </button>
             </div>
 
-            {% if not demo_accounts %}<div class="login-options"><span></span><a href="/forgot-password">Forgot password?</a></div>{% endif %}
+            <div class="login-options"><span></span><a href="/forgot-password">Forgot password?</a></div>
             <button class="login-submit" type="submit" data-submit-button data-loading-label="Signing in…">Sign in</button>
             {% endif %}
           </form>

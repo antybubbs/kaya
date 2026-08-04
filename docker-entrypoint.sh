@@ -73,47 +73,6 @@ export SECRET_KEY
 export ENCRYPTION_KEY
 export SETUP_TOKEN
 
-if [ "${DEMO_MODE:-false}" = "true" ] && [ "${KAYA_GATEWAY_MODE:-false}" != "true" ]; then
-    DEMO_SEED_DIR="${DEMO_SEED_DIR:-/app/demo-seed}"
-    DEMO_SEED_DATABASE="$DEMO_SEED_DIR/kaya.db"
-    DEMO_DATABASE="/app/data/kaya.db"
-    mkdir -p "$DEMO_SEED_DIR" "$DEMO_SEED_DIR/uploads"
-    chown -R kaya:kaya "$DEMO_SEED_DIR"
-
-    if [ "${DEMO_REBUILD_SEED:-false}" = "true" ] || [ ! -f "$DEMO_SEED_DATABASE" ]; then
-        echo "Creating public demo seed database..."
-        gosu kaya python -m scripts.seed_demo --database "$DEMO_SEED_DATABASE"
-    fi
-
-    if [ "${DEMO_RESET_ON_START:-false}" = "true" ] || [ ! -f "$DEMO_DATABASE" ]; then
-        echo "Resetting public demo from seed..."
-        if [ -f /app/data/kaya.db-wal ] || [ -f /app/data/kaya.db-shm ]; then
-            SIDECAR_ARCHIVE="/app/data/backups/demo-reset-sidecars-$(date +%s)-$$"
-            mkdir -p "$SIDECAR_ARCHIVE"
-            if [ -f /app/data/kaya.db-wal ]; then
-                mv /app/data/kaya.db-wal "$SIDECAR_ARCHIVE/"
-            fi
-            if [ -f /app/data/kaya.db-shm ]; then
-                mv /app/data/kaya.db-shm "$SIDECAR_ARCHIVE/"
-            fi
-            chown -R kaya:kaya "$SIDECAR_ARCHIVE"
-            chmod 700 "$SIDECAR_ARCHIVE"
-            echo "Preserved existing SQLite WAL sidecars before demo reset: $SIDECAR_ARCHIVE"
-        fi
-        cp "$DEMO_SEED_DATABASE" "$DEMO_DATABASE"
-        chown kaya:kaya "$DEMO_DATABASE"
-        find /app/uploads -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
-        if [ -d "$DEMO_SEED_DIR/uploads" ]; then
-            cp -a "$DEMO_SEED_DIR/uploads/." /app/uploads/
-        fi
-        chown -R kaya:kaya /app/uploads
-    fi
-
-    if [ "${DEMO_RESET_ON_START:-false}" = "true" ] || [ ! -s "${DEMO_GENERATION_FILE:-/app/data/.demo-generation}" ]; then
-        printf '%s-%s\n' "$(date +%s)" "$$" > "${DEMO_GENERATION_FILE:-/app/data/.demo-generation}"
-        chown kaya:kaya "${DEMO_GENERATION_FILE:-/app/data/.demo-generation}"
-    fi
-fi
 
 echo "Starting Kaya with ENCRYPTION_KEY length: ${#ENCRYPTION_KEY}"
 

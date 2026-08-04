@@ -3,7 +3,6 @@ from starlette.requests import Request
 from app.services.audit import begin_request_context, end_request_context, write_audit
 from app.services.client_ip import client_ip, inspect_client_ip, validate_trusted_proxies
 from app.services.sessions import request_ip as session_request_ip, request_user_agent as session_request_user_agent
-import app.services.sessions as session_service
 
 
 def make_request(immediate_ip: str, forwarded_for: str | None, trusted: str, user_agent: str | None = None) -> Request:
@@ -87,10 +86,10 @@ def test_sessions_and_audit_logs_use_the_same_client_ip():
     assert row.ip_address == expected
 
 
-def test_demo_audit_context_redacts_explicit_client_ip():
+def test_explicitly_redacted_audit_context_omits_client_ip():
     db = RecordingSession()
     token, _ = begin_request_context(
-        request_id="demo-test",
+        request_id="redaction-test",
         method="POST",
         path="/login",
         ip_address=None,
@@ -110,9 +109,8 @@ def test_demo_audit_context_redacts_explicit_client_ip():
     assert row.ip_address is None
 
 
-def test_demo_sessions_do_not_store_visitor_fingerprinting_data(monkeypatch):
-    request = make_request("198.51.100.25", None, "127.0.0.1", "Demo Browser/1.0")
-    monkeypatch.setattr(session_service, "get_settings", lambda: type("Settings", (), {"demo_mode": True})())
+def test_sessions_store_bounded_security_context():
+    request = make_request("198.51.100.25", None, "127.0.0.1", "Test Browser/1.0")
 
-    assert session_request_ip(request) is None
-    assert session_request_user_agent(request) is None
+    assert session_request_ip(request) == "198.51.100.25"
+    assert session_request_user_agent(request) == "Test Browser/1.0"

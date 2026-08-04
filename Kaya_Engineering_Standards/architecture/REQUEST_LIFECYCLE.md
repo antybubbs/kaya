@@ -7,7 +7,7 @@ A typical request follows this sequence:
 1. The reverse proxy forwards the request to Kaya.
 2. Trusted proxy handling determines the effective scheme and client address.
 3. Session middleware validates the signed session cookie.
-4. Global middleware applies demo restrictions, host validation, security headers, metrics and audit context.
+4. Global middleware applies host validation, security headers, metrics and audit context.
 5. The router resolves the endpoint.
 6. Authentication and module-access checks identify the user and permitted operation.
 7. Input is validated and normalised.

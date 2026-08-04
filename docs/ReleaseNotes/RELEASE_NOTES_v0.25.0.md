@@ -52,10 +52,8 @@ Kaya v0.25.0 introduces the first complete Pi-hole High Availability Beta, expan
 - Legacy plaintext FTP targets remain stored for migration but cannot be tested or dispatched.
 - Use SFTP, SMB, or a securely mounted local path.
 
-## Demo and release safety
+## Release safety
 
-- The public demo blocks all HA agent endpoints and all HA mutations while retaining read-only presentation.
-- Demo resets remain deterministic and infrastructure workers remain disabled.
 - Production startup rejects trust-all proxy configuration; configure the exact reverse-proxy IP or CIDR.
 - Existing DNS Manager history and linked data are not deleted as a side effect of HA or provider removal.
 

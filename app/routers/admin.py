@@ -2443,8 +2443,7 @@ def audit_log_query(
             AuditLog.request_path.ilike(like), AuditLog.request_id.ilike(like),
             AuditLog.user.has(User.email.ilike(like)),
         ]
-        if not get_settings().demo_mode:
-            search_fields.append(AuditLog.ip_address.ilike(like))
+        search_fields.append(AuditLog.ip_address.ilike(like))
         query = query.filter(or_(*search_fields))
     if category:
         query = query.filter(AuditLog.category == category)
@@ -2619,8 +2618,6 @@ def export_audit_logs(
         "source": ("Source", lambda row: row.ip_address or ""),
         "detail": ("Detail", lambda row: row.detail or ""),
     }
-    if get_settings().demo_mode:
-        column_map.pop("source")
     selected_columns = validate_export_columns(columns, list(column_map))
     active_filters = validate_export_filters(filters, list(column_map))
     query, clean_q, clean_from, clean_to = audit_log_query(
@@ -2649,22 +2646,18 @@ def about(
     db: Session = Depends(get_db),
     user=Depends(require_admin),
 ):
-    if get_settings().demo_mode:
-        sessions = []
-        current_session_id = None
-    else:
-        sessions = (
-            db.query(AppSession)
-            .filter(
-                AppSession.ended_at.is_(None),
-                AppSession.last_seen_at >= active_since(),
-            )
-            .options(selectinload(AppSession.user))
-            .order_by(AppSession.last_seen_at.desc())
-            .limit(100)
-            .all()
+    sessions = (
+        db.query(AppSession)
+        .filter(
+            AppSession.ended_at.is_(None),
+            AppSession.last_seen_at >= active_since(),
         )
-        current_session_id = request.session.get("session_id")
+        .options(selectinload(AppSession.user))
+        .order_by(AppSession.last_seen_at.desc())
+        .limit(100)
+        .all()
+    )
+    current_session_id = request.session.get("session_id")
 
     return templates.TemplateResponse(
         request,

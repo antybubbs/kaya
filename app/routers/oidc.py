@@ -228,7 +228,7 @@ def _complete_vault_assurance(request: Request, db: Session, provider: OIDCProvi
 async def oidc_login(request: Request, return_to: str = Query("/dashboard"), db: Session = Depends(get_db)):
     policy = get_authentication_policy(db)
     provider = policy.provider
-    if settings.demo_mode or not policy.show_oidc_login:
+    if not policy.show_oidc_login:
         return templates.TemplateResponse(request, "oidc_error.html", _oidc_error_context(request, db, "Single sign-on is not enabled."), status_code=404)
     return await _begin(request, db, provider, return_path=safe_return_path(return_to, get_site_setting(db, "oidc_post_login_path")))
 

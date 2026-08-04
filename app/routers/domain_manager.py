@@ -7,7 +7,6 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from starlette import status
 
-from app.core.config import get_settings
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.core.templating import templates
 from app.db.session import get_db
@@ -206,7 +205,7 @@ def create_domain(
         nameservers=json.dumps(clean_lines(nameservers)),
         notes=notes.strip() or None,
     )
-    if lookup_now and not get_settings().demo_mode:
+    if lookup_now:
         save_lookup(record, lookup_domain(clean_name))
     db.add(record)
     db.commit()
