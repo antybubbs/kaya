@@ -3,15 +3,24 @@
 **State:** Phase 3 validation, 2026-08-04
 **Scope:** The eight reported starting points plus wider-pattern findings discovered while validating them. Severity follows the hardening programme. “Confirmed” means current source demonstrates the condition; it does not mean a production exploit was attempted.
 
+## Checkpoint totals
+
+- **Total tracked:** 9: 1 Emergency, 3 Critical and 5 High.
+- **Contained:** 1 (`KAYA-DEM-001`).
+- **Resolved:** 1 (`KAYA-OIDC-001`).
+- **Remediated, pending independent re-verification:** 0.
+- **Changes required:** 1 (`KAYA-RDP-002`).
+- **Fully open:** 6 (`KAYA-DEM-002`, `KAYA-RDP-001`, `KAYA-BAK-001`, `KAYA-HA-001`, `KAYA-BG-001`, `KAYA-DB-001`).
+
 ## Summary
 
 | ID | Finding | Severity | Confidence | Status |
 |---|---|---:|---:|---|
 | KAYA-DEM-001 | Public demo allowed Secret Vault mutations | Emergency | High | Confirmed; emergency containment applied |
 | KAYA-DEM-002 | Demo policy is allowlist-by-path and leaves other mutations unclassified | High | High | Confirmed design defect; not remediated |
-| KAYA-OIDC-001 | Administrator-link invitation is a bearer account-takeover capability | Critical | High | Confirmed; not remediated |
+| KAYA-OIDC-001 | Administrator-link invitation is a bearer account-takeover capability | Critical | High | Resolved; independently verified at corrective commit `b5f53ce` in PR [#61](https://github.com/antybubbs/kaya/pull/61) |
 | KAYA-RDP-001 | Credential-bearing RDP token is exposed in WebSocket query strings and is replayable | High | High | Confirmed; not remediated |
-| KAYA-RDP-002 | RDP certificate verification is hard-disabled | Critical | High | Confirmed; not remediated |
+| KAYA-RDP-002 | RDP certificate verification is hard-disabled | Critical | High | Changes required in PR [#60](https://github.com/antybubbs/kaya/pull/60); separate corrective checkpoint pending |
 | KAYA-BAK-001 | Backup-agent bearer protocol returns plaintext credentials and data keys without replay resistance | Critical | High | Confirmed; not remediated |
 | KAYA-HA-001 | Keepalived hook holds an exclusive lock during hold-down and slow probes | High | High | Confirmed; not remediated |
 | KAYA-BG-001 | HA watchdog and lease reconciliation can terminate permanently on outer-loop exception | High | High | Confirmed; not remediated |
@@ -54,16 +63,16 @@
 - **Affected component:** OIDC link invitations and link confirmation.
 - **Severity:** Critical.
 - **Confidence:** High.
-- **Status:** Confirmed; no remediation applied in this phase.
+- **Status:** Resolved. Independent re-verification found no remaining Critical weakness at corrective commit `b5f53ceba109a9d7be30931b76932719d9a1ddcc` in PR [#61](https://github.com/antybubbs/kaya/pull/61).
 - **Evidence:** `create_link_invitation` creates a 30-minute random token stored by SHA-256. `accept_link_invitation` accepts the unauthenticated query token, marks it used, and starts an `admin_link` transaction targeting the chosen user. `resolve_login` accepts any valid unlinked IdP identity into that transaction. `confirm_transaction_link` checks current-user ownership only for `self_link`, and requires a password only for `email_match`; `admin_link` requires neither. `link_confirm_submit` starts a Kaya session as the target when there was no current user.
 - **Safe reproduction:** In a test database, create an administrator target and invitation, redeem it in a clean browser session, complete OIDC with a synthetic valid unlinked subject, confirm without target password, and observe `ExternalIdentity.user_id == target.id` plus a target session. Do not run against a live IdP.
 - **Affected files:** `app/routers/oidc.py:292-331, 635-658`, `app/services/oidc_identity.py:139-214`, OIDC models/migrations and templates.
 - **Root cause:** Possession of an administrator-created URL is treated as authorisation to bind the target account. The IdP proves control of the new identity, not that the actor is the intended Kaya recipient.
 - **Wider pattern search:** Self-link correctly binds the active user; email-match correctly asks for local proof. Invitation is consumed before completion, enabling invitation denial-of-service. There is no explicit revoked state or invalidation on target changes.
-- **Remediation:** Require a signed-in target user whose ID matches the invitation, fresh reauthentication/MFA, explicit confirmation of issuer/identity, purpose and recipient binding, server revocation, transactional single use, concurrent redemption protection, invalidation after account/provider changes, and recovery guidance that preserves admin access.
-- **Tests:** Required remediation matrix: wrong recipient, unauthenticated redemption, expired/reused/revoked/modified token, already-linked subject, privilege escalation, concurrent redemption, audit success/failure, provider/target change invalidation. No direct invitation tests currently exist.
+- **Remediation:** Recipient session ownership, password/TOTP step-up and verified email/provider binding remain. The corrective commit requires signed ID-token `auth_time` within 60 seconds of the trusted transaction start, atomically consumes state with a conditional database update, and adds pending/claimed/completed/revoked/expired invitation states. Claimed invitations can be atomically revoked; final completion and identity creation commit together. See ADR-0002 and `security-review/reviews/OIDC_INDEPENDENT_REVIEW.md`.
+- **Tests:** Focused Linux command `python -m pytest -p no:cacheprovider tests/test_oidc_identity.py tests/test_oidc_routes.py tests/test_oidc_security.py tests/test_database_migrations.py -q` passed 124 tests with 0 failures and 0 skips. Coverage includes malformed/missing/stale/future/tampered `auth_time`, prompt-with-stale-session, file-backed concurrent state consumption, restart/rollback/crash behavior, claimed revocation, revoke-versus-complete concurrency, lifecycle UI state, audit actor/redaction and migration. Ruff passed every changed Python file. Independent re-verification and the final full supported-Linux run remain required.
 - **Migration impact:** Existing unused invitations should be revoked on upgrade. Existing linked identities must not be silently removed. Preserve a tested local break-glass administrator and document recovery.
-- **Residual risk:** Email/IdP account compromise remains relevant even after recipient binding; assurance requirements must be an explicit owner decision.
+- **Residual risk:** Providers without signed `auth_time` fail closed for this flow and may require operator/provider changes. Real-provider interoperability and reverse-proxy log behavior remain deployment-specific. Email/IdP or recipient-account compromise remains relevant even after binding.
 
 ## KAYA-RDP-001 — Credential-bearing RDP token is exposed in WebSocket query strings and is replayable
 

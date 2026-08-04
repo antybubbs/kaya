@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="topbar"><div><p class="eyebrow">Sign-in methods</p><h1>Open OIDC invitation</h1></div></div>
+<section class="panel stack">
+  <p>This invitation is addressed to the signed-in Kaya account <strong>{{ user.email }}</strong>. Continue only if you expected it.</p>
+  <form method="post" action="/auth/oidc/link/invitation/open" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="token" value="{{ token }}">
+    <div class="form-actions"><button type="submit">Open invitation</button><a class="button secondary" href="/profile">Cancel</a></div>
+  </form>
+</section>
+{% endblock %}

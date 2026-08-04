@@ -2,10 +2,12 @@
 
 **State:** Proposed after Phase 1–3 review. Ordering may change after owner/human review. Each item must remain a small reviewable change and cite finding IDs.
 
+**Corrective checkpoint:** `KAYA-OIDC-001` is independently verified and resolved; `KAYA-RDP-002` still requires its separate re-verification gate. Six findings remain fully open. Preserve PR order [#58](https://github.com/antybubbs/kaya/pull/58) → [#61](https://github.com/antybubbs/kaya/pull/61) → [#60](https://github.com/antybubbs/kaya/pull/60) → [#59](https://github.com/antybubbs/kaya/pull/59).
+
 ## Sequence
 
 1. **Baseline and emergency Vault containment** — `KAYA-DEM-001`, `KAYA-DEM-002`. Land the three Phase 1–3 reports and the focused Secret Vault demo prefix/test. No claim that demo mode is otherwise safe.
-2. **Administrator invitation containment and migration** — `KAYA-OIDC-001`. Revoke outstanding invitations, require target session plus fresh reauthentication/MFA, add revocation and atomic single-use, migration/recovery guidance, full negative/concurrency/audit matrix. Preserve existing linked identities and local break-glass access.
+2. **Administrator invitation containment and migration** — `KAYA-OIDC-001`. Corrective commit `b5f53ce` on PR #61 enforces signed `auth_time`, atomic state consumption and an atomically revocable invitation lifecycle. Fresh adversarial re-verification and the repeated 124-test focused Linux suite pass. Status is resolved and eligible for the controlled stack merge after PR #58.
 3. **RDP certificate trust** — `KAYA-RDP-002`. Secure default first, administrator-only CA/certificate/fingerprint enrollment, legacy-host inventory/warnings, audit and rejection tests. This is separate from grant transport so reviewers can assess trust semantics independently.
 4. **RDP opaque one-time grants** — `KAYA-RDP-001`. Remove credential-bearing query tokens across browser, Kaya, and bridge; add server-side encrypted one-use grants, atomic consume, strict expiry/binding and URL/log/replay tests.
 5. **Backup agent machine-authentication ADR and protocol** — `KAYA-BAK-001`. Agree signing versus mTLS, enrollment, scopes, replay storage, key lifecycle and migration. Then implement server support, agent support, dual-protocol migration window with no bearer fallback for secret delivery, decommission denial, envelope/minimal secret response and tests.
