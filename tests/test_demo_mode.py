@@ -32,6 +32,22 @@ class DemoModeSafetyTests(unittest.TestCase):
         self.assertTrue(self.blocked("GET", "/system/site-administration/security/public-ip"))
         self.assertTrue(self.blocked("GET", "/system/site-administration/security/inbound"))
 
+    def test_blocks_secret_vault_mutations(self):
+        paths = (
+            "/security/secret-vault/setup",
+            "/security/secret-vault/items",
+            "/security/secret-vault/items/1",
+            "/security/secret-vault/items/1/reveal/fake-field",
+            "/security/secret-vault/collections",
+            "/security/secret-vault/export",
+            "/security/secret-vault/restore",
+            "/security/secret-vault/settings",
+        )
+        for path in paths:
+            with self.subTest(path=path):
+                self.assertTrue(self.blocked("POST", path))
+        self.assertFalse(self.blocked("GET", "/security/secret-vault"))
+
     def test_blocks_all_destructive_delete_routes(self):
         paths = (
             "/networking/vlan-ip-manager/ip-addresses/1/delete",

@@ -1,0 +1,83 @@
+# Kaya Security and Reliability Baseline
+
+**Review state:** Initial Phase 1 baseline
+**Evidence date:** 2026-08-04
+**Scope:** Current repository source, tests, engineering standards, security and deployment documentation. No live deployment or live credentials were used.
+
+## Method and limitations
+
+This baseline traces route dependencies, service calls, persistence models, background-loop entry points, agent code, and focused tests. It records current behaviour rather than inferring safety from names. Runtime route enumeration was unavailable because the local environment does not contain Alembic; static route enumeration and direct source tracing were used instead. External providers, reverse proxies, Keepalived, guacd, Docker agents, and production storage were not contacted.
+
+Kaya is a single-process FastAPI/Starlette application in its documented deployment profile. Browser identity crosses a signed-cookie boundary; agent APIs, shared links, OIDC redirects, remote connections, file storage, outbound provider calls, and the local SQLite database are distinct trust boundaries.
+
+## Identity, tokens, and sessions
+
+| Item | Trust boundary and actor | Authentication and authorisation | Accepted / returned data | Lifetime and storage | Logging, replay, failure, and test evidence |
+|---|---|---|---|---|---|
+| Local login | Public browser to Kaya; local user | Password plus optional TOTP; active user required; module landing is calculated after login | Email, password, TOTP; signed session cookie returned | Argon2 password hash; TOTP Fernet ciphertext; application session absolute lifetime 8 hours | Generic password failure; in-memory client/email throttling; audit success/failure. Covered by `test_authentication_policy.py`, `test_oidc_routes.py`, and `test_release_security_boundaries.py`. Rate limits are process-local. |
+| Initial setup | Unauthenticated browser to bootstrap boundary | CSRF plus deployment `SETUP_TOKEN`; `BEGIN IMMEDIATE` makes first administrator creation single-winner | Name, email, password, setup token | Setup token deployment-managed; password hash persisted | Rejected/success audit excludes token. Concurrency behaviour exists in source; focused release-boundary tests cover token enforcement. |
+| Session management | Browser cookie to signed Starlette session plus server-side `AppSession` ledger | `user_id` and random `session_id` must match an active, unended `AppSession` and active user | Cookie identifiers only; no domain secrets intended | Signed client cookie; server session row; 8-hour absolute lifetime; last-seen sync every 60 seconds | Logout and password reset end server sessions; demo generation invalidates demo sessions. Tests cover host/session boundaries; concurrent-session and fixation coverage is incomplete. |
+| Password reset | Public browser and email delivery boundary | Opaque URL token; CSRF on request and redemption | Email; reset token; new password | 32-byte URL-safe token, SHA-256 hash at rest, one-hour expiry, single use; earlier unused tokens invalidated | Generic request response; email errors redacted; rate limiting is in-memory. Reset invalidates user and Vault sessions. Route tests exist; concurrency redemption is not explicitly tested. |
+| Local profile and TOTP | Authenticated browser | `require_user`; current password and/or TOTP depending on action; CSRF | Names, passwords, TOTP codes/seed setup | Password Argon2; TOTP Fernet; session state | Security actions audited. Tests cover UI and selected route policy; reauthentication consistency requires wider review. |
+| OIDC login | Browser, Kaya, IdP, token endpoint | State, nonce, PKCE verifier, issuer/audience/signature/expiry through OIDC services; active mapped user or controlled JIT | Authorization code and validated claims; encrypted ID-token hint retained for logout | Server `OIDCTransaction`, hashed state/transaction identifiers, encrypted nonce/verifier, short expiry; transaction consumed | Redirects constrained; provider TLS configurable; audit records issuer host, not tokens. OIDC tests cover state, discovery, identity mapping, and migration. |
+| OIDC self-link / email match | Authenticated browser or verified email-matching flow | Self-link binds current session to target; email match requires local password | Validated claims and explicit confirmation | Server transaction; removed after confirmation | Link audit present. Negative coverage exists for identity conflicts, but the full requested replay/concurrency matrix is incomplete. |
+| Administrator link invitation | Admin creates URL; recipient browser and IdP | Creation requires admin and CSRF. Redemption currently requires only the bearer URL followed by control of any unlinked IdP identity; it does not prove the redeemer is the target Kaya user | Invitation token in query string; validated IdP claims | 32-byte token, SHA-256 hash, 30-minute expiry, nominal single use; invitation is marked used before OIDC completes | Critical takeover risk documented as `KAYA-OIDC-001`. No direct invitation regression tests were found. |
+| API / bearer tokens | Browser-created compute agents and backup agents | Per-host SHA-256 bearer token lookup; job access scoped by host ID | Agent inventory/status; backup job payloads | Long-lived until regenerated; only hash retained for current agents; legacy encrypted column retained for migration | No request signing, timestamp, nonce, or replay cache. Regeneration is audited. Tests cover host scoping, not replay or decommission denial. |
+| HA agent identity | HA node to `/api/ha/agent/v1` | Bootstrap then per-agent signed request protocol in `ha_agents`; credential status/revocation and request records | Desired state, lease snapshots, heartbeat/events/results | Per-agent key material, rotation/revocation state, request IDs | Stronger than backup-agent bearer protocol; tests cover signature, replay, sequence, rotation, revocation, and redaction. |
+| WebSocket authentication | Browser session to SSH/RDP WebSockets | Router module dependency, active signed session plus active `AppSession`; strict Origin check; RDP additionally checks a user/remote-bound token | Terminal/RDP frames; RDP grant currently in URL | Browser session plus in-memory RDP token (default 10 minutes, configurable 5–60) | Origin/session tests exist. RDP token is credential-bearing, URL-exposed, and reusable until expiry except a handoff path. |
+
+## Secrets, files, and protected data
+
+| Item | Trust boundary and actor | Access control and data handling | Storage / exposure | Failure and test evidence |
+|---|---|---|---|---|
+| Application encryption key | Deployment operator to process | Required Fernet key; production config fails closed if invalid | Environment/runtime file; passed to Guacamole bridge environment; not database-backed | Loss makes encrypted fields unrecoverable. Configuration tests exist; rotation is not implemented centrally. |
+| User-managed secrets | Editors/admins through module routes | Module plus role checks vary by module; object checks are route/service specific | Fernet ciphertext in SQLite for licence, provider, SMTP, remote, backup and related credentials | Audit generally records action/target, not value. A complete cross-module object-access matrix remains outstanding. |
+| Secret Vault | Authenticated user; optionally shared collection members; filesystem attachment store | Module access, role admission, owner/member object checks, unlocked Vault session, CSRF, fresh TOTP/OIDC assurance for sensitive actions | Layered encrypted payloads and encrypted attachments; per-process Vault sessions; audit metadata is redacted | Tests cover crypto, ownership/session/TOTP replay and secret-log source checks. Demo mutation omission was confirmed and contained. Shared-collection and concurrent mutation matrices remain incomplete. |
+| Secure Send | Sender, public recipient gateway, filesystem, optional mail | Sender module/role checks; recipient opaque token plus PIN/passphrase and recipient session; separate restricted gateway | AES-GCM content; hashed access credentials; encrypted files; gateway suppresses bearer-path logging and uses no-store | Extensive `test_secure_send.py` coverage includes credential requirements and source redaction. Proxy logging remains an operational boundary. |
+| RDP credentials | Authenticated remote user to Kaya, local bridge, guacd, target | Module and active-session checks; remote record must be enabled | Password is inside a Fernet token returned to JS and placed in browser/Kaya/bridge WebSocket query strings | URL/log/replay exposure and hardcoded certificate bypass are confirmed. No focused RDP grant or certificate tests exist. |
+| Backup credentials and data keys | Admin configuration to Kaya; backup agent to remote target | Editor queues job; bearer-authenticated host retrieves its queued jobs | Remote target password and per-job AES key are decrypted into JSON response; encrypted at rest | Confirmed critical protocol weakness. Audit omits secrets. Existing tests cover dispatch/status but not signing/replay/decommission. |
+| File uploads / downloads | Browser to filesystem or database | Hardware attachments, runbook images/imports, remote recordings, Vault and Secure Send each implement separate limits and object checks | Generated or constrained names in module stores; some content in database; recording/Vault/Secure Send files on persistent storage | Size checks exist, but validation strength is inconsistent and there is no malware scanning. Tests are strongest for Vault/Secure Send and weaker for general attachments/imports. |
+| Exports / backups | Authenticated browser or startup process to download/storage | Admin/module/object rules vary; shared table exporter allowlists columns | CSV/JSON/download streams; SQLite backup API used before migration | Formula-injection and column/filter tests exist for shared exporter. Secret stores require purpose-built exports. Operational backup must also preserve `ENCRYPTION_KEY`. |
+
+## Authorisation, demo mode, and administrative operations
+
+| Item | Current control | Observed boundary and failure mode | Test coverage |
+|---|---|---|---|
+| Global roles | `require_admin`, `require_editor`, `require_user` | Admin: administration; editor: operational mutation; viewer: read-only intent | Module and selected route tests exist; whole-route role enumeration is absent. |
+| Module permissions | Router dependencies from `require_module_access` | Independent database grants; active session is rechecked; WebSocket routers inherit module dependency | `test_module_access.py` and WebSocket regression tests. |
+| Object authorisation | Implemented per route/service | Strong examples: Vault owner/member checks, recording ownership/admin rules, backup job host binding. Risk: no shared enforcement or complete negative matrix | Scattered module tests; a repository-wide IDOR review remains outstanding. |
+| Administrator operations | Admin dependency plus CSRF for browser mutations | User/security/OIDC/site/notification settings are high-impact; several live under `/api/admin` | Many focused tests; no single inventory test proves every admin route. |
+| Demo mode | `app.main.protect_public_demo` calls `demo_request_is_blocked` | Prefix/suffix allowlist, not deny-by-default. Secret Vault was omitted. Static enumeration found many other non-safe routes outside the policy | `test_demo_mode.py` covers listed cases, now including Vault. No authoritative route-enumeration test exists. |
+| Audit events | `write_audit` across security and operational routes | Actor/action/entity and safe metadata persisted; demo redacts IP/user-agent; audit failures are not uniformly fail-closed | Broad feature tests assert selected events. Central redaction and completeness need systematic validation. |
+
+## External calls, TLS, and proxy boundary
+
+| Surface | Destination and validation | Timeouts / TLS | Observations |
+|---|---|---|---|
+| OIDC | Configured issuer/discovery/token endpoints; redirects disabled in HTTP client | Bounded timeout; TLS verification defaults on but administrator may disable it | Explicit insecure setting is audited; SSRF/issuer allowlisting needs deeper Phase 11 review. |
+| DNS / compute / domain integrations | Administrator-configured LAN or internet services | Call-site timeouts generally present; TLS flags vary by provider | These are intentional SSRF-adjacent capabilities and require strict admin-only configuration plus destination validation. |
+| SSH | Local Node bridge then SSH host; host key is scanned and explicitly pinned | Bounded local bridge connection and scan timeouts | Host-key enrollment is a positive model for RDP certificate trust. Some upstream errors are returned verbatim and require redaction review. |
+| RDP | Local Guacamole bridge, guacd, remote RDP host | Local bridge timeout; remote certificate verification hard-disabled | `KAYA-RDP-002` is confirmed Critical. |
+| Notifications / web push / mail | SMTP and push subscription endpoints | SMTP and delivery services use timeouts/retry patterns; push code blocks redirects | Durable outbox/supervisor design is substantially stronger than older loops; endpoint secrecy/redaction tests exist in notification suite. |
+| Reverse proxy | Immediate peer to trusted forwarded-header middleware | `FORWARDED_ALLOW_IPS` defaults to loopback; production forbids wildcard | Deployment docs clearly distinguish allowed hosts and trusted proxies; test suite covers spoofing and host handling. |
+
+## Background services and schedulers
+
+| Service | Task ownership / resilience | Health and failure state | Evidence |
+|---|---|---|---|
+| Domain polling, compute monitor, DNS collector, Secure Send cleanup, version check | Retained module-level tasks created during lifespan; loop-specific exception behaviour varies | Mostly logging only; no common heartbeat model | Entry points in `app.main` and service loops; focused module tests vary. |
+| Network monitor | Retained manager task with per-monitor tasks and watchdog logic | Has more developed restart behaviour than older loops | `test_network_monitor.py` covers task recovery paths. |
+| Notification runtime | Dedicated supervisor, named workers, heartbeats, restart/backoff, retention | Diagnostics and durable outbox state | `test_notification_runtime.py` and `test_notifications.py` cover recovery and delivery. |
+| HA sync monitor | Retained task; outer exception isolation and retry delay | Logs failures; no common diagnostic heartbeat | `test_ha_sync_monitor.py` covers monitor logic. |
+| HA watchdog and lease reconciliation | Retained tasks but no outer exception isolation around `to_thread` pass | An exception before/around per-cluster handling permanently ends the task with no restart | Confirmed `KAYA-BG-001`; no recovery-after-pass-exception test. |
+| HA agent main loop | Long-running local agent loop with SQLite WAL/busy handling and top-level retry behaviour | Local state/events retained | HA agent resilience tests include SQLite contention. |
+
+## SQLite and data integrity
+
+The main SQLAlchemy engine is created centrally in `app/db/session.py`, but its connect hook only enables foreign keys. It does not set `journal_mode=WAL`, a busy timeout, or an explicit synchronous/checkpoint policy. Migration and backup helpers independently set a busy timeout; the HA agent independently uses WAL and a busy timeout. Legacy `scripts/migrate_sqlite.py` and `scripts/seed_demo.py` create direct connections/engines with different policies. This inconsistency is `KAYA-DB-001`.
+
+Transactions are generally request- or service-owned, but some services commit repeatedly within loops. Startup migration uses SQLite's backup API and schema validation. Existing tests cover migrations, validation, and HA-agent contention; realistic concurrent main-application writers, WAL checkpoint growth, bind-mount behaviour, abrupt termination, and restore compatibility are not covered.
+
+## Initial coverage conclusion
+
+The repository contains meaningful security tests around authentication, OIDC primitives, host/proxy handling, Secret Vault, Secure Send, HA agent signing, notification durability, migrations, and selected module access. The largest systematic gaps are deny-by-default route classification, administrator-invitation recipient proof, RDP grant/certificate lifecycle, backup-agent machine authentication, outer-loop supervision, whole-application object-authorisation matrices, and realistic SQLite concurrency/deployment tests.
