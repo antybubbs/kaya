@@ -7,7 +7,7 @@ alembic==1.16.5
 pydantic-settings==2.14.2
 passlib[argon2]==1.7.4
 itsdangerous==2.2.0
-cryptography==49.0.0
+cryptography==50.0.0
 pandas==2.2.3
 openpyxl==3.1.5
 email-validator==2.2.0
