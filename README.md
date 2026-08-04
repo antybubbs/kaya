@@ -105,6 +105,10 @@ Kaya is more than a homelab inventory. It is a self-hosted operations hub for th
 - SMTP
 - Backup Manager
 
+## Notifications
+
+Kaya includes an in-application notification centre and optional PWA Web Push. Push remains disabled until an administrator configures VAPID keys and a user intentionally grants permission on a device. See [Notification setup, privacy, troubleshooting, and developer integration](docs/notifications.md).
+
 ------------------------------------------------------------------------
 
 # Live Demo
@@ -326,6 +330,3 @@ should feel organised, trusted and completely under our control.
 I am orignally from South Africa and thus wanted something to remind me of "Home" :-)
 
 ------------------------------------------------------------------------
-## Notifications
-
-Kaya includes an in-application notification centre and optional PWA Web Push. Push remains disabled until an administrator configures VAPID keys and a user intentionally grants permission on a device. See [Notification setup, privacy, troubleshooting, and developer integration](docs/notifications.md).
