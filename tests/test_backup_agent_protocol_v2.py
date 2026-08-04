@@ -4,14 +4,21 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
 from app.services.backup_agent_protocol import b64u_decode, canonical_query, canonical_request, seal_dispatch
 
-sys.path.insert(0, str(Path(__file__).parents[1] / "external/Kaya-Docker-Agent"))
-from protocol_v2 import ProtocolV2Client, b64u  # noqa: E402
+AGENT_ROOT = Path(__file__).parents[1] / "external/Kaya-Docker-Agent"
+if AGENT_ROOT.exists():
+    sys.path.insert(0, str(AGENT_ROOT))
+    from protocol_v2 import ProtocolV2Client, b64u  # noqa: E402
+else:
+    ProtocolV2Client = None
+    b64u = None
 
 
 VECTORS = json.loads((Path(__file__).parents[1] / "docs/security/backup-agent-protocol-v2-test-vectors.json").read_text(encoding="utf-8"))
@@ -44,6 +51,7 @@ def test_shared_envelope_vector_is_reproduced_exactly():
     assert envelope["server_signature"] == vector["server_ed25519_signature"]
 
 
+@pytest.mark.skipif(ProtocolV2Client is None, reason="genuine Kaya-Docker-Agent checkout is not present")
 def test_server_envelope_is_opened_by_production_agent_implementation():
     agent_private = X25519PrivateKey.generate()
     server_private = Ed25519PrivateKey.generate()

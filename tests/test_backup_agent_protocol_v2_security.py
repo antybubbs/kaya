@@ -32,8 +32,12 @@ from app.services.backup_agent_protocol import (
     create_server_signing_key,
 )
 
-sys.path.insert(0, str(Path(__file__).parents[1] / "external/Kaya-Docker-Agent"))
-from protocol_v2 import ProtocolV2Client  # noqa: E402
+AGENT_ROOT = Path(__file__).parents[1] / "external/Kaya-Docker-Agent"
+if AGENT_ROOT.exists():
+    sys.path.insert(0, str(AGENT_ROOT))
+    from protocol_v2 import ProtocolV2Client  # noqa: E402
+else:
+    ProtocolV2Client = None
 
 
 @contextmanager
@@ -152,6 +156,7 @@ def test_wrong_path_scope_revoked_decommissioned_and_disabled_agents_fail_closed
         assert disabled.value.status_code == 403
 
 
+@pytest.mark.skipif(ProtocolV2Client is None, reason="genuine Kaya-Docker-Agent checkout is not present")
 def test_server_agent_offer_claim_interoperability_and_idempotent_retry():
     with database() as db:
         signing, envelope_private = Ed25519PrivateKey.generate(), X25519PrivateKey.generate()
