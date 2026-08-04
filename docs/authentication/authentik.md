@@ -351,7 +351,7 @@ Use the same browser session for the complete process. Do not use the main SSO b
 
 After linking, the profile should show the provider name, OIDC email, and last OIDC login. The Audit Log should contain **OIDC Identity Linked**.
 
-An administrator can alternatively create a single-use linking invitation from Kaya's authentication administration page. Invitations expire and should be delivered privately to the intended user.
+An administrator can alternatively create a recipient-bound linking invitation from Kaya's authentication administration page. The URL is displayed once, expires after 30 minutes and should be delivered privately. The exact recipient must already be signed in locally, re-enter their Kaya password and TOTP code when enabled, and then complete a fresh authentik login whose verified email matches the Kaya account. A stolen URL alone is insufficient. Provider or account changes invalidate the invitation, and an abandoned flow requires a newly issued invitation.
 
 ## Step 9: Enable SSO safely
 

@@ -54,14 +54,14 @@
 - **Affected component:** OIDC link invitations and link confirmation.
 - **Severity:** Critical.
 - **Confidence:** High.
-- **Status:** Confirmed; no remediation applied in this phase.
+- **Status:** Remediation implemented on `security/oidc-admin-link-hardening`; supported-Linux and independent review pending.
 - **Evidence:** `create_link_invitation` creates a 30-minute random token stored by SHA-256. `accept_link_invitation` accepts the unauthenticated query token, marks it used, and starts an `admin_link` transaction targeting the chosen user. `resolve_login` accepts any valid unlinked IdP identity into that transaction. `confirm_transaction_link` checks current-user ownership only for `self_link`, and requires a password only for `email_match`; `admin_link` requires neither. `link_confirm_submit` starts a Kaya session as the target when there was no current user.
 - **Safe reproduction:** In a test database, create an administrator target and invitation, redeem it in a clean browser session, complete OIDC with a synthetic valid unlinked subject, confirm without target password, and observe `ExternalIdentity.user_id == target.id` plus a target session. Do not run against a live IdP.
 - **Affected files:** `app/routers/oidc.py:292-331, 635-658`, `app/services/oidc_identity.py:139-214`, OIDC models/migrations and templates.
 - **Root cause:** Possession of an administrator-created URL is treated as authorisation to bind the target account. The IdP proves control of the new identity, not that the actor is the intended Kaya recipient.
 - **Wider pattern search:** Self-link correctly binds the active user; email-match correctly asks for local proof. Invitation is consumed before completion, enabling invitation denial-of-service. There is no explicit revoked state or invalidation on target changes.
-- **Remediation:** Require a signed-in target user whose ID matches the invitation, fresh reauthentication/MFA, explicit confirmation of issuer/identity, purpose and recipient binding, server revocation, transactional single use, concurrent redemption protection, invalidation after account/provider changes, and recovery guidance that preserves admin access.
-- **Tests:** Required remediation matrix: wrong recipient, unauthenticated redemption, expired/reused/revoked/modified token, already-linked subject, privilege escalation, concurrent redemption, audit success/failure, provider/target change invalidation. No direct invitation tests currently exist.
+- **Remediation:** Implemented recipient session ownership, password/TOTP step-up, forced fresh IdP login, verified-email match, target/provider bindings, explicit revocation, atomic single use, no target session creation, migration invalidation and recovery guidance. See ADR-0002.
+- **Tests:** Added wrong-recipient, expired/reused/revoked token, already-linked identity, exact-owner, verified-email, target/provider-change, stale concurrent-session, audit-secret and access-log-redaction coverage. Existing OIDC tests retain state, nonce, issuer, audience, expiry, PKCE and redirect coverage. Supported-Linux execution and independent review remain required before closure.
 - **Migration impact:** Existing unused invitations should be revoked on upgrade. Existing linked identities must not be silently removed. Preserve a tested local break-glass administrator and document recovery.
 - **Residual risk:** Email/IdP account compromise remains relevant even after recipient binding; assurance requirements must be an explicit owner decision.
 

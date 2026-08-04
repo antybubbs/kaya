@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+import hashlib
 import json
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models.models import ExternalIdentity, OIDCProvider, OIDCTransaction, User
+from app.models.models import ExternalIdentity, OIDCLinkInvitation, OIDCProvider, OIDCTransaction, User
 from app.services.oidc_role_mapping import (
     claim_bool,
     claim_groups,
@@ -31,6 +32,80 @@ class LoginResolution:
     confirmation_required: bool = False
     provisioned: bool = False
     linked: bool = False
+
+
+def invitation_recipient_binding(user: User) -> str:
+    """Bind an invitation to the security-relevant recipient account state."""
+    updated = user.updated_at.isoformat() if user.updated_at else ""
+    value = f"{user.id}|{normalise_email(user.email)}|{user.role}|{int(user.is_active)}|{updated}"
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
+def invitation_provider_binding(provider: OIDCProvider) -> str:
+    updated = provider.updated_at.isoformat() if provider.updated_at else ""
+    value = "|".join((
+        str(provider.id), provider.issuer.strip(), provider.client_id.strip(),
+        provider.email_claim, provider.email_verified_claim, str(int(provider.is_enabled)), updated,
+    ))
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
+def validate_admin_link_invitation(
+    db: Session,
+    transaction: OIDCTransaction,
+    target: User,
+    value: dict,
+) -> OIDCLinkInvitation:
+    invitation = db.get(OIDCLinkInvitation, transaction.link_invitation_id) if transaction.link_invitation_id else None
+    provider = db.get(OIDCProvider, transaction.provider_id)
+    now = datetime.utcnow()
+    if (
+        not invitation
+        or invitation.user_id != target.id
+        or invitation.provider_id != transaction.provider_id
+        or invitation.used_at is None
+        or invitation.revoked_at is not None
+        or invitation.expires_at < now
+        or invitation.recipient_binding_hash != invitation_recipient_binding(target)
+        or not provider
+        or invitation.provider_binding_hash != invitation_provider_binding(provider)
+    ):
+        raise OIDCIdentityError("invalid_link_invitation")
+    if not value.get("email_verified") or normalise_email(value.get("email")) != normalise_email(target.email):
+        raise OIDCIdentityError("invitation_identity_mismatch")
+    return invitation
+
+
+def claim_admin_link_invitation(
+    db: Session,
+    invitation: OIDCLinkInvitation,
+    user: User,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """Atomically burn one recipient/session-bound invitation before IdP redirect."""
+    claimed_at = now or datetime.utcnow()
+    provider = db.get(OIDCProvider, invitation.provider_id)
+    if not invitation.redemption_session_hash or not provider:
+        return False
+    count = db.query(OIDCLinkInvitation).filter(
+        OIDCLinkInvitation.id == invitation.id,
+        OIDCLinkInvitation.user_id == user.id,
+        OIDCLinkInvitation.recipient_binding_hash == invitation_recipient_binding(user),
+        OIDCLinkInvitation.provider_binding_hash == invitation_provider_binding(provider),
+        OIDCLinkInvitation.redemption_session_hash == invitation.redemption_session_hash,
+        OIDCLinkInvitation.used_at.is_(None),
+        OIDCLinkInvitation.revoked_at.is_(None),
+        OIDCLinkInvitation.expires_at >= claimed_at,
+    ).update(
+        {OIDCLinkInvitation.used_at: claimed_at, OIDCLinkInvitation.redemption_session_hash: None},
+        synchronize_session=False,
+    )
+    if count != 1:
+        db.rollback()
+        return False
+    db.commit()
+    return True
 
 
 def normalised_identity_claims(provider: OIDCProvider, claims: dict) -> dict:
@@ -138,8 +213,15 @@ def _apply_profile(db: Session, provider: OIDCProvider, user: User, identity: Ex
 
 def resolve_login(db: Session, provider: OIDCProvider, transaction: OIDCTransaction, claims: dict) -> LoginResolution:
     value = normalised_identity_claims(provider, claims)
+    if transaction.flow_type == "admin_link":
+        target = db.get(User, transaction.target_user_id)
+        if not target or not target.is_active:
+            raise OIDCIdentityError("invalid_link_target")
+        validate_admin_link_invitation(db, transaction, target, value)
     identity = db.query(ExternalIdentity).filter_by(provider_id=provider.id, issuer=value["iss"], subject=value["sub"]).first()
     if identity:
+        if transaction.flow_type == "admin_link":
+            raise OIDCIdentityError("identity_conflict")
         user = db.get(User, identity.user_id)
         if not user or not user.is_active:
             raise OIDCIdentityError("inactive_user")
@@ -150,6 +232,8 @@ def resolve_login(db: Session, provider: OIDCProvider, transaction: OIDCTransact
         target = db.get(User, transaction.target_user_id)
         if not target or not target.is_active:
             raise OIDCIdentityError("invalid_link_target")
+        if transaction.flow_type == "admin_link":
+            validate_admin_link_invitation(db, transaction, target, value)
         transaction.validated_claims_json = json.dumps(value, separators=(",", ":"))
         db.commit()
         return LoginResolution(user=None, confirmation_required=True)
@@ -200,6 +284,11 @@ def confirm_transaction_link(db: Session, transaction: OIDCTransaction, current_
         raise OIDCIdentityError("invalid_link_target")
     if transaction.flow_type == "self_link" and (not current_user or current_user.id != target.id):
         raise OIDCIdentityError("invalid_link_owner")
+    invitation = None
+    if transaction.flow_type == "admin_link":
+        if not current_user or current_user.id != target.id:
+            raise OIDCIdentityError("invalid_link_owner")
+        invitation = validate_admin_link_invitation(db, transaction, target, json.loads(transaction.validated_claims_json))
     if transaction.flow_type == "email_match" and not password_verified:
         raise OIDCIdentityError("local_proof_required", "Confirm the link with your current Kaya password.")
     value = json.loads(transaction.validated_claims_json)
@@ -208,8 +297,8 @@ def confirm_transaction_link(db: Session, transaction: OIDCTransaction, current_
         provider,
         target,
         value,
-        link_method="self_service" if transaction.flow_type == "self_link" else "verified_email_match" if transaction.flow_type == "email_match" else "admin",
-        linked_by_user_id=transaction.initiated_by_user_id,
+        link_method="self_service" if transaction.flow_type == "self_link" else "verified_email_match" if transaction.flow_type == "email_match" else "admin_invitation",
+        linked_by_user_id=invitation.created_by_user_id if invitation else transaction.initiated_by_user_id,
     )
 
 

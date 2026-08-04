@@ -1,12 +1,12 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.db.session import Base
-from app.models.models import ExternalIdentity, OIDCProvider, OIDCTransaction, User
-from app.services.oidc_identity import OIDCIdentityError, confirm_transaction_link, resolve_login, unlink_identity
+from app.models.models import ExternalIdentity, OIDCLinkInvitation, OIDCProvider, OIDCTransaction, User
+from app.services.oidc_identity import OIDCIdentityError, claim_admin_link_invitation, confirm_transaction_link, invitation_provider_binding, invitation_recipient_binding, resolve_login, unlink_identity
 
 
 def database():
@@ -40,6 +40,26 @@ def transaction(db, provider, **values):
 
 def claims(email="user@example.com", subject="subject-1", groups=None):
     return {"iss": "https://id.example.com", "sub": subject, "email": email, "email_verified": True, "given_name": "Test", "family_name": "User", "groups": groups or []}
+
+
+def admin_link_transaction(db, provider, target, creator, **invitation_values):
+    invitation = OIDCLinkInvitation(
+        token_hash="f" * 64,
+        user_id=target.id,
+        provider_id=provider.id,
+        created_by_user_id=creator.id,
+        recipient_binding_hash=invitation_recipient_binding(target),
+        provider_binding_hash=invitation_provider_binding(provider),
+        expires_at=invitation_values.pop("expires_at", datetime.utcnow() + timedelta(minutes=30)),
+        used_at=invitation_values.pop("used_at", datetime.utcnow()),
+        **invitation_values,
+    )
+    db.add(invitation)
+    db.flush()
+    return transaction(
+        db, provider, flow_type="admin_link", target_user_id=target.id,
+        initiated_by_user_id=target.id, link_invitation_id=invitation.id,
+    ), invitation
 
 
 def test_existing_link_resolves_by_issuer_and_subject_not_changed_email():
@@ -94,6 +114,102 @@ def test_explicit_self_link_requires_target_owner_and_prevents_identity_conflict
         identity = confirm_transaction_link(db, tx, user)
         assert identity.user_id == user.id
         assert user.authentication_type == "local_and_oidc"
+
+
+def test_admin_invitation_requires_exact_recipient_and_verified_matching_email():
+    with database() as db:
+        provider = add_provider(db, require_verified_email=False)
+        creator = add_user(db, "admin@example.com", role="admin")
+        target = add_user(db)
+        attacker = add_user(db, "attacker@example.com")
+        tx, _ = admin_link_transaction(db, provider, target, creator)
+
+        wrong_email = claims(email=attacker.email)
+        with pytest.raises(OIDCIdentityError) as mismatch:
+            resolve_login(db, provider, tx, wrong_email)
+        assert mismatch.value.category == "invitation_identity_mismatch"
+
+        unverified = claims(email=target.email)
+        unverified["email_verified"] = False
+        with pytest.raises(OIDCIdentityError) as mismatch:
+            resolve_login(db, provider, tx, unverified)
+        assert mismatch.value.category == "invitation_identity_mismatch"
+
+        resolution = resolve_login(db, provider, tx, claims(email=target.email))
+        assert resolution.confirmation_required
+        with pytest.raises(OIDCIdentityError) as wrong_owner:
+            confirm_transaction_link(db, tx, attacker)
+        assert wrong_owner.value.category == "invalid_link_owner"
+        identity = confirm_transaction_link(db, tx, target)
+        assert identity.user_id == target.id
+        assert identity.link_method == "admin_invitation"
+        assert identity.linked_by_user_id == creator.id
+
+
+@pytest.mark.parametrize("change", ["expired", "revoked", "account_changed", "provider_changed"])
+def test_admin_invitation_fails_closed_when_security_binding_is_stale(change):
+    with database() as db:
+        provider = add_provider(db)
+        creator = add_user(db, "admin@example.com", role="admin")
+        target = add_user(db)
+        values = {"expires_at": datetime.utcnow() - timedelta(seconds=1)} if change == "expired" else {}
+        tx, invitation = admin_link_transaction(db, provider, target, creator, **values)
+        if change == "revoked":
+            invitation.revoked_at = datetime.utcnow()
+        elif change == "account_changed":
+            target.role = "editor"
+        elif change == "provider_changed":
+            provider.client_id = "replacement-client"
+        db.flush()
+        with pytest.raises(OIDCIdentityError) as failure:
+            resolve_login(db, provider, tx, claims(email=target.email))
+        assert failure.value.category == "invalid_link_invitation"
+
+
+def test_existing_provider_link_blocks_admin_invitation_rebinding():
+    with database() as db:
+        provider = add_provider(db)
+        creator = add_user(db, "admin@example.com", role="admin")
+        target = add_user(db)
+        db.add(ExternalIdentity(
+            user_id=target.id, provider_id=provider.id, issuer=provider.issuer,
+            subject="existing-subject", current_email=target.email, link_method="self_service",
+        ))
+        tx, _ = admin_link_transaction(db, provider, target, creator)
+        resolve_login(db, provider, tx, claims(email=target.email, subject="different-subject"))
+        with pytest.raises(OIDCIdentityError) as failure:
+            confirm_transaction_link(db, tx, target)
+        assert failure.value.category == "user_identity_conflict"
+
+        tx.validated_claims_json = None
+        with pytest.raises(OIDCIdentityError) as failure:
+            resolve_login(db, provider, tx, claims(email=target.email, subject="existing-subject"))
+        assert failure.value.category == "identity_conflict"
+
+
+def test_concurrent_sessions_can_claim_an_invitation_only_once(tmp_path):
+    engine = create_engine(f"sqlite:///{(tmp_path / 'concurrent.sqlite3').as_posix()}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as seed:
+        provider = add_provider(seed)
+        creator = add_user(seed, "admin@example.com", role="admin")
+        target = add_user(seed)
+        _, invitation = admin_link_transaction(seed, provider, target, creator)
+        invitation.used_at = None
+        invitation.redemption_session_hash = "e" * 64
+        seed.commit()
+        invitation_id, target_id = invitation.id, target.id
+
+    first = Session(engine)
+    second = Session(engine)
+    try:
+        first_invitation, first_user = first.get(OIDCLinkInvitation, invitation_id), first.get(User, target_id)
+        second_invitation, second_user = second.get(OIDCLinkInvitation, invitation_id), second.get(User, target_id)
+        assert claim_admin_link_invitation(first, first_invitation, first_user) is True
+        assert claim_admin_link_invitation(second, second_invitation, second_user) is False
+    finally:
+        first.close()
+        second.close()
 
 
 def test_oidc_only_user_cannot_unlink_and_local_user_can():

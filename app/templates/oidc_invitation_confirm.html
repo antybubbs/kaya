@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="topbar"><div><p class="eyebrow">Sign-in methods</p><h1>Confirm OIDC invitation</h1></div></div>
+<section class="panel stack">
+  <p>Confirm that you control the signed-in Kaya account <strong>{{ user.email }}</strong>. You will then complete a fresh identity-provider login using the same verified email.</p>
+  {% if error %}<div class="alert">{{ error }}</div>{% endif %}
+  <form method="post" action="/auth/oidc/link/invitation/confirm" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Current Kaya password<input type="password" name="password" autocomplete="current-password" maxlength="255" required></label>
+    {% if requires_2fa %}<label>Authentication code<input name="totp_code" inputmode="numeric" autocomplete="one-time-code" maxlength="20" required></label>{% endif %}
+    <div class="form-actions"><button type="submit">Continue to provider</button><a class="button secondary" href="/profile">Cancel</a></div>
+  </form>
+</section>
+{% endblock %}

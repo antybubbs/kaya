@@ -146,11 +146,15 @@ def test_nested_claims_domains_and_highest_role_mapping():
     assert email_is_allowed(row_provider, "person@fakeexample.com") is False
 
 
-def test_oidc_callback_authorization_code_is_redacted_from_access_log():
-    record = logging.LogRecord("uvicorn.access", logging.INFO, __file__, 1, '%s - "%s %s HTTP/%s" %d', ("client", "GET", "/auth/oidc/callback?code=secret-code&state=value", "1.1", 303), None)
+@pytest.mark.parametrize("path", [
+    "/auth/oidc/callback?code=secret-code&state=value",
+    "/auth/oidc/link/invitation?token=secret-code",
+])
+def test_oidc_credential_query_values_are_redacted_from_access_log(path):
+    record = logging.LogRecord("uvicorn.access", logging.INFO, __file__, 1, '%s - "%s %s HTTP/%s" %d', ("client", "GET", path, "1.1", 303), None)
     SensitiveAuthenticationLogFilter().filter(record)
     assert "secret-code" not in record.getMessage()
-    assert "/auth/oidc/callback?[redacted]" in record.getMessage()
+    assert "?[redacted]" in record.getMessage()
 
 
 def test_provider_logout_uses_id_token_hint_and_safe_local_return(monkeypatch):

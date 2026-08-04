@@ -50,6 +50,7 @@ def create_transaction(
     flow_type: str = "login",
     target_user_id: int | None = None,
     initiated_by_user_id: int | None = None,
+    link_invitation_id: int | None = None,
     return_path: str = "/dashboard",
 ) -> tuple[OIDCTransaction, str, str, str, str]:
     opaque = secrets.token_urlsafe(32)
@@ -67,6 +68,7 @@ def create_transaction(
         flow_type=flow_type,
         target_user_id=target_user_id,
         initiated_by_user_id=initiated_by_user_id,
+        link_invitation_id=link_invitation_id,
         return_path=safe_return_path(return_path),
         created_at=now,
         expires_at=now + timedelta(minutes=TRANSACTION_TTL_MINUTES),
@@ -84,6 +86,7 @@ async def authorization_redirect(
     flow_type: str = "login",
     target_user_id: int | None = None,
     initiated_by_user_id: int | None = None,
+    link_invitation_id: int | None = None,
     return_path: str = "/dashboard",
     authorization_params: dict[str, str] | None = None,
 ) -> tuple[str, str]:
@@ -94,6 +97,7 @@ async def authorization_redirect(
         flow_type=flow_type,
         target_user_id=target_user_id,
         initiated_by_user_id=initiated_by_user_id,
+        link_invitation_id=link_invitation_id,
         return_path=return_path,
     )
     params = {

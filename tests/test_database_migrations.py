@@ -66,6 +66,47 @@ def test_fresh_install_and_repeated_start_are_idempotent(tmp_path):
     assert foreign_keys == []
 
 
+def test_oidc_hardening_migration_revokes_legacy_bearer_invitations(tmp_path):
+    from alembic import command
+    from app.db.migrations import _alembic_config
+    from app.models.models import OIDCProvider
+
+    path = tmp_path / "kaya.db"
+    settings = settings_for(path, tmp_path / "backups")
+    engine = engine_for(path)
+    prepare_database(engine, settings)
+    with Session(engine) as db:
+        admin = User(email="admin@example.invalid", password_hash="fake-hash", role="admin", is_active=True)
+        target = User(email="recipient@example.invalid", password_hash="fake-hash", role="viewer", is_active=True)
+        provider = OIDCProvider(name="Fake IdP", issuer="https://id.example.invalid", client_id="fake", is_enabled=True)
+        db.add_all([admin, target, provider])
+        db.commit()
+        ids = (admin.id, target.id, provider.id)
+
+    config = _alembic_config(settings.database_url)
+    command.downgrade(config, "20260803_02")
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "INSERT INTO oidc_link_invitations "
+            "(token_hash, user_id, provider_id, created_by_user_id, created_at, expires_at) "
+            "VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, datetime('now', '+30 minutes'))",
+            ("a" * 64, ids[1], ids[2], ids[0]),
+        )
+        connection.commit()
+
+    command.upgrade(config, "head")
+    with sqlite3.connect(path) as connection:
+        row = connection.execute(
+            "SELECT recipient_binding_hash, provider_binding_hash, revoked_at, used_at FROM oidc_link_invitations"
+        ).fetchone()
+        revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()[0]
+    assert row[0] == "legacy-revoked"
+    assert row[1] == "legacy-revoked"
+    assert row[2] is not None
+    assert row[3] is None
+    assert revision == CURRENT_REVISION
+
+
 def test_clean_restart_uses_lightweight_startup_validation(tmp_path, monkeypatch):
     path = tmp_path / "kaya.db"
     settings = settings_for(path, tmp_path / "backups")

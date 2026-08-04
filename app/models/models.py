@@ -129,6 +129,7 @@ class OIDCTransaction(Base):
     flow_type: Mapped[str] = mapped_column(String(40), default="login", index=True)
     target_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
     initiated_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    link_invitation_id: Mapped[int | None] = mapped_column(ForeignKey("oidc_link_invitations.id", ondelete="SET NULL"), nullable=True, index=True)
     return_path: Mapped[str] = mapped_column(String(500), default="/dashboard")
     validated_claims_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
@@ -143,9 +144,13 @@ class OIDCLinkInvitation(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     provider_id: Mapped[int] = mapped_column(ForeignKey("oidc_providers.id", ondelete="CASCADE"), index=True)
     created_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    recipient_binding_hash: Mapped[str] = mapped_column(String(64))
+    provider_binding_hash: Mapped[str] = mapped_column(String(64))
+    redemption_session_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
     used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
 
 
 class PasswordResetToken(Base):
