@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 
 import pytest
@@ -6,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.db.session import Base
 from app.models.models import ExternalIdentity, OIDCLinkInvitation, OIDCProvider, OIDCTransaction, User
-from app.services.oidc_identity import OIDCIdentityError, claim_admin_link_invitation, confirm_transaction_link, invitation_provider_binding, invitation_recipient_binding, resolve_login, unlink_identity
+from app.services.oidc_identity import OIDCIdentityError, claim_admin_link_invitation, confirm_transaction_link, invitation_provider_binding, invitation_recipient_binding, resolve_login, revoke_admin_link_invitation, unlink_identity
 
 
 def database():
@@ -122,7 +123,7 @@ def test_admin_invitation_requires_exact_recipient_and_verified_matching_email()
         creator = add_user(db, "admin@example.com", role="admin")
         target = add_user(db)
         attacker = add_user(db, "attacker@example.com")
-        tx, _ = admin_link_transaction(db, provider, target, creator)
+        tx, invitation = admin_link_transaction(db, provider, target, creator)
 
         wrong_email = claims(email=attacker.email)
         with pytest.raises(OIDCIdentityError) as mismatch:
@@ -144,6 +145,8 @@ def test_admin_invitation_requires_exact_recipient_and_verified_matching_email()
         assert identity.user_id == target.id
         assert identity.link_method == "admin_invitation"
         assert identity.linked_by_user_id == creator.id
+        db.refresh(invitation)
+        assert invitation.completed_at is not None
 
 
 @pytest.mark.parametrize("change", ["expired", "revoked", "account_changed", "provider_changed"])
@@ -210,6 +213,98 @@ def test_concurrent_sessions_can_claim_an_invitation_only_once(tmp_path):
     finally:
         first.close()
         second.close()
+
+
+def test_claimed_invitation_can_be_revoked_and_cannot_complete():
+    with database() as db:
+        provider = add_provider(db)
+        creator = add_user(db, "admin@example.com", role="admin")
+        target = add_user(db)
+        tx, invitation = admin_link_transaction(db, provider, target, creator)
+        resolve_login(db, provider, tx, claims(email=target.email))
+        assert revoke_admin_link_invitation(db, invitation.id) is True
+        with pytest.raises(OIDCIdentityError) as failure:
+            confirm_transaction_link(db, tx, target)
+        assert failure.value.category == "invalid_link_invitation"
+        assert db.query(ExternalIdentity).count() == 0
+
+
+def test_invitation_lifecycle_statuses_are_explicit():
+    with database() as db:
+        provider = add_provider(db)
+        creator = add_user(db, "admin@example.com", role="admin")
+        target = add_user(db)
+        _, invitation = admin_link_transaction(db, provider, target, creator, used_at=None)
+        assert invitation.lifecycle_status == "pending"
+        invitation.used_at = datetime.utcnow()
+        assert invitation.lifecycle_status == "claimed"
+        invitation.completed_at = datetime.utcnow()
+        assert invitation.lifecycle_status == "completed"
+        invitation.completed_at = None
+        invitation.revoked_at = datetime.utcnow()
+        assert invitation.lifecycle_status == "revoked"
+        invitation.revoked_at = None
+        invitation.used_at = None
+        invitation.expires_at = datetime.utcnow() - timedelta(seconds=1)
+        assert invitation.lifecycle_status == "expired"
+
+
+def test_completed_invitation_cannot_be_revoked_or_reused():
+    with database() as db:
+        provider = add_provider(db)
+        creator = add_user(db, "admin@example.com", role="admin")
+        target = add_user(db)
+        tx, invitation = admin_link_transaction(db, provider, target, creator)
+        resolve_login(db, provider, tx, claims(email=target.email))
+        confirm_transaction_link(db, tx, target)
+        assert revoke_admin_link_invitation(db, invitation.id) is False
+        with pytest.raises(OIDCIdentityError) as replay:
+            confirm_transaction_link(db, tx, target)
+        assert replay.value.category == "invalid_link_invitation"
+        assert db.query(ExternalIdentity).count() == 1
+        db.refresh(invitation)
+        assert invitation.completed_at is not None
+        assert invitation.revoked_at is None
+
+
+def test_concurrent_revoke_and_complete_has_one_atomic_terminal_state(tmp_path):
+    engine = create_engine(f"sqlite:///{(tmp_path / 'invitation-race.sqlite3').as_posix()}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as seed:
+        provider = add_provider(seed)
+        creator = add_user(seed, "admin@example.com", role="admin")
+        target = add_user(seed)
+        tx, invitation = admin_link_transaction(seed, provider, target, creator)
+        resolve_login(seed, provider, tx, claims(email=target.email))
+        tx_id, invitation_id, target_id = tx.id, invitation.id, target.id
+
+    def complete():
+        with Session(engine) as db:
+            try:
+                confirm_transaction_link(db, db.get(OIDCTransaction, tx_id), db.get(User, target_id))
+                return "completed"
+            except OIDCIdentityError:
+                return "completion_rejected"
+
+    def revoke():
+        with Session(engine) as db:
+            return "revoked" if revoke_admin_link_invitation(db, invitation_id) else "revocation_rejected"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        complete_future = pool.submit(complete)
+        revoke_future = pool.submit(revoke)
+        outcomes = {complete_future.result(), revoke_future.result()}
+
+    with Session(engine) as verify:
+        invitation = verify.get(OIDCLinkInvitation, invitation_id)
+        identities = verify.query(ExternalIdentity).count()
+        assert (invitation.completed_at is not None) != (invitation.revoked_at is not None)
+        if invitation.completed_at is not None:
+            assert outcomes == {"completed", "revocation_rejected"}
+            assert identities == 1
+        else:
+            assert outcomes == {"completion_rejected", "revoked"}
+            assert identities == 0
 
 
 def test_oidc_only_user_cannot_unlink_and_local_user_can():

@@ -64,6 +64,7 @@ def validate_admin_link_invitation(
         or invitation.user_id != target.id
         or invitation.provider_id != transaction.provider_id
         or invitation.used_at is None
+        or invitation.completed_at is not None
         or invitation.revoked_at is not None
         or invitation.expires_at < now
         or invitation.recipient_binding_hash != invitation_recipient_binding(target)
@@ -99,6 +100,30 @@ def claim_admin_link_invitation(
         OIDCLinkInvitation.expires_at >= claimed_at,
     ).update(
         {OIDCLinkInvitation.used_at: claimed_at, OIDCLinkInvitation.redemption_session_hash: None},
+        synchronize_session=False,
+    )
+    if count != 1:
+        db.rollback()
+        return False
+    db.commit()
+    return True
+
+
+def revoke_admin_link_invitation(
+    db: Session,
+    invitation_id: int,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """Atomically revoke a pending or claimed invitation, but never a completed one."""
+    revoked_at = now or datetime.utcnow()
+    count = db.query(OIDCLinkInvitation).filter(
+        OIDCLinkInvitation.id == invitation_id,
+        OIDCLinkInvitation.completed_at.is_(None),
+        OIDCLinkInvitation.revoked_at.is_(None),
+        OIDCLinkInvitation.expires_at >= revoked_at,
+    ).update(
+        {OIDCLinkInvitation.revoked_at: revoked_at, OIDCLinkInvitation.redemption_session_hash: None},
         synchronize_session=False,
     )
     if count != 1:
@@ -149,6 +174,7 @@ def create_identity(
     *,
     link_method: str,
     linked_by_user_id: int | None = None,
+    commit: bool = True,
 ) -> ExternalIdentity:
     conflict = db.query(ExternalIdentity).filter_by(provider_id=provider.id, issuer=value["iss"], subject=value["sub"]).first()
     if conflict and conflict.user_id != user.id:
@@ -175,7 +201,10 @@ def create_identity(
     db.add(row)
     user.authentication_type = "local_and_oidc" if user.password_hash else "oidc"
     try:
-        db.commit()
+        if commit:
+            db.commit()
+        else:
+            db.flush()
     except IntegrityError as exc:
         db.rollback()
         raise OIDCIdentityError("identity_conflict") from exc
@@ -292,13 +321,32 @@ def confirm_transaction_link(db: Session, transaction: OIDCTransaction, current_
     if transaction.flow_type == "email_match" and not password_verified:
         raise OIDCIdentityError("local_proof_required", "Confirm the link with your current Kaya password.")
     value = json.loads(transaction.validated_claims_json)
+    if transaction.flow_type == "admin_link":
+        now = datetime.utcnow()
+        count = db.query(OIDCLinkInvitation).filter(
+            OIDCLinkInvitation.id == invitation.id,
+            OIDCLinkInvitation.user_id == target.id,
+            OIDCLinkInvitation.provider_id == provider.id,
+            OIDCLinkInvitation.recipient_binding_hash == invitation_recipient_binding(target),
+            OIDCLinkInvitation.provider_binding_hash == invitation_provider_binding(provider),
+            OIDCLinkInvitation.used_at.is_not(None),
+            OIDCLinkInvitation.completed_at.is_(None),
+            OIDCLinkInvitation.revoked_at.is_(None),
+            OIDCLinkInvitation.expires_at >= now,
+        ).update({OIDCLinkInvitation.completed_at: now}, synchronize_session=False)
+        if count != 1:
+            db.rollback()
+            raise OIDCIdentityError("invalid_link_invitation")
+        identity = create_identity(
+            db, provider, target, value, link_method="admin_invitation",
+            linked_by_user_id=invitation.created_by_user_id, commit=False,
+        )
+        db.commit()
+        return identity
     return create_identity(
-        db,
-        provider,
-        target,
-        value,
-        link_method="self_service" if transaction.flow_type == "self_link" else "verified_email_match" if transaction.flow_type == "email_match" else "admin_invitation",
-        linked_by_user_id=invitation.created_by_user_id if invitation else transaction.initiated_by_user_id,
+        db, provider, target, value,
+        link_method="self_service" if transaction.flow_type == "self_link" else "verified_email_match",
+        linked_by_user_id=transaction.initiated_by_user_id,
     )
 
 

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import base64
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import math
 import secrets
 from urllib.parse import urlencode
 
@@ -19,6 +20,7 @@ from app.services.oidc_discovery import MAX_METADATA_BYTES, OIDCDiscoveryError, 
 
 ALLOWED_ID_TOKEN_ALGORITHMS = ("RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512")
 TRANSACTION_TTL_MINUTES = 10
+PRIVILEGED_AUTH_TIME_CLOCK_SKEW_SECONDS = 60
 JWKS_CACHE: dict[int, tuple[datetime, dict]] = {}
 
 
@@ -124,12 +126,25 @@ async def authorization_redirect(
 def consume_transaction(db: Session, opaque: str | None, state: str | None) -> OIDCTransaction:
     if not opaque or not state:
         raise OIDCFlowError("invalid_state", "The sign-in request expired. Please try again.")
-    row = db.query(OIDCTransaction).filter_by(transaction_hash=_hash(opaque), state_hash=_hash(state)).first()
     now = datetime.utcnow()
-    if not row or row.used_at is not None or row.expires_at < now:
+    transaction_hash = _hash(opaque)
+    count = db.query(OIDCTransaction).filter(
+        OIDCTransaction.transaction_hash == transaction_hash,
+        OIDCTransaction.state_hash == _hash(state),
+        OIDCTransaction.used_at.is_(None),
+        OIDCTransaction.expires_at > now,
+    ).update({OIDCTransaction.used_at: now}, synchronize_session=False)
+    if count != 1:
+        db.rollback()
         raise OIDCFlowError("invalid_state", "The sign-in request expired. Please try again.")
-    row.used_at = now
-    db.commit()
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise OIDCFlowError("invalid_state", "The sign-in request expired. Please try again.") from exc
+    row = db.query(OIDCTransaction).filter_by(transaction_hash=transaction_hash).one_or_none()
+    if row is None:
+        raise OIDCFlowError("invalid_state", "The sign-in request expired. Please try again.")
     return row
 
 
@@ -211,25 +226,61 @@ async def exchange_and_validate(
         raise OIDCFlowError("missing_id_token")
     jwks = await _provider_jwks(provider, metadata)
     try:
-        merged = validate_id_token(id_token, jwks, metadata, provider, nonce=nonce, access_token=token.get("access_token"))
-    except OIDCFlowError:
+        merged = validate_id_token(
+            id_token, jwks, metadata, provider, nonce=nonce, access_token=token.get("access_token"),
+            required_auth_time_after=transaction.created_at if transaction.flow_type == "admin_link" else None,
+        )
+    except OIDCFlowError as exc:
         # A provider may rotate signing keys between cache refreshes. Refresh
         # once and retry; all other validation failures remain fatal.
+        if exc.category != "invalid_id_token":
+            raise
         jwks = await _provider_jwks(provider, metadata, force=True)
-        merged = validate_id_token(id_token, jwks, metadata, provider, nonce=nonce, access_token=token.get("access_token"))
+        merged = validate_id_token(
+            id_token, jwks, metadata, provider, nonce=nonce, access_token=token.get("access_token"),
+            required_auth_time_after=transaction.created_at if transaction.flow_type == "admin_link" else None,
+        )
     if provider.use_userinfo and metadata.get("userinfo_endpoint") and token.get("access_token"):
+        signed_auth_time = merged.get("auth_time")
         userinfo = await _json_get(metadata["userinfo_endpoint"], provider, bearer=token["access_token"])
         if userinfo.get("sub") != merged.get("sub"):
             raise OIDCFlowError("userinfo_subject_mismatch")
         merged.update(userinfo)
         merged["iss"] = str(metadata.get("issuer") or provider.issuer)
         merged["sub"] = str(merged.get("sub") or "")
+        if transaction.flow_type == "admin_link":
+            merged["auth_time"] = signed_auth_time
     logout_hint = id_token
     token.clear()
     return merged, logout_hint
 
 
-def validate_id_token(id_token: str, jwks: dict, metadata: dict, provider: OIDCProvider, *, nonce: str, access_token: str | None = None) -> dict:
+def _validate_privileged_auth_time(claims: dict, transaction_started_at: datetime) -> None:
+    value = claims.get("auth_time")
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+        raise OIDCFlowError("invalid_auth_time")
+    started_at = transaction_started_at
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+    else:
+        started_at = started_at.astimezone(timezone.utc)
+    now = datetime.now(timezone.utc).timestamp()
+    if value > now + PRIVILEGED_AUTH_TIME_CLOCK_SKEW_SECONDS:
+        raise OIDCFlowError("invalid_auth_time")
+    if value < started_at.timestamp() - PRIVILEGED_AUTH_TIME_CLOCK_SKEW_SECONDS:
+        raise OIDCFlowError("invalid_auth_time")
+
+
+def validate_id_token(
+    id_token: str,
+    jwks: dict,
+    metadata: dict,
+    provider: OIDCProvider,
+    *,
+    nonce: str,
+    access_token: str | None = None,
+    required_auth_time_after: datetime | None = None,
+) -> dict:
     algorithms = set(metadata.get("id_token_signing_alg_values_supported") or ALLOWED_ID_TOKEN_ALGORITHMS)
     allowed = tuple(algorithm for algorithm in ALLOWED_ID_TOKEN_ALGORITHMS if algorithm in algorithms)
     if not allowed:
@@ -250,10 +301,15 @@ def validate_id_token(id_token: str, jwks: dict, metadata: dict, provider: OIDCP
             claims_options=claims_options,
             claims_params={"nonce": nonce, "client_id": provider.client_id, "access_token": access_token},
         )
+        if required_auth_time_after is not None:
+            _validate_privileged_auth_time(dict(claims), required_auth_time_after)
         claims.validate(leeway=60)
+    except OIDCFlowError:
+        raise
     except (JoseError, ValueError, TypeError) as exc:
         raise OIDCFlowError("invalid_id_token") from exc
-    return dict(claims)
+    result = dict(claims)
+    return result
 
 
 def claims_preview(claims: dict, provider: OIDCProvider) -> dict:

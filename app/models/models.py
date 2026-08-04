@@ -150,7 +150,20 @@ class OIDCLinkInvitation(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
     used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+
+    @property
+    def lifecycle_status(self) -> str:
+        if self.revoked_at is not None:
+            return "revoked"
+        if self.completed_at is not None:
+            return "completed"
+        if self.expires_at < datetime.utcnow():
+            return "expired"
+        if self.used_at is not None:
+            return "claimed"
+        return "pending"
 
 
 class PasswordResetToken(Base):

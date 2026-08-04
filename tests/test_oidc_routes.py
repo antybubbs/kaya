@@ -515,6 +515,50 @@ def test_administrator_can_revoke_unused_invitation():
         db.refresh(invitation)
         assert response.status_code == 303
         assert invitation.revoked_at is not None
+        audit = db.query(AuditLog).filter_by(action="oidc_link_invitation_revoked").one()
+        assert audit.user_id == admin.id
+        assert invitation.token_hash not in (audit.detail or "")
+
+
+def test_administrator_can_revoke_claimed_incomplete_invitation():
+    ACTION_ATTEMPTS.clear()
+    with database() as db:
+        admin, target, _ = invitation_rows(db)
+        create_link_invitation(request(method="POST"), user_id=target.id, csrf_token="csrf", db=db, admin=admin)
+        invitation = db.query(OIDCLinkInvitation).one()
+        invitation.used_at = datetime.utcnow()
+        db.commit()
+        response = revoke_link_invitation(invitation.id, request(method="POST"), csrf_token="csrf", db=db, admin=admin)
+        db.refresh(invitation)
+        assert response.status_code == 303
+        assert invitation.revoked_at is not None
+
+
+def test_invitation_revocation_route_is_admin_and_csrf_protected():
+    route = next(
+        route for route in app.routes
+        if getattr(route, "path", None) == "/system/site-administration/authentication/links/invitations/{invitation_id}/revoke"
+    )
+    dependency_names = {dependency.call.__name__ for dependency in route.dependant.dependencies}
+    assert "require_admin" in dependency_names
+
+
+def test_auth_time_failure_is_generic_for_authorised_link_owner():
+    with database() as db:
+        admin, target, provider = invitation_rows(db)
+        incoming = request("/auth/oidc/callback")
+        incoming.session["user_id"] = target.id
+        transaction = OIDCTransaction(
+            transaction_hash="a" * 64, state_hash="b" * 64, encrypted_nonce="fake", encrypted_code_verifier="fake",
+            provider_id=provider.id, flow_type="admin_link", target_user_id=target.id,
+            initiated_by_user_id=target.id, expires_at=datetime.utcnow() + timedelta(minutes=5),
+        )
+        db.add(transaction)
+        db.commit()
+        actor, message, _, _ = callback_error_context(db, incoming, transaction, OIDCFlowError("invalid_auth_time"))
+        assert actor.id == target.id
+        assert message == "Single sign-on could not be completed."
+        assert "auth_time" not in message
 
 
 def vault_assurance_rows(db):
