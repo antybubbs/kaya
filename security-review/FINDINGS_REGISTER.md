@@ -1,7 +1,7 @@
 # Kaya Initial Findings Register
 
 **State:** Security-hardening checkpoint, 2026-08-04
-**Scope:** Eight originally reported findings plus one additional broader demo-policy finding discovered during validation. Severity follows the hardening programme. “Confirmed” means current source demonstrates the condition; it does not mean a production exploit was attempted. “Remediated, verification pending” is not closed.
+**Scope:** Eight originally reported findings plus one additional broader demo-policy finding discovered during validation. Severity follows the hardening programme. “Confirmed” means current source demonstrates the condition; it does not mean a production exploit was attempted. “Changes required after independent review” is not closed.
 
 ## Unambiguous totals
 
@@ -9,7 +9,7 @@
 - **Additional wider-pattern finding:** 1 (`KAYA-DEM-002`).
 - **Total tracked:** 9 findings: 1 Emergency, 3 Critical and 5 High.
 - **Contained:** 1 (`KAYA-DEM-001`). The immediate Secret Vault mutation path is blocked, but containment does not resolve the wider demo-policy defect.
-- **Remediated, verification pending:** 2 (`KAYA-OIDC-001`, `KAYA-RDP-002`). Neither is closed; OIDC requires independent verification, and RDP certificate validation requires independent verification plus live synthetic testing.
+- **Changes required after independent review:** 2 (`KAYA-OIDC-001`, `KAYA-RDP-002`). Neither is closed or ready to merge.
 - **Fully open:** 6 (`KAYA-DEM-002`, `KAYA-RDP-001`, `KAYA-BAK-001`, `KAYA-HA-001`, `KAYA-BG-001`, `KAYA-DB-001`). `KAYA-BAK-001` remains Critical; its design is approved in principle but production implementation has not started.
 
 ## Finding table
@@ -18,10 +18,10 @@
 |---|---|---:|---:|---|
 | KAYA-DEM-001 | Public demo allowed Secret Vault mutations | Emergency | High | Contained; broader demo policy remains open |
 | KAYA-DEM-002 | Demo policy is allowlist-by-path and leaves other mutations unclassified | High | High | Open; not remediated |
-| KAYA-OIDC-001 | Administrator-link invitation is a bearer account-takeover capability | Critical | High | Remediated; independent verification pending |
+| KAYA-OIDC-001 | Administrator-link invitation is a bearer account-takeover capability | Critical | High | Changes required after independent review; PR [#61](https://github.com/antybubbs/kaya/pull/61); not ready |
 | KAYA-RDP-001 | Credential-bearing RDP token is exposed in WebSocket query strings and is replayable | High | High | Confirmed; not remediated |
-| KAYA-RDP-002 | RDP certificate verification is hard-disabled | Critical | High | Remediated; independent verification and live synthetic testing pending |
-| KAYA-BAK-001 | Backup-agent bearer protocol returns plaintext credentials and data keys without replay resistance | Critical | High | Open; design approved in principle, implementation not started |
+| KAYA-RDP-002 | RDP certificate verification is hard-disabled | Critical | High | Changes required after independent review; PR [#60](https://github.com/antybubbs/kaya/pull/60); live synthetic testing unavailable; not ready |
+| KAYA-BAK-001 | Backup-agent bearer protocol returns plaintext credentials and data keys without replay resistance | Critical | High | Open; PR [#59](https://github.com/antybubbs/kaya/pull/59) is design only; implementation not started |
 | KAYA-HA-001 | Keepalived hook holds an exclusive lock during hold-down and slow probes | High | High | Confirmed; not remediated |
 | KAYA-BG-001 | HA watchdog and lease reconciliation can terminate permanently on outer-loop exception | High | High | Confirmed; not remediated |
 | KAYA-DB-001 | SQLite connection policy is inconsistent and lacks main-engine WAL/busy timeout | High | High | Confirmed configuration defect; deployment impact unverified |
@@ -63,16 +63,16 @@
 - **Affected component:** OIDC link invitations and link confirmation.
 - **Severity:** Critical.
 - **Confidence:** High.
-- **Status:** Remediated on `security/oidc-admin-link-hardening`; independent verification pending. Not closed.
+- **Status:** Changes required after independent review of commit `42299a99a72e0a21461e225e2c32daa235aa8604` in PR [#61](https://github.com/antybubbs/kaya/pull/61). Not closed or ready.
 - **Evidence:** `create_link_invitation` creates a 30-minute random token stored by SHA-256. `accept_link_invitation` accepts the unauthenticated query token, marks it used, and starts an `admin_link` transaction targeting the chosen user. `resolve_login` accepts any valid unlinked IdP identity into that transaction. `confirm_transaction_link` checks current-user ownership only for `self_link`, and requires a password only for `email_match`; `admin_link` requires neither. `link_confirm_submit` starts a Kaya session as the target when there was no current user.
 - **Safe reproduction:** In a test database, create an administrator target and invitation, redeem it in a clean browser session, complete OIDC with a synthetic valid unlinked subject, confirm without target password, and observe `ExternalIdentity.user_id == target.id` plus a target session. Do not run against a live IdP.
 - **Affected files:** `app/routers/oidc.py:292-331, 635-658`, `app/services/oidc_identity.py:139-214`, OIDC models/migrations and templates.
 - **Root cause:** Possession of an administrator-created URL is treated as authorisation to bind the target account. The IdP proves control of the new identity, not that the actor is the intended Kaya recipient.
 - **Wider pattern search:** Self-link correctly binds the active user; email-match correctly asks for local proof. Invitation is consumed before completion, enabling invitation denial-of-service. There is no explicit revoked state or invalidation on target changes.
-- **Remediation:** Implemented recipient session ownership, password/TOTP step-up, forced fresh IdP login, verified-email match, target/provider bindings, explicit revocation, atomic single use, no target session creation, migration invalidation and recovery guidance. See ADR-0002.
-- **Tests:** Added wrong-recipient, expired/reused/revoked token, already-linked identity, exact-owner, verified-email, target/provider-change, stale concurrent-session, audit-secret and access-log-redaction coverage. Existing OIDC tests retain state, nonce, issuer, audience, expiry, PKCE and redirect coverage. The supported-Linux suite passed; independent verification remains required before closure.
+- **Remediation:** The branch implements recipient session ownership, password/TOTP step-up, verified-email match, target/provider bindings, revocation, single-use handling, no target session creation, migration invalidation and recovery guidance. Independent review found three blockers: requested fresh IdP authentication is not enforced from the ID token's `auth_time`; OIDC transaction state consumption is not an atomic conditional update and permits concurrent winners; and a claimed/in-progress invitation cannot be revoked by the administrator. See ADR-0002 and `security-review/reviews/OIDC_INDEPENDENT_REVIEW.md`.
+- **Tests:** Independent Linux-focused run: `python -m pytest -p no:cacheprovider tests/test_oidc_identity.py tests/test_oidc_routes.py tests/test_oidc_security.py tests/test_database_migrations.py -q` — 105 passed, 0 failed, 0 skipped. Synthetic probes reproduced acceptance of stale authentication, concurrent state consumption and the in-progress revocation gap. Required corrective tests include missing/future/stale `auth_time`, an actual concurrent state race, revocation across every invitation transition, explicit wrong-password and session-rotation/fixation coverage. The full supported-Linux suite was not rerun at this checkpoint because Docker execution became unavailable.
 - **Migration impact:** Existing unused invitations should be revoked on upgrade. Existing linked identities must not be silently removed. Preserve a tested local break-glass administrator and document recovery.
-- **Residual risk:** Email/IdP account compromise remains relevant even after recipient binding; assurance requirements must be an explicit owner decision.
+- **Residual risk:** Until the three independent-review blockers are corrected and reverified, a forced-login parameter does not prove fresh IdP authentication, state has a concurrent replay window, and an administrator cannot stop a claimed invitation. Email/IdP account compromise remains relevant even after recipient binding; assurance requirements must be an explicit owner decision.
 
 ## KAYA-RDP-001 — Credential-bearing RDP token is exposed in WebSocket query strings and is replayable
 
@@ -95,23 +95,23 @@
 - **Affected component:** RDP connection settings in Kaya and the Guacamole bridge.
 - **Severity:** Critical.
 - **Confidence:** High.
-- **Status:** Remediated on `security/rdp-certificate-validation`; independent verification and live synthetic RDP testing pending. Not closed.
+- **Status:** Changes required after independent review of commit `789e09ae2cf85cdedbf4b17fcaf94c151a54ac82` in PR [#60](https://github.com/antybubbs/kaya/pull/60). Live synthetic verification was unavailable. Not closed or ready.
 - **Evidence:** `app/routers/remote_manager.py:589` places `"ignore-cert": True` in every generated RDP token. `scripts/guacamole-server.cjs:79` also defaults `"ignore-cert": true`. There is no per-host certificate/CA/fingerprint trust model.
 - **Safe reproduction:** Generate a fake RDP token and decrypt it in a controlled test; the setting is true. Bridge default configuration independently has the same value. No real RDP server is required.
 - **Affected files:** `app/routers/remote_manager.py`, `scripts/guacamole-server.cjs`, remote models/settings/templates/tests.
 - **Root cause:** Compatibility with self-signed RDP hosts was implemented as universal certificate acceptance.
 - **Wider pattern search:** SSH uses explicit host-key scan and pinning and is the safer local precedent. OIDC/provider TLS has an explicit administrator-controlled flag, though disabling it remains risky.
-- **Remediation:** Implemented strict system-CA validation by default, explicit per-host SHA-256 pins for self-signed/private endpoints, disabled TOFU, administrator-only CSRF-protected trust changes, independent-verification acknowledgement, audit redaction, protocol/port invalidation, legacy inventory and rotation guidance. See ADR-0003.
-- **Tests:** Added secure-default token, normalized pin transport, malformed/excess pin rejection, administrator dependency, audit redaction, migration schema and bridge-default coverage. Guacd/FreeRDP performs unknown/changed presented-certificate rejection from the exact pin allowlist; live synthetic RDP-server verification and independent review remain required before closure.
+- **Remediation:** The branch implements strict system-CA validation by default, explicit per-host SHA-256 pins, disabled TOFU, administrator-only CSRF-protected trust changes, audit redaction and one protocol/port invalidation path. Independent review found that the primary IP-address editor and DNS-managed address update paths can change the RDP endpoint while retaining its old certificate pins. Pin invalidation must cover every address, protocol and port mutation path. See ADR-0003 and `security-review/reviews/RDP_CERTIFICATE_INDEPENDENT_REVIEW.md`.
+- **Tests:** Independent Linux-focused run: `python -m pytest -p no:cacheprovider tests/test_release_security_boundaries.py tests/test_database_migrations.py -q` — 45 passed, 0 failed, 0 skipped. Static review confirmed strict token/bridge defaults, exact pin parsing and administrator/CSRF controls, but also confirmed the endpoint-mutation defect. Required valid, mismatched, expired, not-yet-valid, changed self-signed and exact-pin live checks were not performed because Docker execution became unavailable; they remain mandatory before closure.
 - **Migration impact:** Existing RDP connections may fail until trust is enrolled. Provide a staged warning/inventory and explicit enrollment workflow; do not auto-trust the first certificate.
-- **Residual risk:** A trusted CA or pinned endpoint can still be compromised; document renewal and pin rotation.
+- **Residual risk:** Pins can currently survive endpoint reassignment through uncovered mutation paths. Live guacd/FreeRDP behaviour remains unverified at this checkpoint, and `KAYA-RDP-001` still exposes credential-bearing replayable WebSocket query tokens. A trusted CA or pinned endpoint can still be compromised; document renewal and pin rotation.
 
 ## KAYA-BAK-001 — Backup-agent bearer protocol returns plaintext credentials and data keys without replay resistance
 
 - **Affected component:** Compute/backup agent enrollment and Backup Manager agent API.
 - **Severity:** Critical.
 - **Confidence:** High.
-- **Status:** Critical and open. ADR-0004 and protocol v2 are approved in principle with recorded conditions; production implementation has not started.
+- **Status:** Critical and open. PR [#59](https://github.com/antybubbs/kaya/pull/59) contains design material only; ADR-0004 and protocol v2 are approved in principle with recorded conditions. Production implementation has not started.
 - **Evidence:** `require_agent_host` hashes a reusable Authorization bearer value and looks up a `docker_agent` host. It has no signature, timestamp, nonce, session grant, explicit scope, or `is_enabled` check. `agent_jobs` decrypts the selected target's `remote_password` and each job's `encrypted_backup_key` into the JSON response. Tokens are long-lived until regeneration.
 - **Safe reproduction:** In an in-memory database, create a fake docker agent, target password ciphertext and queued job, call `agent_jobs` with the fake bearer, and observe plaintext fake values. Repeat or set `host.is_enabled=False`; authentication logic remains token-based. Existing tests already construct this boundary without live secrets.
 - **Affected files:** `app/routers/backup_manager.py:69-87, 176-194, 610-689`, `app/routers/compute_manager.py`, `app/models/models.py:1334-1362, 1449-1471`, agent implementation outside repository if applicable.
@@ -172,4 +172,4 @@
 
 ## Cross-finding release position
 
-The register tracks nine findings: eight from the original report and the additional `KAYA-DEM-002` wider demo-policy defect. `KAYA-DEM-001` is contained, `KAYA-OIDC-001` and `KAYA-RDP-002` are remediated but unverified, and six findings remain fully open. No fixed release should be declared until applicable remediation tests, migration/rollback validation, full suite and security gates pass, followed by a separate human/adversarial review that attempts to disprove the controls.
+The register tracks nine findings: eight from the original report and the additional `KAYA-DEM-002` wider demo-policy defect. `KAYA-DEM-001` is contained, independent review concluded **Changes required** for `KAYA-OIDC-001` and `KAYA-RDP-002`, and six findings remain fully open. No fixed release should be declared until the review blockers are corrected and independently reverified, applicable migration/rollback validation, full suite and security gates pass, and the outstanding findings are resolved or explicitly risk-accepted by the owner.

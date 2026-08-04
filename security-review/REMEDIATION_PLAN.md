@@ -2,15 +2,24 @@
 
 **State:** Proposed after Phase 1–3 review. Ordering may change after owner/human review. Each item must remain a small reviewable change and cite finding IDs.
 
-**Checkpoint totals:** 9 tracked findings = 8 original + 1 additional wider demo-policy finding. One is contained (`KAYA-DEM-001`), two are remediated but not closed pending verification (`KAYA-OIDC-001`, `KAYA-RDP-002`), and six remain fully open. The wider demo policy remains open even though its original Secret Vault mutation path is contained.
+**Checkpoint totals:** 9 tracked findings = 8 original + 1 additional wider demo-policy finding. One is contained (`KAYA-DEM-001`), independent review concluded **Changes required** for two (`KAYA-OIDC-001`, `KAYA-RDP-002`), and six remain fully open. The wider demo policy remains open even though its original Secret Vault mutation path is contained.
+
+## Required review stack
+
+Preserve this dependency order for review; do not retarget, merge or reorder it during the checkpoint:
+
+1. Phase 1–3 baseline and emergency containment — PR [#58](https://github.com/antybubbs/kaya/pull/58), `security/hardening-baseline` into `dev0.27.0`.
+2. OIDC administrator-link hardening — PR [#61](https://github.com/antybubbs/kaya/pull/61), based on the baseline branch.
+3. RDP certificate validation — PR [#60](https://github.com/antybubbs/kaya/pull/60), based on the OIDC branch.
+4. Backup-agent authentication design — PR [#59](https://github.com/antybubbs/kaya/pull/59), based on the RDP branch. This PR is design only; protocol-v2 implementation remains paused.
 
 ## Sequence
 
 1. **Baseline and emergency Vault containment** — `KAYA-DEM-001`, `KAYA-DEM-002`. Land the three Phase 1–3 reports and the focused Secret Vault demo prefix/test. No claim that demo mode is otherwise safe.
-2. **Administrator invitation containment and migration** — `KAYA-OIDC-001`. Remediated on its dedicated branch: legacy invitation revocation, exact target session plus fresh password/TOTP, verified-email/provider binding, explicit revocation, atomic single-use, migration/recovery guidance and focused negative/concurrency/audit coverage. Independent verification remains before closure.
-3. **RDP certificate trust** — `KAYA-RDP-002`. Remediated on its dedicated branch with strict CA validation, optional per-host SHA-256 pins, disabled bypass/TOFU, administrator-only enrollment, legacy inventory/rotation guidance and focused audit/contract tests. Live synthetic RDP-server testing and independent verification remain before closure.
+2. **Administrator invitation containment and migration** — `KAYA-OIDC-001`. Independent review of PR #61 concluded **Changes required**: validate and enforce ID-token `auth_time` for fresh authentication, make transaction-state consumption an atomic single-winner operation, and permit revocation after claim while the flow remains incomplete. Add the missing negative/concurrency/session tests and re-run independent verification. A coordinated corrective-stack instruction is required before code changes so the dependent branches remain coherent.
+3. **RDP certificate trust** — `KAYA-RDP-002`. Independent review of PR #60 concluded **Changes required**: clear or re-authorise pins on every address/protocol/port mutation path, including the primary IP editor and DNS-managed updates. Complete the blocked synthetic guacd/FreeRDP matrix and independently reverify. `KAYA-RDP-001` remains a separate open High finding.
 4. **RDP opaque one-time grants** — `KAYA-RDP-001`. Remove credential-bearing query tokens across browser, Kaya, and bridge; add server-side encrypted one-use grants, atomic consume, strict expiry/binding and URL/log/replay tests.
-5. **Backup agent machine-authentication ADR and protocol** — `KAYA-BAK-001`. Design is approved in principle: Ed25519 request signing, separate X25519 envelope keys, HKDF-SHA-256/AES-256-GCM, purpose-specific server Ed25519 dispatch signatures, approved scopes and bounded replay/grant/migration windows. Production implementation has not started and remains paused for coordinated Kaya/external-agent planning. No bearer fallback for secret delivery is permitted.
+5. **Backup agent machine-authentication ADR and protocol** — `KAYA-BAK-001`. PR #59 is design only. The design is approved in principle: Ed25519 request signing, separate X25519 envelope keys, HKDF-SHA-256/AES-256-GCM, purpose-specific server Ed25519 dispatch signatures, approved scopes and bounded replay/grant/migration windows. Production implementation has not started and remains paused for coordinated Kaya/external-agent planning. No bearer fallback for secret delivery is permitted.
 6. **HA transition intent state machine** — `KAYA-HA-001`. Version-gated agent change that releases the lock during hold-down, records/revalidates intent, rejects stale work, reconciles final state and passes concurrency/restart/failure tests.
 7. **Common background supervision** — `KAYA-BG-001`. Define shared task health/backoff/cancellation pattern using notification runtime lessons; first convert HA watchdog/lease/sync, then inventory and migrate other critical loops without hiding programming defects.
 8. **SQLite deployment qualification and central policy** — `KAYA-DB-001`. Run bind-mount/WAL/backup/migration/crash tests before enabling runtime changes. Centralise connect PRAGMAs, add bounded contention handling, checkpoint/integrity diagnostics and supported-deployment/PostgreSQL threshold documentation.
