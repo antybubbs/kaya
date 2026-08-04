@@ -1,18 +1,27 @@
 # Kaya Initial Findings Register
 
-**State:** Phase 3 validation, 2026-08-04
-**Scope:** The eight reported starting points plus wider-pattern findings discovered while validating them. Severity follows the hardening programme. “Confirmed” means current source demonstrates the condition; it does not mean a production exploit was attempted.
+**State:** Security-hardening checkpoint, 2026-08-04
+**Scope:** Eight originally reported findings plus one additional broader demo-policy finding discovered during validation. Severity follows the hardening programme. “Confirmed” means current source demonstrates the condition; it does not mean a production exploit was attempted. “Remediated, verification pending” is not closed.
 
-## Summary
+## Unambiguous totals
+
+- **Original report:** 8 findings (`KAYA-DEM-001`, `KAYA-OIDC-001`, `KAYA-RDP-001`, `KAYA-RDP-002`, `KAYA-BAK-001`, `KAYA-HA-001`, `KAYA-BG-001`, `KAYA-DB-001`).
+- **Additional wider-pattern finding:** 1 (`KAYA-DEM-002`).
+- **Total tracked:** 9 findings: 1 Emergency, 3 Critical and 5 High.
+- **Contained:** 1 (`KAYA-DEM-001`). The immediate Secret Vault mutation path is blocked, but containment does not resolve the wider demo-policy defect.
+- **Remediated, verification pending:** 2 (`KAYA-OIDC-001`, `KAYA-RDP-002`). Neither is closed; OIDC requires independent verification, and RDP certificate validation requires independent verification plus live synthetic testing.
+- **Fully open:** 6 (`KAYA-DEM-002`, `KAYA-RDP-001`, `KAYA-BAK-001`, `KAYA-HA-001`, `KAYA-BG-001`, `KAYA-DB-001`). `KAYA-BAK-001` remains Critical; its design is approved in principle but production implementation has not started.
+
+## Finding table
 
 | ID | Finding | Severity | Confidence | Status |
 |---|---|---:|---:|---|
-| KAYA-DEM-001 | Public demo allowed Secret Vault mutations | Emergency | High | Confirmed; emergency containment applied |
-| KAYA-DEM-002 | Demo policy is allowlist-by-path and leaves other mutations unclassified | High | High | Confirmed design defect; not remediated |
-| KAYA-OIDC-001 | Administrator-link invitation is a bearer account-takeover capability | Critical | High | Confirmed; not remediated |
+| KAYA-DEM-001 | Public demo allowed Secret Vault mutations | Emergency | High | Contained; broader demo policy remains open |
+| KAYA-DEM-002 | Demo policy is allowlist-by-path and leaves other mutations unclassified | High | High | Open; not remediated |
+| KAYA-OIDC-001 | Administrator-link invitation is a bearer account-takeover capability | Critical | High | Remediated; independent verification pending |
 | KAYA-RDP-001 | Credential-bearing RDP token is exposed in WebSocket query strings and is replayable | High | High | Confirmed; not remediated |
-| KAYA-RDP-002 | RDP certificate verification is hard-disabled | Critical | High | Confirmed; not remediated |
-| KAYA-BAK-001 | Backup-agent bearer protocol returns plaintext credentials and data keys without replay resistance | Critical | High | Confirmed; not remediated |
+| KAYA-RDP-002 | RDP certificate verification is hard-disabled | Critical | High | Remediated; independent verification and live synthetic testing pending |
+| KAYA-BAK-001 | Backup-agent bearer protocol returns plaintext credentials and data keys without replay resistance | Critical | High | Open; design approved in principle, implementation not started |
 | KAYA-HA-001 | Keepalived hook holds an exclusive lock during hold-down and slow probes | High | High | Confirmed; not remediated |
 | KAYA-BG-001 | HA watchdog and lease reconciliation can terminate permanently on outer-loop exception | High | High | Confirmed; not remediated |
 | KAYA-DB-001 | SQLite connection policy is inconsistent and lacks main-engine WAL/busy timeout | High | High | Confirmed configuration defect; deployment impact unverified |
@@ -22,7 +31,7 @@
 - **Affected component:** Demo middleware and all `/security/secret-vault` non-safe-method routes.
 - **Severity:** Emergency.
 - **Confidence:** High.
-- **Status:** Confirmed and temporarily contained in this review.
+- **Status:** Contained; the original Secret Vault demo-mutation path is blocked. The broader path-based demo policy remains open as `KAYA-DEM-002`.
 - **Evidence:** `app/main.py` sends every HTTP request through `demo_request_is_blocked`. Before containment, `app/core/demo.py` protected Secure Send, HA, remote and backup paths but had no Secret Vault prefix. `app/routers/secret_vault.py` exposes POST setup, item create/update/delete/reveal, collection sharing, export, restore, recovery and settings routes. These routes enforce normal authentication, module access, CSRF and object rules, but none supplied the missing demo denial.
 - **Safe reproduction:** With `get_settings().demo_mode=True`, `demo_request_is_blocked("POST", "/security/secret-vault/items")` returned `False` before the patch. No secret value or production system was used.
 - **Affected files:** `app/core/demo.py`, `app/main.py`, `app/routers/secret_vault.py`, `tests/test_demo_mode.py`.
@@ -54,14 +63,14 @@
 - **Affected component:** OIDC link invitations and link confirmation.
 - **Severity:** Critical.
 - **Confidence:** High.
-- **Status:** Remediation implemented on `security/oidc-admin-link-hardening`; supported-Linux and independent review pending.
+- **Status:** Remediated on `security/oidc-admin-link-hardening`; independent verification pending. Not closed.
 - **Evidence:** `create_link_invitation` creates a 30-minute random token stored by SHA-256. `accept_link_invitation` accepts the unauthenticated query token, marks it used, and starts an `admin_link` transaction targeting the chosen user. `resolve_login` accepts any valid unlinked IdP identity into that transaction. `confirm_transaction_link` checks current-user ownership only for `self_link`, and requires a password only for `email_match`; `admin_link` requires neither. `link_confirm_submit` starts a Kaya session as the target when there was no current user.
 - **Safe reproduction:** In a test database, create an administrator target and invitation, redeem it in a clean browser session, complete OIDC with a synthetic valid unlinked subject, confirm without target password, and observe `ExternalIdentity.user_id == target.id` plus a target session. Do not run against a live IdP.
 - **Affected files:** `app/routers/oidc.py:292-331, 635-658`, `app/services/oidc_identity.py:139-214`, OIDC models/migrations and templates.
 - **Root cause:** Possession of an administrator-created URL is treated as authorisation to bind the target account. The IdP proves control of the new identity, not that the actor is the intended Kaya recipient.
 - **Wider pattern search:** Self-link correctly binds the active user; email-match correctly asks for local proof. Invitation is consumed before completion, enabling invitation denial-of-service. There is no explicit revoked state or invalidation on target changes.
 - **Remediation:** Implemented recipient session ownership, password/TOTP step-up, forced fresh IdP login, verified-email match, target/provider bindings, explicit revocation, atomic single use, no target session creation, migration invalidation and recovery guidance. See ADR-0002.
-- **Tests:** Added wrong-recipient, expired/reused/revoked token, already-linked identity, exact-owner, verified-email, target/provider-change, stale concurrent-session, audit-secret and access-log-redaction coverage. Existing OIDC tests retain state, nonce, issuer, audience, expiry, PKCE and redirect coverage. Supported-Linux execution and independent review remain required before closure.
+- **Tests:** Added wrong-recipient, expired/reused/revoked token, already-linked identity, exact-owner, verified-email, target/provider-change, stale concurrent-session, audit-secret and access-log-redaction coverage. Existing OIDC tests retain state, nonce, issuer, audience, expiry, PKCE and redirect coverage. The supported-Linux suite passed; independent verification remains required before closure.
 - **Migration impact:** Existing unused invitations should be revoked on upgrade. Existing linked identities must not be silently removed. Preserve a tested local break-glass administrator and document recovery.
 - **Residual risk:** Email/IdP account compromise remains relevant even after recipient binding; assurance requirements must be an explicit owner decision.
 
@@ -70,7 +79,7 @@
 - **Affected component:** RDP start endpoint, browser client, Kaya RDP WebSocket, and Guacamole bridge.
 - **Severity:** High.
 - **Confidence:** High.
-- **Status:** Remediation implemented on `security/rdp-certificate-validation`; supported-Linux and independent review pending.
+- **Status:** Open; no remediation applied. The certificate-validation work for `KAYA-RDP-002` does not remediate this credential-bearing WebSocket grant finding.
 - **Evidence:** `create_rdp_guacamole_token` serialises hostname, username and password into a Fernet token. The start route returns that token to JavaScript. `remote_rdp.js` puts it into `URLSearchParams` passed to `client.connect`; Kaya reads `websocket.query_params["token"]` and forwards it in the bridge URL. The token is also the in-memory dictionary key. Default lifetime is 10 minutes and it is not consumed on an ordinary initial connection; only a handoff path pops it.
 - **Safe reproduction:** Use clearly fake credentials, call the token helper, and inspect the constructed browser/Kaya/upstream WebSocket URLs. Reconnect using the same token and active matching session before expiry; current lookup accepts it.
 - **Affected files:** `app/routers/remote_manager.py:481-608, 1145-1185, 1287-1340`, `app/static/js/remote_rdp.js:410-487`, `scripts/guacamole-server.cjs`.
@@ -86,7 +95,7 @@
 - **Affected component:** RDP connection settings in Kaya and the Guacamole bridge.
 - **Severity:** Critical.
 - **Confidence:** High.
-- **Status:** Remediation implemented on `security/rdp-certificate-validation`; supported-Linux and independent review pending.
+- **Status:** Remediated on `security/rdp-certificate-validation`; independent verification and live synthetic RDP testing pending. Not closed.
 - **Evidence:** `app/routers/remote_manager.py:589` places `"ignore-cert": True` in every generated RDP token. `scripts/guacamole-server.cjs:79` also defaults `"ignore-cert": true`. There is no per-host certificate/CA/fingerprint trust model.
 - **Safe reproduction:** Generate a fake RDP token and decrypt it in a controlled test; the setting is true. Bridge default configuration independently has the same value. No real RDP server is required.
 - **Affected files:** `app/routers/remote_manager.py`, `scripts/guacamole-server.cjs`, remote models/settings/templates/tests.
@@ -102,13 +111,13 @@
 - **Affected component:** Compute/backup agent enrollment and Backup Manager agent API.
 - **Severity:** Critical.
 - **Confidence:** High.
-- **Status:** Confirmed; ADR-0004 and protocol v2 proposed for mandatory human review. No production remediation applied.
+- **Status:** Critical and open. ADR-0004 and protocol v2 are approved in principle with recorded conditions; production implementation has not started.
 - **Evidence:** `require_agent_host` hashes a reusable Authorization bearer value and looks up a `docker_agent` host. It has no signature, timestamp, nonce, session grant, explicit scope, or `is_enabled` check. `agent_jobs` decrypts the selected target's `remote_password` and each job's `encrypted_backup_key` into the JSON response. Tokens are long-lived until regeneration.
 - **Safe reproduction:** In an in-memory database, create a fake docker agent, target password ciphertext and queued job, call `agent_jobs` with the fake bearer, and observe plaintext fake values. Repeat or set `host.is_enabled=False`; authentication logic remains token-based. Existing tests already construct this boundary without live secrets.
 - **Affected files:** `app/routers/backup_manager.py:69-87, 176-194, 610-689`, `app/routers/compute_manager.py`, `app/models/models.py:1334-1362, 1449-1471`, agent implementation outside repository if applicable.
 - **Root cause:** Inventory-agent bearer authentication was reused for high-impact secret delivery. Agent lifecycle lacks first-class identity state, request freshness and least-privilege scopes.
 - **Wider pattern search:** Status updates are host-bound, which is positive. HA agents already implement per-agent signed requests, replay tracking, rotation and revocation and provide an architectural precedent. Legacy `encrypted_agent_token` is intentionally not written for new agents.
-- **Remediation:** Proposed in ADR-0004 and `docs/security/backup-agent-protocol-v2.md`: host-bound Ed25519/X25519 identity, signed/fresh/replay-resistant requests, least-privilege scopes, two-step atomic dispatch, short-lived hashed grants, server-signed agent envelope encryption, lifecycle/rotation/decommission and fail-secure migration. Production implementation is paused pending human approval.
+- **Remediation:** Approved in principle in ADR-0004 and `docs/security/backup-agent-protocol-v2.md`: host-bound Ed25519/X25519 identity, signed/fresh/replay-resistant requests, least-privilege scopes, two-step atomic dispatch, short-lived hashed grants, server-signed agent envelope encryption, lifecycle/rotation/decommission and fail-secure migration. Production implementation remains paused for the coordinated server/external-agent implementation checkpoint.
 - **Tests:** Missing/invalid/revoked/disabled identity, wrong scope/host/job, stale/future timestamp, nonce replay, signature/body/path modification, concurrent dispatch, token/key rotation, decommission denial, least-data response, and log/traceback redaction.
 - **Migration impact:** Requires dual-protocol rollout or forced re-enrollment with a deadline. Do not silently retain bearer fallback for secret delivery. Existing queued jobs and agents need an operator-visible migration state.
 - **Residual risk:** A fully compromised enrolled agent can access secrets legitimately dispatched to it. Containment depends on scopes, rotation, job-level grants and minimal secret lifetime.
@@ -163,4 +172,4 @@
 
 ## Cross-finding release position
 
-Emergency containment is limited to `KAYA-DEM-001`. Critical and remaining High findings are not fixed by the existence of this register. No fixed release should be declared until remediation tests, migration/rollback validation, full suite and security gates pass, followed by a separate human/adversarial review that attempts to disprove the controls.
+The register tracks nine findings: eight from the original report and the additional `KAYA-DEM-002` wider demo-policy defect. `KAYA-DEM-001` is contained, `KAYA-OIDC-001` and `KAYA-RDP-002` are remediated but unverified, and six findings remain fully open. No fixed release should be declared until applicable remediation tests, migration/rollback validation, full suite and security gates pass, followed by a separate human/adversarial review that attempts to disprove the controls.
