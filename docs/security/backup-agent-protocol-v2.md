@@ -196,7 +196,7 @@ Each key has a key ID, activation/retirement timestamps and acknowledgement stat
 
 The fixed 14-day window begins when v2 is deployed, with immutable start/deadline visible in the administrator UI. Deployment, milestone warnings, incomplete enrollment, explicit early completion and expiry generate redacted audit events. The deadline cannot be silently extended.
 
-During the window, v1 is inventory-only, with an optional explicitly approved terminal-status exception for pre-cutoff jobs. It never polls/claims new work or returns storage credentials, backup keys or secret-bearing jobs. At the deadline, automatic completion rejects v1 fully; an administrator may complete earlier through an explicit audited action. Legacy hashes are then cleared through the reviewed migration.
+During the window, v1 may perform bounded inventory check-in only. It cannot submit job status, poll/claim work or return storage credentials, backup keys or secret-bearing jobs. At the deadline, automatic completion rejects v1 fully; an administrator may complete earlier through an explicit audited action. Legacy hashes are then cleared through the reviewed migration.
 
 Rollback never restores bearer secret delivery. If v2 fails, backup dispatch pauses while queued jobs remain preserved and visible.
 

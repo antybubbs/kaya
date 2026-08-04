@@ -93,7 +93,7 @@ If the active server signing key cannot be decrypted, Kaya fails closed and paus
 
 The 14-day protocol-v1 inventory-only window starts automatically when the protocol-v2 server release is deployed. Its start and fixed deadline are visible to administrators and recorded in audit. It cannot be silently extended.
 
-During the window, legacy bearer authentication may submit bounded inventory and, only if explicitly enabled, terminal status for jobs dispatched before cutoff. It cannot poll, claim, receive storage credentials or backup keys, or receive new secret-bearing work. Warnings and audit events are emitted at deployment, pending milestones and expiry. Completion is automatic at the deadline or an earlier explicit audited administrator action; after completion, protocol v1 is fully rejected and legacy hashes are cleared through the reviewed migration.
+During the window, legacy bearer authentication may submit bounded inventory only. It cannot submit job status, poll, claim, receive storage credentials or backup keys, or receive new secret-bearing work. Warnings and audit events are emitted at deployment, pending milestones and expiry. Completion is automatic at the deadline or an earlier explicit audited administrator action; after completion, protocol v1 is fully rejected and legacy hashes are cleared through the reviewed migration.
 
 If protocol v2 fails, dispatch pauses and queued jobs remain preserved and operator-visible. Rollback must never restore bearer-based secret delivery or silently extend the migration window.
 
