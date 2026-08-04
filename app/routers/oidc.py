@@ -55,6 +55,7 @@ from app.services.oidc_identity import (
     invitation_provider_binding,
     invitation_recipient_binding,
     resolve_login,
+    revoke_admin_link_invitation,
     unlink_identity,
 )
 from app.services.sessions import start_user_session
@@ -73,6 +74,7 @@ LINK_ERROR_MESSAGES = {
     "invalid_link_target": "The Kaya account selected for linking is no longer available.",
     "inactive_user": "The Kaya account linked to this identity is disabled.",
     "invalid_link_invitation": "This account-link request is no longer valid.",
+    "invalid_auth_time": "Single sign-on could not be completed.",
     "invitation_identity_mismatch": "The verified identity-provider email did not match this Kaya account.",
 }
 
@@ -418,9 +420,7 @@ def authentication_admin(request: Request, tab: str = Query("general"), db: Sess
     provider = db.query(OIDCProvider).order_by(OIDCProvider.id.asc()).first()
     preview = request.session.pop("oidc_test_preview", None)
     identities = db.query(ExternalIdentity).order_by(ExternalIdentity.created_at.desc()).all()
-    invitations = db.query(OIDCLinkInvitation).filter(
-        OIDCLinkInvitation.used_at.is_(None), OIDCLinkInvitation.revoked_at.is_(None),
-    ).order_by(OIDCLinkInvitation.created_at.desc()).all()
+    invitations = db.query(OIDCLinkInvitation).order_by(OIDCLinkInvitation.created_at.desc()).limit(100).all()
     readiness = oidc_only_readiness(db, user)
     emergency_url = f"{get_site_setting(db, 'base_url').rstrip('/')}/auth/local"
     return templates.TemplateResponse(request, "authentication_settings.html", {
@@ -652,7 +652,7 @@ def create_link_invitation(request: Request, user_id: int = Form(...), csrf_toke
     ):
         return RedirectResponse("/system/site-administration/authentication?tab=links&error=invite", status_code=303)
     now = datetime.utcnow()
-    db.query(OIDCLinkInvitation).filter_by(user_id=target.id, provider_id=provider.id, used_at=None, revoked_at=None).update(
+    db.query(OIDCLinkInvitation).filter_by(user_id=target.id, provider_id=provider.id, completed_at=None, revoked_at=None).update(
         {OIDCLinkInvitation.revoked_at: now, OIDCLinkInvitation.redemption_session_hash: None}, synchronize_session=False,
     )
     raw = secrets.token_urlsafe(32)
@@ -788,11 +788,10 @@ async def invitation_confirm_submit(
 def revoke_link_invitation(invitation_id: int, request: Request, csrf_token: str = Form(...), db: Session = Depends(get_db), admin=Depends(require_admin)):
     validate_csrf_token(request, csrf_token)
     row = db.get(OIDCLinkInvitation, invitation_id)
-    if row and row.used_at is None and row.revoked_at is None:
-        row.revoked_at = datetime.utcnow()
-        row.redemption_session_hash = None
+    if row:
         provider = db.get(OIDCProvider, row.provider_id)
-        db.commit()
+        if not revoke_admin_link_invitation(db, row.id):
+            return RedirectResponse("/system/site-administration/authentication?tab=links", status_code=303)
         _audit_oidc(db, admin, "oidc_link_invitation_revoked", request, provider, detail=f"Invitation revoked for user {row.user_id}")
     return RedirectResponse("/system/site-administration/authentication?tab=links", status_code=303)
 

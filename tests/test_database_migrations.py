@@ -97,13 +97,14 @@ def test_oidc_hardening_migration_revokes_legacy_bearer_invitations(tmp_path):
     command.upgrade(config, "head")
     with sqlite3.connect(path) as connection:
         row = connection.execute(
-            "SELECT recipient_binding_hash, provider_binding_hash, revoked_at, used_at FROM oidc_link_invitations"
+            "SELECT recipient_binding_hash, provider_binding_hash, revoked_at, used_at, completed_at FROM oidc_link_invitations"
         ).fetchone()
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()[0]
     assert row[0] == "legacy-revoked"
     assert row[1] == "legacy-revoked"
     assert row[2] is not None
     assert row[3] is None
+    assert row[4] is None
     assert revision == CURRENT_REVISION
 
 
