@@ -8,13 +8,13 @@
 
 **Corrective implementation commit:** `b5f53ceba109a9d7be30931b76932719d9a1ddcc`
 
-**Independent result:** **Changes required**
+**Independent result:** **Verified**
 
-**Current corrective status:** **Ready for independent re-review; not verified**
+**Current corrective status:** **Resolved; eligible for the controlled stack merge**
 
 ## Scope reviewed
 
-The independent pass treated administrator-invitation recipient binding, OIDC protocol validation, state consumption, invitation revocation, recovery and redaction claims as untrusted. The corrective checkpoint is limited to the three confirmed blockers and does not constitute the required new independent review.
+The fresh independent pass treated administrator-invitation recipient binding, OIDC protocol validation, state consumption, invitation revocation, recovery and redaction claims as untrusted. It traced the real callback and final-link paths rather than relying on middleware/function names or the earlier implementation report.
 
 ## Affected files
 
@@ -60,7 +60,7 @@ Result: **124 passed**, 0 failed, 0 skipped, 715 warnings, 21.57 seconds.
 
 Changed-file Ruff result: **All checks passed**.
 
-The full supported-Linux suite is scheduled after the corrected RDP branch is updated and is not claimed here.
+Fresh re-verification on the same corrective implementation repeated this exact command on 2026-08-04: **124 passed**, 0 failed, 0 skipped, 715 warnings, 98.18 seconds. The earlier 21.57-second run is retained as corroborating evidence. The final combined supported-Linux suite remains a release gate after all scoped branches merge.
 
 ## Bypass attempts
 
@@ -73,15 +73,14 @@ The full supported-Linux suite is scheduled after the corrected RDP branch is up
 
 ## Findings
 
-The corrective implementation addresses OIDC-IR-001 (fresh authentication), OIDC-IR-002 (atomic state consumption) and OIDC-IR-003 (claimed invitation revocation) in focused testing. This is implementer evidence, not independent verification.
+The independent re-review finds OIDC-IR-001 (fresh authentication), OIDC-IR-002 (atomic state consumption) and OIDC-IR-003 (claimed invitation revocation) corrected. No Critical bypass was found.
 
 ## Unresolved uncertainties
 
-- A fresh independent reviewer must attempt to disprove the corrective claims.
 - A real supported provider must confirm signed `auth_time` interoperability; providers omitting it intentionally fail closed.
 - The complete supported-Linux suite has not yet run on the final corrected stack.
 - End-to-end reverse-proxy and real-provider log behavior remains operational evidence rather than focused-unit evidence.
 
 ## Final review result
 
-The previous result remains **Changes required** until re-review. Corrective commit `b5f53ce` is **ready for independent re-review**, but `KAYA-OIDC-001` is not verified, closed, approved or ready to merge.
+Result: **Verified**. Signed transaction-relative authentication freshness, atomic single-use state and the revocable invitation lifecycle withstand the reviewed adversarial cases. `KAYA-OIDC-001` is resolved for this checkpoint and PR #61 is eligible for the controlled stack merge after PR #58. This result does not approve unrelated PR content or waive final combined release gates.
