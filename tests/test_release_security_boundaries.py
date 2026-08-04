@@ -230,12 +230,14 @@ def test_rdp_bridge_source_never_defaults_to_ignoring_or_tofu_certificates():
     assert '"ignore-cert": true' not in source
 
 
-def test_rdp_certificate_trust_change_is_admin_only_and_audit_is_redacted():
-    route = next(
-        route for route in app.routes
-        if getattr(route, "path", "") == "/remote-manager/{remote_id}/rdp/certificate-trust"
-    )
-    assert "require_admin" in {dependency.call.__name__ for dependency in route.dependant.dependencies}
+def test_rdp_certificate_trust_change_is_admin_only_and_audit_is_redacted(monkeypatch):
+    for path in (
+        "/remote-manager/{remote_id}/rdp/certificate/discover",
+        "/remote-manager/{remote_id}/rdp/certificate/trust",
+        "/remote-manager/{remote_id}/rdp/certificate/remove",
+    ):
+        route = next(route for route in app.routes if getattr(route, "path", "") == path)
+        assert "require_admin" in {dependency.call.__name__ for dependency in route.dependant.dependencies}
     with database() as db:
         admin = user(db)
         address = IPAddress(address="192.0.2.40", name="Synthetic RDP")
@@ -243,9 +245,14 @@ def test_rdp_certificate_trust_change_is_admin_only_and_audit_is_redacted():
         db.add_all([address, remote])
         db.commit()
         fingerprint = f"sha256:{'a' * 64}"
-        response = remote_manager.save_rdp_certificate_trust(
-            request(), remote.id, rdp_cert_fingerprints=fingerprint,
-            rdp_trust_acknowledged="1", csrf_token="csrf", db=db, user=admin,
+        candidate = remote_manager.RdpCertificateCandidate(
+            fingerprint=fingerprint, subject="CN=synthetic", issuer="CN=synthetic", self_signed=True,
+            not_valid_before=datetime.utcnow(), not_valid_after=datetime.utcnow() + timedelta(days=365), sans=[],
+        )
+        monkeypatch.setattr(remote_manager, "discover_rdp_certificate", lambda *a, **k: candidate)
+        response = remote_manager.trust_remote_rdp_certificate(
+            request(), remote.id, csrf_token="csrf", rdp_cert_candidate=fingerprint,
+            rdp_cert_mode="trust", rdp_cert_view="settings", db=db, user=admin,
         )
         assert response.status_code == 303
         assert remote.rdp_cert_fingerprints == fingerprint
@@ -253,11 +260,11 @@ def test_rdp_certificate_trust_change_is_admin_only_and_audit_is_redacted():
         assert fingerprint not in (audit.detail or "")
         assert fingerprint not in (audit.metadata_json or "")
 
-        rejected = remote_manager.save_rdp_certificate_trust(
-            request(), remote.id, rdp_cert_fingerprints="sha256:not-valid",
-            rdp_trust_acknowledged="1", csrf_token="csrf", db=db, user=admin,
+        rejected = remote_manager.trust_remote_rdp_certificate(
+            request(), remote.id, csrf_token="csrf", rdp_cert_candidate="sha256:not-valid",
+            rdp_cert_mode="trust", rdp_cert_view="settings", db=db, user=admin,
         )
-        assert rejected.status_code == 303
+        assert rejected.status_code == 400
         rejection_audit = db.query(AuditLog).filter_by(action="rdp_certificate_trust_rejected").one()
         assert "not-valid" not in (rejection_audit.detail or "")
 

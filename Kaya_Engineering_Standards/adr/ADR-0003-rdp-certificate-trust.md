@@ -1,8 +1,10 @@
 # ADR-0003: Strict RDP certificate trust
 
-**Status:** Accepted
+**Status:** Accepted (manual-entry mechanism superseded by [ADR-0006](ADR-0006-rdp-certificate-discovery.md))
 **Date:** 2026-08-04  
 **Decision owners:** Kaya maintainers
+
+> **Note:** ADR-0006 replaces the manual fingerprint-paste workflow described below with guided, read-only Kaya-side discovery and an admin-confirmed trust step. Every other decision here — NLA required, `ignore-cert=false`, `cert-tofu=false`, per-host pin scoping, endpoint-change invalidation, guacd/FreeRDP as the authoritative comparison — is unchanged and remains authoritative.
 
 ## Context
 

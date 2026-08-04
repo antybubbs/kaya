@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Verify {{ remote_label }}</title>
+  <link rel="stylesheet" href="/static/css/app.css?v={{ asset_version }}">
+  <link rel="stylesheet" href="/static/css/kaya.css?v={{ asset_version }}">
+  <link rel="stylesheet" href="/static/css/remote.css?v={{ asset_version }}">
+  <link rel="stylesheet" href="/static/css/responsive.css?v={{ asset_version }}">
+  <script>
+    (function () {
+      var theme = localStorage.getItem("kaya.ui.theme") === "light-ops" ? "light-ops" : "command";
+      document.documentElement.dataset.kayaTheme = theme;
+      document.documentElement.dataset.theme = theme === "light-ops" ? "light" : "dark";
+    })();
+  </script>
+</head>
+<body class="remote-panel-body remote-identity-page">
+  <main class="remote-identity-focus">
+    <section class="remote-identity-card" id="rdp-certificate-identity">
+      <header class="remote-identity-heading">
+        <div class="remote-identity-mark" aria-hidden="true">RDP</div>
+        <div>
+          <p class="remote-identity-eyebrow">Server certificate check</p>
+          <h1>Verify {{ remote_label }}</h1>
+          <p>{{ remote.ip_address.address }}:{{ remote.port }}</p>
+        </div>
+        <span class="remote-identity-status {{ 'is-review' if remote.rdp_trust_invalidated_at else 'is-trusted' if rdp_cert_pin_count else 'is-blocked' }}">
+          {{ 'Certificate review required' if remote.rdp_trust_invalidated_at else 'Trusted' if rdp_cert_pin_count else 'System CA required' }}
+        </span>
+      </header>
+
+      <div class="remote-identity-explainer">
+        <strong>Why Kaya is asking</strong>
+        <p>Kaya never trusts an RDP certificate automatically. It can retrieve the certificate a server presents for your review, but only an administrator's explicit decision creates trust.</p>
+      </div>
+
+      {% if rdp_cert_error %}
+      <div class="alert danger" role="alert"><strong>{{ 'Certificate changed' if rdp_cert_comparison else 'Certificate discovery failed' }}</strong><p>{{ rdp_cert_error }}</p></div>
+      {% endif %}
+
+      {% if rdp_cert_comparison and rdp_cert_candidate %}
+      <div class="remote-identity-comparison">
+        <div class="remote-identity-fingerprint">
+          <div><span>Previously trusted</span></div>
+          {% if remote.rdp_cert_fingerprints %}
+          {% for pin in remote.rdp_cert_fingerprints.split('\n') %}<code>{{ pin }}</code>{% endfor %}
+          {% else %}<code>No certificate was previously trusted.</code>{% endif %}
+        </div>
+        <div class="remote-identity-fingerprint">
+          <div><span>Currently presented</span></div>
+          <code>{{ rdp_cert_candidate.fingerprint }}</code>
+        </div>
+      </div>
+      <p class="muted">This could mean the certificate was renewed, the server was rebuilt or replaced, or the connection is being intercepted. Compare the new fingerprint using another trusted channel before trusting it.</p>
+      {% elif rdp_cert_candidate %}
+      <div class="alert warning" role="alert"><strong>This certificate has been retrieved from the remote host but is NOT trusted.</strong><p>If practical, compare this fingerprint using another trusted management channel before trusting it.</p></div>
+      {% else %}
+      <div class="remote-identity-fingerprint">
+        <div><span>{{ 'Trusted' if rdp_cert_pin_count else 'Not trusted' }}</span></div>
+        {% if remote.rdp_cert_fingerprints %}
+        {% for pin in remote.rdp_cert_fingerprints.split('\n') %}<code>{{ pin }}</code>{% endfor %}
+        {% else %}<code>Discover the certificate to retrieve its details.</code>{% endif %}
+      </div>
+      {% endif %}
+
+      {% if rdp_cert_candidate %}
+      <dl class="remote-identity-details">
+        <div><dt>Subject</dt><dd>{{ rdp_cert_candidate.subject }}</dd></div>
+        <div><dt>Issuer</dt><dd>{{ rdp_cert_candidate.issuer }}</dd></div>
+        <div><dt>Self-signed</dt><dd>{{ 'Yes' if rdp_cert_candidate.self_signed else 'No' }}</dd></div>
+        <div><dt>Valid from</dt><dd>{{ rdp_cert_candidate.not_valid_before }}</dd></div>
+        <div><dt>Expires</dt><dd>{{ rdp_cert_candidate.not_valid_after }}</dd></div>
+        {% if rdp_cert_candidate.sans %}<div><dt>Subject alternative names</dt><dd>{{ rdp_cert_candidate.sans|join(', ') }}</dd></div>{% endif %}
+      </dl>
+      <form method="post" action="/remote-manager/{{ remote.id }}/rdp/certificate/trust" class="remote-identity-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="rdp_cert_view" value="{{ rdp_cert_view }}">
+        <input type="hidden" name="rdp_cert_candidate" value="{{ rdp_cert_candidate.fingerprint }}">
+        <p class="remote-identity-first-use-note">Kaya re-checks the certificate again immediately before trusting it, but only an independent console can prove the connection was not intercepted.</p>
+        <div class="remote-identity-actions">
+          {% if rdp_cert_pin_count == 0 %}
+          <button type="submit" name="rdp_cert_mode" value="trust">Trust Certificate</button>
+          {% else %}
+          <button type="submit" name="rdp_cert_mode" value="replace">Trust New Certificate</button>
+          <button class="button secondary" type="submit" name="rdp_cert_mode" value="append">Keep Previous During Rotation</button>
+          {% endif %}
+          <a class="button secondary" href="{{ rdp_cert_return_path }}">Cancel</a>
+        </div>
+      </form>
+      {% else %}
+      <form method="post" action="/remote-manager/{{ remote.id }}/rdp/certificate/discover" class="remote-identity-actions">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="rdp_cert_view" value="{{ rdp_cert_view }}">
+        <button type="submit">Discover Certificate</button>
+        <a class="button secondary" href="{{ rdp_cert_return_path }}">Back to session</a>
+      </form>
+      {% endif %}
+    </section>
+  </main>
+</body>
+</html>

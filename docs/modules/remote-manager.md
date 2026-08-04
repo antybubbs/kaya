@@ -53,12 +53,12 @@ Settings include Guacamole enablement, guacd host/port, split screen mode, idle 
 
 RDP certificate verification is always enabled. Kaya requires NLA and disables Guacamole/FreeRDP certificate bypass and trust-on-first-use. Legacy non-TLS RDP security is not supported as a fallback.
 
-- With no per-host pin, guacd requires a certificate valid under its system CA store.
-- For a self-signed host, an administrator may enroll up to three SHA-256 pins under the host's **RDP certificate trust** settings. Obtain and compare each fingerprint outside Kaya using a trusted administrative path; Kaya never scans and trusts the first certificate automatically.
-- Kaya stores pins in canonical lowercase form and renders them as FreeRDP 2.x-compatible colon-separated bytes only inside the Guacamole connection settings. Fingerprint values are not placed in logs or URLs.
-- A missing, unknown or changed certificate is rejected by guacd. Independently investigate unexpected changes before modifying trust.
-- For planned rotation, independently obtain the replacement fingerprint, temporarily retain the old and new pins, deploy the new certificate, verify access, then remove the old pin. Do not leave unused rotation pins indefinitely.
-- Changing the configured protocol or port clears stored pins.
+- With no trusted certificate, guacd requires a certificate valid under its system CA store.
+- For a self-signed host, an administrator uses **Discover Certificate** under the host's **RDP certificate trust** settings. Kaya retrieves the certificate the server presents and displays its subject, issuer, validity, SANs and SHA-256 fingerprint — but never trusts it automatically. Compare the displayed fingerprint using another trusted channel if practical, then choose **Trust Certificate**. Kaya re-verifies the certificate immediately before storing it, so nothing is trusted if it changed between review and confirmation.
+- Kaya stores the trusted fingerprint in canonical lowercase form and renders it as FreeRDP 2.x-compatible colon-separated bytes only inside the Guacamole connection settings. Fingerprint, subject, issuer and SAN values are not placed in logs, audit details or URLs.
+- A missing, unknown or changed certificate is rejected by guacd. Kaya also runs a short best-effort check before starting a session with a trusted certificate and redirects to a "previously trusted vs. currently presented" comparison page on a mismatch, instead of a generic connection failure.
+- For planned rotation, use **Replace Trusted Certificate** and choose to keep the previous certificate trusted during the transition; remove it once the new certificate is confirmed working. Do not leave unused rotation certificates trusted indefinitely.
+- Changing the configured protocol or port clears trusted certificates.
 
 ### Upgrade inventory
 
