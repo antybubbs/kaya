@@ -69,6 +69,7 @@ The entrypoint:
 - Preserve `.runtime.env`; losing the encryption key can make encrypted secrets unrecoverable.
 - Normal startup runs the Alembic lifecycle automatically before application services.
 - Pre-Alembic installations use the retained compatibility bridge and are stamped only after full validation.
+- RDP certificate verification is strict after the security migration. Inventory RDP hosts before upgrade. Public/system-CA certificates require no Kaya pin when guacd trusts the CA; self-signed hosts require independently verified per-host SHA-256 pins. Do not restore connectivity by enabling certificate bypass or TOFU.
 
 ## Reverse proxies and real client IPs
 

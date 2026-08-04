@@ -70,7 +70,7 @@
 - **Affected component:** RDP start endpoint, browser client, Kaya RDP WebSocket, and Guacamole bridge.
 - **Severity:** High.
 - **Confidence:** High.
-- **Status:** Confirmed; no remediation applied.
+- **Status:** Remediation implemented on `security/rdp-certificate-validation`; supported-Linux and independent review pending.
 - **Evidence:** `create_rdp_guacamole_token` serialises hostname, username and password into a Fernet token. The start route returns that token to JavaScript. `remote_rdp.js` puts it into `URLSearchParams` passed to `client.connect`; Kaya reads `websocket.query_params["token"]` and forwards it in the bridge URL. The token is also the in-memory dictionary key. Default lifetime is 10 minutes and it is not consumed on an ordinary initial connection; only a handoff path pops it.
 - **Safe reproduction:** Use clearly fake credentials, call the token helper, and inspect the constructed browser/Kaya/upstream WebSocket URLs. Reconnect using the same token and active matching session before expiry; current lookup accepts it.
 - **Affected files:** `app/routers/remote_manager.py:481-608, 1145-1185, 1287-1340`, `app/static/js/remote_rdp.js:410-487`, `scripts/guacamole-server.cjs`.
@@ -92,8 +92,8 @@
 - **Affected files:** `app/routers/remote_manager.py`, `scripts/guacamole-server.cjs`, remote models/settings/templates/tests.
 - **Root cause:** Compatibility with self-signed RDP hosts was implemented as universal certificate acceptance.
 - **Wider pattern search:** SSH uses explicit host-key scan and pinning and is the safer local precedent. OIDC/provider TLS has an explicit administrator-controlled flag, though disabling it remains risky.
-- **Remediation:** Verify certificates by default. Support self-signed hosts only through admin-only CA/certificate import or fingerprint pinning, with first-use comparison outside Kaya, warnings, audit, per-host scope, and change detection. Never silently accept any certificate.
-- **Tests:** Secure-default token, trusted CA/pin success, unknown/changed certificate rejection, admin-only trust changes, audit redaction, migration of legacy hosts, and bridge-default tests.
+- **Remediation:** Implemented strict system-CA validation by default, explicit per-host SHA-256 pins for self-signed/private endpoints, disabled TOFU, administrator-only CSRF-protected trust changes, independent-verification acknowledgement, audit redaction, protocol/port invalidation, legacy inventory and rotation guidance. See ADR-0003.
+- **Tests:** Added secure-default token, normalized pin transport, malformed/excess pin rejection, administrator dependency, audit redaction, migration schema and bridge-default coverage. Guacd/FreeRDP performs unknown/changed presented-certificate rejection from the exact pin allowlist; live synthetic RDP-server verification and independent review remain required before closure.
 - **Migration impact:** Existing RDP connections may fail until trust is enrolled. Provide a staged warning/inventory and explicit enrollment workflow; do not auto-trust the first certificate.
 - **Residual risk:** A trusted CA or pinned endpoint can still be compromised; document renewal and pin rotation.
 

@@ -56,6 +56,7 @@ def test_fresh_install_and_repeated_start_are_idempotent(tmp_path):
         ).fetchone()[0]
         integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
         foreign_keys = connection.execute("PRAGMA foreign_key_check").fetchall()
+        remote_columns = {row[1] for row in connection.execute("PRAGMA table_info(remote_access)")}
     assert first.current_revision == CURRENT_REVISION
     assert second.current_revision == CURRENT_REVISION
     assert first.backup is None and second.backup is None
@@ -64,6 +65,7 @@ def test_fresh_install_and_repeated_start_are_idempotent(tmp_path):
     assert revision == CURRENT_REVISION
     assert integrity == "ok"
     assert foreign_keys == []
+    assert "rdp_cert_fingerprints" in remote_columns
 
 
 def test_oidc_hardening_migration_revokes_legacy_bearer_invitations(tmp_path):

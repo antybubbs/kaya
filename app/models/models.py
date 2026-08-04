@@ -425,6 +425,7 @@ class RemoteAccess(Base):
     port: Mapped[int] = mapped_column(Integer, default=22)
     username: Mapped[str | None] = mapped_column(String(120), nullable=True)
     host_key_fingerprint: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    rdp_cert_fingerprints: Mapped[str | None] = mapped_column(Text, nullable=True)
     terminal_settings: Mapped[str | None] = mapped_column(Text, nullable=True)
     rdp_settings: Mapped[str | None] = mapped_column(Text, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
