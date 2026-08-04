@@ -1,0 +1,130 @@
+{
+  "warning": "SYNTHETIC TEST KEYS AND FAKE CREDENTIALS ONLY. NEVER LOAD IN PRODUCTION.",
+  "version": 1,
+  "encoding": {
+    "binary": "unpadded base64url unless a field name says hex",
+    "json_canonicalization": "RFC 8785",
+    "text": "UTF-8"
+  },
+  "keys": {
+    "agent_ed25519_private_seed_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "agent_ed25519_public": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg",
+    "agent_x25519_private_hex": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+    "agent_x25519_public": "NYBy1jZYgNGu6jKa35EhODhR7SGijjt16WXQ0s0WYlQ",
+    "server_ed25519_private_seed_hex": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+    "server_ed25519_public": "JUO5L_EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0",
+    "ephemeral_x25519_private_hex": "606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f",
+    "ephemeral_x25519_public": "Z13VdO13iTELPS52gfN5C0ZsdzsVIf7PNld5WDcepS8"
+  },
+  "signed_request": {
+    "method_on_wire": "post",
+    "raw_path": "/api/agent/v2/backup/dispatches/disp_test_001/claim",
+    "raw_query": "tag=z&empty=&tag=%C3%A9&space=a%20b",
+    "canonical_query": "empty=&space=a%20b&tag=%C3%A9&tag=z",
+    "agent_id": "agt_test_01",
+    "key_id": "ask_test_01",
+    "request_id": "018f3c2a-7b4d-4e5f-8a91-0123456789ab",
+    "timestamp": 1785861000,
+    "body_utf8": "{\"claim_id\":\"018f3c2a-7b4d-4e5f-8a91-0123456789ab\",\"note\":\"café\"}",
+    "body_base64": "eyJjbGFpbV9pZCI6IjAxOGYzYzJhLTdiNGQtNGU1Zi04YTkxLTAxMjM0NTY3ODlhYiIsIm5vdGUiOiJjYWbDqSJ9",
+    "body_sha256": "8a5237249eeba99c832e2215cf8462f78bf2bde41f8e99894546d94db7073fc7",
+    "canonical_request": "KAYA-AGENT-V2\nPOST\n/api/agent/v2/backup/dispatches/disp_test_001/claim\nempty=&space=a%20b&tag=%C3%A9&tag=z\nagt_test_01\nask_test_01\n018f3c2a-7b4d-4e5f-8a91-0123456789ab\n1785861000\n8a5237249eeba99c832e2215cf8462f78bf2bde41f8e99894546d94db7073fc7",
+    "ed25519_signature": "QfyJfAJeEsHIJe9NupZjPwO4ZuXSYPPhwXoYBOhYfudi7Du1RVrz0g8hIfiO8_Ql19ucFTaoMoxU1gUF8vJgCQ",
+    "empty_body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "envelope": {
+    "manifest": {
+      "job_id": "job_test_01",
+      "operation": "backup",
+      "policy": "full",
+      "target_type": "sftp",
+      "workload_ref": "container_test_01"
+    },
+    "manifest_canonical_utf8": "{\"job_id\":\"job_test_01\",\"operation\":\"backup\",\"policy\":\"full\",\"target_type\":\"sftp\",\"workload_ref\":\"container_test_01\"}",
+    "manifest_sha256": "b0305de97fc9a95d638f2ba47ead4c34e3ba82601fa56dde27780280f63de046",
+    "aad": {
+      "agent_encryption_key_id": "aek_test_01",
+      "agent_id": "agt_test_01",
+      "claim_id": "018f3c2a-7b4d-4e5f-8a91-0123456789ab",
+      "dispatch_id": "disp_test_001",
+      "expires_at": "2026-08-04T15:15:00Z",
+      "host_id": "host_test_01",
+      "job_id": "job_test_01",
+      "manifest_sha256": "b0305de97fc9a95d638f2ba47ead4c34e3ba82601fa56dde27780280f63de046",
+      "operation": "backup",
+      "protocol_version": 2
+    },
+    "aad_canonical_utf8": "{\"agent_encryption_key_id\":\"aek_test_01\",\"agent_id\":\"agt_test_01\",\"claim_id\":\"018f3c2a-7b4d-4e5f-8a91-0123456789ab\",\"dispatch_id\":\"disp_test_001\",\"expires_at\":\"2026-08-04T15:15:00Z\",\"host_id\":\"host_test_01\",\"job_id\":\"job_test_01\",\"manifest_sha256\":\"b0305de97fc9a95d638f2ba47ead4c34e3ba82601fa56dde27780280f63de046\",\"operation\":\"backup\",\"protocol_version\":2}",
+    "hkdf_salt": "gIGCg4SFhoeIiYqLjI2Oj5CRkpOUlZaXmJmam5ydnp8",
+    "hkdf_info_utf8": "kaya:backup-agent:envelope:v2\nagt_test_01\naek_test_01\nhost_test_01\njob_test_01\ndisp_test_001\n018f3c2a-7b4d-4e5f-8a91-0123456789ab\nbackup\n2026-08-04T15:15:00Z\nb0305de97fc9a95d638f2ba47ead4c34e3ba82601fa56dde27780280f63de046",
+    "x25519_shared_secret": "fHnXtfMbmqw2dHf198emi1xEysKO1ckCpZ7EjAKVamo",
+    "hkdf_derived_aes256_key": "jcpjCjDvutFdNf2tJHopRKjT47-Vld88Yo8Co0lkR14",
+    "plaintext": {
+      "dispatch_grant": "grant_test_only_000000000000000000000001",
+      "encryption": {
+        "data_key": "ZGF0YV9rZXlfdGVzdF9vbmx5XzMyX2J5dGVzISE",
+        "mode": "agent-aes-256-gcm"
+      },
+      "manifest": {
+        "job_id": "job_test_01",
+        "operation": "backup",
+        "policy": "full",
+        "target_type": "sftp",
+        "workload_ref": "container_test_01"
+      },
+      "target": {
+        "host": "backup.example.invalid",
+        "password": "fake-test-password",
+        "path": "/synthetic",
+        "port": 22,
+        "type": "sftp",
+        "username": "fake"
+      }
+    },
+    "nonce": "oKGio6Slpqeoqaqr",
+    "ciphertext_and_tag": "DinWLJk4bsp8vgUuLNbdd-XkR2Gj8CBN1CpJLjpo0jQ1OOEYzj_JPaZB4lM3hJ5e4c88KGkkoXXexEyRjHxCuBMnhoXrTLLEukZtA5nFN8KgWfO3VnU2ELUL_w70KvPjnZPTlC922AzL3zMeX6rQJ_qDezkae8VJHvlyHakCUzVP7mXNBzjW06POvJNHJyqWgGWvvdJB5HcC-tnbpl50fyPSxSe_nvCeqAf8qyUN8Lf5D6HbcmEFWADwt5mEeAmuJmtF2OZ6NiqHwY7e8D8uuz1eRlXigUYbCjQtsyFKJSyv55bN5pGNHnlM2o2sKjpfuvsAPiaOw1TteX47a8ZPSSHzpgh5j8DlmdSy5bimkHzh3YeMWftHituL-zz8flWsDoxpZBsm8KO07F2f9wASypI6rivT7arJEvTGbOkYkKw-Dd5SF80E4H_c4IW_laABuZhXyxmaLfeio0mjjchtQMcOYOvZSfpqF21al9Mro9Y5Y8093cla4fN3iu_OgbdFrqNoX3KPCm0DV4Ro6Y-DQokrcysVP-m8I-et1mA800gM8sm8QnLOHKfyw7tDG44g6B2nVYus",
+    "outer_without_signature": {
+      "aad": "eyJhZ2VudF9lbmNyeXB0aW9uX2tleV9pZCI6ImFla190ZXN0XzAxIiwiYWdlbnRfaWQiOiJhZ3RfdGVzdF8wMSIsImNsYWltX2lkIjoiMDE4ZjNjMmEtN2I0ZC00ZTVmLThhOTEtMDEyMzQ1Njc4OWFiIiwiZGlzcGF0Y2hfaWQiOiJkaXNwX3Rlc3RfMDAxIiwiZXhwaXJlc19hdCI6IjIwMjYtMDgtMDRUMTU6MTU6MDBaIiwiaG9zdF9pZCI6Imhvc3RfdGVzdF8wMSIsImpvYl9pZCI6ImpvYl90ZXN0XzAxIiwibWFuaWZlc3Rfc2hhMjU2IjoiYjAzMDVkZTk3ZmM5YTk1ZDYzOGYyYmE0N2VhZDRjMzRlM2JhODI2MDFmYTU2ZGRlMjc3ODAyODBmNjNkZTA0NiIsIm9wZXJhdGlvbiI6ImJhY2t1cCIsInByb3RvY29sX3ZlcnNpb24iOjJ9",
+      "algorithm": "X25519-HKDF-SHA256+A256GCM",
+      "ciphertext": "DinWLJk4bsp8vgUuLNbdd-XkR2Gj8CBN1CpJLjpo0jQ1OOEYzj_JPaZB4lM3hJ5e4c88KGkkoXXexEyRjHxCuBMnhoXrTLLEukZtA5nFN8KgWfO3VnU2ELUL_w70KvPjnZPTlC922AzL3zMeX6rQJ_qDezkae8VJHvlyHakCUzVP7mXNBzjW06POvJNHJyqWgGWvvdJB5HcC-tnbpl50fyPSxSe_nvCeqAf8qyUN8Lf5D6HbcmEFWADwt5mEeAmuJmtF2OZ6NiqHwY7e8D8uuz1eRlXigUYbCjQtsyFKJSyv55bN5pGNHnlM2o2sKjpfuvsAPiaOw1TteX47a8ZPSSHzpgh5j8DlmdSy5bimkHzh3YeMWftHituL-zz8flWsDoxpZBsm8KO07F2f9wASypI6rivT7arJEvTGbOkYkKw-Dd5SF80E4H_c4IW_laABuZhXyxmaLfeio0mjjchtQMcOYOvZSfpqF21al9Mro9Y5Y8093cla4fN3iu_OgbdFrqNoX3KPCm0DV4Ro6Y-DQokrcysVP-m8I-et1mA800gM8sm8QnLOHKfyw7tDG44g6B2nVYus",
+      "ephemeral_public_key": "Z13VdO13iTELPS52gfN5C0ZsdzsVIf7PNld5WDcepS8",
+      "hkdf_salt": "gIGCg4SFhoeIiYqLjI2Oj5CRkpOUlZaXmJmam5ydnp8",
+      "nonce": "oKGio6Slpqeoqaqr",
+      "server_signing_key_id": "ssk_test_01",
+      "version": 2
+    },
+    "server_ed25519_signature": "amLQBNogAEkv-PP0xCI41D9_IWOxTMviySSiZJynbbG-RYgz_qsZVLmuBuecVUvGNoNLXvKIAq13ZsyXipY4DQ"
+  },
+  "accepted_examples": [
+    {
+      "case": "query order and duplicate retention",
+      "raw_query": "tag=z&empty=&tag=%C3%A9&space=a%20b",
+      "canonical_query": "empty=&space=a%20b&tag=%C3%A9&tag=z"
+    },
+    {
+      "case": "empty query and body",
+      "raw_query": "",
+      "canonical_query": "",
+      "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "lowercase percent escape canonicalized",
+      "raw_query": "tag=%c3%a9",
+      "canonical_query": "tag=%C3%A9"
+    }
+  ],
+  "rejected_examples": [
+    {"case": "route trailing-slash mismatch", "mutation": "/claim/", "category": "invalid_request"},
+    {"case": "encoded path delimiter", "mutation": "disp_test_001%2Fclaim", "category": "invalid_request"},
+    {"case": "dot path segment", "mutation": "/../claim", "category": "invalid_request"},
+    {"case": "invalid percent escape", "mutation": "tag=%ZZ", "category": "invalid_request"},
+    {"case": "duplicate security header", "mutation": "two X-Kaya-Agent-ID values", "category": "invalid_request"},
+    {"case": "same JSON meaning but changed bytes", "mutation": "encode café as \\u00e9 while retaining original signature", "category": "authentication_failed"},
+    {"case": "request replay", "mutation": "reuse request_id for the same identity", "category": "conflict"},
+    {"case": "stale timestamp", "mutation": "timestamp more than 300 seconds old", "category": "authentication_failed"},
+    {"case": "different claim retry", "mutation": "change claim_id and retain envelope request", "category": "conflict"},
+    {"case": "different agent retry", "mutation": "use another active agent identity", "category": "not_found_or_conflict"},
+    {"case": "ciphertext mutation", "mutation": "flip one ciphertext bit", "category": "authentication_failed"},
+    {"case": "server signature mutation", "mutation": "change server_signing_key_id", "category": "authentication_failed"}
+  ]
+}

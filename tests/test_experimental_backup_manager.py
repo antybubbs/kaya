@@ -7,12 +7,12 @@ from urllib.parse import urlencode
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session
 from starlette.requests import Request
 
 from app.db.session import Base
 from app.main import app
-from app.models.models import AuditLog, BackupJob, BackupRecord, ComputeHost, ComputeInventoryItem, NotificationEvent, NotificationOutbox, RemoteManagerSetting, User, UserNotification
+from app.models.models import AuditLog, BackupJob, BackupRecord, ComputeHost, ComputeInventoryItem, RemoteManagerSetting, User
 from app.routers.admin import set_backup_manager_feature
 from app.routers.backup_manager import (
     agent_jobs,
@@ -32,7 +32,6 @@ from app.services.compute_monitor import (
 )
 from app.services.modules import grant_all_registered_modules
 from app.services.site_settings import get_site_setting
-from app.services.notification_outbox import process_outbox
 
 
 def database():
@@ -111,12 +110,13 @@ def test_disabled_backup_manager_blocks_ui_and_stops_new_agent_dispatch():
         with pytest.raises(HTTPException) as rejected:
             require_backup_user(request("/infrastructure/backup-manager"), db=db, user=user)
         assert rejected.value.status_code == 404
-        response = agent_jobs(request("/infrastructure/backup-manager/api/agent/jobs", authorization=f"Bearer {token}"), db=db)
-        assert response == {"ok": True, "jobs": []}
+        with pytest.raises(HTTPException) as legacy_rejected:
+            agent_jobs(request("/infrastructure/backup-manager/api/agent/jobs", authorization=f"Bearer {token}"), db=db)
+        assert legacy_rejected.value.status_code == 426
         assert db.get(BackupJob, queued.id).status == "queued"
 
 
-def test_failed_agent_job_commits_outbox_with_source_and_uses_durable_pipeline():
+def test_legacy_bearer_agent_cannot_report_backup_status():
     with database() as db:
         token = "clearly-fake-agent-token"
         admin = User(
@@ -142,30 +142,20 @@ def test_failed_agent_job_commits_outbox_with_source_and_uses_durable_pipeline()
         db.add(job)
         db.commit()
 
-        asyncio.run(
-            agent_job_status(
-                job.id,
-                json_request(
-                    f"/infrastructure/backup-manager/api/agent/jobs/{job.id}/status",
-                    {"status": "failed", "error": "Synthetic safe failure"},
-                    authorization=f"Bearer {token}",
-                ),
-                db=db,
+        with pytest.raises(HTTPException) as rejected:
+            asyncio.run(
+                agent_job_status(
+                    job.id,
+                    json_request(
+                        f"/infrastructure/backup-manager/api/agent/jobs/{job.id}/status",
+                        {"status": "failed", "error": "Synthetic safe failure"},
+                        authorization=f"Bearer {token}",
+                    ),
+                    db=db,
+                )
             )
-        )
-
-        assert db.get(BackupJob, job.id).status == "failed"
-        assert db.query(NotificationOutbox).filter_by(
-            event_type="backup.job.failed", status="pending"
-        ).count() == 1
-        process_outbox(session_factory=sessionmaker(bind=db.bind))
-        db.expire_all()
-        event = db.query(NotificationEvent).filter_by(
-            event_type="backup.job.failed"
-        ).one()
-        assert db.query(UserNotification).filter_by(
-            notification_event_id=event.id, user_id=admin.id
-        ).count() == 1
+        assert rejected.value.status_code == 426
+        assert db.get(BackupJob, job.id).status == "running"
 
 
 def test_disable_requires_acknowledgement_and_preserves_backup_data():
