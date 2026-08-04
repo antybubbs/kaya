@@ -25,6 +25,7 @@ from app.models.models import (
     DHCPRange,
     IPAddress,
 )
+from app.services.remote_endpoint_trust import update_remote_endpoint
 from app.services.audit import write_audit
 from app.services.site_settings import get_site_settings
 
@@ -221,7 +222,9 @@ def _suggest_managed_record(db: Session, client: DNSRecognisedDevice) -> None:
                 _event(db, client, "managed_record_update_blocked", "Dynamic managed IP update blocked because the address is already allocated", old=managed.address, new=client.current_ip, source="automatic dynamic IP update")
             else:
                 old = managed.address
-                managed.address = client.current_ip
+                update_remote_endpoint(
+                    db, managed, address=client.current_ip, reason="dns_automatic_update",
+                )
                 _event(db, client, "managed_record_updated", "Dynamic managed IP updated from stable client identity", old=old, new=managed.address, source="automatic dynamic IP update")
         if not managed.name and client.hostname and settings["dns_update_empty_managed_hostname"] == "1":
             managed.name = client.hostname

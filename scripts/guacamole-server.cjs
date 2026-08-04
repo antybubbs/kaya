@@ -75,8 +75,9 @@ const server = new GuacamoleLite(
     },
     connectionDefaultSettings: {
       rdp: {
-        security: "any",
-        "ignore-cert": true,
+        security: "nla",
+        "ignore-cert": false,
+        "cert-tofu": false,
         "enable-wallpaper": true,
         "enable-font-smoothing": true,
         "enable-desktop-composition": false,

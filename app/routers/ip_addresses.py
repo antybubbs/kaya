@@ -26,6 +26,7 @@ from app.models.models import (
     NetworkMonitorStatistic,
     RemoteAccess,
     RemoteSessionRecording,
+    User,
 )
 from app.routers.auth import require_editor, require_module_access, require_user
 from app.routers.compute_manager import uptime_label, workload_addresses
@@ -38,6 +39,7 @@ from app.routers.remote_manager import (
 )
 from app.routers.remote_manager import SETTINGS as REMOTE_MANAGER_DEFAULTS
 from app.services.audit import write_audit
+from app.services.remote_endpoint_trust import update_remote_endpoint
 from app.services.custom_fields import (
     active_fields,
     field_values,
@@ -246,7 +248,7 @@ def remote_override_settings(form, keys: list[str]) -> dict[str, str]:
     return values
 
 
-def save_remote_settings(db: Session, record: IPAddress, enabled: bool, display_name: str, protocol: str, port: int, username: str, terminal_settings: dict[str, str] | None = None, rdp_settings: dict[str, str] | None = None) -> None:
+def save_remote_settings(db: Session, record: IPAddress, enabled: bool, display_name: str, protocol: str, port: int, username: str, terminal_settings: dict[str, str] | None = None, rdp_settings: dict[str, str] | None = None, *, actor: User | None = None, audit_ip: str | None = None) -> None:
     remote = remote_for(db, record.id)
     if not enabled:
         if remote:
@@ -256,10 +258,13 @@ def save_remote_settings(db: Session, record: IPAddress, enabled: bool, display_
     if not remote:
         remote = RemoteAccess(ip_address_id=record.id)
         db.add(remote)
+        db.flush()
     remote.display_name = display_name.strip() or None
     remote.is_enabled = True
-    remote.protocol = protocol
-    remote.port = clean_remote_port(port, protocol)
+    update_remote_endpoint(
+        db, record, remote=remote, protocol=protocol, port=clean_remote_port(port, protocol),
+        actor=actor, audit_ip=audit_ip, reason="primary_ip_editor",
+    )
     remote.username = username.strip() or None
     remote.terminal_settings = encode_settings_blob(terminal_settings or {})
     remote.rdp_settings = encode_settings_blob(rdp_settings or {})
@@ -588,7 +593,20 @@ async def update_ip_address(request: Request, record_id: int, address: str = For
         remote = remote_for(db, row.id)
         return templates.TemplateResponse(request, "ip_address_form.html", {"user": user, "record": row, "monitor": monitor_for(db, row.id), "remote": remote, "categories": categories, "vlans": vlans, "selected_vlan_id": selected_vlan.id, "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": values, "option_list": option_list, "error": "That IP address already exists in this VLAN.", "monitor_thresholds": monitor_thresholds, "monitor_using_default_thresholds": use_default_thresholds, **remote_settings_context(remote), **csrf_context(request)}, status_code=400)
     row.vlan_id = selected_vlan.id
-    row.address = clean_address
+    current_remote = remote_for(db, row.id)
+    next_remote_protocol = clean_remote_protocol(remote_protocol)
+    next_remote_port = clean_remote_port(remote_port, next_remote_protocol)
+    if remote_enabled and current_remote:
+        update_remote_endpoint(
+            db, row, remote=current_remote, address=clean_address,
+            protocol=next_remote_protocol, port=next_remote_port, actor=user,
+            audit_ip=request.client.host if request.client else None, reason="primary_ip_editor",
+        )
+    else:
+        update_remote_endpoint(
+            db, row, remote=current_remote, address=clean_address, actor=user,
+            audit_ip=request.client.host if request.client else None, reason="primary_ip_editor",
+        )
     clean_mac = normalise_mac(mac_address)
     if mac_address.strip() and not clean_mac:
         raise HTTPException(status_code=400, detail="Enter a valid MAC address.")
@@ -598,9 +616,12 @@ async def update_ip_address(request: Request, record_id: int, address: str = For
     row.description = description.strip() or None
     row.assignment_type = clean_assignment_type(assignment_type)
     row.notes = notes.strip() or None
-    db.commit()
     monitor_changes = save_monitor_settings(db, row, bool(monitor_enabled), monitor_display_name, monitor_interval_seconds, monitor_timeout_ms, str(form.get("monitor_maintenance_mode") or "") == "1", use_default_thresholds, monitor_thresholds)
-    save_remote_settings(db, row, bool(remote_enabled), remote_display_name, remote_protocol, remote_port, remote_username, remote_override_settings(form, TERMINAL_SETTING_KEYS), remote_override_settings(form, RDP_SETTING_KEYS))
+    save_remote_settings(
+        db, row, bool(remote_enabled), remote_display_name, remote_protocol, remote_port, remote_username,
+        remote_override_settings(form, TERMINAL_SETTING_KEYS), remote_override_settings(form, RDP_SETTING_KEYS),
+        actor=user, audit_ip=request.client.host if request.client else None,
+    )
     save_custom_values(db, fields, form, ENTITY_TYPE, row.id)
     db.commit()
     write_audit(db, user, "update", "ip_address", str(row.id), request.client.host if request.client else None, detail=clean_address, metadata={"monitor_settings": monitor_changes})

@@ -64,6 +64,33 @@
     </div>
     {% endif %}
   </section>
+  <section class="remote-settings-card" id="rdp-certificate-trust">
+    <header>
+      <span>RDP certificate trust</span>
+      <span class="ssh-identity-status {{ 'is-blocked' if remote.rdp_trust_invalidated_at else 'is-trusted' if remote.rdp_cert_fingerprints else 'is-blocked' }}">{{ 'Re-authorization required' if remote.rdp_trust_invalidated_at else 'Pinned' if remote.rdp_cert_fingerprints else 'System CA required' }}</span>
+    </header>
+    {% if remote.protocol != 'rdp' %}
+    <p class="muted">Certificate trust applies to RDP connections. Save this host as RDP before enrolling fingerprints.</p>
+    {% else %}
+    <div class="ssh-identity-settings-body">
+      {% if request.query_params.get('rdp_cert_saved') == '1' %}<div class="alert success"><strong>RDP certificate trust updated</strong><p>Future sessions will require the configured pins, or normal system CA validation when no pins are stored.</p></div>{% endif %}
+      {% if request.query_params.get('rdp_cert_error') == 'invalid' %}<div class="alert danger">Use up to three SHA-256 fingerprints in <code>sha256:hex</code> format.</div>{% endif %}
+      {% if request.query_params.get('rdp_cert_error') == 'acknowledgement' %}<div class="alert danger">Confirm that the endpoint and selected certificate trust method were verified through an independent trusted channel.</div>{% endif %}
+      {% if remote.rdp_trust_invalidated_at %}<div class="alert danger"><strong>RDP connection blocked</strong><p>The endpoint changed and its previous certificate pins were invalidated. Independently verify the current host and port, then explicitly save either verified pins or system-CA trust.</p></div>{% endif %}
+      <p>Kaya never trusts the first certificate automatically. With no pin, guacd requires a certificate valid under its system CA store. A configured pin must exactly match the server certificate.</p>
+      {% if user.role == 'admin' %}
+      <label>Trusted SHA-256 fingerprints
+        <textarea name="rdp_cert_fingerprints" rows="4" maxlength="500" placeholder="sha256:0123456789abcdef...">{{ remote.rdp_cert_fingerprints or '' }}</textarea>
+        <small>One per line, maximum three. Obtain and compare these outside Kaya before enrollment. Two pins may be retained briefly for a controlled certificate rotation.</small>
+      </label>
+      <label class="checkbox-label"><input name="rdp_trust_acknowledged" type="checkbox" value="1"> I independently verified the host, port and selected certificate trust method before trusting it.</label>
+      <button type="submit" formaction="/remote-manager/{{ remote.id }}/rdp/certificate-trust" formmethod="post">Save RDP certificate trust</button>
+      {% else %}
+      <p class="muted">Only a Kaya administrator can change RDP certificate trust.</p>
+      {% endif %}
+    </div>
+    {% endif %}
+  </section>
   <section class="remote-settings-card">
     <header><span>Terminal overrides</span></header>
     <div class="remote-settings-grid two">

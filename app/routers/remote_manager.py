@@ -48,6 +48,7 @@ from app.routers.auth import (
     require_user,
 )
 from app.services.audit import write_audit
+from app.services.remote_endpoint_trust import update_remote_endpoint
 from app.services.guacamole_bridge import (
     restart_guacamole_bridge,
     start_guacamole_bridge,
@@ -68,6 +69,8 @@ SSH_HOST_KEY_ALGORITHMS = {
     "ssh-rsa",
 }
 SSH_SHA256_FINGERPRINT = re.compile(r"^SHA256:[A-Za-z0-9+/]{43}$")
+RDP_SHA256_FINGERPRINT = re.compile(r"^sha256:((?:[0-9a-fA-F]{2}:){31}[0-9a-fA-F]{2}|[0-9a-fA-F]{64})$")
+MAX_RDP_CERT_FINGERPRINTS = 3
 SETTINGS = {
     "guacamole_enabled": "0",
     "split_screen_enabled": "1",
@@ -154,6 +157,39 @@ def clean_dimension(value: int, default: int, minimum: int, maximum: int) -> int
     if minimum <= value <= maximum:
         return value
     return default
+
+
+def normalise_rdp_cert_fingerprints(value: str | None) -> list[str]:
+    entries = [entry.strip() for entry in re.split(r"[\r\n,]+", str(value or "")) if entry.strip()]
+    if len(entries) > MAX_RDP_CERT_FINGERPRINTS:
+        raise ValueError(f"At most {MAX_RDP_CERT_FINGERPRINTS} RDP certificate fingerprints are permitted.")
+    normalised = []
+    for entry in entries:
+        match = RDP_SHA256_FINGERPRINT.fullmatch(entry)
+        if not match:
+            raise ValueError("RDP fingerprints must use sha256 followed by exactly 32 hexadecimal bytes.")
+        fingerprint = f"sha256:{match.group(1).replace(':', '').lower()}"
+        if fingerprint not in normalised:
+            normalised.append(fingerprint)
+    return normalised
+
+
+def freerdp_rdp_cert_fingerprint(fingerprint: str) -> str:
+    """Render a validated canonical pin in FreeRDP 2.x's wire format."""
+    algorithm, digest = fingerprint.split(":", 1)
+    return f"{algorithm}:{':'.join(digest[index:index + 2] for index in range(0, len(digest), 2))}"
+
+
+def rdp_certificate_settings(row: RemoteAccess) -> dict[str, object]:
+    if getattr(row, "rdp_trust_invalidated_at", None) is not None:
+        raise ValueError("RDP certificate trust must be re-authorized after the endpoint changed.")
+    fingerprints = normalise_rdp_cert_fingerprints(row.rdp_cert_fingerprints)
+    settings: dict[str, object] = {"ignore-cert": False, "cert-tofu": False}
+    if fingerprints:
+        settings["cert-fingerprints"] = ",".join(
+            freerdp_rdp_cert_fingerprint(fingerprint) for fingerprint in fingerprints
+        )
+    return settings
 
 
 def int_payload(payload: dict, key: str, default: int) -> int:
@@ -572,6 +608,7 @@ def create_rdp_guacamole_token(row: RemoteAccess, username: str, password: str, 
     def enabled(key: str) -> bool:
         return rdp_settings.get(key, SETTINGS[key]) == "1"
 
+    certificate_settings = rdp_certificate_settings(row)
     return encrypt_guacamole_token(
         {
             "connection": {
@@ -585,8 +622,8 @@ def create_rdp_guacamole_token(row: RemoteAccess, username: str, password: str, 
                     "height": height,
                     "dpi": dpi,
                     "timezone": timezone,
-                    "security": "any",
-                    "ignore-cert": True,
+                    "security": "nla",
+                    **certificate_settings,
                     "disable-audio": enabled("rdp_disable_audio"),
                     "enable-audio-input": enabled("rdp_enable_audio_input"),
                     "enable-wallpaper": enabled("rdp_enable_wallpaper"),
@@ -888,11 +925,14 @@ async def save_remote_host_settings(request: Request, remote_id: int, csrf_token
     form = await request.form()
     row.display_name = remote_display_name.strip() or None
     row.is_enabled = bool(form.get("remote_enabled"))
-    previous_protocol = row.protocol
-    previous_port = row.port
-    row.protocol = clean_protocol(remote_protocol)
-    row.port = clean_port(remote_port, row.protocol)
-    if row.protocol != previous_protocol or row.port != previous_port:
+    previous_protocol, previous_port = row.protocol, row.port
+    next_protocol = clean_protocol(remote_protocol)
+    next_port = clean_port(remote_port, next_protocol)
+    update_remote_endpoint(
+        db, row.ip_address, remote=row, protocol=next_protocol, port=next_port,
+        actor=user, audit_ip=request.client.host if request.client else None, reason="remote_host_editor",
+    )
+    if next_protocol != previous_protocol or next_port != previous_port:
         row.host_key_fingerprint = None
     row.username = remote_username.strip() or None
     row.terminal_settings = encode_settings_blob(remote_override_settings(form, TERMINAL_SETTING_KEYS))
@@ -900,6 +940,51 @@ async def save_remote_host_settings(request: Request, remote_id: int, csrf_token
     db.commit()
     write_audit(db, user, "update", "remote_access", entity_id=str(row.id), ip_address=request.client.host if request.client else None, detail=f"Updated Remote Manager settings for {remote_label(row)}")
     return RedirectResponse("/remote-manager", status_code=303)
+
+
+@router.post("/{remote_id}/rdp/certificate-trust")
+def save_rdp_certificate_trust(
+    request: Request, remote_id: int, rdp_cert_fingerprints: str = Form("", max_length=500),
+    rdp_trust_acknowledged: str = Form(""), csrf_token: str = Form(...),
+    db: Session = Depends(get_db), user=Depends(require_admin),
+):
+    validate_csrf_token(request, csrf_token)
+    row = db.get(RemoteAccess, remote_id)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Remote access entry not found")
+    if row.protocol != "rdp":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Certificate trust is only available for RDP connections.")
+    try:
+        fingerprints = normalise_rdp_cert_fingerprints(rdp_cert_fingerprints)
+    except ValueError:
+        write_audit(
+            db, user, "rdp_certificate_trust_rejected", "remote_access", entity_id=str(row.id),
+            ip_address=request.client.host if request.client else None,
+            detail=f"Rejected invalid RDP certificate trust update for {remote_label(row)}", severity="warning",
+        )
+        return RedirectResponse(f"/remote-manager/{row.id}/settings?rdp_cert_error=invalid", status_code=303)
+    if (fingerprints or row.rdp_trust_invalidated_at is not None) and rdp_trust_acknowledged != "1":
+        write_audit(
+            db, user, "rdp_certificate_trust_rejected", "remote_access", entity_id=str(row.id),
+            ip_address=request.client.host if request.client else None,
+            detail=f"Rejected unacknowledged RDP certificate trust update for {remote_label(row)}", severity="warning",
+        )
+        return RedirectResponse(f"/remote-manager/{row.id}/settings?rdp_cert_error=acknowledgement", status_code=303)
+    try:
+        previous_count = len(normalise_rdp_cert_fingerprints(row.rdp_cert_fingerprints))
+    except ValueError:
+        previous_count = 0
+    row.rdp_cert_fingerprints = "\n".join(fingerprints) or None
+    row.rdp_trust_invalidated_at = None
+    row.rdp_trust_invalidated_reason = None
+    db.commit()
+    write_audit(
+        db, user, "rdp_certificate_trust_updated", "remote_access", entity_id=str(row.id),
+        ip_address=request.client.host if request.client else None,
+        detail=f"Updated RDP certificate trust for {remote_label(row)}; pin count changed from {previous_count} to {len(fingerprints)}",
+        severity="warning",
+    )
+    return RedirectResponse(f"/remote-manager/{row.id}/settings?rdp_cert_saved=1", status_code=303)
 
 
 @router.post("/{remote_id}/ssh/host-key/scan")
@@ -1165,7 +1250,16 @@ async def rdp_start(request: Request, remote_id: int, db: Session = Depends(get_
     height = clean_dimension(int_payload(payload, "height", 720), 720, 480, 4320)
     dpi = clean_dimension(int_payload(payload, "dpi", 96), 96, 72, 240)
     timezone = str(payload.get("timezone", ""))[:80]
-    token = create_rdp_guacamole_token(row, username, password, width, height, dpi, timezone, remote_settings["rdp"])
+    try:
+        token = create_rdp_guacamole_token(row, username, password, width, height, dpi, timezone, remote_settings["rdp"])
+    except ValueError:
+        write_audit(
+            db, user, "rdp_session_rejected", "remote_access", entity_id=str(row.id),
+            ip_address=request.client.host if request.client else None,
+            detail=f"Rejected RDP session for {remote_label(row)} because certificate trust configuration is invalid",
+            severity="warning",
+        )
+        return JSONResponse({"ok": False, "logs": ["RDP certificate trust is invalid. Ask an administrator to review this host."]}, status_code=400)
     now = time.time()
     rdp_tokens[token] = RDPSessionToken(
         remote_id=row.id,

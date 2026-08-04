@@ -7,9 +7,9 @@
 
 - **Total tracked:** 9: 1 Emergency, 3 Critical and 5 High.
 - **Contained:** 1 (`KAYA-DEM-001`).
-- **Resolved:** 1 (`KAYA-OIDC-001`).
+- **Resolved:** 2 (`KAYA-OIDC-001`, `KAYA-RDP-002`).
 - **Remediated, pending independent re-verification:** 0.
-- **Changes required:** 1 (`KAYA-RDP-002`).
+- **Changes required:** 0.
 - **Fully open:** 6 (`KAYA-DEM-002`, `KAYA-RDP-001`, `KAYA-BAK-001`, `KAYA-HA-001`, `KAYA-BG-001`, `KAYA-DB-001`).
 
 ## Summary
@@ -20,7 +20,7 @@
 | KAYA-DEM-002 | Demo policy is allowlist-by-path and leaves other mutations unclassified | High | High | Confirmed design defect; not remediated |
 | KAYA-OIDC-001 | Administrator-link invitation is a bearer account-takeover capability | Critical | High | Resolved; independently verified at corrective commit `b5f53ce` in PR [#61](https://github.com/antybubbs/kaya/pull/61) |
 | KAYA-RDP-001 | Credential-bearing RDP token is exposed in WebSocket query strings and is replayable | High | High | Confirmed; not remediated |
-| KAYA-RDP-002 | RDP certificate verification is hard-disabled | Critical | High | Changes required in PR [#60](https://github.com/antybubbs/kaya/pull/60); separate corrective checkpoint pending |
+| KAYA-RDP-002 | RDP certificate verification is hard-disabled | Critical | High | Resolved; independently verified with conditions at corrective commit `8ae6fbe` in PR [#60](https://github.com/antybubbs/kaya/pull/60) |
 | KAYA-BAK-001 | Backup-agent bearer protocol returns plaintext credentials and data keys without replay resistance | Critical | High | Confirmed; not remediated |
 | KAYA-HA-001 | Keepalived hook holds an exclusive lock during hold-down and slow probes | High | High | Confirmed; not remediated |
 | KAYA-BG-001 | HA watchdog and lease reconciliation can terminate permanently on outer-loop exception | High | High | Confirmed; not remediated |
@@ -79,7 +79,7 @@
 - **Affected component:** RDP start endpoint, browser client, Kaya RDP WebSocket, and Guacamole bridge.
 - **Severity:** High.
 - **Confidence:** High.
-- **Status:** Confirmed; no remediation applied.
+- **Status:** Remediation implemented on `security/rdp-certificate-validation`; supported-Linux and independent review pending.
 - **Evidence:** `create_rdp_guacamole_token` serialises hostname, username and password into a Fernet token. The start route returns that token to JavaScript. `remote_rdp.js` puts it into `URLSearchParams` passed to `client.connect`; Kaya reads `websocket.query_params["token"]` and forwards it in the bridge URL. The token is also the in-memory dictionary key. Default lifetime is 10 minutes and it is not consumed on an ordinary initial connection; only a handoff path pops it.
 - **Safe reproduction:** Use clearly fake credentials, call the token helper, and inspect the constructed browser/Kaya/upstream WebSocket URLs. Reconnect using the same token and active matching session before expiry; current lookup accepts it.
 - **Affected files:** `app/routers/remote_manager.py:481-608, 1145-1185, 1287-1340`, `app/static/js/remote_rdp.js:410-487`, `scripts/guacamole-server.cjs`.
@@ -95,15 +95,15 @@
 - **Affected component:** RDP connection settings in Kaya and the Guacamole bridge.
 - **Severity:** Critical.
 - **Confidence:** High.
-- **Status:** Confirmed; no remediation applied.
-- **Evidence:** `app/routers/remote_manager.py:589` places `"ignore-cert": True` in every generated RDP token. `scripts/guacamole-server.cjs:79` also defaults `"ignore-cert": true`. There is no per-host certificate/CA/fingerprint trust model.
+- **Status:** Resolved. Fresh independent re-verification result: Verified with conditions at corrective commit `8ae6fbe`.
+- **Evidence:** The original paths universally disabled certificate validation. PR #60 now enforces system-CA validation or an explicit SHA-256 pin, disables bypass/TOFU, atomically invalidates trust on every supported effective endpoint writer, and blocks downgrade across the minimum safe database boundary. See `security-review/reviews/RDP_CERTIFICATE_INDEPENDENT_REVIEW.md`.
 - **Safe reproduction:** Generate a fake RDP token and decrypt it in a controlled test; the setting is true. Bridge default configuration independently has the same value. No real RDP server is required.
 - **Affected files:** `app/routers/remote_manager.py`, `scripts/guacamole-server.cjs`, remote models/settings/templates/tests.
 - **Root cause:** Compatibility with self-signed RDP hosts was implemented as universal certificate acceptance.
 - **Wider pattern search:** SSH uses explicit host-key scan and pinning and is the safer local precedent. OIDC/provider TLS has an explicit administrator-controlled flag, though disabling it remains risky.
-- **Remediation:** Verify certificates by default. Support self-signed hosts only through admin-only CA/certificate import or fingerprint pinning, with first-use comparison outside Kaya, warnings, audit, per-host scope, and change detection. Never silently accept any certificate.
-- **Tests:** Secure-default token, trusted CA/pin success, unknown/changed certificate rejection, admin-only trust changes, audit redaction, migration of legacy hosts, and bridge-default tests.
-- **Migration impact:** Existing RDP connections may fail until trust is enrolled. Provide a staged warning/inventory and explicit enrollment workflow; do not auto-trust the first certificate.
+- **Remediation:** Implemented strict system-CA validation by default, explicit per-host SHA-256 pins for self-signed/private endpoints, disabled TOFU, administrator-only CSRF-protected trust changes, independent-verification acknowledgement, audit redaction, protocol/port invalidation, legacy inventory and rotation guidance. See ADR-0003.
+- **Tests:** The 56-test focused Linux suite passes. Live synthetic checks reject unknown, mismatched, expired and changed certificates, accept the exact SHA-256 pin, and confirm bypass/TOFU remain absent. The seventh URL/log check reconfirms separate High finding `KAYA-RDP-001`. Independent re-review remains required before closure.
+- **Migration impact:** Existing RDP connections may fail until trust is enrolled. Revision `20260804_02` retains invalidation evidence and blocks insecure downgrade; a pre-fix restore under secure code upgrades to strict CA validation without auto-trust.
 - **Residual risk:** A trusted CA or pinned endpoint can still be compromised; document renewal and pin rotation.
 
 ## KAYA-BAK-001 — Backup-agent bearer protocol returns plaintext credentials and data keys without replay resistance
