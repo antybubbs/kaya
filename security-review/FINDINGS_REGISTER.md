@@ -86,7 +86,7 @@
 - **Affected component:** RDP connection settings in Kaya and the Guacamole bridge.
 - **Severity:** Critical.
 - **Confidence:** High.
-- **Status:** Confirmed; no remediation applied.
+- **Status:** Remediation implemented on `security/rdp-certificate-validation`; supported-Linux and independent review pending.
 - **Evidence:** `app/routers/remote_manager.py:589` places `"ignore-cert": True` in every generated RDP token. `scripts/guacamole-server.cjs:79` also defaults `"ignore-cert": true`. There is no per-host certificate/CA/fingerprint trust model.
 - **Safe reproduction:** Generate a fake RDP token and decrypt it in a controlled test; the setting is true. Bridge default configuration independently has the same value. No real RDP server is required.
 - **Affected files:** `app/routers/remote_manager.py`, `scripts/guacamole-server.cjs`, remote models/settings/templates/tests.
@@ -102,13 +102,13 @@
 - **Affected component:** Compute/backup agent enrollment and Backup Manager agent API.
 - **Severity:** Critical.
 - **Confidence:** High.
-- **Status:** Confirmed; no remediation applied.
+- **Status:** Confirmed; ADR-0004 and protocol v2 proposed for mandatory human review. No production remediation applied.
 - **Evidence:** `require_agent_host` hashes a reusable Authorization bearer value and looks up a `docker_agent` host. It has no signature, timestamp, nonce, session grant, explicit scope, or `is_enabled` check. `agent_jobs` decrypts the selected target's `remote_password` and each job's `encrypted_backup_key` into the JSON response. Tokens are long-lived until regeneration.
 - **Safe reproduction:** In an in-memory database, create a fake docker agent, target password ciphertext and queued job, call `agent_jobs` with the fake bearer, and observe plaintext fake values. Repeat or set `host.is_enabled=False`; authentication logic remains token-based. Existing tests already construct this boundary without live secrets.
 - **Affected files:** `app/routers/backup_manager.py:69-87, 176-194, 610-689`, `app/routers/compute_manager.py`, `app/models/models.py:1334-1362, 1449-1471`, agent implementation outside repository if applicable.
 - **Root cause:** Inventory-agent bearer authentication was reused for high-impact secret delivery. Agent lifecycle lacks first-class identity state, request freshness and least-privilege scopes.
 - **Wider pattern search:** Status updates are host-bound, which is positive. HA agents already implement per-agent signed requests, replay tracking, rotation and revocation and provide an architectural precedent. Legacy `encrypted_agent_token` is intentionally not written for new agents.
-- **Remediation:** New machine-auth ADR; secure enrollment; per-agent signing key or mTLS; signed method/path/body/timestamp/nonce; bounded skew and replay cache; short-lived scoped dispatch grant; explicit active/revoked/decommissioned state; rate limits; key rotation; response minimisation; envelope encryption separating authentication and data keys; auditable acknowledgements.
+- **Remediation:** Proposed in ADR-0004 and `docs/security/backup-agent-protocol-v2.md`: host-bound Ed25519/X25519 identity, signed/fresh/replay-resistant requests, least-privilege scopes, two-step atomic dispatch, short-lived hashed grants, server-signed agent envelope encryption, lifecycle/rotation/decommission and fail-secure migration. Production implementation is paused pending human approval.
 - **Tests:** Missing/invalid/revoked/disabled identity, wrong scope/host/job, stale/future timestamp, nonce replay, signature/body/path modification, concurrent dispatch, token/key rotation, decommission denial, least-data response, and log/traceback redaction.
 - **Migration impact:** Requires dual-protocol rollout or forced re-enrollment with a deadline. Do not silently retain bearer fallback for secret delivery. Existing queued jobs and agents need an operator-visible migration state.
 - **Residual risk:** A fully compromised enrolled agent can access secrets legitimately dispatched to it. Containment depends on scopes, rotation, job-level grants and minimal secret lifetime.
