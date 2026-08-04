@@ -27,13 +27,13 @@ Kaya is a FastAPI application using server-rendered Jinja templates, SQLAlchemy 
 - `app/db/`: database sessions, Alembic orchestration, pre-Alembic compatibility, backup, validation, and default data
 - `app/models/models.py`: SQLAlchemy models
 - `app/db/session.py`: database engine and session factory
-- `app/core/`: configuration, security, CSRF, demo mode, branding, TOTP helpers
+- `app/core/`: configuration, security, CSRF, branding, TOTP helpers
 - `app/routers/`: route modules for each feature area
 - `app/services/`: shared business logic, background polling, integrations, audit/session helpers
 - `app/templates/`: Jinja templates
 - `app/static/`: CSS, JavaScript, brand assets, vendor assets
-- `scripts/`: migration, demo seeding, Node remote helper services
-- `tests/`: currently limited test coverage, mainly demo-mode restrictions
+- `scripts/`: migration and Node remote helper services
+- `tests/`: application, security, migration and integration regression coverage
 
 ## Main Entry Points
 
@@ -76,7 +76,6 @@ Static assets are local under `app/static`. The main CSS files are:
 
 - `app.css`
 - `imports.css`
-- `demo.css`
 - `kaya.css`
 
 Shared JavaScript includes sidebar state, table sorting/filtering/column settings, and inline editing. Module-specific JavaScript lives in `app/static/js`.

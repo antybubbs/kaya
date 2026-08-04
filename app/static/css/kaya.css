@@ -57,7 +57,7 @@ input,textarea,select{background:#0d1117;border:1px solid #2a303a;border-radius:
 
 .dashboard-hero{background:#12161c;border:1px solid #252c36;border-radius:8px;box-shadow:none;margin-bottom:14px;padding:18px}.dashboard-hero .eyebrow{color:var(--kaya-orange-soft)}.live-indicator{background:rgba(34,197,94,.09);border:1px solid rgba(34,197,94,.28);border-radius:999px;color:#bbf7d0;padding:7px 10px}.live-indicator i{background:var(--kaya-success)}.compute-summary-grid,.compute-resource-grid{gap:12px}.compute-summary-grid article,.resource-gauge{background:#14171d;border:1px solid #2a303a;border-radius:8px;box-shadow:none;padding:16px}.compute-summary-grid article.good{border-color:rgba(34,197,94,.32)}.compute-summary-grid article.warn{border-color:rgba(245,158,11,.38)}.compute-summary-grid strong,.resource-gauge strong{color:#fff}.resource-track{background:#0d1117;border-radius:999px}.resource-track i{background:linear-gradient(90deg,var(--kaya-orange),var(--kaya-orange-soft));border-radius:999px}
 
-.login-wrap{background:#0d0f13;min-height:100vh;padding:28px}.login-card{background:#14171d;border:1px solid #2a303a;border-radius:8px;box-shadow:var(--kaya-shadow);padding:30px;width:min(440px,100%)}.login-card .brand.large{justify-items:start;margin-bottom:18px}.login-card h1{color:#fff;font-size:28px;margin-bottom:8px}.demo-login-grid{gap:10px}.demo-login-option{background:#10141a;border:1px solid #2a303a;border-radius:8px;padding:12px}.demo-login-option:hover{border-color:rgba(255,138,0,.36)}
+.login-wrap{background:#0d0f13;min-height:100vh;padding:28px}.login-card{background:#14171d;border:1px solid #2a303a;border-radius:8px;box-shadow:var(--kaya-shadow);padding:30px;width:min(440px,100%)}.login-card .brand.large{justify-items:start;margin-bottom:18px}.login-card h1{color:#fff;font-size:28px;margin-bottom:8px}
 
 /* Keep text dark on orange primary buttons across state overrides */
 .button:not(.secondary):not(.danger):not(.ghost):not(.icon-button):not([data-kaya-theme-choice]):not([role=tab]),button:not(.secondary):not(.danger):not(.ghost):not(.icon-button):not([data-kaya-theme-choice]):not([role=tab]),.button:not(.secondary):not(.danger):not(.ghost):not(.icon-button):not([data-kaya-theme-choice]):not([role=tab]):hover,.button:not(.secondary):not(.danger):not(.ghost):not(.icon-button):not([data-kaya-theme-choice]):not([role=tab]):focus-visible,.button:not(.secondary):not(.danger):not(.ghost):not(.icon-button):not([data-kaya-theme-choice]):not([role=tab]):active,button:not(.secondary):not(.danger):not(.ghost):not(.icon-button):not([data-kaya-theme-choice]):not([role=tab]):hover,button:not(.secondary):not(.danger):not(.ghost):not(.icon-button):not([data-kaya-theme-choice]):not([role=tab]):focus-visible,button:not(.secondary):not(.danger):not(.ghost):not(.icon-button):not([data-kaya-theme-choice]):not([role=tab]):active{color:#101010!important}
@@ -215,7 +215,6 @@ html[data-kaya-theme=light-ops] .secret,html[data-kaya-theme=light-ops] .inline-
 html[data-kaya-theme=light-ops] .login-wrap{background:#f2eee8}
 html[data-kaya-theme=light-ops] .login-card{background:#fff;border-color:#d8dee8;color:#111827}
 html[data-kaya-theme=light-ops] .login-card h1{color:#111827}
-html[data-kaya-theme=light-ops] .demo-login-option{background:#fff;border-color:#d8dee8;color:#111827}
 
 /* Kaya Light Ops form labels and control borders */
 html[data-kaya-theme=light-ops] label,html[data-kaya-theme=light-ops] .field-label,html[data-kaya-theme=light-ops] .runbook-editor-pane-heading>label,html[data-kaya-theme=light-ops] .runbook-editor-pane-heading>h2,html[data-kaya-theme=light-ops] .remote-settings-grid label,html[data-kaya-theme=light-ops] .remote-setting-row strong,html[data-kaya-theme=light-ops] .table-filter label,html[data-kaya-theme=light-ops] .bulk-action-bar label{color:#334155!important;font-weight:850}
@@ -303,18 +302,6 @@ html[data-kaya-theme=light-ops] .sidebar .nav-subgroup:has(.nav-link.active)>sum
 
 .sidebar .nav-tree{
   padding-top:0;
-}
-
-.demo-banner ~ .sidebar{
-  height:calc(100vh - 96px);
-  top:96px;
-}
-
-@media(max-width:850px){
-  .demo-banner ~ .sidebar{
-    height:auto;
-    top:auto;
-  }
 }
 
 .sidebar-collapse-button{
@@ -956,7 +943,7 @@ html:not([data-theme="light"]):not([data-kaya-theme="light-ops"])
 
 /* Critical responsive controls are hidden by default. Keep this contract in the
    core stylesheet as well as responsive.css so a stale optional stylesheet can
-   never expose mobile-only controls on the desktop demo. */
+   never expose mobile-only controls on the desktop layout. */
 .mobile-menu-button,
 .mobile-page-title,
 .mobile-nav-overlay,

@@ -22,7 +22,6 @@ from fastapi import (
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.core.templating import templates
 from app.core.security import verify_password
@@ -75,7 +74,6 @@ router = APIRouter(
     dependencies=[Depends(require_module_access("secret_vault"))],
 )
 
-settings = get_settings()
 ITEM_TYPES = {
     "secure_note": "Secure Note",
     "secure_document": "Secure Document",
@@ -724,8 +722,7 @@ def item_detail(
             attachments=attachments,
             versions=versions,
             permission=permission,
-            secure_send_enabled=get_site_setting(db, "secure_send_enabled") == "1"
-            and not settings.demo_mode,
+            secure_send_enabled=get_site_setting(db, "secure_send_enabled") == "1",
             **oidc_vault_context(db, request, user, "sensitive"),
         ),
     )

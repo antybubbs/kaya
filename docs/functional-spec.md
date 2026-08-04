@@ -37,7 +37,7 @@ When Kaya's application version changes, the documentation version in these file
 - Keep documentation changes in the same pull request or commit as feature changes.
 - Update the relevant module file whenever routes, permissions, settings, workflows, or models change.
 - Update [Database](database.md) whenever a table, column, relationship, migration, seed, or persistence path changes.
-- Update [Security](security.md) whenever authentication, authorisation, session, upload, secret handling, demo restrictions, or external integration behaviour changes.
+- Update [Security](security.md) whenever authentication, authorisation, session, upload, secret handling, or external integration behaviour changes.
 - Update [API And Integration Surface](api.md) whenever agent APIs, webhooks, provider integrations, import/export contracts, or websocket protocols change.
 - Keep planned features clearly marked as planned. Do not document future behaviour as if it exists.
 

@@ -96,5 +96,4 @@ def test_release_command_creates_a_github_release_after_validating_version():
 def test_production_deployments_stay_on_latest():
     expected = "ghcr.io/antybubbs/kaya:latest"
     assert expected in Path("docker-compose.yml").read_text(encoding="utf-8")
-    assert expected in Path("docker-compose.demo.yml").read_text(encoding="utf-8")
     assert expected in Path("install-kaya.sh").read_text(encoding="utf-8")

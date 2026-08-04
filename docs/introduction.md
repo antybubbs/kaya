@@ -31,7 +31,6 @@ The application combines lightweight CMDB-style documentation with practical ope
 - **Documentation:** runbook spaces and pages
 - **Settings:** stored mostly in the database via `RemoteManagerSetting`
 - **Auditability:** user and request activity is recorded in `AuditLog`
-- **Demo mode:** seeds synthetic data and blocks sensitive actions
 
 ## Functional Boundaries
 

@@ -47,7 +47,6 @@ Important environment/configuration values include:
 - `ALLOWED_HOSTS`
 - `FORWARDED_ALLOW_IPS` (trusted reverse-proxy IPs or CIDR networks; defaults to `127.0.0.1`)
 - `SESSION_COOKIE_SECURE`
-- `DEMO_MODE`
 - Guacamole-related settings
 - Upload and recording size settings
 
@@ -57,7 +56,6 @@ The entrypoint:
 
 - Creates persistent data/upload/recording directories.
 - Generates and preserves runtime secrets in `/app/data/.runtime.env` when not supplied.
-- Handles demo seed/reset behaviour when demo mode is enabled.
 - Creates and verifies a timestamped pre-migration SQLite backup with SQLite's backup API before changing an existing database.
 - Runs the safe `app.db` Alembic preparation lifecycle.
 - Starts Uvicorn.

@@ -94,7 +94,7 @@ def test_session_revocation_can_preserve_only_the_current_session():
 
 
 def test_first_run_setup_requires_the_deployment_token(monkeypatch):
-    monkeypatch.setattr(auth, "settings", SimpleNamespace(setup_token="one-time-token", demo_mode=False))
+    monkeypatch.setattr(auth, "settings", SimpleNamespace(setup_token="one-time-token"))
     with database() as db:
         response = auth.setup_submit(
             request(),

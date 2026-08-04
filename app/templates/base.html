@@ -21,7 +21,6 @@
   <link rel="manifest" href="{{ request.url_for('manifest') }}">
   <link rel="stylesheet" href="/static/css/app.css?v={{ asset_version }}">
   <link rel="stylesheet" href="/static/css/imports.css?v={{ asset_version }}">
-  <link rel="stylesheet" href="/static/css/demo.css?v={{ asset_version }}">
   <link rel="stylesheet" href="/static/css/kaya.css?v={{ asset_version }}">
   {% block extra_head %}{% endblock %}
   <link rel="stylesheet" href="{{ request.url_for('static', path='css/sidebar.css') }}?v={{ asset_version }}">
@@ -36,16 +35,6 @@
   {% if user %}<script src="{{ request.url_for('static', path='js/notifications.js') }}?v={{ asset_version }}" defer></script>{% endif %}
 </head>
 <body data-app-root="{{ request.scope.get('root_path', '') }}">
-{% if request.app.state.demo_mode %}
-<div class="demo-banner"><strong>Public demo</strong><span>Sample data resets daily at {{ request.app.state.demo_reset_schedule }}. Identity, security and live connection actions are disabled.</span></div>
-{% set demo_notice = request.session.pop('demo_notice', None) %}
-{% if request.query_params.get('demo_notice') %}
-  {% set demo_notice = 'This action is disabled in the public demo. Sample data resets daily.' %}
-{% endif %}
-{% if demo_notice %}
-<div class="demo-toast" role="status" aria-live="polite">{{ demo_notice }}</div>
-{% endif %}
-{% endif %}
 {% if user %}
 <header class="app-topbar">
   <div class="app-topbar-brand">

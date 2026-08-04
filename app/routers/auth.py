@@ -14,7 +14,6 @@ from starlette.requests import HTTPConnection
 from app.core.config import get_settings
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.core.templating import templates
-from app.core.demo import DEMO_ACCOUNTS, demo_generation, demo_login_email
 from app.core.security import decrypt_secret, hash_password, verify_password
 from app.core.totp import (
     decrypted_totp_secret,
@@ -167,7 +166,6 @@ def login_template_context(request: Request, db: Session, **overrides) -> dict:
         "success": None,
         "setup_complete": False,
         "requires_2fa": False,
-        "demo_accounts": DEMO_ACCOUNTS if settings.demo_mode else None,
         "authentication_mode": policy.authentication_mode,
         "oidc_available": policy.oidc_available,
         "oidc_button_label": policy.oidc_button_label,
@@ -186,9 +184,6 @@ def current_user(request: Request, db: Session = Depends(get_db)) -> User | None
     user_id = request.session.get("user_id")
     session_id = request.session.get("session_id")
     if not user_id or not session_id:
-        return None
-    if settings.demo_mode and request.session.get("demo_generation") != demo_generation():
-        request.session.clear()
         return None
     user = db.query(User).filter(User.id == user_id, User.is_active).first()
     app_session = active_user_session(db, session_id, user.id if user else None)
@@ -237,7 +232,7 @@ def require_module_access(module_key: str):
                 "module_access_denied",
                 "module_permission",
                 module_key,
-                ip_address=None if settings.demo_mode else client_ip(connection),
+                ip_address=client_ip(connection),
                 detail=f"Access denied to module {module_key}",
                 status_code=403,
                 metadata={"module_key": module_key},
@@ -277,7 +272,7 @@ def login_page(
             },
             status_code=503,
         )
-    if policy.auto_redirect_oidc and logged_out != "1" and not settings.demo_mode:
+    if policy.auto_redirect_oidc and logged_out != "1":
         write_audit(db, None, "oidc_automatic_redirect_initiated", "oidc", ip_address=request.client.host if request.client else None)
         return RedirectResponse("/auth/oidc/login", status_code=303)
 
@@ -310,8 +305,6 @@ def setup_page(
 
 @router.get("/forgot-password")
 def forgot_password_page(request: Request):
-    if settings.demo_mode:
-        return RedirectResponse("/login", status_code=303)
     return templates.TemplateResponse(
         request,
         "forgot_password.html",
@@ -331,9 +324,6 @@ def forgot_password_submit(
     db: Session = Depends(get_db),
 ):
     validate_csrf_token(request, csrf_token)
-    if settings.demo_mode:
-        return RedirectResponse("/login", status_code=303)
-
     clean_email = email.strip().lower()
     user = db.query(User).filter(User.email == clean_email, User.is_active).first()
     key = client_key(request)
@@ -416,8 +406,6 @@ def forgot_password_submit(
 
 @router.get("/reset-password")
 def reset_password_page(request: Request, token: str = "", db: Session = Depends(get_db)):
-    if settings.demo_mode:
-        return RedirectResponse("/login", status_code=303)
     row = find_valid_reset_token(db, token)
     if row and (not row.user.password_hash or row.user.authentication_type == "oidc"):
         row = None
@@ -443,9 +431,6 @@ def reset_password_submit(
     db: Session = Depends(get_db),
 ):
     validate_csrf_token(request, csrf_token)
-    if settings.demo_mode:
-        return RedirectResponse("/login", status_code=303)
-
     row = find_valid_reset_token(db, token)
     if row and (not row.user.password_hash or row.user.authentication_type == "oidc"):
         row = None
@@ -501,7 +486,7 @@ def reset_password_submit(
     return templates.TemplateResponse(
         request,
         "login.html",
-        login_template_context(request, db, success="Password updated. You can sign in now.", demo_accounts=None),
+        login_template_context(request, db, success="Password updated. You can sign in now."),
     )
 
 
@@ -622,7 +607,7 @@ def setup_submit(
 @router.post("/login")
 def login(request: Request, email: str = Form(""), password: str = Form(""), totp_code: str = Form(""), csrf_token: str = Form(...), db: Session = Depends(get_db)):
     validate_csrf_token(request, csrf_token)
-    if not normal_local_login_allowed(db) and not settings.demo_mode:
+    if not normal_local_login_allowed(db):
         write_audit(
             db, None, "local_login_rejected_disabled", "user",
             ip_address=request.client.host if request.client else None,
@@ -684,7 +669,7 @@ def login(request: Request, email: str = Form(""), password: str = Form(""), tot
         write_audit(db, user, "login", "user", str(user.id), request.client.host if request.client else None, detail="2FA verified")
         return RedirectResponse(module_landing_url(db, user), status_code=303)
 
-    login_email = demo_login_email(email) if settings.demo_mode else email.strip().lower()
+    login_email = email.strip().lower()
     user = db.query(User).filter(User.email == login_email, User.is_active).first()
     password_hash = user.password_hash if user and user.authentication_type != "oidc" else DUMMY_PASSWORD_HASH
     if not verify_password(password, password_hash) or not user or not user.password_hash or user.authentication_type == "oidc":
@@ -725,8 +710,6 @@ def login(request: Request, email: str = Form(""), password: str = Form(""), tot
         )
     request.session.clear()
     request.session["user_id"] = user.id
-    if settings.demo_mode:
-        request.session["demo_generation"] = demo_generation()
     start_user_session(db, request, user)
     LOGIN_FAILURES.pop(key, None)
     write_audit(db, user, "login", "user", str(user.id), request.client.host if request.client else None)

@@ -751,10 +751,9 @@ async def tcp_check(host: str, port: int, timeout: float = 5) -> tuple[bool, str
 
 @router.get("")
 def remote_list(request: Request, db: Session = Depends(get_db), user=Depends(require_user)):
-    demo_mode = get_settings().demo_mode
-    rows = [] if demo_mode else db.query(RemoteAccess).filter(RemoteAccess.is_enabled).options(selectinload(RemoteAccess.ip_address)).order_by(RemoteAccess.protocol.asc(), RemoteAccess.display_name.asc(), RemoteAccess.id.asc()).all()
+    rows = db.query(RemoteAccess).filter(RemoteAccess.is_enabled).options(selectinload(RemoteAccess.ip_address)).order_by(RemoteAccess.protocol.asc(), RemoteAccess.display_name.asc(), RemoteAccess.id.asc()).all()
     settings = settings_map(db)
-    return templates.TemplateResponse(request, "remote_manager.html", {"user": user, "rows": rows, "remote_label": remote_label, "remote_manager_locked": demo_mode, "split_screen_enabled": settings.get("split_screen_enabled", "1") == "1", **csrf_context(request)})
+    return templates.TemplateResponse(request, "remote_manager.html", {"user": user, "rows": rows, "remote_label": remote_label, "split_screen_enabled": settings.get("split_screen_enabled", "1") == "1", **csrf_context(request)})
 
 
 @router.get("/settings")
@@ -1281,9 +1280,6 @@ async def rdp_start(request: Request, remote_id: int, db: Session = Depends(get_
 
 @router.websocket("/{remote_id}/ssh/ws")
 async def ssh_websocket(websocket: WebSocket, remote_id: int):
-    if get_settings().demo_mode:
-        await websocket.close(code=1008, reason="Remote connections are disabled in the public demo")
-        return
     if not websocket_origin_allowed(websocket):
         await websocket.close(code=1008)
         return
@@ -1380,9 +1376,6 @@ async def ssh_websocket(websocket: WebSocket, remote_id: int):
 
 @router.websocket("/{remote_id}/rdp/ws")
 async def rdp_websocket(websocket: WebSocket, remote_id: int):
-    if get_settings().demo_mode:
-        await websocket.close(code=1008, reason="Remote connections are disabled in the public demo")
-        return
     if not websocket_origin_allowed(websocket):
         await websocket.close(code=1008)
         return

@@ -65,7 +65,7 @@ To run without Docker, install Python dependencies and Node dependencies, then r
 11. Associate dashboard widgets and search results with that same stable module key.
 12. Validate CSRF on mutating browser routes.
 13. Write audit events for sensitive actions.
-14. Add demo-mode restrictions for dangerous operations.
+14. Add explicit authentication, authorisation, CSRF, validation and audit controls for dangerous operations.
 15. Add tests for allowed and denied module access.
 16. Update the matching docs file under `docs/`.
 
@@ -84,7 +84,7 @@ To run without Docker, install Python dependencies and Node dependencies, then r
 1. Update `app/models/models.py`.
 2. Add a reviewed Alembic revision; never add startup-time schema DDL.
 3. Consider indexes and uniqueness.
-4. Update import/export, seed demo data, templates, forms, and tests as needed.
+4. Update import/export, templates, forms, and tests as needed.
 5. Avoid destructive migrations without a backup/restore plan.
 6. Update [Database](database.md).
 
@@ -108,7 +108,6 @@ All genuine user-facing data tables use the shared enhancer in `app/static/js/ta
 - Existing SQLite databases.
 - `/app/data/.runtime.env`.
 - Encryption key compatibility.
-- Demo mode reset/seed flow.
 - Remote helper subprocess startup/shutdown.
 - Guacamole bridge settings.
 - Backup agent token validation.

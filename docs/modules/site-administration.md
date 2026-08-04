@@ -74,4 +74,4 @@ Settings are stored primarily in `remote_manager_settings` as key/value rows. Th
 - The admin router is large and mixes unrelated settings concerns.
 - Site settings are stored in `RemoteManagerSetting`, which now has broader meaning than its name suggests.
 - Settings that contain secrets must be encrypted before storage.
-- Some test actions reach outside Kaya and must remain blocked or constrained in demo mode.
+- Some test actions reach outside Kaya and remain restricted to authorised administrators with explicit validation and audit logging.

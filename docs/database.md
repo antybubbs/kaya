@@ -91,7 +91,6 @@ Bootstrap ensures a default VLAN named `VLAN 1`.
 
 The first real admin is created through `/setup`.
 
-Demo mode seeds synthetic users, VLANs, IPs, monitors, remotes, DNS provider data, hardware assets, licences, domains, runbooks, compute hosts/workloads, backup records/jobs, managed lists, and audit rows.
 
 # DNS insight persistence
 
