@@ -7,8 +7,8 @@
 
 - **Total tracked:** 9: 1 Emergency, 3 Critical and 5 High.
 - **Contained:** 1 (`KAYA-DEM-001`).
-- **Resolved:** 1 (`KAYA-OIDC-001`).
-- **Remediated, pending independent re-verification:** 1 (`KAYA-RDP-002`).
+- **Resolved:** 2 (`KAYA-OIDC-001`, `KAYA-RDP-002`).
+- **Remediated, pending independent re-verification:** 0.
 - **Changes required:** 0.
 - **Fully open:** 6 (`KAYA-DEM-002`, `KAYA-RDP-001`, `KAYA-BAK-001`, `KAYA-HA-001`, `KAYA-BG-001`, `KAYA-DB-001`).
 
@@ -20,7 +20,7 @@
 | KAYA-DEM-002 | Demo policy is allowlist-by-path and leaves other mutations unclassified | High | High | Confirmed design defect; not remediated |
 | KAYA-OIDC-001 | Administrator-link invitation is a bearer account-takeover capability | Critical | High | Resolved; independently verified at corrective commit `b5f53ce` in PR [#61](https://github.com/antybubbs/kaya/pull/61) |
 | KAYA-RDP-001 | Credential-bearing RDP token is exposed in WebSocket query strings and is replayable | High | High | Confirmed; not remediated |
-| KAYA-RDP-002 | RDP certificate verification is hard-disabled | Critical | High | Corrective commit `8ae6fbe`; pending independent re-verification in PR [#60](https://github.com/antybubbs/kaya/pull/60) |
+| KAYA-RDP-002 | RDP certificate verification is hard-disabled | Critical | High | Resolved; independently verified with conditions at corrective commit `8ae6fbe` in PR [#60](https://github.com/antybubbs/kaya/pull/60) |
 | KAYA-BAK-001 | Backup-agent bearer protocol returns plaintext credentials and data keys without replay resistance | Critical | High | Confirmed; not remediated |
 | KAYA-HA-001 | Keepalived hook holds an exclusive lock during hold-down and slow probes | High | High | Confirmed; not remediated |
 | KAYA-BG-001 | HA watchdog and lease reconciliation can terminate permanently on outer-loop exception | High | High | Confirmed; not remediated |
@@ -95,7 +95,7 @@
 - **Affected component:** RDP connection settings in Kaya and the Guacamole bridge.
 - **Severity:** Critical.
 - **Confidence:** High.
-- **Status:** Remediated in corrective commit `8ae6fbe`; pending independent re-verification.
+- **Status:** Resolved. Fresh independent re-verification result: Verified with conditions at corrective commit `8ae6fbe`.
 - **Evidence:** The original paths universally disabled certificate validation. PR #60 now enforces system-CA validation or an explicit SHA-256 pin, disables bypass/TOFU, atomically invalidates trust on every supported effective endpoint writer, and blocks downgrade across the minimum safe database boundary. See `security-review/reviews/RDP_CERTIFICATE_INDEPENDENT_REVIEW.md`.
 - **Safe reproduction:** Generate a fake RDP token and decrypt it in a controlled test; the setting is true. Bridge default configuration independently has the same value. No real RDP server is required.
 - **Affected files:** `app/routers/remote_manager.py`, `scripts/guacamole-server.cjs`, remote models/settings/templates/tests.

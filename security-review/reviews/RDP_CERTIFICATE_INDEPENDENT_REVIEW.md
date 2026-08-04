@@ -6,13 +6,13 @@
 
 **Corrective implementation commit:** `8ae6fbe731906898eb605099b9222dca7240b37e`
 
-**Independent result before correction:** **Changes required**
+**Independent result:** **Verified with conditions**
 
-**Current corrective status:** **Ready for independent re-review; not verified**
+**Current corrective status:** **Resolved; eligible for the controlled stack merge**
 
 ## Scope
 
-This checkpoint corrects endpoint-bound pin invalidation and fail-secure rollback only. It does not remediate `KAYA-RDP-001`, change the PR stack, or independently verify its own implementation.
+The fresh independent pass treated certificate settings, endpoint-writer coverage, trust invalidation, migration/rollback and synthetic transport evidence as untrusted. It does not remediate `KAYA-RDP-001` or waive final combined release gates.
 
 The trust boundary runs from an authenticated administrator's host settings, through every effective endpoint writer and the database transaction, into the encrypted Guacamole token and guacd/FreeRDP certificate validation. RDP credentials and certificate fingerprints are treated as sensitive infrastructure data.
 
@@ -34,7 +34,7 @@ Command:
 python -m pytest -p no:cacheprovider tests/test_release_security_boundaries.py tests/test_rdp_endpoint_trust.py tests/test_database_migrations.py -q
 ```
 
-Result: **56 passed, 0 failed, 0 skipped, 0 subtests**, 164 warnings, 81.46 seconds.
+Fresh re-verification on 2026-08-04 repeated the command: **56 passed, 0 failed, 0 skipped, 0 subtests**, 164 warnings, 83.03 seconds. The earlier 81.46-second result remains corroborating evidence.
 
 Additional checks:
 
@@ -60,7 +60,9 @@ The isolated Docker network exposed no host ports and used only synthetic certif
 4. Exact independently configured SHA-256 self-signed certificate pin: **accepted** using the FreeRDP `sha256:<colon-separated bytes>` wire form.
 5. Certificate replaced while the old pin remained: **rejected**.
 6. Bypass/TOFU review: **passed for `KAYA-RDP-002`**. Application settings and bridge defaults set `ignore-cert=false` and `cert-tofu=false`; malformed and non-SHA-256 stored values are rejected before transport. No observe-and-enrol path exists.
-7. URL/log review: **confirmed `KAYA-RDP-001`; not passed**. Direct inspection confirms that the encrypted credential-bearing token remains in the browser WebSocket query and is forwarded in the upstream WebSocket query, making it visible to browser tooling and any reverse proxy that records query strings. Upstream exception text is returned to the browser and written to audit detail, so a library exception containing its URI could duplicate the token into application-visible output. The isolated certificate-validation logs did not show credentials, fingerprints, certificate PEM or token values during the observed runs. No reverse proxy was instantiated in the isolated certificate lab; its exposure is deterministic from the unchanged browser/server query construction and remains a confirmed High finding.
+7. URL/log review: **confirmed `KAYA-RDP-001`; not passed**. Direct inspection confirms that the encrypted credential-bearing token remains in the browser WebSocket query and is forwarded in the upstream WebSocket query, making it visible to browser tooling and any reverse proxy that records query strings. Upstream exception text is returned to the browser and written to audit detail, so a library exception containing its URI could duplicate the token into application-visible output. Fresh count-only inspection of the isolated guacd logs found zero fake-username, fake-password, pin-prefix and certificate-PEM hits. No reverse proxy was instantiated in the isolated certificate lab; its exposure is deterministic from the unchanged browser/server query construction and remains a confirmed High finding.
+
+A valid private-CA certificate for the requested hostname was also accepted as a positive control.
 
 The certificate matrix supports the remediation claim but is not a substitute for a new independent reviewer. Public-CA and NLA negotiation against a real Windows endpoint remain operational compatibility assumptions, not blockers to the synthetic certificate decision.
 
@@ -73,8 +75,11 @@ Supported downgrade below `20260804_02` raises a clear error and retains the sch
 - `KAYA-RDP-001` remains High and open, including the exception/audit amplification path described above.
 - A trusted CA, administrator-approved pin, host, guacd trust store or administrator account can still be compromised.
 - Real Windows NLA and public-CA compatibility require deployment-specific validation.
-- The implementation requires independent re-review before `KAYA-RDP-002` can be marked verified or closed.
-- The final redacted lab-log count and removal of the two disposable images/network could not be performed because the host approval service reached its usage limit. The lab containers/images therefore require owner cleanup when Docker approval is available.
+- The disposable lab resources remain temporarily available for the required final combined-branch run and must be removed afterward.
+
+## Final review result
+
+Result: **Verified with conditions**. No Critical certificate-validation, endpoint-transfer or rollback bypass remains in the reviewed scope. `KAYA-RDP-002` is resolved and PR #60 is eligible for the controlled stack merge after PR #61. Conditions are the documented TLS-only synthetic server limitation, deployment-specific Windows NLA/public-CA validation, and the separate unresolved High `KAYA-RDP-001` query-token exposure.
 
 ## References
 
