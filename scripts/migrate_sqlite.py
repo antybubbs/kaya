@@ -36,10 +36,23 @@ def main(*, quiet=False):
             print("Database does not exist yet. Skipping migrations.")
         return
 
-    conn = sqlite3.connect(DB_PATH)
+    # autocommit=False keeps every statement below - including the ALTER/CREATE
+    # DDL that SQLite would otherwise auto-commit individually under Python's
+    # legacy transaction mode - inside one transaction, so a failure partway
+    # through leaves the database exactly as it was instead of half-migrated.
+    conn = sqlite3.connect(DB_PATH, autocommit=False)
     cur = conn.cursor()
     cur.execute("PRAGMA foreign_keys = OFF")
 
+    try:
+        _run_migrations(conn, cur, quiet=quiet)
+    except Exception:
+        conn.rollback()
+        conn.close()
+        raise
+
+
+def _run_migrations(conn, cur, *, quiet):
     migrations_applied = []
 
     if table_exists(cur, "users"):

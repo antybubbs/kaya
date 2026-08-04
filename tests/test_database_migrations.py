@@ -269,6 +269,45 @@ def test_reconstructed_historical_upgrade_creates_backup_and_preserves_user(
     assert has_revision is None
 
 
+def test_pre_totp_legacy_database_migrates_without_the_not_null_crash(tmp_path):
+    """A genuinely old users table (pre-TOTP, no totp_enabled column at all).
+
+    scripts/migrate_sqlite.py's additive column list never mentions
+    totp_enabled, so before the compatibility bridge could resolve a NOT NULL
+    column from the model's own default, this reproduced the exact reported
+    crash: "sqlite3.OperationalError: Cannot add a NOT NULL column with
+    default value NULL" while adding users.totp_enabled.
+    """
+    path = tmp_path / "kaya.db"
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "CREATE TABLE users (id INTEGER PRIMARY KEY, email VARCHAR(255) NOT NULL UNIQUE, "
+            "password_hash VARCHAR(255) NOT NULL, first_name VARCHAR(120), last_name VARCHAR(120), "
+            "role VARCHAR(30), is_active BOOLEAN, totp_secret TEXT, created_at DATETIME)"
+        )
+        connection.execute(
+            "INSERT INTO users (id, email, password_hash, role, is_active, created_at) "
+            "VALUES (1, 'pre-totp@example.invalid', 'fake-hash', 'admin', 1, CURRENT_TIMESTAMP)"
+        )
+    settings = settings_for(path, tmp_path / "backups")
+
+    result = prepare_database(engine_for(path), settings)
+
+    with sqlite3.connect(path) as connection:
+        totp_enabled = connection.execute(
+            "SELECT totp_enabled FROM users WHERE id=1"
+        ).fetchone()[0]
+        column = next(
+            row
+            for row in connection.execute("PRAGMA table_info(users)")
+            if row[1] == "totp_enabled"
+        )
+    assert result.current_revision == CURRENT_REVISION
+    assert result.compatibility_applied is True
+    assert totp_enabled == 0
+    assert column[3] == 1  # NOT NULL is genuinely enforced, not skipped
+
+
 def test_current_pre_alembic_schema_is_validated_then_stamped(tmp_path):
     path = tmp_path / "kaya.db"
     settings = settings_for(path, tmp_path / "backups")

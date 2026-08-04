@@ -17,6 +17,7 @@ from sqlalchemy.engine import Engine
 from app.core.config import Settings, sqlite_database_path
 from app.db.backup import MigrationBackup, create_sqlite_backup, prune_migration_backups
 from app.db.compatibility import (
+    BaselineCompatibilityError,
     create_missing_baseline_objects,
     migrate_pre_alembic_database,
 )
@@ -164,7 +165,7 @@ def _apply_missing_baseline_objects(database_path: Path) -> None:
             "sqlalchemy.url", f"sqlite:///{baseline_path.as_posix()}"
         )
         command.upgrade(baseline_config, BASELINE_REVISION)
-        create_missing_baseline_objects(database_path, baseline_path)
+        create_missing_baseline_objects(database_path, baseline_path, Base.metadata)
 
 
 def prepare_database(engine: Engine, settings: Settings) -> MigrationResult:
@@ -231,7 +232,9 @@ def prepare_database(engine: Engine, settings: Settings) -> MigrationResult:
                 logger.info("Kaya database: compatibility upgrade complete")
                 progress.enter(STAGE_SCHEMA_VALIDATION)
                 try:
-                    validate_schema(database_path, Base.metadata, require_revision=False)
+                    validate_schema(
+                        database_path, Base.metadata, require_revision=False
+                    )
                 except DatabaseValidationError:
                     # A historical database now has the complete baseline schema,
                     # but legitimately lacks objects introduced after that baseline.
@@ -291,11 +294,26 @@ def prepare_database(engine: Engine, settings: Settings) -> MigrationResult:
         location = (
             backup.database_path.name if backup else "no verified backup was created"
         )
-        logger.error(
-            "Database migration aborted at stage: %s. Recovery: restore %s and inspect migration logs.",
-            progress.stage,
-            location,
-        )
+        if progress.stage == STAGE_COMPATIBILITY and isinstance(
+            exc, BaselineCompatibilityError
+        ):
+            # create_missing_baseline_objects runs its DDL inside one explicit
+            # SQLite transaction and rolls back on any failure, so the source
+            # database itself is unchanged by this attempt.
+            logger.error(
+                "Database migration aborted at stage: %s. The source database was "
+                "not modified (compatibility DDL is transactional and was rolled "
+                "back). Recovery: %s. Backup: %s.",
+                progress.stage,
+                exc,
+                location,
+            )
+        else:
+            logger.error(
+                "Database migration aborted at stage: %s. Recovery: restore %s and inspect migration logs.",
+                progress.stage,
+                location,
+            )
         if isinstance(exc, DatabaseMigrationError):
             raise
         raise DatabaseMigrationError(
