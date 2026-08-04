@@ -39,6 +39,7 @@ from app.routers.auth import (
     require_user,
 )
 from app.services.audit import write_audit
+from app.services.remote_endpoint_trust import update_remote_endpoint
 from app.services.dns_clients import (
     add_event,
     client_display_name,
@@ -1138,7 +1139,10 @@ def update_managed_ip_from_dns(request: Request, client_id: int, csrf_token: str
     if collision:
         raise HTTPException(status_code=409, detail="That address is already allocated to another record in this VLAN.")
     old = record.address
-    record.address = client.current_ip
+    update_remote_endpoint(
+        db, record, address=client.current_ip, actor=user,
+        audit_ip=request.client.host if request.client else None, reason="dns_managed_update",
+    )
     add_event(db, client, "managed_record_updated", "Managed IP explicitly updated", old=old, new=record.address)
     db.commit()
     _client_audit(request, db, user, client, "update", "Updated linked managed IP from DNS observation", old=old, new=record.address)

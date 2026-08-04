@@ -75,8 +75,9 @@ def test_oidc_hardening_migration_revokes_legacy_bearer_invitations(tmp_path):
 
     path = tmp_path / "kaya.db"
     settings = settings_for(path, tmp_path / "backups")
+    config = _alembic_config(settings.database_url)
+    command.upgrade(config, "20260803_02")
     engine = engine_for(path)
-    prepare_database(engine, settings)
     with Session(engine) as db:
         admin = User(email="admin@example.invalid", password_hash="fake-hash", role="admin", is_active=True)
         target = User(email="recipient@example.invalid", password_hash="fake-hash", role="viewer", is_active=True)
@@ -85,8 +86,6 @@ def test_oidc_hardening_migration_revokes_legacy_bearer_invitations(tmp_path):
         db.commit()
         ids = (admin.id, target.id, provider.id)
 
-    config = _alembic_config(settings.database_url)
-    command.downgrade(config, "20260803_02")
     with sqlite3.connect(path) as connection:
         connection.execute(
             "INSERT INTO oidc_link_invitations "
@@ -108,6 +107,39 @@ def test_oidc_hardening_migration_revokes_legacy_bearer_invitations(tmp_path):
     assert row[3] is None
     assert row[4] is None
     assert revision == CURRENT_REVISION
+
+
+def test_rdp_certificate_trust_downgrade_is_blocked_and_state_is_preserved(tmp_path):
+    from alembic import command
+    from app.db.migrations import _alembic_config
+
+    path = tmp_path / "kaya.db"
+    settings = settings_for(path, tmp_path / "backups")
+    prepare_database(engine_for(path), settings)
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "INSERT INTO ip_addresses (address, assignment_type, created_at, updated_at) "
+            "VALUES ('192.0.2.80', 'Static', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+        )
+        address_id = connection.execute("SELECT last_insert_rowid()").fetchone()[0]
+        connection.execute(
+            "INSERT INTO remote_access "
+            "(ip_address_id, is_enabled, protocol, port, rdp_cert_fingerprints, created_at, updated_at) "
+            "VALUES (?, 1, 'rdp', 3389, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            (address_id, f"sha256:{'a' * 64}"),
+        )
+        connection.commit()
+
+    with pytest.raises(RuntimeError, match="downgrade is blocked"):
+        command.downgrade(_alembic_config(settings.database_url), "20260804_01")
+
+    with sqlite3.connect(path) as connection:
+        revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()[0]
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(remote_access)")}
+        pin = connection.execute("SELECT rdp_cert_fingerprints FROM remote_access").fetchone()[0]
+    assert revision == CURRENT_REVISION
+    assert {"rdp_cert_fingerprints", "rdp_trust_invalidated_at", "rdp_trust_invalidated_reason"} <= columns
+    assert pin == f"sha256:{'a' * 64}"
 
 
 def test_clean_restart_uses_lightweight_startup_validation(tmp_path, monkeypatch):
@@ -435,7 +467,7 @@ def test_missing_required_table_aborts_startup(tmp_path):
         prepare_database(engine_for(path), settings)
 
 
-def test_baseline_downgrade_is_disabled(tmp_path):
+def test_supported_downgrade_path_is_disabled(tmp_path):
     path = tmp_path / "kaya.db"
     settings = settings_for(path, tmp_path / "backups")
     prepare_database(engine_for(path), settings)
@@ -443,7 +475,7 @@ def test_baseline_downgrade_is_disabled(tmp_path):
 
     from app.db.migrations import _alembic_config
 
-    with pytest.raises(RuntimeError, match="intentionally disabled"):
+    with pytest.raises(RuntimeError, match="downgrade is blocked|intentionally disabled"):
         command.downgrade(_alembic_config(settings.database_url), "base")
 
 

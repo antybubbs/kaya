@@ -48,6 +48,7 @@ from app.routers.auth import (
     require_user,
 )
 from app.services.audit import write_audit
+from app.services.remote_endpoint_trust import update_remote_endpoint
 from app.services.guacamole_bridge import (
     restart_guacamole_bridge,
     start_guacamole_bridge,
@@ -173,11 +174,21 @@ def normalise_rdp_cert_fingerprints(value: str | None) -> list[str]:
     return normalised
 
 
+def freerdp_rdp_cert_fingerprint(fingerprint: str) -> str:
+    """Render a validated canonical pin in FreeRDP 2.x's wire format."""
+    algorithm, digest = fingerprint.split(":", 1)
+    return f"{algorithm}:{':'.join(digest[index:index + 2] for index in range(0, len(digest), 2))}"
+
+
 def rdp_certificate_settings(row: RemoteAccess) -> dict[str, object]:
+    if getattr(row, "rdp_trust_invalidated_at", None) is not None:
+        raise ValueError("RDP certificate trust must be re-authorized after the endpoint changed.")
     fingerprints = normalise_rdp_cert_fingerprints(row.rdp_cert_fingerprints)
     settings: dict[str, object] = {"ignore-cert": False, "cert-tofu": False}
     if fingerprints:
-        settings["cert-fingerprints"] = ",".join(fingerprints)
+        settings["cert-fingerprints"] = ",".join(
+            freerdp_rdp_cert_fingerprint(fingerprint) for fingerprint in fingerprints
+        )
     return settings
 
 
@@ -914,13 +925,15 @@ async def save_remote_host_settings(request: Request, remote_id: int, csrf_token
     form = await request.form()
     row.display_name = remote_display_name.strip() or None
     row.is_enabled = bool(form.get("remote_enabled"))
-    previous_protocol = row.protocol
-    previous_port = row.port
-    row.protocol = clean_protocol(remote_protocol)
-    row.port = clean_port(remote_port, row.protocol)
-    if row.protocol != previous_protocol or row.port != previous_port:
+    previous_protocol, previous_port = row.protocol, row.port
+    next_protocol = clean_protocol(remote_protocol)
+    next_port = clean_port(remote_port, next_protocol)
+    update_remote_endpoint(
+        db, row.ip_address, remote=row, protocol=next_protocol, port=next_port,
+        actor=user, audit_ip=request.client.host if request.client else None, reason="remote_host_editor",
+    )
+    if next_protocol != previous_protocol or next_port != previous_port:
         row.host_key_fingerprint = None
-        row.rdp_cert_fingerprints = None
     row.username = remote_username.strip() or None
     row.terminal_settings = encode_settings_blob(remote_override_settings(form, TERMINAL_SETTING_KEYS))
     row.rdp_settings = encode_settings_blob(remote_override_settings(form, RDP_SETTING_KEYS))
@@ -950,7 +963,7 @@ def save_rdp_certificate_trust(
             detail=f"Rejected invalid RDP certificate trust update for {remote_label(row)}", severity="warning",
         )
         return RedirectResponse(f"/remote-manager/{row.id}/settings?rdp_cert_error=invalid", status_code=303)
-    if fingerprints and rdp_trust_acknowledged != "1":
+    if (fingerprints or row.rdp_trust_invalidated_at is not None) and rdp_trust_acknowledged != "1":
         write_audit(
             db, user, "rdp_certificate_trust_rejected", "remote_access", entity_id=str(row.id),
             ip_address=request.client.host if request.client else None,
@@ -962,6 +975,8 @@ def save_rdp_certificate_trust(
     except ValueError:
         previous_count = 0
     row.rdp_cert_fingerprints = "\n".join(fingerprints) or None
+    row.rdp_trust_invalidated_at = None
+    row.rdp_trust_invalidated_reason = None
     db.commit()
     write_audit(
         db, user, "rdp_certificate_trust_updated", "remote_access", entity_id=str(row.id),

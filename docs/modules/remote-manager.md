@@ -55,6 +55,7 @@ RDP certificate verification is always enabled. Kaya requires NLA and disables G
 
 - With no per-host pin, guacd requires a certificate valid under its system CA store.
 - For a self-signed host, an administrator may enroll up to three SHA-256 pins under the host's **RDP certificate trust** settings. Obtain and compare each fingerprint outside Kaya using a trusted administrative path; Kaya never scans and trusts the first certificate automatically.
+- Kaya stores pins in canonical lowercase form and renders them as FreeRDP 2.x-compatible colon-separated bytes only inside the Guacamole connection settings. Fingerprint values are not placed in logs or URLs.
 - A missing, unknown or changed certificate is rejected by guacd. Independently investigate unexpected changes before modifying trust.
 - For planned rotation, independently obtain the replacement fingerprint, temporarily retain the old and new pins, deploy the new certificate, verify access, then remove the old pin. Do not leave unused rotation pins indefinitely.
 - Changing the configured protocol or port clears stored pins.
@@ -75,6 +76,9 @@ The secure-default migration does not trust legacy certificates. Before upgrade,
 
 - Remote credentials are not stored, but they pass through the application process and helper services at connection time.
 - RDP certificate fingerprints identify infrastructure. Kaya stores them per host but excludes their values from audit details.
+- RDP pins are bound to the effective IP/hostname, protocol and port. Changes through the IP editor, Remote Manager or DNS-managed updates clear pins atomically, record a safe audit event and block RDP until an administrator explicitly re-authorizes the endpoint. Same-address DNS observations and non-endpoint metadata changes do not invalidate trust.
+- An invalidated endpoint may be re-authorized with independently verified SHA-256 pins or explicit system-CA trust. Kaya never observes and trusts the replacement certificate automatically.
 - Recordings can contain sensitive information.
 - Websocket origin checks are important for safety.
+- `KAYA-RDP-001` remains open: the current WebSocket flow still carries a credential-bearing encrypted token in query data. Certificate validation does not resolve that separate exposure.
 - Node helper processes are managed by the web process.

@@ -70,6 +70,9 @@ The entrypoint:
 - Normal startup runs the Alembic lifecycle automatically before application services.
 - Pre-Alembic installations use the retained compatibility bridge and are stamped only after full validation.
 - RDP certificate verification is strict after the security migration. Inventory RDP hosts before upgrade. Public/system-CA certificates require no Kaya pin when guacd trusts the CA; self-signed hosts require independently verified per-host SHA-256 pins. Do not restore connectivity by enabling certificate bypass or TOFU.
+- The supported guacd/FreeRDP 2.x boundary receives pins as `sha256:<colon-separated bytes>`; Kaya performs this conversion from its validated canonical storage form. Do not hand-edit connection tokens or substitute unvalidated fingerprint algorithms.
+- The minimum safe RDP rollback boundary is database revision `20260804_02` plus application/bridge code enforcing NLA, `ignore-cert=false` and `cert-tofu=false`. Supported downgrade below that revision is blocked because older code universally accepts certificates. If rollback would cross the boundary, disable RDP and roll forward instead.
+- Restoring a database backup from before `20260804_02` with the secure application is supported: startup upgrades it, creates no pins automatically and uses strict system-CA validation. Never pair a pre-fix backup with an older insecure image. Preserve the upgraded database and its endpoint-trust invalidation evidence in subsequent backups.
 
 ## Reverse proxies and real client IPs
 

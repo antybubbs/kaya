@@ -195,7 +195,16 @@ def test_rdp_certificate_pins_are_normalised_and_enforced_in_token():
     settings = json.loads(decrypt_secret(token))["connection"]["settings"]
     assert settings["ignore-cert"] is False
     assert settings["cert-tofu"] is False
-    assert settings["cert-fingerprints"] == f"sha256:{'a' * 64},sha256:{'b' * 64}"
+    colon_a = ":".join(["aa"] * 32)
+    colon_b = ":".join(["bb"] * 32)
+    assert settings["cert-fingerprints"] == f"sha256:{colon_a},sha256:{colon_b}"
+
+
+def test_rdp_certificate_pin_uses_freerdp_2_wire_format_without_weakening_validation():
+    canonical = f"sha256:{'01' * 32}"
+    wire = remote_manager.freerdp_rdp_cert_fingerprint(canonical)
+    assert wire == "sha256:" + ":".join(["01"] * 32)
+    assert remote_manager.normalise_rdp_cert_fingerprints(wire) == [canonical]
 
 
 def test_rdp_certificate_trust_rejects_malformed_or_excessive_pins():
