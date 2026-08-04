@@ -96,7 +96,7 @@
 - **Severity:** Critical.
 - **Confidence:** High.
 - **Status:** Resolved. The genuine production source `antybubbs/Kaya-Docker-Agent` and Kaya now implement coordinated protocol v2. Deterministic interoperability, direct server-agent integration and adversarial review passed with the conditions in `security-review/reviews/BACKUP_AGENT_PROTOCOL_V2_INDEPENDENT_REVIEW.md`.
-- **Evidence:** `require_agent_host` hashes a reusable Authorization bearer value and looks up a `docker_agent` host. It has no signature, timestamp, nonce, session grant, explicit scope, or `is_enabled` check. `agent_jobs` decrypts the selected target's `remote_password` and each job's `encrypted_backup_key` into the JSON response. Tokens are long-lived until regeneration.
+- **Original evidence:** `require_agent_host` hashed a reusable Authorization bearer value and looked up a `docker_agent` host. It had no signature, timestamp, nonce, session grant, explicit scope, or `is_enabled` check. `agent_jobs` decrypted the selected target's `remote_password` and each job's `encrypted_backup_key` into the JSON response. Tokens were long-lived until regeneration.
 - **Safe reproduction:** In an in-memory database, create a fake docker agent, target password ciphertext and queued job, call `agent_jobs` with the fake bearer, and observe plaintext fake values. Repeat or set `host.is_enabled=False`; authentication logic remains token-based. Existing tests already construct this boundary without live secrets.
 - **Affected files:** `app/routers/backup_manager.py:69-87, 176-194, 610-689`, `app/routers/compute_manager.py`, `app/models/models.py:1334-1362, 1449-1471`, agent implementation outside repository if applicable.
 - **Root cause:** Inventory-agent bearer authentication was reused for high-impact secret delivery. Agent lifecycle lacks first-class identity state, request freshness and least-privilege scopes.
@@ -104,7 +104,7 @@
 - **Remediation:** New machine-auth ADR; secure enrollment; per-agent signing key or mTLS; signed method/path/body/timestamp/nonce; bounded skew and replay cache; short-lived scoped dispatch grant; explicit active/revoked/decommissioned state; rate limits; key rotation; response minimisation; envelope encryption separating authentication and data keys; auditable acknowledgements.
 - **Tests:** Missing/invalid/revoked/disabled identity, wrong scope/host/job, stale/future timestamp, nonce replay, signature/body/path modification, concurrent dispatch, token/key rotation, decommission denial, least-data response, and log/traceback redaction.
 - **Migration impact:** Requires a coordinated server/production-agent rollout or forced re-enrollment with a deadline. Do not silently retain bearer fallback for secret delivery. Existing queued jobs and agents need an operator-visible migration state.
-- **Resolution evidence:** Separate unmerged implementation branches and draft PRs; shared vector reproduction in both repositories; encrypted claim interoperability; v1 inventory-only cutoff; full details in `security-review/BACKUP_AGENT_PROTOCOL_V2_VERIFICATION.md`.
+- **Resolution evidence:** Kaya PR #63 and Kaya Docker Agent PR #2 are merged. Agent release `v0.2.1` contains the reviewed implementation. Shared-vector reproduction passes in both repositories, encrypted claim interoperability passes, and the v1 inventory-only cutoff is enforced. Full details are in `security-review/BACKUP_AGENT_PROTOCOL_V2_VERIFICATION.md`.
 - **Residual risk:** A fully compromised enrolled agent can access secrets legitimately dispatched to it. Containment depends on scopes, rotation, job-level grants and minimal secret lifetime.
 
 ## KAYA-HA-001 — Keepalived hook holds an exclusive lock during hold-down and slow probes
@@ -157,4 +157,4 @@
 
 ## Cross-finding release position
 
-`KAYA-DEM-001`, `KAYA-DEM-002`, `KAYA-OIDC-001` and `KAYA-RDP-002` are resolved. `KAYA-BAK-001` remains Critical and blocked pending identification of the genuine production agent source. `KAYA-RDP-001` and the other deferred High findings remain open. No release-readiness claim is made by this checkpoint.
+`KAYA-DEM-001`, `KAYA-DEM-002`, `KAYA-OIDC-001`, `KAYA-RDP-002` and `KAYA-BAK-001` are resolved. `KAYA-RDP-001`, `KAYA-HA-001`, `KAYA-BG-001` and `KAYA-DB-001` remain open and deferred. Release readiness is assessed separately in `V0.27_RELEASE_VALIDATION.md`.

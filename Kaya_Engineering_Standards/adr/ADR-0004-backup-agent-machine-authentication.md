@@ -1,6 +1,6 @@
 # ADR-0004: Backup-agent machine authentication and secret delivery
 
-**Status:** Accepted and implemented on coordinated draft branches; human merge approval pending
+**Status:** Accepted
 **Date:** 2026-08-04
 **Decision owners:** Kaya maintainers
 

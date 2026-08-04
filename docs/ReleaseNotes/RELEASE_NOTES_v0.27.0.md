@@ -14,4 +14,4 @@ Kaya v0.27.0 is a security and reliability hardening release following an intern
 - KAYA-RDP-001 remains High and open: encrypted credential-bearing connection data is still present in WebSocket query data. Operators should minimise proxy/access logging and restrict Remote Manager exposure.
 - KAYA-HA-001, KAYA-BG-001 and KAYA-DB-001 remain deferred High-priority hardening work.
 
-No release-readiness decision is made by this branch. The two protocol-v2 draft PRs require coordinated human approval, and deferred High risks remain before publication.
+The coordinated Kaya and Docker Agent protocol-v2 changes have been merged, and Docker Agent v0.2.1 contains the reviewed agent implementation. Release readiness, including the explicitly deferred High risks above, is recorded in `security-review/V0.27_RELEASE_VALIDATION.md`.

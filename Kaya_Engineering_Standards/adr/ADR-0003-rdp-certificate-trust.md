@@ -1,6 +1,6 @@
 # ADR-0003: Strict RDP certificate trust
 
-**Status:** Proposed  
+**Status:** Accepted
 **Date:** 2026-08-04  
 **Decision owners:** Kaya maintainers
 

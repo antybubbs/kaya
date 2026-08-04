@@ -78,6 +78,6 @@ Warnings are the existing deprecation classes for naive UTC datetimes, FastAPI s
 - `KAYA-DEM-001`: resolved through permanent removal.
 - `KAYA-DEM-002`: resolved as no longer applicable.
 - `KAYA-RDP-001`: remains High and open; not remediated here.
-- `KAYA-BAK-001`: remains Critical and blocked pending identification of the genuine external production Docker-agent source repository. No replacement, stub or fake agent was created.
+- At this historical demo-removal checkpoint, `KAYA-BAK-001` remained Critical and blocked pending identification of the genuine external production Docker-agent source repository. It was subsequently resolved through the coordinated protocol-v2 implementation recorded in `BACKUP_AGENT_PROTOCOL_V2_VERIFICATION.md`.
 
 This report does not declare v0.27 release-ready.
