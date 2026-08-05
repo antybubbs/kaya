@@ -4,11 +4,15 @@ Mirrors the trust posture of ``scan_ssh_host_key`` (app/routers/remote_manager.p
 Kaya retrieves the certificate the server presents but never validates or
 trusts it here. RDP negotiates its transport before any TLS byte can be sent
 (MS-RDPBCGR): the client sends a fixed X.224 Connection Request carrying an
-RDP Negotiation Request that asks for TLS, the server replies with its
-Negotiation Response, and only then does the TLS handshake begin. There is no
-standalone tool for this step analogous to ``ssh-keyscan`` (``openssl
-s_client`` has no RDP STARTTLS mode), so this module implements the minimal
-fixed-byte negotiation itself rather than shelling out.
+RDP Negotiation Request that asks for TLS *and* CredSSP/NLA, the server
+replies with its Negotiation Response, and only then does the TLS handshake
+begin - offering CredSSP is required for modern Windows servers that enforce
+Network Level Authentication, which otherwise reject the negotiation before
+TLS ever starts. Discovery never proceeds past the TLS handshake into
+CredSSP's authentication exchange, so no credentials are transmitted either
+way. There is no standalone tool for this step analogous to ``ssh-keyscan``
+(``openssl s_client`` has no RDP STARTTLS mode), so this module implements
+the minimal fixed-byte negotiation itself rather than shelling out.
 """
 
 from __future__ import annotations
@@ -23,9 +27,20 @@ from cryptography import x509
 from cryptography.x509.oid import ExtensionOID
 
 # Fixed 19-byte TPKT + X.224 Connection Request carrying an RDP Negotiation
-# Request that asks only for TLS (requestedProtocols = PROTOCOL_SSL = 1).
-# This exact byte layout is standard across RDP scanners/clients; it is not
+# Request. requestedProtocols advertises PROTOCOL_SSL (bit 0) *and*
+# PROTOCOL_HYBRID/CredSSP (bit 1): a server with NLA enforced (the modern
+# Windows default) sends RDP_NEG_FAILURE and closes the connection if HYBRID
+# is not offered, even though the client only wants the TLS certificate.
+# CredSSP's outer transport is itself a plain TLS handshake - the server
+# presents its certificate before any CredSSP authentication (TSRequest)
+# message is exchanged - so requesting HYBRID here does not require Kaya to
+# authenticate; discover_rdp_certificate stops right after the TLS handshake
+# and never sends a TSRequest, so no credentials are ever transmitted.
+# This byte layout is standard across RDP scanners/clients; it is not
 # server- or version-specific.
+_PROTOCOL_SSL = 0x00000001
+_PROTOCOL_HYBRID = 0x00000002
+_REQUESTED_PROTOCOLS = _PROTOCOL_SSL | _PROTOCOL_HYBRID
 _NEGOTIATION_REQUEST = bytes(
     [
         0x03, 0x00, 0x00, 0x13,  # TPKT: version 3, reserved, length=19
@@ -37,12 +52,21 @@ _NEGOTIATION_REQUEST = bytes(
         0x01,                    # RDP_NEG_REQ type
         0x00,                    # flags
         0x08, 0x00,              # length = 8 (little-endian)
-        0x01, 0x00, 0x00, 0x00,  # requestedProtocols = PROTOCOL_SSL (little-endian)
+        *_REQUESTED_PROTOCOLS.to_bytes(4, "little"),  # requestedProtocols
     ]
 )
 _MIN_NEGOTIATION_RESPONSE = 4 + 7 + 8  # TPKT + X.224 CC fixed part + RDP_NEG_RSP/FAILURE
 _NEG_TYPE_RESPONSE = 0x02
 _NEG_TYPE_FAILURE = 0x03
+# MS-RDPBCGR 2.2.1.2.2 RDP_NEG_FAILURE failureCode values.
+_FAILURE_REASONS = {
+    1: "the server requires TLS but rejected this negotiation (SSL_REQUIRED_BY_SERVER)",
+    2: "the server does not allow TLS-secured connections (SSL_NOT_ALLOWED_BY_SERVER)",
+    3: "the server has no certificate configured for TLS (SSL_CERT_NOT_ON_SERVER)",
+    4: "Kaya's negotiation request was malformed (INCONSISTENT_FLAGS)",
+    5: "the server requires Network Level Authentication (HYBRID_REQUIRED_BY_SERVER)",
+    6: "the server requires TLS with NLA user authentication (SSL_WITH_USER_AUTH_REQUIRED_BY_SERVER)",
+}
 
 
 @dataclass(frozen=True)
@@ -82,7 +106,9 @@ def _negotiate_tls(sock: socket.socket) -> None:
     # body: [0]len indicator [1]CC CDT [2:4]DST-REF [4:6]SRC-REF [6]class option [7]neg type [8]flags [9:11]len [11:15]payload
     neg_type = body[7]
     if neg_type == _NEG_TYPE_FAILURE:
-        raise ValueError("The remote host refused to negotiate a TLS-secured RDP connection.")
+        failure_code = int.from_bytes(body[11:15], "little")
+        reason = _FAILURE_REASONS.get(failure_code, f"failure code {failure_code}")
+        raise ValueError(f"The remote host refused to negotiate a TLS-secured RDP connection: {reason}.")
     if neg_type != _NEG_TYPE_RESPONSE:
         raise ValueError("The remote host returned an unrecognised RDP negotiation response.")
 
