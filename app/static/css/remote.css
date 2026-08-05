@@ -23,7 +23,7 @@
 .remote-host-toolbar .button:hover{background:rgba(255,138,0,.12);border-color:#ff8a00;color:var(--text)}
 .remote-host-toolbar .button.active{background:rgba(255,138,0,.14);border-color:rgba(255,138,0,.7);box-shadow:inset 0 -2px 0 rgba(255,138,0,.75);color:var(--text)}
 .remote-host-toolbar [data-remote-host-add]{min-width:34px;padding:0 10px}
-.remote-host-list{align-content:start;display:grid;gap:3px;min-height:0;overflow-x:hidden;overflow-y:auto;padding:8px;scrollbar-width:none;-ms-overflow-style:none}
+.remote-host-list{align-content:start;display:grid;gap:8px;min-height:0;overflow-x:hidden;overflow-y:auto;padding:8px;scrollbar-width:none;-ms-overflow-style:none}
 .remote-host-list::-webkit-scrollbar{display:none}
 .remote-host-group-heading{align-items:center;background:#0f1722;border:0;border-bottom:1px solid rgba(148,163,184,.18);border-top:1px solid rgba(148,163,184,.08);border-radius:6px 6px 0 0;color:#fff;cursor:pointer;display:grid;font-size:11px;gap:8px;grid-template-columns:minmax(0,1fr) auto;margin-top:10px;min-height:32px;padding:8px 10px;text-align:left;text-transform:uppercase;width:100%}
 .remote-host-group-heading:hover{background:#152131;color:#fff}
@@ -33,21 +33,25 @@
 .remote-host-group-heading.collapsed strong:before{content:"▸ ";font-size:10px}
 .remote-host-group-heading:first-child{margin-top:0}
 .remote-host-group-heading span{color:#f59e0b;font-size:10px}
-.remote-host-card{align-items:center;background:rgba(255,255,255,.024);border:1px solid transparent;border-radius:0;display:grid;gap:8px;grid-template-columns:minmax(0,1fr) 32px;min-height:58px;min-width:0;overflow:hidden;padding:9px 10px;position:relative}
+.remote-host-card{align-items:center;background:rgba(255,255,255,.024);border:1px solid var(--line);border-radius:10px;display:grid;gap:8px;grid-template-columns:minmax(0,1fr) 32px;min-height:64px;min-width:0;overflow:hidden;padding:12px;position:relative}
 .remote-host-card[hidden],.remote-host-group-heading[hidden]{display:none!important}
 .remote-host-card:hover{background:rgba(148,163,184,.075);border-color:rgba(148,163,184,.1)}
 .remote-host-card.active{background:rgba(148,163,184,.105);border-color:rgba(148,163,184,.18)}
-.remote-host-card.active:before{background:#ff8a00;bottom:8px;content:"";left:0;position:absolute;top:8px;width:2px}
+.remote-host-card.active:before{background:#ff8a00;bottom:0;content:"";left:0;position:absolute;top:0;width:3px}
 .remote-host-card.split-active{box-shadow:inset 0 0 0 1px rgba(148,163,184,.22)}
 .remote-host-main{display:contents;min-width:0}
 .remote-host-main>div,.remote-host-info{align-items:center;column-gap:8px;display:grid;grid-column:1;grid-template-columns:auto minmax(0,1fr);min-width:0;overflow:hidden;row-gap:2px}
-.remote-host-main strong{color:#f8fafc;display:block;font-size:14px;font-weight:900;grid-column:2;line-height:1.18;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.remote-host-main span{color:rgba(203,213,225,.62);display:block;font-size:11px;grid-column:2;line-height:1.25;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.remote-host-main strong{color:#f8fafc;display:block;font-size:15px;font-weight:900;grid-column:2;line-height:20px;margin-bottom:2px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.remote-host-main span{color:rgba(203,213,225,.62);display:block;font-size:12px;grid-column:2;line-height:16px;margin-bottom:6px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.remote-host-info .remote-cert-badge{margin-bottom:0}
 .remote-host-actions{align-items:center;display:flex;gap:0;grid-column:2;justify-content:flex-end;margin-left:0;min-width:32px;white-space:nowrap}
-.remote-protocol-icon{align-items:center;border:1px solid rgba(255,138,0,.28);border-radius:5px;color:#bfdbfe;display:inline-flex;font-family:"Caskaydia Cove Nerd Font Mono",Consolas,monospace;font-size:10px;font-weight:900;grid-column:1;grid-row:1 / span 2;height:18px;justify-content:center;line-height:1;margin-bottom:0;min-width:28px;padding:0 5px;width:max-content}
+.remote-protocol-icon{align-items:center;border:1px solid rgba(255,138,0,.28);border-radius:5px;color:#bfdbfe;display:inline-flex;font-family:"Caskaydia Cove Nerd Font Mono",Consolas,monospace;font-size:11px;font-weight:900;grid-column:1;grid-row:1 / span 2;height:20px;justify-content:center;line-height:1;margin-bottom:0;min-width:28px;padding:2px 6px;width:max-content}
 .remote-protocol-icon:hover{background:rgba(255,138,0,.12);border-color:rgba(255,138,0,.45);color:#fff}
+.remote-host-info .remote-cert-badge{align-items:center;background:rgba(148,163,184,.1);border:1px solid rgba(148,163,184,.22);border-radius:999px;color:#cbd5e1;display:inline-flex;font-size:12px;font-weight:800;gap:5px;height:22px;line-height:1;padding:2px 10px;width:max-content}
+.remote-cert-badge-icon{display:block;fill:none;flex:0 0 auto;height:14px;stroke:currentColor;stroke-linecap:round;stroke-linejoin:round;stroke-width:2;width:14px}
+.remote-host-info .remote-cert-badge.is-pinned{background:rgba(255,138,0,.1);border-color:rgba(255,138,0,.34);color:#ffd08a}
 .remote-connect-menu{position:relative}
-.remote-connect-menu>summary{align-items:center;border:1px solid transparent;border-radius:6px;color:#cbd5e1;cursor:pointer;display:flex;font-size:16px;font-weight:900;height:26px;justify-content:center;line-height:1;list-style:none;opacity:.9;padding:0;transition:background .12s ease,color .12s ease,opacity .12s ease;width:28px}
+.remote-connect-menu>summary{align-items:center;border:1px solid transparent;border-radius:6px;color:#cbd5e1;cursor:pointer;display:flex;font-size:16px;font-weight:900;height:28px;justify-content:center;line-height:1;list-style:none;opacity:.9;padding:0;transition:background .12s ease,color .12s ease,opacity .12s ease;width:28px}
 .remote-connect-menu>summary::-webkit-details-marker{display:none}
 .remote-host-card:hover .remote-connect-menu>summary,.remote-connect-menu[open]>summary,.remote-connect-menu>summary:hover,.remote-connect-menu>summary:focus-visible{background:rgba(148,163,184,.12);color:var(--text);opacity:1}
 .remote-connect-menu div{background:#111827;border:1px solid var(--line);border-radius:8px;box-shadow:0 16px 40px rgba(0,0,0,.35);display:grid;min-width:170px;padding:6px;position:fixed;z-index:3000}
@@ -258,6 +262,8 @@ html[data-kaya-theme=light-ops] .remote-settings-card header{border-bottom-color
 html[data-kaya-theme=light-ops] .remote-settings-grid label{color:#111827}
 html[data-kaya-theme=light-ops] .remote-settings-grid input,html[data-kaya-theme=light-ops] .remote-settings-grid select,html[data-kaya-theme=light-ops] .remote-settings-grid textarea{background:#fff;border-color:#cfd7e3;color:#111827}
 html[data-kaya-theme=light-ops] .remote-settings-tabs{border-bottom-color:#d8dee8}
+html[data-kaya-theme=light-ops] .remote-host-info .remote-cert-badge{background:#f1f5f9;border-color:#d8dee8;color:#475569!important}
+html[data-kaya-theme=light-ops] .remote-host-info .remote-cert-badge.is-pinned{background:#fff3e2;border-color:rgba(255,138,0,.32);color:#7a3b00!important}
 html[data-kaya-theme=light-ops] .remote-settings-tabs a,html[data-kaya-theme=light-ops] .remote-host-toolbar button,html[data-kaya-theme=light-ops] .remote-host-toolbar a,html[data-kaya-theme=light-ops] .remote-protocol-icon{background:#fff8f0;border-color:rgba(255,138,0,.24);color:#7a3b00}
 html[data-kaya-theme=light-ops] .remote-layout-button{background:#ff8a00;border-color:#ffb357;color:#050706}
 html[data-kaya-theme=light-ops] .remote-layout-button:hover:not(:disabled),html[data-kaya-theme=light-ops] .remote-layout-button.active{background:#ffb357;border-color:#ffd08a;color:#050706}

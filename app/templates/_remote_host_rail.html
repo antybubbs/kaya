@@ -30,7 +30,7 @@
           <a class="remote-protocol-icon" href="/remote-manager/{{ row.id }}/session" data-remote-open title="Open {{ row.protocol|upper }}">{% if row.protocol == 'rdp' %}RDP{% else %}&gt;_{% endif %}</a>
           <strong>{{ label }}</strong>
           <span class="mono">{{ row.username or 'user' }}@{{ row.ip_address.address }}</span>
-          {% if row.protocol == 'rdp' %}<span class="table-chip {{ 'success' if row.rdp_cert_fingerprints else 'muted-chip' }}" title="RDP certificate trust mode">{{ 'Certificate pinned' if row.rdp_cert_fingerprints else 'System CA' }}</span>{% endif %}
+          {% if row.protocol == 'rdp' %}<span class="remote-cert-badge {{ 'is-pinned' if row.rdp_cert_fingerprints else 'is-system-ca' }}" title="RDP certificate trust mode"><svg class="remote-cert-badge-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3l7 3v6c0 5-3.5 8.5-7 9-3.5-.5-7-4-7-9V6z"></path></svg>{{ 'Certificate pinned' if row.rdp_cert_fingerprints else 'System CA' }}</span>{% endif %}
         </div>
       </div>
       <div class="remote-host-actions">
