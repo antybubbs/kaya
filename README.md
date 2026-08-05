@@ -334,8 +334,10 @@ I am orignally from South Africa and thus wanted something to remind me of "Home
 
 # Support me
 
-If you like what you see, buy me a coffee. It helps with my hosting and licensing/subscription fees. 
+If you like what you see, [buy me a coffee](https://buymeacoffee.com/antybubbs). It helps with my hosting and licensing/subscription fees. 
 
 Please dont feel obligated, I am just happy if you enjoy Kaya as much as i enjoy creating it!
+
+Thank you for all your support :-)
 
 [<img width="75" height="75" alt="bmc_qr" src="https://github.com/user-attachments/assets/51ffe46d-5c43-49a2-aa28-8e45476804bf" />](https://buymeacoffee.com/antybubbs)
