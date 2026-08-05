@@ -49,7 +49,7 @@ Use it, dont use it. Its up to you really (but it is quite cool if I do say so m
 # With thanks
 
 [<img width="289" height="67" alt="image" src="https://github.com/user-attachments/assets/c9563e0e-b9bb-4e96-b33a-a8cabaccba1d" />](https://www.aikido.dev/)
-[<img width="150" height="150" alt="bmc_qr" src="https://github.com/user-attachments/assets/51ffe46d-5c43-49a2-aa28-8e45476804bf" />](https://buymeacoffee.com/antybubbs)
+[<img width="50" height="50" alt="bmc_qr" src="https://github.com/user-attachments/assets/51ffe46d-5c43-49a2-aa28-8e45476804bf" />](https://buymeacoffee.com/antybubbs)
 
 
 # Features
