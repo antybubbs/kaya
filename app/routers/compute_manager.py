@@ -14,6 +14,7 @@ from app.core.formatting import human_bytes
 from app.core.security import encrypt_secret
 from app.db.session import get_db
 from app.models.models import (
+    BackupAgentServerKey,
     BackupJob,
     ComputeEvent,
     ComputeHost,
@@ -350,6 +351,14 @@ def render_host_detail(
     )
     backup_storage_path = get_site_setting(db, "backup_storage_path") or "/mnt/backups"
     backup_storage_type = get_site_setting(db, "backup_storage_type") or "local"
+    # Protocol-v2 agents cannot enrol without an active server signing key.
+    # Only docker_agent hosts show the agent setup panel, so only query for
+    # them - avoids an unused lookup on every Proxmox host detail view.
+    agent_server_key = (
+        db.query(BackupAgentServerKey).filter_by(status="active").first()
+        if host.platform == "docker_agent"
+        else None
+    )
     return templates.TemplateResponse(
         request,
         "compute_host_detail.html",
@@ -360,6 +369,7 @@ def render_host_detail(
             items=items,
             metrics=metrics,
             agent_token=agent_token,
+            agent_server_key=agent_server_key,
             backup_storage_path=backup_storage_path,
             backup_storage_type=backup_storage_type,
             **csrf_context(request),

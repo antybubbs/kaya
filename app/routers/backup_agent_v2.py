@@ -8,6 +8,7 @@ import re
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from app.core.csrf import validate_csrf_token
@@ -84,19 +85,27 @@ def create_agent_bootstrap(
 @router.post("/infrastructure/vm-docker-manager/agent-v2/server-key")
 def provision_agent_server_key(
     request: Request,
+    host_id: int = Form(...),
     csrf_token: str = Form(...),
     db: Session = Depends(get_db),
     user=Depends(require_admin),
     _module=compute_module_gate,
 ):
     validate_csrf_token(request, csrf_token)
+    host = db.get(ComputeHost, host_id)
+    if not host or host.platform != "docker_agent":
+        raise HTTPException(404, "Docker agent host not found")
+    return_path = f"/infrastructure/vm-docker-manager/hosts/{host_id}"
     try:
         row = create_server_signing_key(db)
-    except ValueError as exc:
-        raise HTTPException(409, str(exc)) from exc
+    except ValueError:
+        # An active key already exists: the desired end state is already
+        # reached, so a repeated submission is a safe no-op, not a failure.
+        db.rollback()
+        return RedirectResponse(f"{return_path}?agent_security_status=already_initialised", status_code=303)
     db.commit()
     write_audit(db, user, "provision_protocol_v2_server_key", "backup_agent_server_key", str(row.id), request.client.host if request.client else None, detail=row.key_id)
-    return {"key_id": row.key_id, "public_key": row.public_key}
+    return RedirectResponse(f"{return_path}?agent_security_status=initialised", status_code=303)
 
 
 @router.post("/infrastructure/vm-docker-manager/hosts/{host_id}/agent-v2/{action}")
