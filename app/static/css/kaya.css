@@ -261,6 +261,7 @@ html[data-kaya-theme=command] .rack-create-panel,
 html[data-kaya-theme=command] .rack-elevation-panel,
 html[data-kaya-theme=command] .rack-side-panel,
 html[data-kaya-theme=command] .table-settings-panel,
+html[data-kaya-theme=command] .table-export-panel,
 html[data-kaya-theme=command] .monitor-card,
 html[data-kaya-theme=command] .remote-settings-card,
 html[data-kaya-theme=command] .remote-card{background:#14171d!important;border-color:#2a303a!important;color:#f5f5f2}

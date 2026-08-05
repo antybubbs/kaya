@@ -20,6 +20,7 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Query,
     Request,
     UploadFile,
     WebSocket,
@@ -60,6 +61,14 @@ from app.services.guacamole_bridge import (
 )
 from app.services.sessions import active_user_session
 from app.services.site_settings import get_site_setting
+from app.services.client_ip import client_ip as trusted_client_ip
+from app.services.table_export import (
+    export_row_matches,
+    table_export_response,
+    validate_export_columns,
+    validate_export_filters,
+    validate_export_format,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -846,6 +855,47 @@ def recording_list(request: Request, db: Session = Depends(get_db), user=Depends
         .all()
     )
     return templates.TemplateResponse(request, "remote_recordings.html", {"user": user, "recordings": rows, **csrf_context(request)})
+
+
+@router.get("/recordings/export")
+def export_recordings_table(
+    request: Request,
+    format: str = Query("csv", max_length=8),
+    columns: str = Query("", max_length=300),
+    filters: str = Query("", max_length=2000),
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    format = validate_export_format(format)
+    column_map = {
+        "started": ("Started", lambda row: (row.started_at or row.created_at).isoformat() if (row.started_at or row.created_at) else ""),
+        "host": ("Host", lambda row: row.remote_label or ""),
+        "protocol": ("Protocol", lambda row: (row.protocol or "").upper()),
+        "category": ("Category", lambda row: row.category or "Uncategorised"),
+        "user": ("User", lambda row: row.user.email if row.user else "Unknown"),
+        "duration": ("Duration", lambda row: f"{round(row.duration_seconds or 0)}s"),
+        "size": ("Size", lambda row: f"{round((row.size_bytes or 0) / 1048576, 2)} MB"),
+    }
+    selected_columns = validate_export_columns(columns, list(column_map))
+    active_filters = validate_export_filters(filters, list(column_map))
+    rows = (
+        db.query(RemoteSessionRecording)
+        .options(selectinload(RemoteSessionRecording.user), selectinload(RemoteSessionRecording.remote))
+        .order_by(RemoteSessionRecording.started_at.desc(), RemoteSessionRecording.id.desc())
+        .limit(100000)
+        .all()
+    )
+    rows = [row for row in rows if export_row_matches(row, column_map, active_filters)]
+    write_audit(
+        db, user, "export", "remote_session_recording", None, trusted_client_ip(request),
+        detail=f"Exported {len(rows)} recording rows as {format}",
+    )
+    return table_export_response(
+        table_name="remote-recordings",
+        headers=[column_map[key][0] for key in selected_columns],
+        rows=([column_map[key][1](row) for key in selected_columns] for row in rows),
+        export_format=format,
+    )
 
 
 @router.get("/recordings/{recording_id}")

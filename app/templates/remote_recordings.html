@@ -9,7 +9,7 @@
 </div>
 <section class="remote-recordings-shell">
   {% if recordings %}
-  <table class="data-table remote-recordings-table">
+  <table class="data-table remote-recordings-table" data-table-key="remote-recordings" data-export-url="/remote-manager/recordings/export">
     <colgroup>
       <col class="recording-col-started">
       <col class="recording-col-host">
@@ -22,14 +22,14 @@
     </colgroup>
     <thead>
       <tr>
-        <th>Started</th>
-        <th>Host</th>
-        <th>Protocol</th>
-        <th>Category</th>
-        <th>User</th>
-        <th>Duration</th>
-        <th>Size</th>
-        <th></th>
+        <th data-col="started">Started</th>
+        <th data-col="host">Host</th>
+        <th data-col="protocol">Protocol</th>
+        <th data-col="category">Category</th>
+        <th data-col="user">User</th>
+        <th data-col="duration">Duration</th>
+        <th data-col="size">Size</th>
+        <th data-col="actions"></th>
       </tr>
     </thead>
     <tbody>

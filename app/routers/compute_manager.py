@@ -32,7 +32,15 @@ from app.services.compute_monitor import (
     sync_host,
     workload_identity,
 )
+from app.services.client_ip import client_ip as trusted_client_ip
 from app.services.site_settings import get_site_setting
+from app.services.table_export import (
+    export_row_matches,
+    table_export_response,
+    validate_export_columns,
+    validate_export_filters,
+    validate_export_format,
+)
 
 router = APIRouter(
     prefix="/infrastructure/vm-docker-manager",
@@ -201,6 +209,61 @@ def overview(
             view=view,
             **csrf_context(request),
         ),
+    )
+
+
+@router.get("/export")
+def export_workloads_table(
+    request: Request,
+    q: str = Query("", max_length=200),
+    view: str = Query("overview", max_length=30),
+    format: str = Query("csv", max_length=8),
+    columns: str = Query("", max_length=300),
+    filters: str = Query("", max_length=2000),
+    db: Session = Depends(get_db),
+    user=Depends(require_user),
+):
+    format = validate_export_format(format)
+    column_map = {
+        "state": ("State", lambda row: row.status.title()),
+        "name": ("Name", lambda row: row.name),
+        "type": ("Type", lambda row: row.kind.upper()),
+        "host": ("Host / Node", lambda row: f"{row.host.name}{' / ' + row.node if row.node and row.node != row.host.name else ''}"),
+        "cpu": ("CPU", lambda row: f"{round(row.cpu_percent, 1)}%" if row.cpu_percent is not None else ""),
+        "ram": ("RAM", lambda row: f"{bytes_label(row.memory_used)}{' / ' + bytes_label(row.memory_total) if row.memory_total else ''}"),
+        "storage": ("Storage", lambda row: bytes_label(row.storage_used)),
+        "uptime": ("Uptime", lambda row: uptime_label(row.uptime_seconds)),
+        "owner": ("Owner", lambda row: row.owner or ""),
+        "backup": ("Backup", lambda row: row.backup_policy or ""),
+    }
+    selected_columns = validate_export_columns(columns, list(column_map))
+    active_filters = validate_export_filters(filters, list(column_map))
+    clean = q.strip()
+    query = db.query(ComputeWorkload).filter(ComputeWorkload.status != "missing")
+    if clean:
+        query = query.filter(
+            or_(
+                ComputeWorkload.name.ilike(f"%{clean}%"),
+                ComputeWorkload.node.ilike(f"%{clean}%"),
+                ComputeWorkload.owner.ilike(f"%{clean}%"),
+                ComputeWorkload.tags.ilike(f"%{clean}%"),
+            )
+        )
+    if view == "docker":
+        query = query.filter(ComputeWorkload.kind == "container")
+    elif view == "proxmox":
+        query = query.filter(ComputeWorkload.kind.in_(["node", "vm", "lxc"]))
+    rows = query.order_by(ComputeWorkload.status.asc(), ComputeWorkload.name.asc()).limit(100000).all()
+    rows = [row for row in rows if export_row_matches(row, column_map, active_filters)]
+    write_audit(
+        db, user, "export", "compute_workload", None, trusted_client_ip(request),
+        detail=f"Exported {len(rows)} workload rows as {format}; filters applied={bool(clean or view != 'overview')}",
+    )
+    return table_export_response(
+        table_name="compute-workloads",
+        headers=[column_map[key][0] for key in selected_columns],
+        rows=([column_map[key][1](row) for key in selected_columns] for row in rows),
+        export_format=format,
     )
 
 

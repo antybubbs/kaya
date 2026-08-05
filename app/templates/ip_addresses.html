@@ -35,8 +35,8 @@
   <div class="panel-heading">
     <div><h2>Observed clients awaiting management</h2><p class="muted">These clients are retained by DNS Manager but are not linked to a VLAN/IP record. Review each one before creating a managed record.</p></div>
   </div>
-  <table data-table-key="observed-dns-clients">
-    <thead><tr><th>Client</th><th>Observed IP</th><th>MAC</th><th>Provider</th><th>Last seen</th><th>Possible managed match</th><th data-col="actions">Action</th></tr></thead>
+  <table data-table-key="observed-dns-clients" data-export-url="/networking/vlan-ip-manager/export/observed" data-export-name="observed-dns-clients">
+    <thead><tr><th data-col="client">Client</th><th data-col="ip">Observed IP</th><th data-col="mac">MAC</th><th data-col="provider">Provider</th><th data-col="last-seen">Last seen</th><th data-col="managed-match" data-export="false">Possible managed match</th><th data-col="actions">Action</th></tr></thead>
     <tbody>
       {% for client in observed_clients %}
       {% set existing = client.suggested_ip_record or existing_by_address.get(client.current_ip) %}
@@ -56,8 +56,8 @@
 {% elif active_view == 'leases' %}
 <section class="panel">
   <div class="panel-heading"><div><h2>Retained DHCP lease history</h2><p class="muted">Each row is a time-bounded address assignment. Reuse of the same IP creates a new lease interval, keeping the previous device, hostname and DNS history attributable to the correct period.</p></div></div>
-  <table data-table-key="dhcp-lease-history">
-    <thead><tr><th>Status</th><th>IP</th><th>VLAN</th><th>Range</th><th>Hostname</th><th>MAC</th><th>Client</th><th>First seen</th><th>Last seen</th><th>Ended/expires</th></tr></thead>
+  <table data-table-key="dhcp-lease-history" data-export-url="/networking/vlan-ip-manager/export/leases" data-export-name="dhcp-lease-history">
+    <thead><tr><th data-col="status">Status</th><th data-col="ip">IP</th><th data-col="vlan">VLAN</th><th data-col="range">Range</th><th data-col="hostname">Hostname</th><th data-col="mac">MAC</th><th data-col="client">Client</th><th data-col="first-seen">First seen</th><th data-col="last-seen">Last seen</th><th data-col="ended">Ended/expires</th></tr></thead>
     <tbody>{% for lease in leases %}<tr>
       <td><span class="table-chip {% if lease.is_active %}good{% else %}muted-chip{% endif %}">{{ 'Active' if lease.is_active else 'Ended' }}</span></td>
       <td class="mono">{{ lease.ip_address }}</td>
@@ -84,7 +84,7 @@
       <label>Static/Dynamic<select name="assignment_type"><option value="__no_change__">No change</option><option value="Static">Static</option><option value="Dynamic">Dynamic</option></select></label>
       <button type="submit">Apply</button><button class="button secondary" type="button" data-clear-selection>Clear</button>
     </div>
-    <table data-table-key="ip-addresses">
+    <table data-table-key="ip-addresses" data-export-url="/networking/vlan-ip-manager/export/managed" data-export-name="ip-addresses">
       <thead><tr><th class="select-col" data-col="select" data-label="Select"><label class="table-check"><input type="checkbox" aria-label="Select all IP addresses" data-select-all></label></th><th class="action-col" data-col="actions">View</th><th data-col="ip" data-sort>IP</th><th data-col="vlan" data-sort>VLAN</th><th data-col="category" data-sort>Category</th><th data-col="name" data-sort>Name</th><th data-col="mac" data-sort>MAC</th><th data-col="description" data-sort>Description</th><th data-col="assignment" data-sort>Static/Dynamic</th><th data-col="notes" data-sort>Notes</th>{% if dns_enrichment_enabled %}<th data-col="dns-status" data-sort>DNS status</th><th data-col="dns-seen" data-sort>Last DNS seen</th><th data-col="dns-hostname" data-sort>Observed hostname</th>{% endif %}</tr></thead>
       <tbody>{% for row in rows %}{% set dns = dns_by_ip.get(row.id) %}<tr><td class="select-col"><input class="row-select" type="checkbox" name="selected_ids" value="{{ row.id }}"></td><td class="action-col"><a class="button secondary" href="/networking/vlan-ip-manager/{{ row.id }}">View</a></td><td class="mono">{{ row.address }}</td><td>{% if row.vlan %}<a class="table-chip" href="/networking/vlan-ip-manager?vlan_id={{ row.vlan.id }}">{{ row.vlan.name }}</a>{% else %}-{% endif %}</td><td>{% if row.category %}<span class="table-chip">{{ row.category }}</span>{% else %}-{% endif %}</td><td>{{ row.name or '-' }}</td><td class="mono">{{ row.mac_address or '-' }}</td><td>{{ row.description or '-' }}</td><td>{{ row.assignment_type }}</td><td>{{ row.notes or '-' }}</td>{% if dns_enrichment_enabled %}<td>{% if dns %}<a href="/networking/dns-manager/clients/{{ dns.id }}"><span class="table-chip">{{ dns_client_status(dns) }}</span></a>{% else %}<span class="muted">Not linked</span>{% endif %}</td><td>{{ local_time(dns.last_seen_at, 'minute') if dns else '-' }}</td><td>{{ dns.hostname if dns and dns.hostname else '-' }}</td>{% endif %}</tr>{% endfor %}</tbody>
     </table>

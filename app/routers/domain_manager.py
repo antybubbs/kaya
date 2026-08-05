@@ -19,6 +19,14 @@ from app.services.domain_polling import (
     poll_domain,
     set_poll_cadence,
 )
+from app.services.client_ip import client_ip as trusted_client_ip
+from app.services.table_export import (
+    export_row_matches,
+    table_export_response,
+    validate_export_columns,
+    validate_export_filters,
+    validate_export_format,
+)
 
 router = APIRouter(prefix="/networking/domain-manager", dependencies=[Depends(require_module_access("domain_manager"))])
 
@@ -147,6 +155,54 @@ def list_domains(request: Request, q: str = Query("", max_length=200), db: Sessi
         request,
         "domain_manager.html",
         context(user=user, rows=rows, total=db.query(DomainRecord).count(), q=clean_q, poll_cadence=poll_cadence, **csrf_context(request)),
+    )
+
+
+@router.get("/export")
+def export_domains_table(
+    request: Request,
+    q: str = Query("", max_length=200),
+    format: str = Query("csv", max_length=8),
+    columns: str = Query("", max_length=300),
+    filters: str = Query("", max_length=2000),
+    db: Session = Depends(get_db),
+    user=Depends(require_user),
+):
+    format = validate_export_format(format)
+    column_map = {
+        "domain": ("Domain", lambda row: row.name),
+        "registrar": ("Registrar", lambda row: display_registrar(row) or ""),
+        "dns-provider": ("DNS Provider", lambda row: display_dns_provider(row) or ""),
+        "expiry": ("Expiry", lambda row: display_expires_at(row).date().isoformat() if display_expires_at(row) else ""),
+        "state": ("State", lambda row: expiry_state(row).title()),
+        "lookup": ("Last Lookup", lambda row: row.last_lookup_at.isoformat() if row.last_lookup_at else ""),
+    }
+    selected_columns = validate_export_columns(columns, list(column_map))
+    active_filters = validate_export_filters(filters, list(column_map))
+    query = db.query(DomainRecord)
+    clean_q = q.strip()
+    if clean_q:
+        like = f"%{clean_q}%"
+        query = query.filter(
+            or_(
+                DomainRecord.name.ilike(like),
+                DomainRecord.registrar.ilike(like),
+                DomainRecord.dns_provider.ilike(like),
+                DomainRecord.status.ilike(like),
+                DomainRecord.notes.ilike(like),
+            )
+        )
+    rows = query.order_by(DomainRecord.expires_at.is_(None), DomainRecord.expires_at.asc(), DomainRecord.name.asc()).limit(100000).all()
+    rows = [row for row in rows if export_row_matches(row, column_map, active_filters)]
+    write_audit(
+        db, user, "export", "domain", None, trusted_client_ip(request),
+        detail=f"Exported {len(rows)} domain rows as {format}; filters applied={bool(clean_q)}",
+    )
+    return table_export_response(
+        table_name="domains",
+        headers=[column_map[key][0] for key in selected_columns],
+        rows=([column_map[key][1](row) for key in selected_columns] for row in rows),
+        export_format=format,
     )
 
 

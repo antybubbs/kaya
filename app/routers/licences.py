@@ -18,7 +18,15 @@ from app.services.custom_fields import (
     save_custom_values,
     validate_custom_values,
 )
+from app.services.client_ip import client_ip as trusted_client_ip
 from app.services.managed_lists import list_values
+from app.services.table_export import (
+    export_row_matches,
+    table_export_response,
+    validate_export_columns,
+    validate_export_filters,
+    validate_export_format,
+)
 
 router = APIRouter(prefix="/security/license-keys", dependencies=[Depends(require_module_access("licence_manager"))])
 
@@ -65,6 +73,49 @@ def list_licences(request: Request, q: str = Query("", max_length=200), licence_
     favourites = db.query(Licence).filter(Licence.is_favourite).order_by(Licence.product.asc()).limit(50).all()
     total = db.query(Licence).count()
     return templates.TemplateResponse(request, "licences.html", {"user": user, "rows": rows, "favourites": favourites, "total": total, "q": clean_q, "licence_types": licence_types, "active_licence_type": active_licence_type, "mask_key": lambda encrypted: mask_key(decrypt_secret(encrypted)), **csrf_context(request)})
+
+
+@router.get("/export")
+def export_licences_table(
+    request: Request,
+    q: str = Query("", max_length=200),
+    licence_type: str = Query("", max_length=120),
+    format: str = Query("csv", max_length=8),
+    columns: str = Query("", max_length=300),
+    filters: str = Query("", max_length=2000),
+    db: Session = Depends(get_db),
+    user=Depends(require_user),
+):
+    format = validate_export_format(format)
+    column_map = {
+        "favourite": ("Favourite", lambda row: "Yes" if row.is_favourite else "No"),
+        "product": ("Product", lambda row: row.product),
+        "type": ("Type", lambda row: row.licence_type or ""),
+        "product-key": ("Product Key", lambda row: mask_key(decrypt_secret(row.encrypted_product_key))),
+        "seats": ("Seats", lambda row: row.seats or 0),
+    }
+    selected_columns = validate_export_columns(columns, list(column_map))
+    active_filters = validate_export_filters(filters, list(column_map))
+    query = db.query(Licence)
+    active_licence_type = licence_type.strip()
+    if active_licence_type:
+        query = query.filter(Licence.licence_type == active_licence_type)
+    clean_q = q.strip()
+    if clean_q:
+        like = f"%{clean_q}%"
+        query = query.filter(or_(Licence.product.ilike(like), Licence.licence_type.ilike(like), Licence.licence_id.ilike(like), Licence.vendor.ilike(like)))
+    rows = query.order_by(Licence.product.asc()).limit(100000).all()
+    rows = [row for row in rows if export_row_matches(row, column_map, active_filters)]
+    write_audit(
+        db, user, "export", "licence", None, trusted_client_ip(request),
+        detail=f"Exported {len(rows)} licence rows as {format}; filters applied={bool(clean_q or active_licence_type)}",
+    )
+    return table_export_response(
+        table_name="license-keys",
+        headers=[column_map[key][0] for key in selected_columns],
+        rows=([column_map[key][1](row) for key in selected_columns] for row in rows),
+        export_format=format,
+    )
 
 
 @router.get("/new")
