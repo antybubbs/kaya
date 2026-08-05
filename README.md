@@ -46,10 +46,9 @@ Use it, dont use it. Its up to you really (but it is quite cool if I do say so m
 
 ------------------------------------------------------------------------
 
-# With thanks
+# Our Supporters
 
 [<img width="289" height="67" alt="image" src="https://github.com/user-attachments/assets/c9563e0e-b9bb-4e96-b33a-a8cabaccba1d" />](https://www.aikido.dev/)
-[<img width="75" height="75" alt="bmc_qr" src="https://github.com/user-attachments/assets/51ffe46d-5c43-49a2-aa28-8e45476804bf" />](https://buymeacoffee.com/antybubbs)
 
 
 # Features
@@ -332,3 +331,11 @@ should feel organised, trusted and completely under our control.
 I am orignally from South Africa and thus wanted something to remind me of "Home" :-)
 
 ------------------------------------------------------------------------
+
+# Support me
+
+If you like what you see, buy me a coffee. It helps with my hosting and licensing/subscription fees. 
+
+Please dont feel obligated, I am just happy if you enjoy Kaya as much as i enjoy creating it!
+
+[<img width="75" height="75" alt="bmc_qr" src="https://github.com/user-attachments/assets/51ffe46d-5c43-49a2-aa28-8e45476804bf" />](https://buymeacoffee.com/antybubbs)
