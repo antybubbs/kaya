@@ -1,20 +1,9 @@
-# Kaya
-Dark Mode
-<img width="2402" height="1149" alt="Dashboard" src="https://github.com/user-attachments/assets/ee00e957-ac35-4684-9ac8-a6239e3401b1" />
+<div align="center">
+<a href=""><img src="https://github.com/user-attachments/assets/736dd838-34db-4d04-8efd-199163182edb" alt="Leantime Logo" width="150"/></a>
 
-
-Light Mode
-<img width="2402" height="1149" alt="Screenshot 2026-07-27 212234" src="https://github.com/user-attachments/assets/4cf746a4-2338-44a4-83ef-27a8d5b1a31d" />
-
-More ScreenShots - https://www.kaya-app.uk/screenshots
-
-
-
-> **Your Infrastructure. Your Home.**
->
-> A self-hosted infrastructure platform built for homelabs,
-> and users who want complete control of their
-> infrastructure.
+## Your Infrastructure. Your Home. 
+ 
+A self-hosted infrastructure platform built for homelabs, and users who want complete control of their infrastructure.
 
 ![GitHub
 release](https://img.shields.io/github/v/release/antybubbs/kaya)
@@ -22,7 +11,19 @@ release](https://img.shields.io/github/v/release/antybubbs/kaya)
 ![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)
 
-------------------------------------------------------------------------
+⭐ If you find Kaya useful for you, please star us on GitHub! ⭐
+
+## Dark Mode
+<img width="2402" height="1149" alt="Dashboard" src="https://github.com/user-attachments/assets/ee00e957-ac35-4684-9ac8-a6239e3401b1" />
+
+
+## Light Mode
+<img width="2402" height="1149" alt="Screenshot 2026-07-27 212234" src="https://github.com/user-attachments/assets/4cf746a4-2338-44a4-83ef-27a8d5b1a31d" />
+
+More ScreenShots - https://www.kaya-app.uk/screenshots
+
+</div>
+<br /><br />
 
 ## Welcome Home
 
