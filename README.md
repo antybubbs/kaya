@@ -112,22 +112,6 @@ Kaya includes an in-application notification centre and optional PWA Web Push. P
 
 ------------------------------------------------------------------------
 
-# Live Demo
-
-Want to kick the tyres? Go ahead. https://demo.kaya-app.uk 
-
-However, a few caveats.
-- The demo does not have a functional Remote Manager module.
-- It does not have everything active - this is for security reasons.
-- The data resets every night.
-- Its probably (highly likley to be) rough around the edges, this is because its the main app with a few restrictions in place - I probably have not picked up everything and most likley broke things trying to "make it safe"
-
-My suggestion - install it in your own environment and throw the kitchen sink at it.
-
-If you need any support - come on over to our Dicord Server: https://discord.gg/2hn6G7Qr9N 
-
-------------------------------------------------------------------------
-
 # Quick Start
 
 ## Prerequisites
