@@ -16,16 +16,14 @@ release](https://img.shields.io/github/v/release/antybubbs/kaya)
 ## Dark Mode
 <img width="2402" height="1149" alt="Dashboard" src="https://github.com/user-attachments/assets/ee00e957-ac35-4684-9ac8-a6239e3401b1" />
 
-
 ## Light Mode
 <img width="2402" height="1149" alt="Screenshot 2026-07-27 212234" src="https://github.com/user-attachments/assets/4cf746a4-2338-44a4-83ef-27a8d5b1a31d" />
 
 More ScreenShots - https://www.kaya-app.uk/screenshots
-
 </div>
 <br /><br />
 
-## Welcome Home
+# Welcome Home
 
 Lets be honest, homelab infrastrcuture never stays small. I am guilty of this.
 
