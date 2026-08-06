@@ -1,5 +1,5 @@
 <div align="center">
-<a href=""><img src="https://github.com/user-attachments/assets/736dd838-34db-4d04-8efd-199163182edb" alt="Leantime Logo" width="150"/></a>
+<a href=""><img src="https://github.com/user-attachments/assets/736dd838-34db-4d04-8efd-199163182edb" alt="Kaya Logo" width="150"/></a>
 
 ## Your Infrastructure. Your Home. 
  
