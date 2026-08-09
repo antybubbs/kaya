@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 from datetime import datetime, timedelta, timezone
 
 from app.core.security import decrypt_secret
-from app.db.session import SessionLocal, sqlite_lock_error
+from app.db.session import SessionLocal, database_write_context, sqlite_lock_error
 from app.models.models import (
     NotificationDeliveryAttempt,
     PushSubscription,
@@ -23,9 +23,11 @@ from app.services.mail import MailConfigurationError, send_mail
 from app.services.site_settings import get_site_setting
 from app.services.notifications import validate_push_endpoint
 from app.services.web_push_config import (
+    InvalidVapidSubjectError,
     VapidCredentials,
     WebPushConfigurationError,
     effective_credentials,
+    validate_subject_uri,
 )
 
 logger = logging.getLogger(__name__)
@@ -96,13 +98,24 @@ def _safe_subscription_structure(subscription: dict) -> dict:
     }
 
 
-def _subject_description(subject: str) -> str:
-    if subject.startswith("mailto:"):
-        return "mailto:<configured-admin-contact>"
-    parsed = urlsplit(subject)
+def _safe_subject_diagnostics(subject: str) -> dict:
+    canonical = validate_subject_uri(subject)
+    if canonical.startswith("mailto:"):
+        return {
+            "vapid_subject_scheme": "mailto",
+            "vapid_subject_present": True,
+            "vapid_subject_length": len(canonical),
+            "vapid_subject_valid": True,
+        }
+    parsed = urlsplit(canonical)
     if parsed.scheme == "https" and parsed.hostname:
-        return f"https://{parsed.hostname}"
-    return "invalid"
+        return {
+            "vapid_subject_scheme": "https",
+            "vapid_subject_present": True,
+            "vapid_subject_length": len(canonical),
+            "vapid_subject_valid": True,
+        }
+    raise WebPushConfigurationError("Invalid VAPID subject")
 
 
 def _windows_push_headers(subscription: dict) -> tuple[dict[str, str], int]:
@@ -200,7 +213,7 @@ def _send_push(
             "audience": f"{endpoint.scheme}://{endpoint.hostname}"
             + (f":{endpoint.port}" if endpoint.port else ""),
             "payload_bytes": len(json.dumps(payload, separators=(",", ":")).encode("utf-8")),
-            "vapid_subject": _subject_description(credentials.subject),
+            **_safe_subject_diagnostics(credentials.subject),
             "vapid_public_key_fingerprint": "SHA256:"
             + hashlib.sha256(_b64url_decode(credentials.public_key)).hexdigest()[:16],
             **subscription_structure,
@@ -226,23 +239,38 @@ def _send_push(
 
 
 def deliver_queued(heartbeat=None) -> int:
+    with database_write_context("notification_delivery", "delivery_iteration"):
+        return _deliver_queued(heartbeat)
+
+
+def _deliver_queued(heartbeat=None) -> int:
     db = SessionLocal()
     delivered = 0
     try:
         now = datetime.utcnow()
-        db.query(NotificationDeliveryAttempt).filter(
-            NotificationDeliveryAttempt.status == "processing",
-            NotificationDeliveryAttempt.processing_started_at
-            < now - timedelta(seconds=STALE_PROCESSING_SECONDS),
-        ).update(
-            {
-                NotificationDeliveryAttempt.status: "temporary_failure",
-                NotificationDeliveryAttempt.failure_reason_code: "stale_claim_recovered",
-                NotificationDeliveryAttempt.next_retry_at: now,
-                NotificationDeliveryAttempt.processing_started_at: None,
-            },
-            synchronize_session=False,
-        )
+        stale_ids = [
+            row_id
+            for (row_id,) in db.query(NotificationDeliveryAttempt.id)
+            .filter(
+                NotificationDeliveryAttempt.status == "processing",
+                NotificationDeliveryAttempt.processing_started_at
+                < now - timedelta(seconds=STALE_PROCESSING_SECONDS),
+            )
+            .limit(50)
+            .all()
+        ]
+        if stale_ids:
+            db.query(NotificationDeliveryAttempt).filter(
+                NotificationDeliveryAttempt.id.in_(stale_ids)
+            ).update(
+                {
+                    NotificationDeliveryAttempt.status: "temporary_failure",
+                    NotificationDeliveryAttempt.failure_reason_code: "stale_claim_recovered",
+                    NotificationDeliveryAttempt.next_retry_at: now,
+                    NotificationDeliveryAttempt.processing_started_at: None,
+                },
+                synchronize_session=False,
+            )
         attempts = (
             db.query(NotificationDeliveryAttempt)
             .filter(
@@ -386,7 +414,10 @@ def deliver_queued(heartbeat=None) -> int:
                 if subscription:
                     subscription.last_failure_at = now
                     subscription.failure_count = (subscription.failure_count or 0) + 1
-                if (
+                if isinstance(exc, InvalidVapidSubjectError):
+                    attempt.status = "cancelled"
+                    attempt.failure_reason_code = "invalid_vapid_configuration"
+                elif (
                     isinstance(exc, (MailConfigurationError, WebPushConfigurationError))
                     or str(exc) == "push_not_configured"
                 ):
@@ -413,14 +444,18 @@ def deliver_queued(heartbeat=None) -> int:
                         minutes=2**attempt.retry_count
                     )
                     attempt.failure_reason_code = "temporary_failure"
-                if channel == "push" and attempt.failure_reason_code == "channel_not_configured":
+                if channel == "push" and attempt.failure_reason_code in {
+                    "channel_not_configured",
+                    "invalid_vapid_configuration",
+                }:
                     logger.info(
-                        "notification.delivery.push.skipped reason=not_configured attempt_id=%s",
+                        "notification.delivery.push.skipped reason=%s attempt_id=%s",
+                        attempt.failure_reason_code,
                         attempt.id,
                     )
                 elif channel == "push":
                     logger.warning(
-                        "notification.delivery.push.failed classification=%s status_code=%s provider=%s subscription_id=%s retryable=%s attempt_number=%s attempt_id=%s correlation_id=%s audience=%s payload_bytes=%s content_encoding=%s http_method=%s request_headers=%s content_type=%s content_length=%s ttl=%s urgency=%s vapid_authorization_style=%s vapid_key_location=%s jwt_aud=%s jwt_exp=%s jwt_seconds_until_expiry=%s vapid_subject=%s vapid_public_key_fingerprint=%s p256dh_present=%s p256dh_decoded_bytes=%s p256dh_uncompressed_p256=%s auth_present=%s auth_decoded_bytes=%s request_utc=%s response_headers=%s provider_request_id=%s pywebpush=%s py_vapid=%s http_ece=%s provider_reason=%s",
+                        "notification.delivery.push.failed classification=%s status_code=%s provider=%s subscription_id=%s retryable=%s attempt_number=%s attempt_id=%s correlation_id=%s audience=%s payload_bytes=%s content_encoding=%s http_method=%s request_headers=%s content_type=%s content_length=%s ttl=%s urgency=%s vapid_authorization_style=%s vapid_key_location=%s jwt_aud=%s jwt_exp=%s jwt_seconds_until_expiry=%s vapid_subject_scheme=%s vapid_subject_present=%s vapid_subject_length=%s vapid_subject_valid=%s vapid_public_key_fingerprint=%s p256dh_present=%s p256dh_decoded_bytes=%s p256dh_uncompressed_p256=%s auth_present=%s auth_decoded_bytes=%s request_utc=%s response_headers=%s provider_request_id=%s pywebpush=%s py_vapid=%s http_ece=%s provider_reason=%s",
                         attempt.failure_reason_code,
                         status_code or "unknown",
                         _provider_name(decoded if 'decoded' in locals() else None),
@@ -443,7 +478,10 @@ def deliver_queued(heartbeat=None) -> int:
                         push_metadata.get("jwt_aud", "unknown"),
                         push_metadata.get("jwt_exp", "unknown"),
                         push_metadata.get("jwt_seconds_until_expiry", "unknown"),
-                        push_metadata.get("vapid_subject", "unknown"),
+                        push_metadata.get("vapid_subject_scheme", "unknown"),
+                        push_metadata.get("vapid_subject_present", "unknown"),
+                        push_metadata.get("vapid_subject_length", "unknown"),
+                        push_metadata.get("vapid_subject_valid", "unknown"),
                         push_metadata.get("vapid_public_key_fingerprint", "unknown"),
                         push_metadata.get("p256dh_present", "unknown"),
                         push_metadata.get("p256dh_decoded_bytes", "unknown"),

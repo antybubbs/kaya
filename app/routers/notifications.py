@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session, joinedload
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.core.security import encrypt_secret
 from app.core.templating import templates
-from app.db.session import get_db
+from app.db.session import database_write_context, get_db, sqlite_lock_error
 from app.models.models import (
     NotificationCategoryPolicy,
     NotificationDeliveryAttempt,
@@ -118,6 +118,11 @@ class WebPushKeyRequest(BaseModel):
     contact_url: str | None = Field(default=None, max_length=500)
     installation_label: str | None = Field(default=None, max_length=120)
     confirmation: str = Field(min_length=1, max_length=40)
+
+
+class WebPushContactRequest(BaseModel):
+    contact_email: str | None = Field(default=None, max_length=254)
+    contact_url: str | None = Field(default=None, max_length=500)
 
 
 class ConfirmedWebPushAction(BaseModel):
@@ -1063,6 +1068,40 @@ def admin_web_push_status(
     return configuration_status(db)
 
 
+@router.put("/api/admin/web-push/contact")
+def update_web_push_contact(
+    payload: WebPushContactRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    """Correct the VAPID contact without changing keys or browser subscriptions."""
+    _csrf(request)
+    if configuration_status(db)["source"] == "deployment":
+        raise HTTPException(409, "Deployment-managed VAPID contact cannot be changed here")
+    row = ui_configuration(db)
+    if not row:
+        raise HTTPException(404, "Web Push is not configured")
+    try:
+        subject = normalise_subject(payload.contact_email, payload.contact_url)
+    except WebPushConfigurationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    row.subject = subject
+    row.updated_at = datetime.utcnow()
+    db.commit()
+    _audit_or_fail(
+        db,
+        user,
+        "web_push_contact_updated",
+        "web_push_configuration",
+        "1",
+        trusted_client_ip(request),
+        detail="VAPID contact updated without rotating Web Push keys",
+        metadata={"contact_scheme": subject.split(":", 1)[0]},
+    )
+    return configuration_status(db)
+
+
 @router.post("/api/admin/web-push/generate")
 def generate_web_push_keys(
     payload: WebPushKeyRequest,
@@ -1447,7 +1486,14 @@ def admin_push_subscription_test(subscription_id: int, request: Request, db: Ses
         raise HTTPException(404, "Registered device is not active")
     if not configuration_status(db)["enabled"]:
         raise HTTPException(409, "Web Push is not enabled")
-    outbox = enqueue_notification(db, event_type_id="system.notification.test", title="Kaya Web Push test", message="This is a Web Push test requested from Kaya.", target_route="/notifications", recipient_ids=[subscription.user_id], created_by_user_id=user.id, metadata={"diagnostic": True, "diagnostic_channel": "push", "diagnostic_subscription_id": subscription.id})
+    try:
+        with database_write_context("notification_admin", "targeted_web_push_test"):
+            outbox = enqueue_notification(db, event_type_id="system.notification.test", title="Kaya Web Push test", message="This is a Web Push test requested from Kaya.", target_route="/notifications", recipient_ids=[subscription.user_id], created_by_user_id=user.id, metadata={"diagnostic": True, "diagnostic_channel": "push", "diagnostic_subscription_id": subscription.id})
+    except Exception as exc:
+        db.rollback()
+        if sqlite_lock_error(exc):
+            raise HTTPException(503, "Notification queue is temporarily busy. Please retry.") from exc
+        raise
     _audit_or_fail(db, user, "web_push_test_sent", "push_subscription", str(subscription.id), trusted_client_ip(request), detail="Administrator queued a per-device Web Push test", metadata={"subscription_id": subscription.id, "outbox_id": outbox.id})
     return {"ok": True, "outbox_id": outbox.id, "subscription_id": subscription.id, "status": "queued"}
 

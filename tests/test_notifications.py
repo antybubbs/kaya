@@ -3,6 +3,9 @@ import base64
 import inspect
 import json
 import logging
+import sqlite3
+from sqlalchemy import event
+from sqlalchemy.exc import OperationalError
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -49,11 +52,13 @@ from app.services.notifications import (
     validate_push_endpoint,
 )
 from app.services.web_push_config import (
+    InvalidVapidSubjectError,
     WebPushConfigurationError,
     configuration_status,
     create_ui_configuration,
     effective_credentials,
     generate_key_pair,
+    validate_subject_uri,
 )
 
 
@@ -406,6 +411,56 @@ def test_one_invalid_push_device_does_not_block_another(db, monkeypatch):
     assert statuses == ["accepted_by_push_service", "temporary_failure"]
 
 
+def test_delivery_does_not_issue_stale_recovery_update_when_nothing_is_stale(
+    db, monkeypatch
+):
+    factory = sessionmaker(bind=db.bind)
+    monkeypatch.setattr(notification_delivery, "SessionLocal", factory)
+    statements = []
+
+    def capture(_connection, _cursor, statement, _parameters, _context, _many):
+        statements.append(statement.lower())
+
+    event.listen(db.bind, "before_cursor_execute", capture)
+    try:
+        assert notification_delivery.deliver_queued() == 0
+    finally:
+        event.remove(db.bind, "before_cursor_execute", capture)
+
+    assert not any(
+        "update notification_delivery_attempts" in statement for statement in statements
+    )
+
+
+def test_targeted_push_test_returns_controlled_503_after_sqlite_busy(db, monkeypatch):
+    admin = user(db, "busy-admin@example.invalid", role="admin")
+    subscription = PushSubscription(
+        user_id=admin.id,
+        endpoint_hash="b" * 64,
+        encrypted_subscription=encrypt_secret("{}"),
+        status="active",
+    )
+    db.add(subscription)
+    db.commit()
+    monkeypatch.setattr(notification_router, "_csrf", lambda _request: None)
+    monkeypatch.setattr(notification_router, "_admin_rate_limit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(notification_router, "configuration_status", lambda _db: {"enabled": True})
+
+    def locked_enqueue(*_args, **_kwargs):
+        raise OperationalError("INSERT", {}, sqlite3.OperationalError("database is locked"))
+
+    monkeypatch.setattr(notification_router, "enqueue_notification", locked_enqueue)
+
+    with pytest.raises(Exception) as exc:
+        notification_router.admin_push_subscription_test(
+            subscription.id, csrf_request(), db=db, user=admin
+        )
+
+    assert getattr(exc.value, "status_code", None) == 503
+    assert "temporarily busy" in getattr(exc.value, "detail", "")
+    assert db.get(PushSubscription, subscription.id) is not None
+
+
 def test_windows_push_uses_only_documented_wns_extension():
     windows = {"endpoint": "https://wns2-ln2p.notify.windows.com/w/?fake"}
     apple = {"endpoint": "https://web.push.apple.com/QH/fake"}
@@ -449,6 +504,80 @@ def test_vapid_diagnostics_redact_jwt_and_extract_only_safe_claims():
         "jwt_exp": int(now.timestamp()) + 600,
         "jwt_seconds_until_expiry": 600,
     }
+
+
+def test_vapid_subject_is_canonical_and_empty_mailto_is_rejected():
+    assert validate_subject_uri("mailto:Admin@example.com") == "mailto:Admin@example.com"
+    assert validate_subject_uri("https://kaya.example.com/contact") == "https://kaya.example.com/contact"
+    for invalid in (None, "", "mailto:", "mailto", "@"):
+        with pytest.raises(InvalidVapidSubjectError):
+            validate_subject_uri(invalid)
+
+
+def test_delivery_subject_diagnostics_are_unambiguous_and_redacted():
+    assert notification_delivery._safe_subject_diagnostics(
+        "mailto:admin@example.com"
+    ) == {
+        "vapid_subject_scheme": "mailto",
+        "vapid_subject_present": True,
+        "vapid_subject_length": len("mailto:admin@example.com"),
+        "vapid_subject_valid": True,
+    }
+
+
+def test_malformed_persisted_vapid_subject_fails_before_delivery(db):
+    public_key, private_key = generate_key_pair()
+    db.add(
+        WebPushConfiguration(
+            id=1,
+            public_key=public_key,
+            public_key_fingerprint="synthetic",
+            encrypted_private_key=encrypt_secret(private_key),
+            subject="mailto:",
+            enabled=True,
+        )
+    )
+    db.commit()
+
+    with pytest.raises(InvalidVapidSubjectError):
+        effective_credentials(db)
+
+
+def test_admin_can_correct_vapid_contact_without_rotating_keys_or_subscriptions(db):
+    admin = user(db, "contact-admin@example.invalid", role="admin")
+    row = create_ui_configuration(
+        db,
+        subject="mailto:old@example.invalid",
+        installation_label="Synthetic",
+        rotate=False,
+    )
+    subscription = PushSubscription(
+        user_id=admin.id,
+        endpoint_hash="c" * 64,
+        encrypted_subscription=encrypt_secret("{}"),
+        status="active",
+    )
+    db.add(subscription)
+    db.commit()
+    original_public_key = row.public_key
+    original_private_key = row.encrypted_private_key
+
+    result = notification_router.update_web_push_contact(
+        notification_router.WebPushContactRequest(
+            contact_email="new@example.com"
+        ),
+        csrf_request(),
+        db=db,
+        user=admin,
+    )
+
+    db.expire_all()
+    corrected = db.get(WebPushConfiguration, 1)
+    assert result["subject"] == "mailto:new@example.com"
+    assert corrected.subject == "mailto:new@example.com"
+    assert corrected.public_key == original_public_key
+    assert corrected.encrypted_private_key == original_private_key
+    assert db.get(PushSubscription, subscription.id).status == "active"
 
 
 def test_notification_lookup_is_object_scoped(db):

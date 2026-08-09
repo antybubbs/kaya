@@ -1,9 +1,12 @@
 import logging
 import sqlite3
+from contextlib import contextmanager
+from contextvars import ContextVar
+from time import perf_counter
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
-from sqlalchemy.orm import DeclarativeBase, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.core.config import get_settings
 from app.core.performance import install_engine_timing
@@ -14,6 +17,26 @@ logger = logging.getLogger(__name__)
 SQLITE_BUSY_TIMEOUT_MS = 5_000
 SQLITE_REQUIRED_JOURNAL_MODE = "wal"
 SQLITE_REQUIRED_SYNCHRONOUS = "FULL"
+SLOW_WRITE_TRANSACTION_MS = 250
+_write_context: ContextVar[dict[str, str] | None] = ContextVar(
+    "sqlite_write_context", default=None
+)
+
+
+@contextmanager
+def database_write_context(subsystem: str, operation: str, *, external_io: bool = False):
+    """Attach safe attribution to a bounded unit of database work."""
+    token = _write_context.set(
+        {
+            "subsystem": str(subsystem)[:80],
+            "operation": str(operation)[:120],
+            "external_io": str(bool(external_io)).lower(),
+        }
+    )
+    try:
+        yield
+    finally:
+        _write_context.reset(token)
 
 connect_args = (
     {
@@ -50,6 +73,59 @@ if settings.database_url.startswith("sqlite"):
 
 install_engine_timing(engine)
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+
+
+@event.listens_for(Session, "after_begin")
+def _track_transaction_start(session, transaction, connection):
+    if transaction.nested:
+        return
+    context = _write_context.get() or {}
+    session.info["kaya_transaction_trace"] = {
+        "started": perf_counter(),
+        "session_id": id(session),
+        "connection_id": id(connection.connection),
+        "subsystem": context.get("subsystem", "unattributed"),
+        "operation": context.get("operation", "unattributed"),
+        "external_io": context.get("external_io", "false"),
+        "wrote": False,
+    }
+
+
+@event.listens_for(Session, "after_flush")
+def _track_transaction_write(session, _flush_context):
+    trace = session.info.get("kaya_transaction_trace")
+    if trace is not None:
+        trace["wrote"] = True
+
+
+def _finish_transaction_trace(session, outcome: str) -> None:
+    trace = session.info.pop("kaya_transaction_trace", None)
+    if not trace or not trace["wrote"]:
+        return
+    duration_ms = (perf_counter() - trace["started"]) * 1000
+    if duration_ms < SLOW_WRITE_TRANSACTION_MS:
+        return
+    logger.warning(
+        "database.write.slow subsystem=%s operation=%s session_id=%s connection_id=%s "
+        "duration_ms=%.1f outcome=%s external_io=%s",
+        trace["subsystem"],
+        trace["operation"],
+        trace["session_id"],
+        trace["connection_id"],
+        duration_ms,
+        outcome,
+        trace["external_io"],
+    )
+
+
+@event.listens_for(Session, "after_commit")
+def _track_transaction_commit(session):
+    _finish_transaction_trace(session, "committed")
+
+
+@event.listens_for(Session, "after_rollback")
+def _track_transaction_rollback(session):
+    _finish_transaction_trace(session, "rolled_back")
 
 
 class Base(DeclarativeBase):
@@ -98,6 +174,11 @@ def sqlite_lock_error(exc: BaseException) -> bool:
     while current is not None:
         if isinstance(current, sqlite3.OperationalError) and "locked" in str(
             current
+        ).lower():
+            return True
+        original = getattr(current, "orig", None)
+        if isinstance(original, sqlite3.OperationalError) and "locked" in str(
+            original
         ).lower():
             return True
         current = current.__cause__ or current.__context__

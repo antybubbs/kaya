@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
-from app.db.session import get_db
+from app.db.session import database_write_context, get_db
 from app.schemas.high_availability import (
     HAAgentActionResult,
     HAAgentEvents,
@@ -75,7 +75,8 @@ def register(payload: HAAgentRegister, request: Request, db: Session = Depends(g
 
 @router.post("/heartbeat")
 def heartbeat(payload: HAAgentHeartbeat, db: Session = Depends(get_db), agent: AuthenticatedAgent = Depends(require_agent)):
-    node, accepted, reason = record_heartbeat(db, agent.node, payload, return_status=True)
+    with database_write_context("ha_agent", "heartbeat"):
+        node, accepted, reason = record_heartbeat(db, agent.node, payload, return_status=True)
     return {
         "accepted": accepted,
         "reason": reason,

@@ -33,6 +33,10 @@ class WebPushEncryptionUnavailableError(WebPushConfigurationError):
     pass
 
 
+class InvalidVapidSubjectError(WebPushConfigurationError):
+    pass
+
+
 @dataclass(frozen=True)
 class VapidCredentials:
     public_key: str
@@ -88,6 +92,27 @@ def normalise_subject(contact_email: str | None, contact_url: str | None) -> str
     ):
         raise WebPushConfigurationError("Contact URL must be a valid HTTPS URL")
     return url
+
+
+def safe_subject_diagnostics(subject: str | None) -> dict[str, object]:
+    value = str(subject or "").strip()
+    parsed = urlsplit(value)
+    return {
+        "configured_contact_present": bool(value),
+        "configured_contact_scheme": parsed.scheme.lower() or "none",
+        "configured_contact_length": len(value),
+    }
+
+
+def validate_subject_uri(subject: str | None) -> str:
+    """Return one canonical RFC 8292 contact URI or fail closed."""
+    value = str(subject or "").strip()
+    try:
+        if value.lower().startswith("mailto:"):
+            return normalise_subject(value[7:], None)
+        return normalise_subject(None, value)
+    except WebPushConfigurationError as exc:
+        raise InvalidVapidSubjectError("VAPID contact is invalid") from exc
 
 
 def _normalise_label(value: str | None) -> str | None:
@@ -183,13 +208,7 @@ def _deployment_values() -> tuple[str, str, str] | None:
         return None
     if not public or not private:
         raise WebPushConfigurationError("Deployment VAPID configuration is incomplete")
-    subject = settings.vapid_subject.strip()
-    if not subject:
-        raise WebPushConfigurationError("Deployment VAPID subject is missing")
-    if subject.startswith("mailto:"):
-        normalise_subject(subject[7:], None)
-    else:
-        normalise_subject(None, subject)
+    subject = validate_subject_uri(settings.vapid_subject)
     validate_key_pair(public, private)
     return public, private, subject
 
@@ -209,7 +228,9 @@ def effective_credentials(db: Session) -> VapidCredentials | None:
     if not private or private == "[decryption failed]":
         raise WebPushConfigurationError("Stored Web Push configuration cannot be decrypted")
     validate_key_pair(row.public_key, private)
-    return VapidCredentials(row.public_key, private, row.subject, "kaya")
+    return VapidCredentials(
+        row.public_key, private, validate_subject_uri(row.subject), "kaya"
+    )
 
 
 def configuration_status(db: Session) -> dict[str, object]:
@@ -236,7 +257,7 @@ def configuration_status(db: Session) -> dict[str, object]:
             source = "kaya"
             state = "configured" if row.enabled else "disabled"
             fingerprint = public_key_fingerprint(row.public_key)
-            subject = row.subject
+            subject = credentials.subject
             label = row.installation_label
             generated_at = row.generated_at.isoformat() + "Z"
             valid = credentials is not None
