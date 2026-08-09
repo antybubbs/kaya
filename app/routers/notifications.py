@@ -305,7 +305,7 @@ def notification_admin_page(
         .limit(250)
         .all()
     )
-    registered_device_count = db.query(PushSubscription).count()
+    registered_device_count = db.query(PushSubscription).filter_by(status="active", revoked_at=None).count()
     active_devices = db.query(PushSubscription).filter_by(status="active", revoked_at=None).count()
     subscription_ids = [row.id for row, _user in subscriptions]
     attempts = (
@@ -750,8 +750,7 @@ def delete_subscription(
     )
     if not row:
         raise HTTPException(404, "Subscription not found")
-    row.status = "revoked"
-    row.revoked_at = datetime.utcnow()
+    db.delete(row)
     db.commit()
     return {"ok": True}
 
@@ -1449,10 +1448,10 @@ def remove_admin_push_subscription(subscription_id: int, request: Request, db: S
     subscription = db.get(PushSubscription, subscription_id)
     if not subscription:
         raise HTTPException(404, "Registered device not found")
-    subscription.status = "revoked"
-    subscription.revoked_at = datetime.utcnow()
+    db.delete(subscription)
     _audit_or_fail(db, user, "web_push_subscription_removed", "push_subscription", str(subscription.id), trusted_client_ip(request), detail="Administrator removed one registered Web Push device", metadata={"subscription_id": subscription.id, "user_id": subscription.user_id})
-    return {"ok": True, "subscription_id": subscription.id, "status": "revoked"}
+    db.commit()
+    return {"ok": True, "subscription_id": subscription_id, "status": "removed"}
 
 
 @router.get("/api/admin/notification-categories")
