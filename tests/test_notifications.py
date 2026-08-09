@@ -571,6 +571,8 @@ def test_web_push_key_management_routes_are_admin_only():
         notification_router.delete_web_push_configuration,
         notification_router.revoke_web_push_subscriptions,
         notification_router.admin_push_test,
+        notification_router.admin_push_subscription_test,
+        notification_router.remove_admin_push_subscription,
     ):
         dependency = inspect.signature(endpoint).parameters["user"].default
         assert dependency.dependency is require_admin

@@ -1418,6 +1418,32 @@ def admin_push_test(
     }
 
 
+@router.post("/api/admin/web-push/subscriptions/{subscription_id}/test")
+def admin_push_subscription_test(subscription_id: int, request: Request, db: Session = Depends(get_db), user=Depends(require_admin)):
+    _csrf(request)
+    _admin_rate_limit(db, user.id, ("web_push_test_sent", "web_push_test_failed"), limit=10, minutes=10)
+    subscription = db.get(PushSubscription, subscription_id)
+    if not subscription or subscription.status != "active" or subscription.revoked_at:
+        raise HTTPException(404, "Registered device is not active")
+    if not configuration_status(db)["enabled"]:
+        raise HTTPException(409, "Web Push is not enabled")
+    outbox = enqueue_notification(db, event_type_id="system.notification.test", title="Kaya Web Push test", message="This is a Web Push test requested from Kaya.", target_route="/notifications", recipient_ids=[subscription.user_id], created_by_user_id=user.id, metadata={"diagnostic": True, "diagnostic_channel": "push", "diagnostic_subscription_id": subscription.id})
+    _audit_or_fail(db, user, "web_push_test_sent", "push_subscription", str(subscription.id), trusted_client_ip(request), detail="Administrator queued a per-device Web Push test", metadata={"subscription_id": subscription.id, "outbox_id": outbox.id})
+    return {"ok": True, "outbox_id": outbox.id, "subscription_id": subscription.id, "status": "queued"}
+
+
+@router.delete("/api/admin/web-push/subscriptions/{subscription_id}")
+def remove_admin_push_subscription(subscription_id: int, request: Request, db: Session = Depends(get_db), user=Depends(require_admin)):
+    _csrf(request)
+    subscription = db.get(PushSubscription, subscription_id)
+    if not subscription:
+        raise HTTPException(404, "Registered device not found")
+    subscription.status = "revoked"
+    subscription.revoked_at = datetime.utcnow()
+    _audit_or_fail(db, user, "web_push_subscription_removed", "push_subscription", str(subscription.id), trusted_client_ip(request), detail="Administrator removed one registered Web Push device", metadata={"subscription_id": subscription.id, "user_id": subscription.user_id})
+    return {"ok": True, "subscription_id": subscription.id, "status": "revoked"}
+
+
 @router.get("/api/admin/notification-categories")
 def admin_categories(db: Session = Depends(get_db), user=Depends(require_admin)):
     return {

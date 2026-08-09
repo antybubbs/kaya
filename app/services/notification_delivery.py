@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from urllib.parse import urlsplit
 from datetime import datetime, timedelta
 
 from app.core.security import decrypt_secret
@@ -24,6 +25,19 @@ from app.services.web_push_config import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _provider_name(subscription: dict | None) -> str:
+    host = (urlsplit(str((subscription or {}).get("endpoint") or "")).hostname or "").lower().rstrip(".")
+    if host == "fcm.googleapis.com" or host.endswith(".fcm.googleapis.com"):
+        return "FCM"
+    if host.endswith("push.services.mozilla.com"):
+        return "Mozilla Push"
+    if host.endswith("push.apple.com"):
+        return "Apple Web Push"
+    if host.endswith("notify.windows.com"):
+        return "Microsoft/Windows Push"
+    return "Unknown"
 MAX_RETRIES = 4
 STALE_PROCESSING_SECONDS = 300
 
@@ -131,6 +145,7 @@ def deliver_queued(heartbeat=None) -> int:
             encrypted_subscription = (
                 subscription.encrypted_subscription if subscription else None
             )
+            decoded = None
             db.commit()
             try:
                 if channel == "push":
@@ -231,8 +246,11 @@ def deliver_queued(heartbeat=None) -> int:
                     )
                 elif channel == "push":
                     logger.warning(
-                        "notification.delivery.push.failed classification=%s retry=%s attempt_id=%s",
+                        "notification.delivery.push.failed classification=%s status_code=%s provider=%s subscription_id=%s retry=%s attempt_id=%s",
                         attempt.failure_reason_code,
+                        status_code or "unknown",
+                        _provider_name(decoded if 'decoded' in locals() else None),
+                        subscription_id,
                         attempt.retry_count,
                         attempt.id,
                     )

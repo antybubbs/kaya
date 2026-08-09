@@ -224,6 +224,9 @@ def publish(
     diagnostic_channel = (metadata or {}).get("diagnostic_channel")
     if diagnostic_channel not in {"in_app", "push", "email"}:
         diagnostic_channel = None
+    diagnostic_subscription_id = (metadata or {}).get("diagnostic_subscription_id")
+    if not isinstance(diagnostic_subscription_id, int) or diagnostic_subscription_id <= 0:
+        diagnostic_subscription_id = None
     if diagnostics is not None:
         diagnostics.clear()
         diagnostics["event_registered"] = False
@@ -360,6 +363,11 @@ def publish(
                 subscriptions = (
                     db.query(PushSubscription)
                     .filter_by(user_id=recipient.id, status="active", revoked_at=None)
+                    .filter(
+                        PushSubscription.id == diagnostic_subscription_id
+                        if diagnostic_subscription_id
+                        else True
+                    )
                     .limit(20)
                     .all()
                 )
