@@ -7,6 +7,7 @@ import shlex
 import socket
 import ssl
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 from app.core.security import decrypt_secret
@@ -1010,11 +1011,29 @@ def sync_host(db, host):
         return
 
     now = datetime.utcnow()
+    host_id = host.id
     old_host_status = host.status
+    network_host = SimpleNamespace(
+        id=host.id,
+        name=host.name,
+        platform=host.platform,
+        base_url=host.base_url,
+        token_id=host.token_id,
+        encrypted_token=host.encrypted_token,
+        verify_tls=host.verify_tls,
+    )
+    # Collection can span many bounded API calls. End the ORM read transaction
+    # and use only the minimal detached connection snapshot during provider I/O.
+    db.rollback()
     try:
         result = (
-            collect_docker(host) if host.platform == "docker" else collect_proxmox(host)
+            collect_docker(network_host)
+            if network_host.platform == "docker"
+            else collect_proxmox(network_host)
         )
+        host = db.get(ComputeHost, host_id)
+        if host is None or not host.is_enabled:
+            return
         snap = result["host"]
         host.status = "online"
         host.version = result.get("version")
@@ -1149,6 +1168,9 @@ def sync_host(db, host):
                 )
             )
     except Exception as exc:
+        host = db.get(ComputeHost, host_id)
+        if host is None:
+            return
         host.status = "offline"
         host.last_error = str(exc)[:2000]
         if old_host_status != "offline":

@@ -5,10 +5,22 @@
 
 The default database is SQLite.
 
+Kaya configures file-backed SQLite databases with WAL journalling, a bounded
+5-second busy timeout, foreign-key enforcement, and `synchronous=FULL`. Startup
+verifies these settings and stops if the required reliability contract cannot
+be established. WAL improves read/write concurrency; it does not make long
+transactions safe, so background services release database transactions before
+bounded provider, DNS, API, and subprocess work where practical.
+
 ## Location
 
 - Docker default: `/app/data/kaya.db`
 - Docker Compose bind mount: `./data/kaya.db`
+
+While Kaya is running, SQLite may also create `kaya.db-wal` and `kaya.db-shm` in
+the same directory. Keep that directory writable and do not delete or copy the
+sidecars independently. Use Kaya's SQLite backup path or stop Kaya cleanly
+before taking a filesystem-level copy.
 
 Persistent application state also includes:
 

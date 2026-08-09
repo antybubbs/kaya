@@ -8,7 +8,7 @@ import logging
 from datetime import datetime, timedelta
 
 from app.core.security import decrypt_secret
-from app.db.session import SessionLocal
+from app.db.session import SessionLocal, sqlite_lock_error
 from app.models.models import (
     NotificationDeliveryAttempt,
     PushSubscription,
@@ -114,6 +114,7 @@ def deliver_queued(heartbeat=None) -> int:
                         "notification.delivery.push.skipped reason=inactive_target attempt_id=%s",
                         attempt.id,
                     )
+                db.commit()
                 continue
             event = user_notification.event
             payload = {
@@ -158,6 +159,8 @@ def deliver_queued(heartbeat=None) -> int:
                 else:
                     attempt.status = "cancelled"
                     attempt.failure_reason_code = "unknown_channel"
+                    attempt.processing_started_at = None
+                    db.commit()
                     continue
                 attempt = db.get(NotificationDeliveryAttempt, attempt.id)
                 subscription = db.get(PushSubscription, subscription_id)
@@ -176,9 +179,13 @@ def deliver_queued(heartbeat=None) -> int:
                     subscription.last_used_at = now
                     subscription.failure_count = 0
                 delivered += 1
+                db.commit()
             except (
                 Exception
             ) as exc:  # genuine outbound-provider boundary; never log endpoint or key material
+                if sqlite_lock_error(exc):
+                    db.rollback()
+                    raise
                 status_code = getattr(
                     getattr(exc, "response", None), "status_code", None
                 )
@@ -236,8 +243,14 @@ def deliver_queued(heartbeat=None) -> int:
                         attempt.retry_count,
                         attempt.id,
                     )
+                db.commit()
         db.commit()
         return delivered
+    except Exception:
+        # Never leave a failed transaction available to subsequent work in the
+        # same iteration. The next loop always starts with a fresh Session.
+        db.rollback()
+        raise
     finally:
         db.close()
 

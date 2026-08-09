@@ -17,7 +17,7 @@ from starlette.requests import Request
 from app.db.session import Base
 from app.models.models import HAAgentCredential, HAAgentRequest, HACluster, HAEvent, HALeaseReplicationState, HANode, NotificationEvent
 from app.schemas.high_availability import HAAgentActionResult, HAAgentEventItem, HAAgentHeartbeat, HAAgentRegister
-from app.services.ha_agents import HAAgentError, authenticate_agent_request, create_bootstrap_token, desired_state, ingest_events, reconcile_vip_ownership, record_action_result, record_heartbeat, register_agent, revoke_agent
+from app.services.ha_agents import HAAgentError, authenticate_agent_request, create_bootstrap_token, desired_state, ingest_events, prune_agent_request_history, reconcile_vip_ownership, record_action_result, record_heartbeat, register_agent, revoke_agent
 from app.services.ha_clusters import soft_delete_cluster
 from app.services.notification_outbox import process_outbox
 from app.services.ha_topology import reconcile_topology
@@ -131,6 +131,26 @@ def test_signed_requests_expire_reject_replay_and_stop_after_revocation():
         with pytest.raises(HTTPException) as revoked:
             asyncio.run(authenticate_agent_request(signed_request(credential.agent_id, key, "/api/ha/agent/v1/heartbeat", payload, "request-revoked"), db))
         assert revoked.value.status_code == 401
+
+
+def test_agent_replay_retention_is_explicit_maintenance():
+    with database() as db:
+        cluster, primary, _ = cluster_with_nodes(db)
+        credential, token = create_bootstrap_token(db, primary)
+        key = Ed25519PrivateKey.generate()
+        register_agent(db, registration_payload(cluster, primary, token, key))
+        old = HAAgentRequest(
+            credential_id=credential.id,
+            request_id="synthetic-expired-request",
+            request_timestamp=datetime.utcnow() - timedelta(days=2),
+            received_at=datetime.utcnow() - timedelta(days=2),
+        )
+        db.add(old)
+        db.commit()
+
+        assert prune_agent_request_history(db) == 1
+        db.commit()
+        assert db.query(HAAgentRequest).count() == 0
 
 
 def test_rejected_agent_report_logs_reason_without_signature_or_payload(caplog):

@@ -122,3 +122,9 @@ Operational backups should include:
 - Remote recordings
 
 If using remote backup targets, verify credentials and mount/access behaviour outside Kaya as well.
+
+Kaya uses SQLite WAL mode. A running database can have `kaya.db-wal` and
+`kaya.db-shm` beside `kaya.db`; these are live database state, not disposable
+temporary files. Prefer Kaya's online backup workflow. If taking a raw
+filesystem copy, stop Kaya cleanly first and copy the database directory as one
+consistent unit rather than copying only `kaya.db`.

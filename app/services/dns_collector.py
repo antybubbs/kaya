@@ -10,7 +10,7 @@ from time import monotonic
 
 from sqlalchemy.orm import Session
 
-from app.db.session import SessionLocal
+from app.db.session import SessionLocal, sqlite_lock_error
 from app.models.models import DNSProviderConfig
 from app.services.dns_insights import AnalysisAlreadyRunning, analyse_provider
 from app.services.site_settings import get_site_settings
@@ -106,5 +106,17 @@ async def dns_collector_loop() -> None:
     await asyncio.sleep(STARTUP_DELAY_SECONDS)
     while True:
         started = monotonic()
-        delay = await asyncio.to_thread(run_dns_collection_pass)
+        try:
+            delay = await asyncio.to_thread(run_dns_collection_pass)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if sqlite_lock_error(exc):
+                logger.warning(
+                    "database.contention subsystem=dns operation=collection_pass "
+                    "retry_count=1 worker=dns_collector"
+                )
+            else:
+                logger.exception("DNS collection pass failed; retrying")
+            delay = DISABLED_RECHECK_SECONDS
         await asyncio.sleep(max(1, delay - (monotonic() - started)))

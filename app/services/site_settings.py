@@ -1,14 +1,29 @@
 from fnmatch import fnmatch
 import ipaddress
 import json
+import logging
 import re
+import threading
+from time import monotonic
 from urllib.parse import urlparse, urlsplit
 
+from sqlalchemy import event
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
 from app.core.branding import APP_BRAND_NAME
 from app.models.models import OIDCProvider, RemoteManagerSetting
+
+
+logger = logging.getLogger(__name__)
+SECURITY_CACHE_MAX_AGE_SECONDS = 5.0
+_security_cache_guard = threading.RLock()
+_security_cache: tuple[dict[str, str], str | None] | None = None
+_security_cache_engine_id: int | None = None
+_security_cache_loaded_at = 0.0
+_security_cache_stale = True
+_security_cache_lock_warning_at = 0.0
 
 
 DEFAULT_SITE_SETTINGS = {
@@ -202,6 +217,90 @@ def oidc_form_action_source(db: Session) -> str | None:
         host = f"[{hostname}]" if ":" in hostname else hostname
         return f"{parsed.scheme}://{host}{f':{port}' if port else ''}"
     return None
+
+
+def invalidate_security_settings_cache() -> None:
+    """Mark the last-known-good request security snapshot for refresh."""
+    global _security_cache_stale
+    with _security_cache_guard:
+        _security_cache_stale = True
+
+
+@event.listens_for(Session, "before_commit")
+def _track_security_setting_changes(db: Session) -> None:
+    changed = set(db.new).union(db.dirty).union(db.deleted)
+    db.info["security_settings_changed"] = any(
+        isinstance(row, OIDCProvider)
+        or (
+            isinstance(row, RemoteManagerSetting)
+            and row.key in SECURITY_SETTING_KEYS
+        )
+        for row in changed
+    )
+
+
+@event.listens_for(Session, "after_commit")
+def _invalidate_security_settings_after_commit(db: Session) -> None:
+    if db.info.pop("security_settings_changed", False):
+        invalidate_security_settings_cache()
+
+
+@event.listens_for(Session, "after_rollback")
+def _discard_security_settings_change_marker(db: Session) -> None:
+    db.info.pop("security_settings_changed", None)
+
+
+def cached_security_context(
+    db: Session,
+    *,
+    max_age_seconds: float = SECURITY_CACHE_MAX_AGE_SECONDS,
+) -> tuple[dict[str, str], str | None]:
+    """Return validated security-header inputs with a lock-safe stale fallback.
+
+    A transient SQLite writer may delay refresh, but it must not replace the
+    last successfully loaded controls with permissive defaults.
+    """
+    global _security_cache, _security_cache_engine_id
+    global _security_cache_loaded_at, _security_cache_stale
+    global _security_cache_lock_warning_at
+
+    now = monotonic()
+    engine_id = id(db.get_bind())
+    with _security_cache_guard:
+        if (
+            _security_cache is not None
+            and _security_cache_engine_id == engine_id
+            and not _security_cache_stale
+            and now - _security_cache_loaded_at < max_age_seconds
+        ):
+            security, oidc_source = _security_cache
+            return dict(security), oidc_source
+
+    try:
+        security = load_security_settings(db)
+        oidc_source = oidc_form_action_source(db)
+        # Do not leave a reader open after refreshing process-wide settings.
+        db.rollback()
+    except OperationalError:
+        db.rollback()
+        with _security_cache_guard:
+            if _security_cache is None or _security_cache_engine_id != engine_id:
+                raise
+            security, oidc_source = _security_cache
+            if now - _security_cache_lock_warning_at >= 30:
+                logger.warning(
+                    "database.contention subsystem=security_settings "
+                    "operation=cache_refresh fallback=last_known_good"
+                )
+                _security_cache_lock_warning_at = now
+            return dict(security), oidc_source
+
+    with _security_cache_guard:
+        _security_cache = (dict(security), oidc_source)
+        _security_cache_engine_id = engine_id
+        _security_cache_loaded_at = now
+        _security_cache_stale = False
+    return dict(security), oidc_source
 
 
 def split_hosts(value: str) -> list[str]:

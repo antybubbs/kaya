@@ -651,15 +651,25 @@ def record_monitor_result(
 
 def run_monitor_check(db: Session, monitor: NetworkMonitor) -> None:
     started_at = datetime.utcnow()
-    if active_dashboard_interval() == 1:
+    monitor_id = monitor.id
+    address = monitor.ip_address.address
+    timeout_ms = clamp_timeout(monitor.timeout_ms)
+    fast_check = active_dashboard_interval() == 1
+    # Ping is a subprocess boundary and can take several seconds. It needs no
+    # live ORM transaction; reload the monitor before recording the result.
+    db.rollback()
+    if fast_check:
         ok, latency_ms, error = ping_ipv4(
-            monitor.ip_address.address, clamp_timeout(monitor.timeout_ms)
+            address, timeout_ms
         )
         packet_loss = 0 if ok else 100
     else:
         ok, latency_ms, packet_loss, error = ping_ipv4_samples(
-            monitor.ip_address.address, clamp_timeout(monitor.timeout_ms)
+            address, timeout_ms
         )
+    monitor = db.get(NetworkMonitor, monitor_id)
+    if monitor is None or not monitor.is_enabled:
+        return
     record_monitor_result(db, monitor, ok, latency_ms, packet_loss, error, now=started_at)
 
 
