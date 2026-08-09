@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from urllib.parse import urlsplit
 from datetime import datetime, timedelta
 
@@ -38,13 +39,24 @@ def _provider_name(subscription: dict | None) -> str:
     if host.endswith("notify.windows.com"):
         return "Microsoft/Windows Push"
     return "Unknown"
+
+
+def _safe_provider_reason(exc: Exception) -> str | None:
+    response = getattr(exc, "response", None)
+    text = getattr(response, "text", None) or getattr(response, "reason", None)
+    if not text:
+        return None
+    text = " ".join(str(text).split())[:160]
+    text = text.replace("https://", "[url]").replace("http://", "[url]")
+    text = re.sub(r"[A-Za-z0-9_-]{32,}", "[redacted]", text)
+    return text
 MAX_RETRIES = 4
 STALE_PROCESSING_SECONDS = 300
 
 
 def _send_push(
     subscription: dict, payload: dict, credentials: VapidCredentials
-) -> None:
+) -> dict:
     from pywebpush import webpush
     import requests
 
@@ -62,6 +74,12 @@ def _send_push(
         timeout=10,
         requests_session=NoRedirectSession(),
     )
+    endpoint = urlsplit(str(subscription.get("endpoint") or ""))
+    return {
+        "audience": f"{endpoint.scheme}://{endpoint.hostname}" + (f":{endpoint.port}" if endpoint.port else ""),
+        "payload_bytes": len(json.dumps(payload, separators=(",", ":")).encode("utf-8")),
+        "content_encoding": "aes128gcm",
+    }
 
 
 def deliver_queued(heartbeat=None) -> int:
@@ -147,6 +165,7 @@ def deliver_queued(heartbeat=None) -> int:
                 subscription.encrypted_subscription if subscription else None
             )
             decoded = None
+            push_metadata = {}
             db.commit()
             try:
                 if channel == "push":
@@ -159,7 +178,7 @@ def deliver_queued(heartbeat=None) -> int:
                         decrypt_secret(encrypted_subscription)
                     )
                     db.commit()
-                    _send_push(decoded, payload, credentials)
+                    push_metadata = _send_push(decoded, payload, credentials) or {}
                 elif channel == "email":
                     base_url = get_site_setting(db, "base_url").rstrip("/")
                     action_url = f"{base_url}{payload['target']}"
@@ -247,14 +266,19 @@ def deliver_queued(heartbeat=None) -> int:
                     )
                 elif channel == "push":
                     logger.warning(
-                        "notification.delivery.push.failed classification=%s status_code=%s provider=%s subscription_id=%s retry=%s attempt_id=%s correlation_id=%s",
+                        "notification.delivery.push.failed classification=%s status_code=%s provider=%s subscription_id=%s retryable=%s retry=%s attempt_id=%s correlation_id=%s audience=%s payload_bytes=%s content_encoding=%s provider_reason=%s",
                         attempt.failure_reason_code,
                         status_code or "unknown",
                         _provider_name(decoded if 'decoded' in locals() else None),
                         subscription_id,
+                        attempt.status not in {"permanent_failure", "expired_subscription"},
                         attempt.retry_count,
                         attempt.id,
                         correlation_id,
+                        push_metadata.get("audience", "unknown"),
+                        push_metadata.get("payload_bytes", "unknown"),
+                        push_metadata.get("content_encoding", "unknown"),
+                        _safe_provider_reason(exc) or "unknown",
                     )
                 else:
                     logger.warning(
