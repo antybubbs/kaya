@@ -50,8 +50,12 @@ from app.services.oidc_client import (
 from app.services.oidc_discovery import OIDCDiscoveryError, test_and_store_discovery
 from app.services.oidc_identity import (
     OIDCIdentityError,
+    claim_admin_link_invitation,
     confirm_transaction_link,
+    invitation_provider_binding,
+    invitation_recipient_binding,
     resolve_login,
+    revoke_admin_link_invitation,
     unlink_identity,
 )
 from app.services.sessions import start_user_session
@@ -69,6 +73,9 @@ LINK_ERROR_MESSAGES = {
     "user_identity_conflict": "This Kaya account is already linked to a different external identity.",
     "invalid_link_target": "The Kaya account selected for linking is no longer available.",
     "inactive_user": "The Kaya account linked to this identity is disabled.",
+    "invalid_link_invitation": "This account-link request is no longer valid.",
+    "invalid_auth_time": "Single sign-on could not be completed.",
+    "invitation_identity_mismatch": "The verified identity-provider email did not match this Kaya account.",
 }
 
 
@@ -154,7 +161,7 @@ def callback_error_context(db: Session, request: Request, transaction: OIDCTrans
     return actor, message, "/profile" if authorised_link_owner else "/login", "Return to profile" if authorised_link_owner else "Return to sign in"
 
 
-async def _begin(request: Request, db: Session, provider: OIDCProvider, *, flow_type="login", target_user_id=None, initiated_by_user_id=None, return_path="/dashboard", authorization_params=None):
+async def _begin(request: Request, db: Session, provider: OIDCProvider, *, flow_type="login", target_user_id=None, initiated_by_user_id=None, link_invitation_id=None, return_path="/dashboard", authorization_params=None):
     actor = db.get(User, initiated_by_user_id) if initiated_by_user_id else None
     start_action = "oidc_link_started" if flow_type in {"self_link", "admin_link"} else "oidc_login_started"
     if _rate_limited(f"oidc:{client_key(request)}"):
@@ -166,6 +173,7 @@ async def _begin(request: Request, db: Session, provider: OIDCProvider, *, flow_
             authorization_redirect(
                 db, provider, callback_url=callback_url(db), flow_type=flow_type,
                 target_user_id=target_user_id, initiated_by_user_id=initiated_by_user_id, return_path=return_path,
+                link_invitation_id=link_invitation_id,
                 authorization_params=authorization_params,
             ),
             timeout=max(4, min(provider.timeout_seconds, 30) + 2),
@@ -220,7 +228,7 @@ def _complete_vault_assurance(request: Request, db: Session, provider: OIDCProvi
 async def oidc_login(request: Request, return_to: str = Query("/dashboard"), db: Session = Depends(get_db)):
     policy = get_authentication_policy(db)
     provider = policy.provider
-    if settings.demo_mode or not policy.show_oidc_login:
+    if not policy.show_oidc_login:
         return templates.TemplateResponse(request, "oidc_error.html", _oidc_error_context(request, db, "Single sign-on is not enabled."), status_code=404)
     return await _begin(request, db, provider, return_path=safe_return_path(return_to, get_site_setting(db, "oidc_post_login_path")))
 
@@ -298,7 +306,7 @@ def link_confirm_page(request: Request, db: Session = Depends(get_db)):
     provider = db.get(OIDCProvider, transaction.provider_id)
     claims = json.loads(transaction.validated_claims_json)
     current = db.get(User, request.session.get("user_id")) if request.session.get("user_id") else None
-    if transaction.flow_type == "self_link" and (not current or current.id != transaction.target_user_id):
+    if transaction.flow_type in {"self_link", "admin_link"} and (not current or current.id != transaction.target_user_id):
         return RedirectResponse("/login", status_code=303)
     return templates.TemplateResponse(request, "oidc_link_confirm.html", {"user": current, "target": target, "provider": provider, "claims": claims, "require_password": transaction.flow_type == "email_match", **csrf_context(request)})
 
@@ -411,8 +419,8 @@ def _provider_status(db: Session, provider: OIDCProvider | None) -> dict:
 def authentication_admin(request: Request, tab: str = Query("general"), db: Session = Depends(get_db), user=Depends(require_admin)):
     provider = db.query(OIDCProvider).order_by(OIDCProvider.id.asc()).first()
     preview = request.session.pop("oidc_test_preview", None)
-    invitation = request.session.pop("oidc_invitation_url", None)
     identities = db.query(ExternalIdentity).order_by(ExternalIdentity.created_at.desc()).all()
+    invitations = db.query(OIDCLinkInvitation).order_by(OIDCLinkInvitation.created_at.desc()).limit(100).all()
     readiness = oidc_only_readiness(db, user)
     emergency_url = f"{get_site_setting(db, 'base_url').rstrip('/')}/auth/local"
     return templates.TemplateResponse(request, "authentication_settings.html", {
@@ -425,7 +433,7 @@ def authentication_admin(request: Request, tab: str = Query("general"), db: Sess
         "show_local_preferred": get_site_setting(db, "oidc_show_local_preferred") == "1",
         "callback_url": callback_url(db), "post_logout_url": post_logout_url(db), "status": _provider_status(db, provider),
         "identities": identities, "users": db.query(User).order_by(User.email).all(), "test_preview": preview,
-        "invitation_url": invitation, "role_mappings": json.loads(provider.role_mappings_json or "[]") if provider else [],
+        "invitations": invitations, "role_mappings": json.loads(provider.role_mappings_json or "[]") if provider else [],
         "oidc_readiness": readiness, "emergency_url": emergency_url,
         **csrf_context(request),
     })
@@ -637,25 +645,155 @@ def create_link_invitation(request: Request, user_id: int = Form(...), csrf_toke
     validate_csrf_token(request, csrf_token)
     provider = active_provider(db)
     target = db.get(User, user_id)
-    if not provider or not target or _rate_limited(f"oidc-invite:{admin.id}", limit=10):
+    existing_identity = db.query(ExternalIdentity).filter_by(user_id=target.id, provider_id=provider.id).first() if provider and target else None
+    if (
+        not provider or not target or not target.is_active or not target.password_hash or existing_identity
+        or _rate_limited(f"oidc-invite:{admin.id}", limit=10)
+    ):
         return RedirectResponse("/system/site-administration/authentication?tab=links&error=invite", status_code=303)
-    db.query(OIDCLinkInvitation).filter_by(user_id=target.id, provider_id=provider.id, used_at=None).delete()
+    now = datetime.utcnow()
+    db.query(OIDCLinkInvitation).filter_by(user_id=target.id, provider_id=provider.id, completed_at=None, revoked_at=None).update(
+        {OIDCLinkInvitation.revoked_at: now, OIDCLinkInvitation.redemption_session_hash: None}, synchronize_session=False,
+    )
     raw = secrets.token_urlsafe(32)
-    db.add(OIDCLinkInvitation(token_hash=hashlib.sha256(raw.encode()).hexdigest(), user_id=target.id, provider_id=provider.id, created_by_user_id=admin.id, expires_at=datetime.utcnow() + timedelta(minutes=30)))
+    invitation = OIDCLinkInvitation(
+        token_hash=hashlib.sha256(raw.encode()).hexdigest(), user_id=target.id, provider_id=provider.id,
+        created_by_user_id=admin.id, recipient_binding_hash=invitation_recipient_binding(target),
+        provider_binding_hash=invitation_provider_binding(provider),
+        expires_at=now + timedelta(minutes=30),
+    )
+    db.add(invitation)
     db.commit()
-    request.session["oidc_invitation_url"] = f"{get_site_setting(db, 'base_url').rstrip('/')}/auth/oidc/link/invitation?token={raw}"
-    return RedirectResponse("/system/site-administration/authentication?tab=links&invited=1", status_code=303)
+    _audit_oidc(db, admin, "oidc_link_invitation_created", request, provider, detail=f"Invitation created for user {target.id}")
+    response = templates.TemplateResponse(request, "oidc_invitation_created.html", {
+        "user": admin, "target": target,
+        "invitation_url": f"{get_site_setting(db, 'base_url').rstrip('/')}/auth/oidc/link/invitation?token={raw}",
+        **csrf_context(request),
+    }, status_code=201)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
 
 
 @router.get("/auth/oidc/link/invitation")
-async def accept_link_invitation(request: Request, token: str = Query(""), db: Session = Depends(get_db)):
-    row = db.query(OIDCLinkInvitation).filter_by(token_hash=hashlib.sha256(token.encode()).hexdigest(), used_at=None).first()
-    if not row or row.expires_at < datetime.utcnow():
-        return templates.TemplateResponse(request, "oidc_error.html", _oidc_error_context(request, db, "This account-link invitation is invalid or expired."), status_code=400)
-    provider = db.get(OIDCProvider, row.provider_id)
-    row.used_at = datetime.utcnow()
+def accept_link_invitation(request: Request, token: str = Query("", max_length=512), db: Session = Depends(get_db), user=Depends(require_user)):
+    digest = hashlib.sha256(token.encode()).hexdigest()
+    row = db.query(OIDCLinkInvitation).filter_by(token_hash=digest, used_at=None, revoked_at=None).first()
+    provider = db.get(OIDCProvider, row.provider_id) if row else None
+    if (
+        not row or not secrets.compare_digest(row.token_hash, digest) or row.expires_at < datetime.utcnow()
+        or row.user_id != user.id or row.recipient_binding_hash != invitation_recipient_binding(user)
+        or not provider or row.provider_binding_hash != invitation_provider_binding(provider)
+    ):
+        _audit_oidc(db, user, "oidc_link_invitation_rejected", request, None, category="invalid_invitation", severity="warning")
+        return templates.TemplateResponse(request, "oidc_error.html", _oidc_error_context(request, db, "This account-link request is no longer valid."), status_code=400)
+    if not provider or not provider.is_enabled:
+        return templates.TemplateResponse(request, "oidc_error.html", _oidc_error_context(request, db, "This account-link request is no longer valid."), status_code=400)
+    response = templates.TemplateResponse(request, "oidc_invitation_open.html", {
+        "user": user, "token": token, **csrf_context(request),
+    })
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
+
+@router.post("/auth/oidc/link/invitation/open")
+def open_link_invitation(
+    request: Request, token: str = Form("", max_length=512), csrf_token: str = Form(...),
+    db: Session = Depends(get_db), user=Depends(require_user),
+):
+    validate_csrf_token(request, csrf_token)
+    digest = hashlib.sha256(token.encode()).hexdigest()
+    row = db.query(OIDCLinkInvitation).filter_by(token_hash=digest, used_at=None, revoked_at=None).first()
+    provider = db.get(OIDCProvider, row.provider_id) if row else None
+    if (
+        not row or not secrets.compare_digest(row.token_hash, digest) or row.expires_at < datetime.utcnow()
+        or row.user_id != user.id or row.recipient_binding_hash != invitation_recipient_binding(user)
+        or not provider or not provider.is_enabled
+        or row.provider_binding_hash != invitation_provider_binding(provider)
+    ):
+        _audit_oidc(db, user, "oidc_link_invitation_rejected", request, None, category="invalid_invitation", severity="warning")
+        return templates.TemplateResponse(request, "oidc_error.html", _oidc_error_context(request, db, "This account-link request is no longer valid."), status_code=400)
+    binder = secrets.token_urlsafe(32)
+    row.redemption_session_hash = hashlib.sha256(binder.encode()).hexdigest()
     db.commit()
-    return await _begin(request, db, provider, flow_type="admin_link", target_user_id=row.user_id, initiated_by_user_id=row.created_by_user_id, return_path="/profile")
+    request.session["oidc_link_invitation"] = {"id": row.id, "binder": binder}
+    _audit_oidc(db, user, "oidc_link_invitation_opened", request, provider)
+    response = RedirectResponse("/auth/oidc/link/invitation/confirm", status_code=303)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
+
+def _session_invitation(db: Session, request: Request, user: User) -> OIDCLinkInvitation | None:
+    binding = request.session.get("oidc_link_invitation")
+    if not isinstance(binding, dict) or not isinstance(binding.get("id"), int) or not isinstance(binding.get("binder"), str):
+        return None
+    row = db.get(OIDCLinkInvitation, binding["id"])
+    provider = db.get(OIDCProvider, row.provider_id) if row else None
+    binder_hash = hashlib.sha256(binding["binder"].encode()).hexdigest()
+    if (
+        not row or row.user_id != user.id or row.used_at is not None or row.revoked_at is not None
+        or row.expires_at < datetime.utcnow() or not row.redemption_session_hash
+        or not secrets.compare_digest(row.redemption_session_hash, binder_hash)
+        or row.recipient_binding_hash != invitation_recipient_binding(user)
+        or not provider or row.provider_binding_hash != invitation_provider_binding(provider)
+    ):
+        return None
+    return row
+
+
+@router.get("/auth/oidc/link/invitation/confirm")
+def invitation_confirm_page(request: Request, db: Session = Depends(get_db), user=Depends(require_user)):
+    row = _session_invitation(db, request, user)
+    if not row:
+        return RedirectResponse("/profile?identity_error=invalid_invitation", status_code=303)
+    return templates.TemplateResponse(request, "oidc_invitation_confirm.html", {
+        "user": user, "requires_2fa": bool(user.totp_enabled), **csrf_context(request),
+    })
+
+
+@router.post("/auth/oidc/link/invitation/confirm")
+async def invitation_confirm_submit(
+    request: Request, password: str = Form("", max_length=255), totp_code: str = Form("", max_length=20),
+    csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_user),
+):
+    validate_csrf_token(request, csrf_token)
+    row = _session_invitation(db, request, user)
+    valid_proof = bool(row and user.password_hash and verify_password(password, user.password_hash))
+    if valid_proof and user.totp_enabled:
+        valid_proof = verify_totp(decrypted_totp_secret(user.totp_secret), totp_code)
+    limited = _rate_limited(f"oidc-invite-confirm:{user.id}", limit=5)
+    if not valid_proof or limited:
+        provider = db.get(OIDCProvider, row.provider_id) if row else None
+        _audit_oidc(db, user, "oidc_link_invitation_rejected", request, provider, category="local_proof_failed", severity="warning")
+        return templates.TemplateResponse(request, "oidc_invitation_confirm.html", {
+            "user": user, "requires_2fa": bool(user.totp_enabled), "error": "Invalid password or authentication code.", **csrf_context(request),
+        }, status_code=401)
+    invitation_id = row.id
+    provider_id = row.provider_id
+    if not claim_admin_link_invitation(db, row, user):
+        return RedirectResponse("/profile?identity_error=invalid_invitation", status_code=303)
+    provider = db.get(OIDCProvider, provider_id)
+    request.session.pop("oidc_link_invitation", None)
+    _audit_oidc(db, user, "oidc_link_invitation_redeemed", request, provider)
+    return await _begin(
+        request, db, provider, flow_type="admin_link", target_user_id=user.id,
+        initiated_by_user_id=user.id, link_invitation_id=invitation_id, return_path="/profile",
+        authorization_params={"prompt": "login", "max_age": "0"},
+    )
+
+
+@router.post("/system/site-administration/authentication/links/invitations/{invitation_id}/revoke")
+def revoke_link_invitation(invitation_id: int, request: Request, csrf_token: str = Form(...), db: Session = Depends(get_db), admin=Depends(require_admin)):
+    validate_csrf_token(request, csrf_token)
+    row = db.get(OIDCLinkInvitation, invitation_id)
+    if row:
+        provider = db.get(OIDCProvider, row.provider_id)
+        if not revoke_admin_link_invitation(db, row.id):
+            return RedirectResponse("/system/site-administration/authentication?tab=links", status_code=303)
+        _audit_oidc(db, admin, "oidc_link_invitation_revoked", request, provider, detail=f"Invitation revoked for user {row.user_id}")
+    return RedirectResponse("/system/site-administration/authentication?tab=links", status_code=303)
 
 
 @router.post("/system/site-administration/authentication/links/{identity_id}/unlink")

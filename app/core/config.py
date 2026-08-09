@@ -40,9 +40,6 @@ class Settings(BaseSettings):
     guacd_host: str = ""
     guacd_port: str = ""
     version_check_interval_seconds: int = 1800
-    demo_mode: bool = False
-    demo_reset_schedule: str = "03:00 UTC"
-    demo_generation_file: str = str(DEFAULT_DATA_DIR / ".demo-generation")
     performance_diagnostics: bool = False
     vapid_public_key: str = ""
     vapid_private_key: str = ""

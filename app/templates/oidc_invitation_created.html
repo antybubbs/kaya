@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="topbar"><div><p class="eyebrow">Site administration</p><h1>OIDC invitation created</h1></div></div>
+<section class="panel stack">
+  <div class="success">A single-use invitation was created for <strong>{{ target.email }}</strong>. It expires in 30 minutes.</div>
+  <p>Copy this URL now. Kaya does not retain the raw invitation secret and it will not be shown again.</p>
+  <label>Invitation URL<input value="{{ invitation_url }}" readonly autocomplete="off"></label>
+  <p class="muted">Send it only to the intended recipient through an approved private channel. They must already be signed in to this Kaya account and re-authenticate locally before provider linking begins.</p>
+  <div class="form-actions"><a class="button" href="/system/site-administration/authentication?tab=links">Return to account links</a></div>
+</section>
+{% endblock %}

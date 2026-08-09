@@ -78,7 +78,7 @@ def test_view_tracking_uses_additive_fields_with_safe_migration_guards():
     assert "last_viewed_at: Mapped[datetime | None]" in model
     assert 'sa.Column("view_count", sa.Integer(), nullable=False)' in baseline
     assert 'sa.Column("last_viewed_at", sa.DateTime(), nullable=True)' in baseline
-    assert "if column_name in target_columns:" in compatibility
+    assert "row[1] not in target_columns" in compatibility
     assert "ALTER TABLE" in compatibility
 
 

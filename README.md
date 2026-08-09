@@ -193,7 +193,6 @@ services:
       FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
       SKIP_DATABASE_MIGRATIONS: "true"
       KAYA_GATEWAY_MODE: "true"
-      DEMO_MODE: ${DEMO_MODE:-false}
     ports:
       - "${KAYA_SECURE_SEND_PORT:-8999}:8999"
     volumes:

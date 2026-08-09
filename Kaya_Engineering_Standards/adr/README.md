@@ -2,6 +2,15 @@
 
 ADRs record significant engineering decisions.
 
+## Index
+
+- [ADR-0001: Engineering standards as the source of truth](ADR-0001-engineering-standards-as-source-of-truth.md) — Accepted
+- [ADR-0002: Recipient-bound OIDC administrator linking](ADR-0002-recipient-bound-oidc-administrator-linking.md) — Accepted
+- [ADR-0003: Strict RDP certificate trust](ADR-0003-rdp-certificate-trust.md) — Accepted
+- [ADR-0004: Backup-agent machine authentication and secret delivery](ADR-0004-backup-agent-machine-authentication.md) — Accepted
+- [ADR-0005: Retire the shared public demo](ADR-0005-retire-public-demo.md) — Accepted
+- [ADR-0006: Guided RDP certificate discovery](ADR-0006-rdp-certificate-discovery.md) — Accepted
+
 ## Numbering
 
 Use sequential numbers:

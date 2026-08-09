@@ -66,7 +66,6 @@ Startup and shutdown own background task lifecycle. A background service must be
 The application also configures:
 
 - session middleware;
-- demo-mode protections;
 - trusted proxy and client IP behaviour;
 - security headers;
 - request and performance metrics;

@@ -20,6 +20,7 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Query,
     Request,
     UploadFile,
     WebSocket,
@@ -29,6 +30,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
 from starlette import status
+from starlette.concurrency import run_in_threadpool
 
 from app.core.config import get_settings
 from app.core.csrf import csrf_context, validate_csrf_token
@@ -48,12 +50,25 @@ from app.routers.auth import (
     require_user,
 )
 from app.services.audit import write_audit
+from app.services.rdp_certificate_discovery import (
+    RdpCertificateCandidate,
+    discover_rdp_certificate,
+)
+from app.services.remote_endpoint_trust import update_remote_endpoint
 from app.services.guacamole_bridge import (
     restart_guacamole_bridge,
     start_guacamole_bridge,
 )
 from app.services.sessions import active_user_session
 from app.services.site_settings import get_site_setting
+from app.services.client_ip import client_ip as trusted_client_ip
+from app.services.table_export import (
+    export_row_matches,
+    table_export_response,
+    validate_export_columns,
+    validate_export_filters,
+    validate_export_format,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +83,8 @@ SSH_HOST_KEY_ALGORITHMS = {
     "ssh-rsa",
 }
 SSH_SHA256_FINGERPRINT = re.compile(r"^SHA256:[A-Za-z0-9+/]{43}$")
+RDP_SHA256_FINGERPRINT = re.compile(r"^sha256:((?:[0-9a-fA-F]{2}:){31}[0-9a-fA-F]{2}|[0-9a-fA-F]{64})$")
+MAX_RDP_CERT_FINGERPRINTS = 3
 SETTINGS = {
     "guacamole_enabled": "0",
     "split_screen_enabled": "1",
@@ -154,6 +171,89 @@ def clean_dimension(value: int, default: int, minimum: int, maximum: int) -> int
     if minimum <= value <= maximum:
         return value
     return default
+
+
+def normalise_rdp_cert_fingerprints(value: str | None) -> list[str]:
+    entries = [entry.strip() for entry in re.split(r"[\r\n,]+", str(value or "")) if entry.strip()]
+    if len(entries) > MAX_RDP_CERT_FINGERPRINTS:
+        raise ValueError(f"At most {MAX_RDP_CERT_FINGERPRINTS} RDP certificate fingerprints are permitted.")
+    normalised = []
+    for entry in entries:
+        match = RDP_SHA256_FINGERPRINT.fullmatch(entry)
+        if not match:
+            raise ValueError("RDP fingerprints must use sha256 followed by exactly 32 hexadecimal bytes.")
+        fingerprint = f"sha256:{match.group(1).replace(':', '').lower()}"
+        if fingerprint not in normalised:
+            normalised.append(fingerprint)
+    return normalised
+
+
+def freerdp_rdp_cert_fingerprint(fingerprint: str) -> str:
+    """Render a validated canonical pin in FreeRDP 2.x's wire format."""
+    algorithm, digest = fingerprint.split(":", 1)
+    return f"{algorithm}:{':'.join(digest[index:index + 2] for index in range(0, len(digest), 2))}"
+
+
+def rdp_certificate_settings(row: RemoteAccess) -> dict[str, object]:
+    if getattr(row, "rdp_trust_invalidated_at", None) is not None:
+        raise ValueError("RDP certificate trust must be re-authorized after the endpoint changed.")
+    fingerprints = normalise_rdp_cert_fingerprints(row.rdp_cert_fingerprints)
+    settings: dict[str, object] = {"ignore-cert": False, "cert-tofu": False}
+    if fingerprints:
+        settings["cert-fingerprints"] = ",".join(
+            freerdp_rdp_cert_fingerprint(fingerprint) for fingerprint in fingerprints
+        )
+    return settings
+
+
+def rdp_identity_view(value: object) -> str:
+    """Allow only known post-action destinations; never accept a return URL."""
+    candidate = str(value or "").strip().casefold()
+    return candidate if candidate in {"panel", "session"} else "settings"
+
+
+def rdp_identity_destination(row_id: int, view: str, *, trusted: bool = False) -> str:
+    view = rdp_identity_view(view)
+    suffix = "?rdp_cert_trusted=1" if trusted else ""
+    if view == "panel":
+        return f"/remote-manager/{row_id}/panel{suffix}"
+    if view == "session":
+        return f"/remote-manager/{row_id}/session{suffix}"
+    return f"/remote-manager/{row_id}/settings{suffix}#rdp-certificate-trust"
+
+
+def rdp_pin_count(row: RemoteAccess) -> int:
+    return len(normalise_rdp_cert_fingerprints(row.rdp_cert_fingerprints)) if row.rdp_cert_fingerprints else 0
+
+
+def rdp_identity_response(
+    request: Request,
+    row: RemoteAccess,
+    user,
+    *,
+    view: str = "panel",
+    candidate: RdpCertificateCandidate | None = None,
+    comparison: bool = False,
+    error: str | None = None,
+    status_code: int = 200,
+):
+    return templates.TemplateResponse(
+        request,
+        "remote_rdp_certificate_identity.html",
+        {
+            "user": user,
+            "remote": row,
+            "remote_label": remote_label(row),
+            "rdp_cert_candidate": candidate,
+            "rdp_cert_comparison": comparison,
+            "rdp_cert_error": error,
+            "rdp_cert_view": view,
+            "rdp_cert_return_path": rdp_identity_destination(row.id, view),
+            "rdp_cert_pin_count": rdp_pin_count(row),
+            **csrf_context(request),
+        },
+        status_code=status_code,
+    )
 
 
 def int_payload(payload: dict, key: str, default: int) -> int:
@@ -572,6 +672,7 @@ def create_rdp_guacamole_token(row: RemoteAccess, username: str, password: str, 
     def enabled(key: str) -> bool:
         return rdp_settings.get(key, SETTINGS[key]) == "1"
 
+    certificate_settings = rdp_certificate_settings(row)
     return encrypt_guacamole_token(
         {
             "connection": {
@@ -585,8 +686,8 @@ def create_rdp_guacamole_token(row: RemoteAccess, username: str, password: str, 
                     "height": height,
                     "dpi": dpi,
                     "timezone": timezone,
-                    "security": "any",
-                    "ignore-cert": True,
+                    "security": "nla",
+                    **certificate_settings,
                     "disable-audio": enabled("rdp_disable_audio"),
                     "enable-audio-input": enabled("rdp_enable_audio_input"),
                     "enable-wallpaper": enabled("rdp_enable_wallpaper"),
@@ -714,10 +815,9 @@ async def tcp_check(host: str, port: int, timeout: float = 5) -> tuple[bool, str
 
 @router.get("")
 def remote_list(request: Request, db: Session = Depends(get_db), user=Depends(require_user)):
-    demo_mode = get_settings().demo_mode
-    rows = [] if demo_mode else db.query(RemoteAccess).filter(RemoteAccess.is_enabled).options(selectinload(RemoteAccess.ip_address)).order_by(RemoteAccess.protocol.asc(), RemoteAccess.display_name.asc(), RemoteAccess.id.asc()).all()
+    rows = db.query(RemoteAccess).filter(RemoteAccess.is_enabled).options(selectinload(RemoteAccess.ip_address)).order_by(RemoteAccess.protocol.asc(), RemoteAccess.display_name.asc(), RemoteAccess.id.asc()).all()
     settings = settings_map(db)
-    return templates.TemplateResponse(request, "remote_manager.html", {"user": user, "rows": rows, "remote_label": remote_label, "remote_manager_locked": demo_mode, "split_screen_enabled": settings.get("split_screen_enabled", "1") == "1", **csrf_context(request)})
+    return templates.TemplateResponse(request, "remote_manager.html", {"user": user, "rows": rows, "remote_label": remote_label, "split_screen_enabled": settings.get("split_screen_enabled", "1") == "1", **csrf_context(request)})
 
 
 @router.get("/settings")
@@ -755,6 +855,47 @@ def recording_list(request: Request, db: Session = Depends(get_db), user=Depends
         .all()
     )
     return templates.TemplateResponse(request, "remote_recordings.html", {"user": user, "recordings": rows, **csrf_context(request)})
+
+
+@router.get("/recordings/export")
+def export_recordings_table(
+    request: Request,
+    format: str = Query("csv", max_length=8),
+    columns: str = Query("", max_length=300),
+    filters: str = Query("", max_length=2000),
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    format = validate_export_format(format)
+    column_map = {
+        "started": ("Started", lambda row: (row.started_at or row.created_at).isoformat() if (row.started_at or row.created_at) else ""),
+        "host": ("Host", lambda row: row.remote_label or ""),
+        "protocol": ("Protocol", lambda row: (row.protocol or "").upper()),
+        "category": ("Category", lambda row: row.category or "Uncategorised"),
+        "user": ("User", lambda row: row.user.email if row.user else "Unknown"),
+        "duration": ("Duration", lambda row: f"{round(row.duration_seconds or 0)}s"),
+        "size": ("Size", lambda row: f"{round((row.size_bytes or 0) / 1048576, 2)} MB"),
+    }
+    selected_columns = validate_export_columns(columns, list(column_map))
+    active_filters = validate_export_filters(filters, list(column_map))
+    rows = (
+        db.query(RemoteSessionRecording)
+        .options(selectinload(RemoteSessionRecording.user), selectinload(RemoteSessionRecording.remote))
+        .order_by(RemoteSessionRecording.started_at.desc(), RemoteSessionRecording.id.desc())
+        .limit(100000)
+        .all()
+    )
+    rows = [row for row in rows if export_row_matches(row, column_map, active_filters)]
+    write_audit(
+        db, user, "export", "remote_session_recording", None, trusted_client_ip(request),
+        detail=f"Exported {len(rows)} recording rows as {format}",
+    )
+    return table_export_response(
+        table_name="remote-recordings",
+        headers=[column_map[key][0] for key in selected_columns],
+        rows=([column_map[key][1](row) for key in selected_columns] for row in rows),
+        export_format=format,
+    )
 
 
 @router.get("/recordings/{recording_id}")
@@ -853,7 +994,7 @@ def remote_session(request: Request, remote_id: int, db: Session = Depends(get_d
     settings = settings_map(db)
     remote_settings = effective_remote_settings(row, settings)
     title = remote_label(row)
-    return templates.TemplateResponse(request, "remote_session.html", {"user": user, "remote": row, "rows": rows, "remote_label": title, "remote_label_fn": remote_label, "settings": settings, "remote_settings": remote_settings, "ssh_host_key_ready": trusted_ssh_host_key(row) is not None, "ssh_host_identity_view": "session", "recording_enabled": recording_controls_enabled(settings), "recording_auto_enabled": recording_auto_enabled(row, settings), "remote_category": remote_category(row), **csrf_context(request)})
+    return templates.TemplateResponse(request, "remote_session.html", {"user": user, "remote": row, "rows": rows, "remote_label": title, "remote_label_fn": remote_label, "settings": settings, "remote_settings": remote_settings, "ssh_host_key_ready": trusted_ssh_host_key(row) is not None, "ssh_host_identity_view": "session", "rdp_cert_identity_view": "session", "recording_enabled": recording_controls_enabled(settings), "recording_auto_enabled": recording_auto_enabled(row, settings), "remote_category": remote_category(row), **csrf_context(request)})
 
 
 @router.get("/{remote_id}/settings")
@@ -879,6 +1020,17 @@ def remote_ssh_host_identity(request: Request, remote_id: int, db: Session = Dep
     return ssh_host_identity_response(request, row, user, view=view)
 
 
+@router.get("/{remote_id}/rdp/certificate")
+def remote_rdp_certificate_identity(request: Request, remote_id: int, db: Session = Depends(get_db), user=Depends(require_admin)):
+    row = db.get(RemoteAccess, remote_id)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Remote access entry not found")
+    if row.protocol != "rdp":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Certificate discovery is only available for RDP connections.")
+    view = rdp_identity_view(request.query_params.get("view"))
+    return rdp_identity_response(request, row, user, view=view)
+
+
 @router.post("/{remote_id}/settings")
 async def save_remote_host_settings(request: Request, remote_id: int, csrf_token: str = Form(...), remote_display_name: str = Form("", max_length=255), remote_protocol: str = Form("ssh"), remote_port: int = Form(22), remote_username: str = Form("", max_length=120), db: Session = Depends(get_db), user=Depends(require_editor)):
     validate_csrf_token(request, csrf_token)
@@ -888,11 +1040,14 @@ async def save_remote_host_settings(request: Request, remote_id: int, csrf_token
     form = await request.form()
     row.display_name = remote_display_name.strip() or None
     row.is_enabled = bool(form.get("remote_enabled"))
-    previous_protocol = row.protocol
-    previous_port = row.port
-    row.protocol = clean_protocol(remote_protocol)
-    row.port = clean_port(remote_port, row.protocol)
-    if row.protocol != previous_protocol or row.port != previous_port:
+    previous_protocol, previous_port = row.protocol, row.port
+    next_protocol = clean_protocol(remote_protocol)
+    next_port = clean_port(remote_port, next_protocol)
+    update_remote_endpoint(
+        db, row.ip_address, remote=row, protocol=next_protocol, port=next_port,
+        actor=user, audit_ip=request.client.host if request.client else None, reason="remote_host_editor",
+    )
+    if next_protocol != previous_protocol or next_port != previous_port:
         row.host_key_fingerprint = None
     row.username = remote_username.strip() or None
     row.terminal_settings = encode_settings_blob(remote_override_settings(form, TERMINAL_SETTING_KEYS))
@@ -900,6 +1055,149 @@ async def save_remote_host_settings(request: Request, remote_id: int, csrf_token
     db.commit()
     write_audit(db, user, "update", "remote_access", entity_id=str(row.id), ip_address=request.client.host if request.client else None, detail=f"Updated Remote Manager settings for {remote_label(row)}")
     return RedirectResponse("/remote-manager", status_code=303)
+
+
+def _rdp_certificate_discover_response(
+    request: Request, row: RemoteAccess, user, db: Session, view: str,
+    candidate: RdpCertificateCandidate | None, error: str | None, status_code: int,
+):
+    if view == "settings":
+        return templates.TemplateResponse(
+            request,
+            "remote_host_settings.html",
+            {
+                "user": user,
+                **remote_host_settings_context(row, db),
+                "rdp_cert_candidate": candidate,
+                "rdp_cert_discover_error": error,
+                **csrf_context(request),
+            },
+            status_code=status_code,
+        )
+    return rdp_identity_response(
+        request, row, user, view=view, candidate=candidate, error=error, status_code=status_code,
+    )
+
+
+@router.post("/{remote_id}/rdp/certificate/discover")
+def discover_remote_rdp_certificate(
+    request: Request, remote_id: int, csrf_token: str = Form(...),
+    rdp_cert_view: str = Form("settings"), db: Session = Depends(get_db), user=Depends(require_admin),
+):
+    validate_csrf_token(request, csrf_token)
+    view = rdp_identity_view(rdp_cert_view)
+    row = db.get(RemoteAccess, remote_id)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Remote access entry not found")
+    if row.protocol != "rdp":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Certificate discovery is only available for RDP connections.")
+    try:
+        candidate = discover_rdp_certificate(row.ip_address.address, row.port, timeout=8.0)
+        error = None
+    except ValueError as exc:
+        candidate = None
+        error = str(exc)
+    write_audit(
+        db, user, "rdp_certificate_discovered", "remote_access", entity_id=str(row.id),
+        ip_address=request.client.host if request.client else None,
+        detail=f"Discovered RDP certificate for {remote_label(row)}; certificate was not trusted automatically",
+        severity="warning" if error else "info",
+    )
+    return _rdp_certificate_discover_response(request, row, user, db, view, candidate, error, 400 if error else 200)
+
+
+@router.post("/{remote_id}/rdp/certificate/trust")
+def trust_remote_rdp_certificate(
+    request: Request, remote_id: int, csrf_token: str = Form(...),
+    rdp_cert_candidate: str = Form(...), rdp_cert_mode: str = Form("trust"),
+    rdp_cert_view: str = Form("settings"), db: Session = Depends(get_db), user=Depends(require_admin),
+):
+    validate_csrf_token(request, csrf_token)
+    view = rdp_identity_view(rdp_cert_view)
+    row = db.get(RemoteAccess, remote_id)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Remote access entry not found")
+    if row.protocol != "rdp":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Certificate trust is only available for RDP connections.")
+    mode = rdp_cert_mode if rdp_cert_mode in {"trust", "replace", "append"} else "trust"
+    try:
+        submitted = normalise_rdp_cert_fingerprints(rdp_cert_candidate)
+    except ValueError:
+        submitted = []
+    if len(submitted) != 1:
+        write_audit(
+            db, user, "rdp_certificate_trust_rejected", "remote_access", entity_id=str(row.id),
+            ip_address=request.client.host if request.client else None,
+            detail=f"Rejected invalid RDP certificate trust submission for {remote_label(row)}", severity="warning",
+        )
+        return _rdp_certificate_discover_response(
+            request, row, user, db, view, None,
+            "The submitted certificate could not be validated. Discover the certificate again.", 400,
+        )
+    submitted_fingerprint = submitted[0]
+    # Re-verify live, immediately before persisting: closes the gap between
+    # "shown to the administrator" and "saved to the trust store" (mirrors
+    # trust_remote_host_key's re-scan for SSH).
+    try:
+        current = discover_rdp_certificate(row.ip_address.address, row.port, timeout=8.0)
+    except ValueError as exc:
+        return _rdp_certificate_discover_response(
+            request, row, user, db, view, None,
+            f"Kaya could not re-verify the certificate before trusting it: {exc}", 400,
+        )
+    if current.fingerprint != submitted_fingerprint:
+        write_audit(
+            db, user, "rdp_certificate_changed_during_enrolment", "remote_access", entity_id=str(row.id),
+            ip_address=request.client.host if request.client else None,
+            detail=f"RDP certificate changed while enrolling {remote_label(row)}", severity="critical",
+        )
+        return rdp_identity_response(
+            request, row, user, view=view, candidate=current, comparison=True,
+            error="The certificate changed since it was reviewed. Nothing was trusted; review the new certificate below.",
+            status_code=409,
+        )
+    existing = normalise_rdp_cert_fingerprints(row.rdp_cert_fingerprints) if row.rdp_cert_fingerprints else []
+    if mode == "append" and existing:
+        new_pins = existing if submitted_fingerprint in existing else (existing + [submitted_fingerprint])[:MAX_RDP_CERT_FINGERPRINTS]
+    else:
+        new_pins = [submitted_fingerprint]
+    previous_count = len(existing)
+    row.rdp_cert_fingerprints = "\n".join(new_pins)
+    row.rdp_trust_invalidated_at = None
+    row.rdp_trust_invalidated_reason = None
+    db.commit()
+    write_audit(
+        db, user, "rdp_certificate_trust_updated", "remote_access", entity_id=str(row.id),
+        ip_address=request.client.host if request.client else None,
+        detail=f"Updated RDP certificate trust for {remote_label(row)}; pin count changed from {previous_count} to {len(new_pins)}",
+        severity="warning", metadata={"mode": mode},
+    )
+    return RedirectResponse(rdp_identity_destination(row.id, view, trusted=True), status_code=303)
+
+
+@router.post("/{remote_id}/rdp/certificate/remove")
+def remove_remote_rdp_certificate_trust(
+    request: Request, remote_id: int, csrf_token: str = Form(...),
+    db: Session = Depends(get_db), user=Depends(require_admin),
+):
+    validate_csrf_token(request, csrf_token)
+    row = db.get(RemoteAccess, remote_id)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Remote access entry not found")
+    if row.protocol != "rdp":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Certificate trust is only available for RDP connections.")
+    previous_count = rdp_pin_count(row)
+    row.rdp_cert_fingerprints = None
+    row.rdp_trust_invalidated_at = None
+    row.rdp_trust_invalidated_reason = None
+    db.commit()
+    write_audit(
+        db, user, "rdp_certificate_trust_updated", "remote_access", entity_id=str(row.id),
+        ip_address=request.client.host if request.client else None,
+        detail=f"Updated RDP certificate trust for {remote_label(row)}; pin count changed from {previous_count} to 0",
+        severity="warning", metadata={"mode": "remove"},
+    )
+    return RedirectResponse(f"/remote-manager/{row.id}/settings?rdp_cert_removed=1", status_code=303)
 
 
 @router.post("/{remote_id}/ssh/host-key/scan")
@@ -1025,7 +1323,7 @@ def remote_session_panel(request: Request, remote_id: int, db: Session = Depends
     settings = settings_map(db)
     remote_settings = effective_remote_settings(row, settings)
     title = remote_label(row)
-    return templates.TemplateResponse(request, "remote_session_panel.html", {"user": user, "remote": row, "remote_label": title, "settings": settings, "remote_settings": remote_settings, "ssh_host_key_ready": trusted_ssh_host_key(row) is not None, "ssh_host_identity_view": "panel", "recording_enabled": recording_controls_enabled(settings), "recording_auto_enabled": recording_auto_enabled(row, settings), "remote_category": remote_category(row), **csrf_context(request)})
+    return templates.TemplateResponse(request, "remote_session_panel.html", {"user": user, "remote": row, "remote_label": title, "settings": settings, "remote_settings": remote_settings, "ssh_host_key_ready": trusted_ssh_host_key(row) is not None, "ssh_host_identity_view": "panel", "rdp_cert_identity_view": "panel", "recording_enabled": recording_controls_enabled(settings), "recording_auto_enabled": recording_auto_enabled(row, settings), "remote_category": remote_category(row), **csrf_context(request)})
 
 
 @router.post("/{remote_id}/recordings/upload")
@@ -1159,13 +1457,55 @@ async def rdp_start(request: Request, remote_id: int, db: Session = Depends(get_
     if settings.get("guacamole_enabled") != "1" or not settings.get("guacd_host", "").strip():
         logs.append("Guacamole is not enabled or guacd is not configured.")
         return JSONResponse({"ok": False, "logs": logs}, status_code=400)
+    if row.rdp_cert_fingerprints and row.rdp_trust_invalidated_at is None:
+        try:
+            stored_pins = normalise_rdp_cert_fingerprints(row.rdp_cert_fingerprints)
+        except ValueError:
+            stored_pins = []
+        if stored_pins:
+            # Best-effort early warning only: guacd/FreeRDP's cert-fingerprints
+            # check remains the sole authoritative enforcement. A short
+            # timeout keeps this from delaying the common (unchanged) case,
+            # and any discovery failure here falls through to the normal
+            # connection attempt unchanged rather than blocking it.
+            try:
+                live = await run_in_threadpool(
+                    discover_rdp_certificate, row.ip_address.address, row.port, timeout=2.5
+                )
+            except ValueError:
+                live = None
+            if live is not None and live.fingerprint not in stored_pins:
+                write_audit(
+                    db, user, "rdp_certificate_mismatch_detected", "remote_access", entity_id=str(row.id),
+                    ip_address=request.client.host if request.client else None,
+                    detail=f"Blocked RDP session for {remote_label(row)}: presented certificate no longer matches the trusted pin",
+                    severity="critical",
+                )
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "certificate_changed": True,
+                        "review_url": f"/remote-manager/{row.id}/rdp/certificate?view=session",
+                        "logs": ["The RDP certificate has changed since it was trusted. Review it before connecting."],
+                    },
+                    status_code=409,
+                )
     start_guacamole_bridge()
     cleanup_rdp_tokens()
     width = clean_dimension(int_payload(payload, "width", 1280), 1280, 640, 7680)
     height = clean_dimension(int_payload(payload, "height", 720), 720, 480, 4320)
     dpi = clean_dimension(int_payload(payload, "dpi", 96), 96, 72, 240)
     timezone = str(payload.get("timezone", ""))[:80]
-    token = create_rdp_guacamole_token(row, username, password, width, height, dpi, timezone, remote_settings["rdp"])
+    try:
+        token = create_rdp_guacamole_token(row, username, password, width, height, dpi, timezone, remote_settings["rdp"])
+    except ValueError:
+        write_audit(
+            db, user, "rdp_session_rejected", "remote_access", entity_id=str(row.id),
+            ip_address=request.client.host if request.client else None,
+            detail=f"Rejected RDP session for {remote_label(row)} because certificate trust configuration is invalid",
+            severity="warning",
+        )
+        return JSONResponse({"ok": False, "logs": ["RDP certificate trust is invalid. Ask an administrator to review this host."]}, status_code=400)
     now = time.time()
     rdp_tokens[token] = RDPSessionToken(
         remote_id=row.id,
@@ -1187,9 +1527,6 @@ async def rdp_start(request: Request, remote_id: int, db: Session = Depends(get_
 
 @router.websocket("/{remote_id}/ssh/ws")
 async def ssh_websocket(websocket: WebSocket, remote_id: int):
-    if get_settings().demo_mode:
-        await websocket.close(code=1008, reason="Remote connections are disabled in the public demo")
-        return
     if not websocket_origin_allowed(websocket):
         await websocket.close(code=1008)
         return
@@ -1286,9 +1623,6 @@ async def ssh_websocket(websocket: WebSocket, remote_id: int):
 
 @router.websocket("/{remote_id}/rdp/ws")
 async def rdp_websocket(websocket: WebSocket, remote_id: int):
-    if get_settings().demo_mode:
-        await websocket.close(code=1008, reason="Remote connections are disabled in the public demo")
-        return
     if not websocket_origin_allowed(websocket):
         await websocket.close(code=1008)
         return

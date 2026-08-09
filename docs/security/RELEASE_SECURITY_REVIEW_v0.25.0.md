@@ -9,7 +9,6 @@ Candidate branch: `dev0.25.0`
 | Deployment target | Decision | Conditions |
 |---|---|---|
 | Trusted private LAN or VPN Beta | **Go after required CI gates pass** | Use HTTPS, restrict trusted proxies, retain backups, and review the release notes. |
-| Shared public demo | **Go after required CI gates pass** | Use `DEMO_MODE=true`, the deterministic reset, no Secure Send gateway, and no HA background workers. |
 | Direct public-internet exposure of the main Kaya interface | **No-go** | The remaining Medium security findings require further hardening and operational review. |
 
 This is a scoped review, not a claim that Kaya is completely secure.
@@ -63,22 +62,11 @@ The confirmed High findings from the initial audit have been remediated in this 
 - Removing an HA cluster is a soft deletion and does not delete DNS Manager history or linked records.
 - Legacy FTP target metadata is retained even though insecure use is blocked.
 
-## Public demo
-
-The public-demo boundary now:
-
-- blocks every `/api/ha/agent` request;
-- blocks every non-read-only `/high-availability` request;
-- keeps Remote Manager sessions, backup agents, Secure Send, and background infrastructure workers disabled;
-- retains deterministic resets and read-only module presentation;
-- includes regression coverage for representative HA creation, deployment, synchronisation, failover, agent registration, and heartbeat paths.
-
-No demo visitor can register an HA agent, contact a Pi-hole, deploy Keepalived, copy configuration, stage leases, or initiate failover.
 
 ## Verification evidence
 
 - Full Linux suite in an isolated container: **310 passed**.
-- Focused release-security and demo boundary tests: **15 passed**.
+- Focused release-security boundary tests: **15 passed**.
 - JavaScript syntax checks for the SSH bridge and settings UI: passed.
 - Python compilation and shell entrypoint syntax: passed.
 - `git diff --check`: passed.
@@ -105,6 +93,6 @@ Required before merge:
 
 - **Trust boundaries changed:** yes; HA agents, Remote Manager WebSockets, SSH server identity, initial setup, and backup dispatch were hardened.
 - **Sensitive data touched:** encrypted infrastructure credentials, application sessions, setup/bootstrap tokens, SSH fingerprints, Pi-hole credentials, DHCP snapshots, and audit events.
-- **Validation added:** authoritative session lookup, absolute session lifetime, transactional setup ownership, constant-time token/fingerprint comparisons, SSH key-algorithm restriction, password freshness for TOTP enrolment, bounded recording streaming, explicit trusted-proxy ranges, demo-mode denial, and plaintext-FTP denial.
+- **Validation added:** authoritative session lookup, absolute session lifetime, transactional setup ownership, constant-time token/fingerprint comparisons, SSH key-algorithm restriction, password freshness for TOTP enrolment, bounded recording streaming, explicit trusted-proxy ranges, and plaintext-FTP denial.
 - **Audit changes:** rejected setup claims, host-key scans/enrolment changes, session-invalidating account changes, and blocked FTP dispatches are auditable.
 - **Residual risk:** remaining Medium application-wide findings and the externally executed dependency/CodeQL gates prevent an unqualified public-internet security claim.

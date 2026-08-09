@@ -2,6 +2,7 @@ import base64
 import hashlib
 import io
 import asyncio
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,7 +15,8 @@ from fastapi import HTTPException
 
 from app.db.session import Base
 from app.main import app
-from app.models.models import AppSession, User
+from app.core.security import decrypt_secret
+from app.models.models import AppSession, AuditLog, IPAddress, RemoteAccess, User
 from app.routers import auth, remote_manager
 from app.routers.admin import test_backup_storage_target as check_backup_storage_target
 from app.services.sessions import active_user_session, revoke_user_sessions, touch_user_session
@@ -92,7 +94,7 @@ def test_session_revocation_can_preserve_only_the_current_session():
 
 
 def test_first_run_setup_requires_the_deployment_token(monkeypatch):
-    monkeypatch.setattr(auth, "settings", SimpleNamespace(setup_token="one-time-token", demo_mode=False))
+    monkeypatch.setattr(auth, "settings", SimpleNamespace(setup_token="one-time-token"))
     with database() as db:
         response = auth.setup_submit(
             request(),
@@ -163,6 +165,108 @@ def test_trusted_ssh_host_key_accepts_enrolled_supported_identity():
     fingerprint = f"SHA256:{'A' * 43}"
     row = SimpleNamespace(host_key_fingerprint=f"ssh-ed25519 {fingerprint}")
     assert remote_manager.trusted_ssh_host_key(row) == ("ssh-ed25519", fingerprint)
+
+
+def rdp_remote(fingerprints=None):
+    return SimpleNamespace(
+        rdp_cert_fingerprints=fingerprints,
+        ip_address=SimpleNamespace(address="192.0.2.40"),
+        port=3389,
+    )
+
+
+def test_rdp_guacamole_token_verifies_certificates_by_default():
+    token = remote_manager.create_rdp_guacamole_token(
+        rdp_remote(), "synthetic-user", "clearly-fake-password", 1280, 720, 96, "UTC", {},
+    )
+    settings = json.loads(decrypt_secret(token))["connection"]["settings"]
+    assert settings["security"] == "nla"
+    assert settings["ignore-cert"] is False
+    assert settings["cert-tofu"] is False
+    assert "cert-fingerprints" not in settings
+
+
+def test_rdp_certificate_pins_are_normalised_and_enforced_in_token():
+    first = "AA:" * 31 + "AA"
+    fingerprints = f"sha256:{first}\nsha256:{'b' * 64}"
+    token = remote_manager.create_rdp_guacamole_token(
+        rdp_remote(fingerprints), "synthetic-user", "clearly-fake-password", 1280, 720, 96, "UTC", {},
+    )
+    settings = json.loads(decrypt_secret(token))["connection"]["settings"]
+    assert settings["ignore-cert"] is False
+    assert settings["cert-tofu"] is False
+    colon_a = ":".join(["aa"] * 32)
+    colon_b = ":".join(["bb"] * 32)
+    assert settings["cert-fingerprints"] == f"sha256:{colon_a},sha256:{colon_b}"
+
+
+def test_rdp_certificate_pin_uses_freerdp_2_wire_format_without_weakening_validation():
+    canonical = f"sha256:{'01' * 32}"
+    wire = remote_manager.freerdp_rdp_cert_fingerprint(canonical)
+    assert wire == "sha256:" + ":".join(["01"] * 32)
+    assert remote_manager.normalise_rdp_cert_fingerprints(wire) == [canonical]
+
+
+def test_rdp_certificate_trust_rejects_malformed_or_excessive_pins():
+    for value in ("sha1:" + "a" * 40, "sha256:not-hex", "sha256:" + "a" * 62):
+        try:
+            remote_manager.normalise_rdp_cert_fingerprints(value)
+            assert False, "Malformed RDP certificate pin should fail"
+        except ValueError:
+            pass
+    excessive = "\n".join(f"sha256:{str(index) * 64}" for index in range(4))
+    try:
+        remote_manager.normalise_rdp_cert_fingerprints(excessive)
+        assert False, "Excessive RDP certificate pins should fail"
+    except ValueError:
+        pass
+
+
+def test_rdp_bridge_source_never_defaults_to_ignoring_or_tofu_certificates():
+    source = Path("scripts/guacamole-server.cjs").read_text(encoding="utf-8")
+    assert '"ignore-cert": false' in source
+    assert '"cert-tofu": false' in source
+    assert 'security: "nla"' in source
+    assert '"ignore-cert": true' not in source
+
+
+def test_rdp_certificate_trust_change_is_admin_only_and_audit_is_redacted(monkeypatch):
+    for path in (
+        "/remote-manager/{remote_id}/rdp/certificate/discover",
+        "/remote-manager/{remote_id}/rdp/certificate/trust",
+        "/remote-manager/{remote_id}/rdp/certificate/remove",
+    ):
+        route = next(route for route in app.routes if getattr(route, "path", "") == path)
+        assert "require_admin" in {dependency.call.__name__ for dependency in route.dependant.dependencies}
+    with database() as db:
+        admin = user(db)
+        address = IPAddress(address="192.0.2.40", name="Synthetic RDP")
+        remote = RemoteAccess(ip_address=address, protocol="rdp", port=3389, is_enabled=True)
+        db.add_all([address, remote])
+        db.commit()
+        fingerprint = f"sha256:{'a' * 64}"
+        candidate = remote_manager.RdpCertificateCandidate(
+            fingerprint=fingerprint, subject="CN=synthetic", issuer="CN=synthetic", self_signed=True,
+            not_valid_before=datetime.utcnow(), not_valid_after=datetime.utcnow() + timedelta(days=365), sans=[],
+        )
+        monkeypatch.setattr(remote_manager, "discover_rdp_certificate", lambda *a, **k: candidate)
+        response = remote_manager.trust_remote_rdp_certificate(
+            request(), remote.id, csrf_token="csrf", rdp_cert_candidate=fingerprint,
+            rdp_cert_mode="trust", rdp_cert_view="settings", db=db, user=admin,
+        )
+        assert response.status_code == 303
+        assert remote.rdp_cert_fingerprints == fingerprint
+        audit = db.query(AuditLog).filter_by(action="rdp_certificate_trust_updated").one()
+        assert fingerprint not in (audit.detail or "")
+        assert fingerprint not in (audit.metadata_json or "")
+
+        rejected = remote_manager.trust_remote_rdp_certificate(
+            request(), remote.id, csrf_token="csrf", rdp_cert_candidate="sha256:not-valid",
+            rdp_cert_mode="trust", rdp_cert_view="settings", db=db, user=admin,
+        )
+        assert rejected.status_code == 400
+        rejection_audit = db.query(AuditLog).filter_by(action="rdp_certificate_trust_rejected").one()
+        assert "not-valid" not in (rejection_audit.detail or "")
 
 
 def test_ssh_panel_blocks_password_entry_until_host_identity_is_enrolled():

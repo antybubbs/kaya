@@ -15,7 +15,7 @@ python -m app.db.cli --quick-check --quick-check-timeout 300
 
 A strict diagnostic timeout means the scan did not finish; it is not reported as corruption. An actual non-`ok` result remains a corruption failure.
 
-Bind mounts do not change SQLite's validation algorithm, but their storage stack can materially change elapsed time. Windows Docker Desktop file sharing and synchronisation-backed directories such as Nextcloud can add metadata, antivirus, virtualisation, and sync latency. Keep the active SQLite database on local, container-supported storage where possible; exclude the live database, `-wal`, and `-shm` files from active synchronisation. Do not remove WAL sidecars to speed up validation. Kaya reads them as part of a WAL-mode database and preserves any sidecars encountered by the explicit demo reset workflow.
+Bind mounts do not change SQLite's validation algorithm, but their storage stack can materially change elapsed time. Windows Docker Desktop file sharing and synchronisation-backed directories such as Nextcloud can add metadata, antivirus, virtualisation, and sync latency. Keep the active SQLite database on local, container-supported storage where possible; exclude the live database, `-wal`, and `-shm` files from active synchronisation. Do not remove WAL sidecars to speed up validation; Kaya reads them as part of a WAL-mode database.
 
 ### Historical SQLite type compatibility
 

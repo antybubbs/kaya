@@ -584,6 +584,11 @@ if (root) {
         }),
       });
       const data = await response.json();
+      if (data.certificate_changed && data.review_url) {
+        writeLog(data.logs || ["The RDP certificate has changed. Redirecting to review it."]);
+        window.location.href = data.review_url;
+        return;
+      }
       writeLog(data.logs || [`Unexpected response: ${response.status}`]);
       if (!response.ok || !data.ok || !data.token) {
         button.disabled = false;

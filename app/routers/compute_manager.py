@@ -1,6 +1,5 @@
 import hashlib
 import json
-import secrets
 from datetime import datetime, timedelta
 from ipaddress import ip_address
 
@@ -15,6 +14,7 @@ from app.core.formatting import human_bytes
 from app.core.security import encrypt_secret
 from app.db.session import get_db
 from app.models.models import (
+    BackupAgentServerKey,
     BackupJob,
     ComputeEvent,
     ComputeHost,
@@ -32,7 +32,15 @@ from app.services.compute_monitor import (
     sync_host,
     workload_identity,
 )
+from app.services.client_ip import client_ip as trusted_client_ip
 from app.services.site_settings import get_site_setting
+from app.services.table_export import (
+    export_row_matches,
+    table_export_response,
+    validate_export_columns,
+    validate_export_filters,
+    validate_export_format,
+)
 
 router = APIRouter(
     prefix="/infrastructure/vm-docker-manager",
@@ -204,6 +212,61 @@ def overview(
     )
 
 
+@router.get("/export")
+def export_workloads_table(
+    request: Request,
+    q: str = Query("", max_length=200),
+    view: str = Query("overview", max_length=30),
+    format: str = Query("csv", max_length=8),
+    columns: str = Query("", max_length=300),
+    filters: str = Query("", max_length=2000),
+    db: Session = Depends(get_db),
+    user=Depends(require_user),
+):
+    format = validate_export_format(format)
+    column_map = {
+        "state": ("State", lambda row: row.status.title()),
+        "name": ("Name", lambda row: row.name),
+        "type": ("Type", lambda row: row.kind.upper()),
+        "host": ("Host / Node", lambda row: f"{row.host.name}{' / ' + row.node if row.node and row.node != row.host.name else ''}"),
+        "cpu": ("CPU", lambda row: f"{round(row.cpu_percent, 1)}%" if row.cpu_percent is not None else ""),
+        "ram": ("RAM", lambda row: f"{bytes_label(row.memory_used)}{' / ' + bytes_label(row.memory_total) if row.memory_total else ''}"),
+        "storage": ("Storage", lambda row: bytes_label(row.storage_used)),
+        "uptime": ("Uptime", lambda row: uptime_label(row.uptime_seconds)),
+        "owner": ("Owner", lambda row: row.owner or ""),
+        "backup": ("Backup", lambda row: row.backup_policy or ""),
+    }
+    selected_columns = validate_export_columns(columns, list(column_map))
+    active_filters = validate_export_filters(filters, list(column_map))
+    clean = q.strip()
+    query = db.query(ComputeWorkload).filter(ComputeWorkload.status != "missing")
+    if clean:
+        query = query.filter(
+            or_(
+                ComputeWorkload.name.ilike(f"%{clean}%"),
+                ComputeWorkload.node.ilike(f"%{clean}%"),
+                ComputeWorkload.owner.ilike(f"%{clean}%"),
+                ComputeWorkload.tags.ilike(f"%{clean}%"),
+            )
+        )
+    if view == "docker":
+        query = query.filter(ComputeWorkload.kind == "container")
+    elif view == "proxmox":
+        query = query.filter(ComputeWorkload.kind.in_(["node", "vm", "lxc"]))
+    rows = query.order_by(ComputeWorkload.status.asc(), ComputeWorkload.name.asc()).limit(100000).all()
+    rows = [row for row in rows if export_row_matches(row, column_map, active_filters)]
+    write_audit(
+        db, user, "export", "compute_workload", None, trusted_client_ip(request),
+        detail=f"Exported {len(rows)} workload rows as {format}; filters applied={bool(clean or view != 'overview')}",
+    )
+    return table_export_response(
+        table_name="compute-workloads",
+        headers=[column_map[key][0] for key in selected_columns],
+        rows=([column_map[key][1](row) for key in selected_columns] for row in rows),
+        export_format=format,
+    )
+
+
 @router.get("/api/summary")
 def summary_api(db: Session = Depends(get_db), user=Depends(require_user)):
     summary = compute_summary(db)
@@ -291,8 +354,6 @@ def create_host(
             context(user=user, host=None, error=error, **csrf_context(request)),
             status_code=400,
         )
-    agent_token = secrets.token_urlsafe(32) if platform == "docker_agent" else None
-
     row = ComputeHost(
         name=clean_name,
         platform=platform,
@@ -301,7 +362,7 @@ def create_host(
         encrypted_token=(
             encrypt_secret(token_secret.strip()) if token_secret.strip() else None
         ),
-        agent_token_hash=hash_agent_token(agent_token) if agent_token else None,
+        agent_token_hash=None,
         verify_tls=bool(verify_tls),
         is_enabled=bool(is_enabled),
         poll_interval_seconds=max(15, min(poll_interval_seconds, 3600)),
@@ -319,10 +380,6 @@ def create_host(
         request.client.host if request.client else None,
         detail=row.name,
     )
-    if agent_token:
-        return render_host_detail(
-            request, row, db, user, agent_token=agent_token, status_code=201
-        )
     return RedirectResponse(
         f"/infrastructure/vm-docker-manager/hosts/{row.id}", status_code=303
     )
@@ -357,6 +414,14 @@ def render_host_detail(
     )
     backup_storage_path = get_site_setting(db, "backup_storage_path") or "/mnt/backups"
     backup_storage_type = get_site_setting(db, "backup_storage_type") or "local"
+    # Protocol-v2 agents cannot enrol without an active server signing key.
+    # Only docker_agent hosts show the agent setup panel, so only query for
+    # them - avoids an unused lookup on every Proxmox host detail view.
+    agent_server_key = (
+        db.query(BackupAgentServerKey).filter_by(status="active").first()
+        if host.platform == "docker_agent"
+        else None
+    )
     return templates.TemplateResponse(
         request,
         "compute_host_detail.html",
@@ -367,6 +432,7 @@ def render_host_detail(
             items=items,
             metrics=metrics,
             agent_token=agent_token,
+            agent_server_key=agent_server_key,
             backup_storage_path=backup_storage_path,
             backup_storage_type=backup_storage_type,
             **csrf_context(request),
@@ -444,12 +510,7 @@ def update_host(
         host.encrypted_token = None
     elif token_secret.strip():
         host.encrypted_token = encrypt_secret(token_secret.strip())
-    if platform == "docker_agent" and not host.agent_token_hash:
-        agent_token = secrets.token_urlsafe(32)
-        host.agent_token_hash = hash_agent_token(agent_token)
-        host.encrypted_agent_token = None
-    else:
-        agent_token = None
+    agent_token = None
     host.verify_tls = bool(verify_tls)
     host.is_enabled = bool(is_enabled)
     host.poll_interval_seconds = max(15, min(poll_interval_seconds, 3600))
@@ -486,20 +547,7 @@ def regenerate_agent_token(
         raise HTTPException(404, "Host not found")
     if host.platform != "docker_agent":
         raise HTTPException(400, "Host does not use a Docker agent")
-    agent_token = secrets.token_urlsafe(32)
-    host.agent_token_hash = hash_agent_token(agent_token)
-    host.encrypted_agent_token = None
-    db.commit()
-    write_audit(
-        db,
-        user,
-        "regenerate_agent_token",
-        "compute_host",
-        str(host.id),
-        request.client.host if request.client else None,
-        detail=host.name,
-    )
-    return render_host_detail(request, host, db, user, agent_token=agent_token)
+    raise HTTPException(426, "Legacy bearer issuance is permanently disabled; issue a protocol-v2 bootstrap")
 
 
 @router.post("/hosts/{host_id}/sync")
@@ -575,6 +623,10 @@ async def agent_checkin(
     request: Request,
     db: Session = Depends(get_db),
 ):
+    from app.services.backup_agent_protocol import allow_legacy_inventory
+
+    if not allow_legacy_inventory(db):
+        raise HTTPException(426, "Legacy agent migration window has closed")
     auth = request.headers.get("authorization", "")
 
     if not auth.lower().startswith("bearer "):

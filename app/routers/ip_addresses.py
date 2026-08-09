@@ -26,6 +26,7 @@ from app.models.models import (
     NetworkMonitorStatistic,
     RemoteAccess,
     RemoteSessionRecording,
+    User,
 )
 from app.routers.auth import require_editor, require_module_access, require_user
 from app.routers.compute_manager import uptime_label, workload_addresses
@@ -38,6 +39,7 @@ from app.routers.remote_manager import (
 )
 from app.routers.remote_manager import SETTINGS as REMOTE_MANAGER_DEFAULTS
 from app.services.audit import write_audit
+from app.services.remote_endpoint_trust import update_remote_endpoint
 from app.services.custom_fields import (
     active_fields,
     field_values,
@@ -60,7 +62,15 @@ from app.services.network_monitor import (
     validate_monitor_timing,
     validate_threshold_values,
 )
+from app.services.client_ip import client_ip as trusted_client_ip
 from app.services.site_settings import get_site_setting
+from app.services.table_export import (
+    export_row_matches,
+    table_export_response,
+    validate_export_columns,
+    validate_export_filters,
+    validate_export_format,
+)
 
 router = APIRouter(prefix="/networking/vlan-ip-manager", dependencies=[Depends(require_module_access("vlan_ip_manager"))])
 
@@ -246,7 +256,7 @@ def remote_override_settings(form, keys: list[str]) -> dict[str, str]:
     return values
 
 
-def save_remote_settings(db: Session, record: IPAddress, enabled: bool, display_name: str, protocol: str, port: int, username: str, terminal_settings: dict[str, str] | None = None, rdp_settings: dict[str, str] | None = None) -> None:
+def save_remote_settings(db: Session, record: IPAddress, enabled: bool, display_name: str, protocol: str, port: int, username: str, terminal_settings: dict[str, str] | None = None, rdp_settings: dict[str, str] | None = None, *, actor: User | None = None, audit_ip: str | None = None) -> None:
     remote = remote_for(db, record.id)
     if not enabled:
         if remote:
@@ -256,10 +266,13 @@ def save_remote_settings(db: Session, record: IPAddress, enabled: bool, display_
     if not remote:
         remote = RemoteAccess(ip_address_id=record.id)
         db.add(remote)
+        db.flush()
     remote.display_name = display_name.strip() or None
     remote.is_enabled = True
-    remote.protocol = protocol
-    remote.port = clean_remote_port(port, protocol)
+    update_remote_endpoint(
+        db, record, remote=remote, protocol=protocol, port=clean_remote_port(port, protocol),
+        actor=actor, audit_ip=audit_ip, reason="primary_ip_editor",
+    )
     remote.username = username.strip() or None
     remote.terminal_settings = encode_settings_blob(terminal_settings or {})
     remote.rdp_settings = encode_settings_blob(rdp_settings or {})
@@ -317,6 +330,104 @@ def list_ip_addresses(request: Request, q: str = Query("", max_length=200), cate
         leases = lease_query.order_by(DHCPLeaseHistory.is_active.desc(), DHCPLeaseHistory.last_seen_at.desc()).limit(500).all()
     active_view = view if view in {"observed", "leases"} else "managed"
     return templates.TemplateResponse(request, "ip_addresses.html", {"user": user, "rows": rows, "total": total, "q": clean_q, "categories": categories, "vlans": vlans, "active_vlan_id": active_vlan_id, "active_category": active_category, "active_view": active_view, "leases": leases, "observed_clients": observed_clients, "observed_total": observed_total, "existing_by_address": existing_by_address, "dns_by_ip": dns_by_ip, "dns_enrichment_enabled": enrichment_enabled, "dns_client_status": client_status, "dns_client_display_name": client_display_name, **csrf_context(request)})
+
+
+@router.get("/export/{resource}")
+def export_ip_addresses_table(
+    resource: str,
+    request: Request,
+    q: str = Query("", max_length=200),
+    category: str = Query("", max_length=120),
+    vlan_id: str = Query("", max_length=20),
+    format: str = Query("csv", max_length=8),
+    columns: str = Query("", max_length=300),
+    filters: str = Query("", max_length=2000),
+    db: Session = Depends(get_db),
+    user=Depends(require_user),
+):
+    if resource not in {"managed", "observed", "leases"}:
+        raise HTTPException(status_code=404, detail="Export table not found")
+    format = validate_export_format(format)
+    active_vlan_id = clean_vlan_filter(vlan_id)
+    clean_q = q.strip()
+    active_category = category.strip()
+
+    if resource == "managed":
+        query = db.query(IPAddress).options(joinedload(IPAddress.vlan))
+        if active_category:
+            query = query.filter(IPAddress.category == active_category)
+        if active_vlan_id:
+            query = query.filter(IPAddress.vlan_id == active_vlan_id)
+        if clean_q:
+            like = f"%{clean_q}%"
+            query = query.outerjoin(VLAN).filter(or_(IPAddress.address.ilike(like), IPAddress.mac_address.ilike(like), IPAddress.category.ilike(like), IPAddress.name.ilike(like), IPAddress.description.ilike(like), IPAddress.assignment_type.ilike(like), IPAddress.notes.ilike(like), VLAN.name.ilike(like)))
+        rows = sorted(query.limit(100000).all(), key=ip_sort_key)
+        enrichment_enabled = get_site_setting(db, "dns_vlan_enrichment_enabled") == "1"
+        dns_rows = db.query(DNSRecognisedDevice).filter(DNSRecognisedDevice.linked_ip_record_id.in_([row.id for row in rows])).all() if enrichment_enabled and rows else []
+        dns_by_ip = {row.linked_ip_record_id: row for row in dns_rows}
+        column_map = {
+            "ip": ("IP", lambda row: row.address),
+            "vlan": ("VLAN", lambda row: row.vlan.name if row.vlan else ""),
+            "category": ("Category", lambda row: row.category or ""),
+            "name": ("Name", lambda row: row.name or ""),
+            "mac": ("MAC", lambda row: row.mac_address or ""),
+            "description": ("Description", lambda row: row.description or ""),
+            "assignment": ("Static/Dynamic", lambda row: row.assignment_type),
+            "notes": ("Notes", lambda row: row.notes or ""),
+            "dns-status": ("DNS status", lambda row: client_status(dns_by_ip[row.id]) if dns_by_ip.get(row.id) else "Not linked"),
+            "dns-seen": ("Last DNS seen", lambda row: dns_by_ip[row.id].last_seen_at.isoformat() if dns_by_ip.get(row.id) and dns_by_ip[row.id].last_seen_at else ""),
+            "dns-hostname": ("Observed hostname", lambda row: dns_by_ip[row.id].hostname or "" if dns_by_ip.get(row.id) else ""),
+        }
+        filters_applied = bool(clean_q or active_category or active_vlan_id)
+    elif resource == "observed":
+        query = db.query(DNSRecognisedDevice).filter(DNSRecognisedDevice.linked_ip_record_id.is_(None), DNSRecognisedDevice.is_ignored == False)  # noqa: E712
+        if clean_q:
+            like = f"%{clean_q}%"
+            query = query.filter(or_(DNSRecognisedDevice.friendly_name.ilike(like), DNSRecognisedDevice.hostname.ilike(like), DNSRecognisedDevice.current_ip.ilike(like), DNSRecognisedDevice.mac_address.ilike(like), DNSRecognisedDevice.notes.ilike(like)))
+        rows = query.options(joinedload(DNSRecognisedDevice.provider)).order_by(DNSRecognisedDevice.last_seen_at.desc()).limit(100000).all()
+        column_map = {
+            "client": ("Client", client_display_name),
+            "ip": ("Observed IP", lambda row: row.current_ip or ""),
+            "mac": ("MAC", lambda row: row.normalised_mac or ""),
+            "provider": ("Provider", lambda row: row.provider.name if row.provider else row.provider_type),
+            "last-seen": ("Last seen", lambda row: row.last_seen_at.isoformat() if row.last_seen_at else ""),
+        }
+        filters_applied = bool(clean_q)
+    else:
+        query = db.query(DHCPLeaseHistory).options(joinedload(DHCPLeaseHistory.client), joinedload(DHCPLeaseHistory.dhcp_range).joinedload(DHCPRange.vlan))
+        if active_vlan_id:
+            query = query.join(DHCPRange, DHCPLeaseHistory.dhcp_range_id == DHCPRange.id).filter(DHCPRange.vlan_id == active_vlan_id)
+        if clean_q:
+            like = f"%{clean_q}%"
+            query = query.filter(or_(DHCPLeaseHistory.ip_address.ilike(like), DHCPLeaseHistory.mac_address.ilike(like), DHCPLeaseHistory.hostname.ilike(like)))
+        rows = query.order_by(DHCPLeaseHistory.is_active.desc(), DHCPLeaseHistory.last_seen_at.desc()).limit(100000).all()
+        column_map = {
+            "status": ("Status", lambda row: "Active" if row.is_active else "Ended"),
+            "ip": ("IP", lambda row: row.ip_address),
+            "vlan": ("VLAN", lambda row: row.dhcp_range.vlan.name if row.dhcp_range and row.dhcp_range.vlan else ""),
+            "range": ("Range", lambda row: row.dhcp_range.name if row.dhcp_range else "Outside configured ranges"),
+            "hostname": ("Hostname", lambda row: row.hostname or ""),
+            "mac": ("MAC", lambda row: row.mac_address or ""),
+            "client": ("Client", lambda row: client_display_name(row.client) if row.client else ""),
+            "first-seen": ("First seen", lambda row: row.first_seen_at.isoformat() if row.first_seen_at else ""),
+            "last-seen": ("Last seen", lambda row: row.last_seen_at.isoformat() if row.last_seen_at else ""),
+            "ended": ("Ended/expires", lambda row: (row.ended_at or row.expires_at).isoformat() if row.ended_at or row.expires_at else ""),
+        }
+        filters_applied = bool(clean_q or active_vlan_id)
+
+    selected_columns = validate_export_columns(columns, list(column_map))
+    active_filters = validate_export_filters(filters, list(column_map))
+    rows = [row for row in rows if export_row_matches(row, column_map, active_filters)]
+    write_audit(
+        db, user, "export", f"ip_addresses_{resource}", None, trusted_client_ip(request),
+        detail=f"Exported {len(rows)} rows as {format}; filters applied={filters_applied}",
+    )
+    return table_export_response(
+        table_name=f"ip-addresses-{resource}",
+        headers=[column_map[key][0] for key in selected_columns],
+        rows=([column_map[key][1](row) for key in selected_columns] for row in rows),
+        export_format=format,
+    )
 
 
 MODULE = "ip_addresses"
@@ -588,7 +699,20 @@ async def update_ip_address(request: Request, record_id: int, address: str = For
         remote = remote_for(db, row.id)
         return templates.TemplateResponse(request, "ip_address_form.html", {"user": user, "record": row, "monitor": monitor_for(db, row.id), "remote": remote, "categories": categories, "vlans": vlans, "selected_vlan_id": selected_vlan.id, "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": values, "option_list": option_list, "error": "That IP address already exists in this VLAN.", "monitor_thresholds": monitor_thresholds, "monitor_using_default_thresholds": use_default_thresholds, **remote_settings_context(remote), **csrf_context(request)}, status_code=400)
     row.vlan_id = selected_vlan.id
-    row.address = clean_address
+    current_remote = remote_for(db, row.id)
+    next_remote_protocol = clean_remote_protocol(remote_protocol)
+    next_remote_port = clean_remote_port(remote_port, next_remote_protocol)
+    if remote_enabled and current_remote:
+        update_remote_endpoint(
+            db, row, remote=current_remote, address=clean_address,
+            protocol=next_remote_protocol, port=next_remote_port, actor=user,
+            audit_ip=request.client.host if request.client else None, reason="primary_ip_editor",
+        )
+    else:
+        update_remote_endpoint(
+            db, row, remote=current_remote, address=clean_address, actor=user,
+            audit_ip=request.client.host if request.client else None, reason="primary_ip_editor",
+        )
     clean_mac = normalise_mac(mac_address)
     if mac_address.strip() and not clean_mac:
         raise HTTPException(status_code=400, detail="Enter a valid MAC address.")
@@ -598,9 +722,12 @@ async def update_ip_address(request: Request, record_id: int, address: str = For
     row.description = description.strip() or None
     row.assignment_type = clean_assignment_type(assignment_type)
     row.notes = notes.strip() or None
-    db.commit()
     monitor_changes = save_monitor_settings(db, row, bool(monitor_enabled), monitor_display_name, monitor_interval_seconds, monitor_timeout_ms, str(form.get("monitor_maintenance_mode") or "") == "1", use_default_thresholds, monitor_thresholds)
-    save_remote_settings(db, row, bool(remote_enabled), remote_display_name, remote_protocol, remote_port, remote_username, remote_override_settings(form, TERMINAL_SETTING_KEYS), remote_override_settings(form, RDP_SETTING_KEYS))
+    save_remote_settings(
+        db, row, bool(remote_enabled), remote_display_name, remote_protocol, remote_port, remote_username,
+        remote_override_settings(form, TERMINAL_SETTING_KEYS), remote_override_settings(form, RDP_SETTING_KEYS),
+        actor=user, audit_ip=request.client.host if request.client else None,
+    )
     save_custom_values(db, fields, form, ENTITY_TYPE, row.id)
     db.commit()
     write_audit(db, user, "update", "ip_address", str(row.id), request.client.host if request.client else None, detail=clean_address, metadata={"monitor_settings": monitor_changes})

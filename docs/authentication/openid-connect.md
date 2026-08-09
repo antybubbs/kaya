@@ -72,7 +72,10 @@ When multiple groups match, Kaya applies `admin > editor > viewer`. Unmatched ne
 Returning identities are resolved by issuer and subject, never repeatedly by email.
 
 - A logged-in local user can link an identity under **My Profile > Sign-in methods**.
-- An administrator can create a hashed, single-use, 30-minute linking invitation under **Account Links**.
+- An administrator can create a recipient-bound, single-use, 30-minute linking invitation under **Account Links**. The raw URL is shown once and must be sent privately.
+- The exact recipient must already be signed in locally, re-enter the current Kaya password and Kaya TOTP code when enabled, and then complete a forced fresh provider login. The provider must return the same verified email as the Kaya account.
+- The signed ID token must include `auth_time` proving authentication occurred at the start of the privileged link transaction, with only 60 seconds of clock-skew tolerance. `prompt=login` and `max_age=0` remain defence in depth. Providers that omit `auth_time` cannot be used for administrator-link invitations and fail closed; ordinary OIDC login is unaffected.
+- Invitations show pending, claimed, completed, revoked or expired status under **Account Links**. Pending and claimed invitations can be revoked immediately. Final completion rechecks revocation, expiry, recipient and provider bindings and atomically records completion with identity creation; an abandoned or failed flow can therefore be stopped without unlinking a completed identity.
 - Email-based first-time matching is disabled by default. Confirmation mode requires the current local password; automatic matching must be explicitly acknowledged.
 - JIT provisioning is disabled by default. JIT accounts have no local password and cannot use password reset or local TOTP.
 - An OIDC-only account cannot unlink its last sign-in method. An administrator must first establish an approved local method or disable the account.
@@ -80,11 +83,11 @@ Returning identities are resolved by issuer and subject, never repeatedly by ema
 ## Security behavior
 
 - Authorization Code flow with PKCE `S256` is mandatory.
-- State is single-use, nonce is validated, and temporary verifier/nonce data is encrypted in a short-lived server-side transaction.
+- State is consumed using one conditional database transition bound to the hashed browser transaction value, state and expiry. Exactly one callback can win across workers or restarts. Nonce is validated, and temporary verifier/nonce data is encrypted in the short-lived server-side transaction.
 - ID-token signature, asymmetric algorithm, issuer, audience, expiry, issued-at, nonce, subject and authorised party rules are validated with Authlib.
 - Signing keys are cached briefly and refreshed once when validation indicates possible key rotation.
 - Client secrets use Kaya's Fernet encryption and are never redisplayed.
-- Authorization codes and callback query values are redacted from Uvicorn access logs.
+- Authorization codes, callback query values and invitation-token query values are redacted from Uvicorn access logs. Configure reverse proxies to suppress authentication query strings as well.
 - Issuers must use HTTPS except localhost development. Credentials, fragments, cloud metadata and link-local destinations are blocked. Private homelab addresses remain supported.
 - Access and refresh tokens are not stored in the Kaya browser session.
 
@@ -108,6 +111,11 @@ See [authentik setup](authentik.md).
 - **Callback mismatch:** copy the callback displayed by Kaya and verify the public base URL under Site Administration.
 - **Invalid token:** verify client ID, provider clock, signing algorithm, JWKS reachability and proxy TLS handling.
 - **Account not authorised:** link the local user, deliberately enable approved email matching, or deliberately enable JIT provisioning.
+- **Invitation rejected:** sign in locally as the exact selected account, ask an administrator to revoke and reissue the invitation, and confirm that the Kaya and verified provider emails match. Confirm that the provider emits a signed `auth_time` claim for forced reauthentication. An OIDC-only account must first use the approved account-recovery process to establish and test a local authentication method; never bypass recipient proof.
+
+## Upgrade and recovery note
+
+The recipient-binding migration revokes all unused invitations created by older Kaya releases. Existing linked identities are preserved. Before upgrading, test a local break-glass administrator with TOTP and retain a database backup. After upgrading, issue new invitations as needed. Rollback does not restore prior invitation secrets; do not unlink working administrator identities as part of rollback or recovery.
 - **Missing groups:** add the provider's groups claim/scope and set the correct claim path.
 - **Private CA:** install the CA in the container trust store where possible. Disabling TLS verification requires explicit acknowledgement and remains visibly warned.
 - **Provider outage:** use `/auth/local` with a designated break-glass administrator.

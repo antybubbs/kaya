@@ -243,8 +243,7 @@ html body .login-page.login-page {
 }
 
 .login-page .login-oidc-button,
-.login-page .login-submit,
-.login-page .demo-login-option button {
+.login-page .login-submit {
   background: linear-gradient(180deg, #ff941f, var(--login-orange));
   border: 1px solid #ff9d35;
   border-radius: 8px;
@@ -261,8 +260,7 @@ html body .login-page.login-page {
 }
 
 html body .login-page .login-card .login-form-panel .login-form-inner .login-oidc-button.login-oidc-button,
-html body .login-page .login-card .login-form-panel .login-form-inner .login-submit.login-submit,
-html body .login-page .login-card .login-form-panel .login-form-inner .demo-login-option button {
+html body .login-page .login-card .login-form-panel .login-form-inner .login-submit.login-submit {
   color: #fff !important;
 }
 
@@ -273,8 +271,7 @@ html body .login-page .login-card .login-form-panel .login-form-inner .demo-logi
 }
 
 .login-page .login-oidc-button:hover,
-.login-page .login-submit:hover,
-.login-page .demo-login-option button:hover {
+.login-page .login-submit:hover {
   background: linear-gradient(180deg, #ffa23e, var(--login-orange-hover));
   box-shadow: 0 10px 26px rgba(255, 122, 0, 0.22);
   color: #fff !important;
@@ -283,7 +280,6 @@ html body .login-page .login-card .login-form-panel .login-form-inner .demo-logi
 
 .login-page .login-oidc-button:focus-visible,
 .login-page .login-submit:focus-visible,
-.login-page .demo-login-option button:focus-visible,
 .login-page .login-password-toggle:focus-visible,
 .login-page .login-options a:focus-visible,
 .login-page .login-emergency-link:focus-visible {
@@ -477,45 +473,6 @@ html body .login-page .login-card .login-form-panel .login-form-inner .login-pas
 
 .login-account-note span {
   color: var(--login-orange);
-}
-
-.demo-login-grid {
-  display: grid;
-  gap: 10px;
-  margin-bottom: 22px;
-}
-
-.demo-login-option {
-  align-content: space-between;
-  align-items: stretch;
-  background: rgba(8, 13, 21, 0.48);
-  border: 1px solid var(--login-border);
-  border-radius: 10px;
-  display: grid;
-  gap: 12px;
-  grid-template-rows: 1fr auto;
-  min-width: 0;
-  padding: 12px;
-  text-align: center;
-}
-
-.demo-login-option strong,
-.demo-login-option small {
-  display: block;
-}
-
-.demo-login-option small {
-  color: var(--login-muted);
-  margin-top: 2px;
-}
-
-.login-page .demo-login-option button {
-  font-size: 13px;
-  min-height: 40px;
-  padding-left: 6px;
-  padding-right: 6px;
-  white-space: nowrap;
-  width: 100%;
 }
 
 .login-security-footer {
@@ -771,15 +728,6 @@ html body .login-page .login-card .login-form-panel .login-form-inner .login-pas
 
   .login-input-shell input {
     min-height: 50px;
-  }
-
-  .demo-login-option {
-    grid-template-columns: 1fr;
-  }
-
-  .login-page .demo-login-option button {
-    min-height: 44px;
-    width: 100%;
   }
 
   .login-security-footer span {

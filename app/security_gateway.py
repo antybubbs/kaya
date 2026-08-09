@@ -339,9 +339,9 @@ def gateway_favicon():
     return FileResponse(STATIC_FILES["/favicon.svg"][0], media_type="image/svg+xml")
 
 
-def demo_or_disabled(db: Session) -> None:
-    if settings.demo_mode or get_site_setting(db, "secure_send_enabled") != "1":
-        logger.warning("Secure Send request rejected reason=demo_or_disabled")
+def require_enabled(db: Session) -> None:
+    if get_site_setting(db, "secure_send_enabled") != "1":
+        logger.warning("Secure Send request rejected reason=disabled")
         raise HTTPException(403, "Forbidden")
 
 
@@ -370,7 +370,7 @@ def notify_sender(db: Session, row: SecureSendPackage, event: str) -> None:
 
 @app.get("/{access_token}")
 def recipient(access_token: str, request: Request, db: Session = Depends(get_db)):
-    demo_or_disabled(db)
+    require_enabled(db)
     row = package_or_error(db, access_token)
     if not row.opened_at:
         row.opened_at = datetime.utcnow()
@@ -423,7 +423,7 @@ def unlock(
     passphrase: str = Form(""),
     db: Session = Depends(get_db),
 ):
-    demo_or_disabled(db)
+    require_enabled(db)
     row = package_or_error(db, access_token)
     if attempt_limited(request, row):
         raise HTTPException(429, "Too many attempts. Please try again later.")
@@ -533,7 +533,7 @@ def download_file(
     csrf_token: str = Form(...),
     db: Session = Depends(get_db),
 ):
-    demo_or_disabled(db)
+    require_enabled(db)
     row, key = authorised_download(db, request, access_token, csrf_token)
     item = db.query(SecureSendFile).filter_by(id=file_id, package_id=row.id).first()
     if not item:
@@ -565,7 +565,7 @@ def download_package(
     csrf_token: str = Form(...),
     db: Session = Depends(get_db),
 ):
-    demo_or_disabled(db)
+    require_enabled(db)
     row, key = authorised_download(db, request, access_token, csrf_token)
     content = build_zip(db, row, key)
     mark_download(db, request, row)
@@ -586,7 +586,7 @@ def logout(
     csrf_token: str = Form(...),
     db: Session = Depends(get_db),
 ):
-    demo_or_disabled(db)
+    require_enabled(db)
     row = package_or_error(db, access_token)
     session = active_recipient_session(db, row, request.cookies.get(SESSION_COOKIE))
     if not session or not verify_session_csrf(session, csrf_token):

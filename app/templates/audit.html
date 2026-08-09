@@ -20,7 +20,7 @@
 <section class="panel audit-filter-panel">
   <form class="audit-filters" method="get">
     <label class="audit-search">Search
-      <input name="q" value="{{ q }}" placeholder="{% if request.app.state.demo_mode %}Actor, action, target, path, request ID...{% else %}Actor, action, target, IP, path, request ID...{% endif %}">
+      <input name="q" value="{{ q }}" placeholder="Actor, action, target, IP, path, request ID...">
     </label>
     <label>Category
       <select name="category"><option value="">All categories</option>{% for value in categories %}<option value="{{ value }}" {% if active_category == value %}selected{% endif %}>{{ value|replace('_',' ')|title }}</option>{% endfor %}</select>
@@ -60,7 +60,7 @@
   </div>
   <div class="audit-table-wrap">
     <table class="audit-table" data-table-key="audit-logs" data-export-url="/system/audit-logs/export">
-      <thead><tr><th data-col="time">Time</th><th data-col="level">Level</th><th data-col="actor">Actor</th><th data-col="event">Event</th><th data-col="target">Target</th><th data-col="request">Request</th>{% if not request.app.state.demo_mode %}<th data-col="source">Source</th>{% endif %}<th data-col="detail">Detail</th></tr></thead>
+      <thead><tr><th data-col="time">Time</th><th data-col="level">Level</th><th data-col="actor">Actor</th><th data-col="event">Event</th><th data-col="target">Target</th><th data-col="request">Request</th><th data-col="source">Source</th><th data-col="detail">Detail</th></tr></thead>
       <tbody>
       {% for log in logs %}
         <tr>
@@ -70,14 +70,14 @@
           <td><span class="audit-action">{{ log.action|replace('_',' ')|title }}</span><small>{{ log.category|replace('_',' ')|title }}</small></td>
           <td><strong>{{ log.entity|replace('_',' ')|title }}</strong>{% if log.entity_id %}<span class="mono">#{{ log.entity_id }}</span>{% endif %}</td>
           <td class="audit-request">{% if log.request_method %}<span class="audit-method">{{ log.request_method }}</span>{% endif %}<span class="mono">{{ log.request_path or '-' }}</span>{% if log.status_code %}<small class="{% if log.status_code >= 400 %}attention{% endif %}">HTTP {{ log.status_code }}</small>{% endif %}</td>
-          {% if not request.app.state.demo_mode %}<td class="mono">{{ log.ip_address or '-' }}</td>{% endif %}
+          <td class="mono">{{ log.ip_address or '-' }}</td>
           <td class="audit-detail-cell">
             <span>{{ log.detail or 'No additional detail' }}</span>
             <details class="audit-inspector">
               <summary>Inspect event</summary>
               <dl>
                 <div><dt>Request ID</dt><dd class="mono">{{ log.request_id or '-' }}</dd></div>
-                {% if not request.app.state.demo_mode %}<div><dt>User agent</dt><dd>{{ log.user_agent or '-' }}</dd></div>{% endif %}
+                <div><dt>User agent</dt><dd>{{ log.user_agent or '-' }}</dd></div>
                 <div><dt>Recorded</dt><dd>{{ local_time(log.created_at) }}</dd></div>
                 {% for key,value in log.metadata_data.items() %}<div><dt>{{ key|replace('_',' ')|title }}</dt><dd class="mono">{{ value }}</dd></div>{% endfor %}
               </dl>
@@ -85,7 +85,7 @@
           </td>
         </tr>
       {% else %}
-        <tr><td colspan="{% if request.app.state.demo_mode %}7{% else %}8{% endif %}"><div class="audit-empty"><strong>No audit events match these filters.</strong><span>Try widening the date range or clearing one of the filters.</span></div></td></tr>
+        <tr><td colspan="8"><div class="audit-empty"><strong>No audit events match these filters.</strong><span>Try widening the date range or clearing one of the filters.</span></div></td></tr>
       {% endfor %}
       </tbody>
     </table>

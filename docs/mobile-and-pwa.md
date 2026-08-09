@@ -4,7 +4,7 @@ Kaya uses a shared responsive layer in `app/static/css/responsive.css`. Desktop 
 
 ## Reviewed coverage
 
-- Global authenticated shell, account menu, permissions-aware navigation, demo banner, login and setup
+- Global authenticated shell, account menu, permissions-aware navigation, login and setup
 - Dashboard widgets, controls, manager dialog, live refresh and touch reordering
 - Infrastructure: rack manager/detail, backup manager, asset manager/detail/forms, Compute Manager and workload/host views
 - Remote Manager: host rail, session workspace, SSH/RDP panels, settings and recordings

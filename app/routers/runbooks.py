@@ -29,6 +29,14 @@ from app.models.models import (
 )
 from app.routers.auth import require_editor, require_module_access, require_user
 from app.services.audit import write_audit
+from app.services.client_ip import client_ip as trusted_client_ip
+from app.services.table_export import (
+    export_row_matches,
+    table_export_response,
+    validate_export_columns,
+    validate_export_filters,
+    validate_export_format,
+)
 
 router = APIRouter(prefix="/documentation/runbook-manager", dependencies=[Depends(require_module_access("runbooks"))])
 
@@ -460,6 +468,55 @@ def runbooks_page(
             **runbook_context("runbooks"),
             **csrf_context(request),
         },
+    )
+
+
+@router.get("/runbooks/export")
+def export_runbooks_table(
+    request: Request,
+    q: str = Query("", max_length=200),
+    space: int | None = Query(None),
+    tag: str = Query("", max_length=80),
+    format: str = Query("csv", max_length=8),
+    columns: str = Query("", max_length=300),
+    filters: str = Query("", max_length=2000),
+    db: Session = Depends(get_db),
+    user=Depends(require_user),
+):
+    format = validate_export_format(format)
+    column_map = {
+        "title": ("Title", lambda page: page.title),
+        "space": ("Space", lambda page: page.space.name if page.space else "Unassigned"),
+        "summary": ("Summary", lambda page: page.summary or ""),
+        "tags": ("Tags", lambda page: page.tags or ""),
+        "pinned": ("Pinned", lambda page: "Yes" if page.is_pinned else "No"),
+        "views": ("Views", lambda page: page.view_count or 0),
+        "updated": ("Updated", lambda page: page.updated_at.isoformat() if page.updated_at else ""),
+    }
+    selected_columns = validate_export_columns(columns, list(column_map))
+    active_filters = validate_export_filters(filters, list(column_map))
+    parent_alias = aliased(RunbookPage)
+    query = db.query(RunbookPage).outerjoin(RunbookSpace, RunbookPage.space_id == RunbookSpace.id).outerjoin(parent_alias, RunbookPage.parent_id == parent_alias.id)
+    clean_q = q.strip()
+    clean_tag = tag.strip()
+    if space:
+        query = query.filter(RunbookPage.space_id == space)
+    if clean_tag:
+        query = query.filter(RunbookPage.tags.ilike(f"%{clean_tag}%"))
+    if clean_q:
+        like = f"%{clean_q}%"
+        query = query.filter(or_(RunbookPage.title.ilike(like), RunbookPage.summary.ilike(like), RunbookPage.body.ilike(like), RunbookPage.tags.ilike(like), RunbookSpace.name.ilike(like), parent_alias.title.ilike(like)))
+    rows = query.order_by(RunbookPage.is_pinned.desc(), RunbookPage.updated_at.desc(), RunbookPage.title.asc()).limit(100000).all()
+    rows = [row for row in rows if export_row_matches(row, column_map, active_filters)]
+    write_audit(
+        db, user, "export", "runbook", None, trusted_client_ip(request),
+        detail=f"Exported {len(rows)} runbook rows as {format}; filters applied={bool(clean_q or space or clean_tag)}",
+    )
+    return table_export_response(
+        table_name="runbook-library",
+        headers=[column_map[key][0] for key in selected_columns],
+        rows=([column_map[key][1](row) for key in selected_columns] for row in rows),
+        export_format=format,
     )
 
 

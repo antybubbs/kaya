@@ -610,9 +610,7 @@ def queue_docker_restore(
 @router.get("/api/agent/jobs")
 def agent_jobs(request: Request, db: Session = Depends(get_db)):
     host = require_agent_host(request, db)
-    if get_site_setting(db, "backup_manager_enabled") != "1":
-        db.commit()
-        return {"ok": True, "jobs": []}
+    raise HTTPException(426, "Bearer-token agents are inventory-only; enroll with protocol v2")
     jobs = (
         db.query(BackupJob)
         .filter(BackupJob.host_id == host.id, BackupJob.status == "queued")
@@ -692,6 +690,7 @@ def agent_jobs(request: Request, db: Session = Depends(get_db)):
 @router.post("/api/agent/jobs/{job_id}/status")
 async def agent_job_status(job_id: int, request: Request, db: Session = Depends(get_db)):
     host = require_agent_host(request, db)
+    raise HTTPException(426, "Bearer-token agents cannot report backup status; enroll with protocol v2")
     job = db.get(BackupJob, job_id)
     if not job or job.host_id != host.id:
         raise HTTPException(404, "Backup job not found")

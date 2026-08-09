@@ -73,11 +73,9 @@ def deployment(request, db, tmp_path, monkeypatch):
     (static_dir / "probe.txt").write_text("public-static-probe", encoding="utf-8")
 
     # Keep authentication policy deterministic and use only clearly fake data.
-    monkeypatch.setattr(auth_router, "settings", SimpleNamespace(demo_mode=False))
+    monkeypatch.setattr(auth_router, "settings", SimpleNamespace())
 
     app = FastAPI()
-    app.state.demo_mode = False
-    app.state.demo_reset_schedule = "03:00 UTC"
     app.include_router(auth_router.router)
 
     @app.get("/manifest.webmanifest", name="manifest", include_in_schema=False)

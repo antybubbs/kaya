@@ -28,5 +28,3 @@ The Secure Send URL token is one of three required factors and must still be tre
 ## Operation
 
 Admins and editors can create packages under **Security → Secure Send**. Internal recipients see active deliveries under **Received** and may save a separate encrypted copy into an already-unlocked Secret Vault when the sender permits it. Vault owners can use **Share securely** on a Vault item to create a temporary, independent Secure Send copy.
-
-Secure Send is visible but non-functional in Kaya's public demo. The public gateway returns a generic not-found response in demo mode.

@@ -8,7 +8,6 @@ from uuid import uuid4
 from fastapi import FastAPI, Request
 from fastapi.responses import (
     FileResponse,
-    JSONResponse,
     PlainTextResponse,
     RedirectResponse,
 )
@@ -17,7 +16,6 @@ from sqlalchemy import inspect
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.core.config import get_settings
-from app.core.demo import demo_request_is_blocked
 from app.core.logging import install_sensitive_authentication_log_filter
 from app.core.paths import STATIC_DIR
 from app.core.performance import (
@@ -34,6 +32,7 @@ from app.routers import (
     admin,
     auth,
     backup_manager,
+    backup_agent_v2,
     compute_manager,
     dashboard,
     dns_manager,
@@ -108,8 +107,6 @@ ha_sync_monitor_task = None
 ha_watchdog_task = None
 notification_runtime_task = None
 notification_retention_task = None
-app.state.demo_mode = settings.demo_mode
-app.state.demo_reset_schedule = settings.demo_reset_schedule
 
 app.add_middleware(
     SessionMiddleware,
@@ -143,24 +140,6 @@ async def permission_handler(request: Request, exc: PermissionError):
         return PlainTextResponse("Forbidden", status_code=403)
     return RedirectResponse("/login", status_code=303)
 
-
-@app.middleware("http")
-async def protect_public_demo(request: Request, call_next):
-    if demo_request_is_blocked(request.method, request.url.path):
-        message = "This action is disabled in the public demo. Sample data resets daily."
-        accepts_html = "text/html" in request.headers.get("accept", "")
-        if accepts_html:
-            from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
-            redirect_to = request.headers.get("referer") or "/dashboard"
-            parts = urlsplit(redirect_to)
-            query = dict(parse_qsl(parts.query, keep_blank_values=True))
-            query["demo_notice"] = "1"
-            redirect_to = urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
-            return RedirectResponse(redirect_to, status_code=303)
-        if "application/json" in request.headers.get("accept", ""):
-            return JSONResponse({"error": message}, status_code=403)
-        return PlainTextResponse(message, status_code=403)
-    return await call_next(request)
 
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
@@ -252,9 +231,9 @@ async def audit_requests(request: Request, call_next):
         request_id=request_id,
         method=request.method,
         path=safe_path,
-        ip_address=None if settings.demo_mode else client_ip(request),
-        user_agent=None if settings.demo_mode else ((request.headers.get("user-agent") or "")[:2000] or None),
-        redact_client=settings.demo_mode,
+        ip_address=client_ip(request),
+        user_agent=((request.headers.get("user-agent") or "")[:2000] or None),
+        redact_client=False,
     )
     started = perf_counter()
     response = None
@@ -376,6 +355,9 @@ def bootstrap():
             initialise_application_defaults(
                 db, module_permissions_existed=module_permissions_existed
             )
+            from app.services.backup_agent_protocol import allow_legacy_inventory
+            allow_legacy_inventory(db)
+            db.commit()
         stage = "Startup complete"
         logger.debug("Database migration stage: %s", stage)
     except Exception:
@@ -391,8 +373,6 @@ async def on_startup():
     await asyncio.to_thread(refresh_latest_release)
     global version_check_task
     version_check_task = asyncio.create_task(version_check_loop())
-    if settings.demo_mode:
-        return
     start_kaya_remote_service()
     global domain_poll_task, compute_monitor_task, dns_collector_task, secure_send_cleanup_task, ha_lease_reconciliation_task, ha_sync_monitor_task, ha_watchdog_task, notification_runtime_task, notification_retention_task
     start_monitor_scheduler()
@@ -453,6 +433,7 @@ app.include_router(compute_manager.router)
 app.include_router(compute_manager.agent_router)
 app.include_router(rack_manager.router)
 app.include_router(backup_manager.router)
+app.include_router(backup_agent_v2.router)
 app.include_router(dns_manager.router)
 app.include_router(secret_vault.router)
 app.include_router(secure_send.router)

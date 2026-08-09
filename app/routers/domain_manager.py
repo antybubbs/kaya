@@ -7,7 +7,6 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from starlette import status
 
-from app.core.config import get_settings
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.core.templating import templates
 from app.db.session import get_db
@@ -19,6 +18,14 @@ from app.services.domain_polling import (
     get_poll_cadence,
     poll_domain,
     set_poll_cadence,
+)
+from app.services.client_ip import client_ip as trusted_client_ip
+from app.services.table_export import (
+    export_row_matches,
+    table_export_response,
+    validate_export_columns,
+    validate_export_filters,
+    validate_export_format,
 )
 
 router = APIRouter(prefix="/networking/domain-manager", dependencies=[Depends(require_module_access("domain_manager"))])
@@ -151,6 +158,54 @@ def list_domains(request: Request, q: str = Query("", max_length=200), db: Sessi
     )
 
 
+@router.get("/export")
+def export_domains_table(
+    request: Request,
+    q: str = Query("", max_length=200),
+    format: str = Query("csv", max_length=8),
+    columns: str = Query("", max_length=300),
+    filters: str = Query("", max_length=2000),
+    db: Session = Depends(get_db),
+    user=Depends(require_user),
+):
+    format = validate_export_format(format)
+    column_map = {
+        "domain": ("Domain", lambda row: row.name),
+        "registrar": ("Registrar", lambda row: display_registrar(row) or ""),
+        "dns-provider": ("DNS Provider", lambda row: display_dns_provider(row) or ""),
+        "expiry": ("Expiry", lambda row: display_expires_at(row).date().isoformat() if display_expires_at(row) else ""),
+        "state": ("State", lambda row: expiry_state(row).title()),
+        "lookup": ("Last Lookup", lambda row: row.last_lookup_at.isoformat() if row.last_lookup_at else ""),
+    }
+    selected_columns = validate_export_columns(columns, list(column_map))
+    active_filters = validate_export_filters(filters, list(column_map))
+    query = db.query(DomainRecord)
+    clean_q = q.strip()
+    if clean_q:
+        like = f"%{clean_q}%"
+        query = query.filter(
+            or_(
+                DomainRecord.name.ilike(like),
+                DomainRecord.registrar.ilike(like),
+                DomainRecord.dns_provider.ilike(like),
+                DomainRecord.status.ilike(like),
+                DomainRecord.notes.ilike(like),
+            )
+        )
+    rows = query.order_by(DomainRecord.expires_at.is_(None), DomainRecord.expires_at.asc(), DomainRecord.name.asc()).limit(100000).all()
+    rows = [row for row in rows if export_row_matches(row, column_map, active_filters)]
+    write_audit(
+        db, user, "export", "domain", None, trusted_client_ip(request),
+        detail=f"Exported {len(rows)} domain rows as {format}; filters applied={bool(clean_q)}",
+    )
+    return table_export_response(
+        table_name="domains",
+        headers=[column_map[key][0] for key in selected_columns],
+        rows=([column_map[key][1](row) for key in selected_columns] for row in rows),
+        export_format=format,
+    )
+
+
 @router.post("/poll-cadence")
 def update_poll_cadence(
     request: Request,
@@ -206,7 +261,7 @@ def create_domain(
         nameservers=json.dumps(clean_lines(nameservers)),
         notes=notes.strip() or None,
     )
-    if lookup_now and not get_settings().demo_mode:
+    if lookup_now:
         save_lookup(record, lookup_domain(clean_name))
     db.add(record)
     db.commit()

@@ -47,7 +47,6 @@ Important environment/configuration values include:
 - `ALLOWED_HOSTS`
 - `FORWARDED_ALLOW_IPS` (trusted reverse-proxy IPs or CIDR networks; defaults to `127.0.0.1`)
 - `SESSION_COOKIE_SECURE`
-- `DEMO_MODE`
 - Guacamole-related settings
 - Upload and recording size settings
 
@@ -57,7 +56,6 @@ The entrypoint:
 
 - Creates persistent data/upload/recording directories.
 - Generates and preserves runtime secrets in `/app/data/.runtime.env` when not supplied.
-- Handles demo seed/reset behaviour when demo mode is enabled.
 - Creates and verifies a timestamped pre-migration SQLite backup with SQLite's backup API before changing an existing database.
 - Runs the safe `app.db` Alembic preparation lifecycle.
 - Starts Uvicorn.
@@ -69,6 +67,10 @@ The entrypoint:
 - Preserve `.runtime.env`; losing the encryption key can make encrypted secrets unrecoverable.
 - Normal startup runs the Alembic lifecycle automatically before application services.
 - Pre-Alembic installations use the retained compatibility bridge and are stamped only after full validation.
+- RDP certificate verification is strict after the security migration. Inventory RDP hosts before upgrade. Public/system-CA certificates require no trusted certificate when guacd trusts the CA; self-signed hosts require an administrator to discover and explicitly trust the host's certificate (compared via another channel first where practical) under Remote Manager's RDP certificate trust settings. Do not restore connectivity by enabling certificate bypass or TOFU.
+- The supported guacd/FreeRDP 2.x boundary receives pins as `sha256:<colon-separated bytes>`; Kaya performs this conversion from its validated canonical storage form. Do not hand-edit connection tokens or substitute unvalidated fingerprint algorithms.
+- The minimum safe RDP rollback boundary is database revision `20260804_02` plus application/bridge code enforcing NLA, `ignore-cert=false` and `cert-tofu=false`. Supported downgrade below that revision is blocked because older code universally accepts certificates. If rollback would cross the boundary, disable RDP and roll forward instead.
+- Restoring a database backup from before `20260804_02` with the secure application is supported: startup upgrades it, creates no pins automatically and uses strict system-CA validation. Never pair a pre-fix backup with an older insecure image. Preserve the upgraded database and its endpoint-trust invalidation evidence in subsequent backups.
 
 ## Reverse proxies and real client IPs
 

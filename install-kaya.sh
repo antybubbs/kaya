@@ -33,6 +33,7 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: sqlite:////app/data/kaya.db
+      FORWARDED_ALLOW_IPS: \${FORWARDED_ALLOW_IPS:-127.0.0.1}
     ports:
       - "\${KAYA_PORT:-8080}:8080"
     volumes:
@@ -41,11 +42,51 @@ services:
       - ./data/remote-recordings:/app/data/remote-recordings
     security_opt:
       - no-new-privileges:true
-    cap_drop:
-      - ALL
+    cap_add:
+      - NET_RAW
+    read_only: true
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=5).status == 200 else 1)\" >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+    tmpfs:
+      - /tmp:size=128m,noexec,nosuid
+  secure-send-gateway:
+    image: $IMAGE
+    container_name: kaya-secure-send
+    restart: unless-stopped
+    command: ["uvicorn", "app.security_gateway:app", "--host", "0.0.0.0", "--port", "8999", "--proxy-headers", "--forwarded-allow-ips", "\${FORWARDED_ALLOW_IPS:-127.0.0.1}", "--no-access-log", "--no-server-header"]
+    environment:
+      DATABASE_URL: sqlite:////app/data/kaya.db
+      FORWARDED_ALLOW_IPS: \${FORWARDED_ALLOW_IPS:-127.0.0.1}
+      SKIP_DATABASE_MIGRATIONS: "true"
+      KAYA_GATEWAY_MODE: "true"
+    ports:
+      - "\${KAYA_SECURE_SEND_PORT:-8999}:8999"
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      kaya:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
     read_only: true
     tmpfs:
-      - /tmp:noexec,nosuid,size=64m
+      - /tmp:size=64m,noexec,nosuid
+      - /app/data/secret-vault:size=1m,noexec,nosuid
+      - /app/data/remote-recordings:size=1m,noexec,nosuid
+  guacd:
+    image: guacamole/guacd:1.6.0
+    container_name: kaya-guacd
+    restart: unless-stopped
+
+networks:
+  default:
+    driver: bridge
+    driver_opts:
+      com.docker.network.driver.mtu: "1280"
 COMPOSE
 
 echo "Kaya has been installed to $APP_DIR"

@@ -38,7 +38,15 @@ from app.services.custom_fields import (
     save_custom_values,
     validate_custom_values,
 )
+from app.services.client_ip import client_ip as trusted_client_ip
 from app.services.managed_lists import list_values
+from app.services.table_export import (
+    export_row_matches,
+    table_export_response,
+    validate_export_columns,
+    validate_export_filters,
+    validate_export_format,
+)
 
 router = APIRouter(prefix="/infrastructure/asset-manager", dependencies=[Depends(require_module_access("asset_manager"))])
 
@@ -138,6 +146,50 @@ def list_assets(request: Request, q: str = Query("", max_length=200), category: 
     rows = query.order_by(HardwareAsset.name.asc()).limit(500).all()
     total = db.query(HardwareAsset).count()
     return templates.TemplateResponse(request, "hardware_assets.html", {"user": user, "rows": rows, "total": total, "q": clean_q, "categories": categories, "active_category": active_category, **csrf_context(request)})
+
+
+@router.get("/export")
+def export_assets_table(
+    request: Request,
+    q: str = Query("", max_length=200),
+    category: str = Query("", max_length=120),
+    format: str = Query("csv", max_length=8),
+    columns: str = Query("", max_length=300),
+    filters: str = Query("", max_length=2000),
+    db: Session = Depends(get_db),
+    user=Depends(require_user),
+):
+    format = validate_export_format(format)
+    column_map = {
+        "asset-tag": ("Asset Tag", lambda row: row.asset_tag or ""),
+        "name": ("Name", lambda row: row.name),
+        "category": ("Category", lambda row: row.category or ""),
+        "status": ("Status", lambda row: row.status or ""),
+        "location": ("Location", lambda row: row.location or ""),
+        "warranty": ("Warranty", lambda row: row.warranty_expires.isoformat() if row.warranty_expires else ""),
+    }
+    selected_columns = validate_export_columns(columns, list(column_map))
+    active_filters = validate_export_filters(filters, list(column_map))
+    query = db.query(HardwareAsset)
+    active_category = category.strip()
+    if active_category:
+        query = query.filter(HardwareAsset.category == active_category)
+    clean_q = q.strip()
+    if clean_q:
+        like = f"%{clean_q}%"
+        query = query.filter(or_(HardwareAsset.asset_tag.ilike(like), HardwareAsset.name.ilike(like), HardwareAsset.category.ilike(like), HardwareAsset.status.ilike(like), HardwareAsset.manufacturer.ilike(like), HardwareAsset.model.ilike(like), HardwareAsset.serial_number.ilike(like), HardwareAsset.location.ilike(like)))
+    rows = query.order_by(HardwareAsset.name.asc()).limit(100000).all()
+    rows = [row for row in rows if export_row_matches(row, column_map, active_filters)]
+    write_audit(
+        db, user, "export", "hardware_asset", None, trusted_client_ip(request),
+        detail=f"Exported {len(rows)} asset rows as {format}; filters applied={bool(clean_q or active_category)}",
+    )
+    return table_export_response(
+        table_name="hardware-assets",
+        headers=[column_map[key][0] for key in selected_columns],
+        rows=([column_map[key][1](row) for key in selected_columns] for row in rows),
+        export_format=format,
+    )
 
 
 @router.get("/new")

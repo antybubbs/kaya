@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
+import re
 
 import pytest
 from sqlalchemy import create_engine
@@ -7,11 +8,12 @@ from sqlalchemy.orm import Session
 from starlette.requests import Request
 
 from app.core.security import hash_password
+from app.core.totp import encrypted_totp_secret
 from app.db.session import Base
 from app.main import app
-from app.models.models import ExternalIdentity, OIDCProvider, OIDCTransaction, RemoteManagerSetting, User
+from app.models.models import AuditLog, ExternalIdentity, OIDCLinkInvitation, OIDCProvider, OIDCTransaction, RemoteManagerSetting, User
 from app.routers.auth import login, login_page, profile
-from app.routers.oidc import _complete_vault_assurance, callback_error_context, emergency_login_submit, profile_identity_link, save_authentication_general, save_oidc_provider
+from app.routers.oidc import ACTION_ATTEMPTS, _complete_vault_assurance, accept_link_invitation, callback_error_context, create_link_invitation, emergency_login_submit, invitation_confirm_submit, open_link_invitation, profile_identity_link, revoke_link_invitation, save_authentication_general, save_oidc_provider
 from app.services.oidc_client import OIDCFlowError
 from app.services.oidc_identity import OIDCIdentityError
 from app.services.site_settings import get_site_setting
@@ -350,6 +352,213 @@ def test_authenticated_link_callback_shows_safe_actionable_failure_reason():
         assert actor.id == user.id
         assert "did not mark your email address as verified" in message
         assert (return_url, return_label) == ("/profile", "Return to profile")
+
+
+def invitation_rows(db):
+    admin = add_user(db)
+    target = add_user(db, "recipient@example.com", role="viewer")
+    provider = OIDCProvider(
+        name="Company SSO", issuer="https://id.example.com", client_id="kaya",
+        encrypted_client_secret="fake-encrypted-secret", is_enabled=True, discovery_status="ok",
+    )
+    db.add(provider)
+    setting(db, "base_url", "https://kaya.example.com")
+    return admin, target, provider
+
+
+def test_admin_invitation_secret_is_one_time_displayed_not_stored_or_audited():
+    ACTION_ATTEMPTS.clear()
+    with database() as db:
+        admin, target, _ = invitation_rows(db)
+        incoming = request("/system/site-administration/authentication/links/invite", "POST")
+        response = create_link_invitation(incoming, user_id=target.id, csrf_token="csrf", db=db, admin=admin)
+        body = response.body.decode()
+        token = re.search(r"token=([A-Za-z0-9_-]+)", body).group(1)
+
+        assert response.status_code == 201
+        assert response.headers["cache-control"] == "no-store"
+        assert "oidc_invitation_url" not in incoming.session
+        assert token not in str(incoming.session)
+        audit = db.query(AuditLog).filter_by(action="oidc_link_invitation_created").one()
+        assert token not in (audit.detail or "")
+        assert token not in (audit.metadata_json or "")
+
+
+def test_stolen_invitation_cannot_be_opened_by_a_different_signed_in_user():
+    ACTION_ATTEMPTS.clear()
+    with database() as db:
+        admin, target, _ = invitation_rows(db)
+        attacker = add_user(db, "attacker@example.com", role="viewer")
+        created = create_link_invitation(request(method="POST"), user_id=target.id, csrf_token="csrf", db=db, admin=admin)
+        token = re.search(r"token=([A-Za-z0-9_-]+)", created.body.decode()).group(1)
+        incoming = request(f"/auth/oidc/link/invitation?token={token}")
+        incoming.session["user_id"] = attacker.id
+
+        response = accept_link_invitation(incoming, token=token, db=db, user=attacker)
+
+        assert response.status_code == 400
+        invitation = db.query(OIDCLinkInvitation).one()
+        assert invitation.used_at is None
+        assert invitation.redemption_session_hash is None
+        assert db.query(AuditLog).filter_by(action="oidc_link_invitation_rejected").count() == 1
+
+
+def test_modified_invitation_token_is_rejected_without_consuming_original():
+    ACTION_ATTEMPTS.clear()
+    with database() as db:
+        admin, target, _ = invitation_rows(db)
+        created = create_link_invitation(request(method="POST"), user_id=target.id, csrf_token="csrf", db=db, admin=admin)
+        token = re.search(r"token=([A-Za-z0-9_-]+)", created.body.decode()).group(1)
+        incoming = request()
+        incoming.session["user_id"] = target.id
+        response = accept_link_invitation(incoming, token=token[:-1] + ("A" if token[-1] != "A" else "B"), db=db, user=target)
+        assert response.status_code == 400
+        assert db.query(OIDCLinkInvitation).one().used_at is None
+
+
+def test_invitation_is_not_issued_to_account_without_local_recipient_proof():
+    ACTION_ATTEMPTS.clear()
+    with database() as db:
+        admin, _, provider = invitation_rows(db)
+        oidc_only = add_user(db, "oidc-only@example.com", password=None, role="viewer", authentication_type="oidc")
+        response = create_link_invitation(request(method="POST"), user_id=oidc_only.id, csrf_token="csrf", db=db, admin=admin)
+        assert response.status_code == 303
+        assert "error=invite" in response.headers["location"]
+        assert db.query(OIDCLinkInvitation).filter_by(user_id=oidc_only.id, provider_id=provider.id).count() == 0
+
+
+def test_invitation_redemption_routes_require_an_active_user_dependency():
+    protected = {
+        ("/auth/oidc/link/invitation", "GET"),
+        ("/auth/oidc/link/invitation/open", "POST"),
+        ("/auth/oidc/link/invitation/confirm", "GET"),
+        ("/auth/oidc/link/invitation/confirm", "POST"),
+    }
+    routes = {
+        (route.path, method): route
+        for route in app.routes if hasattr(route, "methods")
+        for method in route.methods
+    }
+    for key in protected:
+        names = {dependency.call.__name__ for dependency in routes[key].dependant.dependencies}
+        assert "require_user" in names
+
+
+def test_recipient_reauthentication_claims_invitation_once_and_forces_fresh_provider_login(monkeypatch):
+    ACTION_ATTEMPTS.clear()
+    captured = {}
+
+    async def fake_begin(_request, _db, _provider, **values):
+        captured.update(values)
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse("https://id.example.com/authorize", status_code=302)
+
+    monkeypatch.setattr("app.routers.oidc._begin", fake_begin)
+    with database() as db:
+        admin, target, _ = invitation_rows(db)
+        created = create_link_invitation(request(method="POST"), user_id=target.id, csrf_token="csrf", db=db, admin=admin)
+        token = re.search(r"token=([A-Za-z0-9_-]+)", created.body.decode()).group(1)
+        incoming = request(f"/auth/oidc/link/invitation?token={token}")
+        incoming.session["user_id"] = target.id
+        landing = accept_link_invitation(incoming, token=token, db=db, user=target)
+        assert landing.status_code == 200
+        assert "oidc_link_invitation" not in incoming.session
+        opened = open_link_invitation(incoming, token=token, csrf_token="csrf", db=db, user=target)
+        assert opened.headers["location"] == "/auth/oidc/link/invitation/confirm"
+
+        response = asyncio.run(invitation_confirm_submit(
+            incoming, password="correct horse battery staple", totp_code="", csrf_token="csrf", db=db, user=target,
+        ))
+        invitation = db.query(OIDCLinkInvitation).one()
+        assert response.status_code == 302
+        assert invitation.used_at is not None
+        assert invitation.redemption_session_hash is None
+        assert "oidc_link_invitation" not in incoming.session
+        assert captured["target_user_id"] == target.id
+        assert captured["initiated_by_user_id"] == target.id
+        assert captured["link_invitation_id"] == invitation.id
+        assert captured["authorization_params"] == {"prompt": "login", "max_age": "0"}
+
+        replay = accept_link_invitation(incoming, token=token, db=db, user=target)
+        assert replay.status_code == 400
+
+
+def test_recipient_with_totp_cannot_redeem_using_password_alone():
+    ACTION_ATTEMPTS.clear()
+    with database() as db:
+        admin, target, _ = invitation_rows(db)
+        target.totp_enabled = True
+        target.totp_secret = encrypted_totp_secret("JBSWY3DPEHPK3PXP")
+        db.commit()
+        created = create_link_invitation(request(method="POST"), user_id=target.id, csrf_token="csrf", db=db, admin=admin)
+        token = re.search(r"token=([A-Za-z0-9_-]+)", created.body.decode()).group(1)
+        incoming = request()
+        incoming.session["user_id"] = target.id
+        accept_link_invitation(incoming, token=token, db=db, user=target)
+        open_link_invitation(incoming, token=token, csrf_token="csrf", db=db, user=target)
+
+        response = asyncio.run(invitation_confirm_submit(
+            incoming, password="correct horse battery staple", totp_code="", csrf_token="csrf", db=db, user=target,
+        ))
+
+        assert response.status_code == 401
+        assert db.query(OIDCLinkInvitation).one().used_at is None
+
+
+def test_administrator_can_revoke_unused_invitation():
+    ACTION_ATTEMPTS.clear()
+    with database() as db:
+        admin, target, _ = invitation_rows(db)
+        create_link_invitation(request(method="POST"), user_id=target.id, csrf_token="csrf", db=db, admin=admin)
+        invitation = db.query(OIDCLinkInvitation).one()
+        response = revoke_link_invitation(invitation.id, request(method="POST"), csrf_token="csrf", db=db, admin=admin)
+        db.refresh(invitation)
+        assert response.status_code == 303
+        assert invitation.revoked_at is not None
+        audit = db.query(AuditLog).filter_by(action="oidc_link_invitation_revoked").one()
+        assert audit.user_id == admin.id
+        assert invitation.token_hash not in (audit.detail or "")
+
+
+def test_administrator_can_revoke_claimed_incomplete_invitation():
+    ACTION_ATTEMPTS.clear()
+    with database() as db:
+        admin, target, _ = invitation_rows(db)
+        create_link_invitation(request(method="POST"), user_id=target.id, csrf_token="csrf", db=db, admin=admin)
+        invitation = db.query(OIDCLinkInvitation).one()
+        invitation.used_at = datetime.utcnow()
+        db.commit()
+        response = revoke_link_invitation(invitation.id, request(method="POST"), csrf_token="csrf", db=db, admin=admin)
+        db.refresh(invitation)
+        assert response.status_code == 303
+        assert invitation.revoked_at is not None
+
+
+def test_invitation_revocation_route_is_admin_and_csrf_protected():
+    route = next(
+        route for route in app.routes
+        if getattr(route, "path", None) == "/system/site-administration/authentication/links/invitations/{invitation_id}/revoke"
+    )
+    dependency_names = {dependency.call.__name__ for dependency in route.dependant.dependencies}
+    assert "require_admin" in dependency_names
+
+
+def test_auth_time_failure_is_generic_for_authorised_link_owner():
+    with database() as db:
+        admin, target, provider = invitation_rows(db)
+        incoming = request("/auth/oidc/callback")
+        incoming.session["user_id"] = target.id
+        transaction = OIDCTransaction(
+            transaction_hash="a" * 64, state_hash="b" * 64, encrypted_nonce="fake", encrypted_code_verifier="fake",
+            provider_id=provider.id, flow_type="admin_link", target_user_id=target.id,
+            initiated_by_user_id=target.id, expires_at=datetime.utcnow() + timedelta(minutes=5),
+        )
+        db.add(transaction)
+        db.commit()
+        actor, message, _, _ = callback_error_context(db, incoming, transaction, OIDCFlowError("invalid_auth_time"))
+        assert actor.id == target.id
+        assert message == "Single sign-on could not be completed."
+        assert "auth_time" not in message
 
 
 def vault_assurance_rows(db):

@@ -31,7 +31,7 @@
   <a class="{% if active_category == category %}active{% endif %}" href="/infrastructure/asset-manager?category={{ category|urlencode }}{% if q %}&q={{ q|urlencode }}{% endif %}">{{ category }}</a>
   {% endfor %}
 </nav>
-<table data-table-key="hardware-assets">
+<table data-table-key="hardware-assets" data-export-url="/infrastructure/asset-manager/export">
   <thead><tr><th class="action-col" data-col="actions">View</th><th data-col="asset-tag" data-sort>Asset Tag</th><th data-col="name" data-sort>Name</th><th data-col="category" data-sort>Category</th><th data-col="status" data-sort>Status</th><th data-col="location" data-sort>Location</th><th data-col="warranty" data-sort>Warranty</th></tr></thead>
   <tbody>
   {% for row in rows %}

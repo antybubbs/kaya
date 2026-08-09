@@ -27,40 +27,104 @@
       <label>IP/WAN record<input value="{{ remote.ip_address.address }} · {{ remote.ip_address.category or 'Uncategorised' }}" disabled></label>
     </div>
   </section>
-  <section class="remote-settings-card ssh-identity-settings" id="ssh-host-identity">
+  <section class="remote-settings-card remote-identity-settings" id="ssh-host-identity">
     <header>
       <span>SSH host identity</span>
-      <span class="ssh-identity-status {{ 'is-trusted' if remote.host_key_fingerprint else 'is-blocked' }}">{{ 'Trusted' if remote.host_key_fingerprint else 'Not verified' }}</span>
+      <span class="remote-identity-status {{ 'is-trusted' if remote.host_key_fingerprint else 'is-blocked' }}">{{ 'Trusted' if remote.host_key_fingerprint else 'Not verified' }}</span>
     </header>
     {% if remote.protocol != 'ssh' %}
-    <div class="ssh-identity-settings-body">
+    <div class="remote-identity-settings-body">
       <p class="muted">Host-key verification applies to SSH connections. Save this connection as SSH to enrol a key.</p>
     </div>
     {% else %}
-    <div class="ssh-identity-settings-body">
-    <div class="ssh-identity-explainer">
+    <div class="remote-identity-settings-body">
+    <div class="remote-identity-explainer">
       <strong>Passwords stay blocked until the server is verified</strong>
       <p>Kaya scans the public identity, checks it again when you approve, then requires the same key for every future connection.</p>
     </div>
     {% if request.query_params.get('host_key_trusted') == '1' %}<div class="alert success"><strong>SSH identity trusted</strong><p>Future sessions must present this exact host key.</p></div>{% endif %}
     {% if host_key_error %}<div class="alert danger"><strong>Key scan failed</strong><p>{{ host_key_error }}</p></div>{% endif %}
-    <div class="ssh-identity-fingerprint ssh-identity-trusted-fingerprint">
+    <div class="remote-identity-fingerprint remote-identity-trusted-fingerprint">
       <div><span>Trusted fingerprint</span><strong>{{ 'Enrolled and enforced' if remote.host_key_fingerprint else 'Not enrolled' }}</strong></div>
       <code>{{ remote.host_key_fingerprint or 'SSH connections are blocked until an identity is trusted.' }}</code>
     </div>
     {% if host_key_candidate %}
-    <div class="ssh-identity-fingerprint"><div><span>Identity found by Kaya</span><strong>Checked again before it is saved</strong></div><code>{{ host_key_candidate }}</code></div>
+    <div class="remote-identity-fingerprint"><div><span>Identity found by Kaya</span><strong>Checked again before it is saved</strong></div><code>{{ host_key_candidate }}</code></div>
     <input type="hidden" name="host_key_view" value="settings">
     <input type="hidden" name="host_key_candidate" value="{{ host_key_candidate }}">
-    <p class="ssh-identity-first-use-note">Approve this once if this is the server and address you expected. Any future key change will block SSH until it is reviewed.</p>
-    <div class="ssh-identity-actions">
+    <p class="remote-identity-first-use-note">Approve this once if this is the server and address you expected. Any future key change will block SSH until it is reviewed.</p>
+    <div class="remote-identity-actions">
       <button type="submit" formaction="/remote-manager/{{ remote.id }}/ssh/host-key/trust" formmethod="post">Trust this server</button>
       <button class="button secondary" type="submit" formaction="/remote-manager/{{ remote.id }}/ssh/host-key/scan" formmethod="post">Scan again</button>
     </div>
     {% else %}
     <input type="hidden" name="host_key_view" value="settings">
-    <div class="ssh-identity-actions"><button class="button secondary" type="submit" formaction="/remote-manager/{{ remote.id }}/ssh/host-key/scan" formmethod="post">Scan server identity</button></div>
+    <div class="remote-identity-actions"><button class="button secondary" type="submit" formaction="/remote-manager/{{ remote.id }}/ssh/host-key/scan" formmethod="post">Scan server identity</button></div>
     {% endif %}
+    </div>
+    {% endif %}
+  </section>
+  <section class="remote-settings-card remote-identity-settings" id="rdp-certificate-trust">
+    <header>
+      <span>RDP certificate trust</span>
+      <span class="remote-identity-status {{ 'is-review' if remote.rdp_trust_invalidated_at else 'is-trusted' if remote.rdp_cert_fingerprints else 'is-blocked' }}">{{ 'Re-authorization required' if remote.rdp_trust_invalidated_at else 'Trusted' if remote.rdp_cert_fingerprints else 'System CA required' }}</span>
+    </header>
+    {% if remote.protocol != 'rdp' %}
+    <div class="remote-identity-settings-body">
+      <p class="muted">Certificate trust applies to RDP connections. Save this host as RDP before discovering a certificate.</p>
+    </div>
+    {% else %}
+    <div class="remote-identity-settings-body">
+      {% if request.query_params.get('rdp_cert_trusted') == '1' %}<div class="alert success"><strong>RDP certificate trusted</strong><p>Future sessions require this exact certificate, or system CA validation once no certificates are trusted.</p></div>{% endif %}
+      {% if request.query_params.get('rdp_cert_removed') == '1' %}<div class="alert success"><strong>RDP certificate trust removed</strong><p>Future sessions require normal system CA validation.</p></div>{% endif %}
+      {% if rdp_cert_discover_error %}<div class="alert danger"><strong>Certificate discovery failed</strong><p>{{ rdp_cert_discover_error }}</p></div>{% endif %}
+      {% if remote.rdp_trust_invalidated_at %}<div class="alert danger"><strong>RDP connection blocked</strong><p>The endpoint changed and its previous certificate trust was invalidated. Discover and review the certificate for the new endpoint before trusting it again.</p></div>{% endif %}
+      <p>Kaya never trusts a certificate automatically. With no certificate trusted, guacd requires a certificate valid under its system CA store. A trusted certificate must exactly match the server certificate.</p>
+      <div class="remote-identity-fingerprint remote-identity-trusted-fingerprint">
+        <div><span>Trusted</span><strong>{{ rdp_cert_pin_count }} certificate{{ '' if rdp_cert_pin_count == 1 else 's' }}</strong></div>
+        {% if remote.rdp_cert_fingerprints %}
+        {% for pin in remote.rdp_cert_fingerprints.split('\n') %}<code>{{ pin }}</code>{% endfor %}
+        {% else %}
+        <code>No certificate trusted; RDP connections require system CA validation.</code>
+        {% endif %}
+      </div>
+      {% if user.role == 'admin' %}
+      {% if rdp_cert_candidate %}
+      <div class="remote-identity-candidate">
+        <div class="alert warning"><strong>This certificate has been retrieved from the remote host but is NOT trusted.</strong><p>If practical, compare this fingerprint using another trusted management channel before trusting it.</p></div>
+        <dl class="remote-identity-details">
+          <div><dt>Subject</dt><dd>{{ rdp_cert_candidate.subject }}</dd></div>
+          <div><dt>Issuer</dt><dd>{{ rdp_cert_candidate.issuer }}</dd></div>
+          <div><dt>Self-signed</dt><dd>{{ 'Yes' if rdp_cert_candidate.self_signed else 'No' }}</dd></div>
+          <div><dt>Valid from</dt><dd>{{ rdp_cert_candidate.not_valid_before }}</dd></div>
+          <div><dt>Expires</dt><dd>{{ rdp_cert_candidate.not_valid_after }}</dd></div>
+          {% if rdp_cert_candidate.sans %}<div><dt>Subject alternative names</dt><dd>{{ rdp_cert_candidate.sans|join(', ') }}</dd></div>{% endif %}
+        </dl>
+        <div class="remote-identity-fingerprint"><div><span>Discovered fingerprint</span></div><code>{{ rdp_cert_candidate.fingerprint }}</code></div>
+        <input type="hidden" name="rdp_cert_view" value="settings">
+        <input type="hidden" name="rdp_cert_candidate" value="{{ rdp_cert_candidate.fingerprint }}">
+        <div class="remote-identity-actions">
+          {% if rdp_cert_pin_count == 0 %}
+          <button type="submit" formaction="/remote-manager/{{ remote.id }}/rdp/certificate/trust" formmethod="post" name="rdp_cert_mode" value="trust">Trust Certificate</button>
+          {% else %}
+          <button type="submit" formaction="/remote-manager/{{ remote.id }}/rdp/certificate/trust" formmethod="post" name="rdp_cert_mode" value="replace">Replace Trusted Certificate</button>
+          <button type="submit" formaction="/remote-manager/{{ remote.id }}/rdp/certificate/trust" formmethod="post" name="rdp_cert_mode" value="append">Replace and Keep Previous (rotation)</button>
+          {% endif %}
+          <button class="button secondary" type="submit" formaction="/remote-manager/{{ remote.id }}/rdp/certificate/discover" formmethod="post">Discover Again</button>
+        </div>
+      </div>
+      {% else %}
+      <input type="hidden" name="rdp_cert_view" value="settings">
+      <div class="remote-identity-actions">
+        <button class="button secondary" type="submit" formaction="/remote-manager/{{ remote.id }}/rdp/certificate/discover" formmethod="post">Discover Certificate</button>
+        {% if remote.rdp_cert_fingerprints %}
+        <button class="button danger" type="submit" formaction="/remote-manager/{{ remote.id }}/rdp/certificate/remove" formmethod="post">Remove Trust</button>
+        {% endif %}
+      </div>
+      {% endif %}
+      {% else %}
+      <p class="muted">Only a Kaya administrator can change RDP certificate trust.</p>
+      {% endif %}
     </div>
     {% endif %}
   </section>

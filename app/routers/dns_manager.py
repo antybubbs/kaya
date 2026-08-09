@@ -12,7 +12,6 @@ from sqlalchemy.orm import Session, joinedload
 from starlette import status
 from starlette.datastructures import URL
 
-from app.core.config import get_settings
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.core.templating import templates
 from app.db.session import get_db
@@ -39,6 +38,7 @@ from app.routers.auth import (
     require_user,
 )
 from app.services.audit import write_audit
+from app.services.remote_endpoint_trust import update_remote_endpoint
 from app.services.dns_clients import (
     add_event,
     client_display_name,
@@ -706,100 +706,6 @@ def call_provider(provider: DNSProviderConfig | None, method: str, client: DNSPr
     return result
 
 
-def demo_dns_payloads() -> dict[str, DNSProviderResult]:
-    now = datetime.now()
-    queries = [
-        {
-            "time": (now.timestamp() - index * 184),
-            "domain": domain,
-            "client": {"name": client, "ip": ip},
-            "type": qtype,
-            "status": status,
-            "reply": {"type": reply, "time": duration},
-            "upstream": upstream,
-        }
-        for index, (domain, client, ip, qtype, status, reply, duration, upstream) in enumerate(
-            [
-                ("grafana.lab.home.arpa", "admin-laptop", "10.20.1.54", "A", "allowed", "IP", 0.0021, "local"),
-                ("updates.ubuntu.com", "docker-01", "10.20.10.31", "AAAA", "allowed", "CNAME", 0.014, "1.1.1.1"),
-                ("telemetry.example.invalid", "living-room-display", "10.20.30.42", "A", "blocked", "gravity", 0.0004, "-"),
-                ("nas-01.lab.home.arpa", "backup-runner", "10.20.10.44", "A", "allowed", "IP", 0.0016, "local"),
-                ("phish-demo.example.invalid", "unknown-android", "10.20.30.88", "A", "blocked", "gravity", 0.0003, "-"),
-                ("registry-1.docker.io", "docker-01", "10.20.10.31", "A", "allowed", "IP", 0.021, "9.9.9.9"),
-                ("_ldap._tcp.lab.home.arpa", "admin-laptop", "10.20.1.54", "SRV", "allowed", "NODATA", 0.0032, "local"),
-                ("casino-demo.example.invalid", "guest-tablet", "10.20.40.23", "A", "blocked", "regex", 0.0005, "-"),
-            ]
-        )
-    ]
-    history_rows = [
-        {"timestamp": (now.timestamp() - (11 - index) * 600), "total": 780 + index * 42, "blocked": 92 + (index % 4) * 18}
-        for index in range(12)
-    ]
-    return {
-        "status": DNSProviderResult(
-            True,
-            "Demo DNS status loaded.",
-            {"version": {"core": {"local": {"version": "v6.0-demo"}}}, "status": "enabled"},
-        ),
-        "stats": DNSProviderResult(
-            True,
-            "Demo DNS statistics loaded.",
-            {
-                "queries": {"total": 18342, "blocked": 2418, "percent_blocked": 13.2},
-                "clients": {"active": 12},
-                "gravity": {"domains_being_blocked": 148923},
-                "status": "enabled",
-            },
-        ),
-        "history": DNSProviderResult(True, "Demo DNS history loaded.", {"queries": {"history": history_rows}}),
-        "queries": DNSProviderResult(True, "Demo DNS query log loaded.", {"queries": queries}),
-        "clients": DNSProviderResult(
-            True,
-            "Demo DNS clients loaded.",
-            {
-                "clients": [
-                    {"name": "admin-laptop", "ip": "10.20.1.54", "mac": "02:00:5e:10:01:54", "queries": 842, "blocked_queries": 12, "last_seen": "2026-07-07 09:48"},
-                    {"name": "docker-01", "ip": "10.20.10.31", "mac": "02:00:5e:10:10:31", "queries": 1488, "blocked_queries": 96, "last_seen": "2026-07-07 09:50"},
-                    {"name": "living-room-display", "ip": "10.20.30.42", "mac": "02:00:5e:10:30:42", "queries": 332, "blocked_queries": 44, "last_seen": "2026-07-07 09:44"},
-                    {"name": "unknown-android", "ip": "10.20.30.88", "mac": "-", "queries": 74, "blocked_queries": 18, "last_seen": "2026-07-07 09:39"},
-                ]
-            },
-        ),
-        "local_dns": DNSProviderResult(
-            True,
-            "Demo local DNS records loaded.",
-            {
-                "hosts": [
-                    {"name": "router.lab.home.arpa", "ip": "10.20.1.1", "description": "Core gateway"},
-                    {"name": "pve-01.lab.home.arpa", "ip": "10.20.10.11", "description": "Primary Proxmox node"},
-                    {"name": "nas-01.lab.home.arpa", "ip": "10.20.10.21", "description": "Shared backup storage"},
-                    {"name": "grafana.lab.home.arpa", "ip": "10.20.10.40", "description": "Observability dashboard"},
-                ]
-            },
-        ),
-        "dhcp": DNSProviderResult(
-            True,
-            "Demo DHCP leases loaded.",
-            {
-                "leases": [
-                    {"name": "living-room-display", "ip": "10.20.30.42", "mac": "02:00:5e:10:30:42", "expires": "2026-07-07 14:22", "static": True},
-                    {"name": "guest-tablet", "ip": "10.20.40.23", "mac": "02:00:5e:10:40:23", "expires": "2026-07-07 11:10", "static": False},
-                    {"name": "unknown-android", "ip": "10.20.30.88", "mac": "-", "expires": "2026-07-07 12:05", "static": False},
-                ]
-            },
-        ),
-        "blocklists": DNSProviderResult(
-            True,
-            "Demo blocklists loaded.",
-            {
-                "lists": [
-                    {"name": "StevenBlack unified hosts", "address": "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts", "enabled": True, "date_updated": "2026-07-07"},
-                    {"name": "OISD small", "address": "https://small.oisd.nl/", "enabled": True, "date_updated": "2026-07-06"},
-                    {"name": "Kaya demo policy", "address": "local:demo-policy", "enabled": True, "date_updated": "2026-07-07"},
-                ]
-            },
-        ),
-    }
 
 
 @router.post("/investigations")
@@ -1138,7 +1044,10 @@ def update_managed_ip_from_dns(request: Request, client_id: int, csrf_token: str
     if collision:
         raise HTTPException(status_code=409, detail="That address is already allocated to another record in this VLAN.")
     old = record.address
-    record.address = client.current_ip
+    update_remote_endpoint(
+        db, record, address=client.current_ip, actor=user,
+        audit_ip=request.client.host if request.client else None, reason="dns_managed_update",
+    )
     add_event(db, client, "managed_record_updated", "Managed IP explicitly updated", old=old, new=record.address)
     db.commit()
     _client_audit(request, db, user, client, "update", "Updated linked managed IP from DNS observation", old=old, new=record.address)
@@ -1193,8 +1102,6 @@ def dns_connection_status(provider_id: int | None = Query(None), db: Session = D
         )
     if not provider:
         return JSONResponse({"connected": False, "message": "No enabled provider is configured."})
-    if get_settings().demo_mode:
-        return JSONResponse({"connected": True, "message": "Demo Pi-hole connected."})
     result = call_provider(provider, "test_connection", provider_for(provider))
     db.commit()
     return JSONResponse({"connected": result.ok, "message": result.message})
@@ -1213,8 +1120,6 @@ def update_dns_blocklists(
     provider = selected_provider(db) if dns_manager_enabled(db) else None
     if not provider:
         result = DNSProviderResult(False, "No enabled provider is configured.")
-    elif get_settings().demo_mode:
-        result = DNSProviderResult(True, "Demo Pi-hole blocklists updated successfully.")
     else:
         result = provider_for(provider).update_blocklists()
     write_audit(
@@ -1331,54 +1236,31 @@ def dns_manager(
     retained_dhcp_total = 0
 
     if enabled and provider:
-        if get_settings().demo_mode:
-            demo_payloads = demo_dns_payloads()
-            if active_tab == "dashboard":
-                status = demo_payloads["status"]
-                stats = demo_payloads["stats"]
-                history = demo_payloads["history"]
-                clients = demo_payloads["clients"]
-                dhcp = demo_payloads["dhcp"]
-                queries = demo_payloads["queries"]
-                blocklists = demo_payloads["blocklists"]
-            elif active_tab == "query-log":
-                queries = demo_payloads["queries"]
-            elif active_tab == "clients":
-                clients = demo_payloads["clients"]
-                dhcp = demo_payloads["dhcp"]
-                queries = demo_payloads["queries"]
-            elif active_tab == "local-dns":
-                local_dns = demo_payloads["local_dns"]
-            elif active_tab == "dhcp":
-                dhcp = demo_payloads["dhcp"]
-            elif active_tab == "blocklists":
-                blocklists = demo_payloads["blocklists"]
-        else:
-            provider_client = provider_for(provider)
-            if active_tab == "dashboard":
-                status = call_provider(provider, "get_status", provider_client)
-                stats = call_provider(provider, "get_statistics", provider_client)
-                history = call_provider(provider, "get_history", provider_client)
-                clients = call_provider(provider, "get_clients", provider_client)
-                dhcp = call_provider(provider, "get_dhcp_leases", provider_client)
-                queries = provider_client.get_query_log(limit=300)
-                blocklists = call_provider(provider, "get_blocklists", provider_client)
-            elif active_tab == "query-log":
-                queries = provider_client.get_query_log(limit=200)
-            elif active_tab == "clients":
-                # Client inventory is populated by the background collector.
-                # Normal page rendering never waits for Pi-hole.
-                pass
-            elif active_tab == "local-dns":
-                local_dns = call_provider(provider, "get_local_dns_records", provider_client)
-            elif active_tab == "dhcp":
-                # Retained lease intervals are populated by the collector. Page
-                # rendering stays bounded and does not wait for Pi-hole.
-                pass
-            elif active_tab == "blocklists":
-                blocklists = call_provider(provider, "get_blocklists", provider_client)
+        provider_client = provider_for(provider)
+        if active_tab == "dashboard":
+            status = call_provider(provider, "get_status", provider_client)
+            stats = call_provider(provider, "get_statistics", provider_client)
+            history = call_provider(provider, "get_history", provider_client)
+            clients = call_provider(provider, "get_clients", provider_client)
+            dhcp = call_provider(provider, "get_dhcp_leases", provider_client)
+            queries = provider_client.get_query_log(limit=300)
+            blocklists = call_provider(provider, "get_blocklists", provider_client)
+        elif active_tab == "query-log":
+            queries = provider_client.get_query_log(limit=200)
+        elif active_tab == "clients":
+            # Client inventory is populated by the background collector.
+            # Normal page rendering never waits for Pi-hole.
+            pass
+        elif active_tab == "local-dns":
+            local_dns = call_provider(provider, "get_local_dns_records", provider_client)
+        elif active_tab == "dhcp":
+            # Retained lease intervals are populated by the collector. Page
+            # rendering stays bounded and does not wait for Pi-hole.
+            pass
+        elif active_tab == "blocklists":
+            blocklists = call_provider(provider, "get_blocklists", provider_client)
 
-            db.commit()
+        db.commit()
         active_result = next((item for item in [status, stats, history, queries, clients, local_dns, dhcp, blocklists] if item and not item.ok), None)
         error = active_result.message if active_result else None
         flagged_domains = open_investigation_domains(db, provider)
@@ -1391,12 +1273,12 @@ def dns_manager(
         )
 
     recognised_hostnames = known_hostnames(db)
-    if active_tab == "clients" and not get_settings().demo_mode:
+    if active_tab == "clients":
         retained_client_rows, retained_client_total = list_clients(
             db, provider_id=provider.id if provider else None, search=client_q,
             status=client_status_filter, offset=(client_page - 1) * 50, limit=50,
         )
-    if active_tab == "dhcp" and not get_settings().demo_mode:
+    if active_tab == "dhcp":
         clean_dhcp_status = dhcp_status if dhcp_status in {"current", "active", "recent", "history", "all"} else "current"
         retained_dhcp_rows, retained_dhcp_total = list_dhcp_leases(
             db, provider_id=provider.id if provider else None, status=clean_dhcp_status,
@@ -1478,7 +1360,6 @@ def dns_manager(
         "dns_manager.html",
         {
             "user": user,
-            "demo_mode": get_settings().demo_mode,
             "enabled": enabled,
             "provider": provider,
             "providers": configured_providers(db) if enabled else [],

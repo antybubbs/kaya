@@ -264,7 +264,7 @@
     if (!protectedTable && table.dataset.export !== "false" && headers.some(exportableColumn)) {
       const exportMenu = document.createElement("details");
       exportMenu.className = "table-export";
-      exportMenu.innerHTML = '<summary aria-label="Export table" title="Export the current table" aria-haspopup="menu"><span aria-hidden="true">⇩</span> Export</summary><div class="table-export-panel" role="menu"><button type="button" role="menuitem" data-table-export-format="csv">Export as CSV</button><button type="button" role="menuitem" data-table-export-format="text">Export as Text</button></div>';
+      exportMenu.innerHTML = '<summary aria-label="Export table" title="Export the current table" aria-haspopup="menu"><svg class="table-export-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3v12m0 0-4.5-4.5M12 15l4.5-4.5M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"></path></svg> Export</summary><div class="table-export-panel" role="menu"><button type="button" role="menuitem" data-table-export-format="csv">Export as CSV</button><button type="button" role="menuitem" data-table-export-format="text">Export as Text</button></div>';
       exportMenu.querySelectorAll("button").forEach((button) => button.addEventListener("click", () => void exportTable(table, headers, hiddenColumns, filters, button.dataset.tableExportFormat, exportMenu)));
       exportMenu.querySelector(".table-export-panel").addEventListener("keydown", (event) => {
         const items = Array.from(event.currentTarget.querySelectorAll("button:not(:disabled)"));

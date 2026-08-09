@@ -7,7 +7,6 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from app.models.models import User, UserModulePermission
-from app.core.config import get_settings
 from app.services.site_settings import get_site_setting
 
 
@@ -49,8 +48,6 @@ LANDING_ORDER = (
 
 
 def module_is_enabled(db: Session, module: Module) -> bool:
-    if module.key == "secure_send" and get_settings().demo_mode:
-        return False
     if not module.enabled_setting:
         return module.enabled_default
     value = get_site_setting(db, module.enabled_setting)

@@ -56,6 +56,7 @@ def test_fresh_install_and_repeated_start_are_idempotent(tmp_path):
         ).fetchone()[0]
         integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
         foreign_keys = connection.execute("PRAGMA foreign_key_check").fetchall()
+        remote_columns = {row[1] for row in connection.execute("PRAGMA table_info(remote_access)")}
     assert first.current_revision == CURRENT_REVISION
     assert second.current_revision == CURRENT_REVISION
     assert first.backup is None and second.backup is None
@@ -64,6 +65,81 @@ def test_fresh_install_and_repeated_start_are_idempotent(tmp_path):
     assert revision == CURRENT_REVISION
     assert integrity == "ok"
     assert foreign_keys == []
+    assert "rdp_cert_fingerprints" in remote_columns
+
+
+def test_oidc_hardening_migration_revokes_legacy_bearer_invitations(tmp_path):
+    from alembic import command
+    from app.db.migrations import _alembic_config
+    from app.models.models import OIDCProvider
+
+    path = tmp_path / "kaya.db"
+    settings = settings_for(path, tmp_path / "backups")
+    config = _alembic_config(settings.database_url)
+    command.upgrade(config, "20260803_02")
+    engine = engine_for(path)
+    with Session(engine) as db:
+        admin = User(email="admin@example.invalid", password_hash="fake-hash", role="admin", is_active=True)
+        target = User(email="recipient@example.invalid", password_hash="fake-hash", role="viewer", is_active=True)
+        provider = OIDCProvider(name="Fake IdP", issuer="https://id.example.invalid", client_id="fake", is_enabled=True)
+        db.add_all([admin, target, provider])
+        db.commit()
+        ids = (admin.id, target.id, provider.id)
+
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "INSERT INTO oidc_link_invitations "
+            "(token_hash, user_id, provider_id, created_by_user_id, created_at, expires_at) "
+            "VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, datetime('now', '+30 minutes'))",
+            ("a" * 64, ids[1], ids[2], ids[0]),
+        )
+        connection.commit()
+
+    command.upgrade(config, "head")
+    with sqlite3.connect(path) as connection:
+        row = connection.execute(
+            "SELECT recipient_binding_hash, provider_binding_hash, revoked_at, used_at, completed_at FROM oidc_link_invitations"
+        ).fetchone()
+        revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()[0]
+    assert row[0] == "legacy-revoked"
+    assert row[1] == "legacy-revoked"
+    assert row[2] is not None
+    assert row[3] is None
+    assert row[4] is None
+    assert revision == CURRENT_REVISION
+
+
+def test_rdp_certificate_trust_downgrade_is_blocked_and_state_is_preserved(tmp_path):
+    from alembic import command
+    from app.db.migrations import _alembic_config
+
+    path = tmp_path / "kaya.db"
+    settings = settings_for(path, tmp_path / "backups")
+    prepare_database(engine_for(path), settings)
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "INSERT INTO ip_addresses (address, assignment_type, created_at, updated_at) "
+            "VALUES ('192.0.2.80', 'Static', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+        )
+        address_id = connection.execute("SELECT last_insert_rowid()").fetchone()[0]
+        connection.execute(
+            "INSERT INTO remote_access "
+            "(ip_address_id, is_enabled, protocol, port, rdp_cert_fingerprints, created_at, updated_at) "
+            "VALUES (?, 1, 'rdp', 3389, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            (address_id, f"sha256:{'a' * 64}"),
+        )
+        connection.commit()
+
+    with pytest.raises(RuntimeError, match="downgrade is blocked"):
+        command.downgrade(_alembic_config(settings.database_url), "20260804_01")
+
+    with sqlite3.connect(path) as connection:
+        revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()[0]
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(remote_access)")}
+        pin = connection.execute("SELECT rdp_cert_fingerprints FROM remote_access").fetchone()[0]
+    assert revision == CURRENT_REVISION
+    assert {"rdp_cert_fingerprints", "rdp_trust_invalidated_at", "rdp_trust_invalidated_reason"} <= columns
+    assert pin == f"sha256:{'a' * 64}"
 
 
 def test_clean_restart_uses_lightweight_startup_validation(tmp_path, monkeypatch):
@@ -191,6 +267,45 @@ def test_reconstructed_historical_upgrade_creates_backup_and_preserves_user(
         ).fetchone()
     assert restored_user == user
     assert has_revision is None
+
+
+def test_pre_totp_legacy_database_migrates_without_the_not_null_crash(tmp_path):
+    """A genuinely old users table (pre-TOTP, no totp_enabled column at all).
+
+    scripts/migrate_sqlite.py's additive column list never mentions
+    totp_enabled, so before the compatibility bridge could resolve a NOT NULL
+    column from the model's own default, this reproduced the exact reported
+    crash: "sqlite3.OperationalError: Cannot add a NOT NULL column with
+    default value NULL" while adding users.totp_enabled.
+    """
+    path = tmp_path / "kaya.db"
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "CREATE TABLE users (id INTEGER PRIMARY KEY, email VARCHAR(255) NOT NULL UNIQUE, "
+            "password_hash VARCHAR(255) NOT NULL, first_name VARCHAR(120), last_name VARCHAR(120), "
+            "role VARCHAR(30), is_active BOOLEAN, totp_secret TEXT, created_at DATETIME)"
+        )
+        connection.execute(
+            "INSERT INTO users (id, email, password_hash, role, is_active, created_at) "
+            "VALUES (1, 'pre-totp@example.invalid', 'fake-hash', 'admin', 1, CURRENT_TIMESTAMP)"
+        )
+    settings = settings_for(path, tmp_path / "backups")
+
+    result = prepare_database(engine_for(path), settings)
+
+    with sqlite3.connect(path) as connection:
+        totp_enabled = connection.execute(
+            "SELECT totp_enabled FROM users WHERE id=1"
+        ).fetchone()[0]
+        column = next(
+            row
+            for row in connection.execute("PRAGMA table_info(users)")
+            if row[1] == "totp_enabled"
+        )
+    assert result.current_revision == CURRENT_REVISION
+    assert result.compatibility_applied is True
+    assert totp_enabled == 0
+    assert column[3] == 1  # NOT NULL is genuinely enforced, not skipped
 
 
 def test_current_pre_alembic_schema_is_validated_then_stamped(tmp_path):
@@ -391,7 +506,7 @@ def test_missing_required_table_aborts_startup(tmp_path):
         prepare_database(engine_for(path), settings)
 
 
-def test_baseline_downgrade_is_disabled(tmp_path):
+def test_supported_downgrade_path_is_disabled(tmp_path):
     path = tmp_path / "kaya.db"
     settings = settings_for(path, tmp_path / "backups")
     prepare_database(engine_for(path), settings)
@@ -399,7 +514,7 @@ def test_baseline_downgrade_is_disabled(tmp_path):
 
     from app.db.migrations import _alembic_config
 
-    with pytest.raises(RuntimeError, match="intentionally disabled"):
+    with pytest.raises(RuntimeError, match="downgrade is blocked|intentionally disabled"):
         command.downgrade(_alembic_config(settings.database_url), "base")
 
 
