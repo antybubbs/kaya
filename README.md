@@ -1,20 +1,9 @@
-# Kaya
-Dark Mode
-<img width="2402" height="1149" alt="Dashboard" src="https://github.com/user-attachments/assets/ee00e957-ac35-4684-9ac8-a6239e3401b1" />
+<div align="center">
+<a href=""><img src="https://github.com/user-attachments/assets/736dd838-34db-4d04-8efd-199163182edb" alt="Kaya Logo" width="150"/></a>
 
-
-Light Mode
-<img width="2402" height="1149" alt="Screenshot 2026-07-27 212234" src="https://github.com/user-attachments/assets/4cf746a4-2338-44a4-83ef-27a8d5b1a31d" />
-
-More ScreenShots - https://www.kaya-app.uk/screenshots
-
-
-
-> **Your Infrastructure. Your Home.**
->
-> A self-hosted infrastructure platform built for homelabs,
-> and users who want complete control of their
-> infrastructure.
+## Your Infrastructure. Your Home. 
+ 
+A self-hosted infrastructure platform built for homelabs, and users who want complete control of their infrastructure.
 
 ![GitHub
 release](https://img.shields.io/github/v/release/antybubbs/kaya)
@@ -22,9 +11,19 @@ release](https://img.shields.io/github/v/release/antybubbs/kaya)
 ![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)
 
-------------------------------------------------------------------------
+⭐ If you find Kaya useful for you, please star us on GitHub! ⭐
 
-## Welcome Home
+## Dark Mode
+<img width="2402" height="1149" alt="Dashboard" src="https://github.com/user-attachments/assets/ee00e957-ac35-4684-9ac8-a6239e3401b1" />
+
+## Light Mode
+<img width="2402" height="1149" alt="Screenshot 2026-07-27 212234" src="https://github.com/user-attachments/assets/4cf746a4-2338-44a4-83ef-27a8d5b1a31d" />
+
+More ScreenShots - https://www.kaya-app.uk/screenshots
+</div>
+<br /><br />
+
+# Welcome Home
 
 Lets be honest, homelab infrastrcuture never stays small. I am guilty of this.
 
@@ -46,9 +45,10 @@ Use it, dont use it. Its up to you really (but it is quite cool if I do say so m
 
 ------------------------------------------------------------------------
 
-# With thanks
+# Our Supporters
 
 [<img width="289" height="67" alt="image" src="https://github.com/user-attachments/assets/c9563e0e-b9bb-4e96-b33a-a8cabaccba1d" />](https://www.aikido.dev/)
+
 
 # Features
 
@@ -105,13 +105,9 @@ Kaya is more than a homelab inventory. It is a self-hosted operations hub for th
 - SMTP
 - Backup Manager
 
-------------------------------------------------------------------------
+## Notifications
 
-# Try Kaya
-
-Install Kaya in an environment you control and evaluate it with synthetic data.
-
-If you need any support - come on over to our Dicord Server: https://discord.gg/2hn6G7Qr9N 
+Kaya includes an in-application notification centre and optional PWA Web Push. Push remains disabled until an administrator configures VAPID keys and a user intentionally grants permission on a device. See [Notification setup, privacy, troubleshooting, and developer integration](docs/notifications.md).
 
 ------------------------------------------------------------------------
 
@@ -317,6 +313,13 @@ should feel organised, trusted and completely under our control.
 I am orignally from South Africa and thus wanted something to remind me of "Home" :-)
 
 ------------------------------------------------------------------------
-## Notifications
 
-Kaya includes an in-application notification centre and optional PWA Web Push. Push remains disabled until an administrator configures VAPID keys and a user intentionally grants permission on a device. See [Notification setup, privacy, troubleshooting, and developer integration](docs/notifications.md).
+# Support me
+
+If you like what you see, [buy me a coffee](https://buymeacoffee.com/antybubbs). It helps with my hosting and licensing/subscription fees. 
+
+Please dont feel obligated, I am just happy if you enjoy Kaya as much as i enjoy creating it!
+
+Thank you for all your support :-)
+
+[<img width="75" height="75" alt="bmc_qr" src="https://github.com/user-attachments/assets/51ffe46d-5c43-49a2-aa28-8e45476804bf" />](https://buymeacoffee.com/antybubbs)
