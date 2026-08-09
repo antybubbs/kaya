@@ -342,8 +342,10 @@ def notification_admin_page(
         if row.status != "active" or row.revoked_at:
             return "Disabled"
         failure = latest_failure.get(row.id)
-        if failure and failure.status in {"permanent_failure", "expired_subscription"}:
+        if failure and failure.status == "expired_subscription":
             return "Needs refresh"
+        if failure and failure.status == "permanent_failure":
+            return "Delivery rejected"
         if failure and failure.status in {"temporary_failure", "retry_exhausted"}:
             return "Retrying"
         return "Active"

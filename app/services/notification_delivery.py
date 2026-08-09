@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import re
+from importlib.metadata import PackageNotFoundError, version
 from urllib.parse import urlsplit
 from datetime import datetime, timedelta
 
@@ -50,6 +51,13 @@ def _safe_provider_reason(exc: Exception) -> str | None:
     text = text.replace("https://", "[url]").replace("http://", "[url]")
     text = re.sub(r"[A-Za-z0-9_-]{32,}", "[redacted]", text)
     return text
+
+
+def _package_version(name: str) -> str:
+    try:
+        return version(name)
+    except PackageNotFoundError:
+        return "unknown"
 MAX_RETRIES = 4
 STALE_PROCESSING_SECONDS = 300
 
@@ -177,6 +185,12 @@ def deliver_queued(heartbeat=None) -> int:
                     decoded = json.loads(
                         decrypt_secret(encrypted_subscription)
                     )
+                    endpoint = urlsplit(str(decoded.get("endpoint") or ""))
+                    push_metadata = {
+                        "audience": f"{endpoint.scheme}://{endpoint.hostname}" + (f":{endpoint.port}" if endpoint.port else ""),
+                        "payload_bytes": len(json.dumps(payload, separators=(",", ":")).encode("utf-8")),
+                        "content_encoding": "aes128gcm",
+                    }
                     db.commit()
                     push_metadata = _send_push(decoded, payload, credentials) or {}
                 elif channel == "email":
@@ -266,7 +280,7 @@ def deliver_queued(heartbeat=None) -> int:
                     )
                 elif channel == "push":
                     logger.warning(
-                        "notification.delivery.push.failed classification=%s status_code=%s provider=%s subscription_id=%s retryable=%s retry=%s attempt_id=%s correlation_id=%s audience=%s payload_bytes=%s content_encoding=%s provider_reason=%s",
+                        "notification.delivery.push.failed classification=%s status_code=%s provider=%s subscription_id=%s retryable=%s attempt_number=%s attempt_id=%s correlation_id=%s audience=%s payload_bytes=%s content_encoding=%s pywebpush=%s py_vapid=%s http_ece=%s provider_reason=%s",
                         attempt.failure_reason_code,
                         status_code or "unknown",
                         _provider_name(decoded if 'decoded' in locals() else None),
@@ -278,6 +292,9 @@ def deliver_queued(heartbeat=None) -> int:
                         push_metadata.get("audience", "unknown"),
                         push_metadata.get("payload_bytes", "unknown"),
                         push_metadata.get("content_encoding", "unknown"),
+                        _package_version("pywebpush"),
+                        _package_version("py-vapid"),
+                        _package_version("http-ece"),
                         _safe_provider_reason(exc) or "unknown",
                     )
                 else:
