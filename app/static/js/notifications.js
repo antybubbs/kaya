@@ -1,5 +1,10 @@
 (() => {
   const menu = document.querySelector("[data-notification-menu]");
+  const closeNotificationMenu = (restoreFocus = true) => { if (!menu?.open) return; menu.open = false; if (restoreFocus) menu.querySelector("summary")?.focus({preventScroll:true}); };
+  if (menu) {
+    document.addEventListener("pointerdown", event => { if (menu.open && !menu.contains(event.target)) closeNotificationMenu(false); });
+    document.addEventListener("keydown", event => { if (event.key === "Escape" && menu.open) { event.preventDefault(); closeNotificationMenu(); } });
+  }
   const csrf = menu?.dataset.csrfToken || document.querySelector("[data-notification-page],[data-notification-preferences],[data-notification-admin]")?.dataset.csrfToken || "";
   const channel = "BroadcastChannel" in window ? new BroadcastChannel("kaya-notifications") : null;
   const headers = () => ({"X-CSRF-Token": csrf});
@@ -46,7 +51,7 @@
       if (!items.notifications.length) { const empty=document.createElement("p"); empty.className="notification-empty"; empty.textContent="No notifications yet."; list.append(empty); return; }
       items.notifications.forEach(item => {
         const entry=document.createElement(item.target_route ? "a" : "article"); entry.className=`notification-recent-item severity-${item.severity}${item.read ? "" : " unread"}`;
-        if (item.target_route) { entry.href=item.target_route; entry.addEventListener("click", async event => { event.preventDefault(); try { await mutate(`/api/notifications/${item.id}/read`); } finally { location.assign(item.target_route); } }); }
+        if (item.target_route) { entry.href=item.target_route; entry.addEventListener("click", async event => { event.preventDefault(); try { await mutate(`/api/notifications/${item.id}/read`); } finally { closeNotificationMenu(false); location.assign(item.target_route); } }); }
         const marker=document.createElement("span"); marker.className="notification-severity"; marker.setAttribute("aria-label", item.severity);
         const body=document.createElement("div"), module=document.createElement("span"), title=document.createElement("strong"), message=document.createElement("p"), time=document.createElement("time");
         module.textContent=item.module.replaceAll("_"," "); title.textContent=item.title; message.textContent=item.message; time.textContent=escapeTime(item.created_at);
@@ -54,7 +59,7 @@
       });
     } catch (_) { list.textContent="Notifications could not be loaded."; }
   }
-  menu?.addEventListener("toggle", refreshMenu);
+  menu?.addEventListener("toggle", () => { menu.querySelector("summary")?.setAttribute("aria-expanded", String(menu.open)); refreshMenu(); });
   menu?.querySelector("[data-notification-mark-all]")?.addEventListener("click", async () => { await mutate("/api/notifications/mark-all-read"); await Promise.all([refreshBadge(),refreshMenu()]); });
   document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshBadge(); });
   channel?.addEventListener("message", refreshBadge); window.addEventListener("storage", event => { if (event.key === "kaya-notifications") refreshBadge(); });

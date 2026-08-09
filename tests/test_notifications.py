@@ -922,6 +922,16 @@ def test_admin_event_policies_use_accessible_responsive_cards():
     assert 'status.textContent="Savingâ€¦"' in client
 
 
+def test_global_notification_menu_closes_outside_and_escape():
+    root = Path(__file__).resolve().parents[1]
+    base = (root / "app/templates/base.html").read_text(encoding="utf-8")
+    client = (root / "app/static/js/notifications.js").read_text(encoding="utf-8")
+    assert 'aria-expanded="false"' in base
+    assert 'event.key === "Escape"' in client
+    assert 'menu.contains(event.target)' in client
+    assert 'menu.open = false' in client
+
+
 def test_generate_api_is_post_only_and_csrf_protected(db):
     route = next(
         item
