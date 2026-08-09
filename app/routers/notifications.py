@@ -24,6 +24,7 @@ from app.models.models import (
     NotificationReconciliationFailure,
     AuditLog,
     PushSubscription,
+    User,
     RemoteManagerSetting,
     UserNotification,
 )
@@ -296,9 +297,72 @@ def notification_admin_page(
     request: Request, db: Session = Depends(get_db), user=Depends(require_admin)
 ):
     now = datetime.utcnow()
-    active_devices = (
-        db.query(PushSubscription).filter_by(status="active", revoked_at=None).count()
+    subscriptions = (
+        db.query(PushSubscription)
+        .join(User, User.id == PushSubscription.user_id)
+        .add_entity(User)
+        .order_by(PushSubscription.created_at.desc())
+        .limit(250)
+        .all()
     )
+    registered_device_count = db.query(PushSubscription).count()
+    active_devices = db.query(PushSubscription).filter_by(status="active", revoked_at=None).count()
+    subscription_ids = [row.id for row, _user in subscriptions]
+    attempts = (
+        db.query(NotificationDeliveryAttempt)
+        .filter(
+            NotificationDeliveryAttempt.channel == "push",
+            NotificationDeliveryAttempt.push_subscription_id.in_(subscription_ids or [0]),
+        )
+        .order_by(NotificationDeliveryAttempt.created_at.desc())
+        .limit(1000)
+        .all()
+    )
+    latest_failure = {}
+    for attempt in attempts:
+        if attempt.status in {"permanent_failure", "expired_subscription", "retry_exhausted", "temporary_failure"}:
+            latest_failure.setdefault(attempt.push_subscription_id, attempt)
+
+    def platform(row):
+        value = (row.operating_system or "").lower()
+        for label, needles in (("iOS", ("ios", "iphone", "ipad")), ("Android", ("android",)), ("Windows", ("windows",)), ("macOS", ("mac", "darwin")), ("Linux", ("linux",))):
+            if any(needle in value for needle in needles):
+                return label
+        return "Unknown"
+
+    def device_status(row):
+        if row.status == "expired":
+            return "Expired"
+        if row.status != "active" or row.revoked_at:
+            return "Disabled"
+        failure = latest_failure.get(row.id)
+        if failure and failure.status in {"permanent_failure", "expired_subscription"}:
+            return "Needs refresh"
+        if failure and failure.status in {"temporary_failure", "retry_exhausted"}:
+            return "Retrying"
+        return "Active"
+
+    push_devices = [{
+        "id": row.id,
+        "user": user.email,
+        "device": row.device_label or "Browser device",
+        "platform": platform(row),
+        "status": device_status(row),
+        "registered_at": row.created_at,
+        "last_success_at": row.last_success_at,
+        "last_failure_at": row.last_failure_at,
+        "failure_reason": latest_failure.get(row.id).failure_reason_code if latest_failure.get(row.id) else None,
+    } for row, user in subscriptions]
+    web_push = configuration_status(db)
+    web_push.update({"registered_devices": registered_device_count, "devices": push_devices})
+    if web_push["state"] == "not_configured":
+        web_push["overview_status"] = "Not configured"
+    elif not subscriptions:
+        web_push["overview_status"] = "No registered devices"
+    elif any(device["status"] != "Active" for device in push_devices):
+        web_push["overview_status"] = "Attention required"
+    else:
+        web_push["overview_status"] = "Enabled" if web_push["enabled"] else web_push["status_label"]
     accepted = (
         db.query(NotificationDeliveryAttempt)
         .filter(
@@ -339,7 +403,7 @@ def notification_admin_page(
             "accepted_today": accepted,
             "failed_today": failed,
             "delivery_health": notification_health(),
-            "web_push": configuration_status(db),
+            "web_push": web_push,
             **csrf_context(request),
         },
     )

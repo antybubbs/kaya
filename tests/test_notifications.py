@@ -883,6 +883,10 @@ def test_web_push_modal_is_inside_admin_js_scope_and_has_mobile_safe_feedback():
     general_form_end = template.index("</form></section>")
     assert scope_start < general_form_end < web_push_card < scope_end
     assert '<button type="button" data-web-push-open="generate">' in template
+    assert "<h2>Mobile PWA</h2>" in template
+    assert "Registered devices" in template
+    assert "mobile-pwa-device" in template
+    assert "mobile-pwa-overview" in css
     assert "data-web-push-form-status" in template
     assert "openWebPushDialog" in client
     assert 'keyForm.dataset.submitting==="1"' in client
