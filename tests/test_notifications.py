@@ -889,6 +889,8 @@ def test_web_push_modal_is_inside_admin_js_scope_and_has_mobile_safe_feedback():
     assert "Registered devices" in template
     assert "mobile-pwa-device" in template
     assert "mobile-pwa-overview" in css
+    assert "healthy_devices" in template
+    assert "mobile-pwa-device-actions" in template
     assert "data-web-push-form-status" in template
     assert "openWebPushDialog" in client
     assert 'keyForm.dataset.submitting==="1"' in client

@@ -330,6 +330,12 @@ def notification_admin_page(
                 return label
         return "Unknown"
 
+    def display_label(row):
+        os_name = platform(row)
+        browser = (row.browser_family or "").lower()
+        browser_name = "Edge" if "edge" in browser else "Safari" if "safari" in browser else "Chrome" if "chrome" in browser else None
+        return f"{browser_name} PWA · {os_name}" if browser_name and os_name != "Unknown" else f"{os_name} PWA"
+
     def device_status(row):
         if row.status == "expired":
             return "Expired"
@@ -345,7 +351,7 @@ def notification_admin_page(
     push_devices = [{
         "id": row.id,
         "user": user.email,
-        "device": row.device_label or "Browser device",
+        "device": display_label(row),
         "platform": platform(row),
         "status": device_status(row),
         "registered_at": row.created_at,
@@ -354,7 +360,9 @@ def notification_admin_page(
         "failure_reason": latest_failure.get(row.id).failure_reason_code if latest_failure.get(row.id) else None,
     } for row, user in subscriptions]
     web_push = configuration_status(db)
-    web_push.update({"registered_devices": registered_device_count, "devices": push_devices})
+    healthy_devices = sum(1 for device in push_devices if device["status"] == "Active" and device["last_success_at"])
+    attention_devices = sum(1 for device in push_devices if device["status"] in {"Needs refresh", "Expired", "Retrying", "Disabled"})
+    web_push.update({"registered_devices": registered_device_count, "devices": push_devices, "healthy_devices": healthy_devices, "attention_devices": attention_devices})
     if web_push["state"] == "not_configured":
         web_push["overview_status"] = "Not configured"
     elif not subscriptions:

@@ -131,6 +131,7 @@ def deliver_queued(heartbeat=None) -> int:
                 db.commit()
                 continue
             event = user_notification.event
+            correlation_id = str(event.correlation_id or "")[:64]
             payload = {
                 "title": event.title,
                 "message": event.message,
@@ -246,13 +247,14 @@ def deliver_queued(heartbeat=None) -> int:
                     )
                 elif channel == "push":
                     logger.warning(
-                        "notification.delivery.push.failed classification=%s status_code=%s provider=%s subscription_id=%s retry=%s attempt_id=%s",
+                        "notification.delivery.push.failed classification=%s status_code=%s provider=%s subscription_id=%s retry=%s attempt_id=%s correlation_id=%s",
                         attempt.failure_reason_code,
                         status_code or "unknown",
                         _provider_name(decoded if 'decoded' in locals() else None),
                         subscription_id,
                         attempt.retry_count,
                         attempt.id,
+                        correlation_id,
                     )
                 else:
                     logger.warning(
