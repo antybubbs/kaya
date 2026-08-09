@@ -149,6 +149,7 @@ def discover_rdp_certificate(
             raw_sock.settimeout(timeout)
             _negotiate_tls(raw_sock)
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            context.minimum_version = ssl.TLSVersion.TLSv1_2
             context.check_hostname = False
             context.verify_mode = ssl.CERT_NONE
             with context.wrap_socket(raw_sock, server_hostname=host) as tls_sock:
