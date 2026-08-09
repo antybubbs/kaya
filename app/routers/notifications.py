@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import base64
 import json
 import logging
 import re
@@ -660,6 +661,13 @@ def _valid_subscription(payload: SubscriptionCreate) -> dict:
         and re.fullmatch(r"[A-Za-z0-9_-]+", p256dh)
         and re.fullmatch(r"[A-Za-z0-9_-]+", auth)
     ):
+        raise HTTPException(400, "Invalid push subscription keys")
+    try:
+        p256dh_bytes = base64.urlsafe_b64decode(p256dh + "=" * (-len(p256dh) % 4))
+        auth_bytes = base64.urlsafe_b64decode(auth + "=" * (-len(auth) % 4))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, "Invalid push subscription keys") from exc
+    if len(p256dh_bytes) != 65 or p256dh_bytes[0] != 4 or len(auth_bytes) != 16:
         raise HTTPException(400, "Invalid push subscription keys")
     return {"endpoint": payload.endpoint, "keys": {"p256dh": p256dh, "auth": auth}}
 

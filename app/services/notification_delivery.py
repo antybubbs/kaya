@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import json
 import logging
 import re
 from importlib.metadata import PackageNotFoundError, version
 from urllib.parse import urlsplit
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from app.core.security import decrypt_secret
 from app.db.session import SessionLocal, sqlite_lock_error
@@ -60,6 +62,98 @@ def _package_version(name: str) -> str:
         return "unknown"
 MAX_RETRIES = 4
 STALE_PROCESSING_SECONDS = 300
+WINDOWS_PUSH_TTL_SECONDS = 600
+
+
+def _b64url_decode(value: str) -> bytes:
+    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+
+
+def _safe_subscription_structure(subscription: dict) -> dict:
+    """Validate and describe a browser subscription without exposing its keys."""
+    endpoint = str(subscription.get("endpoint") or "")
+    validate_push_endpoint(endpoint)
+    keys = subscription.get("keys")
+    if not isinstance(keys, dict):
+        raise ValueError("Push subscription keys are missing")
+    p256dh = str(keys.get("p256dh") or "")
+    auth = str(keys.get("auth") or "")
+    try:
+        p256dh_bytes = _b64url_decode(p256dh)
+        auth_bytes = _b64url_decode(auth)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Push subscription keys are not valid base64url") from exc
+    if len(p256dh_bytes) != 65 or p256dh_bytes[0] != 4:
+        raise ValueError("Push subscription p256dh key is not an uncompressed P-256 key")
+    if len(auth_bytes) != 16:
+        raise ValueError("Push subscription auth secret has an invalid length")
+    return {
+        "p256dh_present": bool(p256dh),
+        "p256dh_decoded_bytes": len(p256dh_bytes),
+        "p256dh_uncompressed_p256": True,
+        "auth_present": bool(auth),
+        "auth_decoded_bytes": len(auth_bytes),
+    }
+
+
+def _subject_description(subject: str) -> str:
+    if subject.startswith("mailto:"):
+        return "mailto:<configured-admin-contact>"
+    parsed = urlsplit(subject)
+    if parsed.scheme == "https" and parsed.hostname:
+        return f"https://{parsed.hostname}"
+    return "invalid"
+
+
+def _windows_push_headers(subscription: dict) -> tuple[dict[str, str], int]:
+    """Apply only the documented WNS extension; other providers remain standard Web Push."""
+    if _provider_name(subscription) == "Microsoft/Windows Push":
+        return {"X-WNS-Type": "wns/toast"}, WINDOWS_PUSH_TTL_SECONDS
+    return {}, 0
+
+
+def _safe_vapid_claims(authorization: str | None, now: datetime) -> dict:
+    """Extract non-secret JWT claims from the RFC 8292 Authorization header."""
+    result = {
+        "authorization_style": "unknown",
+        "vapid_key_location": "unknown",
+        "jwt_aud": None,
+        "jwt_exp": None,
+        "jwt_seconds_until_expiry": None,
+    }
+    if not authorization:
+        return result
+    if authorization.lower().startswith("vapid "):
+        result.update({"authorization_style": "vapid", "vapid_key_location": "authorization"})
+        match = re.search(r"(?:^|,)\s*t=([^,]+)", authorization[6:])
+        if not match:
+            return result
+        try:
+            payload = json.loads(_b64url_decode(match.group(1).split(".")[1]))
+            exp = int(payload.get("exp"))
+            result.update(
+                {
+                    "jwt_aud": str(payload.get("aud") or "")[:200] or None,
+                    "jwt_exp": exp,
+                    "jwt_seconds_until_expiry": exp - int(now.timestamp()),
+                }
+            )
+        except (IndexError, TypeError, ValueError, json.JSONDecodeError):
+            result["authorization_style"] = "vapid_unparseable"
+    return result
+
+
+def _safe_response_diagnostics(exc: Exception) -> dict:
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", {}) or {}
+    safe_names = sorted(str(name).lower() for name in headers)
+    request_id = None
+    for name in ("x-wns-msg-id", "ms-cv", "x-correlation-id", "x-request-id"):
+        value = headers.get(name)
+        if value and len(str(value)) <= 160:
+            request_id = f"{name}:{str(value)}"
+            break
+    return {"response_header_names": safe_names, "provider_request_id": request_id}
 
 
 def _send_push(
@@ -68,25 +162,66 @@ def _send_push(
     from pywebpush import webpush
     import requests
 
+    request_trace: dict = {}
+
     class NoRedirectSession(requests.Session):
         def request(self, method, url, **kwargs):
             kwargs["allow_redirects"] = False
             return super().request(method, url, **kwargs)
 
-    validate_push_endpoint(str(subscription.get("endpoint") or ""))
-    webpush(
-        subscription_info=subscription,
-        data=json.dumps(payload, separators=(",", ":")),
-        vapid_private_key=credentials.private_key,
-        vapid_claims={"sub": credentials.subject},
-        timeout=10,
-        requests_session=NoRedirectSession(),
-    )
+        def send(self, request, **kwargs):
+            headers = request.headers
+            body = request.body
+            endpoint = urlsplit(str(request.url))
+            now = datetime.now(timezone.utc)
+            request_trace.update(
+                {
+                    "http_method": str(request.method).upper(),
+                    "audience": f"{endpoint.scheme}://{endpoint.hostname}"
+                    + (f":{endpoint.port}" if endpoint.port else ""),
+                    "request_header_names": sorted(str(name).lower() for name in headers),
+                    "content_encoding": headers.get("content-encoding"),
+                    "content_type": headers.get("content-type"),
+                    "content_length": headers.get("content-length")
+                    or (len(body) if body is not None else 0),
+                    "ttl": headers.get("ttl"),
+                    "urgency": headers.get("urgency"),
+                    "request_utc": now.isoformat(),
+                    **_safe_vapid_claims(headers.get("authorization"), now),
+                }
+            )
+            return super().send(request, **kwargs)
+
+    subscription_structure = _safe_subscription_structure(subscription)
     endpoint = urlsplit(str(subscription.get("endpoint") or ""))
+    extra_headers, ttl = _windows_push_headers(subscription)
+    request_trace.update(
+        {
+            "audience": f"{endpoint.scheme}://{endpoint.hostname}"
+            + (f":{endpoint.port}" if endpoint.port else ""),
+            "payload_bytes": len(json.dumps(payload, separators=(",", ":")).encode("utf-8")),
+            "vapid_subject": _subject_description(credentials.subject),
+            "vapid_public_key_fingerprint": "SHA256:"
+            + hashlib.sha256(_b64url_decode(credentials.public_key)).hexdigest()[:16],
+            **subscription_structure,
+        }
+    )
+    try:
+        webpush(
+            subscription_info=subscription,
+            data=json.dumps(payload, separators=(",", ":")),
+            vapid_private_key=credentials.private_key,
+            vapid_claims={"sub": credentials.subject},
+            timeout=10,
+            ttl=ttl,
+            headers=extra_headers,
+            requests_session=NoRedirectSession(),
+        )
+    except Exception as exc:
+        setattr(exc, "kaya_push_diagnostics", request_trace)
+        raise
     return {
-        "audience": f"{endpoint.scheme}://{endpoint.hostname}" + (f":{endpoint.port}" if endpoint.port else ""),
-        "payload_bytes": len(json.dumps(payload, separators=(",", ":")).encode("utf-8")),
-        "content_encoding": "aes128gcm",
+        **request_trace,
     }
 
 
@@ -232,6 +367,11 @@ def deliver_queued(heartbeat=None) -> int:
             except (
                 Exception
             ) as exc:  # genuine outbound-provider boundary; never log endpoint or key material
+                if channel == "push":
+                    push_metadata.update(
+                        getattr(exc, "kaya_push_diagnostics", {}) or {}
+                    )
+                    push_metadata.update(_safe_response_diagnostics(exc))
                 if sqlite_lock_error(exc):
                     db.rollback()
                     raise
@@ -280,7 +420,7 @@ def deliver_queued(heartbeat=None) -> int:
                     )
                 elif channel == "push":
                     logger.warning(
-                        "notification.delivery.push.failed classification=%s status_code=%s provider=%s subscription_id=%s retryable=%s attempt_number=%s attempt_id=%s correlation_id=%s audience=%s payload_bytes=%s content_encoding=%s pywebpush=%s py_vapid=%s http_ece=%s provider_reason=%s",
+                        "notification.delivery.push.failed classification=%s status_code=%s provider=%s subscription_id=%s retryable=%s attempt_number=%s attempt_id=%s correlation_id=%s audience=%s payload_bytes=%s content_encoding=%s http_method=%s request_headers=%s content_type=%s content_length=%s ttl=%s urgency=%s vapid_authorization_style=%s vapid_key_location=%s jwt_aud=%s jwt_exp=%s jwt_seconds_until_expiry=%s vapid_subject=%s vapid_public_key_fingerprint=%s p256dh_present=%s p256dh_decoded_bytes=%s p256dh_uncompressed_p256=%s auth_present=%s auth_decoded_bytes=%s request_utc=%s response_headers=%s provider_request_id=%s pywebpush=%s py_vapid=%s http_ece=%s provider_reason=%s",
                         attempt.failure_reason_code,
                         status_code or "unknown",
                         _provider_name(decoded if 'decoded' in locals() else None),
@@ -292,6 +432,27 @@ def deliver_queued(heartbeat=None) -> int:
                         push_metadata.get("audience", "unknown"),
                         push_metadata.get("payload_bytes", "unknown"),
                         push_metadata.get("content_encoding", "unknown"),
+                        push_metadata.get("http_method", "unknown"),
+                        push_metadata.get("request_header_names", []),
+                        push_metadata.get("content_type", "none"),
+                        push_metadata.get("content_length", "unknown"),
+                        push_metadata.get("ttl", "unknown"),
+                        push_metadata.get("urgency", "none"),
+                        push_metadata.get("authorization_style", "unknown"),
+                        push_metadata.get("vapid_key_location", "unknown"),
+                        push_metadata.get("jwt_aud", "unknown"),
+                        push_metadata.get("jwt_exp", "unknown"),
+                        push_metadata.get("jwt_seconds_until_expiry", "unknown"),
+                        push_metadata.get("vapid_subject", "unknown"),
+                        push_metadata.get("vapid_public_key_fingerprint", "unknown"),
+                        push_metadata.get("p256dh_present", "unknown"),
+                        push_metadata.get("p256dh_decoded_bytes", "unknown"),
+                        push_metadata.get("p256dh_uncompressed_p256", "unknown"),
+                        push_metadata.get("auth_present", "unknown"),
+                        push_metadata.get("auth_decoded_bytes", "unknown"),
+                        push_metadata.get("request_utc", "unknown"),
+                        push_metadata.get("response_header_names", []),
+                        push_metadata.get("provider_request_id", "none"),
                         _package_version("pywebpush"),
                         _package_version("py-vapid"),
                         _package_version("http-ece"),

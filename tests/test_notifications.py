@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+import base64
 import inspect
 import json
 import logging
@@ -403,6 +404,51 @@ def test_one_invalid_push_device_does_not_block_another(db, monkeypatch):
         )
     )
     assert statuses == ["accepted_by_push_service", "temporary_failure"]
+
+
+def test_windows_push_uses_only_documented_wns_extension():
+    windows = {"endpoint": "https://wns2-ln2p.notify.windows.com/w/?fake"}
+    apple = {"endpoint": "https://web.push.apple.com/QH/fake"}
+
+    assert notification_delivery._windows_push_headers(windows) == (
+        {"X-WNS-Type": "wns/toast"},
+        notification_delivery.WINDOWS_PUSH_TTL_SECONDS,
+    )
+    assert notification_delivery._windows_push_headers(apple) == ({}, 0)
+
+
+def test_vapid_diagnostics_redact_jwt_and_extract_only_safe_claims():
+    def b64(value):
+        return base64.urlsafe_b64encode(value).rstrip(b"=").decode()
+
+    now = datetime.now().astimezone()
+    token = ".".join(
+        [
+            b64(b'{"alg":"ES256"}'),
+            b64(
+                json.dumps(
+                    {
+                        "aud": "https://wns2-ln2p.notify.windows.com",
+                        "exp": int(now.timestamp()) + 600,
+                        "sub": "mailto:secret@example.invalid",
+                    }
+                ).encode()
+            ),
+            "signature-is-not-logged",
+        ]
+    )
+
+    result = notification_delivery._safe_vapid_claims(
+        f"vapid t={token}, k=public-key-is-not-logged", now
+    )
+
+    assert result == {
+        "authorization_style": "vapid",
+        "vapid_key_location": "authorization",
+        "jwt_aud": "https://wns2-ln2p.notify.windows.com",
+        "jwt_exp": int(now.timestamp()) + 600,
+        "jwt_seconds_until_expiry": 600,
+    }
 
 
 def test_notification_lookup_is_object_scoped(db):
