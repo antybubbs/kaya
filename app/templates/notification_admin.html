@@ -24,6 +24,49 @@
   <dialog data-web-push-dialog="revoke" class="notification-preference-dialog"><form data-web-push-confirm-form data-endpoint="/api/admin/web-push/revoke-subscriptions" data-method="POST" data-confirmation="REVOKE ALL"><header><h3>Revoke all browser subscriptions</h3><button type="button" class="ghost" data-web-push-close>×</button></header><p>Every user will need to register each browser again. Keys and in-app history are preserved.</p><label>Type <strong>REVOKE ALL</strong> to confirm<input name="confirmation" maxlength="40" autocomplete="off"></label><footer><button type="button" class="secondary" data-web-push-close>Cancel</button><button type="submit" class="danger">Revoke subscriptions</button></footer></form></dialog>
 </section>
 <section class="panel notification-diagnostic"><div><h2>Notification diagnostic</h2><p class="muted">Send a real in-app notification to your administrator account through the central publication service.</p></div><button type="button" data-notification-test>Send in-app test</button><p data-notification-test-result role="status"></p></section>
-<section class="panel"><h2>Registered categories</h2><div class="notification-category-admin">{% for item in categories %}{% set d=item.definition %}{% set p=item.policy %}<form data-category="{{ d.identifier }}"><div><strong>{{ d.display_name }}</strong><span>{{ d.module|replace('_',' ')|title }} · <code>{{ d.identifier }}</code></span></div><label><input name="enabled" type="checkbox" {% if not p or p.enabled %}checked{% endif %}> Enabled</label><label><input name="push_allowed" type="checkbox" {% if p and p.push_allowed %}checked{% endif %}> Push</label><label><input name="email_allowed" type="checkbox" {% if p and p.email_allowed %}checked{% endif %}> Email</label><label><input name="user_can_opt_out" type="checkbox" {% if not p or p.user_can_opt_out %}checked{% endif %}> User may opt out</label><label><input name="acknowledgement_required" type="checkbox" {% if p and p.acknowledgement_required %}checked{% endif %}> Requires acknowledgement</label><label>Cooldown<input name="cooldown_seconds" type="number" min="0" max="604800" value="{{ p.cooldown_seconds if p else 300 }}"></label><button type="submit">Save</button><span data-category-status></span></form>{% endfor %}</div></section>
+<section class="panel notification-policy-panel">
+  <header class="notification-policy-heading">
+    <div>
+      <h2>Registered event policies</h2>
+      <p class="muted">Choose which channels each event may use and how often Kaya may publish it.</p>
+    </div>
+    <span class="muted">{{ categories|length }} event types</span>
+  </header>
+  <div class="notification-policy-list" data-category-list>
+    {% for item in categories %}
+    {% set d=item.definition %}
+    {% set p=item.policy %}
+    <form class="notification-policy-card" data-category="{{ d.identifier }}">
+      <header class="notification-policy-identity">
+        <strong>{{ d.display_name }}</strong>
+        <span>{{ d.module|replace('_',' ')|title }}</span>
+        <code>{{ d.identifier }}</code>
+      </header>
+      <fieldset class="notification-policy-group">
+        <legend>Delivery</legend>
+        <label class="checkbox-label"><input name="enabled" type="checkbox" {% if not p or p.enabled %}checked{% endif %}> Enabled</label>
+        <label class="checkbox-label"><input name="push_allowed" type="checkbox" {% if p and p.push_allowed %}checked{% endif %}> Push</label>
+        <label class="checkbox-label"><input name="email_allowed" type="checkbox" {% if p and p.email_allowed %}checked{% endif %}> Email</label>
+      </fieldset>
+      <fieldset class="notification-policy-group">
+        <legend>User controls</legend>
+        <label class="checkbox-label"><input name="user_can_opt_out" type="checkbox" {% if not p or p.user_can_opt_out %}checked{% endif %}> May opt out</label>
+        <label class="checkbox-label"><input name="acknowledgement_required" type="checkbox" {% if p and p.acknowledgement_required %}checked{% endif %}> Acknowledgement required</label>
+      </fieldset>
+      <label class="notification-policy-cooldown">
+        <span>Cooldown</span>
+        <span class="notification-number-with-unit">
+          <input name="cooldown_seconds" type="number" min="0" max="604800" value="{{ p.cooldown_seconds if p else 300 }}">
+          <span>seconds</span>
+        </span>
+      </label>
+      <footer class="notification-policy-actions">
+        <button type="submit">Save policy</button>
+        <span data-category-status role="status" aria-live="polite"></span>
+      </footer>
+    </form>
+    {% endfor %}
+  </div>
+</section>
 </div>
 {% endblock %}

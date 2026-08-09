@@ -893,6 +893,26 @@ def test_web_push_modal_is_inside_admin_js_scope_and_has_mobile_safe_feedback():
     assert worker.index("fetch(request).catch", navigate_handler) > navigate_handler
 
 
+def test_admin_event_policies_use_accessible_responsive_cards():
+    root = Path(__file__).resolve().parents[1]
+    template = (root / "app/templates/notification_admin.html").read_text(
+        encoding="utf-8"
+    )
+    css = (root / "app/static/css/notifications.css").read_text(encoding="utf-8")
+    client = (root / "app/static/js/notifications.js").read_text(encoding="utf-8")
+
+    assert 'class="notification-policy-list" data-category-list' in template
+    assert 'class="notification-policy-card" data-category=' in template
+    assert "<legend>Delivery</legend>" in template
+    assert "<legend>User controls</legend>" in template
+    assert 'data-category-status role="status" aria-live="polite"' in template
+    assert "notification-number-with-unit" in template
+    assert "@media(max-width:720px)" in css
+    assert ".notification-policy-card{grid-template-columns:1fr}" in css
+    assert 'querySelector("[data-category-list]")' in client
+    assert 'status.textContent="Savingâ€¦"' in client
+
+
 def test_generate_api_is_post_only_and_csrf_protected(db):
     route = next(
         item
