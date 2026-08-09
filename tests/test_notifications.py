@@ -424,7 +424,7 @@ def test_notification_lookup_is_object_scoped(db):
     assert getattr(exc.value, "status_code", None) == 404
 
 
-def test_admin_in_app_diagnostic_uses_registered_event_and_reports_channels(db):
+def test_admin_in_app_diagnostic_uses_only_in_app_channel(db):
     admin = user(db, "diagnostic-admin@example.invalid", role="admin")
     request = SimpleNamespace(
         headers={"x-csrf-token": "fake-csrf-token"},
@@ -437,14 +437,15 @@ def test_admin_in_app_diagnostic_uses_registered_event_and_reports_channels(db):
         "outbox_id": 1,
         "status": "queued",
         "in_app": "pending outbox processing",
-        "push": "pending policy and subscription evaluation",
-        "email": "pending policy evaluation",
+        "push": "not requested",
+        "email": "not requested",
     }
     assert db.query(NotificationOutbox).filter_by(status="pending").count() == 1
     process_outbox(session_factory=sessionmaker(bind=db.bind))
     db.expire_all()
     event = db.query(NotificationEvent).one()
     assert event.event_type == "system.notification.test"
+    assert db.query(NotificationDeliveryAttempt).count() == 0
     dependency = inspect.signature(notification_router.test_notification).parameters[
         "user"
     ].default

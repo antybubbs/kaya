@@ -718,6 +718,7 @@ def test_notification(
         target_route="/notifications",
         recipient_ids=[user.id],
         created_by_user_id=user.id,
+        metadata={"diagnostic": True, "diagnostic_channel": "in_app"},
     )
     write_audit(
         db,
@@ -733,8 +734,8 @@ def test_notification(
         "outbox_id": outbox.id,
         "status": "queued",
         "in_app": "pending outbox processing",
-        "push": "pending policy and subscription evaluation",
-        "email": "pending policy evaluation",
+        "push": "not requested",
+        "email": "not requested",
     }
 
 
