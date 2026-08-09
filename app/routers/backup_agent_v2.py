@@ -95,7 +95,7 @@ def provision_agent_server_key(
     host = db.get(ComputeHost, host_id)
     if not host or host.platform != "docker_agent":
         raise HTTPException(404, "Docker agent host not found")
-    return_path = f"/infrastructure/vm-docker-manager/hosts/{host_id}"
+    return_path = f"/infrastructure/vm-docker-manager/hosts/{host.id}"
     try:
         row = create_server_signing_key(db)
     except ValueError:
