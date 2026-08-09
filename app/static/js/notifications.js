@@ -81,6 +81,7 @@
 
   const pushRoot=document.querySelector("[data-push-settings]"), pushStatus=pushRoot?.querySelector("[data-push-status]");
   const b64=value=>{const pad="=".repeat((4-value.length%4)%4),raw=atob((value+pad).replace(/-/g,"+").replace(/_/g,"/"));return Uint8Array.from([...raw].map(c=>c.charCodeAt(0)));};
+  const endpointHash=async endpoint=>{const digest=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(endpoint));return [...new Uint8Array(digest)].map(value=>value.toString(16).padStart(2,"0")).join("");};
   pushRoot?.querySelector("[data-enable-push]")?.addEventListener("click",async()=>{
     if(pushRoot.dataset.pushAvailable!=="1"){pushStatus.textContent="Push is not available for this installation.";return;}
     if(!window.isSecureContext){pushStatus.textContent="Push requires HTTPS (localhost is allowed for development).";return;}
@@ -89,10 +90,16 @@
     try{const permission=await Notification.requestPermission();if(permission!=="granted"){pushStatus.textContent=permission==="denied"?"Permission was denied. Change it in browser settings to try again.":"Permission was not granted.";return;}
       const registration=await navigator.serviceWorker.ready,key=await fetch("/api/notifications/vapid-public-key").then(r=>r.json());
       const subscription=await registration.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64(key.public_key)}), raw=subscription.toJSON();
-      await mutate("/api/push-subscriptions","POST",{endpoint:raw.endpoint,keys:raw.keys,device_label:`${navigator.userAgentData?.brands?.[0]?.brand||"Browser"} on this device`,browser_family:navigator.userAgentData?.brands?.[0]?.brand||null,operating_system:navigator.userAgentData?.platform||navigator.platform||null});
+      await mutate("/api/push-subscriptions","POST",{endpoint:raw.endpoint,keys:raw.keys,device_label:"PWA on this device",browser_family:navigator.userAgentData?.brands?.find(item=>/edge|chrome|safari/i.test(item.brand))?.brand||null,operating_system:navigator.userAgentData?.platform||navigator.platform||null});
       pushStatus.textContent="Push notifications are enabled on this device.";
     }catch(_){pushStatus.textContent="Kaya could not enable push notifications on this device.";}
   });
+  pushRoot?.querySelector("[data-reset-push]")?.addEventListener("click",async()=>{
+    if(pushRoot.dataset.pushAvailable!=="1"){pushStatus.textContent="Push is not available for this installation.";return;}
+    const button=pushRoot.querySelector("[data-reset-push]");button.disabled=true;pushStatus.textContent="Resetting this device subscription…";
+    try{const registration=await navigator.serviceWorker.ready,current=await registration.pushManager.getSubscription();if(current)await current.unsubscribe();pushStatus.textContent="Creating a new subscription…";const key=await fetch("/api/notifications/vapid-public-key",{cache:"no-store"}).then(r=>r.json()),subscription=await registration.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64(key.public_key)}),raw=subscription.toJSON();await mutate("/api/push-subscriptions","POST",{endpoint:raw.endpoint,keys:raw.keys,device_label:"PWA on this device",browser_family:navigator.userAgentData?.brands?.find(item=>/edge|chrome|safari/i.test(item.brand))?.brand||null,operating_system:navigator.userAgentData?.platform||navigator.platform||null});pushStatus.textContent="Push notifications active on this device.";}catch(error){pushStatus.textContent=error.message||"This device could not be re-registered.";}finally{button.disabled=false;}
+  });
+  if(pushRoot){(async()=>{try{const registration=await navigator.serviceWorker.ready,current=await registration.pushManager.getSubscription();if(!current)return;const subscriptions=await fetch("/api/push-subscriptions",{cache:"no-store"}).then(response=>response.json());const hash=await endpointHash(current.endpoint),match=subscriptions.subscriptions.find(item=>item.endpoint_hash===hash&&item.status==="active");if(!match)pushStatus.textContent="This device needs to be re-registered with Kaya.";}catch(_){/* optional reconciliation must not block preferences */}})();}
 
   const admin=document.querySelector("[data-notification-admin]");
   admin?.querySelector("[data-notification-test]")?.addEventListener("click",async event=>{const button=event.currentTarget,result=admin.querySelector("[data-notification-test-result]");button.disabled=true;result.textContent="Sending…";try{const data=await mutate("/api/notifications/test");result.textContent=`In app: ${data.in_app}. Push: ${data.push}. Email: ${data.email}.`;}catch(error){result.textContent=error.message;}finally{button.disabled=false;}});

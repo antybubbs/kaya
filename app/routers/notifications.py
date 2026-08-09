@@ -362,7 +362,7 @@ def notification_admin_page(
     web_push = configuration_status(db)
     healthy_devices = sum(1 for device in push_devices if device["status"] == "Active" and device["last_success_at"])
     attention_devices = sum(1 for device in push_devices if device["status"] in {"Needs refresh", "Expired", "Retrying", "Disabled"})
-    web_push.update({"registered_devices": registered_device_count, "devices": push_devices, "healthy_devices": healthy_devices, "attention_devices": attention_devices})
+    web_push.update({"registered_devices": registered_device_count, "devices": push_devices, "active_device_list": [device for device in push_devices if device["status"] not in {"Disabled", "Expired"}], "inactive_device_list": [device for device in push_devices if device["status"] in {"Disabled", "Expired"}], "healthy_devices": healthy_devices, "attention_devices": attention_devices})
     if web_push["state"] == "not_configured":
         web_push["overview_status"] = "Not configured"
     elif not subscriptions:
@@ -672,6 +672,7 @@ def get_subscriptions(db: Session = Depends(get_db), user=Depends(require_user))
         "subscriptions": [
             {
                 "id": row.id,
+                "endpoint_hash": row.endpoint_hash,
                 "device_label": row.device_label,
                 "browser_family": row.browser_family,
                 "operating_system": row.operating_system,
