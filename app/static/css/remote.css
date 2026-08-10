@@ -242,7 +242,7 @@ html[data-kaya-theme=light-ops] .host-lockout-warning{color:#92400e}
 .remote-recording-player video{background:#000;display:block;height:auto;max-height:calc(100vh - 190px);width:100%}
 .remote-recording-player pre{color:#d6deeb;font-family:"Caskaydia Cove Nerd Font Mono",Consolas,monospace;font-size:13px;line-height:1.45;margin:0;max-height:calc(100vh - 190px);min-height:520px;overflow:auto;padding:14px;white-space:pre-wrap}
 @media(max-width:850px){.content.remote-main{padding-top:56px}.remote-workspace{grid-template-columns:1fr;height:auto}.remote-host-rail{max-height:42vh}.remote-session-frame,.remote-console-empty{min-height:58vh}.remote-credential-form,.rdp-credential-form{grid-template-columns:1fr;left:16px;right:16px;top:16px;transform:none;width:auto}}
-@container (max-width:280px){.remote-host-main strong{font-size:14px}.remote-host-main span.mono{font-size:11px}}
+@container (max-width:280px){.remote-host-main strong{font-size:12px}.remote-host-main span.mono{font-size:10px}.remote-host-info .remote-cert-badge{font-size:10px}.remote-protocol-icon{font-size:10px}}
 @media(max-width:850px){.remote-tab-panels.is-split{grid-template-columns:1fr;grid-template-rows:minmax(58vh,1fr) minmax(58vh,1fr)}}
 @media(max-width:850px){.remote-settings-grid.two,.remote-overrides-grid,.remote-recording-detail{grid-template-columns:1fr}.remote-recording-tools{left:12px;right:auto;top:10px}.remote-recording-player{min-height:360px}.remote-recording-player pre{min-height:360px}.remote-recordings-shell{overflow-x:auto}.remote-recordings-table{min-width:980px}}
 
