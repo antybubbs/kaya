@@ -37,7 +37,7 @@ def _provider_name(subscription: dict | None) -> str:
     host = (urlsplit(str((subscription or {}).get("endpoint") or "")).hostname or "").lower().rstrip(".")
     if host == "fcm.googleapis.com" or host.endswith(".fcm.googleapis.com"):
         return "FCM"
-    if host.endswith("push.services.mozilla.com"):
+    if host == "push.services.mozilla.com" or host.endswith(".push.services.mozilla.com"):
         return "Mozilla Push"
     if host.endswith("push.apple.com"):
         return "Apple Web Push"
