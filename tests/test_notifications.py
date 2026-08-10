@@ -781,10 +781,82 @@ def test_web_push_key_management_routes_are_admin_only():
         notification_router.revoke_web_push_subscriptions,
         notification_router.admin_push_test,
         notification_router.admin_push_subscription_test,
+        notification_router.admin_push_subscription_status,
         notification_router.remove_admin_push_subscription,
     ):
         dependency = inspect.signature(endpoint).parameters["user"].default
         assert dependency.dependency is require_admin
+
+
+def test_admin_mobile_pwa_health_uses_latest_success_over_historical_failure(db):
+    admin = user(db, "health-admin@example.invalid", role="admin")
+    failure_at = datetime(2026, 8, 10, 11, 55)
+    success_at = datetime(2026, 8, 10, 12, 1)
+    subscription = PushSubscription(
+        user_id=admin.id,
+        endpoint_hash="h" * 64,
+        encrypted_subscription=encrypt_secret("{}"),
+        last_failure_at=failure_at,
+        last_success_at=success_at,
+        failure_count=0,
+    )
+    db.add(subscription)
+    db.commit()
+
+    event = NotificationEvent(
+        event_type="system.notification.test",
+        module="system",
+        category="system",
+        severity="info",
+        title="Synthetic test",
+        message="Synthetic test",
+    )
+    db.add(event)
+    db.flush()
+    user_notification = UserNotification(
+        notification_event_id=event.id,
+        user_id=admin.id,
+    )
+    db.add(user_notification)
+    db.flush()
+    attempt = NotificationDeliveryAttempt(
+        user_notification_id=user_notification.id,
+        channel="push",
+        push_subscription_id=subscription.id,
+        status="permanent_failure",
+        failure_reason_code="provider_rejected",
+        attempted_at=failure_at,
+        created_at=failure_at,
+    )
+    db.add(attempt)
+    db.commit()
+
+    response = notification_router.notification_admin_page(
+        SimpleNamespace(), db=db, user=admin
+    )
+    device = response.context["web_push"]["devices"][0]
+    assert device["status"] == "Active"
+    assert device["failure_is_historical"] is True
+    assert response.context["web_push"]["healthy_devices"] == 1
+    assert response.context["web_push"]["attention_devices"] == 0
+    assert db.query(NotificationDeliveryAttempt).count() == 1
+
+
+def test_push_device_status_follows_latest_outcome_and_preserves_invalidation():
+    row = SimpleNamespace(
+        status="active",
+        revoked_at=None,
+        last_success_at=datetime(2026, 8, 10, 12, 1),
+        last_failure_at=datetime(2026, 8, 10, 11, 55),
+    )
+    failure = SimpleNamespace(status="permanent_failure")
+    assert notification_router.push_device_status(row, failure) == "Active"
+
+    row.last_failure_at = datetime(2026, 8, 10, 12, 2)
+    assert notification_router.push_device_status(row, failure) == "Delivery rejected"
+
+    row.status = "expired"
+    assert notification_router.push_device_status(row, failure) == "Needs refresh"
 
 
 def test_ui_vapid_configuration_survives_a_new_database_session(db):

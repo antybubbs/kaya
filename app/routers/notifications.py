@@ -298,6 +298,23 @@ def notification_preferences_page(
     )
 
 
+def push_device_status(row: PushSubscription, failure: NotificationDeliveryAttempt | None) -> str:
+    """Return current device health without mistaking history for state."""
+    if row.status == "expired" or (failure and failure.status == "expired_subscription"):
+        return "Needs refresh"
+    if row.status != "active" or row.revoked_at:
+        return "Disabled"
+    if row.last_success_at and (
+        not row.last_failure_at or row.last_success_at >= row.last_failure_at
+    ):
+        return "Active"
+    if failure and failure.status == "permanent_failure":
+        return "Delivery rejected"
+    if failure and failure.status in {"temporary_failure", "retry_exhausted"}:
+        return "Retrying"
+    return "Active"
+
+
 @router.get("/system/site-administration/notifications")
 def notification_admin_page(
     request: Request, db: Session = Depends(get_db), user=Depends(require_admin)
@@ -343,18 +360,7 @@ def notification_admin_page(
         return f"{browser_name} PWA · {os_name}" if browser_name and os_name != "Unknown" else f"{os_name} PWA"
 
     def device_status(row):
-        if row.status == "expired":
-            return "Expired"
-        if row.status != "active" or row.revoked_at:
-            return "Disabled"
-        failure = latest_failure.get(row.id)
-        if failure and failure.status == "expired_subscription":
-            return "Needs refresh"
-        if failure and failure.status == "permanent_failure":
-            return "Delivery rejected"
-        if failure and failure.status in {"temporary_failure", "retry_exhausted"}:
-            return "Retrying"
-        return "Active"
+        return push_device_status(row, latest_failure.get(row.id))
 
     push_devices = [{
         "id": row.id,
@@ -366,6 +372,11 @@ def notification_admin_page(
         "last_success_at": row.last_success_at,
         "last_failure_at": row.last_failure_at,
         "failure_reason": latest_failure.get(row.id).failure_reason_code if latest_failure.get(row.id) else None,
+        "failure_is_historical": bool(
+            row.last_success_at
+            and row.last_failure_at
+            and row.last_success_at >= row.last_failure_at
+        ),
     } for row, user in subscriptions]
     web_push = configuration_status(db)
     healthy_devices = sum(1 for device in push_devices if device["status"] == "Active" and device["last_success_at"])
@@ -1496,6 +1507,31 @@ def admin_push_subscription_test(subscription_id: int, request: Request, db: Ses
         raise
     _audit_or_fail(db, user, "web_push_test_sent", "push_subscription", str(subscription.id), trusted_client_ip(request), detail="Administrator queued a per-device Web Push test", metadata={"subscription_id": subscription.id, "outbox_id": outbox.id})
     return {"ok": True, "outbox_id": outbox.id, "subscription_id": subscription.id, "status": "queued"}
+
+
+@router.get("/api/admin/web-push/subscriptions/{subscription_id}/status")
+def admin_push_subscription_status(subscription_id: int, db: Session = Depends(get_db), user=Depends(require_admin)):
+    subscription = db.get(PushSubscription, subscription_id)
+    if not subscription:
+        raise HTTPException(404, "Registered device not found")
+    failure = (
+        db.query(NotificationDeliveryAttempt)
+        .filter(
+            NotificationDeliveryAttempt.channel == "push",
+            NotificationDeliveryAttempt.push_subscription_id == subscription.id,
+            NotificationDeliveryAttempt.status.in_(
+                {"permanent_failure", "expired_subscription", "retry_exhausted", "temporary_failure"}
+            ),
+        )
+        .order_by(NotificationDeliveryAttempt.created_at.desc())
+        .first()
+    )
+    return {
+        "subscription_id": subscription.id,
+        "status": push_device_status(subscription, failure),
+        "last_success_at": subscription.last_success_at.isoformat() + "Z" if subscription.last_success_at else None,
+        "last_failure_at": subscription.last_failure_at.isoformat() + "Z" if subscription.last_failure_at else None,
+    }
 
 
 @router.delete("/api/admin/web-push/subscriptions/{subscription_id}")
