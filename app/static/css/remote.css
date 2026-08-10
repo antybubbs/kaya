@@ -44,13 +44,14 @@
 .remote-host-main strong{color:#f8fafc;display:block;font-size:15px;font-size:clamp(12px,calc(7.7px + 2.15cqi),15px);font-weight:900;grid-column:2;line-height:20px;margin-bottom:2px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .remote-host-main span{color:rgba(203,213,225,.62);display:block;font-size:12px;grid-column:2;line-height:16px;margin-bottom:6px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .remote-host-main span.mono{font-size:clamp(10px,calc(7.15px + 1.425cqi),12px)}
-.remote-host-info .remote-cert-badge{margin-bottom:0}
 .remote-host-actions{align-items:center;display:flex;gap:0;grid-column:2;justify-content:flex-end;margin-left:0;min-width:32px;white-space:nowrap}
 .remote-protocol-icon{align-items:center;border:1px solid rgba(255,138,0,.28);border-radius:5px;color:#bfdbfe;display:inline-flex;font-family:"Caskaydia Cove Nerd Font Mono",Consolas,monospace;font-size:11px;font-weight:900;grid-column:1;grid-row:1 / span 2;height:20px;justify-content:center;line-height:1;margin-bottom:0;min-width:28px;padding:2px 6px;width:max-content}
 .remote-protocol-icon:hover{background:rgba(255,138,0,.12);border-color:rgba(255,138,0,.45);color:#fff}
-.remote-host-info .remote-cert-badge{align-items:center;background:rgba(148,163,184,.1);border:1px solid rgba(148,163,184,.22);border-radius:999px;color:#cbd5e1;display:inline-flex;font-size:12px;font-size:clamp(10px,calc(7.15px + 1.425cqi),12px);font-weight:800;gap:5px;height:22px;line-height:1;padding:2px 10px;width:max-content}
-.remote-cert-badge-icon{display:block;fill:none;flex:0 0 auto;height:14px;stroke:currentColor;stroke-linecap:round;stroke-linejoin:round;stroke-width:2;width:14px}
-.remote-host-info .remote-cert-badge.is-pinned{background:rgba(255,138,0,.1);border-color:rgba(255,138,0,.34);color:#ffd08a}
+.remote-host-info.has-cert-shield .remote-protocol-icon{grid-row:1}
+.remote-cert-shield{align-items:center;color:#94a3b8;display:inline-flex;grid-column:1;grid-row:2;height:16px;justify-content:center;justify-self:center;width:16px}
+.remote-cert-shield.is-pinned{color:#4ade80}
+.remote-cert-shield:focus-visible{border-radius:4px;outline:2px solid var(--accent);outline-offset:2px}
+.remote-cert-shield-icon{display:block;fill:none;height:16px;stroke:currentColor;stroke-linecap:round;stroke-linejoin:round;stroke-width:2;width:16px}
 .remote-connect-menu{position:relative}
 .remote-connect-menu>summary{align-items:center;border:1px solid transparent;border-radius:6px;color:#cbd5e1;cursor:pointer;display:flex;font-size:16px;font-weight:900;height:28px;justify-content:center;line-height:1;list-style:none;opacity:.9;padding:0;transition:background .12s ease,color .12s ease,opacity .12s ease;width:28px}
 .remote-connect-menu>summary::-webkit-details-marker{display:none}
@@ -263,8 +264,8 @@ html[data-kaya-theme=light-ops] .remote-settings-card header{border-bottom-color
 html[data-kaya-theme=light-ops] .remote-settings-grid label{color:#111827}
 html[data-kaya-theme=light-ops] .remote-settings-grid input,html[data-kaya-theme=light-ops] .remote-settings-grid select,html[data-kaya-theme=light-ops] .remote-settings-grid textarea{background:#fff;border-color:#cfd7e3;color:#111827}
 html[data-kaya-theme=light-ops] .remote-settings-tabs{border-bottom-color:#d8dee8}
-html[data-kaya-theme=light-ops] .remote-host-info .remote-cert-badge{background:#f1f5f9;border-color:#d8dee8;color:#475569!important}
-html[data-kaya-theme=light-ops] .remote-host-info .remote-cert-badge.is-pinned{background:#fff3e2;border-color:rgba(255,138,0,.32);color:#7a3b00!important}
+html[data-kaya-theme=light-ops] .remote-cert-shield{color:#64748b}
+html[data-kaya-theme=light-ops] .remote-cert-shield.is-pinned{color:#15803d}
 html[data-kaya-theme=light-ops] .remote-settings-tabs a,html[data-kaya-theme=light-ops] .remote-host-toolbar button,html[data-kaya-theme=light-ops] .remote-host-toolbar a,html[data-kaya-theme=light-ops] .remote-protocol-icon{background:#fff8f0;border-color:rgba(255,138,0,.24);color:#7a3b00}
 html[data-kaya-theme=light-ops] .remote-layout-button{background:#ff8a00;border-color:#ffb357;color:#050706}
 html[data-kaya-theme=light-ops] .remote-layout-button:hover:not(:disabled),html[data-kaya-theme=light-ops] .remote-layout-button.active{background:#ffb357;border-color:#ffd08a;color:#050706}

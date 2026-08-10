@@ -2,6 +2,7 @@ from pathlib import Path
 
 
 REMOTE_CSS = Path(__file__).parents[1] / "app" / "static" / "css" / "remote.css"
+HOST_RAIL_TEMPLATE = Path(__file__).parents[1] / "app" / "templates" / "_remote_host_rail.html"
 
 
 def test_remote_host_typography_uses_fluid_rail_container_units():
@@ -10,7 +11,7 @@ def test_remote_host_typography_uses_fluid_rail_container_units():
     assert ".remote-host-rail{" in css
     assert "container-type:inline-size" in css
     assert "font-size:clamp(12px,calc(7.7px + 2.15cqi),15px)" in css
-    assert css.count("font-size:clamp(10px,calc(7.15px + 1.425cqi),12px)") == 2
+    assert css.count("font-size:clamp(10px,calc(7.15px + 1.425cqi),12px)") == 1
     assert "@container (max-width:280px)" not in css
     assert "@media(max-width:1023px){.remote-host-main strong" not in css
 
@@ -34,3 +35,16 @@ def test_fluid_remote_typography_bounds_across_supported_rail_widths():
 
     assert hostname == [12, 14.365, 15, 15]
     assert secondary == [10, 11.568, 11.995, 12]
+
+
+def test_rdp_host_cards_use_compact_accessible_certificate_shields():
+    css = REMOTE_CSS.read_text(encoding="utf-8")
+    template = HOST_RAIL_TEMPLATE.read_text(encoding="utf-8")
+
+    assert "remote-cert-badge" not in template
+    assert "remote-host-info {% if row.protocol == 'rdp' %}has-cert-shield{% endif %}" in template
+    assert "remote-cert-shield {{ 'is-pinned' if row.rdp_cert_fingerprints else 'is-system-ca' }}" in template
+    assert 'aria-label="{{ \'Certificate pinned\' if row.rdp_cert_fingerprints else \'System CA\' }}"' in template
+    assert "remote-host-info.has-cert-shield .remote-protocol-icon{grid-row:1}" in css
+    assert ".remote-cert-shield{align-items:center;color:#94a3b8" in css
+    assert ".remote-cert-shield.is-pinned{color:#4ade80}" in css
