@@ -26,11 +26,15 @@
     {% set label = remote_label_fn(row) if remote_label_fn is defined else remote_label(row) %}
     <article class="remote-host-card {% if remote and remote.id == row.id %}active{% endif %}" data-remote-id="{{ row.id }}" data-remote-label="{{ label }}" data-remote-protocol="{{ row.protocol }}" data-remote-category="{{ row.ip_address.category or 'Uncategorised' }}" data-remote-order="{{ loop.index0 }}" data-remote-panel-url="/remote-manager/{{ row.id }}/panel?ssh=kaya-rewrite-2" data-remote-search-text="{{ label }} {{ row.username or '' }} {{ row.ip_address.address }} {{ row.protocol }} {{ row.ip_address.category or '' }}">
       <div class="remote-host-main">
-        <div class="remote-host-info {% if row.protocol == 'rdp' %}has-cert-shield{% endif %}">
-          <a class="remote-protocol-icon" href="/remote-manager/{{ row.id }}/session" data-remote-open title="Open {{ row.protocol|upper }}">{% if row.protocol == 'rdp' %}RDP{% else %}&gt;_{% endif %}</a>
-          <strong>{{ label }}</strong>
-          <span class="mono">{{ row.username or 'user' }}@{{ row.ip_address.address }}</span>
-          {% if row.protocol == 'rdp' %}<span class="remote-cert-shield {{ 'is-pinned' if row.rdp_cert_fingerprints else 'is-system-ca' }}" role="img" tabindex="0" aria-label="{{ 'Certificate pinned' if row.rdp_cert_fingerprints else 'System CA' }}" title="{{ 'Certificate pinned' if row.rdp_cert_fingerprints else 'System CA' }}"><svg class="remote-cert-shield-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3l7 3v6c0 5-3.5 8.5-7 9-3.5-.5-7-4-7-9V6z"></path></svg></span>{% endif %}
+        <div class="remote-host-info">
+          <div class="remote-host-status">
+            <a class="remote-protocol-icon" href="/remote-manager/{{ row.id }}/session" data-remote-open title="Open {{ row.protocol|upper }}">{% if row.protocol == 'rdp' %}RDP{% else %}&gt;_{% endif %}</a>
+            {% if row.protocol == 'rdp' %}<span class="remote-cert-shield {{ 'is-pinned' if row.rdp_cert_fingerprints else 'is-system-ca' }}" role="img" tabindex="0" aria-label="{{ 'Certificate pinned' if row.rdp_cert_fingerprints else 'System CA' }}" title="{{ 'Certificate pinned' if row.rdp_cert_fingerprints else 'System CA' }}"><svg class="remote-cert-shield-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3l7 3v6c0 5-3.5 8.5-7 9-3.5-.5-7-4-7-9V6z"></path></svg></span>{% endif %}
+          </div>
+          <div class="remote-host-copy">
+            <strong>{{ label }}</strong>
+            <span class="mono">{{ row.username or 'user' }}@{{ row.ip_address.address }}</span>
+          </div>
         </div>
       </div>
       <div class="remote-host-actions">

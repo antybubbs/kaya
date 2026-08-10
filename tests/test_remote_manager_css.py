@@ -42,9 +42,11 @@ def test_rdp_host_cards_use_compact_accessible_certificate_shields():
     template = HOST_RAIL_TEMPLATE.read_text(encoding="utf-8")
 
     assert "remote-cert-badge" not in template
-    assert "remote-host-info {% if row.protocol == 'rdp' %}has-cert-shield{% endif %}" in template
+    assert '<div class="remote-host-status">' in template
+    assert '<div class="remote-host-copy">' in template
     assert "remote-cert-shield {{ 'is-pinned' if row.rdp_cert_fingerprints else 'is-system-ca' }}" in template
     assert 'aria-label="{{ \'Certificate pinned\' if row.rdp_cert_fingerprints else \'System CA\' }}"' in template
-    assert "remote-host-info.has-cert-shield .remote-protocol-icon{grid-row:1}" in css
-    assert ".remote-cert-shield{align-items:center;color:#94a3b8" in css
-    assert ".remote-cert-shield.is-pinned{color:#4ade80}" in css
+    assert ".remote-host-status{align-items:center;display:flex;flex-direction:column" in css
+    assert ".remote-host-copy{display:grid;grid-column:2;grid-row:1" in css
+    assert ".remote-host-status .remote-cert-shield{align-items:center;color:#94a3b8" in css
+    assert ".remote-host-status .remote-cert-shield.is-pinned{color:#4ade80}" in css
