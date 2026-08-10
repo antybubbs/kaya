@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
-from app.db.session import SessionLocal
+from app.db.session import SessionLocal, database_write_context
 from app.models.models import (
     IPAddress, NetworkMonitor, NetworkMonitorCheck, NetworkMonitorEvent,
     NetworkMonitorOutage, NetworkMonitorStatistic, NetworkMonitorTransition,
@@ -651,15 +651,32 @@ def record_monitor_result(
 
 def run_monitor_check(db: Session, monitor: NetworkMonitor) -> None:
     started_at = datetime.utcnow()
-    if active_dashboard_interval() == 1:
+    # Phase A: finish any read transaction before resolving configuration and
+    # starting the external probe. The write transaction starts only when the
+    # result is reloaded and persisted below.
+    db.rollback()
+    monitor_id = monitor.id
+    address = monitor.ip_address.address
+    timeout_ms = clamp_timeout(monitor.timeout_ms)
+    fast_check = active_dashboard_interval() == 1
+    db.rollback()
+    # Phase B: ping is a subprocess boundary and can take several seconds. No
+    # SQLite transaction is held while it runs.
+    db.rollback()
+    if fast_check:
         ok, latency_ms, error = ping_ipv4(
-            monitor.ip_address.address, clamp_timeout(monitor.timeout_ms)
+            address, timeout_ms
         )
         packet_loss = 0 if ok else 100
     else:
         ok, latency_ms, packet_loss, error = ping_ipv4_samples(
-            monitor.ip_address.address, clamp_timeout(monitor.timeout_ms)
+            address, timeout_ms
         )
+    # Phase C: reload current state, atomically apply transitions, enqueue any
+    # durable notification records, and commit immediately.
+    monitor = db.get(NetworkMonitor, monitor_id)
+    if monitor is None or not monitor.is_enabled:
+        return
     record_monitor_result(db, monitor, ok, latency_ms, packet_loss, error, now=started_at)
 
 
@@ -667,6 +684,8 @@ def run_monitor_check_by_id(monitor_id: int) -> bool:
     lock = monitor_check_lock(monitor_id)
     if not lock.acquire(blocking=False):
         return False
+    context = database_write_context("network_monitor", "check", external_io=False)
+    context.__enter__()
     db = SessionLocal()
     try:
         monitor = db.get(NetworkMonitor, monitor_id)
@@ -685,6 +704,7 @@ def run_monitor_check_by_id(monitor_id: int) -> bool:
         return False
     finally:
         db.close()
+        context.__exit__(None, None, None)
         lock.release()
 
 

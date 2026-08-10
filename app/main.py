@@ -26,7 +26,12 @@ from app.core.performance import (
 )
 from app.db.migrations import prepare_database
 from app.db.seeds import initialise_application_defaults
-from app.db.session import SessionLocal, engine
+from app.db.session import (
+    SessionLocal,
+    database_write_context,
+    engine,
+    verify_sqlite_pragmas,
+)
 from app.models.models import AuditLog, User
 from app.routers import (
     admin,
@@ -78,13 +83,12 @@ from app.services.notification_runtime import (
 from app.services.notifications import cleanup_retention
 from app.services.secure_send import cleanup_loop as secure_send_cleanup_loop
 from app.services.site_settings import (
+    cached_security_context,
     effective_allowed_hosts,
     frame_ancestor_directive,
     get_site_setting,
     host_is_allowed,
     hsts_header_value,
-    load_security_settings,
-    oidc_form_action_source,
 )
 from app.services.version import refresh_latest_release, version_check_loop
 
@@ -151,21 +155,27 @@ async def security_headers(request: Request, call_next):
     request.state.module_landing_url = "/profile"
     request.state.enabled_modules = ()
     if not request.url.path.startswith("/static/"):
-        db = SessionLocal()
-        try:
-            security = load_security_settings(db)
-            oidc_form_source = oidc_form_action_source(db)
-            request.state.high_availability_enabled = get_site_setting(db, "high_availability_enabled") == "1"
-            request.state.backup_manager_enabled = get_site_setting(db, "backup_manager_enabled") == "1"
-            request.state.enabled_modules = enabled_modules(db)
-        finally:
-            db.close()
+        file_only_request = request.url.path in {
+            "/manifest.webmanifest",
+            "/service-worker.js",
+        }
+        with database_write_context("http_request", f"{request.method} {request.url.path}"):
+            db = SessionLocal()
+            try:
+                security, oidc_form_source = cached_security_context(db)
+                if not file_only_request:
+                    request.state.high_availability_enabled = get_site_setting(db, "high_availability_enabled") == "1"
+                    request.state.backup_manager_enabled = get_site_setting(db, "backup_manager_enabled") == "1"
+                    request.state.enabled_modules = enabled_modules(db)
+            finally:
+                db.close()
         if security.get("trusted_hosts_enabled") == "1" or settings.allowed_hosts.strip():
             allowed_hosts = effective_allowed_hosts(security, settings)
             if not host_is_allowed(request.headers.get("host", ""), allowed_hosts):
                 return PlainTextResponse("Invalid host header", status_code=400)
 
-    response = await call_next(request)
+    with database_write_context("http_request", f"{request.method} {request.url.path}"):
+        response = await call_next(request)
     is_static_asset = request.url.path.startswith(f"{settings.root_path}/static") if settings.root_path else request.url.path.startswith("/static")
     path = request.url.path
     if settings.root_path and path.startswith(settings.root_path):
@@ -349,6 +359,7 @@ def bootstrap():
     try:
         module_permissions_existed = inspect(engine).has_table("user_module_permissions")
         prepare_database(engine, settings)
+        verify_sqlite_pragmas(engine)
         stage = "Running seed initialisation"
         logger.debug("Database migration stage: %s", stage)
         with SessionLocal() as db:
@@ -358,6 +369,9 @@ def bootstrap():
             from app.services.backup_agent_protocol import allow_legacy_inventory
             allow_legacy_inventory(db)
             db.commit()
+        stage = "Warming security settings cache"
+        with SessionLocal() as db:
+            cached_security_context(db, max_age_seconds=0)
         stage = "Startup complete"
         logger.debug("Database migration stage: %s", stage)
     except Exception:

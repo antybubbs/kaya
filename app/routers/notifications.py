@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import base64
 import json
 import logging
 import re
@@ -14,7 +15,7 @@ from sqlalchemy.orm import Session, joinedload
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.core.security import encrypt_secret
 from app.core.templating import templates
-from app.db.session import get_db
+from app.db.session import database_write_context, get_db, sqlite_lock_error
 from app.models.models import (
     NotificationCategoryPolicy,
     NotificationDeliveryAttempt,
@@ -24,6 +25,7 @@ from app.models.models import (
     NotificationReconciliationFailure,
     AuditLog,
     PushSubscription,
+    User,
     RemoteManagerSetting,
     UserNotification,
 )
@@ -116,6 +118,11 @@ class WebPushKeyRequest(BaseModel):
     contact_url: str | None = Field(default=None, max_length=500)
     installation_label: str | None = Field(default=None, max_length=120)
     confirmation: str = Field(min_length=1, max_length=40)
+
+
+class WebPushContactRequest(BaseModel):
+    contact_email: str | None = Field(default=None, max_length=254)
+    contact_url: str | None = Field(default=None, max_length=500)
 
 
 class ConfirmedWebPushAction(BaseModel):
@@ -291,14 +298,100 @@ def notification_preferences_page(
     )
 
 
+def push_device_status(row: PushSubscription, failure: NotificationDeliveryAttempt | None) -> str:
+    """Return current device health without mistaking history for state."""
+    if row.status == "expired" or (failure and failure.status == "expired_subscription"):
+        return "Needs refresh"
+    if row.status != "active" or row.revoked_at:
+        return "Disabled"
+    if row.last_success_at and (
+        not row.last_failure_at or row.last_success_at >= row.last_failure_at
+    ):
+        return "Active"
+    if failure and failure.status == "permanent_failure":
+        return "Delivery rejected"
+    if failure and failure.status in {"temporary_failure", "retry_exhausted"}:
+        return "Retrying"
+    return "Active"
+
+
 @router.get("/system/site-administration/notifications")
 def notification_admin_page(
     request: Request, db: Session = Depends(get_db), user=Depends(require_admin)
 ):
     now = datetime.utcnow()
-    active_devices = (
-        db.query(PushSubscription).filter_by(status="active", revoked_at=None).count()
+    subscriptions = (
+        db.query(PushSubscription)
+        .join(User, User.id == PushSubscription.user_id)
+        .add_entity(User)
+        .order_by(PushSubscription.created_at.desc())
+        .limit(250)
+        .all()
     )
+    registered_device_count = db.query(PushSubscription).filter_by(status="active", revoked_at=None).count()
+    active_devices = db.query(PushSubscription).filter_by(status="active", revoked_at=None).count()
+    subscription_ids = [row.id for row, _user in subscriptions]
+    attempts = (
+        db.query(NotificationDeliveryAttempt)
+        .filter(
+            NotificationDeliveryAttempt.channel == "push",
+            NotificationDeliveryAttempt.push_subscription_id.in_(subscription_ids or [0]),
+        )
+        .order_by(NotificationDeliveryAttempt.created_at.desc())
+        .limit(1000)
+        .all()
+    )
+    latest_failure = {}
+    for attempt in attempts:
+        if attempt.status in {"permanent_failure", "expired_subscription", "retry_exhausted", "temporary_failure"}:
+            latest_failure.setdefault(attempt.push_subscription_id, attempt)
+
+    def platform(row):
+        value = (row.operating_system or "").lower()
+        for label, needles in (("iOS", ("ios", "iphone", "ipad")), ("Android", ("android",)), ("Windows", ("windows",)), ("macOS", ("mac", "darwin")), ("Linux", ("linux",))):
+            if any(needle in value for needle in needles):
+                return label
+        return "Unknown"
+
+    def display_label(row):
+        os_name = platform(row)
+        browser = (row.browser_family or "").lower()
+        browser_name = "Edge" if "edge" in browser else "Safari" if "safari" in browser else "Chrome" if "chrome" in browser else None
+        return f"{browser_name} PWA · {os_name}" if browser_name and os_name != "Unknown" else f"{os_name} PWA"
+
+    def device_status(row):
+        return push_device_status(row, latest_failure.get(row.id))
+
+    push_devices = [{
+        "id": row.id,
+        "user": user.email,
+        "device": display_label(row),
+        "platform": platform(row),
+        "status": device_status(row),
+        "registered_at": row.created_at,
+        "last_success_at": row.last_success_at,
+        "last_failure_at": row.last_failure_at,
+        "failure_reason": latest_failure.get(row.id).failure_reason_code if latest_failure.get(row.id) else None,
+        "failure_is_historical": bool(
+            row.last_success_at
+            and row.last_failure_at
+            and row.last_success_at >= row.last_failure_at
+        ),
+    } for row, user in subscriptions]
+    web_push = configuration_status(db)
+    healthy_devices = sum(1 for device in push_devices if device["status"] == "Active" and device["last_success_at"])
+    attention_devices = sum(1 for device in push_devices if device["status"] in {"Needs refresh", "Expired", "Retrying", "Disabled"})
+    active_device_list = [device for device in push_devices if device["status"] not in {"Disabled", "Expired"}]
+    inactive_device_list = [device for device in push_devices if device["status"] in {"Disabled", "Expired"}]
+    web_push.update({"registered_devices": registered_device_count, "devices": active_device_list, "inactive_devices": inactive_device_list, "healthy_devices": healthy_devices, "attention_devices": attention_devices})
+    if web_push["state"] == "not_configured":
+        web_push["overview_status"] = "Not configured"
+    elif not subscriptions:
+        web_push["overview_status"] = "No registered devices"
+    elif any(device["status"] != "Active" for device in push_devices):
+        web_push["overview_status"] = "Attention required"
+    else:
+        web_push["overview_status"] = "Enabled" if web_push["enabled"] else web_push["status_label"]
     accepted = (
         db.query(NotificationDeliveryAttempt)
         .filter(
@@ -339,7 +432,7 @@ def notification_admin_page(
             "accepted_today": accepted,
             "failed_today": failed,
             "delivery_health": notification_health(),
-            "web_push": configuration_status(db),
+            "web_push": web_push,
             **csrf_context(request),
         },
     )
@@ -585,6 +678,13 @@ def _valid_subscription(payload: SubscriptionCreate) -> dict:
         and re.fullmatch(r"[A-Za-z0-9_-]+", auth)
     ):
         raise HTTPException(400, "Invalid push subscription keys")
+    try:
+        p256dh_bytes = base64.urlsafe_b64decode(p256dh + "=" * (-len(p256dh) % 4))
+        auth_bytes = base64.urlsafe_b64decode(auth + "=" * (-len(auth) % 4))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, "Invalid push subscription keys") from exc
+    if len(p256dh_bytes) != 65 or p256dh_bytes[0] != 4 or len(auth_bytes) != 16:
+        raise HTTPException(400, "Invalid push subscription keys")
     return {"endpoint": payload.endpoint, "keys": {"p256dh": p256dh, "auth": auth}}
 
 
@@ -600,6 +700,7 @@ def get_subscriptions(db: Session = Depends(get_db), user=Depends(require_user))
         "subscriptions": [
             {
                 "id": row.id,
+                "endpoint_hash": row.endpoint_hash,
                 "device_label": row.device_label,
                 "browser_family": row.browser_family,
                 "operating_system": row.operating_system,
@@ -675,8 +776,7 @@ def delete_subscription(
     )
     if not row:
         raise HTTPException(404, "Subscription not found")
-    row.status = "revoked"
-    row.revoked_at = datetime.utcnow()
+    db.delete(row)
     db.commit()
     return {"ok": True}
 
@@ -718,6 +818,7 @@ def test_notification(
         target_route="/notifications",
         recipient_ids=[user.id],
         created_by_user_id=user.id,
+        metadata={"diagnostic": True, "diagnostic_channel": "in_app"},
     )
     write_audit(
         db,
@@ -733,8 +834,8 @@ def test_notification(
         "outbox_id": outbox.id,
         "status": "queued",
         "in_app": "pending outbox processing",
-        "push": "pending policy and subscription evaluation",
-        "email": "pending policy evaluation",
+        "push": "not requested",
+        "email": "not requested",
     }
 
 
@@ -975,6 +1076,40 @@ def update_admin_settings(
 def admin_web_push_status(
     db: Session = Depends(get_db), user=Depends(require_admin)
 ):
+    return configuration_status(db)
+
+
+@router.put("/api/admin/web-push/contact")
+def update_web_push_contact(
+    payload: WebPushContactRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    """Correct the VAPID contact without changing keys or browser subscriptions."""
+    _csrf(request)
+    if configuration_status(db)["source"] == "deployment":
+        raise HTTPException(409, "Deployment-managed VAPID contact cannot be changed here")
+    row = ui_configuration(db)
+    if not row:
+        raise HTTPException(404, "Web Push is not configured")
+    try:
+        subject = normalise_subject(payload.contact_email, payload.contact_url)
+    except WebPushConfigurationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    row.subject = subject
+    row.updated_at = datetime.utcnow()
+    db.commit()
+    _audit_or_fail(
+        db,
+        user,
+        "web_push_contact_updated",
+        "web_push_configuration",
+        "1",
+        trusted_client_ip(request),
+        detail="VAPID contact updated without rotating Web Push keys",
+        metadata={"contact_scheme": subject.split(":", 1)[0]},
+    )
     return configuration_status(db)
 
 
@@ -1351,6 +1486,64 @@ def admin_push_test(
         "outbox_id": outbox.id,
         "status": "queued",
     }
+
+
+@router.post("/api/admin/web-push/subscriptions/{subscription_id}/test")
+def admin_push_subscription_test(subscription_id: int, request: Request, db: Session = Depends(get_db), user=Depends(require_admin)):
+    _csrf(request)
+    _admin_rate_limit(db, user.id, ("web_push_test_sent", "web_push_test_failed"), limit=10, minutes=10)
+    subscription = db.get(PushSubscription, subscription_id)
+    if not subscription or subscription.status != "active" or subscription.revoked_at:
+        raise HTTPException(404, "Registered device is not active")
+    if not configuration_status(db)["enabled"]:
+        raise HTTPException(409, "Web Push is not enabled")
+    try:
+        with database_write_context("notification_admin", "targeted_web_push_test"):
+            outbox = enqueue_notification(db, event_type_id="system.notification.test", title="Kaya Web Push test", message="This is a Web Push test requested from Kaya.", target_route="/notifications", recipient_ids=[subscription.user_id], created_by_user_id=user.id, metadata={"diagnostic": True, "diagnostic_channel": "push", "diagnostic_subscription_id": subscription.id})
+    except Exception as exc:
+        db.rollback()
+        if sqlite_lock_error(exc):
+            raise HTTPException(503, "Notification queue is temporarily busy. Please retry.") from exc
+        raise
+    _audit_or_fail(db, user, "web_push_test_sent", "push_subscription", str(subscription.id), trusted_client_ip(request), detail="Administrator queued a per-device Web Push test", metadata={"subscription_id": subscription.id, "outbox_id": outbox.id})
+    return {"ok": True, "outbox_id": outbox.id, "subscription_id": subscription.id, "status": "queued"}
+
+
+@router.get("/api/admin/web-push/subscriptions/{subscription_id}/status")
+def admin_push_subscription_status(subscription_id: int, db: Session = Depends(get_db), user=Depends(require_admin)):
+    subscription = db.get(PushSubscription, subscription_id)
+    if not subscription:
+        raise HTTPException(404, "Registered device not found")
+    failure = (
+        db.query(NotificationDeliveryAttempt)
+        .filter(
+            NotificationDeliveryAttempt.channel == "push",
+            NotificationDeliveryAttempt.push_subscription_id == subscription.id,
+            NotificationDeliveryAttempt.status.in_(
+                {"permanent_failure", "expired_subscription", "retry_exhausted", "temporary_failure"}
+            ),
+        )
+        .order_by(NotificationDeliveryAttempt.created_at.desc())
+        .first()
+    )
+    return {
+        "subscription_id": subscription.id,
+        "status": push_device_status(subscription, failure),
+        "last_success_at": subscription.last_success_at.isoformat() + "Z" if subscription.last_success_at else None,
+        "last_failure_at": subscription.last_failure_at.isoformat() + "Z" if subscription.last_failure_at else None,
+    }
+
+
+@router.delete("/api/admin/web-push/subscriptions/{subscription_id}")
+def remove_admin_push_subscription(subscription_id: int, request: Request, db: Session = Depends(get_db), user=Depends(require_admin)):
+    _csrf(request)
+    subscription = db.get(PushSubscription, subscription_id)
+    if not subscription:
+        raise HTTPException(404, "Registered device not found")
+    db.delete(subscription)
+    _audit_or_fail(db, user, "web_push_subscription_removed", "push_subscription", str(subscription.id), trusted_client_ip(request), detail="Administrator removed one registered Web Push device", metadata={"subscription_id": subscription.id, "user_id": subscription.user_id})
+    db.commit()
+    return {"ok": True, "subscription_id": subscription_id, "status": "removed"}
 
 
 @router.get("/api/admin/notification-categories")

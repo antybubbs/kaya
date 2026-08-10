@@ -1,9 +1,11 @@
 import asyncio
 from datetime import datetime, timedelta
 import logging
+import sqlite3
 
 import pytest
 from sqlalchemy import create_engine
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -275,7 +277,11 @@ def test_iteration_exception_logs_traceback_then_recovers(
         nonlocal calls
         calls += 1
         if calls == 1:
-            raise RuntimeError("synthetic database unavailable")
+            raise OperationalError(
+                "synthetic operation",
+                {},
+                sqlite3.OperationalError("database is locked"),
+            )
 
     monkeypatch.setattr(runtime, "_operation_for", lambda _name: operation)
     monkeypatch.setattr(
@@ -305,6 +311,6 @@ def test_iteration_exception_logs_traceback_then_recovers(
     assert calls >= 2
     assert state["last_loop_completed"] is not None
     assert state["consecutive_failures"] == 0
-    assert state["last_exception_type"] == "RuntimeError"
+    assert state["last_exception_type"] == "OperationalError"
     assert state["last_exception_correlation_id"]
     assert failure_log.exc_info is not None

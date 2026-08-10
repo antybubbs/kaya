@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
-from app.db.session import get_db
+from app.db.session import database_write_context, get_db
 from app.schemas.high_availability import (
     HAAgentActionResult,
     HAAgentEvents,
@@ -61,7 +61,8 @@ def register(payload: HAAgentRegister, request: Request, db: Session = Depends(g
     if registration_rate_limited(request):
         raise HTTPException(429, "Agent registration rate limit exceeded")
     try:
-        credential, node = register_agent(db, payload)
+        with database_write_context("ha_agent", "register"):
+            credential, node = register_agent(db, payload)
     except HAAgentError as exc:
         raise HTTPException(401, str(exc))
     return {
@@ -75,7 +76,8 @@ def register(payload: HAAgentRegister, request: Request, db: Session = Depends(g
 
 @router.post("/heartbeat")
 def heartbeat(payload: HAAgentHeartbeat, db: Session = Depends(get_db), agent: AuthenticatedAgent = Depends(require_agent)):
-    node, accepted, reason = record_heartbeat(db, agent.node, payload, return_status=True)
+    with database_write_context("ha_agent", "heartbeat"):
+        node, accepted, reason = record_heartbeat(db, agent.node, payload, return_status=True)
     return {
         "accepted": accepted,
         "reason": reason,
@@ -86,7 +88,8 @@ def heartbeat(payload: HAAgentHeartbeat, db: Session = Depends(get_db), agent: A
 
 @router.post("/events")
 def events(payload: HAAgentEvents, db: Session = Depends(get_db), agent: AuthenticatedAgent = Depends(require_agent)):
-    accepted, duplicates = ingest_events(db, agent.node, payload.events)
+    with database_write_context("ha_agent", "events"):
+        accepted, duplicates = ingest_events(db, agent.node, payload.events)
     return {"accepted": accepted, "duplicates": duplicates}
 
 
@@ -111,7 +114,8 @@ def lease_snapshot(generation: int, agent: AuthenticatedAgent = Depends(require_
 @router.post("/action-result")
 def action_result(payload: HAAgentActionResult, db: Session = Depends(get_db), agent: AuthenticatedAgent = Depends(require_agent)):
     try:
-        row = record_action_result(db, agent.node, payload)
+        with database_write_context("ha_agent", "action_result"):
+            row = record_action_result(db, agent.node, payload)
     except HAAgentError as exc:
         raise HTTPException(409, str(exc))
     return {"accepted": True, "action_id": row.action_id, "status": row.status}

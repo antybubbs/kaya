@@ -218,6 +218,15 @@ def publish(
     commit: bool = True,
     diagnostics: dict | None = None,
 ) -> NotificationEvent | None:
+    # Diagnostic requests may explicitly exercise one channel.  This is kept
+    # in the persisted metadata so the outbox remains restart-safe, while
+    # ordinary production publications continue to use category policy.
+    diagnostic_channel = (metadata or {}).get("diagnostic_channel")
+    if diagnostic_channel not in {"in_app", "push", "email"}:
+        diagnostic_channel = None
+    diagnostic_subscription_id = (metadata or {}).get("diagnostic_subscription_id")
+    if not isinstance(diagnostic_subscription_id, int) or diagnostic_subscription_id <= 0:
+        diagnostic_subscription_id = None
     if diagnostics is not None:
         diagnostics.clear()
         diagnostics["event_registered"] = False
@@ -336,7 +345,7 @@ def publish(
         db.add(row)
         db.flush()
         for recipient in recipients:
-            if not preference_allows(
+            if diagnostic_channel in {None, "in_app"} and not preference_allows(
                 db, recipient.id, event_type_id, resolved_severity, "in_app"
             ):
                 continue
@@ -346,7 +355,7 @@ def publish(
             db.add(user_notification)
             db.flush()
             created_count += 1
-            if get_site_setting(
+            if diagnostic_channel in {None, "push"} and get_site_setting(
                 db, "notifications_push_enabled"
             ) == "1" and preference_allows(
                 db, recipient.id, event_type_id, resolved_severity, "push"
@@ -354,6 +363,11 @@ def publish(
                 subscriptions = (
                     db.query(PushSubscription)
                     .filter_by(user_id=recipient.id, status="active", revoked_at=None)
+                    .filter(
+                        PushSubscription.id == diagnostic_subscription_id
+                        if diagnostic_subscription_id
+                        else True
+                    )
                     .limit(20)
                     .all()
                 )
@@ -366,7 +380,7 @@ def publish(
                         )
                     )
                     queued_channels["push"] += 1
-            if get_site_setting(
+            if diagnostic_channel in {None, "email"} and get_site_setting(
                 db, "notifications_email_enabled"
             ) == "1" and preference_allows(
                 db, recipient.id, event_type_id, resolved_severity, "email"

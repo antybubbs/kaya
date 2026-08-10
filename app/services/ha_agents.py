@@ -167,7 +167,6 @@ async def authenticate_agent_request(request: Request, db: Session) -> Authentic
     except (ValueError, OverflowError):
         _reject_agent_request(400, "Invalid agent request timestamp", "invalid_timestamp", agent_id=agent_id, request_id=request_id, node=node)
     now = datetime.utcnow()
-    db.query(HAAgentRequest).filter(HAAgentRequest.received_at < now - timedelta(days=1)).delete(synchronize_session=False)
     if abs((now - request_time).total_seconds()) > REQUEST_WINDOW_SECONDS:
         _reject_agent_request(401, "Expired agent request", "expired_request", agent_id=agent_id, request_id=request_id, node=node)
     if db.query(HAAgentRequest.id).filter(HAAgentRequest.credential_id == credential.id, HAAgentRequest.request_id == request_id).first():
@@ -190,6 +189,16 @@ async def authenticate_agent_request(request: Request, db: Session) -> Authentic
         db.rollback()
         _reject_agent_request(409, "Replayed agent request", "request_id_conflict", agent_id=agent_id, request_id=request_id, node=node)
     return AuthenticatedAgent(credential, credential.node)
+
+
+def prune_agent_request_history(
+    db: Session, *, now: datetime | None = None
+) -> int:
+    """Remove expired replay records outside the live authentication path."""
+    cutoff = (now or datetime.utcnow()) - timedelta(days=1)
+    return db.query(HAAgentRequest).filter(
+        HAAgentRequest.received_at < cutoff
+    ).delete(synchronize_session=False)
 
 
 def record_heartbeat(

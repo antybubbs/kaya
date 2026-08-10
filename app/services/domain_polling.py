@@ -141,9 +141,17 @@ def apply_snapshot(record: DomainRecord, snapshot: dict, data: dict) -> None:
 
 
 def poll_domain(db: Session, record: DomainRecord, source: str = "scheduled") -> list[dict]:
+    record_id = record.id
+    domain_name = record.name
     had_baseline = record.last_lookup_at is not None
     before = discovered_snapshot(record)
-    data = lookup_domain(record.name)
+    # The lookup can involve several bounded network calls. Release SQLite's
+    # reader before crossing that boundary, then re-check that the row exists.
+    db.rollback()
+    data = lookup_domain(domain_name)
+    record = db.get(DomainRecord, record_id)
+    if record is None:
+        return []
     after = lookup_snapshot(data, before)
     changes = compare_snapshots(before, after) if had_baseline else []
     apply_snapshot(record, after, data)

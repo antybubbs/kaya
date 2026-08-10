@@ -216,6 +216,24 @@ def test_failure_threshold_opens_outage_and_recovery_closes_it(monkeypatch):
         assert "incident_started" in event_types and "recovered" in event_types
 
 
+def test_external_probe_runs_after_read_transaction_is_finished(monkeypatch):
+    factory = session_factory()
+    monitor_id = add_monitor(factory)
+    observed = []
+
+    db = None
+
+    def fake_probe(*_args):
+        observed.append(db.in_transaction())
+        return True, 5, 0, None
+
+    monkeypatch.setattr(network_monitor, "ping_ipv4_samples", fake_probe)
+    with factory() as db:
+        network_monitor.run_monitor_check(db, db.get(NetworkMonitor, monitor_id))
+
+    assert observed == [False]
+
+
 def test_latency_thresholds_are_recorded_without_request_time_collection(monkeypatch):
     factory = session_factory()
     monitor_id = add_monitor(factory, latency_warning_ms=100, latency_critical_ms=300)

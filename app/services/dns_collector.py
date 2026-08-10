@@ -10,7 +10,7 @@ from time import monotonic
 
 from sqlalchemy.orm import Session
 
-from app.db.session import SessionLocal
+from app.db.session import SessionLocal, database_write_context, sqlite_lock_error
 from app.models.models import DNSProviderConfig
 from app.services.dns_insights import AnalysisAlreadyRunning, analyse_provider
 from app.services.site_settings import get_site_settings
@@ -56,19 +56,20 @@ def collector_configuration(db: Session) -> tuple[bool, int, list[int], str]:
 
 
 def collect_provider(provider_id: int, known_hostnames_raw: str, session_factory=SessionLocal) -> None:
-    db = session_factory()
-    try:
-        provider = db.get(DNSProviderConfig, provider_id)
-        if not provider or not provider.is_enabled:
-            return
-        analyse_provider(db, provider, known_hostnames_raw=known_hostnames_raw)
-    except AnalysisAlreadyRunning:
-        logger.info("DNS collection skipped because analysis is already running", extra={"provider_id": provider_id})
-    except Exception:
-        db.rollback()
-        logger.exception("DNS background collection failed", extra={"provider_id": provider_id})
-    finally:
-        db.close()
+    with database_write_context("dns_collector", "provider_collection", external_io=True):
+        db = session_factory()
+        try:
+            provider = db.get(DNSProviderConfig, provider_id)
+            if not provider or not provider.is_enabled:
+                return
+            analyse_provider(db, provider, known_hostnames_raw=known_hostnames_raw)
+        except AnalysisAlreadyRunning:
+            logger.info("DNS collection skipped because analysis is already running", extra={"provider_id": provider_id})
+        except Exception:
+            db.rollback()
+            logger.exception("DNS background collection failed", extra={"provider_id": provider_id})
+        finally:
+            db.close()
 
 
 def run_dns_collection_pass(session_factory=SessionLocal) -> int:
@@ -85,18 +86,20 @@ def run_dns_collection_pass(session_factory=SessionLocal) -> int:
             return DISABLED_RECHECK_SECONDS
         for provider_id in provider_ids:
             collect_provider(provider_id, known_hostnames_raw, session_factory)
-        maintenance_db = session_factory()
-        try:
-            consolidate_strong_identity_duplicates(maintenance_db)
-            reconcile_managed_matches(maintenance_db)
-            prune_client_history(maintenance_db)
-            global _last_history_cleanup_date
-            today = datetime.utcnow().date()
-            if _last_history_cleanup_date != today:
-                cleanup_dns_history(maintenance_db)
-                _last_history_cleanup_date = today
-        finally:
-            maintenance_db.close()
+        context = database_write_context("dns_collector", "maintenance", external_io=False)
+        with context:
+            maintenance_db = session_factory()
+            try:
+                consolidate_strong_identity_duplicates(maintenance_db)
+                reconcile_managed_matches(maintenance_db)
+                prune_client_history(maintenance_db)
+                global _last_history_cleanup_date
+                today = datetime.utcnow().date()
+                if _last_history_cleanup_date != today:
+                    cleanup_dns_history(maintenance_db)
+                    _last_history_cleanup_date = today
+            finally:
+                maintenance_db.close()
         return interval
     finally:
         _pass_lock.release()
@@ -106,5 +109,17 @@ async def dns_collector_loop() -> None:
     await asyncio.sleep(STARTUP_DELAY_SECONDS)
     while True:
         started = monotonic()
-        delay = await asyncio.to_thread(run_dns_collection_pass)
+        try:
+            delay = await asyncio.to_thread(run_dns_collection_pass)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if sqlite_lock_error(exc):
+                logger.warning(
+                    "database.contention subsystem=dns operation=collection_pass "
+                    "retry_count=1 worker=dns_collector"
+                )
+            else:
+                logger.exception("DNS collection pass failed; retrying")
+            delay = DISABLED_RECHECK_SECONDS
         await asyncio.sleep(max(1, delay - (monotonic() - started)))

@@ -8,7 +8,7 @@ import threading
 from datetime import datetime, timedelta
 from time import monotonic
 
-from app.db.session import SessionLocal
+from app.db.session import SessionLocal, database_write_context, sqlite_lock_error
 from app.models.models import HACluster
 from app.services.ha_leases import HALeaseError, reconcile_cluster_leases
 from app.services.site_settings import get_site_setting
@@ -23,6 +23,8 @@ _pass_lock = threading.Lock()
 def run_ha_lease_reconciliation_pass(session_factory=SessionLocal) -> int:
     if not _pass_lock.acquire(blocking=False):
         return CHECK_INTERVAL_SECONDS
+    context = database_write_context("ha", "lease_reconciliation")
+    context.__enter__()
     try:
         db = session_factory()
         try:
@@ -47,6 +49,7 @@ def run_ha_lease_reconciliation_pass(session_factory=SessionLocal) -> int:
             db.close()
         return CHECK_INTERVAL_SECONDS
     finally:
+        context.__exit__(None, None, None)
         _pass_lock.release()
 
 
@@ -54,5 +57,17 @@ async def ha_lease_reconciliation_loop() -> None:
     await asyncio.sleep(STARTUP_DELAY_SECONDS)
     while True:
         started = monotonic()
-        delay = await asyncio.to_thread(run_ha_lease_reconciliation_pass)
+        try:
+            delay = await asyncio.to_thread(run_ha_lease_reconciliation_pass)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if sqlite_lock_error(exc):
+                logger.warning(
+                    "database.contention subsystem=ha operation=lease_reconciliation "
+                    "retry_count=1 worker=ha_lease_reconciliation"
+                )
+            else:
+                logger.exception("HA lease reconciliation pass failed; retrying")
+            delay = CHECK_INTERVAL_SECONDS
         await asyncio.sleep(max(1, delay - (monotonic() - started)))

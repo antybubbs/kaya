@@ -10,9 +10,16 @@
   <label>Read retention days<input type="number" name="read_retention_days" min="1" max="3650" value="{{ settings.notifications_read_retention_days }}"></label><label>Unread safety limit days<input type="number" name="unread_retention_days" min="1" max="3650" value="{{ settings.notifications_unread_retention_days }}"></label><label>Maximum recipients per event<input type="number" name="maximum_per_event" min="1" max="10000" value="{{ settings.notifications_max_per_event }}"></label><label>Default severity<select name="default_severity">{% for value in ['info','success','warning','critical'] %}<option {% if settings.notifications_default_severity==value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label><button type="submit">Save settings</button><span data-admin-status role="status"></span>
 </form></section>
 <section class="panel web-push-configuration" data-web-push-state="{{ web_push.state }}">
-  <header><div><h2>Web Push configuration</h2><p class="muted">{% if web_push.state == 'not_configured' %}Web Push requires a VAPID key pair. Kaya can generate and manage this securely for this installation.{% elif web_push.source == 'deployment' %}This configuration is controlled by deployment environment variables. Changes must be made in the deployment configuration.{% else %}The private key is encrypted at rest and is never displayed or returned.{% endif %}</p></div><span class="status-pill {{ 'healthy' if web_push.enabled else 'warning' if web_push.valid else 'critical' if 'error' in web_push.state or 'invalid' in web_push.state else 'unknown' }}">{{ web_push.status_label }}</span></header>
+  <header><div><p class="eyebrow">Push delivery</p><h2>Mobile PWA</h2><p class="muted">Push notifications to installed Kaya PWAs on supported devices.</p></div><span class="status-pill {{ 'healthy' if web_push.overview_status == 'Enabled' else 'warning' if web_push.overview_status == 'Attention required' else 'unknown' }}">{% if web_push.registered_devices and web_push.healthy_devices %}{{ web_push.healthy_devices }} of {{ web_push.registered_devices }} healthy{% else %}{{ web_push.overview_status }}{% endif %}</span></header>
+  {% if web_push.state in ['configuration_error', 'invalid_configuration'] %}<p class="notification-alert" role="alert">VAPID contact is invalid. {% if web_push.source == 'deployment' %}Correct the deployment-managed VAPID subject before sending Push notifications.{% else %}Update Mobile PWA Advanced configuration before sending Push notifications.{% endif %}</p>{% endif %}
+  <dl class="notification-health mobile-pwa-overview"><div><dt>Registered devices</dt><dd>{{ web_push.registered_devices }}</dd></div><div><dt>Healthy</dt><dd>{{ web_push.healthy_devices }}</dd></div><div><dt>Needs attention</dt><dd>{{ web_push.attention_devices }}</dd></div><div><dt>Last successful push</dt><dd>{{ web_push.last_successful_push or 'Never' }}</dd></div></dl>
+  <p class="muted">Each subscription is managed independently; one expired device does not block other PWAs.</p>
+  <h3>Registered devices</h3>
+  {% if web_push.devices %}<div class="mobile-pwa-devices" role="list">{% for device in web_push.devices %}<article class="mobile-pwa-device" role="listitem"><div><strong>{{ device.device }}</strong><span class="muted">{{ device.user }} · {{ device.platform }}</span></div><span class="status-pill {{ 'healthy' if device.status == 'Active' else 'warning' if device.status == 'Retrying' else 'critical' if device.status == 'Needs refresh' else 'unknown' }}">{{ device.status }}</span><dl><div><dt>Last success</dt><dd>{{ device.last_success_at.strftime('%d %b %Y, %H:%M') if device.last_success_at else 'Never' }}</dd></div><div><dt>{{ 'Previous failure' if device.failure_is_historical else 'Last failure' }}</dt><dd>{{ device.failure_reason|replace('_',' ')|title if device.failure_reason else 'None' }}</dd></div></dl></article>{% endfor %}</div>{% else %}<p class="notification-empty">No push subscriptions are registered yet.</p>{% endif %}
   <dl class="notification-health"><div><dt>Key source</dt><dd>{{ web_push.source_label }}</dd></div><div><dt>Public key fingerprint</dt><dd class="mono">{{ web_push.public_key_fingerprint or '—' }}</dd></div><div><dt>VAPID contact</dt><dd>{{ web_push.subject or '—' }}</dd></div><div><dt>Installation label</dt><dd>{{ web_push.installation_label or '—' }}</dd></div><div><dt>Generated</dt><dd>{{ web_push.generated_at or web_push.loaded_at or '—' }}</dd></div><div><dt>Active browser subscriptions</dt><dd>{{ web_push.active_devices }}</dd></div><div><dt>Last successful push</dt><dd>{{ web_push.last_successful_push or 'Never' }}</dd></div><div><dt>Last push failure</dt><dd>{{ web_push.last_push_failure or 'Never' }}</dd></div></dl>
   <p class="muted">Encrypted VAPID material is included in database backups. Recovery requires the original separately protected <code>ENCRYPTION_KEY</code>. Restoring to a different Kaya URL may require browser re-registration.</p>
+  <details class="mobile-pwa-advanced"><summary>Advanced configuration</summary><p class="muted">Technical VAPID details and installation controls are retained below. Private key material is never displayed.</p>{% if web_push.source == 'kaya' and web_push.state != 'not_configured' %}<form data-web-push-contact-form><label>VAPID contact email<input type="email" name="contact_email" maxlength="254" placeholder="admin@example.com" autocomplete="email"></label><div class="muted">or</div><label>VAPID contact URL<input type="url" name="contact_url" maxlength="500" placeholder="https://example.com/contact"></label><button type="submit" class="secondary">Update VAPID contact</button><span role="status" aria-live="polite" data-web-push-contact-status></span></form>{% endif %}</details>
+  <div class="mobile-pwa-device-actions">{% for device in web_push.devices %}<button type="button" class="secondary" data-push-device-test="{{ device.id }}">Send test · {{ device.platform }} {{ device.id }}</button><button type="button" class="ghost danger-text" data-push-device-remove="{{ device.id }}" data-push-device-user="{{ device.user }}" data-push-device-platform="{{ device.platform }}">Remove device</button><span role="status" aria-live="polite" data-push-device-result></span>{% endfor %}</div>
   <div class="form-actions web-push-actions">
     {% if web_push.state == 'not_configured' %}<button type="button" data-web-push-open="generate">Generate Web Push keys</button>{% endif %}
     {% if web_push.valid and web_push.enabled %}<button type="button" data-web-push-test {% if web_push.active_devices == 0 %}disabled{% endif %}>Send push test</button><button type="button" class="secondary" data-web-push-action="disable">Disable</button>{% elif web_push.valid %}<button type="button" data-web-push-action="enable">Enable Web Push</button>{% endif %}
@@ -24,6 +31,49 @@
   <dialog data-web-push-dialog="revoke" class="notification-preference-dialog"><form data-web-push-confirm-form data-endpoint="/api/admin/web-push/revoke-subscriptions" data-method="POST" data-confirmation="REVOKE ALL"><header><h3>Revoke all browser subscriptions</h3><button type="button" class="ghost" data-web-push-close>×</button></header><p>Every user will need to register each browser again. Keys and in-app history are preserved.</p><label>Type <strong>REVOKE ALL</strong> to confirm<input name="confirmation" maxlength="40" autocomplete="off"></label><footer><button type="button" class="secondary" data-web-push-close>Cancel</button><button type="submit" class="danger">Revoke subscriptions</button></footer></form></dialog>
 </section>
 <section class="panel notification-diagnostic"><div><h2>Notification diagnostic</h2><p class="muted">Send a real in-app notification to your administrator account through the central publication service.</p></div><button type="button" data-notification-test>Send in-app test</button><p data-notification-test-result role="status"></p></section>
-<section class="panel"><h2>Registered categories</h2><div class="notification-category-admin">{% for item in categories %}{% set d=item.definition %}{% set p=item.policy %}<form data-category="{{ d.identifier }}"><div><strong>{{ d.display_name }}</strong><span>{{ d.module|replace('_',' ')|title }} · <code>{{ d.identifier }}</code></span></div><label><input name="enabled" type="checkbox" {% if not p or p.enabled %}checked{% endif %}> Enabled</label><label><input name="push_allowed" type="checkbox" {% if p and p.push_allowed %}checked{% endif %}> Push</label><label><input name="email_allowed" type="checkbox" {% if p and p.email_allowed %}checked{% endif %}> Email</label><label><input name="user_can_opt_out" type="checkbox" {% if not p or p.user_can_opt_out %}checked{% endif %}> User may opt out</label><label><input name="acknowledgement_required" type="checkbox" {% if p and p.acknowledgement_required %}checked{% endif %}> Requires acknowledgement</label><label>Cooldown<input name="cooldown_seconds" type="number" min="0" max="604800" value="{{ p.cooldown_seconds if p else 300 }}"></label><button type="submit">Save</button><span data-category-status></span></form>{% endfor %}</div></section>
+<section class="panel notification-policy-panel">
+  <header class="notification-policy-heading">
+    <div>
+      <h2>Registered event policies</h2>
+      <p class="muted">Choose which channels each event may use and how often Kaya may publish it.</p>
+    </div>
+    <span class="muted">{{ categories|length }} event types</span>
+  </header>
+  <div class="notification-policy-list" data-category-list>
+    {% for item in categories %}
+    {% set d=item.definition %}
+    {% set p=item.policy %}
+    <form class="notification-policy-card" data-category="{{ d.identifier }}">
+      <header class="notification-policy-identity">
+        <strong>{{ d.display_name }}</strong>
+        <span>{{ d.module|replace('_',' ')|title }}</span>
+        <code>{{ d.identifier }}</code>
+      </header>
+      <fieldset class="notification-policy-group">
+        <legend>Delivery</legend>
+        <label class="checkbox-label"><input name="enabled" type="checkbox" {% if not p or p.enabled %}checked{% endif %}> Enabled</label>
+        <label class="checkbox-label"><input name="push_allowed" type="checkbox" {% if p and p.push_allowed %}checked{% endif %}> Push</label>
+        <label class="checkbox-label"><input name="email_allowed" type="checkbox" {% if p and p.email_allowed %}checked{% endif %}> Email</label>
+      </fieldset>
+      <fieldset class="notification-policy-group">
+        <legend>User controls</legend>
+        <label class="checkbox-label"><input name="user_can_opt_out" type="checkbox" {% if not p or p.user_can_opt_out %}checked{% endif %}> May opt out</label>
+        <label class="checkbox-label"><input name="acknowledgement_required" type="checkbox" {% if p and p.acknowledgement_required %}checked{% endif %}> Acknowledgement required</label>
+      </fieldset>
+      <label class="notification-policy-cooldown">
+        <span>Cooldown</span>
+        <span class="notification-number-with-unit">
+          <input name="cooldown_seconds" type="number" min="0" max="604800" value="{{ p.cooldown_seconds if p else 300 }}">
+          <span>seconds</span>
+        </span>
+      </label>
+      <footer class="notification-policy-actions">
+        <button type="submit">Save policy</button>
+        <span data-category-status role="status" aria-live="polite"></span>
+      </footer>
+    </form>
+    {% endfor %}
+  </div>
+</section>
 </div>
 {% endblock %}
