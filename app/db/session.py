@@ -26,10 +26,13 @@ _write_context: ContextVar[dict[str, str] | None] = ContextVar(
 @contextmanager
 def database_write_context(subsystem: str, operation: str, *, external_io: bool = False):
     """Attach safe attribution to a bounded unit of database work."""
+    def clean(value: object, maximum: int) -> str:
+        return " ".join(str(value).split())[:maximum] or "unattributed"
+
     token = _write_context.set(
         {
-            "subsystem": str(subsystem)[:80],
-            "operation": str(operation)[:120],
+            "subsystem": clean(subsystem, 80),
+            "operation": clean(operation, 120),
             "external_io": str(bool(external_io)).lower(),
         }
     )

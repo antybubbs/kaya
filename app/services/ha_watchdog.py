@@ -8,7 +8,7 @@ import threading
 from datetime import datetime, timedelta
 from time import monotonic
 
-from app.db.session import SessionLocal, sqlite_lock_error
+from app.db.session import SessionLocal, database_write_context, sqlite_lock_error
 from app.models.models import HACluster
 from app.services.ha_agents import prune_agent_request_history
 from app.services.ha_failover import advance_failover
@@ -49,6 +49,8 @@ def reconcile_cluster(db, cluster: HACluster) -> None:
 def run_ha_watchdog_pass(session_factory=SessionLocal) -> int:
     if not _pass_lock.acquire(blocking=False):
         return CHECK_INTERVAL_SECONDS
+    context = database_write_context("ha", "watchdog_pass")
+    context.__enter__()
     try:
         db = session_factory()
         try:
@@ -89,6 +91,7 @@ def run_ha_watchdog_pass(session_factory=SessionLocal) -> int:
             db.close()
         return CHECK_INTERVAL_SECONDS
     finally:
+        context.__exit__(None, None, None)
         _pass_lock.release()
 
 

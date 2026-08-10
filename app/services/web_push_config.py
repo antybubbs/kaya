@@ -264,6 +264,12 @@ def configuration_status(db: Session) -> dict[str, object]:
     except WebPushConfigurationError:
         source = "deployment" if get_settings().vapid_public_key or get_settings().vapid_private_key else "kaya"
         state = "invalid_configuration" if source == "deployment" else "configuration_error"
+    raw_subject = (
+        get_settings().vapid_subject
+        if source == "deployment"
+        else row.subject if row else None
+    )
+    contact_diagnostics = safe_subject_diagnostics(raw_subject)
     active_devices = (
         db.query(PushSubscription)
         .filter_by(status="active", revoked_at=None)
@@ -288,6 +294,7 @@ def configuration_status(db: Session) -> dict[str, object]:
         "enabled": valid and push_enabled and state not in {"disabled"},
         "public_key_fingerprint": fingerprint,
         "subject": subject,
+        **contact_diagnostics,
         "installation_label": label,
         "generated_at": generated_at,
         "loaded_at": loaded_at,

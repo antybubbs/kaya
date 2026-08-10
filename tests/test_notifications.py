@@ -466,7 +466,7 @@ def test_windows_push_uses_only_documented_wns_extension():
     apple = {"endpoint": "https://web.push.apple.com/QH/fake"}
 
     assert notification_delivery._windows_push_headers(windows) == (
-        {"X-WNS-Type": "wns/toast"},
+        {"X-WNS-Type": "wns/toast", "Content-Type": "text/xml"},
         notification_delivery.WINDOWS_PUSH_TTL_SECONDS,
     )
     assert notification_delivery._windows_push_headers(apple) == ({}, 0)
@@ -506,6 +506,32 @@ def test_vapid_diagnostics_redact_jwt_and_extract_only_safe_claims():
     }
 
 
+def test_windows_response_diagnostics_keep_safe_wns_values_only():
+    class Response:
+        status_code = 400
+        headers = {
+            "X-WNS-Error-Description": "  malformed content type  ",
+            "X-WNS-NotificationStatus": "Dropped",
+            "X-WNS-Status": "400",
+            "X-WNS-Msg-ID": "synthetic-message-id",
+        }
+
+    error = RuntimeError("synthetic provider failure")
+    error.response = Response()
+    assert notification_delivery._safe_response_diagnostics(error) == {
+        "response_header_names": [
+            "x-wns-error-description",
+            "x-wns-msg-id",
+            "x-wns-notificationstatus",
+            "x-wns-status",
+        ],
+        "provider_request_id": "x-wns-msg-id:synthetic-message-id",
+        "wns_error_description": "malformed content type",
+        "wns_notification_status": "Dropped",
+        "wns_status": "400",
+    }
+
+
 def test_vapid_subject_is_canonical_and_empty_mailto_is_rejected():
     assert validate_subject_uri("mailto:Admin@example.com") == "mailto:Admin@example.com"
     assert validate_subject_uri("https://kaya.example.com/contact") == "https://kaya.example.com/contact"
@@ -541,6 +567,11 @@ def test_malformed_persisted_vapid_subject_fails_before_delivery(db):
 
     with pytest.raises(InvalidVapidSubjectError):
         effective_credentials(db)
+    status = configuration_status(db)
+    assert status["state"] == "configuration_error"
+    assert status["configured_contact_present"] is True
+    assert status["configured_contact_scheme"] == "mailto"
+    assert status["configured_contact_length"] == len("mailto:")
 
 
 def test_admin_can_correct_vapid_contact_without_rotating_keys_or_subscriptions(db):

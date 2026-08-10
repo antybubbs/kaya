@@ -26,7 +26,12 @@ from app.core.performance import (
 )
 from app.db.migrations import prepare_database
 from app.db.seeds import initialise_application_defaults
-from app.db.session import SessionLocal, engine, verify_sqlite_pragmas
+from app.db.session import (
+    SessionLocal,
+    database_write_context,
+    engine,
+    verify_sqlite_pragmas,
+)
 from app.models.models import AuditLog, User
 from app.routers import (
     admin,
@@ -154,21 +159,23 @@ async def security_headers(request: Request, call_next):
             "/manifest.webmanifest",
             "/service-worker.js",
         }
-        db = SessionLocal()
-        try:
-            security, oidc_form_source = cached_security_context(db)
-            if not file_only_request:
-                request.state.high_availability_enabled = get_site_setting(db, "high_availability_enabled") == "1"
-                request.state.backup_manager_enabled = get_site_setting(db, "backup_manager_enabled") == "1"
-                request.state.enabled_modules = enabled_modules(db)
-        finally:
-            db.close()
+        with database_write_context("http_request", f"{request.method} {request.url.path}"):
+            db = SessionLocal()
+            try:
+                security, oidc_form_source = cached_security_context(db)
+                if not file_only_request:
+                    request.state.high_availability_enabled = get_site_setting(db, "high_availability_enabled") == "1"
+                    request.state.backup_manager_enabled = get_site_setting(db, "backup_manager_enabled") == "1"
+                    request.state.enabled_modules = enabled_modules(db)
+            finally:
+                db.close()
         if security.get("trusted_hosts_enabled") == "1" or settings.allowed_hosts.strip():
             allowed_hosts = effective_allowed_hosts(security, settings)
             if not host_is_allowed(request.headers.get("host", ""), allowed_hosts):
                 return PlainTextResponse("Invalid host header", status_code=400)
 
-    response = await call_next(request)
+    with database_write_context("http_request", f"{request.method} {request.url.path}"):
+        response = await call_next(request)
     is_static_asset = request.url.path.startswith(f"{settings.root_path}/static") if settings.root_path else request.url.path.startswith("/static")
     path = request.url.path
     if settings.root_path and path.startswith(settings.root_path):

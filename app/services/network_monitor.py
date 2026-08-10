@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
-from app.db.session import SessionLocal
+from app.db.session import SessionLocal, database_write_context
 from app.models.models import (
     IPAddress, NetworkMonitor, NetworkMonitorCheck, NetworkMonitorEvent,
     NetworkMonitorOutage, NetworkMonitorStatistic, NetworkMonitorTransition,
@@ -677,6 +677,8 @@ def run_monitor_check_by_id(monitor_id: int) -> bool:
     lock = monitor_check_lock(monitor_id)
     if not lock.acquire(blocking=False):
         return False
+    context = database_write_context("network_monitor", "check", external_io=True)
+    context.__enter__()
     db = SessionLocal()
     try:
         monitor = db.get(NetworkMonitor, monitor_id)
@@ -695,6 +697,7 @@ def run_monitor_check_by_id(monitor_id: int) -> bool:
         return False
     finally:
         db.close()
+        context.__exit__(None, None, None)
         lock.release()
 
 

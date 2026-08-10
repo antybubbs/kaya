@@ -121,7 +121,14 @@ def _safe_subject_diagnostics(subject: str) -> dict:
 def _windows_push_headers(subscription: dict) -> tuple[dict[str, str], int]:
     """Apply only the documented WNS extension; other providers remain standard Web Push."""
     if _provider_name(subscription) == "Microsoft/Windows Push":
-        return {"X-WNS-Type": "wns/toast"}, WINDOWS_PUSH_TTL_SECONDS
+        # pywebpush passes caller headers through unchanged. WNS requires the
+        # Content-Type to match X-WNS-Type; its documented Edge example uses
+        # this pair. The encrypted Web Push body is still produced by
+        # pywebpush and is not replaced with native toast XML here.
+        return {
+            "X-WNS-Type": "wns/toast",
+            "Content-Type": "text/xml",
+        }, WINDOWS_PUSH_TTL_SECONDS
     return {}, 0
 
 
@@ -160,13 +167,28 @@ def _safe_response_diagnostics(exc: Exception) -> dict:
     response = getattr(exc, "response", None)
     headers = getattr(response, "headers", {}) or {}
     safe_names = sorted(str(name).lower() for name in headers)
+    safe_values = {}
+    for name in (
+        "x-wns-error-description",
+        "x-wns-notificationstatus",
+        "x-wns-status",
+    ):
+        value = headers.get(name)
+        if value is not None:
+            safe_values[name.replace("-", "_")] = " ".join(str(value).split())[:160]
     request_id = None
     for name in ("x-wns-msg-id", "ms-cv", "x-correlation-id", "x-request-id"):
         value = headers.get(name)
         if value and len(str(value)) <= 160:
             request_id = f"{name}:{str(value)}"
             break
-    return {"response_header_names": safe_names, "provider_request_id": request_id}
+    return {
+        "response_header_names": safe_names,
+        "provider_request_id": request_id,
+        "wns_error_description": safe_values.get("x_wns_error_description"),
+        "wns_notification_status": safe_values.get("x_wns_notificationstatus"),
+        "wns_status": safe_values.get("x_wns_status"),
+    }
 
 
 def _send_push(
@@ -193,6 +215,7 @@ def _send_push(
                     "audience": f"{endpoint.scheme}://{endpoint.hostname}"
                     + (f":{endpoint.port}" if endpoint.port else ""),
                     "request_header_names": sorted(str(name).lower() for name in headers),
+                    "wns_type": headers.get("x-wns-type"),
                     "content_encoding": headers.get("content-encoding"),
                     "content_type": headers.get("content-type"),
                     "content_length": headers.get("content-length")
@@ -455,7 +478,7 @@ def _deliver_queued(heartbeat=None) -> int:
                     )
                 elif channel == "push":
                     logger.warning(
-                        "notification.delivery.push.failed classification=%s status_code=%s provider=%s subscription_id=%s retryable=%s attempt_number=%s attempt_id=%s correlation_id=%s audience=%s payload_bytes=%s content_encoding=%s http_method=%s request_headers=%s content_type=%s content_length=%s ttl=%s urgency=%s vapid_authorization_style=%s vapid_key_location=%s jwt_aud=%s jwt_exp=%s jwt_seconds_until_expiry=%s vapid_subject_scheme=%s vapid_subject_present=%s vapid_subject_length=%s vapid_subject_valid=%s vapid_public_key_fingerprint=%s p256dh_present=%s p256dh_decoded_bytes=%s p256dh_uncompressed_p256=%s auth_present=%s auth_decoded_bytes=%s request_utc=%s response_headers=%s provider_request_id=%s pywebpush=%s py_vapid=%s http_ece=%s provider_reason=%s",
+                        "notification.delivery.push.failed classification=%s status_code=%s provider=%s subscription_id=%s retryable=%s attempt_number=%s attempt_id=%s correlation_id=%s audience=%s payload_bytes=%s content_encoding=%s http_method=%s request_headers=%s wns_type=%s content_type=%s content_length=%s ttl=%s urgency=%s vapid_authorization_style=%s vapid_key_location=%s jwt_aud=%s jwt_exp=%s jwt_seconds_until_expiry=%s vapid_subject_scheme=%s vapid_subject_present=%s vapid_subject_length=%s vapid_subject_valid=%s vapid_public_key_fingerprint=%s p256dh_present=%s p256dh_decoded_bytes=%s p256dh_uncompressed_p256=%s auth_present=%s auth_decoded_bytes=%s request_utc=%s response_headers=%s provider_request_id=%s wns_error_description=%s wns_notification_status=%s wns_status=%s pywebpush=%s py_vapid=%s http_ece=%s provider_reason=%s",
                         attempt.failure_reason_code,
                         status_code or "unknown",
                         _provider_name(decoded if 'decoded' in locals() else None),
@@ -469,6 +492,7 @@ def _deliver_queued(heartbeat=None) -> int:
                         push_metadata.get("content_encoding", "unknown"),
                         push_metadata.get("http_method", "unknown"),
                         push_metadata.get("request_header_names", []),
+                        push_metadata.get("wns_type", "none"),
                         push_metadata.get("content_type", "none"),
                         push_metadata.get("content_length", "unknown"),
                         push_metadata.get("ttl", "unknown"),
@@ -491,6 +515,9 @@ def _deliver_queued(heartbeat=None) -> int:
                         push_metadata.get("request_utc", "unknown"),
                         push_metadata.get("response_header_names", []),
                         push_metadata.get("provider_request_id", "none"),
+                        push_metadata.get("wns_error_description", "none"),
+                        push_metadata.get("wns_notification_status", "none"),
+                        push_metadata.get("wns_status", "none"),
                         _package_version("pywebpush"),
                         _package_version("py-vapid"),
                         _package_version("http-ece"),

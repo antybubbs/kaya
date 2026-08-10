@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
-from app.db.session import SessionLocal
+from app.db.session import SessionLocal, database_write_context
 from app.models.models import NotificationEvent, NotificationOutbox
 from app.services.notification_registry import event_type
 from app.services.notifications import publish, safe_target_route
@@ -146,7 +146,7 @@ def enqueue_notification(
 def _claim_due(session_factory=SessionLocal) -> int | None:
     now = datetime.utcnow()
     stale_before = now - timedelta(seconds=STALE_CLAIM_SECONDS)
-    with session_factory() as db:
+    with database_write_context("notification_outbox", "claim_due"), session_factory() as db:
         stale = (
             db.query(NotificationOutbox)
             .filter(
@@ -190,7 +190,7 @@ def _decode_json(value: str | None, fallback):
 
 
 def _process_claimed(row_id: int, session_factory=SessionLocal) -> bool:
-    with session_factory() as db:
+    with database_write_context("notification_outbox", "publish_claimed"), session_factory() as db:
         row = db.get(NotificationOutbox, row_id)
         if not row or row.status != "processing":
             return False
