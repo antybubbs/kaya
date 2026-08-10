@@ -39,9 +39,9 @@ def _provider_name(subscription: dict | None) -> str:
         return "FCM"
     if host == "push.services.mozilla.com" or host.endswith(".push.services.mozilla.com"):
         return "Mozilla Push"
-    if host.endswith("push.apple.com"):
+    if host == "push.apple.com" or host.endswith(".push.apple.com"):
         return "Apple Web Push"
-    if host.endswith("notify.windows.com"):
+    if host == "notify.windows.com" or host.endswith(".notify.windows.com"):
         return "Microsoft/Windows Push"
     return "Unknown"
 
