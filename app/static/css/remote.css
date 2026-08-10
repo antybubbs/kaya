@@ -41,13 +41,14 @@
 .remote-host-card.split-active{box-shadow:inset 0 0 0 1px rgba(148,163,184,.22)}
 .remote-host-main{display:contents;min-width:0}
 .remote-host-main>div,.remote-host-info{align-items:center;column-gap:8px;display:grid;grid-column:1;grid-template-columns:auto minmax(0,1fr);min-width:0;overflow:hidden;row-gap:2px}
-.remote-host-main strong{color:#f8fafc;display:block;font-size:15px;font-weight:900;grid-column:2;line-height:20px;margin-bottom:2px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.remote-host-main strong{color:#f8fafc;display:block;font-size:15px;font-size:clamp(12px,calc(7.7px + 2.15cqi),15px);font-weight:900;grid-column:2;line-height:20px;margin-bottom:2px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .remote-host-main span{color:rgba(203,213,225,.62);display:block;font-size:12px;grid-column:2;line-height:16px;margin-bottom:6px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.remote-host-main span.mono{font-size:clamp(10px,calc(7.15px + 1.425cqi),12px)}
 .remote-host-info .remote-cert-badge{margin-bottom:0}
 .remote-host-actions{align-items:center;display:flex;gap:0;grid-column:2;justify-content:flex-end;margin-left:0;min-width:32px;white-space:nowrap}
 .remote-protocol-icon{align-items:center;border:1px solid rgba(255,138,0,.28);border-radius:5px;color:#bfdbfe;display:inline-flex;font-family:"Caskaydia Cove Nerd Font Mono",Consolas,monospace;font-size:11px;font-weight:900;grid-column:1;grid-row:1 / span 2;height:20px;justify-content:center;line-height:1;margin-bottom:0;min-width:28px;padding:2px 6px;width:max-content}
 .remote-protocol-icon:hover{background:rgba(255,138,0,.12);border-color:rgba(255,138,0,.45);color:#fff}
-.remote-host-info .remote-cert-badge{align-items:center;background:rgba(148,163,184,.1);border:1px solid rgba(148,163,184,.22);border-radius:999px;color:#cbd5e1;display:inline-flex;font-size:12px;font-weight:800;gap:5px;height:22px;line-height:1;padding:2px 10px;width:max-content}
+.remote-host-info .remote-cert-badge{align-items:center;background:rgba(148,163,184,.1);border:1px solid rgba(148,163,184,.22);border-radius:999px;color:#cbd5e1;display:inline-flex;font-size:12px;font-size:clamp(10px,calc(7.15px + 1.425cqi),12px);font-weight:800;gap:5px;height:22px;line-height:1;padding:2px 10px;width:max-content}
 .remote-cert-badge-icon{display:block;fill:none;flex:0 0 auto;height:14px;stroke:currentColor;stroke-linecap:round;stroke-linejoin:round;stroke-width:2;width:14px}
 .remote-host-info .remote-cert-badge.is-pinned{background:rgba(255,138,0,.1);border-color:rgba(255,138,0,.34);color:#ffd08a}
 .remote-connect-menu{position:relative}
@@ -242,7 +243,6 @@ html[data-kaya-theme=light-ops] .host-lockout-warning{color:#92400e}
 .remote-recording-player video{background:#000;display:block;height:auto;max-height:calc(100vh - 190px);width:100%}
 .remote-recording-player pre{color:#d6deeb;font-family:"Caskaydia Cove Nerd Font Mono",Consolas,monospace;font-size:13px;line-height:1.45;margin:0;max-height:calc(100vh - 190px);min-height:520px;overflow:auto;padding:14px;white-space:pre-wrap}
 @media(max-width:850px){.content.remote-main{padding-top:56px}.remote-workspace{grid-template-columns:1fr;height:auto}.remote-host-rail{max-height:42vh}.remote-session-frame,.remote-console-empty{min-height:58vh}.remote-credential-form,.rdp-credential-form{grid-template-columns:1fr;left:16px;right:16px;top:16px;transform:none;width:auto}}
-@container (max-width:280px){.remote-host-main strong{font-size:12px}.remote-host-main span.mono{font-size:10px}.remote-host-info .remote-cert-badge{font-size:10px}.remote-protocol-icon{font-size:10px}}
 @media(max-width:850px){.remote-tab-panels.is-split{grid-template-columns:1fr;grid-template-rows:minmax(58vh,1fr) minmax(58vh,1fr)}}
 @media(max-width:850px){.remote-settings-grid.two,.remote-overrides-grid,.remote-recording-detail{grid-template-columns:1fr}.remote-recording-tools{left:12px;right:auto;top:10px}.remote-recording-player{min-height:360px}.remote-recording-player pre{min-height:360px}.remote-recordings-shell{overflow-x:auto}.remote-recordings-table{min-width:980px}}
 
