@@ -1586,6 +1586,7 @@ class AuditLog(Base):
     status_code: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     user_agent: Mapped[str | None] = mapped_column(Text, nullable=True)
     request_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    capture_tier: Mapped[str] = mapped_column(String(20), default="standard", index=True)
     metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     user = relationship("User")

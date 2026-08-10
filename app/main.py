@@ -57,6 +57,7 @@ from app.routers import (
     secure_send,
 )
 from app.services.audit import (
+    cleanup_audit_logs,
     begin_request_context,
     end_request_context,
     request_event_written,
@@ -402,7 +403,18 @@ async def on_startup():
         while True:
             await asyncio.sleep(3600)
             with SessionLocal() as notification_db:
-                cleanup_retention(notification_db)
+                try:
+                    cleanup_retention(notification_db)
+                except Exception:
+                    notification_db.rollback()
+                    logger.exception("notification.retention.failed")
+                try:
+                    deleted = cleanup_audit_logs(notification_db)
+                    if deleted:
+                        logger.info("audit.retention.completed deleted=%s", deleted)
+                except Exception:
+                    notification_db.rollback()
+                    logger.exception("audit.retention.failed")
     notification_retention_task = asyncio.create_task(notification_retention_loop())
 
 

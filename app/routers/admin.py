@@ -77,7 +77,7 @@ from app.routers.remote_manager import (
     SETTINGS as REMOTE_MANAGER_SETTINGS,
 )
 from app.services.about import collect_about
-from app.services.audit import write_audit
+from app.services.audit import get_audit_settings, save_audit_settings, write_audit
 from app.services.client_ip import (
     client_ip as trusted_client_ip,
 )
@@ -2591,9 +2591,57 @@ def audit_logs(
             "per_page": per_page,
             "previous_url": page_url(page - 1) if page > 1 else None,
             "next_url": page_url(page + 1) if page < pages else None,
+            "audit_settings": get_audit_settings(db),
             **csrf_context(request),
         },
     )
+
+
+@router.post("/system/audit-logs/settings")
+def update_audit_settings(
+    request: Request,
+    capture_level: str = Form(..., max_length=20),
+    retention_mode: str = Form(..., max_length=20),
+    retention_days: str = Form("", max_length=5),
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    validate_csrf_token(request, csrf_token)
+    try:
+        old, new = save_audit_settings(
+            db,
+            level=capture_level,
+            retention_mode=retention_mode,
+            retention_days=retention_days,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if old != new:
+        write_audit(
+            db,
+            user,
+            "audit_settings_changed",
+            "audit_log",
+            "settings",
+            trusted_client_ip(request),
+            detail=(
+                f"Changed capture level {old['capture_level']} -> {new['capture_level']}; "
+                f"retention {old['retention_mode']} ({old['retention_days'] or 'indefinite'}) -> "
+                f"{new['retention_mode']} ({new['retention_days'] or 'indefinite'})"
+            ),
+            metadata={
+                "previous_capture_level": old["capture_level"],
+                "capture_level": new["capture_level"],
+                "previous_retention_mode": old["retention_mode"],
+                "retention_mode": new["retention_mode"],
+                "previous_retention_days": old["retention_days"],
+                "retention_days": new["retention_days"],
+            },
+            capture_tier="essential",
+            force=True,
+        )
+    return RedirectResponse("/system/audit-logs?settings=updated", status_code=303)
 
 
 @router.get("/system/audit-logs/export")

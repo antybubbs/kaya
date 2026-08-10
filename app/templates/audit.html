@@ -53,6 +53,19 @@
   </form>
 </section>
 
+<section class="panel audit-filter-panel">
+  <h2>Audit Log Settings</h2>
+  <p class="muted">Security-critical events are always recorded. Routine activity is controlled by the capture level; retention cleanup runs in the background.</p>
+  {% if request.query_params.get('settings') == 'updated' %}<p class="success" role="status">Audit Log settings updated.</p>{% endif %}
+  <form method="post" action="/system/audit-logs/settings" class="audit-filters">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Capture level<select name="capture_level"><option value="essential" {% if audit_settings.capture_level == 'essential' %}selected{% endif %}>Essential</option><option value="standard" {% if audit_settings.capture_level == 'standard' %}selected{% endif %}>Standard</option><option value="verbose" {% if audit_settings.capture_level == 'verbose' %}selected{% endif %}>Verbose</option><option value="diagnostic" {% if audit_settings.capture_level == 'diagnostic' %}selected{% endif %}>Diagnostic</option></select></label>
+    <label>Retention<select name="retention_mode"><option value="30" {% if audit_settings.retention_mode == '30' %}selected{% endif %}>30 days</option><option value="60" {% if audit_settings.retention_mode == '60' %}selected{% endif %}>60 days</option><option value="90" {% if audit_settings.retention_mode == '90' %}selected{% endif %}>90 days</option><option value="180" {% if audit_settings.retention_mode == '180' %}selected{% endif %}>180 days</option><option value="365" {% if audit_settings.retention_mode == '365' %}selected{% endif %}>365 days</option><option value="custom" {% if audit_settings.retention_mode == 'custom' %}selected{% endif %}>Custom</option><option value="indefinite" {% if audit_settings.retention_mode == 'indefinite' %}selected{% endif %}>Keep indefinitely</option></select></label>
+    <label>Custom days<input type="number" name="retention_days" min="1" max="3650" value="{{ audit_settings.retention_days or '' }}"></label>
+    <button type="submit">Save Audit Settings</button>
+  </form>
+</section>
+
 <section class="panel audit-log-panel">
   <div class="audit-table-heading">
     <div><h2>Event stream</h2><p class="muted">{{ filtered_total }} matching event{% if filtered_total != 1 %}s{% endif %}</p></div>
@@ -67,7 +80,7 @@
           <td class="audit-time">{{ local_time(log.created_at) }}</td>
           <td><span class="audit-severity {{ log.severity }}">{{ log.severity|title }}</span></td>
           <td class="audit-actor">{% if log.user %}<strong>{{ log.user.email }}</strong><span>User #{{ log.user.id }}</span>{% else %}<strong>System / anonymous</strong><span>Unauthenticated</span>{% endif %}</td>
-          <td><span class="audit-action">{{ log.action|replace('_',' ')|title }}</span><small>{{ log.category|replace('_',' ')|title }}</small></td>
+          <td><span class="audit-action">{{ log.action|replace('_',' ')|title }}</span><small>{{ log.category|replace('_',' ')|title }} · {{ log.capture_tier|title }}</small></td>
           <td><strong>{{ log.entity|replace('_',' ')|title }}</strong>{% if log.entity_id %}<span class="mono">#{{ log.entity_id }}</span>{% endif %}</td>
           <td class="audit-request">{% if log.request_method %}<span class="audit-method">{{ log.request_method }}</span>{% endif %}<span class="mono">{{ log.request_path or '-' }}</span>{% if log.status_code %}<small class="{% if log.status_code >= 400 %}attention{% endif %}">HTTP {{ log.status_code }}</small>{% endif %}</td>
           <td class="mono">{{ log.ip_address or '-' }}</td>
