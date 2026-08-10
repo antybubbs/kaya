@@ -7,7 +7,7 @@
 .session-tab.close-tab{background:transparent;color:var(--muted)}
 .content.remote-main{padding:56px 0 0}
 .remote-workspace{display:grid;grid-template-columns:var(--remote-host-rail-width,310px) minmax(0,1fr);height:calc(100vh - 56px);min-height:480px}
-.remote-host-rail{background:#0b1016;border-right:1px solid var(--line);display:grid;grid-template-rows:auto auto minmax(0,1fr);min-height:0;position:relative}
+.remote-host-rail{background:#0b1016;border-right:1px solid var(--line);container-type:inline-size;display:grid;grid-template-rows:auto auto minmax(0,1fr);min-height:0;position:relative}
 .remote-host-header{align-items:center;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;min-height:42px;padding:9px 14px}
 .remote-host-heading{display:grid;gap:1px;min-width:0}
 .remote-host-header strong{font-size:13px}
@@ -242,7 +242,7 @@ html[data-kaya-theme=light-ops] .host-lockout-warning{color:#92400e}
 .remote-recording-player video{background:#000;display:block;height:auto;max-height:calc(100vh - 190px);width:100%}
 .remote-recording-player pre{color:#d6deeb;font-family:"Caskaydia Cove Nerd Font Mono",Consolas,monospace;font-size:13px;line-height:1.45;margin:0;max-height:calc(100vh - 190px);min-height:520px;overflow:auto;padding:14px;white-space:pre-wrap}
 @media(max-width:850px){.content.remote-main{padding-top:56px}.remote-workspace{grid-template-columns:1fr;height:auto}.remote-host-rail{max-height:42vh}.remote-session-frame,.remote-console-empty{min-height:58vh}.remote-credential-form,.rdp-credential-form{grid-template-columns:1fr;left:16px;right:16px;top:16px;transform:none;width:auto}}
-@media(max-width:1023px){.remote-host-main strong{font-size:14px}.remote-host-main span.mono{font-size:11px}}
+@container (max-width:280px){.remote-host-main strong{font-size:14px}.remote-host-main span.mono{font-size:11px}}
 @media(max-width:850px){.remote-tab-panels.is-split{grid-template-columns:1fr;grid-template-rows:minmax(58vh,1fr) minmax(58vh,1fr)}}
 @media(max-width:850px){.remote-settings-grid.two,.remote-overrides-grid,.remote-recording-detail{grid-template-columns:1fr}.remote-recording-tools{left:12px;right:auto;top:10px}.remote-recording-player{min-height:360px}.remote-recording-player pre{min-height:360px}.remote-recordings-shell{overflow-x:auto}.remote-recordings-table{min-width:980px}}
 
