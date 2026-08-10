@@ -651,12 +651,17 @@ def record_monitor_result(
 
 def run_monitor_check(db: Session, monitor: NetworkMonitor) -> None:
     started_at = datetime.utcnow()
+    # Phase A: finish any read transaction before resolving configuration and
+    # starting the external probe. The write transaction starts only when the
+    # result is reloaded and persisted below.
+    db.rollback()
     monitor_id = monitor.id
     address = monitor.ip_address.address
     timeout_ms = clamp_timeout(monitor.timeout_ms)
     fast_check = active_dashboard_interval() == 1
-    # Ping is a subprocess boundary and can take several seconds. It needs no
-    # live ORM transaction; reload the monitor before recording the result.
+    db.rollback()
+    # Phase B: ping is a subprocess boundary and can take several seconds. No
+    # SQLite transaction is held while it runs.
     db.rollback()
     if fast_check:
         ok, latency_ms, error = ping_ipv4(
@@ -667,6 +672,8 @@ def run_monitor_check(db: Session, monitor: NetworkMonitor) -> None:
         ok, latency_ms, packet_loss, error = ping_ipv4_samples(
             address, timeout_ms
         )
+    # Phase C: reload current state, atomically apply transitions, enqueue any
+    # durable notification records, and commit immediately.
     monitor = db.get(NetworkMonitor, monitor_id)
     if monitor is None or not monitor.is_enabled:
         return
@@ -677,7 +684,7 @@ def run_monitor_check_by_id(monitor_id: int) -> bool:
     lock = monitor_check_lock(monitor_id)
     if not lock.acquire(blocking=False):
         return False
-    context = database_write_context("network_monitor", "check", external_io=True)
+    context = database_write_context("network_monitor", "check", external_io=False)
     context.__enter__()
     db = SessionLocal()
     try:

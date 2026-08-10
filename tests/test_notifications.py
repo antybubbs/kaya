@@ -466,7 +466,10 @@ def test_windows_push_uses_only_documented_wns_extension():
     apple = {"endpoint": "https://web.push.apple.com/QH/fake"}
 
     assert notification_delivery._windows_push_headers(windows) == (
-        {"X-WNS-Type": "wns/toast", "Content-Type": "text/xml"},
+        {
+            "X-WNS-Type": "wns/raw",
+            "Content-Type": "application/octet-stream",
+        },
         notification_delivery.WINDOWS_PUSH_TTL_SECONDS,
     )
     assert notification_delivery._windows_push_headers(apple) == ({}, 0)

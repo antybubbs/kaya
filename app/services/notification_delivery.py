@@ -121,13 +121,11 @@ def _safe_subject_diagnostics(subject: str) -> dict:
 def _windows_push_headers(subscription: dict) -> tuple[dict[str, str], int]:
     """Apply only the documented WNS extension; other providers remain standard Web Push."""
     if _provider_name(subscription) == "Microsoft/Windows Push":
-        # pywebpush passes caller headers through unchanged. WNS requires the
-        # Content-Type to match X-WNS-Type; its documented Edge example uses
-        # this pair. The encrypted Web Push body is still produced by
-        # pywebpush and is not replaced with native toast XML here.
+        # Edge Web Push uses WNS raw delivery. The encrypted Web Push body is
+        # still produced by pywebpush and is not replaced with native toast XML.
         return {
-            "X-WNS-Type": "wns/toast",
-            "Content-Type": "text/xml",
+            "X-WNS-Type": "wns/raw",
+            "Content-Type": "application/octet-stream",
         }, WINDOWS_PUSH_TTL_SECONDS
     return {}, 0
 
