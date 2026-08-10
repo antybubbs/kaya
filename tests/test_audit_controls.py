@@ -6,11 +6,14 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from app.db.session import Base
-from app.models.models import AuditLog, RemoteManagerSetting
+from app.models.models import AuditLog, RemoteManagerSetting, User
 from app.services.audit import (
+    audit_purge_query,
     cleanup_audit_logs,
     end_request_context,
     get_audit_settings,
+    preview_audit_purge,
+    purge_audit_logs,
     begin_request_context,
     validate_audit_settings,
     write_audit,
@@ -74,3 +77,48 @@ def test_retention_deletes_bounded_nonessential_rows_and_preserves_security_rows
     assert db.query(AuditLog).filter_by(action="old_essential").count() == 1
     assert db.query(AuditLog).filter_by(action="new_standard").count() == 1
     assert get_audit_settings(db)["capture_level"] == "standard"
+
+
+def test_manual_filtered_purge_only_deletes_matches_and_records_event(db):
+    admin = User(email="purge-admin@example.invalid", role="admin")
+    db.add(admin)
+    db.flush()
+    db.add_all([
+        AuditLog(action="old_match", entity="server", category="activity", user_id=admin.id),
+        AuditLog(action="keep_action", entity="server", category="security", user_id=admin.id),
+        AuditLog(action="old_match", entity="network", category="activity", user_id=admin.id),
+    ])
+    db.commit()
+
+    preview = preview_audit_purge(db, action="old_match", entity="server")
+    assert preview["count"] == 1
+    assert purge_audit_logs(db, admin, batch_size=1, action="old_match", entity="server") == 1
+    assert db.query(AuditLog).filter_by(action="old_match", entity="server").count() == 0
+    assert db.query(AuditLog).filter_by(action="old_match", entity="network").count() == 1
+    assert db.query(AuditLog).filter_by(action="keep_action").count() == 1
+    purge_event = db.query(AuditLog).filter_by(action="audit_logs_purged").one()
+    assert '"count":1' in purge_event.metadata_json
+    assert purge_event.capture_tier == "essential"
+
+
+def test_manual_purge_rejects_ambiguous_or_invalid_filters(db):
+    with pytest.raises(ValueError):
+        preview_audit_purge(db, date_from="2026-02-30")
+    with pytest.raises(ValueError):
+        preview_audit_purge(db, date_from="2026-01-02", date_to="2026-01-01")
+    with pytest.raises(ValueError):
+        preview_audit_purge(db, severity="not-a-severity")
+    with pytest.raises(ValueError):
+        audit_purge_query(db, date_from="2026-01-01", older_than="2026-02-01")
+
+
+def test_manual_delete_all_leaves_only_new_purge_event(db):
+    admin = User(email="purge-all-admin@example.invalid", role="admin")
+    db.add(admin)
+    db.add_all([AuditLog(action="one", entity="test"), AuditLog(action="two", entity="test")])
+    db.commit()
+
+    assert purge_audit_logs(db, admin, batch_size=1) == 2
+    rows = db.query(AuditLog).all()
+    assert len(rows) == 1
+    assert rows[0].action == "audit_logs_purged"

@@ -1,6 +1,7 @@
 import json
 from contextvars import ContextVar
 from datetime import datetime, timedelta
+from sqlalchemy import func
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from app.models.models import AuditLog, RemoteManagerSetting, User
@@ -214,4 +215,85 @@ def cleanup_audit_logs(db: Session, *, batch_size: int = 500) -> int:
         db.query(AuditLog).filter(AuditLog.id.in_(ids)).delete(synchronize_session=False)
         db.commit()
         deleted += len(ids)
+    return deleted
+
+
+def audit_purge_query(db: Session, *, category: str = "", severity: str = "",
+                      action: str = "", entity: str = "", actor: str = "",
+                      date_from: str = "", date_to: str = "", older_than: str = ""):
+    """Build the exact, bounded filter used by manual audit deletion and preview."""
+    values = {
+        "category": str(category or "").strip(),
+        "severity": str(severity or "").strip(),
+        "action": str(action or "").strip(),
+        "entity": str(entity or "").strip(),
+        "actor": str(actor or "").strip(),
+        "date_from": str(date_from or "").strip(),
+        "date_to": str(date_to or "").strip(),
+        "older_than": str(older_than or "").strip(),
+    }
+    for key, value in values.items():
+        if len(value) > (255 if key == "actor" else 80):
+            raise ValueError(f"Audit purge filter '{key}' is too long.")
+    if values["date_from"] and values["older_than"]:
+        raise ValueError("Use either a start date or an older-than date, not both.")
+    try:
+        if values["date_from"]:
+            start = datetime.strptime(values["date_from"], "%Y-%m-%d")
+            db_query = db.query(AuditLog).filter(AuditLog.created_at >= start)
+        else:
+            db_query = db.query(AuditLog)
+        if values["date_to"]:
+            db_query = db_query.filter(
+                AuditLog.created_at < datetime.strptime(values["date_to"], "%Y-%m-%d") + timedelta(days=1)
+            )
+        if values["older_than"]:
+            db_query = db_query.filter(
+                AuditLog.created_at < datetime.strptime(values["older_than"], "%Y-%m-%d")
+            )
+    except ValueError as exc:
+        raise ValueError("Audit purge dates must use YYYY-MM-DD and be valid calendar dates.") from exc
+    if values["date_from"] and values["date_to"] and values["date_from"] > values["date_to"]:
+        raise ValueError("Audit purge start date must not be after the end date.")
+    if values["category"]:
+        db_query = db_query.filter(AuditLog.category == values["category"])
+    if values["severity"]:
+        if values["severity"] not in {"info", "warning", "error", "critical"}:
+            raise ValueError("Choose a supported audit severity.")
+        db_query = db_query.filter(AuditLog.severity == values["severity"])
+    if values["action"]:
+        db_query = db_query.filter(AuditLog.action == values["action"])
+    if values["entity"]:
+        db_query = db_query.filter(AuditLog.entity == values["entity"])
+    if values["actor"]:
+        db_query = db_query.filter(AuditLog.user.has(User.email == values["actor"]))
+    return db_query, values
+
+
+def preview_audit_purge(db: Session, **filters) -> dict:
+    query, values = audit_purge_query(db, **filters)
+    oldest, newest = query.with_entities(func.min(AuditLog.created_at), func.max(AuditLog.created_at)).one()
+    return {"count": query.count(), "oldest": oldest, "newest": newest, "filters": values}
+
+
+def purge_audit_logs(db: Session, user: User, *, batch_size: int = 500, **filters) -> int:
+    query, values = audit_purge_query(db, **filters)
+    batch_size = max(1, min(int(batch_size), 1000))
+    deleted = 0
+    while True:
+        ids = [row[0] for row in query.with_entities(AuditLog.id).order_by(AuditLog.id).limit(batch_size).all()]
+        if not ids:
+            break
+        db.query(AuditLog).filter(AuditLog.id.in_(ids)).delete(synchronize_session=False)
+        db.commit()
+        deleted += len(ids)
+    event = write_audit(
+        db, user, "audit_logs_purged", "audit_log", "manual_purge",
+        detail=f"Deleted {deleted} audit log event(s).",
+        category="security", severity="warning",
+        metadata={"count": deleted, "filters": values},
+        capture_tier="essential", force=True,
+    )
+    if event is None:
+        raise RuntimeError("The audit purge completed but its mandatory record could not be written.")
     return deleted

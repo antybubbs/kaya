@@ -77,7 +77,14 @@ from app.routers.remote_manager import (
     SETTINGS as REMOTE_MANAGER_SETTINGS,
 )
 from app.services.about import collect_about
-from app.services.audit import get_audit_settings, save_audit_settings, write_audit
+from app.services.audit import (
+    audit_purge_query,
+    get_audit_settings,
+    preview_audit_purge,
+    purge_audit_logs,
+    save_audit_settings,
+    write_audit,
+)
 from app.services.client_ip import (
     client_ip as trusted_client_ip,
 )
@@ -2642,6 +2649,95 @@ def update_audit_settings(
             force=True,
         )
     return RedirectResponse("/system/audit-logs?settings=updated", status_code=303)
+
+
+def _audit_purge_rate_limit(db: Session, user_id: int) -> None:
+    recent = (
+        db.query(AuditLog.id)
+        .filter(
+            AuditLog.user_id == user_id,
+            AuditLog.action == "audit_logs_purged",
+            AuditLog.created_at >= datetime.utcnow() - timedelta(minutes=10),
+        )
+        .count()
+    )
+    if recent >= 3:
+        raise HTTPException(status_code=429, detail="Audit log deletion rate limit reached.")
+
+
+def _audit_purge_filters(category, severity, action, entity, actor, date_from, date_to, older_than):
+    return {
+        "category": category, "severity": severity, "action": action,
+        "entity": entity, "actor": actor, "date_from": date_from,
+        "date_to": date_to, "older_than": older_than,
+    }
+
+
+@router.post("/system/audit-logs/purge/preview")
+def preview_audit_log_purge(
+    request: Request,
+    category: str = Form("", max_length=80), severity: str = Form("", max_length=20),
+    action: str = Form("", max_length=80), entity: str = Form("", max_length=80),
+    actor: str = Form("", max_length=255), date_from: str = Form("", max_length=10),
+    date_to: str = Form("", max_length=10), older_than: str = Form("", max_length=10),
+    csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_admin),
+):
+    validate_csrf_token(request, csrf_token)
+    try:
+        result = preview_audit_purge(
+            db, **_audit_purge_filters(category, severity, action, entity, actor, date_from, date_to, older_than)
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse({
+        "count": result["count"],
+        "oldest": result["oldest"].isoformat() if result["oldest"] else None,
+        "newest": result["newest"].isoformat() if result["newest"] else None,
+        "filters": result["filters"],
+    })
+
+
+@router.post("/system/audit-logs/purge")
+def purge_filtered_audit_logs(
+    request: Request,
+    category: str = Form("", max_length=80), severity: str = Form("", max_length=20),
+    action: str = Form("", max_length=80), entity: str = Form("", max_length=80),
+    actor: str = Form("", max_length=255), date_from: str = Form("", max_length=10),
+    date_to: str = Form("", max_length=10), older_than: str = Form("", max_length=10),
+    confirmation: str = Form("", max_length=32), csrf_token: str = Form(...),
+    db: Session = Depends(get_db), user=Depends(require_admin),
+):
+    validate_csrf_token(request, csrf_token)
+    filters = _audit_purge_filters(category, severity, action, entity, actor, date_from, date_to, older_than)
+    if not any(str(value or "").strip() for value in filters.values()):
+        raise HTTPException(status_code=400, detail="Choose at least one filter; use the separate delete-all action for all history.")
+    if confirmation != "DELETE MATCHING AUDIT LOGS":
+        raise HTTPException(status_code=400, detail="Type DELETE MATCHING AUDIT LOGS exactly to continue.")
+    try:
+        audit_purge_query(db, **filters)
+        _audit_purge_rate_limit(db, user.id)
+        deleted = purge_audit_logs(db, user, **filters)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail="The purge completed but could not be recorded safely.") from exc
+    return RedirectResponse(f"/system/audit-logs?purged={deleted}", status_code=303)
+
+
+@router.post("/system/audit-logs/purge-all")
+def purge_all_audit_logs(
+    request: Request, confirmation: str = Form("", max_length=32), csrf_token: str = Form(...),
+    db: Session = Depends(get_db), user=Depends(require_admin),
+):
+    validate_csrf_token(request, csrf_token)
+    if confirmation != "DELETE ALL AUDIT LOGS":
+        raise HTTPException(status_code=400, detail="Type DELETE ALL AUDIT LOGS exactly to continue.")
+    _audit_purge_rate_limit(db, user.id)
+    try:
+        deleted = purge_audit_logs(db, user)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail="The purge completed but could not be recorded safely.") from exc
+    return RedirectResponse(f"/system/audit-logs?purged={deleted}", status_code=303)
 
 
 @router.get("/system/audit-logs/export")

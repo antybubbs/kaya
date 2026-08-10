@@ -128,6 +128,14 @@ html[data-theme=light] .panel th,html[data-theme=light] .table-head th{color:#a8
 .panel tbody tr:hover,.workload-address:hover,.favourites-menu>summary:hover,.favourites-popover a:hover{background:rgba(255,138,0,.08);border-color:rgba(255,138,0,.32)}
 .favourites-menu>summary span{background:rgba(255,138,0,.13);border-color:rgba(255,138,0,.3);color:#ffd08a}
 .audit-table th{background:#191510}
+.audit-danger-zone{border-color:rgba(239,68,68,.55);border-left:4px solid var(--danger)}
+.audit-danger-zone h2,.audit-danger-zone h3,.danger-text{color:#fca5a5}
+.audit-danger-zone form{display:grid;gap:10px}
+.audit-danger-grid{display:grid;gap:18px;grid-template-columns:1fr 1fr}
+.audit-purge-filters{display:grid;gap:8px;grid-template-columns:repeat(2,minmax(0,1fr))}
+.audit-danger-zone label{display:grid;gap:4px}
+.audit-danger-zone .form-actions{align-items:center;display:flex;gap:10px}
+.audit-danger-zone [role=status]{color:#fca5a5;font-size:12px;font-weight:700}
 html[data-theme=light] .module-stat,html[data-theme=light] .record-identifier,html[data-theme=light] .record-fields label,html[data-theme=light] .record-kv-list dt,html[data-theme=light] .runbook-info-list dt,html[data-theme=light] .inline-edit-preview label,html[data-theme=light] .preview-heading,html[data-theme=light] .audit-method,html[data-theme=light] .audit-inspector>summary,html[data-theme=light] .dashboard-hero .eyebrow{color:#a84b00!important}
 
 /* Domain and form accent cleanup */
