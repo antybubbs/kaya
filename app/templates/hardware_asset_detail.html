@@ -1,5 +1,9 @@
 {% extends "base.html" %}
 {% block content %}
+{% if user.role in ['admin','editor'] %}
+<form id="asset-photo-upload" method="post" action="/infrastructure/asset-manager/{{ record.id }}/photo" enctype="multipart/form-data"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
+<form id="asset-photo-remove" method="post" action="/infrastructure/asset-manager/{{ record.id }}/photo/delete"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
+{% endif %}
 <form method="post" action="/infrastructure/asset-manager/{{ record.id }}/edit" class="inline-record" data-inline-edit enctype="multipart/form-data">
 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 <div class="record-hero">
@@ -21,13 +25,12 @@
   {% endif %}
 </div>
 <section class="record-layout">
-  {% if record.photo_filename %}
   <section class="panel record-panel media-panel">
     <h2>Photo</h2>
-    <div class="asset-photo-wrap"><img class="asset-photo" src="/infrastructure/asset-manager/{{ record.id }}/photo" alt="{{ record.name }}"></div>
+    {% if record.photo_filename %}<div class="asset-photo-wrap"><img class="asset-photo" src="/infrastructure/asset-manager/{{ record.id }}/photo" alt="{{ record.name }}"></div>{% else %}<div class="asset-photo-empty"><span aria-hidden="true">📷</span><strong>Add asset photo</strong><span>Take a photo or choose an image</span></div>{% endif %}
+    {% if user.role in ['admin','editor'] %}<div class="asset-photo-actions"><input id="asset-photo-file" form="asset-photo-upload" name="photo" type="file" accept="image/*" required><button class="button secondary" form="asset-photo-upload" type="submit">{% if record.photo_filename %}Replace photo{% else %}Upload photo{% endif %}</button>{% if record.photo_filename %}<button class="button danger" form="asset-photo-remove" type="submit">Remove photo</button>{% endif %}</div>{% endif %}
   </section>
-  {% endif %}
-  <section class="panel record-panel {% if not record.photo_filename %}wide{% endif %}">
+  <section class="panel record-panel">
     <h2>Overview</h2>
     <dl class="record-kv-list">
       <div><dt>Asset Tag</dt><dd class="mono"><span data-view>{{ record.asset_tag or '-' }}</span><input data-edit data-display-copy name="asset_tag_display" value="{{ record.asset_tag or '' }}" disabled></dd></div>

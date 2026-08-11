@@ -1,4 +1,5 @@
 import shutil
+from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
@@ -17,6 +18,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from starlette import status
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from app.core.config import get_settings
 from app.core.csrf import csrf_context, validate_csrf_token
@@ -59,6 +61,7 @@ ALLOWED_PHOTO_TYPES = {
     ".png": ("image/png", (b"\x89PNG\r\n\x1a\n",)),
     ".webp": ("image/webp", (b"RIFF",)),
 }
+MAX_PHOTO_DIMENSION = 2400
 
 
 def validate_photo_upload(filename: str, data: bytes) -> str:
@@ -72,7 +75,33 @@ def validate_photo_upload(filename: str, data: bytes) -> str:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Photo file content does not match its image type.")
     elif not any(data.startswith(signature) for signature in signatures):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Photo file content does not match its image type.")
+    try:
+        with Image.open(BytesIO(data)) as image:
+            image.verify()
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Photo file is not a valid image.") from exc
     return content_type
+
+
+def process_photo(data: bytes, content_type: str) -> bytes:
+    """Normalize camera images while preserving the original supported format."""
+    if content_type == "image/gif":
+        return data
+    try:
+        with Image.open(BytesIO(data)) as source:
+            image = ImageOps.exif_transpose(source)
+            if max(image.size) > MAX_PHOTO_DIMENSION:
+                image.thumbnail((MAX_PHOTO_DIMENSION, MAX_PHOTO_DIMENSION), Image.Resampling.LANCZOS)
+            output = BytesIO()
+            if content_type == "image/jpeg":
+                image.convert("RGB").save(output, format="JPEG", quality=88, optimize=True)
+            elif content_type == "image/png":
+                image.save(output, format="PNG", optimize=True)
+            else:
+                image.save(output, format="WEBP", quality=88, method=6)
+            return output.getvalue()
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Photo could not be processed.") from exc
 
 
 def parse_date(value: str):
@@ -85,10 +114,20 @@ def parse_date(value: str):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Enter dates as YYYY-MM-DD.") from exc
 
 
-def asset_upload_dir(asset_id: int) -> Path:
+def asset_upload_dir(asset_id: int, *, create: bool = False) -> Path:
     path = Path(get_settings().upload_dir) / "hardware_assets" / str(asset_id)
-    path.mkdir(parents=True, exist_ok=True)
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def stored_upload_path(asset_id: int, filename: str) -> Path:
+    """Resolve a generated upload name without allowing path traversal."""
+    root = asset_upload_dir(asset_id).resolve()
+    candidate = (root / filename).resolve()
+    if not filename or Path(filename).name != filename or candidate.parent != root:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Uploaded file not found")
+    return candidate
 
 
 async def save_upload(upload: UploadFile | None, asset_id: int, prefix: str, image_only: bool = False) -> tuple[str, str, str | None] | None:
@@ -101,8 +140,9 @@ async def save_upload(upload: UploadFile | None, asset_id: int, prefix: str, ima
     suffix = Path(upload.filename).suffix.lower()
     if image_only:
         content_type = validate_photo_upload(upload.filename, data)
+        data = process_photo(data, content_type)
     stored = f"{prefix}-{uuid4().hex}{suffix}"
-    path = asset_upload_dir(asset_id) / stored
+    path = asset_upload_dir(asset_id, create=True) / stored
     path.write_bytes(data)
     return upload.filename, stored, content_type
 
@@ -283,6 +323,7 @@ async def update_asset(request: Request, asset_id: int, asset_tag: str = Form(""
     row.warranty_expires = parse_date(warranty_expires)
     row.supplier = supplier.strip() or None
     row.notes = notes.strip() or None
+    old_photo_filename = row.photo_filename
     saved_photo = await save_upload(photo, row.id, "photo", image_only=True)
     if saved_photo:
         row.photo_filename = saved_photo[1]
@@ -291,6 +332,8 @@ async def update_asset(request: Request, asset_id: int, asset_tag: str = Form(""
         db.add(HardwareAssetAttachment(asset_id=row.id, original_filename=saved_attachment[0], stored_filename=saved_attachment[1], content_type=saved_attachment[2]))
     save_custom_values(db, fields, form, ENTITY_TYPE, row.id)
     db.commit()
+    if saved_photo and old_photo_filename and old_photo_filename != row.photo_filename:
+        stored_upload_path(row.id, old_photo_filename).unlink(missing_ok=True)
     write_audit(db, user, "update", "hardware_asset", str(row.id), request.client.host if request.client else None, detail=row.name)
     return RedirectResponse(f"/infrastructure/asset-manager/{row.id}", status_code=303)
 
@@ -314,10 +357,47 @@ def asset_photo(asset_id: int, db: Session = Depends(get_db), user=Depends(requi
     row = db.get(HardwareAsset, asset_id)
     if not row or not row.photo_filename:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
-    path = asset_upload_dir(row.id) / row.photo_filename
+    path = stored_upload_path(row.id, row.photo_filename)
     if not path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
     return FileResponse(path)
+
+
+@router.post("/{asset_id}/photo")
+async def upload_photo(request: Request, asset_id: int, csrf_token: str = Form(...), photo: UploadFile = File(...), db: Session = Depends(get_db), user=Depends(require_editor)):
+    validate_csrf_token(request, csrf_token)
+    row = db.get(HardwareAsset, asset_id)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Hardware asset not found")
+    old_photo_filename = row.photo_filename
+    saved_photo = await save_upload(photo, row.id, "photo", image_only=True)
+    if not saved_photo:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Choose a photo to upload.")
+    row.photo_filename = saved_photo[1]
+    try:
+        db.commit()
+    except Exception:
+        stored_upload_path(row.id, saved_photo[1]).unlink(missing_ok=True)
+        raise
+    if old_photo_filename and old_photo_filename != row.photo_filename:
+        stored_upload_path(row.id, old_photo_filename).unlink(missing_ok=True)
+    write_audit(db, user, "upload_photo", "hardware_asset", str(row.id), request.client.host if request.client else None)
+    return RedirectResponse(f"/infrastructure/asset-manager/{row.id}", status_code=303)
+
+
+@router.post("/{asset_id}/photo/delete")
+def delete_photo(request: Request, asset_id: int, csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_editor)):
+    validate_csrf_token(request, csrf_token)
+    row = db.get(HardwareAsset, asset_id)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Hardware asset not found")
+    old_photo_filename = row.photo_filename
+    row.photo_filename = None
+    db.commit()
+    if old_photo_filename:
+        stored_upload_path(row.id, old_photo_filename).unlink(missing_ok=True)
+    write_audit(db, user, "delete_photo", "hardware_asset", str(row.id), request.client.host if request.client else None)
+    return RedirectResponse(f"/infrastructure/asset-manager/{row.id}", status_code=303)
 
 
 @router.get("/{asset_id}/attachments/{attachment_id}")
@@ -325,7 +405,7 @@ def download_attachment(asset_id: int, attachment_id: int, db: Session = Depends
     row = db.get(HardwareAssetAttachment, attachment_id)
     if not row or row.asset_id != asset_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found")
-    path = asset_upload_dir(asset_id) / row.stored_filename
+    path = stored_upload_path(asset_id, row.stored_filename)
     if not path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found")
     return FileResponse(path, media_type="application/octet-stream", filename=row.original_filename)
@@ -338,7 +418,7 @@ def delete_attachment(request: Request, asset_id: int, attachment_id: int, csrf_
     if not row or row.asset_id != asset_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found")
     filename = row.original_filename
-    path = asset_upload_dir(asset_id) / row.stored_filename
+    path = stored_upload_path(asset_id, row.stored_filename)
     db.delete(row)
     db.commit()
     path.unlink(missing_ok=True)

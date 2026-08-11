@@ -1,3 +1,4 @@
+import logging
 import smtplib
 from html import escape
 from email.message import EmailMessage
@@ -14,6 +15,7 @@ from app.services.site_settings import get_site_setting, get_site_settings
 
 EMAIL_LOGO_PATH = Path(__file__).parents[1] / "static" / "brand" / "kaya-favicon-192-transparent.png"
 EMAIL_LOGO_CID = "kaya-email-logo"
+logger = logging.getLogger(__name__)
 
 
 class MailConfigurationError(RuntimeError):
@@ -74,6 +76,30 @@ def branded_email_html(
     )
 
 
+def load_email_logo() -> bytes | None:
+    """Load the fixed, repository-owned logo without making mail delivery depend on it."""
+    try:
+        logo = EMAIL_LOGO_PATH.read_bytes()
+    except OSError:
+        logger.warning("mail.branding_logo_unavailable filename=%s", EMAIL_LOGO_PATH.name)
+        return None
+    if not logo:
+        logger.warning("mail.branding_logo_empty filename=%s", EMAIL_LOGO_PATH.name)
+        return None
+    return logo
+
+
+def add_email_logo(message: EmailMessage, logo: bytes) -> None:
+    """Attach the trusted PNG as an inline related MIME part."""
+    message.get_payload()[-1].add_related(
+        logo,
+        maintype="image",
+        subtype="png",
+        cid=f"<{EMAIL_LOGO_CID}>",
+        disposition="inline",
+    )
+
+
 def send_mail(
     db: Session,
     to_email: str,
@@ -117,25 +143,19 @@ def send_mail(
     message["Message-ID"] = make_msgid(domain=message_id_domain)
     message.set_content(body)
     if setting_enabled(get_site_setting(db, "email_include_branding")):
-        include_logo = EMAIL_LOGO_PATH.is_file()
+        logo = load_email_logo()
         message.add_alternative(
             branded_email_html(
                 body,
                 app_name=get_site_setting(db, "app_name").strip() or APP_BRAND_NAME,
                 action_url=action_url,
                 action_label=action_label,
-                include_logo=include_logo,
+                include_logo=logo is not None,
             ),
             subtype="html",
         )
-        if include_logo:
-            message.get_payload()[-1].add_related(
-                EMAIL_LOGO_PATH.read_bytes(),
-                maintype="image",
-                subtype="png",
-                cid=f"<{EMAIL_LOGO_CID}>",
-                disposition="inline",
-            )
+        if logo is not None:
+            add_email_logo(message, logo)
 
     smtp_class = smtplib.SMTP_SSL if use_ssl else smtplib.SMTP
     if before_send:
