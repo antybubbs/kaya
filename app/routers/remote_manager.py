@@ -1691,6 +1691,7 @@ async def rdp_websocket(websocket: WebSocket, remote_id: int):
             if websocket.query_params.get("handoff") == "1":
                 rdp_tokens.pop(token, None)
         except Exception as exc:
+            logger.warning("Guacamole bridge RDP tunnel failed (%s)", type(exc).__name__)
             audit_db = SessionLocal()
             try:
                 audit_user = audit_db.get(User, user.id)
@@ -1701,11 +1702,11 @@ async def rdp_websocket(websocket: WebSocket, remote_id: int):
                     "remote_rdp_session",
                     entity_id=str(remote_id),
                     ip_address=websocket.client.host if websocket.client else None,
-                    detail=f"RDP connection failed for {remote_label_text} ({remote_address}:{remote_port}): {exc}",
+                    detail=f"RDP connection failed for {remote_label_text} ({remote_address}:{remote_port}); Kaya's Guacamole bridge rejected the tunnel",
                 )
             finally:
                 audit_db.close()
-            await websocket.send_text(guac_instruction("error", f"RDP connection failed: {exc}", 512))
+            await websocket.send_text(guac_instruction("error", "Kaya's Guacamole bridge could not open the RDP tunnel.", 512))
             await websocket.close(code=1011)
             return
         audit_db = SessionLocal()

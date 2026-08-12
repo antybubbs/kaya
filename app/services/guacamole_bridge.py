@@ -120,7 +120,11 @@ def start_guacamole_bridge() -> None:
             }
         )
         script = SCRIPT_DIR / "guacamole-server.cjs"
-        _process = subprocess.Popen(["node", str(script)], env=env)
+        try:
+            _process = subprocess.Popen(["node", str(script)], env=env)
+        except OSError as exc:
+            logger.error("Guacamole bridge process could not be started (%s)", type(exc).__name__)
+            raise GuacamoleBridgeError("Guacamole bridge process could not be started.") from exc
         process = _process
         logger.info("Guacamole bridge starting pid=%s", process.pid)
         try:

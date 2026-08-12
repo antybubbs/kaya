@@ -60,3 +60,114 @@ The application must not report a version that does not match the checked-out or
 Security fixes should minimise disclosure before a patched release is available.
 
 Release notes should explain impact and required user action without publishing unnecessary exploitation guidance.
+
+## Mandatory completion standard for all Kaya development work
+
+Do not consider a task complete merely because the requested feature works or the automated tests pass.
+
+Kaya uses GitHub CodeQL and security checks as part of the Dev → Main promotion process. We are currently seeing too many issues discovered only at that stage.
+
+Your responsibility is to catch these problems before handing the work back.
+
+Before declaring any task complete
+
+You must:
+
+Review the complete diff for the work you have performed.
+Run all relevant:
+unit tests
+integration tests
+linting
+formatting checks
+type checking
+security/static-analysis tooling already available in the repository
+Examine every changed security boundary for CodeQL-style vulnerabilities.
+
+This includes, where relevant:
+
+SQL/query construction
+command execution and subprocess use
+shell injection
+path traversal
+arbitrary file access
+unsafe archive/file extraction
+SSRF
+unsafe URL handling or redirects
+XSS / unsafe HTML generation
+template injection
+untrusted input reaching sensitive APIs
+authentication and authorisation bypasses
+CSRF
+insecure session/token handling
+secret exposure
+passwords/tokens appearing in logs
+weak or inappropriate cryptography
+insecure randomness
+unsafe deserialisation
+overly permissive CORS or network access
+filesystem permissions
+race conditions affecting security-sensitive operations
+exception messages leaking sensitive information
+
+Review both backend and frontend code.
+
+CodeQL
+
+Where the repository provides a practical way to run CodeQL or equivalent analysis locally, run it.
+
+If CodeQL itself cannot reasonably be executed in the development environment, that is not a reason to ignore this requirement.
+
+Perform a manual security/data-flow review of the changed code before handing the task back.
+
+Pay particular attention to:
+
+source → transformation → sink
+
+Do not only inspect the line likely to be flagged. Trace where the data originates, how it is validated, and where it ultimately reaches a sensitive operation.
+
+Do not suppress findings to get a green build
+
+Never:
+
+add CodeQL suppression comments merely to make the alert disappear
+weaken validation
+disable a security check
+exclude files from analysis
+catch and ignore exceptions hiding the underlying problem
+
+unless there is a genuine, documented false positive and the reasoning is clearly explained.
+
+Fix the underlying issue instead.
+
+Existing security controls
+
+Do not weaken existing Kaya security behaviour while implementing unrelated work.
+
+This particularly applies to:
+
+Remote Manager trust controls
+RDP certificate verification
+SSH host identity verification
+authentication
+authorisation
+CSRF
+rate limiting
+encryption
+session management
+audit logging
+secure uploads
+secret handling
+Final response
+
+Before saying the task is complete, report:
+
+what changed
+tests/checks run
+whether they passed
+security-sensitive areas reviewed
+any CodeQL/static-analysis checks run
+any remaining concern or limitation
+
+If you have not completed the security review, explicitly say the work is not yet ready for Dev → Main promotion.
+
+The objective is that Dev → Main should confirm the quality of the work, not be the first point at which obvious CodeQL/security problems are discovered.
