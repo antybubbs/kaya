@@ -1209,6 +1209,21 @@ class HardwareAsset(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    photos = relationship("HardwareAssetPhoto", back_populates="asset", cascade="all, delete-orphan", order_by="HardwareAssetPhoto.sort_order, HardwareAssetPhoto.id")
+
+
+class HardwareAssetPhoto(Base):
+    __tablename__ = "hardware_asset_photos"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    asset_id: Mapped[int] = mapped_column(ForeignKey("hardware_assets.id", ondelete="CASCADE"), index=True)
+    original_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    storage_filename: Mapped[str] = mapped_column(String(255))
+    thumbnail_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    content_type: Mapped[str] = mapped_column(String(120), default="image/webp")
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    asset = relationship("HardwareAsset", back_populates="photos")
 
 
 class HardwareAssetAttachment(Base):

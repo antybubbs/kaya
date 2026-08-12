@@ -56,6 +56,8 @@ from app.services.rdp_certificate_discovery import (
 )
 from app.services.remote_endpoint_trust import update_remote_endpoint
 from app.services.guacamole_bridge import (
+    GuacamoleBridgeError,
+    is_guacamole_bridge_ready,
     restart_guacamole_bridge,
     start_guacamole_bridge,
 )
@@ -1490,7 +1492,11 @@ async def rdp_start(request: Request, remote_id: int, db: Session = Depends(get_
                     },
                     status_code=409,
                 )
-    start_guacamole_bridge()
+    try:
+        await run_in_threadpool(start_guacamole_bridge)
+    except GuacamoleBridgeError:
+        logs.append("Kaya's Guacamole bridge is not ready. The RDP session was not started.")
+        return JSONResponse({"ok": False, "logs": logs}, status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
     cleanup_rdp_tokens()
     width = clean_dimension(int_payload(payload, "width", 1280), 1280, 640, 7680)
     height = clean_dimension(int_payload(payload, "height", 720), 720, 480, 4320)
@@ -1558,6 +1564,17 @@ async def ssh_websocket(websocket: WebSocket, remote_id: int):
     await websocket.accept()
     upstream = None
     try:
+        import websockets
+
+        try:
+            upstream = await websockets.connect("ws://127.0.0.1:30009", open_timeout=10)
+        except Exception as exc:
+            logger.warning("Remote Manager SSH upstream session could not be established (%s)", type(exc).__name__)
+            await websocket.send_json({"type": "session_error", "message": "Remote Manager session could not be established. Try again."})
+            await websocket.close(code=1011)
+            return
+
+        await websocket.send_json({"type": "ready", "message": "Remote Manager session ready"})
         payload = await websocket.receive_json()
         if payload.get("type") == "connectToHost":
             connect_data = payload.get("data") or {}
@@ -1571,9 +1588,6 @@ async def ssh_websocket(websocket: WebSocket, remote_id: int):
         try:
             cols = clean_dimension(int_payload(connect_data, "cols", 120), 120, 40, 500)
             rows = clean_dimension(int_payload(connect_data, "rows", 34), 34, 10, 200)
-            import websockets
-
-            upstream = await websockets.connect("ws://127.0.0.1:30009", open_timeout=10)
             await upstream.send(json.dumps({
                 "type": "connectToHost",
                 "data": {
@@ -1588,7 +1602,8 @@ async def ssh_websocket(websocket: WebSocket, remote_id: int):
                 },
             }))
         except Exception as exc:
-            await websocket.send_json({"type": "error", "message": f"SSH connection failed: {exc}"})
+            logger.warning("Remote Manager SSH upstream session could not be established (%s)", type(exc).__name__)
+            await websocket.send_json({"type": "session_error", "message": "Remote Manager session could not be established. Try again."})
             await websocket.close(code=1011)
             return
 
@@ -1650,6 +1665,12 @@ async def rdp_websocket(websocket: WebSocket, remote_id: int):
         remote_port = remote.port
     finally:
         db.close()
+
+    if not await run_in_threadpool(is_guacamole_bridge_ready):
+        await websocket.accept(subprotocol="guacamole")
+        await websocket.send_text(guac_instruction("error", "Kaya's Guacamole bridge is not ready. Try starting the RDP session again.", 512))
+        await websocket.close(code=1011)
+        return
 
     await websocket.accept(subprotocol="guacamole")
     upstream = None

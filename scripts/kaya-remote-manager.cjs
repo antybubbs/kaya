@@ -32,6 +32,16 @@ function cleanup(conn, stream) {
   }
 }
 
+function sshFailureMessage(error) {
+  const code = String(error?.code || "").toUpperCase();
+  const message = String(error?.message || "");
+  if (code === "ECONNREFUSED") return "SSH connection refused by the target host.";
+  if (code === "AUTH_FAILED" || /authentication|all configured authentication methods failed|permission denied/i.test(message)) {
+    return "SSH authentication failed. Check the username and password.";
+  }
+  return `SSH connection failed: ${message || "The target did not accept the connection."}`;
+}
+
 function startShell(ws, conn, data) {
   const rows = Number.parseInt(data.rows || "34", 10);
   const cols = Number.parseInt(data.cols || "120", 10);
@@ -128,7 +138,7 @@ server.on("connection", (ws) => {
     conn
       .on("ready", () => startShell(ws, conn, data))
       .on("error", (error) => {
-        send(ws, { type: "error", message: `SSH connection failed: ${error.message}` });
+        send(ws, { type: "error", message: sshFailureMessage(error) });
         ws.close();
       })
       .on("close", () => {
