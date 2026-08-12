@@ -117,12 +117,7 @@ def parse_date(value: str):
 
 
 def asset_upload_dir(asset_id: int, *, create: bool = False) -> Path:
-    base = (Path(get_settings().upload_dir) / "hardware_assets").resolve()
-    path = (base / str(asset_id)).resolve()
-    try:
-        path.relative_to(base)
-    except ValueError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Uploaded file not found")
+    if asset_id <= 0:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Hardware asset not found")
 
     root = (Path(get_settings().upload_dir) / "hardware_assets").resolve()
