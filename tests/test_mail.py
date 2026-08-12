@@ -73,6 +73,9 @@ def test_branded_email_embeds_compact_logo_and_keeps_plain_text(monkeypatch):
     assert logo.get_content_disposition() == "inline"
     assert logo["Content-ID"] == "<kaya-email-logo>"
     assert logo.get_filename() is None
+    raw_message = message.as_bytes()
+    assert b"Content-ID: <kaya-email-logo>" in raw_message
+    assert logo.get_payload(decode=True) == Path(mail_service.EMAIL_LOGO_PATH).read_bytes()
     assert message["Date"] and message["Message-ID"].endswith("@example.test>")
     assert FakeSMTP.envelopes == [("kaya@example.test", ["recipient@example.test"])]
 
@@ -83,6 +86,17 @@ def test_email_branding_can_be_disabled(monkeypatch):
     message = FakeSMTP.sent[0]
     assert message.get_content_type() == "text/plain"
     assert not message.is_multipart()
+
+
+def test_missing_logo_does_not_prevent_branded_email_delivery(monkeypatch, tmp_path, caplog):
+    configure_mail(monkeypatch, branding="1")
+    monkeypatch.setattr(mail_service, "EMAIL_LOGO_PATH", tmp_path / "missing-logo.png")
+    mail_service.send_mail(object(), "recipient@example.test", "Subject", "Plain body")
+    message = FakeSMTP.sent[0]
+    assert message.get_body(preferencelist=("plain",)).get_content() == "Plain body\n"
+    assert "cid:kaya-email-logo" not in message.get_body(preferencelist=("html",)).get_content()
+    assert not any(part.get_content_maintype() == "image" for part in message.walk())
+    assert "mail.branding_logo_unavailable" in caplog.text
 
 
 def test_secure_send_template_and_branding_settings_are_available():

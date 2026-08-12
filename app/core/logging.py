@@ -13,6 +13,10 @@ class SensitiveAuthenticationLogFilter(logging.Filter):
                 clean = list(args)
                 clean[2] = path.split("?", 1)[0] + "?[redacted]"
                 record.args = tuple(clean)
+            elif path.startswith("/remote-manager/") and "/rdp/ws?" in path:
+                clean = list(args)
+                clean[2] = path.split("?", 1)[0] + "?[redacted]"
+                record.args = tuple(clean)
         return True
 
 

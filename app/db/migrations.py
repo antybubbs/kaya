@@ -34,7 +34,7 @@ from app.models.models import Base
 logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BASELINE_REVISION = "20260730_01"
-CURRENT_REVISION = "20260804_03"
+CURRENT_REVISION = "20260811_01"
 STAGE_OPENING_DATABASE = "Opening database"
 STAGE_INTEGRITY_CHECKS = "Checking database readability"
 STAGE_CREATING_BACKUP = "Creating backup"
@@ -187,8 +187,15 @@ def prepare_database(engine: Engine, settings: Settings) -> MigrationResult:
         script = ScriptDirectory.from_config(config)
         heads = script.get_heads()
         if len(heads) != 1:
+            head_list = ", ".join(sorted(heads)) or "none"
+            logger.error(
+                "Multiple Alembic migration heads detected: %s. Database has not "
+                "been modified. Developer action required: merge the migration heads.",
+                head_list,
+            )
             raise DatabaseMigrationError(
-                "Kaya requires exactly one Alembic migration head."
+                f"Multiple Alembic migration heads detected: {head_list}. "
+                "Database has not been modified; developer action required: merge the migration heads."
             )
         target_revision = heads[0]
         detected_revision = _revision(database_path) if database_path.exists() else None

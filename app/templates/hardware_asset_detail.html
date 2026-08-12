@@ -1,5 +1,10 @@
 {% extends "base.html" %}
 {% block content %}
+{% if user.role in ['admin','editor'] %}
+<form id="asset-photo-upload" method="post" action="/infrastructure/asset-manager/{{ record.id }}/photos" enctype="multipart/form-data"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
+<form id="asset-photo-primary" method="post" action="" data-photo-primary-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
+<form id="asset-photo-remove" method="post" action="" data-photo-remove-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
+{% endif %}
 <form method="post" action="/infrastructure/asset-manager/{{ record.id }}/edit" class="inline-record" data-inline-edit enctype="multipart/form-data">
 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 <div class="record-hero">
@@ -20,14 +25,17 @@
   </div>
   {% endif %}
 </div>
-<section class="record-layout">
-  {% if record.photo_filename %}
+<section class="record-layout asset-record-layout">
   <section class="panel record-panel media-panel">
     <h2>Photo</h2>
-    <div class="asset-photo-wrap"><img class="asset-photo" src="/infrastructure/asset-manager/{{ record.id }}/photo" alt="{{ record.name }}"></div>
+    {% set primary_photo = photos|selectattr('is_primary')|first if photos else none %}
+    <div class="asset-photo-gallery" data-asset-photo-gallery data-asset-id="{{ record.id }}" data-asset-name="{{ record.name }}">
+      {% if primary_photo %}<button class="asset-photo-preview" type="button" data-photo-preview data-full-src="/infrastructure/asset-manager/{{ record.id }}/photos/{{ primary_photo.id }}" aria-label="View larger photo of {{ record.name }}"><img class="asset-photo" data-photo-main src="/infrastructure/asset-manager/{{ record.id }}/photos/{{ primary_photo.id }}" alt="{{ record.name }}"></button>{% else %}<div class="asset-photo-empty"><span aria-hidden="true">📷</span><strong>Add asset photo</strong><span>Take a photo or choose an image</span></div>{% endif %}
+      {% if photos %}<div class="asset-photo-thumbnails" role="list" aria-label="Asset photos">{% for photo in photos %}<button class="asset-photo-thumbnail{% if photo.is_primary %} is-primary{% endif %}" type="button" role="listitem" data-photo-id="{{ photo.id }}" data-full-src="/infrastructure/asset-manager/{{ record.id }}/photos/{{ photo.id }}" data-thumb-src="/infrastructure/asset-manager/{{ record.id }}/photos/{{ photo.id }}/thumbnail" data-is-primary="{{ '1' if photo.is_primary else '0' }}" aria-label="{{ 'Primary photo' if photo.is_primary else 'View photo' }} {{ loop.index }}"><img src="/infrastructure/asset-manager/{{ record.id }}/photos/{{ photo.id }}/thumbnail" alt=""><span>{% if photo.is_primary %}Primary{% else %}{{ loop.index }}{% endif %}</span></button>{% endfor %}</div>{% endif %}
+      {% if user.role in ['admin','editor'] %}<div class="asset-photo-actions">{% if photos|length < 5 %}<input id="asset-photo-file" form="asset-photo-upload" name="photos" type="file" accept="image/*" multiple required><button class="button secondary" form="asset-photo-upload" type="submit">Add photo</button>{% else %}<span class="muted">Maximum of 5 photos reached.</span>{% endif %}{% if primary_photo %}<button class="button secondary" form="asset-photo-primary" type="submit" data-photo-primary-submit hidden>Set primary</button><button class="button danger" form="asset-photo-remove" type="submit" data-photo-remove-submit>Remove photo</button>{% endif %}</div>{% endif %}
+    </div>
   </section>
-  {% endif %}
-  <section class="panel record-panel {% if not record.photo_filename %}wide{% endif %}">
+  <section class="panel record-panel">
     <h2>Overview</h2>
     <dl class="record-kv-list">
       <div><dt>Asset Tag</dt><dd class="mono"><span data-view>{{ record.asset_tag or '-' }}</span><input data-edit data-display-copy name="asset_tag_display" value="{{ record.asset_tag or '' }}" disabled></dd></div>
@@ -99,4 +107,6 @@
   </form>
 </section>
 {% endif %}
+<dialog class="asset-photo-lightbox" data-asset-photo-lightbox aria-label="Larger asset photo"><form method="dialog"><button class="button secondary" type="submit" aria-label="Close larger photo">Close</button></form><img data-photo-lightbox-image alt=""></dialog>
 {% endblock %}
+{% block extra_scripts %}<script src="/static/js/hardware_assets.js?v={{ asset_version }}" defer></script>{% endblock %}

@@ -38,7 +38,7 @@
       <label>Password for {{ remote.username }}@{{ remote.ip_address.address }}
         <input data-ssh-password type="password" autocomplete="current-password" required>
       </label>
-      <button type="submit">Start SSH session</button>
+      <button type="submit" disabled>Start SSH session</button>
       <p class="muted">Session only. Not stored.</p>
     </form>
     <div class="ssh-terminal" data-ssh-terminal aria-label="SSH terminal"></div>

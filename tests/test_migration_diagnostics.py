@@ -118,6 +118,31 @@ def test_every_fatal_migration_stage_emits_full_traceback_for_container_logs(
     assert fatal_records[0].exc_info is not None
 
 
+def test_multiple_migration_heads_fail_before_database_access_with_actionable_diagnostic(
+    tmp_path, monkeypatch, caplog
+):
+    from app.db.migrations import DatabaseMigrationError, prepare_database
+
+    path = tmp_path / "kaya.db"
+    path.touch()
+    settings = _settings(path, tmp_path / "backups")
+    engine = create_engine(f"sqlite:///{path.as_posix()}")
+
+    class Script:
+        @staticmethod
+        def get_heads():
+            return ["branch-a", "branch-b"]
+
+    monkeypatch.setattr(migrations.ScriptDirectory, "from_config", lambda _config: Script())
+    caplog.set_level(logging.INFO)
+
+    with pytest.raises(DatabaseMigrationError, match="branch-a, branch-b"):
+        prepare_database(engine, settings)
+
+    assert "Database has not been modified" in caplog.text
+    assert "Developer action required: merge the migration heads" in caplog.text
+
+
 def test_seed_initialisation_failure_delegates_traceback_to_server(monkeypatch, caplog):
     from app import main
 

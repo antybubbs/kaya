@@ -599,6 +599,8 @@
   }
 
   let socket = null;
+  let sessionReady = false;
+  let shuttingDown = false;
   let connected = false;
   let closeHandled = false;
   let idleTimer = null;
@@ -622,6 +624,128 @@
   let recordingPauseTimer = null;
   const recordingPauseIdleMinutes = Math.max(0, Math.min(1440, Number.parseInt(root.dataset.recordingPauseIdleMinutes || "5", 10) || 0));
   const recordingPauseIdleMs = recordingPauseIdleMinutes > 0 ? recordingPauseIdleMinutes * 60 * 1000 : 0;
+
+  const setSessionReady = (ready) => {
+    sessionReady = ready;
+    if (submitButton) submitButton.disabled = !ready;
+    passwordForm.dataset.sessionReady = ready ? "1" : "0";
+  };
+
+  const openSessionSocket = () => {
+    if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
+    const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const wsUrl = `${scheme}//${window.location.host}${root.dataset.wsUrl}`;
+    setSessionReady(false);
+    socket = new WebSocket(wsUrl);
+
+    socket.addEventListener("open", () => {
+      // The backend sends `ready` after authentication and object checks. Do
+      // not enable password submission merely because the transport opened.
+      writeTerminal("Preparing Remote Manager session...\r\n");
+    });
+
+    socket.addEventListener("message", (event) => {
+      let message = null;
+      try {
+        message = JSON.parse(event.data);
+      } catch (_error) {
+        writeTerminal(event.data);
+        return;
+      }
+
+      if (message.type === "ready") {
+        setSessionReady(true);
+        return;
+      }
+
+      if (message.type === "data") {
+        writeTerminal(message.data || "");
+      } else if (message.type === "connected") {
+        connected = true;
+        markActivity();
+        syncRecordingButton();
+        if (recordingAuto) startRecording("auto");
+        fit();
+        if (popoutRequestId && !popoutConnectedNotified) {
+          popoutConnectedNotified = true;
+          window.opener?.postMessage({ type: "kaya:remote-popout-connected", requestId: popoutRequestId }, window.location.origin);
+          window.parent?.postMessage({ type: "kaya:remote-popout-connected", requestId: popoutRequestId }, window.location.origin);
+        }
+      } else if (message.type === "session_error") {
+        closeHandled = true;
+        connected = false;
+        sessionPassword = "";
+        clearIdleTimer();
+        stopRecording();
+        syncRecordingButton();
+        writeTerminal(`\r\n${message.message || "Remote Manager session could not be established."}\r\n`);
+      } else if (message.type === "error") {
+        closeHandled = true;
+        connected = false;
+        sessionPassword = "";
+        clearIdleTimer();
+        stopRecording();
+        syncRecordingButton();
+        writeTerminal(`\r\n${message.message || "SSH connection failed."}\r\n`);
+      } else if (message.type === "closed") {
+        connected = false;
+        sessionPassword = "";
+        clearIdleTimer();
+        stopRecording();
+        syncRecordingButton();
+        closeHandled = true;
+        writeTerminal(`\r\n${message.message || "SSH session closed."}\r\n`);
+
+        try {
+          socket.close();
+        } catch (_error) {
+          // Ignore close errors
+        }
+      } else if (message.type === "sessionTakenOver" || message.type === "sessionExpired") {
+        connected = false;
+        sessionPassword = "";
+        clearIdleTimer();
+        stopRecording();
+        syncRecordingButton();
+        closeHandled = true;
+        writeTerminal(`\r\n${message.message || "Session ended."}\r\n`);
+
+        try {
+          socket.close();
+        } catch (_error) {
+          // Ignore close errors
+        }
+      }
+
+      if (connected && document.visibilityState === "visible") {
+        window.setTimeout(() => term.focus(), 0);
+      }
+    });
+
+    socket.addEventListener("close", (event) => {
+      const wasReady = sessionReady;
+      setSessionReady(false);
+      connected = false;
+      sessionPassword = "";
+      clearIdleTimer();
+      stopRecording();
+      syncRecordingButton();
+
+      if (!closeHandled) {
+        const reason = String(event.reason || "").trim();
+        writeTerminal(`\r\n${wasReady ? (reason || "Session closed.") : "Remote Manager session could not be established."}\r\n`);
+      }
+      closeHandled = false;
+      passwordForm.hidden = false;
+      if (!shuttingDown) window.setTimeout(openSessionSocket, 0);
+    });
+
+    socket.addEventListener("error", () => {
+      closeHandled = true;
+      setSessionReady(false);
+      writeTerminal("\r\nRemote Manager session could not be established.\r\n");
+    });
+  };
 
   const setRecordingStatus = (message) => {
     if (recordingStatus) recordingStatus.textContent = message;
@@ -887,6 +1011,7 @@
   });
 
   window.addEventListener("beforeunload", () => {
+    shuttingDown = true;
     clearIdleTimer();
     stopRecording();
     sessionPassword = "";
@@ -908,115 +1033,29 @@
 
   passwordForm.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
+    if (!sessionReady || !socket || socket.readyState !== WebSocket.OPEN) return;
 
-    const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${scheme}//${window.location.host}${root.dataset.wsUrl}`;
     cancelPendingTerminalWrites();
     term.reset();
     writeTerminal("Connecting...\r\n");
     closeHandled = false;
     sessionPassword = passwordInput.value;
-    socket = new WebSocket(wsUrl);
     if (submitButton) submitButton.disabled = true;
-
-    socket.addEventListener("open", () => {
-      sendTerminalMessage("connectToHost", {
-        password: sessionPassword,
-        cols: term.cols,
-        rows: term.rows,
-      });
-      passwordInput.value = "";
-      passwordForm.hidden = true;
-      fit();
-      term.focus();
-      term.options.cursorBlink = terminalSettings.cursorBlink;
-      term.options.cursorStyle = terminalSettings.cursorStyle;
+    sendTerminalMessage("connectToHost", {
+      password: sessionPassword,
+      cols: term.cols,
+      rows: term.rows,
     });
-
-    socket.addEventListener("message", (event) => {
-      let message = null;
-      try {
-        message = JSON.parse(event.data);
-      } catch (_error) {
-        writeTerminal(event.data);
-        return;
-      }
-
-      if (message.type === "data") {
-        writeTerminal(message.data || "");
-      } else if (message.type === "connected") {
-        connected = true;
-        markActivity();
-        syncRecordingButton();
-        if (recordingAuto) startRecording("auto");
-        fit();
-        if (popoutRequestId && !popoutConnectedNotified) {
-          popoutConnectedNotified = true;
-          window.opener?.postMessage({ type: "kaya:remote-popout-connected", requestId: popoutRequestId }, window.location.origin);
-          window.parent?.postMessage({ type: "kaya:remote-popout-connected", requestId: popoutRequestId }, window.location.origin);
-        }
-      } else if (message.type === "error") {
-        connected = false;
-        sessionPassword = "";
-        clearIdleTimer();
-        stopRecording();
-        syncRecordingButton();
-        writeTerminal(`\r\n${message.message || "SSH connection failed."}\r\n`);
-      } else if (message.type === "closed") {
-        connected = false;
-        sessionPassword = "";
-        clearIdleTimer();
-        stopRecording();
-        syncRecordingButton();
-        closeHandled = true;
-        writeTerminal(`\r\n${message.message || "SSH session closed."}\r\n`);
-
-        try {
-          socket.close();
-        } catch (_error) {
-          // Ignore close errors
-        }
-      } else if (message.type === "sessionTakenOver" || message.type === "sessionExpired") {
-        connected = false;
-        sessionPassword = "";
-        clearIdleTimer();
-        stopRecording();
-        syncRecordingButton();
-        closeHandled = true;
-        writeTerminal(`\r\n${message.message || "Session ended."}\r\n`);
-
-        try {
-          socket.close();
-        } catch (_error) {
-          // Ignore close errors
-        }
-      }
-
-      if (connected && document.visibilityState === "visible") {
-        window.setTimeout(() => term.focus(), 0);
-      }
-    });
-    socket.addEventListener("close", (event) => {
-      connected = false;
-      sessionPassword = "";
-      clearIdleTimer();
-      stopRecording();
-      syncRecordingButton();
-
-      if (!closeHandled) {
-        const reason = String(event.reason || "").trim();
-        writeTerminal(`\r\n${reason || "Session closed."}\r\n`);
-      }
-
-      passwordForm.hidden = false;
-      if (submitButton) submitButton.disabled = false;
-    });
-    socket.addEventListener("error", () => {
-      if (submitButton) submitButton.disabled = false;
-      writeTerminal("\r\nSession error.\r\n");
-    });
+    passwordInput.value = "";
+    passwordForm.hidden = true;
+    fit();
+    term.focus();
+    term.options.cursorBlink = terminalSettings.cursorBlink;
+    term.options.cursorStyle = terminalSettings.cursorStyle;
   });
+
+  setSessionReady(false);
+  openSessionSocket();
 
   if (popoutRequestId && window.opener && !window.opener.closed) {
     window.setTimeout(() => {
