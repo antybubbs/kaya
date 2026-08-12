@@ -21,3 +21,14 @@ def test_asset_photo_detail_has_authenticated_controls_and_mobile_input():
     assert '"hardware_asset_photos"' in migration
     assert "photo_filename" in migration
     assert "hardware_asset_photos_max_five" in migration
+
+
+def test_asset_storage_paths_use_validated_asset_directory_helper():
+    router = Path("app/routers/hardware_assets.py").read_text(encoding="utf-8")
+    assert "def asset_upload_dir(asset_id: int" in router
+    assert "path.relative_to(root)" in router
+    assert "shutil.rmtree(asset_upload_dir(row.id), ignore_errors=True)" in router
+    assert 'shutil.rmtree(Path(get_settings().upload_dir) / "hardware_assets" / str(asset_id)' not in router
+    assert "stored_upload_path(asset_id, photo.storage_filename)" not in router
+    assert "stored_upload_path(asset_id, filename)" not in router
+    assert "stored_upload_path(asset_id, row.stored_filename)" not in router

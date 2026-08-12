@@ -117,6 +117,14 @@ def parse_date(value: str):
 
 
 def asset_upload_dir(asset_id: int, *, create: bool = False) -> Path:
+    if asset_id <= 0:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Hardware asset not found")
+
+    root = (Path(get_settings().upload_dir) / "hardware_assets").resolve()
+    path = (root / str(asset_id)).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Hardware asset not found") from exc
 
     if create:
@@ -405,7 +413,7 @@ def asset_photo_file(asset_id: int, photo_id: int, db: Session = Depends(get_db)
     photo = db.get(HardwareAssetPhoto, photo_id)
     if not photo or photo.asset_id != asset_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
-    path = stored_upload_path(asset_id, photo.storage_filename)
+    path = stored_upload_path(photo.asset_id, photo.storage_filename)
     if not path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
     return FileResponse(path, media_type=photo.content_type)
@@ -417,7 +425,7 @@ def asset_photo_thumbnail(asset_id: int, photo_id: int, db: Session = Depends(ge
     if not photo or photo.asset_id != asset_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
     filename = photo.thumbnail_filename or photo.storage_filename
-    path = stored_upload_path(asset_id, filename)
+    path = stored_upload_path(photo.asset_id, filename)
     if not path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
     return FileResponse(path, media_type="image/webp" if photo.thumbnail_filename else photo.content_type)
@@ -483,9 +491,9 @@ def delete_photo(request: Request, asset_id: int, photo_id: int, csrf_token: str
         if replacement:
             replacement.is_primary = True
     db.commit()
-    stored_upload_path(asset_id, storage_filename).unlink(missing_ok=True)
+    stored_upload_path(photo.asset_id, storage_filename).unlink(missing_ok=True)
     if thumbnail_filename:
-        stored_upload_path(asset_id, thumbnail_filename).unlink(missing_ok=True)
+        stored_upload_path(photo.asset_id, thumbnail_filename).unlink(missing_ok=True)
     write_audit(db, user, "delete_photo", "hardware_asset", str(asset_id), request.client.host if request.client else None)
     return RedirectResponse("/infrastructure/asset-manager", status_code=303)
 
@@ -495,7 +503,7 @@ def download_attachment(asset_id: int, attachment_id: int, db: Session = Depends
     row = db.get(HardwareAssetAttachment, attachment_id)
     if not row or row.asset_id != asset_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found")
-    path = stored_upload_path(asset_id, row.stored_filename)
+    path = stored_upload_path(row.asset_id, row.stored_filename)
     if not path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found")
     return FileResponse(path, media_type="application/octet-stream", filename=row.original_filename)
@@ -508,7 +516,7 @@ def delete_attachment(request: Request, asset_id: int, attachment_id: int, csrf_
     if not row or row.asset_id != asset_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found")
     filename = row.original_filename
-    path = stored_upload_path(asset_id, row.stored_filename)
+    path = stored_upload_path(row.asset_id, row.stored_filename)
     db.delete(row)
     db.commit()
     path.unlink(missing_ok=True)
@@ -537,6 +545,6 @@ def delete_asset(request: Request, asset_id: int, csrf_token: str = Form(...), d
     db.query(HardwareAssetPhoto).filter(HardwareAssetPhoto.asset_id == row.id).delete(synchronize_session=False)
     db.delete(row)
     db.commit()
-    shutil.rmtree(Path(get_settings().upload_dir) / "hardware_assets" / str(asset_id), ignore_errors=True)
+    shutil.rmtree(asset_upload_dir(row.id), ignore_errors=True)
     write_audit(db, user, "delete", "hardware_asset", str(asset_id), request.client.host if request.client else None, detail=name)
     return RedirectResponse("/infrastructure/asset-manager", status_code=303)
