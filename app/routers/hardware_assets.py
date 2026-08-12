@@ -117,7 +117,8 @@ def parse_date(value: str):
 
 
 def asset_upload_dir(asset_id: int, *, create: bool = False) -> Path:
-    path = Path(get_settings().upload_dir) / "hardware_assets" / str(asset_id)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Hardware asset not found") from exc
+
     if create:
         path.mkdir(parents=True, exist_ok=True)
     return path
@@ -486,7 +487,7 @@ def delete_photo(request: Request, asset_id: int, photo_id: int, csrf_token: str
     if thumbnail_filename:
         stored_upload_path(asset_id, thumbnail_filename).unlink(missing_ok=True)
     write_audit(db, user, "delete_photo", "hardware_asset", str(asset_id), request.client.host if request.client else None)
-    return RedirectResponse(f"/infrastructure/asset-manager/{asset_id}", status_code=303)
+    return RedirectResponse("/infrastructure/asset-manager", status_code=303)
 
 
 @router.get("/{asset_id}/attachments/{attachment_id}")
