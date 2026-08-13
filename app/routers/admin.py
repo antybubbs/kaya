@@ -139,6 +139,12 @@ from app.services.site_settings import (
     validate_allowed_hosts,
 )
 from app.services.user_names import clean_name_part, first_name_contains_last_name
+from app.services.asset_tags import (
+    SETTING_DEFAULTS as ASSET_TAG_SETTING_DEFAULTS,
+    next_asset_tag_preview,
+    synchronise_asset_tag_sequence,
+    validate_asset_tag_settings,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +169,7 @@ MODULE_SETTINGS_TABS = {
     "module-network-monitor": "network_monitor",
     "module-vlan-ip-manager": "vlan_ip_manager",
     "module-remote-manager": "remote_manager",
+    "module-asset-manager": "asset_manager",
     "module-secret-vault": "secret_vault",
     "module-secure-send": "secure_send",
 }
@@ -352,6 +359,7 @@ SITE_SETTING_KEYS = {
     "secure_send_vault_integration": "1",
     "secure_send_gateway_hostname": "http://localhost:8999",
     "secure_send_email_notifications": "1",
+    **ASSET_TAG_SETTING_DEFAULTS,
     "smtp_enabled": "",
     "smtp_host": "",
     "smtp_port": "587",
@@ -2874,6 +2882,7 @@ def settings_page(
             "user": user,
             "module_access": granted_module_keys(db, user),
             "settings": load_site_settings(db),
+            "asset_tag_preview": next_asset_tag_preview(db),
             **wallboard_admin_context(request, db),
             "ha_active_cluster_count": db.query(HACluster)
             .filter(HACluster.deleted_at.is_(None))
@@ -3678,6 +3687,11 @@ async def save_settings(
     secure_send_vault_integration: str = Form(""),
     secure_send_gateway_hostname: str = Form("http://localhost:8999"),
     secure_send_email_notifications: str = Form(""),
+    asset_tags_auto_generate: str = Form(""),
+    asset_tags_prefix: str = Form("HAL"),
+    asset_tags_separator: str = Form("-"),
+    asset_tags_padding: str = Form("4"),
+    asset_tags_start_number: str = Form("1"),
     dns_manager_enabled: str = Form(""),
     dns_collector_enabled: str = Form(""),
     dns_default_provider_id: str = Form(""),
@@ -3728,6 +3742,10 @@ async def save_settings(
     validate_csrf_token(request, csrf_token)
     form = await request.form()
     module_settings_access = granted_module_keys(db, user)
+    previous_asset_tag_settings = {
+        key: get_site_setting(db, key) or default
+        for key, default in ASSET_TAG_SETTING_DEFAULTS.items()
+    }
     if "remote_manager" not in module_settings_access:
         guacd_host = get_site_setting(db, "guacd_host")
         guacd_port = get_site_setting(db, "guacd_port")
@@ -3955,6 +3973,58 @@ async def save_settings(
         if not re.fullmatch(r"https?://[^\s/]+(?::\d+)?", gateway_hostname):
             gateway_hostname = "http://localhost:8999"
         save_site_setting(db, "secure_send_gateway_hostname", gateway_hostname)
+    if "asset_manager" in module_settings_access:
+        asset_tag_values, asset_tag_error = validate_asset_tag_settings(
+            {
+                "asset_tags_auto_generate": asset_tags_auto_generate,
+                "asset_tags_prefix": asset_tags_prefix,
+                "asset_tags_separator": asset_tags_separator,
+                "asset_tags_padding": asset_tags_padding,
+                "asset_tags_start_number": asset_tags_start_number,
+            }
+        )
+        if asset_tag_error:
+            db.rollback()
+            submitted_settings = load_site_settings(db)
+            for key, value in form.items():
+                if key in submitted_settings and key != "csrf_token":
+                    submitted_settings[key] = str(value)
+            return templates.TemplateResponse(
+                request,
+                "settings.html",
+                {
+                    "user": user,
+                    "module_access": module_settings_access,
+                    "settings": submitted_settings,
+                    "dns_providers": dns_providers_for_admin(db),
+                    "ha_dns_clusters": ha_dns_clusters_for_admin(db),
+                    **vlan_ip_admin_context(db),
+                    "security_check": security_check_context(request, db),
+                    "message": None,
+                    "error": asset_tag_error,
+                    **csrf_context(request),
+                },
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
+        for key, value in asset_tag_values.items():
+            save_site_setting(db, key, value)
+        synchronise_asset_tag_sequence(db, asset_tag_values)
+        changed_asset_tag_keys = [
+            key
+            for key, value in asset_tag_values.items()
+            if previous_asset_tag_settings.get(key, "") != value
+        ]
+        if changed_asset_tag_keys:
+            write_audit(
+                db,
+                user,
+                "update",
+                "asset_tag_settings",
+                None,
+                trusted_client_ip(request),
+                detail="Updated Asset Tag generation settings",
+                metadata={"changed_keys": changed_asset_tag_keys},
+            )
     if "dns_manager" in module_settings_access:
         try:
             save_dns_manager_settings(

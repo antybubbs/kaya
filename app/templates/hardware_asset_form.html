@@ -5,7 +5,7 @@
 <section class="panel">
 <form method="post" enctype="multipart/form-data" class="form-grid">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <label>Asset Tag<input name="asset_tag" value="{{ record.asset_tag if record and record.asset_tag else '' }}" placeholder="HL-001"></label>
+  <label>Asset Tag{% if not record and asset_tag_auto_generate %}<small>Leave blank to generate the next tag. Preview: {{ asset_tag_preview }}</small>{% endif %}<input name="asset_tag" value="{{ record.asset_tag if record and record.asset_tag else '' }}" placeholder="{{ asset_tag_preview if asset_tag_auto_generate else 'HL-001' }}"></label>
   <label>Name<input name="name" value="{{ record.name if record else '' }}" placeholder="Main lab server" required></label>
   <label>Category<select name="category"><option value=""></option>{% if record and record.category and record.category not in categories %}<option value="{{ record.category }}" selected>{{ record.category }}</option>{% endif %}{% for option in categories %}<option value="{{ option }}" {% if record and record.category == option %}selected{% endif %}>{{ option }}</option>{% endfor %}</select></label>
   <label>Status<select name="asset_status">{% if record and record.status and record.status not in statuses %}<option value="{{ record.status }}" selected>{{ record.status }}</option>{% endif %}{% for option in statuses %}<option value="{{ option }}" {% if record and record.status == option %}selected{% endif %}>{{ option }}</option>{% endfor %}</select></label>

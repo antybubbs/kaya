@@ -55,9 +55,9 @@
         </div>
       </details>
 
-      {% if 'backup_manager' in module_access or 'dashboard' in module_access or 'dns_manager' in module_access or 'network_monitor' in module_access or 'vlan_ip_manager' in module_access or 'remote_manager' in module_access or 'secret_vault' in module_access or 'secure_send' in module_access %}
+      {% if 'backup_manager' in module_access or 'dashboard' in module_access or 'dns_manager' in module_access or 'network_monitor' in module_access or 'vlan_ip_manager' in module_access or 'remote_manager' in module_access or 'asset_manager' in module_access or 'secret_vault' in module_access or 'secure_send' in module_access %}
       <details class="settings-side-group" data-settings-details="modules" open>
-        <summary class="settings-side-link" data-settings-parent-tab="modules" data-default-child="{% if 'backup_manager' in module_access %}module-backup-manager{% elif 'dashboard' in module_access %}module-dashboard{% elif 'dns_manager' in module_access %}module-dns-manager{% elif 'network_monitor' in module_access %}module-network-monitor{% elif 'vlan_ip_manager' in module_access %}module-vlan-ip-manager{% elif 'remote_manager' in module_access %}module-remote-manager{% elif 'secret_vault' in module_access %}module-secret-vault{% else %}module-secure-send{% endif %}" aria-selected="false">Module Settings</summary>
+        <summary class="settings-side-link" data-settings-parent-tab="modules" data-default-child="{% if 'backup_manager' in module_access %}module-backup-manager{% elif 'dashboard' in module_access %}module-dashboard{% elif 'dns_manager' in module_access %}module-dns-manager{% elif 'network_monitor' in module_access %}module-network-monitor{% elif 'vlan_ip_manager' in module_access %}module-vlan-ip-manager{% elif 'remote_manager' in module_access %}module-remote-manager{% elif 'asset_manager' in module_access %}module-asset-manager{% elif 'secret_vault' in module_access %}module-secret-vault{% else %}module-secure-send{% endif %}" aria-selected="false">Module Settings</summary>
         <div class="settings-side-children">
           {% if 'backup_manager' in module_access %}<a href="/system/site-administration?tab=module-backup-manager" class="settings-side-child" data-settings-child-tab="module-backup-manager" data-settings-parent="modules" aria-selected="false">Backup Manager</a>{% endif %}
           {% if 'dashboard' in module_access %}<a href="/system/site-administration?tab=module-dashboard" class="settings-side-child" data-settings-child-tab="module-dashboard" data-settings-parent="modules" aria-selected="false">Dashboard</a>{% endif %}
@@ -65,6 +65,7 @@
           {% if 'network_monitor' in module_access %}<a href="/system/site-administration?tab=module-network-monitor" class="settings-side-child" data-settings-child-tab="module-network-monitor" data-settings-parent="modules" aria-selected="false">IP/WAN Monitor</a>{% endif %}
           {% if 'vlan_ip_manager' in module_access %}<a href="/system/site-administration?tab=module-vlan-ip-manager" class="settings-side-child" data-settings-child-tab="module-vlan-ip-manager" data-settings-parent="modules" aria-selected="false">VLAN/IP Manager</a>{% endif %}
           {% if 'remote_manager' in module_access %}<a href="/system/site-administration?tab=module-remote-manager" class="settings-side-child" data-settings-child-tab="module-remote-manager" data-settings-parent="modules" aria-selected="false">Remote Manager</a>{% endif %}
+          {% if 'asset_manager' in module_access %}<a href="/system/site-administration?tab=module-asset-manager" class="settings-side-child" data-settings-child-tab="module-asset-manager" data-settings-parent="modules" aria-selected="false">Asset Manager</a>{% endif %}
           {% if 'secret_vault' in module_access %}<a href="/system/site-administration?tab=module-secret-vault" class="settings-side-child" data-settings-child-tab="module-secret-vault" data-settings-parent="modules" aria-selected="false">Secret Vault</a>{% endif %}
           {% if 'secure_send' in module_access %}<a href="/system/site-administration?tab=module-secure-send" class="settings-side-child" data-settings-child-tab="module-secure-send" data-settings-parent="modules" aria-selected="false">Secure Send</a>{% endif %}
         </div>
@@ -643,6 +644,21 @@
       <div class="remote-settings-actions">
         <button class="button" type="submit" formaction="/system/site-administration/save-dns-provider" formmethod="post" formnovalidate>Save Pi-hole provider</button>
         <button class="button secondary" type="submit" formaction="/system/site-administration/test-dns-provider" formmethod="post" formnovalidate>Test Pi-hole connection</button>
+      </div>
+    </div>
+  </section>{% endif %}
+
+  {% if 'asset_manager' in module_access %}<section class="settings-tab-panel" data-settings-panel="module-asset-manager" data-settings-parent="modules" role="tabpanel" hidden>
+    <h2>Asset Manager</h2>
+    <div class="remote-settings-card" id="asset-manager-tags">
+      <header><span>Asset Tags</span></header>
+      <div class="remote-settings-grid">
+        {{ switch('asset_tags_auto_generate', 'Auto-generate Asset Tags', 'Assign the next available tag when a new asset is saved without a manual tag.') }}
+        <label><strong>Prefix</strong><small>Letters, numbers, spaces, dots, hyphens, and underscores only.</small><input name="asset_tags_prefix" value="{{ settings.get('asset_tags_prefix', 'HAL') }}" maxlength="40"></label>
+        <label><strong>Separator</strong><small>Use -, /, _, a space, or leave blank.</small><input name="asset_tags_separator" value="{{ settings.get('asset_tags_separator', '-') }}" maxlength="1"></label>
+        <label><strong>Number padding</strong><small>Number of digits, from 1 to 12.</small><input name="asset_tags_padding" type="number" min="1" max="12" value="{{ settings.get('asset_tags_padding', '4') }}"></label>
+        <label><strong>Starting number</strong><small>Existing matching tags are always respected.</small><input name="asset_tags_start_number" type="number" min="1" value="{{ settings.get('asset_tags_start_number', '1') }}"></label>
+        <p class="muted">Next Asset Tag: <code>{{ asset_tag_preview }}</code></p>
       </div>
     </div>
   </section>{% endif %}
