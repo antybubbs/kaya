@@ -21,7 +21,7 @@ from app.db.session import Base
 from app.core.security import encrypt_secret
 from app.models.models import BackupAgentBootstrap, BackupAgentIdentity, BackupAgentKey, BackupAgentMigrationWindow, BackupJob, ComputeHost, ComputeMetric, ComputeWorkload, RemoteManagerSetting
 from app.routers.backup_agent_v2 import checkin, claim, offers
-from app.routers.compute_manager import summary_api
+from app.routers.compute_manager import summary_api, uptime_label
 from app.services.backup_agent_protocol import (
     authenticate_request,
     allow_legacy_inventory,
@@ -235,19 +235,24 @@ def test_v2_checkin_persists_workload_metrics_and_summary_values():
     with database() as db:
         host, _, key, private = enrolled(db)
         workloads = [
-            {"name": "container-a", "status": "running", "cpu_percent": 1.2, "memory_used": 100_000_000, "memory_total": 400_000_000},
+            {"name": "container-a", "status": "running", "cpu_percent": 1.2, "memory_used": 100_000_000, "memory_total": 400_000_000, "storage_used": 104_857_600, "uptime_seconds": 93_784},
             {"name": "container-b", "status": "running", "cpu_percent": 15.8, "memory_used": 900_000_000, "memory_total": 2_000_000_000},
         ]
         _checkin_workloads(db, host, key, private, workloads)
         rows = {row.name: row for row in db.query(ComputeWorkload).filter_by(host_id=host.id).all()}
         assert rows["container-a"].cpu_percent == 1.2
         assert rows["container-b"].memory_used == 900_000_000
+        assert rows["container-a"].storage_used == 104_857_600
+        assert rows["container-a"].storage_total is None
+        assert rows["container-a"].uptime_seconds == 93_784
         metrics = db.query(ComputeMetric).filter(ComputeMetric.host_id == host.id, ComputeMetric.workload_id.is_not(None)).all()
         assert {metric.workload_id for metric in metrics} == {row.id for row in rows.values()}
         summary = json.loads(summary_api(db).body)
         summary_rows = {row["name"]: row for row in summary["workloads"]}
         assert summary_rows["container-a"]["cpu"] == 1.2
         assert summary_rows["container-b"]["memory"] == 45
+        assert uptime_label(rows["container-a"].uptime_seconds) == "1d 2h"
+        assert uptime_label(0) == "<1m"
 
 
 def test_v2_checkin_preserves_zero_and_missing_metrics():
@@ -281,3 +286,11 @@ def test_v2_repeated_checkin_reconciles_workload_and_updates_current_values():
         assert len(rows) == 1
         assert rows[0].cpu_percent == 2.0
         assert rows[0].memory_used == 20
+
+
+def test_workload_detail_template_uses_live_cpu_and_optional_storage_total():
+    template = (Path(__file__).parents[1] / "app/templates/compute_workload_detail.html").read_text(encoding="utf-8")
+    assert "CPU usage" in template
+    assert "row.cpu_percent|round(1)" in template
+    assert "row.cpu_total" not in template
+    assert "row.storage_total is not none" in template
