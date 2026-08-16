@@ -183,6 +183,24 @@ def prune_missing_workloads(db, host_id, now, retention_days=30):
         db.delete(row)
 
 
+def record_compute_metrics(db, host, workloads, recorded_at, min_interval_seconds=60):
+    """Persist host and workload samples using the normal compute retention cadence."""
+    last = (
+        db.query(ComputeMetric)
+        .filter(
+            ComputeMetric.host_id == host.id, ComputeMetric.workload_id.is_(None)
+        )
+        .order_by(ComputeMetric.recorded_at.desc())
+        .first()
+    )
+    if last and last.recorded_at >= recorded_at - timedelta(seconds=min_interval_seconds):
+        return False
+    db.add(ComputeMetric(host_id=host.id, cpu_percent=host.cpu_percent, memory_used=host.memory_used, memory_total=host.memory_total, storage_used=host.storage_used, storage_total=host.storage_total, recorded_at=recorded_at))
+    for workload in workloads:
+        db.add(ComputeMetric(host_id=host.id, workload_id=workload.id, cpu_percent=workload.cpu_percent, memory_used=workload.memory_used, memory_total=workload.memory_total, storage_used=workload.storage_used, storage_total=workload.storage_total, recorded_at=recorded_at))
+    return True
+
+
 def collect_docker(host):
     version = request_json(host, "/version") or {}
     info = request_json(host, "/info") or {}
@@ -1121,44 +1139,15 @@ def sync_host(db, host):
                     last_seen_at=now,
                 )
             )
-        last = (
-            db.query(ComputeMetric)
-            .filter(
-                ComputeMetric.host_id == host.id, ComputeMetric.workload_id.is_(None)
-            )
-            .order_by(ComputeMetric.recorded_at.desc())
-            .first()
+        record_compute_metrics(
+            db,
+            host,
+            db.query(ComputeWorkload)
+            .filter_by(host_id=host.id)
+            .filter(ComputeWorkload.last_seen_at == now)
+            .all(),
+            now,
         )
-        if not last or last.recorded_at < now - timedelta(seconds=60):
-            db.add(
-                ComputeMetric(
-                    host_id=host.id,
-                    cpu_percent=host.cpu_percent,
-                    memory_used=host.memory_used,
-                    memory_total=host.memory_total,
-                    storage_used=host.storage_used,
-                    storage_total=host.storage_total,
-                    recorded_at=now,
-                )
-            )
-            for row in (
-                db.query(ComputeWorkload)
-                .filter_by(host_id=host.id)
-                .filter(ComputeWorkload.last_seen_at == now)
-                .all()
-            ):
-                db.add(
-                    ComputeMetric(
-                        host_id=host.id,
-                        workload_id=row.id,
-                        cpu_percent=row.cpu_percent,
-                        memory_used=row.memory_used,
-                        memory_total=row.memory_total,
-                        storage_used=row.storage_used,
-                        storage_total=row.storage_total,
-                        recorded_at=now,
-                    )
-                )
         if old_host_status != "online":
             db.add(
                 ComputeEvent(

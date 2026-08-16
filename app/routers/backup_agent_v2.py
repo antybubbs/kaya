@@ -5,7 +5,7 @@ import json
 import secrets
 import uuid
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
@@ -22,6 +22,7 @@ from app.models.models import (
     BackupJob,
     ComputeHost,
     ComputeInventoryItem,
+    ComputeMetric,
     ComputeWorkload,
 )
 from app.routers.auth import require_admin, require_module_access
@@ -39,6 +40,7 @@ from app.services.backup_agent_protocol import (
     seal_dispatch,
     b64u_decode,
 )
+from app.services.compute_monitor import prune_missing_workloads, record_compute_metrics
 
 router = APIRouter()
 compute_module_gate = Depends(require_module_access("compute_manager"))
@@ -60,6 +62,19 @@ def _json_object(body: bytes) -> dict:
         raise HTTPException(400, "A valid JSON object is required") from exc
     if not isinstance(value, dict):
         raise HTTPException(400, "A JSON object is required")
+    return value
+
+
+def _workload_metric(data: dict, field: str, *, integer: bool = False):
+    value = data.get(field)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise HTTPException(400, f"Invalid workload {field}")
+    if integer and not isinstance(value, int):
+        raise HTTPException(400, f"Invalid workload {field}")
+    if value < 0:
+        raise HTTPException(400, f"Invalid workload {field}")
     return value
 
 
@@ -185,12 +200,24 @@ async def checkin(request: Request, db: Session = Depends(get_db)):
             raise HTTPException(400, "Workload identity is required")
         external_id = workload_identity(kind, reported, name)
         row, _ = reconcile_workload(db, host.id, kind, external_id, name)
-        row.name, row.status, row.last_seen_at, row.updated_at = name, str(data.get("status") or "unknown")[:30], now, now
+        row.name = name
+        row.node = host.name
+        row.status = str(data.get("status") or "unknown")[:30]
+        row.cpu_percent = _workload_metric(data, "cpu_percent")
+        row.cpu_total = _workload_metric(data, "cpu_total")
+        row.memory_used = _workload_metric(data, "memory_used", integer=True)
+        row.memory_total = _workload_metric(data, "memory_total", integer=True)
+        row.storage_used = _workload_metric(data, "storage_used", integer=True)
+        row.storage_total = _workload_metric(data, "storage_total", integer=True)
+        row.uptime_seconds = _workload_metric(data, "uptime_seconds", integer=True)
+        row.tags = str(data["tags"])[:500] if data.get("tags") is not None else None
+        row.last_seen_at, row.updated_at = now, now
         row.metadata_json = json.dumps(data.get("metadata") if isinstance(data.get("metadata"), dict) else {})
         seen.add((kind, external_id))
     for row in db.query(ComputeWorkload).filter_by(host_id=host.id).all():
         if (row.kind, row.external_id) not in seen:
             row.status = "missing"
+    prune_missing_workloads(db, host.id, now)
     db.query(ComputeInventoryItem).filter_by(host_id=host.id).delete(synchronize_session=False)
     inventory_seen: set[tuple[str, str]] = set()
     for data in items:
@@ -202,6 +229,19 @@ async def checkin(request: Request, db: Session = Depends(get_db)):
             continue
         inventory_seen.add((kind, external_id))
         db.add(ComputeInventoryItem(host_id=host.id, external_id=external_id, name=str(data.get("name") or external_id)[:500], kind=kind, status=str(data.get("status"))[:30] if data.get("status") is not None else None, size_bytes=data.get("size_bytes") if isinstance(data.get("size_bytes"), int) else None, metadata_json=json.dumps(data.get("metadata") if isinstance(data.get("metadata"), dict) else {}), last_seen_at=now))
+    record_compute_metrics(
+        db,
+        host,
+        [
+            row
+            for row in db.query(ComputeWorkload).filter_by(host_id=host.id).all()
+            if row.last_seen_at == now
+        ],
+        now,
+    )
+    db.query(ComputeMetric).filter(
+        ComputeMetric.recorded_at < now - timedelta(days=7)
+    ).delete(synchronize_session=False)
     db.commit()
     return {"ok": True, "server_time": int(now.timestamp())}
 
