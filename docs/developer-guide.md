@@ -30,15 +30,31 @@ make shell
 
 ## Publishing Releases
 
-Kaya uses three release phases. Work is developed on the current `dev*` branch
-(the planned logical branch is `dev`), then tested as immutable development and
-release-candidate prereleases before stable promotion:
+Kaya uses three release phases. Work is developed on the `dev` branch (with
+historical versioned `dev*` branches retained where they already exist). Every
+successful push publishes the moving `dev` development image and a
+commit-specific image; no manual version tag or GitHub Release is required for
+normal Development work:
 
 ```text
-dev -> vX.Y.Z-dev.N -> vX.Y.Z-rc.N -> RC validation -> Dev -> Main -> vX.Y.Z
+dev -> automatic kaya:dev -> explicit vX.Y.Z-rc.N -> RC validation -> Dev -> Main -> vX.Y.Z
 ```
 
-Create internal builds with:
+The normal Development workflow is:
+
+```bash
+git commit
+git push origin dev
+docker pull ghcr.io/antybubbs/kaya:dev
+```
+
+CI also publishes `ghcr.io/antybubbs/kaya:dev-<short-git-sha>` for the exact
+build. The `dev` tag is mutable and always points to the latest successful
+Development build. Development pushes do not create GitHub Releases and never
+publish `latest`.
+
+If an immutable internal snapshot is specifically needed, it may still be
+created with:
 
 ```bash
 make release-dev VERSION=v0.28.0-dev.1

@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - Kaya
+      - dev
       - "dev*"
   release:
     types:
@@ -21,7 +22,7 @@ jobs:
     steps:
       # PRODUCTION: vX.Y.Z GitHub release -> publishes vX.Y.Z + latest.
       # CANDIDATE: vX.Y.Z-dev.N / vX.Y.Z-rc.N -> publishes the version tag only.
-      # DEVELOPMENT: dev* branch -> publishes development tags only.
+      # DEVELOPMENT: dev/dev* branch -> publishes development tags only.
       # MAIN: publishes a commit-specific SHA image only.
       # KAYA: publishes its branch tag only.
       - name: Set image metadata

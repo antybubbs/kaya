@@ -37,17 +37,20 @@ Kaya releases should follow the repository's chosen semantic versioning approach
 Pre-1.0 releases may move quickly, but breaking changes still require documentation and migration care.
 
 Kaya uses a Development -> Release Candidate -> Stable lifecycle for new public
-versions. Active development remains on the repository's development branch
-(currently the `dev*` branch family; the planned logical branch is `dev`).
+versions. Active development remains on the `dev` branch (with historical
+versioned `dev*` branches retained where they already exist).
 
-- Development builds use immutable tags `vX.Y.Z-dev.N` and are GitHub prereleases.
+- Successful `dev` pushes publish the mutable `dev` development image and a
+  commit-specific `dev-<short-sha>` image. These are CI artifacts, not releases.
+- Versioned development tags `vX.Y.Z-dev.N` may still be used for an explicit
+  internal snapshot, but are not required for normal Development work.
 - Release candidates use immutable tags `vX.Y.Z-rc.N` and are GitHub prereleases.
 - Stable releases use `vX.Y.Z` and are normal GitHub releases.
 
 The release flow is:
 
 ```text
-dev -> vX.Y.Z-dev.N -> vX.Y.Z-rc.N -> RC validation -> Dev -> Main -> vX.Y.Z
+dev -> automatic kaya:dev -> vX.Y.Z-rc.N -> RC validation -> Dev -> Main -> vX.Y.Z
 ```
 
 An RC that fails validation is never edited or reused. Fixes return to the
@@ -56,7 +59,7 @@ add functional changes after RC approval. If functional code changes, the RC
 must be rejected, the fix must return through Development, and a new RC must
 be tested.
 
-The public updater remains stable-only. Prerelease tags must not become the
+The public updater remains stable-only. Development images and prerelease tags must not become the
 Docker `latest` image or be treated as mandatory upgrade steps. Only a
 published, non-draft, non-prerelease `vX.Y.Z` release may publish `latest`.
 Development and RC images receive only their version-specific tags.

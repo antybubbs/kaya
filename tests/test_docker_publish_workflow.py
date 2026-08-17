@@ -69,6 +69,7 @@ def test_branch_builds_cannot_publish_latest_and_keep_expected_versions():
     kaya = workflow_step("Build and push Kaya branch image")
 
     assert 'VERSION="$SHORT_SHA"' in metadata
+    assert "- dev" in WORKFLOW
     assert '[[ "$REF" == refs/heads/dev* ]]' in metadata
     assert 'VERSION="$REF_TAG"' in metadata
 
@@ -87,6 +88,18 @@ def test_branch_builds_cannot_publish_latest_and_keep_expected_versions():
 
     for step in (main, development, kaya):
         assert ":latest" not in step
+
+
+def test_dev_branch_publishes_moving_and_commit_specific_tags_without_release():
+    trigger = WORKFLOW.partition("permissions:")[0]
+    development = workflow_step("Build and push development branch image")
+
+    assert "      - dev\n" in trigger
+    assert "startsWith(github.ref, 'refs/heads/dev')" in development
+    assert "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.ref_tag }}" in development
+    assert "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.ref_tag }}-${{ steps.meta.outputs.short_sha }}" in development
+    assert ":latest" not in development
+    assert "gh release" not in development
 
 
 def test_stable_release_validation_is_strict_semver_without_suffixes():
