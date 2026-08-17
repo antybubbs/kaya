@@ -49,6 +49,19 @@ def test_only_published_releases_can_reach_the_latest_tag():
     assert WORKFLOW.count("${{ steps.meta.outputs.image }}:latest") == 1
 
 
+def test_published_prereleases_get_version_images_without_latest():
+    metadata = workflow_step("Set image metadata")
+    prerelease = workflow_step("Build and push prerelease image")
+
+    assert "RELEASE_PRERELEASE" in metadata
+    assert "v[0-9]+\\.[0-9]+\\.[0-9]+-(dev|rc)\\.[0-9]+" in metadata
+    assert "CHECKOUT_REF=\"$RELEASE_TAG\"" in metadata
+    assert "github.event_name == 'release'" in prerelease
+    assert "APP_VERSION=${{ steps.meta.outputs.version }}" in prerelease
+    assert "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}" in prerelease
+    assert ":latest" not in prerelease
+
+
 def test_branch_builds_cannot_publish_latest_and_keep_expected_versions():
     metadata = workflow_step("Set image metadata")
     main = workflow_step("Build and push main commit image")
@@ -88,9 +101,27 @@ def test_stable_release_validation_is_strict_semver_without_suffixes():
     assert "VERSION=\"$RELEASE_TAG\"" in WORKFLOW
 
 
+def test_release_lifecycle_tag_formats_are_distinct_and_ordered_by_semver():
+    prerelease = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+-(dev|rc)\.[0-9]+$")
+    assert all(prerelease.fullmatch(tag) for tag in (
+        "v0.28.0-dev.1", "v0.28.0-dev.2", "v0.28.0-rc.1", "v0.28.0-rc.2",
+    ))
+    assert STABLE_TAG.fullmatch("v0.28.0")
+    assert not prerelease.fullmatch("v0.28.0")
+    assert not STABLE_TAG.fullmatch("v0.28.0-rc.1")
+
+
 def test_release_command_creates_a_github_release_after_validating_version():
     assert "grep -Eq '^v[0-9]+\\.[0-9]+\\.[0-9]+$$'" in MAKEFILE
-    assert "gh release create $(VERSION) --verify-tag --generate-notes --title $(VERSION)" in MAKEFILE
+    assert 'gh release create "$(VERSION)" --verify-tag --generate-notes --title "$(VERSION)"' in MAKEFILE
+
+
+def test_release_commands_mark_only_prereleases_as_prerelease():
+    assert "release-dev:" in MAKEFILE
+    assert "release-rc:" in MAKEFILE
+    assert "^v[0-9]+\\.[0-9]+\\.[0-9]+-dev\\.[0-9]+$$" in MAKEFILE
+    assert "^v[0-9]+\\.[0-9]+\\.[0-9]+-rc\\.[0-9]+$$" in MAKEFILE
+    assert MAKEFILE.count("--prerelease") == 2
 
 
 def test_production_deployments_stay_on_latest():

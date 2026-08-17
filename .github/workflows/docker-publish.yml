@@ -20,6 +20,7 @@ jobs:
       packages: write
     steps:
       # PRODUCTION: vX.Y.Z GitHub release -> publishes vX.Y.Z + latest.
+      # CANDIDATE: vX.Y.Z-dev.N / vX.Y.Z-rc.N -> publishes the version tag only.
       # DEVELOPMENT: dev* branch -> publishes development tags only.
       # MAIN: publishes a commit-specific SHA image only.
       # KAYA: publishes its branch tag only.
@@ -46,24 +47,33 @@ jobs:
           CHECKOUT_REF="$GITHUB_SHA"
 
           if [ "$EVENT_NAME" = "release" ]; then
-            if [ "$RELEASE_DRAFT" = "true" ] || [ "$RELEASE_PRERELEASE" = "true" ]; then
-              echo "Refusing to publish latest from a draft or prerelease." >&2
-              exit 1
-            fi
-            if ! printf '%s' "$RELEASE_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
-              echo "Refusing to publish latest: release tag must match vMAJOR.MINOR.PATCH." >&2
+            if [ "$RELEASE_DRAFT" = "true" ]; then
+              echo "Refusing to publish a draft release." >&2
               exit 1
             fi
 
-            LATEST_RELEASE_TAG="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.tag_name')"
-            if [ "$LATEST_RELEASE_TAG" != "$RELEASE_TAG" ]; then
-              echo "Refusing to publish latest: this is not GitHub's latest stable release." >&2
-              exit 1
+            if [ "$RELEASE_PRERELEASE" = "true" ]; then
+              if ! printf '%s' "$RELEASE_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+-(dev|rc)\.[0-9]+$'; then
+                echo "Refusing to publish prerelease: tag must match vMAJOR.MINOR.PATCH-(dev|rc).N." >&2
+                exit 1
+              fi
+            else
+              if ! printf '%s' "$RELEASE_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+                echo "Refusing to publish stable release: tag must match vMAJOR.MINOR.PATCH." >&2
+                exit 1
+              fi
+
+              LATEST_RELEASE_TAG="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.tag_name')"
+              if [ "$LATEST_RELEASE_TAG" != "$RELEASE_TAG" ]; then
+                echo "Refusing to publish latest: this is not GitHub's latest stable release." >&2
+                exit 1
+              fi
+
+              STABLE_RELEASE=true
             fi
 
             VERSION="$RELEASE_TAG"
             CHECKOUT_REF="$RELEASE_TAG"
-            STABLE_RELEASE=true
           elif [ "$REF" = "refs/heads/Kaya" ] || [[ "$REF" == refs/heads/dev* ]]; then
             VERSION="$REF_TAG"
           fi
@@ -161,3 +171,20 @@ jobs:
           tags: |
             ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}
             ${{ steps.meta.outputs.image }}:latest
+
+      - name: Build and push prerelease image
+        if: github.event_name == 'release' && steps.meta.outputs.stable_release != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          build-args: |
+            APP_VERSION=${{ steps.meta.outputs.version }}
+          labels: |
+            org.opencontainers.image.title=Kaya
+            org.opencontainers.image.description=Your Infrastructure. Your Home.
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+          tags: |
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}

@@ -30,11 +30,56 @@ make shell
 
 ## Publishing Releases
 
-Production containers are published only when a non-draft, non-prerelease GitHub
-Release is published with a tag that exactly matches `vMAJOR.MINOR.PATCH`. The
-release must also be the release returned by GitHub's `releases/latest` API.
-That single build publishes both the version tag and `latest`, so both tags refer
-to the same image digest and contain the release tag as `APP_VERSION`.
+Kaya uses three release phases. Work is developed on the current `dev*` branch
+(the planned logical branch is `dev`), then tested as immutable development and
+release-candidate prereleases before stable promotion:
+
+```text
+dev -> vX.Y.Z-dev.N -> vX.Y.Z-rc.N -> RC validation -> Dev -> Main -> vX.Y.Z
+```
+
+Create internal builds with:
+
+```bash
+make release-dev VERSION=v0.28.0-dev.1
+```
+
+Create a feature-complete candidate with:
+
+```bash
+make release-rc VERSION=v0.28.0-rc.1
+```
+
+Both commands create an immutable Git tag and a GitHub prerelease. Never reuse
+an existing tag. If validation finds a defect, fix it on Development and create
+`v0.28.0-rc.2` (or the next number); do not modify the tested candidate.
+
+After the latest RC passes validation, complete all Dev -> Main checks and
+promote the tested source to `main`. Do not add functional changes during this
+promotion. If the promoted source differs functionally from the approved RC,
+return to Development and create a new RC.
+
+For a merge that changes the commit ID, compare source trees before tagging
+Stable:
+
+```bash
+git diff --exit-code v0.28.0-rc.1^{tree} main^{tree}
+```
+
+The command must produce no output and exit successfully. Release-note wording
+may change during validation, but functional source changes require another RC.
+
+Create the public stable release only when explicitly approved:
+
+```bash
+make release VERSION=v0.28.0
+```
+
+Stable releases must be non-draft, non-prerelease GitHub Releases with a
+`vMAJOR.MINOR.PATCH` tag. The release must also be the release returned by
+GitHub's `releases/latest` API. That build publishes both the version tag and
+`latest`, so both tags refer to the same image digest and contain the release
+tag as `APP_VERSION`.
 
 From an authenticated GitHub CLI session, the repository release helper performs
 the tag push and creates the GitHub Release:
@@ -43,10 +88,16 @@ the tag push and creates the GitHub Release:
 make release VERSION=v0.26.0
 ```
 
-Pushing a tag alone does not publish a production container. Development branches
-publish only `dev...` tags, `main` publishes only a short-SHA tag, and `Kaya`
-publishes only its branch tag. Production deployments continue to use
-`ghcr.io/antybubbs/kaya:latest`.
+Pushing a tag alone does not publish a container. Published development and RC
+releases publish only their exact version-specific image tag, such as
+`ghcr.io/antybubbs/kaya:0.28.0-rc.1`; they never publish or replace `latest`.
+Development branches publish only `dev...` tags, `main` publishes only a
+short-SHA tag, and `Kaya` publishes only its branch tag. Production deployments
+continue to use `ghcr.io/antybubbs/kaya:latest`.
+
+Existing stable installations continue using GitHub's `/releases/latest` stable
+endpoint and are not offered development or RC builds. Existing stable tags
+and releases are not renamed, recreated or rewritten.
 
 To run without Docker, install Python dependencies and Node dependencies, then run Uvicorn against `app.main:app`. Local filesystem paths may need adjustment because defaults assume `/app/data` and `/app/uploads`.
 

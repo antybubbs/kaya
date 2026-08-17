@@ -36,6 +36,44 @@ Kaya releases should follow the repository's chosen semantic versioning approach
 
 Pre-1.0 releases may move quickly, but breaking changes still require documentation and migration care.
 
+Kaya uses a Development -> Release Candidate -> Stable lifecycle for new public
+versions. Active development remains on the repository's development branch
+(currently the `dev*` branch family; the planned logical branch is `dev`).
+
+- Development builds use immutable tags `vX.Y.Z-dev.N` and are GitHub prereleases.
+- Release candidates use immutable tags `vX.Y.Z-rc.N` and are GitHub prereleases.
+- Stable releases use `vX.Y.Z` and are normal GitHub releases.
+
+The release flow is:
+
+```text
+dev -> vX.Y.Z-dev.N -> vX.Y.Z-rc.N -> RC validation -> Dev -> Main -> vX.Y.Z
+```
+
+An RC that fails validation is never edited or reused. Fixes return to the
+development branch and produce the next RC number. Stable promotion must not
+add functional changes after RC approval. If functional code changes, the RC
+must be rejected, the fix must return through Development, and a new RC must
+be tested.
+
+The public updater remains stable-only. Prerelease tags must not become the
+Docker `latest` image or be treated as mandatory upgrade steps. Only a
+published, non-draft, non-prerelease `vX.Y.Z` release may publish `latest`.
+Development and RC images receive only their version-specific tags.
+
+Release notes may be brief and internal for Development builds, should identify
+the validation scope for RCs, and must be polished public notes for Stable. The
+final Stable wording may be completed during RC validation without changing
+the tested application source.
+
+Release creation is an owner-controlled operation. Coding agents must read the
+current release phase, must not independently promote Development to `main`,
+and must not create a stable release unless explicitly instructed. Before
+stable promotion, the approved RC tag and the promotion source tree must be
+compared; any functional difference requires a new RC. Required Dev -> Main
+checks, including tests, lint/type/security checks and Docker/workflow checks,
+must pass before recommending promotion.
+
 ## Release checks
 
 Before release:
