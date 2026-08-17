@@ -16,6 +16,7 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy import or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette import status
 from PIL import Image, ImageOps, UnidentifiedImageError
@@ -34,6 +35,7 @@ from app.models.models import (
 )
 from app.routers.auth import require_editor, require_module_access, require_user
 from app.services.audit import write_audit
+from app.services.asset_tags import allocate_asset_tag, asset_tag_settings, next_asset_tag_preview
 from app.services.custom_fields import (
     active_fields,
     field_values,
@@ -206,6 +208,8 @@ def template_context(db: Session, request: Request, user, record=None, error=Non
         "custom_fields": fields,
         "custom_values": values,
         "option_list": option_list,
+        "asset_tag_auto_generate": asset_tag_settings(db)["asset_tags_auto_generate"] == "1",
+        "asset_tag_preview": next_asset_tag_preview(db),
         "error": error,
         **csrf_context(request),
     }
@@ -296,6 +300,11 @@ async def create_asset(request: Request, asset_tag: str = Form("", max_length=12
     clean_asset_tag = asset_tag.strip() or None
     if clean_asset_tag and db.query(HardwareAsset).filter(HardwareAsset.asset_tag == clean_asset_tag).first():
         return templates.TemplateResponse(request, "hardware_asset_form.html", template_context(db, request, user, error="That asset tag already exists."), status_code=400)
+    try:
+        clean_asset_tag = allocate_asset_tag(db, clean_asset_tag)
+    except ValueError as exc:
+        db.rollback()
+        return templates.TemplateResponse(request, "hardware_asset_form.html", template_context(db, request, user, error=str(exc)), status_code=400)
     lists = list_values(db, MODULE)
     category_value = clean_managed_value(category, lists.get("category", []))
     location_value = clean_managed_value(location, lists.get("location", []))
@@ -303,7 +312,11 @@ async def create_asset(request: Request, asset_tag: str = Form("", max_length=12
     status_value = clean_managed_value(asset_status, status_values) or (status_values[0] if status_values else "In use")
     row = HardwareAsset(asset_tag=clean_asset_tag, name=name.strip(), category=category_value, status=status_value, manufacturer=manufacturer.strip() or None, model=model.strip() or None, serial_number=serial_number.strip() or None, location=location_value, assigned_to=None, purchase_date=parse_date(purchase_date), purchase_cost=purchase_cost.strip() or None, warranty_expires=parse_date(warranty_expires), supplier=supplier.strip() or None, notes=notes.strip() or None)
     db.add(row)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return templates.TemplateResponse(request, "hardware_asset_form.html", template_context(db, request, user, error="That asset tag already exists."), status_code=400)
     db.refresh(row)
     saved_photo = await save_upload(photo, row.id, "photo", image_only=True)
     if saved_photo:
@@ -354,6 +367,12 @@ async def update_asset(request: Request, asset_id: int, asset_tag: str = Form(""
     clean_asset_tag = asset_tag.strip() or None
     if clean_asset_tag and db.query(HardwareAsset).filter(HardwareAsset.asset_tag == clean_asset_tag, HardwareAsset.id != row.id).first():
         return templates.TemplateResponse(request, "hardware_asset_form.html", template_context(db, request, user, record=row, error="That asset tag already exists."), status_code=400)
+    if clean_asset_tag != row.asset_tag:
+        try:
+            clean_asset_tag = allocate_asset_tag(db, clean_asset_tag)
+        except ValueError as exc:
+            db.rollback()
+            return templates.TemplateResponse(request, "hardware_asset_form.html", template_context(db, request, user, record=row, error=str(exc)), status_code=400)
     lists = list_values(db, MODULE)
     status_values = lists.get("status", [])
     row.asset_tag = clean_asset_tag
@@ -377,7 +396,11 @@ async def update_asset(request: Request, asset_id: int, asset_tag: str = Form(""
     if saved_attachment:
         db.add(HardwareAssetAttachment(asset_id=row.id, original_filename=saved_attachment[0], stored_filename=saved_attachment[1], content_type=saved_attachment[2]))
     save_custom_values(db, fields, form, ENTITY_TYPE, row.id)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return templates.TemplateResponse(request, "hardware_asset_form.html", template_context(db, request, user, record=row, error="That asset tag already exists."), status_code=400)
     write_audit(db, user, "update", "hardware_asset", str(row.id), request.client.host if request.client else None, detail=row.name)
     return RedirectResponse(f"/infrastructure/asset-manager/{row.id}", status_code=303)
 

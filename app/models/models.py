@@ -1212,6 +1212,13 @@ class HardwareAsset(Base):
     photos = relationship("HardwareAssetPhoto", back_populates="asset", cascade="all, delete-orphan", order_by="HardwareAssetPhoto.sort_order, HardwareAssetPhoto.id")
 
 
+class HardwareAssetTagSequence(Base):
+    __tablename__ = "hardware_asset_tag_sequences"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    next_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class HardwareAssetPhoto(Base):
     __tablename__ = "hardware_asset_photos"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
