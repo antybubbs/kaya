@@ -27,6 +27,14 @@ from app.db.validation import (
 )
 from app.models.models import IPAddress, NetworkMonitor, User
 
+DNS_CLIENT_DETAIL_INDEXES = (
+    ("dns_client_ip_history", "ix_dns_client_ip_history_client_last_seen", ("dns_client_id", "last_seen_at")),
+    ("dns_client_hostname_history", "ix_dns_client_hostname_history_client_last_seen", ("dns_client_id", "last_seen_at")),
+    ("dns_client_events", "ix_dns_client_events_client_created", ("dns_client_id", "created_at")),
+    ("dns_client_traffic_events", "ix_dns_client_traffic_client_observed", ("dns_client_id", "observed_at")),
+    ("dns_client_traffic_events", "ix_dns_client_traffic_client_blocked_observed", ("dns_client_id", "is_blocked", "observed_at")),
+)
+
 
 def settings_for(path: Path, backup_dir: Path) -> Settings:
     return Settings(
@@ -107,6 +115,147 @@ def test_oidc_hardening_migration_revokes_legacy_bearer_invitations(tmp_path):
     assert row[3] is None
     assert row[4] is None
     assert revision == CURRENT_REVISION
+
+
+@pytest.mark.parametrize("partial_count", range(6))
+def test_dns_client_indexes_recover_from_any_partial_application(tmp_path, partial_count):
+    from alembic import command
+
+    path = tmp_path / f"partial-{partial_count}.db"
+    config = migrations_module._alembic_config(f"sqlite:///{path.as_posix()}")
+    command.upgrade(config, "20260813_01")
+    indexes = DNS_CLIENT_DETAIL_INDEXES
+    with sqlite3.connect(path) as connection:
+        for table, name, columns in indexes[:partial_count]:
+            connection.execute(f'CREATE INDEX "{name}" ON "{table}" ({", ".join(columns)})')
+        connection.commit()
+
+    command.upgrade(config, "head")
+
+    with sqlite3.connect(path) as connection:
+        actual = {}
+        for table, name, _ in indexes:
+            index_row = next(
+                row for row in connection.execute(f'PRAGMA index_list("{table}")') if row[1] == name
+            )
+            columns = tuple(row[2] for row in connection.execute(f'PRAGMA index_info("{name}")'))
+            actual[name] = (table, columns, bool(index_row[2]))
+        revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()[0]
+    assert actual == {name: (table, columns, False) for table, name, columns in indexes}
+    assert revision == "20260818_01"
+
+
+def test_prepare_database_recovers_stale_revision_with_existing_first_index(tmp_path):
+    from alembic import command
+
+    path = tmp_path / "startup-recovery.db"
+    settings = settings_for(path, tmp_path / "backups")
+    config = migrations_module._alembic_config(settings.database_url)
+    command.upgrade(config, "20260813_01")
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "CREATE INDEX ix_dns_client_ip_history_client_last_seen "
+            "ON dns_client_ip_history (dns_client_id, last_seen_at)"
+        )
+        connection.commit()
+
+    result = prepare_database(engine_for(path), settings)
+
+    assert result.current_revision == "20260818_01"
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "20260818_01"
+
+
+def test_dns_client_index_downgrade_removes_only_owned_indexes(tmp_path):
+    from alembic import command
+
+    path = tmp_path / "downgrade.db"
+    config = migrations_module._alembic_config(f"sqlite:///{path.as_posix()}")
+    command.upgrade(config, "head")
+    command.downgrade(config, "20260813_01")
+
+    with sqlite3.connect(path) as connection:
+        names = {
+            row[1]
+            for table in (
+                "dns_client_ip_history",
+                "dns_client_hostname_history",
+                "dns_client_events",
+                "dns_client_traffic_events",
+            )
+            for row in connection.execute(f'PRAGMA index_list("{table}")')
+        }
+        assert not names & {
+            "ix_dns_client_ip_history_client_last_seen",
+            "ix_dns_client_hostname_history_client_last_seen",
+            "ix_dns_client_events_client_created",
+            "ix_dns_client_traffic_client_observed",
+            "ix_dns_client_traffic_client_blocked_observed",
+        }
+
+
+def test_sqlite_ddl_survives_failed_non_transactional_transition(tmp_path):
+    path = tmp_path / "ddl-survives.db"
+    with sqlite3.connect(path) as connection:
+        connection.execute("CREATE TABLE sample (id INTEGER PRIMARY KEY, value TEXT)")
+        connection.execute("CREATE INDEX retained_after_failure ON sample (value)")
+        try:
+            raise sqlite3.OperationalError("database or disk is full")
+        except sqlite3.OperationalError:
+            pass
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name='retained_after_failure'"
+        ).fetchone() == ("retained_after_failure",)
+
+
+def test_dns_client_index_name_collision_fails_with_schema_drift(tmp_path):
+    from alembic import command
+
+    path = tmp_path / "wrong-index.db"
+    config = migrations_module._alembic_config(f"sqlite:///{path.as_posix()}")
+    command.upgrade(config, "20260813_01")
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "CREATE INDEX ix_dns_client_ip_history_client_last_seen "
+            "ON dns_client_ip_history (ip_address)"
+        )
+        connection.commit()
+
+    with pytest.raises(RuntimeError, match="Migration index collision"):
+        command.upgrade(config, "head")
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "20260813_01"
+
+
+def test_retry_backup_reuses_verified_backup_after_schema_only_failure(tmp_path):
+    source = tmp_path / "source.db"
+    backup_dir = tmp_path / "backups"
+    with sqlite3.connect(source) as connection:
+        connection.execute("CREATE TABLE sample (id INTEGER PRIMARY KEY)")
+    first = create_sqlite_backup(source, backup_dir, source_revision="20260813_01", target_revision="20260818_01")
+    with sqlite3.connect(source) as connection:
+        connection.execute("CREATE INDEX partial_index ON sample (id)")
+        connection.commit()
+    second = create_sqlite_backup(source, backup_dir, source_revision="20260813_01", target_revision="20260818_01")
+    assert second.database_path == first.database_path
+    assert len(list(backup_dir.glob("pre-migration-*.sqlite3"))) == 1
+
+
+def test_migration_disk_space_preflight_fails_before_backup(tmp_path, monkeypatch):
+    from alembic import command
+
+    path = tmp_path / "low-space.db"
+    backup_dir = tmp_path / "backups"
+    config = migrations_module._alembic_config(f"sqlite:///{path.as_posix()}")
+    command.upgrade(config, "20260813_01")
+    settings = settings_for(path, backup_dir)
+    usage = shutil.disk_usage(tmp_path)._replace(free=0)
+    monkeypatch.setattr(migrations_module.shutil, "disk_usage", lambda _path: usage)
+
+    with pytest.raises(DatabaseMigrationError, match="Insufficient free storage"):
+        prepare_database(engine_for(path), settings)
+    assert list(backup_dir.glob("*.sqlite3")) == []
 
 
 def test_rdp_certificate_trust_downgrade_is_blocked_and_state_is_preserved(tmp_path):

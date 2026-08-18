@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import sqlite3
 import tempfile
 from contextlib import closing
@@ -34,7 +35,8 @@ from app.models.models import Base
 logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BASELINE_REVISION = "20260730_01"
-CURRENT_REVISION = "20260813_01"
+CURRENT_REVISION = "20260818_01"
+MINIMUM_MIGRATION_FREE_BYTES = 1 * 1024 * 1024
 STAGE_OPENING_DATABASE = "Opening database"
 STAGE_INTEGRITY_CHECKS = "Checking database readability"
 STAGE_CREATING_BACKUP = "Creating backup"
@@ -154,6 +156,49 @@ def _backup_if_enabled(
     )
 
 
+def _existing_storage_path(path: Path) -> Path:
+    candidate = path.resolve()
+    while not candidate.exists() and candidate != candidate.parent:
+        candidate = candidate.parent
+    return candidate
+
+
+def _migration_footprint(path: Path) -> int:
+    return sum(
+        candidate.stat().st_size
+        for candidate in (
+            path,
+            path.with_name(path.name + "-wal"),
+            path.with_name(path.name + "-shm"),
+        )
+        if candidate.is_file()
+    )
+
+
+def _ensure_migration_disk_space(database_path: Path, backup_directory: Path) -> None:
+    """Fail before backup/DDL when storage cannot safely hold migration work."""
+    footprint = _migration_footprint(database_path)
+    required = max(MINIMUM_MIGRATION_FREE_BYTES, footprint * 2)
+    locations = {
+        _existing_storage_path(database_path.parent),
+        _existing_storage_path(backup_directory),
+    }
+    for location in locations:
+        available = shutil.disk_usage(location).free
+        logger.info(
+            "Kaya database: migration storage preflight location=%s available_bytes=%s required_bytes=%s database_bytes=%s",
+            location,
+            available,
+            required,
+            footprint,
+        )
+        if available < required:
+            raise DatabaseMigrationError(
+                "Insufficient free storage for a safe SQLite migration; "
+                f"at least {required} bytes is required on {location}."
+            )
+
+
 def _apply_missing_baseline_objects(database_path: Path) -> None:
     with tempfile.TemporaryDirectory(prefix="kaya-baseline-") as directory:
         baseline_path = Path(directory) / "baseline.sqlite3"
@@ -218,6 +263,9 @@ def prepare_database(engine: Engine, settings: Settings) -> MigrationResult:
                 migration_required = True
                 progress.enter(STAGE_INTEGRITY_CHECKS)
                 validate_legacy_database(database_path)
+                _ensure_migration_disk_space(
+                    database_path, Path(settings.migration_backup_dir)
+                )
                 progress.enter(STAGE_CREATING_BACKUP)
                 backup = _backup_if_enabled(
                     settings,
@@ -265,6 +313,9 @@ def prepare_database(engine: Engine, settings: Settings) -> MigrationResult:
                     "Kaya database: Alembic upgrade required current=%s target=%s",
                     previous_revision,
                     target_revision,
+                )
+                _ensure_migration_disk_space(
+                    database_path, Path(settings.migration_backup_dir)
                 )
                 progress.enter(STAGE_CREATING_BACKUP)
                 backup = _backup_if_enabled(

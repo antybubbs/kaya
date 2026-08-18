@@ -620,9 +620,19 @@ def test_client_detail_does_not_load_large_observation_history(monkeypatch):
             "scheme": "http",
             "session": {},
         })
-        result = dns_manager.dns_client_detail(request, client.id, db=db, user=SimpleNamespace(role="viewer"))
+        result = dns_manager.dns_client_detail(
+            request,
+            client.id,
+            q="",
+            traffic_q="",
+            traffic_status="all",
+            traffic_period="7d",
+            traffic_page=1,
+            db=db,
+            user=SimpleNamespace(role="viewer"),
+        )
 
-        assert result is rendered
+        assert result["client"] is rendered["client"]
         assert rendered["client"].observation_count == 10000
         assert "dns_client_observations" not in " ".join(statements)
 

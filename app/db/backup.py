@@ -66,43 +66,52 @@ def _reusable_backup(
     target_revision: str,
     source_fingerprint: str,
 ) -> MigrationBackup | None:
-    for metadata_path in sorted(
-        backup_directory.glob("pre-migration-*.json"), reverse=True
-    ):
-        try:
-            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-            backup_filename = metadata.get("backup_filename")
-            if (
-                not isinstance(backup_filename, str)
-                or Path(backup_filename).name != backup_filename
-            ):
-                continue
-            if not (
-                metadata.get("source_filename") == source.name
-                and metadata.get("source_revision") == source_revision
-                and metadata.get("target_revision") == target_revision
-                and metadata.get("source_fingerprint") == source_fingerprint
-            ):
-                continue
-            backup_path = backup_directory / backup_filename
-            if not backup_path.is_file() or metadata.get(
-                "backup_sha256"
-            ) != _file_sha256(backup_path):
+    candidates = sorted(backup_directory.glob("pre-migration-*.json"), reverse=True)
+    for retry_mode in (False, True):
+        for metadata_path in candidates:
+            transition_matches = False
+            exact_matches = False
+            backup_path = None
+            metadata = None
+            try:
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                backup_filename = metadata.get("backup_filename")
+                if (
+                    not isinstance(backup_filename, str)
+                    or Path(backup_filename).name != backup_filename
+                ):
+                    continue
+                transition_matches = (
+                    metadata.get("source_filename") == source.name
+                    and metadata.get("source_revision") == source_revision
+                    and metadata.get("target_revision") == target_revision
+                )
+                exact_matches = (
+                    transition_matches
+                    and metadata.get("source_fingerprint") == source_fingerprint
+                )
+                if not (exact_matches or (retry_mode and transition_matches)):
+                    continue
+                backup_path = backup_directory / backup_filename
+                if not backup_path.is_file() or metadata.get(
+                    "backup_sha256"
+                ) != _file_sha256(backup_path):
+                    logger.warning(
+                        "Ignoring reusable migration backup candidate with failed digest verification"
+                    )
+                    continue
+                validate_sqlite_readable(backup_path)
+            except (OSError, ValueError, DatabaseValidationError):
                 logger.warning(
-                    "Ignoring reusable migration backup candidate with failed digest verification"
+                    "Ignoring unreadable or invalid reusable migration backup candidate"
                 )
                 continue
-            validate_sqlite_readable(backup_path)
-        except (OSError, ValueError, DatabaseValidationError):
-            logger.warning(
-                "Ignoring unreadable or invalid reusable migration backup candidate"
+            logger.debug(
+                "Reusing verified migration backup for %s database transition: %s",
+                "unchanged" if exact_matches else "retry with changed SQLite schema",
+                backup_path.name,
             )
-            continue
-        logger.debug(
-            "Reusing verified migration backup for unchanged database: %s",
-            backup_path.name,
-        )
-        return MigrationBackup(backup_path, metadata_path)
+            return MigrationBackup(backup_path, metadata_path)
     return None
 
 
@@ -162,9 +171,7 @@ def create_sqlite_backup(
             percent = int(((total - remaining) / total) * 100) if total else 100
             if percent >= next_milestone:
                 while percent >= next_milestone:
-                    logger.info(
-                        "Kaya database: backup progress %s%%", next_milestone
-                    )
+                    logger.info("Kaya database: backup progress %s%%", next_milestone)
                     next_milestone += 25
             elif time.monotonic() >= next_progress:
                 logger.info(
