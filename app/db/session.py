@@ -8,11 +8,17 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
-from app.core.config import get_settings
+from app.core.config import get_settings, sqlite_database_path
 from app.core.performance import install_engine_timing
+from app.db.sqlite_temp import configure_sqlite_temp_directory
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
+
+if settings.database_url.startswith("sqlite"):
+    database_path = sqlite_database_path(settings.database_url)
+    if database_path is not None:
+        configure_sqlite_temp_directory(database_path)
 
 SQLITE_BUSY_TIMEOUT_MS = 5_000
 SQLITE_REQUIRED_JOURNAL_MODE = "wal"

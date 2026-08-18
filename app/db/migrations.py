@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import sqlite3
 import tempfile
@@ -22,6 +23,7 @@ from app.db.compatibility import (
     create_missing_baseline_objects,
     migrate_pre_alembic_database,
 )
+from app.db.sqlite_temp import configure_sqlite_temp_directory
 from app.db.validation import (
     DatabaseValidationError,
     SQLITE_BUSY_TIMEOUT_MS,
@@ -175,22 +177,77 @@ def _migration_footprint(path: Path) -> int:
     )
 
 
-def _ensure_migration_disk_space(database_path: Path, backup_directory: Path) -> None:
+def _prepare_sqlite_temp_directory(database_path: Path) -> Path:
+    """Configure a Kaya-owned SQLite temp directory before opening SQLite."""
+    try:
+        temp_directory = configure_sqlite_temp_directory(database_path)
+    except RuntimeError as exc:
+        raise DatabaseMigrationError(
+            str(exc)
+        ) from exc
+    logger.info(
+        "Kaya database: SQLite migration temp directory=%s filesystem=%s",
+        temp_directory,
+        os.stat(temp_directory).st_dev,
+    )
+    return temp_directory
+
+
+def _ensure_migration_disk_space(
+    database_path: Path, backup_directory: Path, sqlite_temp_directory: Path
+) -> None:
     """Fail before backup/DDL when storage cannot safely hold migration work."""
-    footprint = _migration_footprint(database_path)
-    required = max(MINIMUM_MIGRATION_FREE_BYTES, footprint * 2)
-    locations = {
-        _existing_storage_path(database_path.parent),
-        _existing_storage_path(backup_directory),
-    }
-    for location in locations:
+    database_directory = _existing_storage_path(database_path.parent)
+    backup_location = _existing_storage_path(backup_directory)
+    temp_location = _existing_storage_path(sqlite_temp_directory)
+    database_bytes = database_path.stat().st_size if database_path.is_file() else 0
+    wal_bytes = (
+        database_path.with_name(database_path.name + "-wal").stat().st_size
+        if database_path.with_name(database_path.name + "-wal").is_file()
+        else 0
+    )
+    shm_bytes = (
+        database_path.with_name(database_path.name + "-shm").stat().st_size
+        if database_path.with_name(database_path.name + "-shm").is_file()
+        else 0
+    )
+    footprint = database_bytes + wal_bytes + shm_bytes
+    database_filesystem = os.stat(database_directory).st_dev
+    temp_filesystem = os.stat(temp_location).st_dev
+    backup_filesystem = os.stat(backup_location).st_dev
+    if database_filesystem != temp_filesystem:
+        raise DatabaseMigrationError(
+            "SQLite migration temp directory is not on the database filesystem."
+        )
+    shared_required = max(MINIMUM_MIGRATION_FREE_BYTES, footprint * 2)
+    backup_required = (
+        shared_required
+        if backup_filesystem == database_filesystem
+        else max(MINIMUM_MIGRATION_FREE_BYTES, footprint)
+    )
+    checks = (
+        (database_directory, database_filesystem, shared_required),
+        (backup_location, backup_filesystem, backup_required),
+    )
+    seen: set[int] = set()
+    for location, filesystem, required in checks:
+        if filesystem in seen:
+            continue
+        seen.add(filesystem)
         available = shutil.disk_usage(location).free
         logger.info(
-            "Kaya database: migration storage preflight location=%s available_bytes=%s required_bytes=%s database_bytes=%s",
+            "Kaya database: migration storage preflight database_path=%s database_filesystem=%s backup_filesystem=%s sqlite_temp_directory=%s sqlite_temp_filesystem=%s database_bytes=%s wal_bytes=%s shm_bytes=%s location=%s available_bytes=%s required_bytes=%s",
+            database_path,
+            database_filesystem,
+            backup_filesystem,
+            sqlite_temp_directory,
+            temp_filesystem,
+            database_bytes,
+            wal_bytes,
+            shm_bytes,
             location,
             available,
             required,
-            footprint,
         )
         if available < required:
             raise DatabaseMigrationError(
@@ -199,8 +256,12 @@ def _ensure_migration_disk_space(database_path: Path, backup_directory: Path) ->
             )
 
 
-def _apply_missing_baseline_objects(database_path: Path) -> None:
-    with tempfile.TemporaryDirectory(prefix="kaya-baseline-") as directory:
+def _apply_missing_baseline_objects(
+    database_path: Path, sqlite_temp_directory: Path
+) -> None:
+    with tempfile.TemporaryDirectory(
+        dir=sqlite_temp_directory, prefix="kaya-baseline-"
+    ) as directory:
         baseline_path = Path(directory) / "baseline.sqlite3"
         baseline_config = Config(str(PROJECT_ROOT / "alembic.ini"))
         baseline_config.set_main_option(
@@ -228,6 +289,7 @@ def prepare_database(engine: Engine, settings: Settings) -> MigrationResult:
             raise DatabaseMigrationError(
                 "Only file-backed SQLite migration is currently supported."
             )
+        sqlite_temp_directory = _prepare_sqlite_temp_directory(database_path)
         config = _alembic_config(settings.database_url)
         script = ScriptDirectory.from_config(config)
         heads = script.get_heads()
@@ -253,6 +315,11 @@ def prepare_database(engine: Engine, settings: Settings) -> MigrationResult:
             logger.info("Kaya database: fresh database detected")
             database_path.parent.mkdir(parents=True, exist_ok=True)
             migration_required = True
+            _ensure_migration_disk_space(
+                database_path,
+                Path(settings.migration_backup_dir),
+                sqlite_temp_directory,
+            )
             progress.enter(STAGE_ALEMBIC_MIGRATION)
             command.upgrade(config, "head")
             previous_revision = None
@@ -264,7 +331,9 @@ def prepare_database(engine: Engine, settings: Settings) -> MigrationResult:
                 progress.enter(STAGE_INTEGRITY_CHECKS)
                 validate_legacy_database(database_path)
                 _ensure_migration_disk_space(
-                    database_path, Path(settings.migration_backup_dir)
+                    database_path,
+                    Path(settings.migration_backup_dir),
+                    sqlite_temp_directory,
                 )
                 progress.enter(STAGE_CREATING_BACKUP)
                 backup = _backup_if_enabled(
@@ -282,7 +351,9 @@ def prepare_database(engine: Engine, settings: Settings) -> MigrationResult:
                 progress.enter(STAGE_COMPATIBILITY)
                 logger.info("Kaya database: running compatibility upgrade")
                 migrate_pre_alembic_database(database_path)
-                _apply_missing_baseline_objects(database_path)
+                _apply_missing_baseline_objects(
+                    database_path, sqlite_temp_directory
+                )
                 compatibility_applied = True
                 logger.info("Kaya database: compatibility upgrade complete")
                 progress.enter(STAGE_SCHEMA_VALIDATION)
@@ -315,7 +386,9 @@ def prepare_database(engine: Engine, settings: Settings) -> MigrationResult:
                     target_revision,
                 )
                 _ensure_migration_disk_space(
-                    database_path, Path(settings.migration_backup_dir)
+                    database_path,
+                    Path(settings.migration_backup_dir),
+                    sqlite_temp_directory,
                 )
                 progress.enter(STAGE_CREATING_BACKUP)
                 backup = _backup_if_enabled(
