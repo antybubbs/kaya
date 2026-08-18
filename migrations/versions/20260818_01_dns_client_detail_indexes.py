@@ -1,8 +1,15 @@
 """Add indexes used by DNS client detail history queries."""
 
+import logging
+import os
+import shutil
+import time
+from pathlib import Path
+
 from alembic import op
 from sqlalchemy import inspect
 
+logger = logging.getLogger(__name__)
 
 INDEXES = (
     (
@@ -55,6 +62,20 @@ def _existing_indexes(bind) -> dict[str, tuple[str, tuple[str, ...], bool]]:
     return found
 
 
+def _storage_snapshot(bind) -> dict[str, int | str]:
+    database_path = Path(bind.exec_driver_sql("PRAGMA database_list").first()[2])
+    temp_directory = Path(os.environ.get("SQLITE_TMPDIR", "/tmp"))
+    database_bytes = database_path.stat().st_size if database_path.is_file() else 0
+    temp_bytes = sum(
+        item.stat().st_size for item in temp_directory.iterdir() if item.is_file()
+    ) if temp_directory.is_dir() else 0
+    return {
+        "database_bytes": database_bytes,
+        "available_bytes": shutil.disk_usage(database_path.parent).free,
+        "sqlite_temp_bytes": temp_bytes,
+    }
+
+
 def _ensure_index(bind, table: str, name: str, columns: tuple[str, ...]) -> None:
     existing = _existing_indexes(bind).get(name)
     expected = (table, columns, False)
@@ -65,8 +86,39 @@ def _ensure_index(bind, table: str, name: str, columns: tuple[str, ...]) -> None
                 f"{table}({', '.join(columns)}) unique=False, found "
                 f"{existing[0]}({', '.join(existing[1])}) unique={existing[2]}"
             )
+        logger.info("migration_index action=skip name=%s reason=already_exact", name)
         return
-    op.create_index(name, table, list(columns))
+    started = time.monotonic()
+    before = _storage_snapshot(bind)
+    logger.info(
+        "migration_index action=start name=%s database_bytes=%s available_bytes=%s sqlite_temp_bytes=%s",
+        name,
+        before["database_bytes"],
+        before["available_bytes"],
+        before["sqlite_temp_bytes"],
+    )
+    try:
+        op.create_index(name, table, list(columns))
+    except Exception:
+        after = _storage_snapshot(bind)
+        logger.error(
+            "migration_index action=failed name=%s duration_seconds=%.3f database_bytes=%s available_bytes=%s sqlite_temp_bytes=%s",
+            name,
+            time.monotonic() - started,
+            after["database_bytes"],
+            after["available_bytes"],
+            after["sqlite_temp_bytes"],
+        )
+        raise
+    after = _storage_snapshot(bind)
+    logger.info(
+        "migration_index action=complete name=%s duration_seconds=%.3f database_bytes=%s available_bytes=%s sqlite_temp_bytes=%s",
+        name,
+        time.monotonic() - started,
+        after["database_bytes"],
+        after["available_bytes"],
+        after["sqlite_temp_bytes"],
+    )
 
 
 def upgrade() -> None:

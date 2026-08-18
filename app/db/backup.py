@@ -111,6 +111,12 @@ def _reusable_backup(
                 "unchanged" if exact_matches else "retry with changed SQLite schema",
                 backup_path.name,
             )
+            logger.info(
+                "migration_backup action=reused filename=%s source_revision=%s target_revision=%s",
+                backup_path.name,
+                source_revision,
+                target_revision,
+            )
             return MigrationBackup(backup_path, metadata_path)
     return None
 
@@ -237,6 +243,12 @@ def create_sqlite_backup(
         "Kaya database: backup verified filename=%s elapsed=%.3fs",
         backup_path.name,
         time.monotonic() - backup_started,
+    )
+    logger.info(
+        "migration_backup action=created filename=%s source_revision=%s target_revision=%s",
+        backup_path.name,
+        source_revision,
+        target_revision,
     )
     return MigrationBackup(backup_path, metadata_path)
 

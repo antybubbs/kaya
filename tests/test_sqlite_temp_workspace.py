@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import sqlite3
 from pathlib import Path
 
 import pytest
@@ -17,6 +16,8 @@ from app.db import migrations
     reason="run explicitly in the constrained-/tmp Docker integration environment",
 )
 def test_large_index_uses_kaya_sqlite_temp_workspace() -> None:
+    import sqlite3
+
     persistent_root = os.environ.get("KAYA_SQLITE_TEMP_INTEGRATION_ROOT")
     if not persistent_root:
         pytest.fail("KAYA_SQLITE_TEMP_INTEGRATION_ROOT must be a persistent mount")

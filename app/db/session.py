@@ -1,5 +1,4 @@
 import logging
-import sqlite3
 from contextlib import contextmanager
 from contextvars import ContextVar
 from time import perf_counter
@@ -179,6 +178,8 @@ def verify_sqlite_pragmas(target_engine: Engine = engine) -> dict[str, int | str
 
 def sqlite_lock_error(exc: BaseException) -> bool:
     """Identify SQLite busy/locked failures without inspecting SQL values."""
+    import sqlite3
+
     current: BaseException | None = exc
     while current is not None:
         if isinstance(current, sqlite3.OperationalError) and "locked" in str(

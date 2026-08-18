@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+# SQLite-dependent modules intentionally follow the temp-directory bootstrap.
+# ruff: noqa: E402
+
 import logging
 import os
 import shutil
-import sqlite3
 import tempfile
 from contextlib import closing
 from dataclasses import dataclass, field
@@ -16,14 +18,20 @@ from alembic.script import ScriptDirectory
 from sqlalchemy import inspect
 from sqlalchemy.engine import Engine
 
-from app.core.config import Settings, sqlite_database_path
+from app.core.config import Settings, get_settings, sqlite_database_path
+from app.db.sqlite_temp import configure_sqlite_temp_directory
+
+_bootstrap_settings = get_settings()
+_bootstrap_database_path = sqlite_database_path(_bootstrap_settings.database_url)
+if _bootstrap_database_path is not None:
+    configure_sqlite_temp_directory(_bootstrap_database_path)
+
 from app.db.backup import MigrationBackup, create_sqlite_backup, prune_migration_backups
 from app.db.compatibility import (
     BaselineCompatibilityError,
     create_missing_baseline_objects,
     migrate_pre_alembic_database,
 )
-from app.db.sqlite_temp import configure_sqlite_temp_directory
 from app.db.validation import (
     DatabaseValidationError,
     SQLITE_BUSY_TIMEOUT_MS,
@@ -97,6 +105,8 @@ def _alembic_config(database_url: str) -> Config:
 
 
 def _revision(path: Path) -> str | None:
+    import sqlite3
+
     try:
         return _read_revision(path)
     except sqlite3.Error as exc:
@@ -106,6 +116,8 @@ def _revision(path: Path) -> str | None:
 
 
 def _read_revision(path: Path) -> str | None:
+    import sqlite3
+
     with closing(
         sqlite3.connect(path, timeout=SQLITE_BUSY_TIMEOUT_MS / 1_000)
     ) as connection:
