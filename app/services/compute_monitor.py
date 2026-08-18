@@ -1157,6 +1157,11 @@ def sync_host(db, host):
                 )
             )
     except Exception as exc:
+        # A failed flush/statement poisons the SQLAlchemy transaction. Reset
+        # it before loading the host for the bounded offline-state update;
+        # otherwise the recovery path raises PendingRollbackError and hides
+        # the original contention failure.
+        db.rollback()
         host = db.get(ComputeHost, host_id)
         if host is None:
             return

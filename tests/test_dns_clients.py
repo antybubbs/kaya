@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta
 import inspect
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,6 +18,7 @@ from app.services.dns_client_repair import repair_dns_client_identities
 from app.services.dns_insights import NormalisedClient, _persist_client_traffic, _persist_dhcp_leases
 from app.routers import dns_manager
 from app.routers import ip_addresses
+from app.services import dns_collector
 
 
 def factory():
@@ -541,6 +544,51 @@ def test_client_traffic_history_is_persisted_and_deduplicated():
         assert event.domain == "ads.example.test"
         assert event.is_blocked is True
         assert event.reply_time_ms == 4.0
+
+
+def test_dns_collection_releases_read_transaction_before_slow_provider_work(
+    monkeypatch, tmp_path
+):
+    database_path = tmp_path / "dns-collector.sqlite"
+    engine = create_engine(
+        f"sqlite:///{database_path}",
+        connect_args={"check_same_thread": False, "timeout": 2},
+    )
+    Base.metadata.create_all(engine)
+    make = sessionmaker(bind=engine)
+    with make() as db:
+        provider = setup_provider(db)
+        provider_id = provider.id
+
+    started = threading.Event()
+    release = threading.Event()
+    transaction_state = []
+
+    def slow_analysis(db, provider, *, known_hostnames_raw):
+        transaction_state.append(db.in_transaction())
+        started.set()
+        assert release.wait(5)
+
+    monkeypatch.setattr(dns_collector, "analyse_provider", slow_analysis)
+    worker = threading.Thread(
+        target=dns_collector.collect_provider,
+        args=(provider_id, "[]", make),
+    )
+    worker.start()
+    assert started.wait(5)
+    with make() as writer:
+        writer.add(
+            DNSProviderConfig(
+                name="Concurrent writer", provider_type="pihole", base_url="http://example.invalid"
+            )
+        )
+        started_at = time.monotonic()
+        writer.commit()
+        assert time.monotonic() - started_at < 1
+    release.set()
+    worker.join(timeout=5)
+    assert not worker.is_alive()
+    assert transaction_state == [False]
 
 
 def test_client_detail_exposes_traffic_summaries_and_history():

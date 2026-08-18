@@ -56,12 +56,16 @@ def collector_configuration(db: Session) -> tuple[bool, int, list[int], str]:
 
 
 def collect_provider(provider_id: int, known_hostnames_raw: str, session_factory=SessionLocal) -> None:
-    with database_write_context("dns_collector", "provider_collection", external_io=True):
+    with database_write_context("dns_collector", "provider_collection"):
         db = session_factory()
         try:
             provider = db.get(DNSProviderConfig, provider_id)
             if not provider or not provider.is_enabled:
                 return
+            # Do not carry even the provider lookup's read transaction into
+            # provider/network work. analyse_provider opens a fresh read/write
+            # transaction only after collection has completed.
+            db.rollback()
             analyse_provider(db, provider, known_hostnames_raw=known_hostnames_raw)
         except AnalysisAlreadyRunning:
             logger.info("DNS collection skipped because analysis is already running", extra={"provider_id": provider_id})

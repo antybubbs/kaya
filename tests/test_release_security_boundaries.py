@@ -93,6 +93,25 @@ def test_session_revocation_can_preserve_only_the_current_session():
         assert other.encrypted_oidc_id_token is None
 
 
+def test_session_touch_skips_recent_database_timestamp(monkeypatch):
+    with database() as db:
+        account = user(db)
+        row = AppSession(
+            session_id="recent",
+            user_id=account.id,
+            last_seen_at=datetime.utcnow(),
+        )
+        db.add(row)
+        db.commit()
+        current = request({"csrf_token": "csrf", "session_id": "recent"})
+
+        def unexpected_commit():
+            raise AssertionError("recent session touches must not commit")
+
+        monkeypatch.setattr(db, "commit", unexpected_commit)
+        assert touch_user_session(db, current, account, row=row) is True
+
+
 def test_first_run_setup_requires_the_deployment_token(monkeypatch):
     monkeypatch.setattr(auth, "settings", SimpleNamespace(setup_token="one-time-token"))
     with database() as db:

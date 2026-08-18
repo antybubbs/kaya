@@ -1,4 +1,6 @@
 import logging
+import random
+import time
 from contextlib import contextmanager
 from contextvars import ContextVar
 from time import perf_counter
@@ -29,7 +31,13 @@ _write_context: ContextVar[dict[str, str] | None] = ContextVar(
 
 
 @contextmanager
-def database_write_context(subsystem: str, operation: str, *, external_io: bool = False):
+def database_write_context(
+    subsystem: str,
+    operation: str,
+    *,
+    external_io: bool = False,
+    retry_count: int = 0,
+):
     """Attach safe attribution to a bounded unit of database work."""
     def clean(value: object, maximum: int) -> str:
         return " ".join(str(value).split())[:maximum] or "unattributed"
@@ -39,12 +47,54 @@ def database_write_context(subsystem: str, operation: str, *, external_io: bool 
             "subsystem": clean(subsystem, 80),
             "operation": clean(operation, 120),
             "external_io": str(bool(external_io)).lower(),
+            "retry_count": retry_count,
         }
     )
     try:
         yield
     finally:
         _write_context.reset(token)
+
+
+def run_with_sqlite_retry(
+    session_factory,
+    operation,
+    *,
+    subsystem: str,
+    operation_name: str,
+    attempts: int = 3,
+):
+    """Run an idempotent DB-only operation in a fresh session per attempt.
+
+    The operation must not perform external I/O or depend on ORM state from a
+    previous attempt. A fresh session is required because rollback invalidates
+    pending ORM state after a failed SQLite write.
+    """
+    attempts = max(1, min(int(attempts), 3))
+    for attempt in range(attempts):
+        db = session_factory()
+        try:
+            with database_write_context(
+                subsystem, operation_name, retry_count=attempt
+            ):
+                result = operation(db)
+                db.commit()
+            return result
+        except Exception as exc:
+            db.rollback()
+            if not sqlite_lock_error(exc) or attempt + 1 >= attempts:
+                raise
+            delay = 0.02 * (2**attempt) + random.uniform(0, 0.02)
+            logger.warning(
+                "database.lock_retry subsystem=%s operation=%s retry_count=%s delay_ms=%.1f",
+                subsystem,
+                operation_name,
+                attempt + 1,
+                delay * 1000,
+            )
+            time.sleep(delay)
+        finally:
+            db.close()
 
 connect_args = (
     {
@@ -78,6 +128,20 @@ if settings.database_url.startswith("sqlite"):
         finally:
             cursor.close()
 
+    @event.listens_for(engine, "handle_error")
+    def log_sqlite_lock_contention(exception_context):
+        original = exception_context.original_exception
+        if "locked" not in str(original).lower():
+            return
+        trace = _write_context.get() or {}
+        logger.warning(
+            "database.lock_contention subsystem=%s operation=%s retry_count=%s error_type=%s",
+            trace.get("subsystem", "unattributed"),
+            trace.get("operation", "unattributed"),
+            trace.get("retry_count", 0),
+            type(original).__name__,
+        )
+
 
 install_engine_timing(engine)
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
@@ -90,6 +154,7 @@ def _track_transaction_start(session, transaction, connection):
     context = _write_context.get() or {}
     session.info["kaya_transaction_trace"] = {
         "started": perf_counter(),
+        "commit_started": None,
         "session_id": id(session),
         "connection_id": id(connection.connection),
         "subsystem": context.get("subsystem", "unattributed"),
@@ -115,20 +180,29 @@ def _finish_transaction_trace(session, outcome: str) -> None:
         return
     logger.warning(
         "database.write.slow subsystem=%s operation=%s session_id=%s connection_id=%s "
-        "duration_ms=%.1f outcome=%s external_io=%s",
+        "duration_ms=%.1f commit_duration_ms=%.1f outcome=%s external_io=%s retry_count=%s",
         trace["subsystem"],
         trace["operation"],
         trace["session_id"],
         trace["connection_id"],
         duration_ms,
+        ((perf_counter() - trace["commit_started"]) * 1000 if trace["commit_started"] else 0.0),
         outcome,
         trace["external_io"],
+        trace.get("retry_count", 0),
     )
 
 
 @event.listens_for(Session, "after_commit")
 def _track_transaction_commit(session):
     _finish_transaction_trace(session, "committed")
+
+
+@event.listens_for(Session, "before_commit")
+def _track_commit_start(session):
+    trace = session.info.get("kaya_transaction_trace")
+    if trace is not None:
+        trace["commit_started"] = perf_counter()
 
 
 @event.listens_for(Session, "after_rollback")

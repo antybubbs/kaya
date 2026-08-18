@@ -8,7 +8,12 @@ import threading
 from datetime import datetime, timedelta
 from time import monotonic
 
-from app.db.session import SessionLocal, database_write_context, sqlite_lock_error
+from app.db.session import (
+    SessionLocal,
+    database_write_context,
+    run_with_sqlite_retry,
+    sqlite_lock_error,
+)
 from app.models.models import HACluster
 from app.services.ha_agents import prune_agent_request_history
 from app.services.ha_failover import advance_failover
@@ -63,8 +68,12 @@ def run_ha_watchdog_pass(session_factory=SessionLocal) -> int:
                 or _last_agent_request_cleanup_at < now - timedelta(hours=1)
             ):
                 try:
-                    deleted = prune_agent_request_history(db, now=now)
-                    db.commit()
+                    deleted = run_with_sqlite_retry(
+                        session_factory,
+                        lambda cleanup_db: prune_agent_request_history(cleanup_db, now=now),
+                        subsystem="ha",
+                        operation_name="agent_request_retention",
+                    )
                     _last_agent_request_cleanup_at = now
                     if deleted:
                         logger.info(
