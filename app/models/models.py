@@ -700,7 +700,10 @@ class DNSClientObservation(Base):
 
 class DNSClientIPHistory(Base):
     __tablename__ = "dns_client_ip_history"
-    __table_args__ = (UniqueConstraint("dns_client_id", "ip_address", name="uq_dns_client_ip_history"),)
+    __table_args__ = (
+        UniqueConstraint("dns_client_id", "ip_address", name="uq_dns_client_ip_history"),
+        Index("ix_dns_client_ip_history_client_last_seen", "dns_client_id", "last_seen_at"),
+    )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     dns_client_id: Mapped[int] = mapped_column(ForeignKey("dns_recognised_devices.id", ondelete="CASCADE"), index=True)
     ip_address: Mapped[str] = mapped_column(String(80), index=True)
@@ -716,7 +719,10 @@ class DNSClientIPHistory(Base):
 
 class DNSClientHostnameHistory(Base):
     __tablename__ = "dns_client_hostname_history"
-    __table_args__ = (UniqueConstraint("dns_client_id", "normalised_hostname", name="uq_dns_client_hostname_history"),)
+    __table_args__ = (
+        UniqueConstraint("dns_client_id", "normalised_hostname", name="uq_dns_client_hostname_history"),
+        Index("ix_dns_client_hostname_history_client_last_seen", "dns_client_id", "last_seen_at"),
+    )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     dns_client_id: Mapped[int] = mapped_column(ForeignKey("dns_recognised_devices.id", ondelete="CASCADE"), index=True)
     hostname: Mapped[str] = mapped_column(String(255), index=True)
@@ -733,6 +739,7 @@ class DNSClientHostnameHistory(Base):
 
 class DNSClientEvent(Base):
     __tablename__ = "dns_client_events"
+    __table_args__ = (Index("ix_dns_client_events_client_created", "dns_client_id", "created_at"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     dns_client_id: Mapped[int] = mapped_column(ForeignKey("dns_recognised_devices.id", ondelete="CASCADE"), index=True)
     event_type: Mapped[str] = mapped_column(String(60), index=True)
@@ -747,7 +754,11 @@ class DNSClientEvent(Base):
 
 class DNSClientTrafficEvent(Base):
     __tablename__ = "dns_client_traffic_events"
-    __table_args__ = (UniqueConstraint("provider_id", "event_key", name="uq_dns_client_traffic_provider_event"),)
+    __table_args__ = (
+        UniqueConstraint("provider_id", "event_key", name="uq_dns_client_traffic_provider_event"),
+        Index("ix_dns_client_traffic_client_observed", "dns_client_id", "observed_at"),
+        Index("ix_dns_client_traffic_client_blocked_observed", "dns_client_id", "is_blocked", "observed_at"),
+    )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     dns_client_id: Mapped[int] = mapped_column(ForeignKey("dns_recognised_devices.id", ondelete="CASCADE"), index=True)
     provider_id: Mapped[int] = mapped_column(ForeignKey("dns_providers.id", ondelete="CASCADE"), index=True)
