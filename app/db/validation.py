@@ -18,7 +18,10 @@ from sqlalchemy import (
     MetaData,
     Numeric,
     String,
+    inspect,
+    text,
 )
+from sqlalchemy.engine import Engine
 from sqlalchemy.sql.type_api import TypeEngine
 
 logger = logging.getLogger(__name__)
@@ -68,6 +71,91 @@ class DatabaseUnreadableError(DatabaseValidationError):
 
 class UnexpectedSQLiteError(DatabaseValidationError):
     pass
+
+
+def validate_engine_schema(
+    engine: Engine,
+    metadata: MetaData,
+    *,
+    required_seed_tables: Iterable[str] = (),
+    require_revision: str | None = None,
+) -> None:
+    """Validate portable schema invariants through SQLAlchemy inspection."""
+    inspector = inspect(engine)
+    actual_tables = set(inspector.get_table_names())
+    missing_tables = set(metadata.tables) - actual_tables
+    if missing_tables:
+        raise DatabaseValidationError(
+            f"Required tables are missing: {', '.join(sorted(missing_tables))}"
+        )
+    for table in metadata.tables.values():
+        actual_columns = {column["name"] for column in inspector.get_columns(table.name)}
+        missing_columns = {column.name for column in table.columns} - actual_columns
+        if missing_columns:
+            raise DatabaseValidationError(
+                f"Table {table.name} is missing columns: {', '.join(sorted(missing_columns))}"
+            )
+        actual_indexes = {
+            index.get("name") for index in inspector.get_indexes(table.name)
+        }
+        actual_indexes.update(
+            constraint.get("name")
+            for constraint in inspector.get_unique_constraints(table.name)
+        )
+        expected_indexes = {
+            index.name for index in table.indexes if index.name
+        }
+        expected_indexes.update(
+            constraint.name
+            for constraint in table.constraints
+            if constraint.name and constraint.__class__.__name__ == "UniqueConstraint"
+        )
+        missing_indexes = expected_indexes - actual_indexes
+        if missing_indexes:
+            raise DatabaseValidationError(
+                f"Table {table.name} is missing indexes or unique constraints: {', '.join(sorted(missing_indexes))}"
+            )
+        actual_foreign_keys = {
+            (
+                column,
+                foreign_key.get("referred_table"),
+                (foreign_key.get("referred_columns") or [None])[0],
+            )
+            for foreign_key in inspector.get_foreign_keys(table.name)
+            for column in (foreign_key.get("constrained_columns") or [None])
+        }
+        expected_foreign_keys = {
+            (foreign_key.parent.name, foreign_key.column.table.name, foreign_key.column.name)
+            for foreign_key in table.foreign_keys
+        }
+        if not expected_foreign_keys <= actual_foreign_keys:
+            raise DatabaseValidationError(
+                f"Table {table.name} is missing one or more required foreign keys."
+            )
+    for table_name in required_seed_tables:
+        with engine.connect() as connection:
+            if connection.execute(text(f'SELECT 1 FROM "{table_name}" LIMIT 1')).first() is None:
+                raise DatabaseValidationError(f"Required seed table is empty: {table_name}")
+    if require_revision is not None:
+        with engine.connect() as connection:
+            revisions = [
+                row[0]
+                for row in connection.execute(text("SELECT version_num FROM alembic_version"))
+            ]
+        if revisions != [require_revision]:
+            raise DatabaseValidationError(
+                f"Database revision {revisions!r} does not match {require_revision!r}."
+            )
+
+
+def validate_engine_startup(engine: Engine, *, required_tables: Iterable[str] = ()) -> None:
+    """Run portable startup object-presence checks."""
+    actual_tables = set(inspect(engine).get_table_names())
+    missing_tables = set(required_tables) - actual_tables
+    if missing_tables:
+        raise DatabaseValidationError(
+            f"Required tables are missing: {', '.join(sorted(missing_tables))}"
+        )
 
 
 def _timestamp() -> str:

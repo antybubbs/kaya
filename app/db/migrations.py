@@ -15,7 +15,7 @@ from time import perf_counter
 from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
 
 from app.core.config import Settings, get_settings, sqlite_database_path
@@ -32,12 +32,14 @@ from app.db.compatibility import (
     create_missing_baseline_objects,
     migrate_pre_alembic_database,
 )
+from app.db.dialect import capabilities
 from app.db.validation import (
     DatabaseValidationError,
     SQLITE_BUSY_TIMEOUT_MS,
     classify_sqlite_error,
     validate_legacy_database,
     validate_schema,
+    validate_engine_schema,
     validate_startup_database,
 )
 from app.models.models import Base
@@ -143,6 +145,44 @@ def _read_revision(path: Path) -> str | None:
 
 def _has_application_tables(engine: Engine) -> bool:
     return bool(set(inspect(engine).get_table_names()) - {"alembic_version"})
+
+
+def _prepare_postgresql_database(
+    engine: Engine, settings: Settings, progress: MigrationProgress
+) -> MigrationResult:
+    """Prepare an already-provisioned PostgreSQL database without SQLite file logic."""
+    config = _alembic_config(settings.database_url)
+    script = ScriptDirectory.from_config(config)
+    heads = script.get_heads()
+    if len(heads) != 1:
+        raise DatabaseMigrationError(
+            f"Multiple Alembic migration heads detected: {', '.join(sorted(heads)) or 'none'}."
+        )
+    target_revision = heads[0]
+    with engine.connect() as connection:
+        connection.execute(text("SELECT 1"))
+        if "alembic_version" not in inspect(engine).get_table_names():
+            previous_revision = None
+        else:
+            revisions = [
+                row[0]
+                for row in connection.execute(
+                    text("SELECT version_num FROM alembic_version")
+                )
+            ]
+            if len(revisions) > 1:
+                raise DatabaseMigrationError("The PostgreSQL database contains multiple Alembic revisions.")
+            previous_revision = revisions[0] if revisions else None
+    if not _has_application_tables(engine) or previous_revision != target_revision:
+        if previous_revision is not None:
+            script.get_revision(previous_revision)
+        progress.enter(STAGE_ALEMBIC_MIGRATION)
+        command.upgrade(config, "head")
+    progress.enter(STAGE_SCHEMA_VALIDATION)
+    validate_engine_schema(engine, Base.metadata, require_revision=target_revision)
+    progress.enter(STAGE_STARTUP_COMPLETE)
+    progress.finish()
+    return MigrationResult(previous_revision, target_revision, None, False)
 
 
 def _backup_if_enabled(
@@ -296,6 +336,19 @@ def prepare_database(engine: Engine, settings: Settings) -> MigrationResult:
     schema_fully_validated = False
     try:
         progress.enter(STAGE_OPENING_DATABASE)
+        detected = capabilities(engine)
+        if detected.is_postgresql:
+            result = _prepare_postgresql_database(engine, settings, progress)
+            logger.info(
+                "Kaya database ready: engine=postgresql revision=%s migration_required=%s",
+                result.current_revision,
+                result.previous_revision != result.current_revision,
+            )
+            return result
+        if not detected.is_sqlite:
+            raise DatabaseMigrationError(
+                f"Unsupported database engine: {detected.name}. Kaya supports SQLite and PostgreSQL."
+            )
         database_path = sqlite_database_path(settings.database_url)
         if database_path is None:
             raise DatabaseMigrationError(

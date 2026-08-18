@@ -806,6 +806,7 @@ class HACluster(Base):
             "virtual_ip",
             unique=True,
             sqlite_where=text("virtual_ip IS NOT NULL AND deleted_at IS NULL"),
+            postgresql_where=text("virtual_ip IS NOT NULL AND deleted_at IS NULL"),
         ),
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

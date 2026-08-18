@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from alembic import op
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +63,14 @@ def _existing_indexes(bind) -> dict[str, tuple[str, tuple[str, ...], bool]]:
 
 
 def _storage_snapshot(bind) -> dict[str, int | str]:
+    if bind.dialect.name == "postgresql":
+        return {
+            "database_bytes": int(
+                bind.execute(text("SELECT pg_database_size(current_database())")).scalar_one()
+            ),
+            "available_bytes": None,
+            "sqlite_temp_bytes": 0,
+        }
     database_path = Path(bind.exec_driver_sql("PRAGMA database_list").first()[2])
     temp_directory = Path(os.environ.get("SQLITE_TMPDIR", "/tmp"))
     database_bytes = database_path.stat().st_size if database_path.is_file() else 0

@@ -30,7 +30,7 @@ from app.db.session import (
     SessionLocal,
     database_write_context,
     engine,
-    verify_sqlite_pragmas,
+    verify_database_engine,
 )
 from app.models.models import AuditLog, User
 from app.routers import (
@@ -360,7 +360,7 @@ def bootstrap():
     try:
         module_permissions_existed = inspect(engine).has_table("user_module_permissions")
         prepare_database(engine, settings)
-        verify_sqlite_pragmas(engine)
+        verify_database_engine(engine)
         stage = "Running seed initialisation"
         logger.debug("Database migration stage: %s", stage)
         with SessionLocal() as db:

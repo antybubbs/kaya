@@ -10,6 +10,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.core.config import get_settings, sqlite_database_path
+from app.db.dialect import verify_database_connection
 from app.core.performance import install_engine_timing
 from app.db.sqlite_temp import configure_sqlite_temp_directory
 
@@ -107,26 +108,29 @@ connect_args = (
 engine = create_engine(
     settings.database_url, connect_args=connect_args, pool_pre_ping=True
 )
+
+
+def configure_sqlite_connection(dbapi_connection, connection_record=None):
+    """Apply Kaya's SQLite-only connection contract to a DB-API connection."""
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+        cursor.execute("PRAGMA foreign_keys=ON")
+        journal_mode = str(
+            cursor.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+        ).lower()
+        if journal_mode != SQLITE_REQUIRED_JOURNAL_MODE:
+            raise RuntimeError(
+                "Kaya requires SQLite WAL journal mode for concurrent operation."
+            )
+        cursor.execute(f"PRAGMA synchronous={SQLITE_REQUIRED_SYNCHRONOUS}")
+    finally:
+        cursor.close()
+
+
 if settings.database_url.startswith("sqlite"):
 
-    @event.listens_for(engine, "connect")
-    def configure_sqlite_connection(dbapi_connection, connection_record):
-        cursor = dbapi_connection.cursor()
-        try:
-            cursor.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
-            cursor.execute("PRAGMA foreign_keys=ON")
-            journal_mode = str(
-                cursor.execute("PRAGMA journal_mode=WAL").fetchone()[0]
-            ).lower()
-            if journal_mode != SQLITE_REQUIRED_JOURNAL_MODE:
-                raise RuntimeError(
-                    "Kaya requires SQLite WAL journal mode for concurrent operation."
-                )
-            # FULL is intentionally retained: WAL is a concurrency change, not
-            # permission to weaken durability for operational records.
-            cursor.execute(f"PRAGMA synchronous={SQLITE_REQUIRED_SYNCHRONOUS}")
-        finally:
-            cursor.close()
+    event.listen(engine, "connect", configure_sqlite_connection)
 
     @event.listens_for(engine, "handle_error")
     def log_sqlite_lock_contention(exception_context):
@@ -248,6 +252,14 @@ def verify_sqlite_pragmas(target_engine: Engine = engine) -> dict[str, int | str
         values["busy_timeout"],
     )
     return values
+
+
+def verify_database_engine(target_engine: Engine = engine):
+    """Verify connectivity and apply SQLite-only checks by dialect."""
+    detected = verify_database_connection(target_engine)
+    if detected.is_sqlite:
+        verify_sqlite_pragmas(target_engine)
+    return detected
 
 
 def sqlite_lock_error(exc: BaseException) -> bool:
