@@ -70,7 +70,7 @@ jobs:
           $compose run --rm postgres-backup backup
           $compose run --rm postgres-backup backup
           $compose run --rm postgres-backup backup
-          test "$(find phase8-backups -maxdepth 1 -name 'kaya-*.dump' | wc -l)" -eq 2
+          test "$( $compose run --rm --entrypoint bash postgres-backup -c \"find /var/backups/kaya-postgres -maxdepth 1 -name 'kaya-*.dump' | wc -l\" )" -eq 2
           $compose run --rm postgres-backup verify
       - name: Restore drill and diagnostics
         env:
