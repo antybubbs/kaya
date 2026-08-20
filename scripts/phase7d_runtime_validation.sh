@@ -154,6 +154,7 @@ configure_project kaya_phase7d_legacy "$RUN_ROOT/legacy" 18092 18992 "$IMAGE_A"
 docker run --rm --entrypoint python \
     -w /app \
     -e PYTHONPATH=/app \
+    --user 100:101 \
     -e SECRET_KEY=phase7d-synthetic-secret-key-012345678901234567890123 \
     -e ENCRYPTION_KEY=MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA= \
     -e SETUP_TOKEN=phase7d-synthetic-setup-token \
