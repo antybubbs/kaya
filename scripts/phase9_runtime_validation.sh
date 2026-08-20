@@ -84,7 +84,7 @@ scenario 9 "No SQLite migration rerun" bash -c '! compose logs --no-color kaya |
 # the same run-scoped resource naming and cleanup boundary.
 compose down -v --remove-orphans >/dev/null
 docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c 'rm -f /data/kaya.db'
-docker run --rm --entrypoint python -e PYTHONPATH=/app -v "$ROOT/data:/app/data" -w /app "$IMAGE" scripts/generate_sqlite_migration_fixture.py /app/data/kaya.db --functional
+docker run --rm --entrypoint python -e PYTHONPATH=/app -e APP_ENV=test -e SECRET_KEY=phase9-synthetic-secret-key-012345678901234567890123 -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= -v "$ROOT/data:/app/data" -w /app "$IMAGE" scripts/generate_sqlite_migration_fixture.py /app/data/kaya.db --functional
 legacy_before="$(source_hash)"
 mkdir -p "$ROOT/data/backups"
 printf 'phase9-sentinel-immutable\n' > "$ROOT/data/backups/DO_NOT_DELETE_SENTINEL.txt"
