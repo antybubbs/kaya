@@ -151,6 +151,9 @@ echo 'fresh install, HTTP smoke, writes, and down/up persistence passed'
 
 # Legacy SQLite through the primary production Compose architecture.
 configure_project kaya_phase7d_legacy "$RUN_ROOT/legacy" 18092 18992 "$IMAGE_A"
+docker run --rm --entrypoint chown \
+    -v "$PHASE7D_ROOT/data:/app/data" "$IMAGE_A" \
+    -R 100:101 /app/data
 docker run --rm --entrypoint python \
     -w /app \
     -e PYTHONPATH=/app \
