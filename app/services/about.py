@@ -24,6 +24,7 @@ from app.models.models import (
 )
 from app.db.session import engine
 from app.services.version import version_status
+from app.services.postgres_diagnostics import collect_postgres_diagnostics
 
 PACKAGE_NAMES = [
     "fastapi",
@@ -225,4 +226,7 @@ def collect_about(db: Session) -> dict:
         "storage_rows": storage_rows(),
         "packages": package_versions(),
         "module_counts": module_counts(db),
+        "postgres_diagnostics": collect_postgres_diagnostics(
+            engine, Path(settings.postgres_backup_dir)
+        ),
     }

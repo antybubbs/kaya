@@ -1,0 +1,39 @@
+# Overlay for the real deployment topology. All state names are replaced by
+# Phase 8-specific disposable names; the service graph remains docker-compose.yml.
+services:
+  kaya:
+    container_name: kaya_phase8_kaya
+  secure-send-gateway:
+    container_name: kaya_phase8_secure_send
+  guacd:
+    container_name: kaya_phase8_guacd
+  postgres-secret-init:
+    container_name: kaya_phase8_postgres_secret_init
+  postgres:
+    container_name: kaya_phase8_postgres
+  postgres-backup:
+    image: postgres:16.14
+    container_name: kaya_phase8_backup
+    profiles: [postgres-ops]
+    environment:
+      POSTGRES_DB: kaya
+      POSTGRES_USER: kaya
+      POSTGRES_PASSWORD_FILE: /run/kaya-secrets/postgres_password
+      PGHOST: postgres
+      KAYA_POSTGRES_BACKUP_RETENTION: ${KAYA_POSTGRES_BACKUP_RETENTION:-2}
+      KAYA_POSTGRES_BACKUP_INTERVAL_SECONDS: ${KAYA_POSTGRES_BACKUP_INTERVAL_SECONDS:-60}
+    entrypoint: ["/bin/bash", "/usr/local/bin/kaya_postgres_backup_worker.sh"]
+    command: ["scheduled"]
+    volumes:
+      - ${KAYA_POSTGRES_BACKUP_DIR:-./phase8-backups}:/var/backups/kaya-postgres
+      - kaya_phase6_postgres_secret:/run/kaya-secrets:ro
+      - ./scripts/kaya_postgres_backup_worker.sh:/usr/local/bin/kaya_postgres_backup_worker.sh:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  kaya_postgres_data:
+    name: ${KAYA_PHASE8_VOLUME_PREFIX:-kaya_phase8}_postgres_data
+  kaya_phase6_postgres_secret:
+    name: ${KAYA_PHASE8_VOLUME_PREFIX:-kaya_phase8}_postgres_secret

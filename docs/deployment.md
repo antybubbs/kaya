@@ -207,6 +207,34 @@ If using remote backup targets, verify credentials and mount/access behaviour ou
 
 ## PostgreSQL operations
 
+Kaya's PostgreSQL deployment includes an opt-in native backup worker in
+`docker-compose.phase8-ops.yml`. It uses the pinned `postgres:16.14` client,
+writes custom-format `pg_dump` archives to the persistent
+`KAYA_POSTGRES_BACKUP_DIR`, verifies each archive with `pg_restore --list` and
+a SHA-256 sidecar, and applies a count-based retention policy. The worker reads
+the database password only from the mounted secret file; passwords are not
+placed in command arguments, filenames, metadata, or logs.
+
+Enable the scheduled worker explicitly with the `postgres-ops` profile:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.phase8-ops.yml --profile postgres-ops up -d postgres-backup
+```
+
+Set `KAYA_POSTGRES_BACKUP_INTERVAL_SECONDS`, `KAYA_POSTGRES_BACKUP_RETENTION`,
+and `KAYA_POSTGRES_BACKUP_DIR` in the deployment environment. The worker is
+separate from Kaya's request process and does not change the active database.
+For a one-shot backup, verification, diagnostics, or restore drill, invoke the
+same disposable service with `backup`, `verify`, `diagnostics`, or
+`restore-drill`. A restore drill always targets a named disposable database;
+never point it at the production database.
+
+The admin-only About page reports PostgreSQL version, database size, active
+connections, deadlocks, SQLAlchemy pool status, and the latest verified backup.
+It deliberately excludes connection strings, usernames, passwords, backup
+contents, and query values. `/healthz` remains a liveness check; database
+readiness is exercised by the existing DB-backed application smoke path.
+
 The supported architecture is:
 
 ```text

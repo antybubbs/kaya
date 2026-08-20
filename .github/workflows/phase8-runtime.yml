@@ -1,0 +1,104 @@
+name: Phase 8 PostgreSQL Operations Validation
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/phase8-runtime.yml"
+      - "docker-compose.phase8-ci.yml"
+      - "docker-compose.yml"
+      - "docker-compose.phase8-production-ci.yml"
+      - "docker-entrypoint.sh"
+      - "scripts/kaya_postgres_backup_worker.sh"
+      - "app/services/postgres_diagnostics.py"
+      - "app/db/**"
+      - "app/core/config.py"
+      - "migrations/**"
+      - "docs/deployment.md"
+      - "tests/test_postgres_operations.py"
+  pull_request:
+    paths:
+      - ".github/workflows/phase8-runtime.yml"
+      - "docker-compose.phase8-ci.yml"
+      - "docker-compose.yml"
+      - "docker-compose.phase8-production-ci.yml"
+      - "docker-entrypoint.sh"
+      - "scripts/kaya_postgres_backup_worker.sh"
+      - "app/services/postgres_diagnostics.py"
+      - "app/db/**"
+      - "app/core/config.py"
+      - "migrations/**"
+      - "docs/deployment.md"
+      - "tests/test_postgres_operations.py"
+
+jobs:
+  postgres-operations:
+    name: Disposable PostgreSQL backup and restore drill
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build disposable Kaya image
+        run: docker build --tag kaya:phase8b-${GITHUB_SHA} .
+      - name: Start isolated PostgreSQL 16.14
+        env:
+          KAYA_IMAGE: kaya:phase8b-${{ github.sha }}
+          KAYA_DATA_DIR: ./phase8-data
+          KAYA_UPLOAD_DIR: ./phase8-uploads
+          KAYA_POSTGRES_BACKUP_DIR: ./phase8-backups
+          KAYA_POSTGRES_PASSWORD_DIR: ./phase8-secrets
+          KAYA_PHASE8_VOLUME_PREFIX: kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
+          KAYA_PORT: 18080
+        run: docker compose -p kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }} -f docker-compose.yml -f docker-compose.phase8-production-ci.yml up -d kaya postgres
+      - name: Seed synthetic fixture
+        run: |
+          project=kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
+          compose="docker compose -p $project -f docker-compose.yml -f docker-compose.phase8-production-ci.yml"
+          password=$($compose exec -T postgres cat /run/kaya-secrets/postgres_password)
+          $compose exec -T -e "PGPASSWORD=$password" postgres psql -U kaya -d kaya -c "CREATE TABLE phase8_fixture (id integer PRIMARY KEY, value text NOT NULL); INSERT INTO phase8_fixture VALUES (1, 'synthetic');"
+      - name: Create, verify, and retain native backups
+        env:
+          KAYA_IMAGE: kaya:phase8b-${{ github.sha }}
+          KAYA_DATA_DIR: ./phase8-data
+          KAYA_UPLOAD_DIR: ./phase8-uploads
+          KAYA_POSTGRES_BACKUP_DIR: ./phase8-backups
+          KAYA_POSTGRES_PASSWORD_DIR: ./phase8-secrets
+          KAYA_PHASE8_VOLUME_PREFIX: kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
+        run: |
+          project=kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
+          compose="docker compose -p $project -f docker-compose.yml -f docker-compose.phase8-production-ci.yml --profile postgres-ops"
+          $compose run --rm postgres-backup backup
+          $compose run --rm postgres-backup backup
+          $compose run --rm postgres-backup backup
+          test "$(find phase8-backups -maxdepth 1 -name 'kaya-*.dump' | wc -l)" -eq 2
+          $compose run --rm postgres-backup verify
+      - name: Restore drill and diagnostics
+        env:
+          KAYA_IMAGE: kaya:phase8b-${{ github.sha }}
+          KAYA_DATA_DIR: ./phase8-data
+          KAYA_UPLOAD_DIR: ./phase8-uploads
+          KAYA_POSTGRES_BACKUP_DIR: ./phase8-backups
+          KAYA_POSTGRES_PASSWORD_DIR: ./phase8-secrets
+          KAYA_PHASE8_VOLUME_PREFIX: kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
+        run: |
+          project=kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
+          compose="docker compose -p $project -f docker-compose.yml -f docker-compose.phase8-production-ci.yml --profile postgres-ops"
+          $compose run --rm postgres-backup restore-drill
+          $compose run --rm postgres-backup diagnostics
+      - name: Upload redacted failure evidence
+        if: failure()
+        run: |
+          project=kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
+          docker compose -p $project -f docker-compose.yml -f docker-compose.phase8-production-ci.yml logs --no-color > phase8-docker.log || true
+          sed -E 's/(password|secret|token|cookie|csrf)[^=]*=[^[:space:]]+/\1=[REDACTED]/gi' phase8-docker.log > phase8-docker-redacted.log
+          rm -f phase8-docker.log
+      - name: Publish redacted failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase8-redacted-evidence
+          path: phase8-docker-redacted.log
+          if-no-files-found: ignore
+      - name: Dispose exact Phase 8 resources
+        if: always()
+        run: docker compose -p kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }} -f docker-compose.yml -f docker-compose.phase8-production-ci.yml down -v --remove-orphans

@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     database_pool_timeout_seconds: int = 10
     data_dir: str = str(DEFAULT_DATA_DIR)
     migration_backup_dir: str = str(DEFAULT_DATA_DIR / "backups")
+    postgres_backup_dir: str = str(DEFAULT_DATA_DIR / "postgres-backups")
     migration_backups_enabled: bool = True
     migration_backup_retention_count: int = 10
     secret_key: str = ""

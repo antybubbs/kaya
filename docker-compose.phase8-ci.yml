@@ -1,0 +1,49 @@
+name: kaya-phase8
+
+services:
+  postgres:
+    image: postgres:16.14
+    container_name: kaya_phase8_postgres
+    environment:
+      POSTGRES_DB: kaya
+      POSTGRES_USER: kaya
+      POSTGRES_PASSWORD: kaya_phase8_fake_password
+      PGHOST: postgres
+    volumes:
+      - kaya_phase8_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kaya -d kaya"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    networks: [kaya_phase8]
+
+  postgres-backup:
+    image: postgres:16.14
+    container_name: kaya_phase8_backup
+    environment:
+      POSTGRES_DB: kaya
+      POSTGRES_USER: kaya
+      POSTGRES_PASSWORD: kaya_phase8_fake_password
+      PGHOST: postgres
+      KAYA_POSTGRES_BACKUP_DIR: /var/backups/kaya-postgres
+      KAYA_POSTGRES_BACKUP_RETENTION: "2"
+    entrypoint: ["/bin/bash", "/usr/local/bin/kaya_postgres_backup_worker.sh"]
+    command: ["backup"]
+    volumes:
+      - kaya_phase8_backups:/var/backups/kaya-postgres
+      - ./scripts/kaya_postgres_backup_worker.sh:/usr/local/bin/kaya_postgres_backup_worker.sh:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [kaya_phase8]
+
+volumes:
+  kaya_phase8_postgres_data:
+    name: kaya_phase8_postgres_data
+  kaya_phase8_backups:
+    name: kaya_phase8_backups
+
+networks:
+  kaya_phase8:
+    name: kaya_phase8_network
