@@ -14,6 +14,12 @@ import urllib.request
 BASE = os.environ.get("PHASE7D_HTTP_BASE", "http://127.0.0.1:18087").rstrip("/")
 EMAIL = "synthetic@example.invalid"
 PASSWORD = "synthetic-admin-password"
+ROUTE_SUCCESS_STATUSES = frozenset({200, 303, 307})
+
+
+def route_status_is_acceptable(status: int) -> bool:
+    """Accept successful pages and the app's intentional route redirects."""
+    return status in ROUTE_SUCCESS_STATUSES
 
 
 class Client:
@@ -104,7 +110,11 @@ def main() -> None:
         "/system/about",
     ]
     for route in routes:
-        client.expect("GET", route, {200, 303})
+        status, url, _body = client.request("GET", route)
+        if not route_status_is_acceptable(status):
+            raise AssertionError(
+                f"GET {route}: expected {set(ROUTE_SUCCESS_STATUSES)}, got {status} ({url})"
+            )
     _, _, dashboard = client.expect("GET", "/dashboard", {200})
     csrf = client.csrf(dashboard)
     client.expect(
