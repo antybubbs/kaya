@@ -12,6 +12,8 @@ on:
       - "scripts/kaya_postgres_backup_worker.sh"
       - "scripts/phase8_live_write.py"
       - "scripts/phase8_acceptance_evidence.py"
+      - "scripts/phase8d_runtime_validation.sh"
+      - "scripts/postgres_scale_validation.py"
       - "Dockerfile.test"
       - "app/services/postgres_diagnostics.py"
       - "app/db/**"
@@ -29,6 +31,8 @@ on:
       - "scripts/kaya_postgres_backup_worker.sh"
       - "scripts/phase8_live_write.py"
       - "scripts/phase8_acceptance_evidence.py"
+      - "scripts/phase8d_runtime_validation.sh"
+      - "scripts/postgres_scale_validation.py"
       - "Dockerfile.test"
       - "app/services/postgres_diagnostics.py"
       - "app/db/**"
@@ -68,8 +72,7 @@ jobs:
         run: |
           project=kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
           compose="docker compose -p $project -f docker-compose.yml -f docker-compose.phase8-production-ci.yml"
-          password=$($compose exec -T postgres cat /run/kaya-secrets/postgres_password)
-          $compose exec -T -e "PGPASSWORD=$password" postgres psql -U kaya -d kaya -c "CREATE TABLE phase8_fixture (id integer PRIMARY KEY, value text NOT NULL); INSERT INTO phase8_fixture VALUES (1, 'synthetic'); INSERT INTO remote_manager_settings (key, value, updated_at) VALUES ('high_availability_enabled', '1', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at;"
+          $compose exec -T postgres bash -c 'export PGPASSWORD="$(< /run/kaya-secrets/postgres_password)"; psql -U kaya -d kaya -c "CREATE TABLE phase8_fixture (id integer PRIMARY KEY, value text NOT NULL); INSERT INTO phase8_fixture VALUES (1, '\''synthetic'\''); INSERT INTO remote_manager_settings (key, value, updated_at) VALUES ('\''high_availability_enabled'\'', '\''1'\'', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at;"'
       - name: Authenticated smoke and representative writes
         env:
           PHASE7D_HTTP_BASE: http://127.0.0.1:18080
@@ -130,6 +133,17 @@ jobs:
           compose="docker compose -p $project -f docker-compose.yml -f docker-compose.phase8-production-ci.yml --profile postgres-ops"
           $compose run --rm postgres-backup restore-drill
           $compose run --rm postgres-backup diagnostics
+      - name: Phase 8D runtime scenarios
+        env:
+          PHASE8_PROJECT: kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
+          PHASE8_PORT: 18080
+          PHASE8_DATA_ROOT: ./phase8-data
+          PHASE8_RESULT_FILE: phase8d-results.env
+          KAYA_IMAGE: kaya:phase8b-${{ github.sha }}
+          KAYA_PHASE8_VOLUME_PREFIX: kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
+        run: |
+          docker build --file Dockerfile.test --tag kaya:phase8-tests-${GITHUB_SHA} .
+          bash scripts/phase8d_runtime_validation.sh
       - name: Linux regression suite
         run: |
           docker build --file Dockerfile.test --tag kaya:phase8-tests-${GITHUB_SHA} .
@@ -149,18 +163,19 @@ jobs:
         run: |
           project=kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
           compose="docker compose -p $project -f docker-compose.yml -f docker-compose.phase8-production-ci.yml"
-          password=$($compose exec -T postgres cat /run/kaya-secrets/postgres_password)
-          $compose exec -T -e "PGPASSWORD=$password" postgres psql -U kaya -d postgres -c "CREATE DATABASE kaya_phase8_compat OWNER kaya;"
+          $compose exec -T postgres bash -c 'export PGPASSWORD="$(< /run/kaya-secrets/postgres_password)"; psql -U kaya -d postgres -c "CREATE DATABASE kaya_phase8_compat OWNER kaya;"'
           docker build --file Dockerfile.test --tag kaya:phase8-tests-${GITHUB_SHA} .
-          docker run --rm --network "${project}_default" -e PYTHONPATH=/workspace -e SECRET_KEY=phase8-ci-only-secret-key-012345678901234567890123456789 -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= -e "KAYA_TEST_POSTGRES_URL=postgresql+psycopg://kaya:$password@postgres:5432/kaya_phase8_compat" \
-            -v "$PWD:/workspace" -w /workspace kaya:phase8-tests-${GITHUB_SHA} \
-            pytest -q tests/test_database_engine_compatibility.py
+          docker run --rm --network "${project}_default" -e PYTHONPATH=/workspace -e SECRET_KEY=phase8-ci-only-secret-key-012345678901234567890123456789 -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= -e KAYA_TEST_POSTGRES_URL=postgresql+psycopg://kaya@postgres:5432/kaya_phase8_compat \
+            -v "${KAYA_PHASE8_VOLUME_PREFIX}_postgres_secret:/run/kaya-secrets:ro" -v "$PWD:/workspace" -w /workspace kaya:phase8-tests-${GITHUB_SHA} \
+            bash -c 'export PGPASSWORD="$(cat /run/kaya-secrets/postgres_password)"; pytest -q tests/test_database_engine_compatibility.py'
       - name: Generate acceptance evidence
         if: always()
         env:
           PHASE8_PASS_ROWS: 1,2,3,4,5,6,7,8,9,10,11,12,19,20,21,23,38,40,43,44,46,47,48,49,50,51
-          PHASE8_BLOCKED_ROWS: 13,14,15,16,17,18,22,24,25,26,27,28,29,30,31,32,33,34,35,36,37,39,41,42,45
-        run: python scripts/phase8_acceptance_evidence.py --output phase8_acceptance.tsv
+          PHASE8_BLOCKED_ROWS: 42
+        run: |
+          if test -f phase8d-results.env; then source phase8d-results.env; fi
+          python scripts/phase8_acceptance_evidence.py --output phase8_acceptance.json
       - name: Upload redacted failure evidence
         if: always()
         run: |
@@ -175,7 +190,9 @@ jobs:
           name: phase8-redacted-evidence
           path: |
             phase8-docker-redacted.log
-            phase8_acceptance.tsv
+            phase8_acceptance.json
+            phase8d-results.env
+            phase8-scale-report.json
             phase8-live-write.log
           if-no-files-found: warn
       - name: Dispose exact Phase 8 resources

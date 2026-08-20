@@ -3,6 +3,9 @@
 services:
   kaya:
     container_name: kaya_phase8_kaya
+    environment:
+      KAYA_TEST_MODE: "true"
+      KAYA_TEST_OBSERVABILITY_FILE: /app/data/phase8-observability.jsonl
   secure-send-gateway:
     container_name: kaya_phase8_secure_send
   guacd:

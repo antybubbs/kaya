@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 
@@ -17,12 +18,34 @@ def main() -> None:
     args = parser.parse_args()
     blocked = {int(value) for value in os.environ.get("PHASE8_BLOCKED_ROWS", "").split(",") if value}
     passed = {int(value) for value in os.environ.get("PHASE8_PASS_ROWS", "").split(",") if value}
-    lines = ["scenario_number\tscenario_name\tresult\tevidence_summary"]
+    failed = {int(value) for value in os.environ.get("PHASE8_FAIL_ROWS", "").split(",") if value}
+    evidence = os.environ.get("PHASE8_EVIDENCE_SUMMARY", "validated by Phase 8D workflow")
+    try:
+        metrics = json.loads(os.environ.get("PHASE8_METRICS_JSON", "{}"))
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"invalid PHASE8_METRICS_JSON: {exc}") from exc
+    rows = []
     for number, name in enumerate(SCENARIOS, 1):
-        result = "BLOCKED" if number in blocked else "PASS" if number in passed else "BLOCKED"
-        summary = "validated by Phase 8C workflow" if result == "PASS" else "not exercised by this validation run; see Phase 8C report"
-        lines.append(f"{number}\t{name}\t{result}\t{summary}")
-    args.output.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        result = "FAIL" if number in failed else "BLOCKED" if number in blocked else "PASS" if number in passed else "BLOCKED"
+        summary = evidence if result == "PASS" else "scenario failed in the Phase 8D runtime harness" if result == "FAIL" else "not exercised by this validation run; see Phase 8D report"
+        rows.append(
+            {
+                "scenario_number": number,
+                "scenario_name": name,
+                "result": result,
+                "evidence_summary": summary,
+                "duration_or_metric_if_relevant": metrics.get(str(number)),
+            }
+        )
+    if args.output.suffix.lower() == ".json":
+        args.output.write_text(json.dumps(rows, indent=2) + "\n", encoding="utf-8")
+    else:
+        lines = ["scenario_number\tscenario_name\tresult\tevidence_summary"]
+        lines.extend(
+            f"{row['scenario_number']}\t{row['scenario_name']}\t{row['result']}\t{row['evidence_summary']}"
+            for row in rows
+        )
+        args.output.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":

@@ -225,6 +225,10 @@ def _run_retention_workload(engine, batch_size: int = 10_000) -> dict:
 
 
 def run(database_url: str, *, traffic_rows: int, clients: int, metric_rows: int, audit_rows: int, workers: int, operations: int) -> dict:
+    password_file = os.environ.get("DATABASE_PASSWORD_FILE", "")
+    if password_file:
+        password = Path(password_file).read_text(encoding="utf-8").strip()
+        database_url = database_url.replace("postgresql+psycopg://kaya@", f"postgresql+psycopg://kaya:{password}@", 1)
     engine = create_engine(
         database_url,
         pool_size=5,

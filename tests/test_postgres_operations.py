@@ -1,4 +1,8 @@
+import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 from sqlalchemy import create_engine
 
@@ -38,3 +42,23 @@ def test_acceptance_evidence_has_all_explicit_matrix_rows():
     source = Path("scripts/phase8_acceptance_evidence.py").read_text(encoding="utf-8")
     assert '"Cleanup/isolation"' in source
     assert source.count('"') > 100
+
+
+def test_acceptance_evidence_json_is_complete_and_explicit(tmp_path):
+    output = tmp_path / "phase8_acceptance.json"
+    environment = os.environ | {
+        "PHASE8_PASS_ROWS": "1,51",
+        "PHASE8_BLOCKED_ROWS": "15",
+        "PHASE8_FAIL_ROWS": "",
+    }
+    subprocess.run(
+        [sys.executable, "scripts/phase8_acceptance_evidence.py", "--output", str(output)],
+        check=True,
+        env=environment,
+    )
+    rows = json.loads(output.read_text(encoding="utf-8"))
+    assert len(rows) == 51
+    assert {row["result"] for row in rows} <= {"PASS", "FAIL", "BLOCKED"}
+    assert rows[0]["scenario_number"] == 1
+    assert rows[14]["result"] == "BLOCKED"
+    assert rows[50]["result"] == "PASS"
