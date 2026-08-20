@@ -150,8 +150,9 @@ jobs:
           project=kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
           compose="docker compose -p $project -f docker-compose.yml -f docker-compose.phase8-production-ci.yml"
           password=$($compose exec -T postgres cat /run/kaya-secrets/postgres_password)
+          $compose exec -T -e "PGPASSWORD=$password" postgres psql -U kaya -d postgres -c "CREATE DATABASE kaya_phase8_compat OWNER kaya;"
           docker build --file Dockerfile.test --tag kaya:phase8-tests-${GITHUB_SHA} .
-          docker run --rm --network "${project}_default" -e PYTHONPATH=/workspace -e SECRET_KEY=phase8-ci-only-secret-key-012345678901234567890123456789 -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= -e "KAYA_TEST_POSTGRES_URL=postgresql+psycopg://kaya:$password@postgres:5432/kaya" \
+          docker run --rm --network "${project}_default" -e PYTHONPATH=/workspace -e SECRET_KEY=phase8-ci-only-secret-key-012345678901234567890123456789 -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= -e "KAYA_TEST_POSTGRES_URL=postgresql+psycopg://kaya:$password@postgres:5432/kaya_phase8_compat" \
             -v "$PWD:/workspace" -w /workspace kaya:phase8-tests-${GITHUB_SHA} \
             pytest -q tests/test_database_engine_compatibility.py
       - name: Generate acceptance evidence
