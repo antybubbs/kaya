@@ -13,6 +13,22 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 
+def _reject_unsafe_sqlite_downgrade() -> None:
+    migration_context = context.get_context()
+    environment_context = migration_context.environment_context
+    command = environment_context.context_opts.get("fn") if environment_context else None
+    destination = environment_context.context_opts.get("destination_rev") if environment_context else None
+    if (
+        migration_context.dialect.name == "sqlite"
+        and getattr(command, "__name__", None) == "downgrade"
+        and destination
+        and destination < "20260810_02"
+    ):
+        raise RuntimeError(
+            "Migration downgrade is blocked for SQLite databases before 20260810_02."
+        )
+
+
 def run_migrations_offline() -> None:
     context.configure(
         url=config.get_main_option("sqlalchemy.url"),
@@ -39,6 +55,7 @@ def run_migrations_online() -> None:
             compare_type=True,
             render_as_batch=connection.dialect.name == "sqlite",
         )
+        _reject_unsafe_sqlite_downgrade()
         with context.begin_transaction():
             context.run_migrations()
 

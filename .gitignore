@@ -1,6 +1,8 @@
 .env
 data/
 uploads/
+postgres-backups/
+data/secrets/
 __pycache__/
 *.py[cod]
 .pytest_cache/

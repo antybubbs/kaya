@@ -1,0 +1,53 @@
+name: kaya-postgres
+
+services:
+  kaya:
+    environment:
+      DATABASE_URL: postgresql+psycopg://kaya@postgres:5432/kaya
+      DATABASE_PASSWORD_FILE: /run/secrets/kaya_postgres_password
+    depends_on:
+      postgres:
+        condition: service_healthy
+    secrets:
+      - kaya_postgres_password
+    volumes:
+      - ${KAYA_POSTGRES_BACKUP_DIR:-./postgres-backups}:/var/backups/kaya-postgres
+
+  secure-send-gateway:
+    environment:
+      DATABASE_URL: postgresql+psycopg://kaya@postgres:5432/kaya
+      DATABASE_PASSWORD_FILE: /run/secrets/kaya_postgres_password
+    depends_on:
+      kaya:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    secrets:
+      - kaya_postgres_password
+
+  postgres:
+    image: postgres:16.14
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: kaya
+      POSTGRES_USER: kaya
+      POSTGRES_PASSWORD_FILE: /run/secrets/kaya_postgres_password
+    secrets:
+      - kaya_postgres_password
+    volumes:
+      - kaya_postgres_data:/var/lib/postgresql/data
+      - ${KAYA_POSTGRES_BACKUP_DIR:-./postgres-backups}:/var/backups/kaya-postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kaya -d kaya"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+secrets:
+  kaya_postgres_password:
+    file: ${KAYA_POSTGRES_PASSWORD_FILE:-./data/secrets/postgres_password}
+
+volumes:
+  kaya_postgres_data:
+    name: kaya_postgres_data

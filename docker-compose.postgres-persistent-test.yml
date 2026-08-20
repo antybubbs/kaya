@@ -1,3 +1,5 @@
+name: kaya-postgres-persistent-test
+
 services:
   postgres:
     image: postgres:16.14
@@ -5,12 +7,14 @@ services:
       POSTGRES_DB: kaya_test
       POSTGRES_USER: kaya_test
       POSTGRES_PASSWORD: kaya_test_only
-    ports:
-      - "${KAYA_POSTGRES_TEST_PORT:-55432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U kaya_test -d kaya_test"]
       interval: 2s
       timeout: 5s
       retries: 30
-    tmpfs:
-      - /var/lib/postgresql/data
+    volumes:
+      - kaya_phase5b2_persistent_data:/var/lib/postgresql/data
+
+volumes:
+  kaya_phase5b2_persistent_data:
+    name: kaya_phase5b2_persistent_data

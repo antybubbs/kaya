@@ -47,7 +47,8 @@ from app.models.models import Base
 logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BASELINE_REVISION = "20260730_01"
-CURRENT_REVISION = "20260818_01"
+CURRENT_REVISION = "20260818_02"
+MIGRATION_STATE_TABLE = "kaya_migration_state"
 MINIMUM_MIGRATION_FREE_BYTES = 1 * 1024 * 1024
 STAGE_OPENING_DATABASE = "Opening database"
 STAGE_INTEGRITY_CHECKS = "Checking database readability"
@@ -179,7 +180,22 @@ def _prepare_postgresql_database(
         progress.enter(STAGE_ALEMBIC_MIGRATION)
         command.upgrade(config, "head")
     progress.enter(STAGE_SCHEMA_VALIDATION)
-    validate_engine_schema(engine, Base.metadata, require_revision=target_revision)
+    with engine.connect() as connection:
+        if MIGRATION_STATE_TABLE in inspect(engine).get_table_names():
+            state = connection.execute(
+                text(f"SELECT state, validation_state FROM {MIGRATION_STATE_TABLE} ORDER BY started_at DESC LIMIT 1")
+            ).one()
+            if state.state != "COMPLETED" or state.validation_state != "PASSED":
+                raise DatabaseMigrationError(
+                    "PostgreSQL target contains an incomplete SQLite migration and is not startup-authoritative."
+                )
+    validate_engine_schema(
+        engine,
+        Base.metadata,
+        require_revision=target_revision,
+        required_indexes=(("hardware_asset_photos", "uq_hardware_asset_photos_primary"),),
+        required_triggers=("hardware_asset_photos_max_five",),
+    )
     progress.enter(STAGE_STARTUP_COMPLETE)
     progress.finish()
     return MigrationResult(previous_revision, target_revision, None, False)

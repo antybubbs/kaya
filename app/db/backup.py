@@ -30,6 +30,7 @@ class DatabaseBackupError(RuntimeError):
 class MigrationBackup:
     database_path: Path
     metadata_path: Path
+    action: str = "created"
 
 
 def _file_sha256(path: Path) -> str:
@@ -117,7 +118,7 @@ def _reusable_backup(
                 source_revision,
                 target_revision,
             )
-            return MigrationBackup(backup_path, metadata_path)
+            return MigrationBackup(backup_path, metadata_path, "reused")
     return None
 
 
@@ -189,12 +190,18 @@ def create_sqlite_backup(
                 )
                 next_progress = time.monotonic() + 5.0
 
+        source_uri = f"file:{Path(source).resolve().as_posix()}?mode=ro"
         with closing(
-            sqlite3.connect(source, timeout=SQLITE_BUSY_TIMEOUT_MS / 1_000)
+            sqlite3.connect(
+                source_uri,
+                uri=True,
+                timeout=SQLITE_BUSY_TIMEOUT_MS / 1_000,
+            )
         ) as source_connection:
             source_connection.execute(
                 f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}"
             ).close()
+            source_connection.execute("PRAGMA query_only=ON").close()
             with closing(
                 sqlite3.connect(backup_path, timeout=SQLITE_BUSY_TIMEOUT_MS / 1_000)
             ) as backup_connection:
@@ -250,7 +257,7 @@ def create_sqlite_backup(
         source_revision,
         target_revision,
     )
-    return MigrationBackup(backup_path, metadata_path)
+    return MigrationBackup(backup_path, metadata_path, "created")
 
 
 def prune_migration_backups(backup_directory: Path, retention_count: int) -> None:

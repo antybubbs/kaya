@@ -142,7 +142,7 @@ def test_dns_client_indexes_recover_from_any_partial_application(tmp_path, parti
             actual[name] = (table, columns, bool(index_row[2]))
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()[0]
     assert actual == {name: (table, columns, False) for table, name, columns in indexes}
-    assert revision == "20260818_01"
+    assert revision == "20260818_02"
 
 
 def test_prepare_database_recovers_stale_revision_with_existing_first_index(tmp_path):
@@ -161,9 +161,9 @@ def test_prepare_database_recovers_stale_revision_with_existing_first_index(tmp_
 
     result = prepare_database(engine_for(path), settings)
 
-    assert result.current_revision == "20260818_01"
+    assert result.current_revision == "20260818_02"
     with sqlite3.connect(path) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "20260818_01"
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "20260818_02"
 
 
 def test_dns_client_index_downgrade_removes_only_owned_indexes(tmp_path):

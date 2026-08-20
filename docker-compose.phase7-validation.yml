@@ -1,0 +1,37 @@
+services:
+  kaya:
+    image: kaya-phase7-validation:local
+    container_name: kaya-phase7-kaya
+    ports: !override
+      - "18087:8080"
+    volumes: !override
+      - ./phase7-validation/data:/app/data
+      - ./phase7-validation/uploads:/app/uploads
+      - ./phase7-validation/data/remote-recordings:/app/data/remote-recordings
+      - kaya_phase7_postgres_secret:/run/kaya-secrets:ro
+  secure-send-gateway:
+    image: kaya-phase7-validation:local
+    container_name: kaya-phase7-secure-send
+    ports: !override
+      - "18997:8999"
+    volumes: !override
+      - ./phase7-validation/data:/app/data
+      - kaya_phase7_postgres_secret:/run/kaya-secrets:ro
+  guacd:
+    container_name: kaya-phase7-guacd
+  postgres-secret-init:
+    image: kaya-phase7-validation:local
+    volumes: !override
+      - kaya_phase7_postgres_secret:/run/kaya-secrets
+      - ./phase7-validation/secrets:/run/kaya-host-secrets:ro
+  postgres:
+    volumes: !override
+      - kaya_phase7_postgres_data:/var/lib/postgresql/data
+      - kaya_phase7_postgres_secret:/run/kaya-secrets:ro
+      - ./phase7-validation/backups:/var/backups/kaya-postgres
+
+volumes:
+  kaya_phase7_postgres_data:
+    name: kaya_phase7_postgres_data
+  kaya_phase7_postgres_secret:
+    name: kaya_phase7_postgres_secret

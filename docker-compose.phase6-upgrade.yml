@@ -1,0 +1,74 @@
+services:
+  kaya:
+    container_name: kaya-phase6-upgrade
+    environment:
+      DATABASE_URL: postgresql+psycopg://kaya@postgres:5432/kaya
+      KAYA_POSTGRES_DATABASE_URL: postgresql+psycopg://kaya@postgres:5432/kaya
+      KAYA_SQLITE_SOURCE_URL: sqlite:////app/data/kaya.db
+      DATABASE_PASSWORD_FILE: /run/kaya-secrets/postgres_password
+      KAYA_PHASE6_AUTO_UPGRADE: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - kaya_phase6_postgres_secret:/run/kaya-secrets:ro
+
+  postgres-secret-init:
+    container_name: kaya-phase6-postgres-secret-init
+    image: ${KAYA_IMAGE:-ghcr.io/antybubbs/kaya:latest}
+    restart: "no"
+    entrypoint: ["python"]
+    command:
+      - -c
+      - >-
+        import os,secrets;
+        path='/run/kaya-secrets/postgres_password';
+        os.umask(0o077);
+        open(path,'xb').write(secrets.token_urlsafe(64).encode()) if not os.path.exists(path) else None;
+        os.chown(path,100,101);os.chmod(path,0o600)
+    volumes:
+      - kaya_phase6_postgres_secret:/run/kaya-secrets
+
+  postgres:
+    container_name: kaya-phase6-postgres
+    image: postgres:16.14
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: kaya
+      POSTGRES_USER: kaya
+      POSTGRES_PASSWORD_FILE: /run/kaya-secrets/postgres_password
+    volumes:
+      - kaya_postgres_data:/var/lib/postgresql/data
+      - kaya_phase6_postgres_secret:/run/kaya-secrets:ro
+    depends_on:
+      postgres-secret-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kaya -d kaya"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+  secure-send-gateway:
+    container_name: kaya-phase6-secure-send
+    environment:
+      DATABASE_URL: postgresql+psycopg://kaya@postgres:5432/kaya
+      KAYA_POSTGRES_DATABASE_URL: postgresql+psycopg://kaya@postgres:5432/kaya
+      DATABASE_PASSWORD_FILE: /run/kaya-secrets/postgres_password
+    volumes:
+      - kaya_phase6_postgres_secret:/run/kaya-secrets:ro
+    depends_on:
+      kaya:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  guacd:
+    container_name: kaya-phase6-guacd
+
+volumes:
+  kaya_postgres_data:
+    name: kaya_postgres_data
+  kaya_phase6_postgres_secret:
+    name: kaya_phase6_postgres_secret

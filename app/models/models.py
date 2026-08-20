@@ -1,9 +1,12 @@
 from datetime import datetime
 from uuid import uuid4
-from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, LargeBinary, String, Text, UniqueConstraint, text
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, LargeBinary, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.session import Base
 from app.services.user_names import user_display_name
+
+
+BYTE_COUNT = BigInteger().with_variant(Integer(), "sqlite")
 
 
 class User(Base):
@@ -1407,10 +1410,10 @@ class ComputeHost(Base):
     status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
     version: Mapped[str | None] = mapped_column(String(120), nullable=True)
     cpu_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
-    memory_used: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    memory_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    storage_used: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    storage_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    memory_used: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
+    memory_total: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
+    storage_used: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
+    storage_total: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
     metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
@@ -1430,10 +1433,10 @@ class ComputeWorkload(Base):
     status: Mapped[str] = mapped_column(String(30), default="unknown", index=True)
     cpu_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
     cpu_total: Mapped[float | None] = mapped_column(Float, nullable=True)
-    memory_used: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    memory_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    storage_used: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    storage_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    memory_used: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
+    memory_total: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
+    storage_used: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
+    storage_total: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
     uptime_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     owner: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     backup_policy: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -1454,7 +1457,7 @@ class ComputeInventoryItem(Base):
     name: Mapped[str] = mapped_column(String(500), index=True)
     kind: Mapped[str] = mapped_column(String(30), index=True)
     status: Mapped[str | None] = mapped_column(String(30), nullable=True, index=True)
-    size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    size_bytes: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
     metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     host = relationship("ComputeHost")
@@ -1466,10 +1469,10 @@ class ComputeMetric(Base):
     host_id: Mapped[int] = mapped_column(ForeignKey("compute_hosts.id"), index=True)
     workload_id: Mapped[int | None] = mapped_column(ForeignKey("compute_workloads.id"), nullable=True, index=True)
     cpu_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
-    memory_used: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    memory_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    storage_used: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    storage_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    memory_used: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
+    memory_total: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
+    storage_used: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
+    storage_total: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
     recorded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
 

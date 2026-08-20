@@ -43,6 +43,7 @@ def upgrade() -> None:
             LANGUAGE plpgsql
             AS $function$
             BEGIN
+                PERFORM pg_advisory_xact_lock(NEW.asset_id::bigint);
                 IF (SELECT COUNT(*) FROM hardware_asset_photos WHERE asset_id = NEW.asset_id) >= 5 THEN
                     RAISE EXCEPTION 'hardware asset photo limit exceeded';
                 END IF;

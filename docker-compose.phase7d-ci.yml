@@ -1,0 +1,44 @@
+# CI-only isolation layer. Service images, dependencies, health checks and
+# security options come from docker-compose.yml; this file only prevents the
+# stable production names from colliding on a shared runner.
+services:
+  kaya:
+    image: ${PHASE7D_IMAGE:?PHASE7D_IMAGE is required}
+    container_name: ${PHASE7D_PROJECT:?PHASE7D_PROJECT is required}_kaya
+    ports: !override
+      - "${PHASE7D_HTTP_PORT:?PHASE7D_HTTP_PORT is required}:8080"
+    volumes: !override
+      - ${PHASE7D_ROOT:?PHASE7D_ROOT is required}/data:/app/data
+      - ${PHASE7D_ROOT}/uploads:/app/uploads
+      - ${PHASE7D_ROOT}/data/remote-recordings:/app/data/remote-recordings
+      - postgres_secret:/run/kaya-secrets:ro
+
+  secure-send-gateway:
+    image: ${PHASE7D_IMAGE}
+    container_name: ${PHASE7D_PROJECT}_secure_send
+    ports: !override
+      - "${PHASE7D_GATEWAY_PORT:?PHASE7D_GATEWAY_PORT is required}:8999"
+    volumes: !override
+      - ${PHASE7D_ROOT}/data:/app/data
+      - postgres_secret:/run/kaya-secrets:ro
+
+  guacd:
+    container_name: ${PHASE7D_PROJECT}_guacd
+
+  postgres-secret-init:
+    image: ${PHASE7D_IMAGE}
+    volumes: !override
+      - postgres_secret:/run/kaya-secrets
+      - ${PHASE7D_ROOT}/secrets:/run/kaya-host-secrets:ro
+
+  postgres:
+    volumes: !override
+      - postgres_data:/var/lib/postgresql/data
+      - postgres_secret:/run/kaya-secrets:ro
+      - ${PHASE7D_ROOT}/backups:/var/backups/kaya-postgres
+
+volumes:
+  postgres_data:
+    name: ${PHASE7D_PROJECT}_postgres_data
+  postgres_secret:
+    name: ${PHASE7D_PROJECT}_postgres_secret

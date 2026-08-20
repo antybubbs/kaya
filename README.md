@@ -138,7 +138,7 @@ Open your browser:
 http://SERVER-IP:8080/setup
 ```
 
-Kaya works without an environment file, I wanted this to be easier to install. By default it accepts the hostname or IP address you use to reach it, whether that is direct Docker port access or a reverse proxy such as NetBird.
+Kaya works without an environment file, I wanted this to be easier to install. The default stack uses PostgreSQL 16.14 on a private Compose network and accepts the hostname or IP address you use to reach it, whether that is direct Docker port access or a reverse proxy such as NetBird.
 
 For hardened installs, set `ALLOWED_HOSTS` to your known hostnames or IPs in your compose file. When `ALLOWED_HOSTS` is blank, Kaya does not enforce host filtering.
 
@@ -154,71 +154,12 @@ My suggestion, install Kaya and sort the settings out in your Site Administratio
 
 # Docker Compose
 
-``` yaml
-name: kaya
-
-services:
-  kaya:
-    image: ${KAYA_IMAGE:-ghcr.io/antybubbs/kaya:latest}
-    container_name: kaya
-    restart: unless-stopped
-    environment:
-      DATABASE_URL: sqlite:////app/data/kaya.db
-      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
-    ports:
-      - "${KAYA_PORT:-8080}:8080"
-    volumes:
-      - ./data:/app/data
-      - ./uploads:/app/uploads
-      - ./data/remote-recordings:/app/data/remote-recordings
-    security_opt:
-      - no-new-privileges:true
-    cap_add:
-      - NET_RAW
-    read_only: true
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-    tmpfs:
-      - /tmp:size=128m,noexec,nosuid
-  secure-send-gateway:
-    image: ${KAYA_IMAGE:-ghcr.io/antybubbs/kaya:latest}
-    container_name: kaya-secure-send
-    restart: unless-stopped
-    command: ["uvicorn", "app.security_gateway:app", "--host", "0.0.0.0", "--port", "8999", "--proxy-headers", "--forwarded-allow-ips", "${FORWARDED_ALLOW_IPS:-127.0.0.1}", "--no-access-log", "--no-server-header"]
-    environment:
-      DATABASE_URL: sqlite:////app/data/kaya.db
-      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
-      SKIP_DATABASE_MIGRATIONS: "true"
-      KAYA_GATEWAY_MODE: "true"
-    ports:
-      - "${KAYA_SECURE_SEND_PORT:-8999}:8999"
-    volumes:
-      - ./data:/app/data
-    depends_on:
-      kaya:
-        condition: service_healthy
-    security_opt:
-      - no-new-privileges:true
-    read_only: true
-    tmpfs:
-      - /tmp:size=64m,noexec,nosuid
-      - /app/data/secret-vault:size=1m,noexec,nosuid
-      - /app/data/remote-recordings:size=1m,noexec,nosuid
-  guacd:
-    image: guacamole/guacd:1.6.0
-    container_name: kaya-guacd
-    restart: unless-stopped
-
-networks:
-  default:
-    driver: bridge
-    driver_opts:
-      com.docker.network.driver.mtu: "1280"
-
-```
+The repository's `docker-compose.yml` is the supported production stack. It
+starts Kaya, PostgreSQL 16.14, the secure-send gateway and guacd. PostgreSQL
+is private to the Compose network and is persisted in the Docker volume
+`kaya_postgres_data`; it is not published on host port 5432. The stack also
+retains `/app/data/kaya.db` as the legacy source used by the controlled Phase 6
+upgrade path for existing SQLite installations.
 
 Launch:
 
@@ -235,6 +176,7 @@ docker compose up -d
   |`./data`     | Database and application data  | 
   |`./uploads`  | User uploads                   |
   |`./data/remote-recordings`| SSH and RDP session recordings |
+  |`kaya_postgres_data`| PostgreSQL production database |
 
 Back up these folders regularly.
 

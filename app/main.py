@@ -25,6 +25,7 @@ from app.core.performance import (
     log_request_metrics,
 )
 from app.db.migrations import prepare_database
+from app.db.phase6_test_hooks import worker_started
 from app.db.seeds import initialise_application_defaults
 from app.db.session import (
     SessionLocal,
@@ -391,13 +392,22 @@ async def on_startup():
     start_kaya_remote_service()
     global domain_poll_task, compute_monitor_task, dns_collector_task, secure_send_cleanup_task, ha_lease_reconciliation_task, ha_sync_monitor_task, ha_watchdog_task, notification_runtime_task, notification_retention_task
     start_monitor_scheduler()
+    database_engine = engine.dialect.name
+    worker_started("domain_poll", database_engine)
     domain_poll_task = asyncio.create_task(domain_poll_loop())
+    worker_started("compute_monitor", database_engine)
     compute_monitor_task = asyncio.create_task(compute_monitor_loop())
+    worker_started("dns_collector", database_engine)
     dns_collector_task = asyncio.create_task(dns_collector_loop())
+    worker_started("secure_send_cleanup", database_engine)
     secure_send_cleanup_task = asyncio.create_task(secure_send_cleanup_loop())
+    worker_started("ha_lease_reconciliation", database_engine)
     ha_lease_reconciliation_task = asyncio.create_task(ha_lease_reconciliation_loop())
+    worker_started("ha_sync_monitor", database_engine)
     ha_sync_monitor_task = asyncio.create_task(ha_sync_monitor_loop())
+    worker_started("ha_watchdog", database_engine)
     ha_watchdog_task = asyncio.create_task(ha_watchdog_loop())
+    worker_started("notification_runtime", database_engine)
     notification_runtime_task = start_notification_runtime()
     async def notification_retention_loop():
         while True:
@@ -415,6 +425,7 @@ async def on_startup():
                 except Exception:
                     notification_db.rollback()
                     logger.exception("audit.retention.failed")
+    worker_started("notification_retention", database_engine)
     notification_retention_task = asyncio.create_task(notification_retention_loop())
 
 

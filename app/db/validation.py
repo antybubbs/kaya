@@ -79,6 +79,8 @@ def validate_engine_schema(
     *,
     required_seed_tables: Iterable[str] = (),
     require_revision: str | None = None,
+    required_indexes: Iterable[tuple[str, str]] = (),
+    required_triggers: Iterable[str] = (),
 ) -> None:
     """Validate portable schema invariants through SQLAlchemy inspection."""
     inspector = inspect(engine)
@@ -136,6 +138,39 @@ def validate_engine_schema(
         with engine.connect() as connection:
             if connection.execute(text(f'SELECT 1 FROM "{table_name}" LIMIT 1')).first() is None:
                 raise DatabaseValidationError(f"Required seed table is empty: {table_name}")
+    actual_required_indexes = {
+        (table_name, index.get("name"))
+        for table_name in actual_tables
+        for index in inspect(engine).get_indexes(table_name)
+    }
+    missing_required_indexes = set(required_indexes) - actual_required_indexes
+    if missing_required_indexes:
+        raise DatabaseValidationError(
+            "Required indexes are missing: "
+            + ", ".join(f"{table}.{index}" for table, index in sorted(missing_required_indexes))
+        )
+    if required_triggers:
+        if engine.dialect.name == "postgresql":
+            with engine.connect() as connection:
+                actual_triggers = {
+                    row[0]
+                    for row in connection.execute(
+                        text("SELECT tgname FROM pg_trigger WHERE NOT tgisinternal")
+                    )
+                }
+        else:
+            with engine.connect() as connection:
+                actual_triggers = {
+                    row[0]
+                    for row in connection.execute(
+                        text("SELECT name FROM sqlite_master WHERE type = 'trigger'")
+                    )
+                }
+        missing_triggers = set(required_triggers) - actual_triggers
+        if missing_triggers:
+            raise DatabaseValidationError(
+                f"Required triggers are missing: {', '.join(sorted(missing_triggers))}"
+            )
     if require_revision is not None:
         with engine.connect() as connection:
             revisions = [

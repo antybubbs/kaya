@@ -1,0 +1,66 @@
+name: Phase 7 PostgreSQL Runtime Validation
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, dev, Kaya]
+    paths:
+      - "docker-compose.yml"
+      - "docker-compose.*.yml"
+      - "Dockerfile"
+      - "docker-entrypoint.sh"
+      - "app/core/config.py"
+      - "app/db/**"
+      - "migrations/**"
+      - "scripts/phase7d_*.py"
+      - "scripts/phase7d_*.sh"
+      - "scripts/generate_sqlite_migration_fixture.py"
+      - ".github/workflows/phase7d-runtime.yml"
+  pull_request:
+    paths:
+      - "docker-compose.yml"
+      - "docker-compose.*.yml"
+      - "Dockerfile"
+      - "docker-entrypoint.sh"
+      - "app/core/config.py"
+      - "app/db/**"
+      - "migrations/**"
+      - "scripts/phase7d_*.py"
+      - "scripts/phase7d_*.sh"
+      - "scripts/generate_sqlite_migration_fixture.py"
+      - ".github/workflows/phase7d-runtime.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    name: Phase 7 PostgreSQL Runtime Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install smoke-test dependencies
+        run: python -m pip install --upgrade pip
+
+      - name: Validate primary Compose configuration
+        run: docker compose -f docker-compose.yml config --quiet
+
+      - name: Run isolated Phase 7D runtime matrix
+        run: bash scripts/phase7d_runtime_validation.sh
+
+      - name: Upload redacted runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase7d-runtime-evidence-${{ github.run_id }}
+          path: /tmp/kaya-phase7d-*/logs/
+          if-no-files-found: ignore
+          retention-days: 14

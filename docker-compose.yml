@@ -8,7 +8,11 @@ services:
     container_name: kaya
     restart: unless-stopped
     environment:
-      DATABASE_URL: sqlite:////app/data/kaya.db
+      DATABASE_URL: postgresql+psycopg://kaya@postgres:5432/kaya
+      KAYA_POSTGRES_DATABASE_URL: postgresql+psycopg://kaya@postgres:5432/kaya
+      KAYA_SQLITE_SOURCE_URL: sqlite:////app/data/kaya.db
+      DATABASE_PASSWORD_FILE: /run/kaya-secrets/postgres_password
+      KAYA_PHASE6_AUTO_UPGRADE: "true"
       FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
     ports:
       - "${KAYA_PORT:-8080}:8080"
@@ -16,6 +20,10 @@ services:
       - ${KAYA_DATA_DIR:-./data}:/app/data
       - ${KAYA_UPLOAD_DIR:-./uploads}:/app/uploads
       - ${KAYA_DATA_DIR:-./data}/remote-recordings:/app/data/remote-recordings
+      - kaya_phase6_postgres_secret:/run/kaya-secrets:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
     security_opt:
       - no-new-privileges:true
     cap_add:
@@ -35,7 +43,9 @@ services:
     restart: unless-stopped
     command: ["uvicorn", "app.security_gateway:app", "--host", "0.0.0.0", "--port", "8999", "--proxy-headers", "--forwarded-allow-ips", "${FORWARDED_ALLOW_IPS:-127.0.0.1}", "--no-access-log", "--no-server-header"]
     environment:
-      DATABASE_URL: sqlite:////app/data/kaya.db
+      DATABASE_URL: postgresql+psycopg://kaya@postgres:5432/kaya
+      KAYA_POSTGRES_DATABASE_URL: postgresql+psycopg://kaya@postgres:5432/kaya
+      DATABASE_PASSWORD_FILE: /run/kaya-secrets/postgres_password
       FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
       SKIP_DATABASE_MIGRATIONS: "true"
       KAYA_GATEWAY_MODE: "true"
@@ -43,8 +53,11 @@ services:
       - "${KAYA_SECURE_SEND_PORT:-8999}:8999"
     volumes:
       - ${KAYA_DATA_DIR:-./data}:/app/data
+      - kaya_phase6_postgres_secret:/run/kaya-secrets:ro
     depends_on:
       kaya:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
     security_opt:
       - no-new-privileges:true
@@ -58,8 +71,52 @@ services:
     container_name: kaya-guacd
     restart: unless-stopped
 
+  postgres-secret-init:
+    image: ${KAYA_IMAGE:-ghcr.io/antybubbs/kaya:latest}
+    restart: "no"
+    entrypoint: ["python"]
+    command:
+      - -c
+      - >-
+        import os,secrets;
+        target='/run/kaya-secrets/postgres_password';
+        host='/run/kaya-host-secrets/postgres_password';
+        value=open(host,'rb').read() if os.path.isfile(host) else secrets.token_urlsafe(64).encode();
+        open(target,'xb').write(value) if not os.path.exists(target) else None;
+        os.chown(target,100,101);os.chmod(target,0o600)
+    volumes:
+      - kaya_phase6_postgres_secret:/run/kaya-secrets
+      - ${KAYA_POSTGRES_PASSWORD_DIR:-./data/secrets}:/run/kaya-host-secrets:ro
+
+  postgres:
+    image: postgres:16.14
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: kaya
+      POSTGRES_USER: kaya
+      POSTGRES_PASSWORD_FILE: /run/kaya-secrets/postgres_password
+    volumes:
+      - kaya_postgres_data:/var/lib/postgresql/data
+      - kaya_phase6_postgres_secret:/run/kaya-secrets:ro
+      - ${KAYA_POSTGRES_BACKUP_DIR:-./postgres-backups}:/var/backups/kaya-postgres
+    depends_on:
+      postgres-secret-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kaya -d kaya"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
 networks:
   default:
     driver: bridge
     driver_opts:
       com.docker.network.driver.mtu: "1280"
+
+volumes:
+  kaya_postgres_data:
+    name: kaya_postgres_data
+  kaya_phase6_postgres_secret:
+    name: kaya_phase6_postgres_secret

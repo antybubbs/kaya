@@ -73,6 +73,45 @@ export SECRET_KEY
 export ENCRYPTION_KEY
 export SETUP_TOKEN
 
+UPGRADE_STATE_FILE="/app/data/kaya-database-upgrade.json"
+if [ -f "$UPGRADE_STATE_FILE" ]; then
+    UPGRADE_STATE="$(python -c "import json; print(json.load(open('$UPGRADE_STATE_FILE', encoding='utf-8')).get('state', ''))")"
+    AUTHORITATIVE_ENGINE="$(python -c "import json; print(json.load(open('$UPGRADE_STATE_FILE', encoding='utf-8')).get('database_engine', ''))")"
+    case "$UPGRADE_STATE" in
+        FAILED|PRECHECK|MAINTENANCE|BACKED_UP|POSTGRES_PREPARED|MIGRATING|VALIDATING|POSTGRES_READY|CUTOVER_PENDING)
+            echo "Kaya database upgrade is $UPGRADE_STATE; operator recovery is required before startup." >&2
+            exit 1
+            ;;
+    esac
+    if [ "$AUTHORITATIVE_ENGINE" = "postgresql" ]; then
+        if [ -z "${KAYA_POSTGRES_DATABASE_URL:-}" ]; then
+            echo "PostgreSQL is authoritative but KAYA_POSTGRES_DATABASE_URL is not configured; refusing SQLite fallback." >&2
+            exit 1
+        fi
+        export DATABASE_URL="$KAYA_POSTGRES_DATABASE_URL"
+    fi
+fi
+
+CONFIGURED_DATABASE_URL="${DATABASE_URL:-}"
+SQLITE_SOURCE_URL="${KAYA_SQLITE_SOURCE_URL:-}"
+SQLITE_SOURCE_PATH="${SQLITE_SOURCE_URL#sqlite:///}"
+POSTGRES_SCHEMA_READY="false"
+if [ "$CONFIGURED_DATABASE_URL" != "${CONFIGURED_DATABASE_URL#postgresql}" ]; then
+    if gosu kaya python -c "from sqlalchemy import inspect; from app.db.session import engine; raise SystemExit(0 if inspect(engine).has_table('alembic_version') else 1)"; then
+        POSTGRES_SCHEMA_READY="true"
+    fi
+fi
+
+if [ "${KAYA_PHASE6_AUTO_UPGRADE:-false}" = "true" ] && [ -n "$SQLITE_SOURCE_URL" ] && [ -f "$SQLITE_SOURCE_PATH" ] && [ "${AUTHORITATIVE_ENGINE:-}" != "postgresql" ] && [ "$POSTGRES_SCHEMA_READY" != "true" ]; then
+    echo "Preparing controlled SQLite to PostgreSQL upgrade..."
+    gosu kaya python -m scripts.kaya_phase6_upgrade \
+        --source "$SQLITE_SOURCE_PATH" \
+        --target-url "${KAYA_POSTGRES_DATABASE_URL:-}" \
+        --backup-dir "${MIGRATION_BACKUP_DIR:-/app/data/backups}" \
+        --data-dir "${DATA_DIR:-/app/data}"
+    export DATABASE_URL="${KAYA_POSTGRES_DATABASE_URL}"
+fi
+
 
 echo "Starting Kaya with ENCRYPTION_KEY length: ${#ENCRYPTION_KEY}"
 

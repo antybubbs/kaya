@@ -12,7 +12,7 @@ Kaya is a FastAPI application using server-rendered Jinja templates, SQLAlchemy 
 - Starlette sessions
 - Jinja2 templates
 - SQLAlchemy ORM
-- SQLite default database
+- PostgreSQL 16.14 default production database; SQLite legacy/recovery support
 - Passlib Argon2 password hashing
 - Fernet encryption for stored secrets
 - Pandas/OpenPyXL for import/export support

@@ -3,7 +3,9 @@
 **Kaya version:** `dev`  
 **Documentation version:** `dev`
 
-The default database is SQLite.
+The supported production database is PostgreSQL 16.14 in the primary Docker
+Compose stack. SQLite remains supported for legacy/recovery workflows and
+local development.
 
 Kaya configures file-backed SQLite databases with WAL journalling, a bounded
 5-second busy timeout, foreign-key enforcement, and `synchronous=FULL`. Startup
@@ -14,8 +16,9 @@ bounded provider, DNS, API, and subprocess work where practical.
 
 ## Location
 
-- Docker default: `/app/data/kaya.db`
-- Docker Compose bind mount: `./data/kaya.db`
+- Docker production database: PostgreSQL volume `kaya_postgres_data`
+- Legacy SQLite source: `/app/data/kaya.db`
+- Docker Compose application-data mount: `./data`
 
 While Kaya is running, SQLite may also create `kaya.db-wal` and `kaya.db-shm` in
 the same directory. Keep that directory writable and do not delete or copy the

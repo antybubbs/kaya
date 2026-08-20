@@ -9,10 +9,11 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
-from app.core.config import get_settings, sqlite_database_path
+from app.core.config import get_settings, postgres_engine_options, sqlite_database_path
 from app.db.dialect import verify_database_connection
 from app.core.performance import install_engine_timing
 from app.db.sqlite_temp import configure_sqlite_temp_directory
+from app.db.phase6_test_hooks import worker_write as record_worker_write
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -105,9 +106,15 @@ connect_args = (
     if settings.database_url.startswith("sqlite")
     else {}
 )
-engine = create_engine(
-    settings.database_url, connect_args=connect_args, pool_pre_ping=True
-)
+engine_options = {"connect_args": connect_args, "pool_pre_ping": True}
+if settings.database_url.startswith("postgresql"):
+    engine_options.update(postgres_engine_options(settings))
+    engine_options.update(
+        pool_size=settings.database_pool_size,
+        max_overflow=settings.database_max_overflow,
+        pool_recycle=settings.database_pool_recycle_seconds,
+    )
+engine = create_engine(settings.database_url, **engine_options)
 
 
 def configure_sqlite_connection(dbapi_connection, connection_record=None):
@@ -165,6 +172,7 @@ def _track_transaction_start(session, transaction, connection):
         "operation": context.get("operation", "unattributed"),
         "external_io": context.get("external_io", "false"),
         "wrote": False,
+        "database_engine": connection.engine.dialect.name,
     }
 
 
@@ -173,6 +181,7 @@ def _track_transaction_write(session, _flush_context):
     trace = session.info.get("kaya_transaction_trace")
     if trace is not None:
         trace["wrote"] = True
+        record_worker_write(trace["subsystem"], trace["database_engine"])
 
 
 def _finish_transaction_trace(session, outcome: str) -> None:

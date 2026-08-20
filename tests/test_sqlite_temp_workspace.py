@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import shutil
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -58,11 +60,32 @@ def test_large_index_uses_kaya_sqlite_temp_workspace() -> None:
             max_tmp_bytes = 0
             managed_fd_seen = False
             tmp_fd_seen = False
+            observed_fd_targets: set[str] = set()
+            stop_observer = threading.Event()
+            baseline_tmp_files = {
+                item.name for item in Path("/tmp").iterdir() if item.is_file()
+            }
             baseline_tmp_fds = {
                 os.readlink(descriptor)
                 for descriptor in Path("/proc/self/fd").iterdir()
                 if descriptor.exists() and os.readlink(descriptor).startswith("/tmp/")
-            }
+                }
+
+            def observe_open_files() -> None:
+                nonlocal managed_fd_seen, tmp_fd_seen
+                while not stop_observer.is_set():
+                    for descriptor in Path("/proc/self/fd").iterdir():
+                        try:
+                            target = os.readlink(descriptor)
+                        except OSError:
+                            continue
+                        observed_fd_targets.add(target)
+                        managed_fd_seen |= str(sqlite_temp_directory) in target
+                        tmp_fd_seen |= target.startswith("/tmp/") and target not in baseline_tmp_fds
+                    time.sleep(0.001)
+
+            observer = threading.Thread(target=observe_open_files, daemon=True)
+            observer.start()
 
             def observe_workspaces() -> int:
                 nonlocal max_managed_bytes, max_managed_entries, max_tmp_bytes
@@ -80,7 +103,7 @@ def test_large_index_uses_kaya_sqlite_temp_workspace() -> None:
                     sum(
                         item.stat().st_size
                         for item in Path("/tmp").iterdir()
-                        if item.is_file()
+                        if item.is_file() and item.name not in baseline_tmp_files
                     ),
                 )
                 for descriptor in Path("/proc/self/fd").iterdir():
@@ -95,16 +118,20 @@ def test_large_index_uses_kaya_sqlite_temp_workspace() -> None:
                 return 0
 
             connection.set_progress_handler(observe_workspaces, 10_000)
-            connection.execute(
-                "CREATE INDEX ix_dns_client_traffic_client_observed "
-                "ON dns_client_traffic_events (dns_client_id, observed_at)"
-            )
-            connection.commit()
-            connection.set_progress_handler(None, 0)
+            try:
+                connection.execute(
+                    "CREATE INDEX ix_dns_client_traffic_client_observed "
+                    "ON dns_client_traffic_events (dns_client_id, observed_at)"
+                )
+                connection.commit()
+            finally:
+                connection.set_progress_handler(None, 0)
+                stop_observer.set()
+                observer.join(timeout=2)
         finally:
             connection.close()
 
-        assert max_managed_entries > 0 or managed_fd_seen
+        assert max_managed_entries > 0 or managed_fd_seen, observed_fd_targets
         assert max_tmp_bytes == 0
         assert not tmp_fd_seen
         with sqlite3.connect(database_path) as verification:

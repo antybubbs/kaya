@@ -1,0 +1,58 @@
+name: Tests
+
+on:
+  push:
+    branches: [main, dev, Kaya]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies
+        run: python -m pip install -r requirements.txt pytest ruff
+      - name: Compose configuration
+        run: docker compose -f docker-compose.yml config --quiet
+      - name: Unit and regression tests
+        # Docker integration runs on the host-Docker Phase 7 workflow; do not
+        # attempt to nest Docker inside this Python test job.
+        run: python -m pytest -q --ignore=tests/test_sqlite_temp_exhaustion_docker.py
+      - name: Ruff
+        run: ruff check .
+      - name: Diff whitespace
+        run: git diff --check
+
+  postgresql:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16.14
+        env:
+          POSTGRES_DB: kaya_test
+          POSTGRES_USER: kaya_test
+          POSTGRES_PASSWORD: kaya_test_only
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U kaya_test -d kaya_test"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies
+        run: python -m pip install -r requirements.txt pytest
+      - name: PostgreSQL schema and invariant regression tests
+        env:
+          KAYA_TEST_POSTGRES_URL: postgresql+psycopg://kaya_test:kaya_test_only@127.0.0.1:55432/kaya_test
+        run: python -m pytest -q tests/test_postgresql_schema_validation.py tests/test_database_engine_compatibility.py
