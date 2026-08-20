@@ -123,6 +123,10 @@ docker build -f "$ROOT_DIR/Dockerfile" -t "$IMAGE_A" "$ROOT_DIR"
 docker build -f "$ROOT_DIR/Dockerfile" -t "$IMAGE_B" "$ROOT_DIR"
 docker image inspect "$IMAGE_A" --format 'image_a={{.Id}}'
 docker image inspect "$IMAGE_B" --format 'image_b={{.Id}}'
+KAYA_RUNTIME_UID="$(docker run --rm --entrypoint sh "$IMAGE_A" -c 'id -u kaya')"
+KAYA_RUNTIME_GID="$(docker run --rm --entrypoint sh "$IMAGE_A" -c 'id -g kaya')"
+[[ "$KAYA_RUNTIME_UID" =~ ^[1-9][0-9]*$ ]]
+[[ "$KAYA_RUNTIME_GID" =~ ^[1-9][0-9]*$ ]]
 
 export PHASE7D_PROJECT="kaya_phase7d_config" PHASE7D_ROOT="$RUN_ROOT/config"
 export PHASE7D_IMAGE="$IMAGE_A" PHASE7D_HTTP_PORT=18090 PHASE7D_GATEWAY_PORT=18990
@@ -153,11 +157,11 @@ echo 'fresh install, HTTP smoke, writes, and down/up persistence passed'
 configure_project kaya_phase7d_legacy "$RUN_ROOT/legacy" 18092 18992 "$IMAGE_A"
 docker run --rm --entrypoint chown \
     -v "$PHASE7D_ROOT/data:/app/data" "$IMAGE_A" \
-    -R 100:101 /app/data
+    -R "$KAYA_RUNTIME_UID:$KAYA_RUNTIME_GID" /app/data
 docker run --rm --entrypoint python \
     -w /app \
     -e PYTHONPATH=/app \
-    --user 100:101 \
+    --user "$KAYA_RUNTIME_UID:$KAYA_RUNTIME_GID" \
     -e SECRET_KEY=phase7d-synthetic-secret-key-012345678901234567890123 \
     -e ENCRYPTION_KEY=MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA= \
     -e SETUP_TOKEN=phase7d-synthetic-setup-token \
