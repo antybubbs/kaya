@@ -45,6 +45,7 @@ state() { compose exec -T kaya python -c "import json; print(json.load(open('/ap
 source_hash() { find "$ROOT/data" -maxdepth 1 -type f \( -name 'kaya.db' -o -name 'kaya.db-wal' -o -name 'kaya.db-shm' \) -print0 | sort -z | xargs -0 -r sha256sum | sha256sum | awk '{print $1}'; }
 setup_token() { compose exec -T kaya sh -c "sed -n 's/^SETUP_TOKEN=//p' /app/data/.runtime.env" | tr -d '\r'; }
 smoke() { PHASE7D_HTTP_BASE="http://127.0.0.1:$PORT" KAYA_SETUP_TOKEN="$(setup_token)" python "$ROOT_DIR/scripts/phase7d_http_smoke.py"; }
+smoke_existing() { PHASE7D_HTTP_BASE="http://127.0.0.1:$PORT" python "$ROOT_DIR/scripts/phase7d_http_smoke.py"; }
 test_suite() { docker run --rm -e PYTHONPATH=/workspace -e APP_ENV=test -e SECRET_KEY=phase9-synthetic-secret-key-012345678901234567890123 -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= -v "$ROOT_DIR:/workspace" -w /workspace "$TEST_IMAGE" "$@"; }
 production_sqlite_rejection() {
   local output status=0
@@ -63,7 +64,7 @@ trap cleanup EXIT
 mkdir -p "$ROOT/data/remote-recordings" "$ROOT/uploads" "$ROOT/secrets" "$ROOT/backups"
 docker build --file "$ROOT_DIR/Dockerfile" --tag "$IMAGE" "$ROOT_DIR"
 export ROOT_DIR PROJECT ROOT IMAGE TEST_IMAGE PORT PRIMARY ISOLATION
-export -f compose wait_pg wait_app revision state source_hash setup_token smoke test_suite production_sqlite_rejection
+export -f compose wait_pg wait_app revision state source_hash setup_token smoke smoke_existing test_suite production_sqlite_rejection
 
 fresh_install() { compose up -d; wait_pg; wait_app; [[ "$(revision)" == "20260818_02" ]]; }
 scenario 1 "Fresh install uses PostgreSQL" fresh_install
@@ -88,12 +89,13 @@ docker run --rm --entrypoint python -e PYTHONPATH=/app -e APP_ENV=test -e SECRET
 legacy_before="$(source_hash)"
 docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c "mkdir -p /data/backups && printf 'phase9-sentinel-immutable\\n' > /data/backups/DO_NOT_DELETE_SENTINEL.txt"
 compose up -d postgres; wait_pg; compose up -d kaya; wait_app
+docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c "chown -R $(id -u):$(id -g) /data/backups"
 scenario 10 "Legacy SQLite detected" bash -c '[[ "$(state)" == "POSTGRES_ACTIVE" ]]'
 scenario 11 "Legacy SQLite verified backup" bash -c 'test "$(find "$ROOT/data/backups" -type f | wc -l)" -gt 0 && [[ "$(source_hash)" == "$legacy_before" ]]'
 scenario 12 "Legacy SQLite migration" bash -c '[[ "$(revision)" == "20260818_02" ]]'
 scenario 13 "PostgreSQL cutover" bash -c '[[ "$(state)" == "POSTGRES_ACTIVE" ]]'
-scenario 14 "Migrated authenticated HTTP smoke" smoke
-scenario 15 "Migrated representative writes" smoke
+scenario 14 "Migrated authenticated HTTP smoke" smoke_existing
+scenario 15 "Migrated representative writes" smoke_existing
 legacy_after="$(source_hash)"
 scenario 16 "Retained SQLite fingerprint unchanged" test "$legacy_before" = "$legacy_after"
 scenario 17 "Migrated restart" bash -c 'compose restart kaya >/dev/null && wait_app && [[ "$(state)" == "POSTGRES_ACTIVE" ]]'
