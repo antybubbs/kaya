@@ -194,6 +194,7 @@ jobs:
             phase8_acceptance.json
             phase8d-results.env
             phase8-scale-report.json
+            phase8-interrupted.log
             phase8-live-write.log
           if-no-files-found: warn
       - name: Dispose exact Phase 8 resources

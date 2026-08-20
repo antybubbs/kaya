@@ -71,7 +71,7 @@ def _insert_seed_data(connection, clients: int) -> tuple[int, int, int]:
     return provider_id, user_id, client_start_id
 
 
-def _insert_scale_data(connection, provider_id: int, user_id: int, client_start_id: int, client_count: int, traffic_rows: int, metric_rows: int, audit_rows: int) -> None:
+def _insert_scale_data(connection, provider_id: int, user_id: int, client_start_id: int, client_count: int, traffic_rows: int, metric_rows: int, audit_rows: int) -> int:
     connection.execute(
         text(
             "INSERT INTO dns_client_traffic_events "
@@ -84,22 +84,22 @@ def _insert_scale_data(connection, provider_id: int, user_id: int, client_start_
         ),
         {"rows": traffic_rows, "provider_id": provider_id, "client_start_id": client_start_id, "client_count": client_count},
     )
-    connection.execute(
+    host_id = connection.execute(
         text(
             "INSERT INTO compute_hosts "
             "(name, platform, base_url, verify_tls, is_enabled, poll_interval_seconds, status, created_at, updated_at) "
-            "VALUES ('scale-compute-1', 'linux', 'https://compute.invalid', TRUE, TRUE, 30, 'online', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            "VALUES ('scale-compute-1', 'linux', 'https://compute.invalid', TRUE, TRUE, 30, 'online', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) RETURNING id"
         )
-    )
+    ).scalar_one()
     connection.execute(
         text(
             "INSERT INTO compute_metrics "
             "(host_id, cpu_percent, memory_used, memory_total, storage_used, storage_total, recorded_at) "
-            "SELECT 1, (g % 100)::double precision, 1000000000 + g, 16000000000, 50000000000 + g, 100000000000, "
+            "SELECT :host_id, (g % 100)::double precision, 1000000000 + g, 16000000000, 50000000000 + g, 100000000000, "
             "CURRENT_TIMESTAMP - ((g % 4320)::text || ' minutes')::interval "
             "FROM generate_series(1, :rows) AS source(g)"
         ),
-        {"rows": metric_rows},
+        {"rows": metric_rows, "host_id": host_id},
     )
     connection.execute(
         text(
@@ -128,6 +128,7 @@ def _insert_scale_data(connection, provider_id: int, user_id: int, client_start_
             "FROM generate_series(1, 1000)"
         )
     )
+    return host_id
 
 
 def _explain(connection, name: str, statement: str) -> dict:
@@ -246,7 +247,7 @@ def run(database_url: str, *, traffic_rows: int, clients: int, metric_rows: int,
     started = time.perf_counter()
     with engine.begin() as connection:
         provider_id, user_id, client_start_id = _insert_seed_data(connection, clients)
-        _insert_scale_data(connection, provider_id, user_id, client_start_id, clients, traffic_rows, metric_rows, audit_rows)
+        compute_host_id = _insert_scale_data(connection, provider_id, user_id, client_start_id, clients, traffic_rows, metric_rows, audit_rows)
         connection.execute(text("ANALYZE"))
     generation_seconds = time.perf_counter() - started
     queries = [
@@ -254,7 +255,7 @@ def run(database_url: str, *, traffic_rows: int, clients: int, metric_rows: int,
         ("dns_history", f"SELECT id, domain, is_blocked, observed_at FROM dns_client_traffic_events WHERE dns_client_id = {client_start_id} ORDER BY observed_at DESC, id DESC LIMIT 1000"),
         ("dns_count", f"SELECT count(*) FROM dns_client_traffic_events WHERE dns_client_id = {client_start_id} AND observed_at >= CURRENT_TIMESTAMP - interval '30 days'"),
         ("dns_top_domains", f"SELECT domain, count(*) FROM dns_client_traffic_events WHERE dns_client_id = {client_start_id} GROUP BY domain ORDER BY count(*) DESC, domain LIMIT 10"),
-        ("compute_history", "SELECT recorded_at, cpu_percent, memory_used FROM compute_metrics WHERE host_id = 1 ORDER BY recorded_at DESC LIMIT 200"),
+        ("compute_history", f"SELECT recorded_at, cpu_percent, memory_used FROM compute_metrics WHERE host_id = {compute_host_id} ORDER BY recorded_at DESC LIMIT 200"),
         ("audit_listing", "SELECT id, action, entity, created_at FROM audit_logs ORDER BY created_at DESC, id DESC LIMIT 100"),
         ("session_lookup", "SELECT id, session_id, last_seen_at FROM app_sessions WHERE user_id = 1 AND ended_at IS NULL ORDER BY last_seen_at DESC"),
         ("notification_count", "SELECT count(*) FROM notification_events WHERE resolved_at IS NULL"),

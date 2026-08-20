@@ -91,11 +91,19 @@ constrained_destination() {
 }
 
 interrupted_backup() {
-    local container pid
+    local container pid lock_ready=0 killed=0 status
     compose exec -T postgres psql -U kaya -d kaya -v ON_ERROR_STOP=1 -c \
         "CREATE TABLE IF NOT EXISTS phase8_interrupt_fixture (id integer PRIMARY KEY, payload text NOT NULL); TRUNCATE phase8_interrupt_fixture; INSERT INTO phase8_interrupt_fixture SELECT g, repeat('phase8-interrupt-', 400) FROM generate_series(1, 200000) AS source(g);" >/dev/null
     compose exec -d postgres psql -U kaya -d kaya -c "BEGIN; LOCK TABLE phase8_interrupt_fixture IN ACCESS EXCLUSIVE MODE; SELECT pg_sleep(120);" >/dev/null
-    sleep 2
+    for _ in $(seq 1 30); do
+        if compose exec -T postgres psql -U kaya -d kaya -Atc \
+            "SELECT count(*) FROM pg_locks l JOIN pg_class c ON c.oid = l.relation WHERE c.relname = 'phase8_interrupt_fixture' AND l.mode = 'AccessExclusiveLock' AND l.granted;" | tail -n 1 | grep -qx '1'; then
+            lock_ready=1
+            break
+        fi
+        sleep 1
+    done
+    [[ "$lock_ready" == "1" ]]
     compose run -d --no-deps postgres-backup backup >phase8-interrupted-container.txt
     container="$(tr -d '\r\n' < phase8-interrupted-container.txt)"
     for _ in $(seq 1 120); do
@@ -104,10 +112,15 @@ interrupted_backup() {
         sleep 1
     done
     [[ -n "${pid:-}" ]]
-    docker exec "$container" bash -c 'for attempt in $(seq 1 600); do if active="$(pgrep -o -x pg_dump 2>/dev/null)"; then if test -n "$active"; then kill -KILL "$active"; exit 0; fi; fi; sleep 0.1; done; exit 1'
+    if docker exec "$container" bash -c 'for attempt in $(seq 1 600); do if active="$(pgrep -o -x pg_dump 2>/dev/null)"; then if test -n "$active"; then kill -KILL "$active"; exit 0; fi; fi; sleep 0.1; done; exit 1'; then
+        killed=1
+    fi
     compose exec -T postgres psql -U kaya -d kaya -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE query LIKE '%pg_sleep(120)%';" >/dev/null
-    if docker wait "$container" | grep -q '^0$'; then return 1; fi
+    status="$(docker wait "$container")"
+    docker logs "$container" >phase8-interrupted.log 2>&1
     docker rm "$container" >/dev/null
+    [[ "$killed" == "1" ]]
+    [[ "$status" != "0" ]]
     [[ "$(compose run --rm --entrypoint bash postgres-backup -c 'find /var/backups/kaya-postgres -maxdepth 1 -type f -name "*.tmp" | wc -l' | tail -n 1)" == "0" ]]
 }
 
