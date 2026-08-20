@@ -32,6 +32,13 @@ def _insert_seed_data(connection, clients: int) -> tuple[int, int, int]:
     connection.execute(text("DELETE FROM dns_client_traffic_events"))
     connection.execute(text("DELETE FROM dns_recognised_devices"))
     connection.execute(text("DELETE FROM dns_providers"))
+    connection.execute(
+        text(
+            "DELETE FROM compute_metrics WHERE host_id IN "
+            "(SELECT id FROM compute_hosts WHERE name = 'scale-compute-1')"
+        )
+    )
+    connection.execute(text("DELETE FROM compute_hosts WHERE name = 'scale-compute-1'"))
     provider_id = connection.execute(
         text(
             "INSERT INTO dns_providers "
