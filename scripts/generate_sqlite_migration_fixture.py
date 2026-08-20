@@ -34,6 +34,17 @@ def generate(
             INSERT INTO users (email, password_hash, role, is_active, totp_enabled, authentication_type, is_break_glass, role_source, created_at, updated_at)
             VALUES ('synthetic@example.invalid', :password_hash, 'admin', 1, 0, 'local', 0, 'local', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         """), {"password_hash": hash_password("synthetic-admin-password")})
+        for module_key in (
+            "asset_manager", "backup_manager", "compute_manager", "dashboard",
+            "dns_manager", "domain_manager", "high_availability", "licence_manager",
+            "network_monitor", "rack_manager", "remote_manager", "runbooks",
+            "secret_vault", "secure_send", "vlan_ip_manager",
+        ):
+            connection.execute(text("""
+                INSERT INTO user_module_permissions (user_id, module_key, allowed, created_by, created_at, updated_at)
+                SELECT id, :module_key, 1, id, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                FROM users WHERE email = 'synthetic@example.invalid'
+            """), {"module_key": module_key})
         connection.execute(text("""
             INSERT INTO dns_providers (name, provider_type, base_url, auth_method, ssl_verify, timeout_seconds, is_enabled, created_at, updated_at)
             VALUES ('Synthetic DNS', 'pihole', 'https://dns.invalid', 'password', 1, 10, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
