@@ -62,7 +62,7 @@ trap cleanup EXIT
 
 mkdir -p "$ROOT/data/remote-recordings" "$ROOT/uploads" "$ROOT/secrets" "$ROOT/backups"
 docker build --file "$ROOT_DIR/Dockerfile" --tag "$IMAGE" "$ROOT_DIR"
-export ROOT_DIR PROJECT ROOT IMAGE TEST_IMAGE PORT
+export ROOT_DIR PROJECT ROOT IMAGE TEST_IMAGE PORT PRIMARY ISOLATION
 export -f compose wait_pg wait_app revision state source_hash setup_token smoke test_suite production_sqlite_rejection
 
 fresh_install() { compose up -d; wait_pg; wait_app; [[ "$(revision)" == "20260818_02" ]]; }
