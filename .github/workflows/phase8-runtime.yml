@@ -36,6 +36,14 @@ jobs:
     name: Disposable PostgreSQL backup and restore drill
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      KAYA_IMAGE: kaya:phase8b-${{ github.sha }}
+      KAYA_DATA_DIR: ./phase8-data
+      KAYA_UPLOAD_DIR: ./phase8-uploads
+      KAYA_POSTGRES_BACKUP_DIR: ./phase8-backups
+      KAYA_POSTGRES_PASSWORD_DIR: ./phase8-secrets
+      KAYA_PHASE8_VOLUME_PREFIX: kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
+      KAYA_PORT: 18080
     steps:
       - uses: actions/checkout@v4
       - name: Build disposable Kaya image
