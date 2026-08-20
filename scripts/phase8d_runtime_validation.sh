@@ -91,7 +91,7 @@ constrained_destination() {
 }
 
 interrupted_backup() {
-    local container pid lock_ready=0 killed=0 status
+    local container pid lock_ready=0 killed=0 status tmp_count
     compose exec -T postgres psql -U kaya -d kaya -v ON_ERROR_STOP=1 -c \
         "CREATE TABLE IF NOT EXISTS phase8_interrupt_fixture (id integer PRIMARY KEY, payload text NOT NULL); TRUNCATE phase8_interrupt_fixture; INSERT INTO phase8_interrupt_fixture SELECT g, repeat('phase8-interrupt-', 400) FROM generate_series(1, 200000) AS source(g);" >/dev/null
     compose exec -d postgres psql -U kaya -d kaya -c "BEGIN; LOCK TABLE phase8_interrupt_fixture IN ACCESS EXCLUSIVE MODE; SELECT pg_sleep(120);" >/dev/null
@@ -119,9 +119,11 @@ interrupted_backup() {
     status="$(docker wait "$container")"
     docker logs "$container" >phase8-interrupted.log 2>&1
     docker rm "$container" >/dev/null
+    tmp_count="$(compose run --rm --entrypoint bash postgres-backup -c 'find /var/backups/kaya-postgres -maxdepth 1 -type f -name "*.tmp" | wc -l' | tail -n 1)"
+    printf 'killed=%s status=%s tmp_count=%s\n' "$killed" "$status" "$tmp_count" >>phase8-interrupted.log
     [[ "$killed" == "1" ]]
     [[ "$status" != "0" ]]
-    [[ "$(compose run --rm --entrypoint bash postgres-backup -c 'find /var/backups/kaya-postgres -maxdepth 1 -type f -name "*.tmp" | wc -l' | tail -n 1)" == "0" ]]
+    [[ "$tmp_count" == "0" ]]
 }
 
 partial_archive() {
