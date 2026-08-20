@@ -103,6 +103,7 @@ scenario 18 "Migrated image replacement" bash -c 'compose up -d --force-recreate
 scenario 19 "PostgreSQL outage after cutover" bash -c 'compose stop postgres >/dev/null; if curl --fail --silent --max-time 15 "http://127.0.0.1:$PORT/api/site-timezone" >/dev/null; then exit 1; fi'
 scenario 20 "No SQLite fallback" bash -c '! compose logs --no-color kaya | grep -q "fallback"'
 scenario 21 "PostgreSQL recovery" bash -c 'compose start postgres >/dev/null; wait_pg; wait_app'
+docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c "chown -R $(id -u):$(id -g) /data"
 rm -f "$ROOT/data/kaya.db"
 scenario 22 "Missing retained SQLite post-cutover" bash -c 'compose restart kaya >/dev/null && wait_app && [[ "$(revision)" == "20260818_02" ]]'
 printf 'corrupt\n' > "$ROOT/data/kaya.db"
