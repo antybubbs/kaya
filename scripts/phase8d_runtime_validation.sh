@@ -59,7 +59,7 @@ backup_count() {
 }
 
 latest_archive() {
-    compose run --rm --entrypoint bash postgres-backup -c 'find /var/backups/kaya-postgres -maxdepth 1 -type f -name "kaya-*.dump" -printf "%T@ %f\n" | sort -nr | cut -d" " -f2-' | tail -n 1
+    compose run --rm --entrypoint bash postgres-backup -c 'find /var/backups/kaya-postgres -maxdepth 1 -type f -name "kaya-*.dump" -printf "%T@ %f\n" | sort -nr | cut -d" " -f2-' | grep '^kaya-' | tail -n 1
 }
 
 backup_must_fail() {
@@ -116,7 +116,9 @@ interrupted_backup() {
 }
 
 partial_archive() {
-    local archive="$(latest_archive)" partial="${archive}.partial"
+    local archive partial
+    archive="$(latest_archive)"
+    partial="${archive}.partial"
     compose run --rm --entrypoint bash postgres-backup -c "cp /var/backups/kaya-postgres/$archive /var/backups/kaya-postgres/$partial; cp /var/backups/kaya-postgres/$archive.json /var/backups/kaya-postgres/$partial.json; cp /var/backups/kaya-postgres/$archive.sha256 /var/backups/kaya-postgres/$partial.sha256; truncate -s -1 /var/backups/kaya-postgres/$partial"
     backup_must_fail phase8-partial.log --entrypoint bash postgres-backup -c "pg_restore --list /var/backups/kaya-postgres/$partial"
     backup_must_fail phase8-partial-verify.log verify "/var/backups/kaya-postgres/$partial"
@@ -124,7 +126,9 @@ partial_archive() {
 }
 
 corrupt_archive() {
-    local archive="$(latest_archive)" corrupt="${archive}.corrupt"
+    local archive corrupt
+    archive="$(latest_archive)"
+    corrupt="${archive}.corrupt"
     compose run --rm --entrypoint bash postgres-backup -c "cp /var/backups/kaya-postgres/$archive /var/backups/kaya-postgres/$corrupt; cp /var/backups/kaya-postgres/$archive.json /var/backups/kaya-postgres/$corrupt.json; cp /var/backups/kaya-postgres/$archive.sha256 /var/backups/kaya-postgres/$corrupt.sha256; printf X | dd of=/var/backups/kaya-postgres/$corrupt bs=1 seek=32 conv=notrunc status=none"
     backup_must_fail phase8-corrupt.log verify "/var/backups/kaya-postgres/$corrupt"
     backup_must_fail phase8-corrupt-restore.log restore-drill "/var/backups/kaya-postgres/$corrupt" kaya_phase8_corrupt
