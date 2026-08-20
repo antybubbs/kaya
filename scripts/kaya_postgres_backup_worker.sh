@@ -44,11 +44,12 @@ backup() {
   metadata="$archive.json"
   tmp="$archive.tmp"
   (umask 077; pg_dump --format=custom --no-owner --no-privileges --file="$tmp" --username="$DB_USER" --dbname="$DB_NAME")
+  revision="$(psql --username="$DB_USER" --dbname="$DB_NAME" --tuples-only --no-align --command="SELECT COALESCE((SELECT version_num FROM alembic_version LIMIT 1), 'unknown');" | tr -d '[:space:]')"
+  postgres_version="$(psql --username="$DB_USER" --dbname="$DB_NAME" --tuples-only --no-align --command="SELECT replace(replace(version(), chr(10), ' '), chr(13), ' ');" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  [[ "$revision" != "unknown" && -n "$revision" && -n "$postgres_version" ]] || die "database revision or PostgreSQL version metadata is unavailable"
   mv -- "$tmp" "$archive"
   digest="$(sha256sum "$archive" | awk '{print $1}')"
   archive_bytes="$(stat -c '%s' "$archive")"
-  revision="$(psql --username="$DB_USER" --dbname="$DB_NAME" --tuples-only --no-align --command="SELECT COALESCE((SELECT version_num FROM alembic_version LIMIT 1), 'unknown');" | tr -d '[:space:]')"
-  postgres_version="$(psql --username="$DB_USER" --dbname="$DB_NAME" --tuples-only --no-align --command="SELECT replace(replace(version(), chr(10), ' '), chr(13), ' ');" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
   (umask 077
     printf '{\n  "archive_bytes": %s,\n  "created_at": "%s",\n  "postgresql_version": "%s",\n  "sha256": "%s",\n  "alembic_revision": "%s"\n}\n' "$archive_bytes" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$postgres_version" "$digest" "$revision" > "$metadata"
     printf '%s  %s\n' "$digest" "$archive" > "$archive.sha256"
@@ -58,16 +59,23 @@ backup() {
   echo "$archive"
 }
 restore_drill() {
-  local archive="${1:-$(latest)}" target="${2:-kaya_restore_drill}"
+  local archive="${1:-$(latest)}" target="${2:-kaya_restore_drill}" metadata expected_revision restored_revision user_count asset_count
   [[ -n "$archive" ]] || die "no backup archive available"
   [[ "$target" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]] || die "restore database name is invalid"
   verify "$archive"
+  metadata="$archive.json"
+  expected_revision="$(sed -n 's/.*\"alembic_revision\": \"\([^\"]*\)\".*/\1/p' "$metadata")"
   psql --username="$DB_USER" --dbname=postgres --command="DROP DATABASE IF EXISTS \"$target\";" >/dev/null
   psql --username="$DB_USER" --dbname=postgres --command="CREATE DATABASE \"$target\";" >/dev/null
   pg_restore --exit-on-error --no-owner --no-privileges --username="$DB_USER" --dbname="$target" "$archive"
+  restored_revision="$(psql --username="$DB_USER" --dbname="$target" --tuples-only --no-align --command='SELECT version_num FROM alembic_version LIMIT 1;' | tr -d '[:space:]')"
+  [[ -n "$expected_revision" && "$restored_revision" == "$expected_revision" ]] || die "restored Alembic revision does not match backup metadata"
+  user_count="$(psql --username="$DB_USER" --dbname="$target" --tuples-only --no-align --command='SELECT count(*) FROM users;' | tr -d '[:space:]')"
+  asset_count="$(psql --username="$DB_USER" --dbname="$target" --tuples-only --no-align --command='SELECT count(*) FROM hardware_assets;' | tr -d '[:space:]')"
+  [[ "$user_count" =~ ^[1-9][0-9]*$ && "$asset_count" =~ ^[1-9][0-9]*$ ]] || die "restored representative data is missing"
   psql --username="$DB_USER" --dbname="$target" --tuples-only --no-align --command="SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public';" | grep -q '[1-9]' || die "restore drill has no public tables"
   psql --username="$DB_USER" --dbname=postgres --command="DROP DATABASE \"$target\";" >/dev/null
-  echo "restore-drill passed"
+  echo "restore-drill passed revision=$restored_revision users=$user_count assets=$asset_count"
 }
 diagnostics() {
   psql --username="$DB_USER" --dbname="$DB_NAME" --no-align --field-separator='|' --tuples-only <<'SQL'

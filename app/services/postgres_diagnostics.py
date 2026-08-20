@@ -28,6 +28,13 @@ def collect_postgres_diagnostics(engine: Engine, backup_directory: Path) -> dict
                 ORDER BY pg_total_relation_size(relid) DESC LIMIT 10
             """)
         ).all()
+        indexes = connection.execute(
+            text("""
+                SELECT indexrelname, relname, pg_relation_size(indexrelid)
+                FROM pg_catalog.pg_stat_user_indexes
+                ORDER BY pg_relation_size(indexrelid) DESC LIMIT 10
+            """)
+        ).all()
     pool = engine.pool
     archives = sorted(backup_directory.glob("kaya-*.dump"), key=lambda path: path.stat().st_mtime, reverse=True) if backup_directory.exists() else []
     return {
@@ -40,10 +47,12 @@ def collect_postgres_diagnostics(engine: Engine, backup_directory: Path) -> dict
         "pool": {
             "size": pool.size() if hasattr(pool, "size") else None,
             "checked_out": pool.checkedout() if hasattr(pool, "checkedout") else None,
+            "checked_in": pool.checkedin() if hasattr(pool, "checkedin") else None,
             "overflow": pool.overflow() if hasattr(pool, "overflow") else None,
             "status": pool.status(),
         },
         "largest_tables": [{"name": row[0], "bytes": int(row[1])} for row in tables],
+        "largest_indexes": [{"name": row[0], "table": row[1], "bytes": int(row[2])} for row in indexes],
         "latest_backup": archives[0].name if archives else None,
         "backup_count": len(archives),
     }

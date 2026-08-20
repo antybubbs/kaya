@@ -21,7 +21,20 @@ def test_phase8_worker_has_verification_retention_and_restore_drill_contract():
     assert "archive_bytes" in worker
     assert "postgresql_version" in worker
     assert "alembic_revision" in worker
+    assert "metadata is unavailable" in worker
     assert "RETENTION" in worker
     assert "restore-drill" in worker
     assert "PGPASSWORD" in worker
     assert "DROP DATABASE" in worker
+
+
+def test_live_write_harness_uses_authenticated_supported_route():
+    harness = Path("scripts/phase8_live_write.py").read_text(encoding="utf-8")
+    assert "/api/dashboard/preferences" in harness
+    assert "X-CSRF-Token" in harness
+
+
+def test_acceptance_evidence_has_all_explicit_matrix_rows():
+    source = Path("scripts/phase8_acceptance_evidence.py").read_text(encoding="utf-8")
+    assert '"Cleanup/isolation"' in source
+    assert source.count('"') > 100

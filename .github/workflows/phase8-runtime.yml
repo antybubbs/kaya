@@ -55,7 +55,34 @@ jobs:
           project=kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
           compose="docker compose -p $project -f docker-compose.yml -f docker-compose.phase8-production-ci.yml"
           password=$($compose exec -T postgres cat /run/kaya-secrets/postgres_password)
-          $compose exec -T -e "PGPASSWORD=$password" postgres psql -U kaya -d kaya -c "CREATE TABLE phase8_fixture (id integer PRIMARY KEY, value text NOT NULL); INSERT INTO phase8_fixture VALUES (1, 'synthetic');"
+          $compose exec -T -e "PGPASSWORD=$password" postgres psql -U kaya -d kaya -c "CREATE TABLE phase8_fixture (id integer PRIMARY KEY, value text NOT NULL); INSERT INTO phase8_fixture VALUES (1, 'synthetic'); INSERT INTO remote_manager_settings (key, value, updated_at) VALUES ('high_availability_enabled', '1', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at;"
+      - name: Authenticated smoke and representative writes
+        env:
+          PHASE7D_HTTP_BASE: http://127.0.0.1:18080
+        run: |
+          project=kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
+          compose="docker compose -p $project -f docker-compose.yml -f docker-compose.phase8-production-ci.yml"
+          token=$($compose exec -T kaya sh -c "sed -n 's/^SETUP_TOKEN=//p' /app/data/.runtime.env")
+          KAYA_SETUP_TOKEN="$token" python scripts/phase7d_http_smoke.py
+      - name: Create retention sentinel
+        run: |
+          mkdir -p phase8-backups
+          printf 'phase8-sentinel-immutable\n' > phase8-backups/DO_NOT_DELETE_SENTINEL.txt
+      - name: Backup during authenticated live writes
+        env:
+          PHASE7D_HTTP_BASE: http://127.0.0.1:18080
+          PHASE8_WRITE_SECONDS: "20"
+        run: |
+          project=kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
+          compose="docker compose -p $project -f docker-compose.yml -f docker-compose.phase8-production-ci.yml --profile postgres-ops"
+          python scripts/phase8_live_write.py > phase8-live-write.log 2>&1 &
+          writer=$!
+          backup_started=$(date +%s.%N)
+          $compose run --rm postgres-backup backup > phase8-live-backup.log
+          backup_finished=$(date +%s.%N)
+          wait "$writer"
+          cat phase8-live-write.log
+          printf 'backup-started=%s backup-finished=%s\n' "$backup_started" "$backup_finished"
       - name: Create, verify, and retain native backups
         env:
           KAYA_IMAGE: kaya:phase8b-${{ github.sha }}
@@ -72,6 +99,8 @@ jobs:
           $compose run --rm postgres-backup backup
           count=$($compose run --rm --entrypoint bash postgres-backup -c 'find /var/backups/kaya-postgres -maxdepth 1 -name "kaya-*.dump" | wc -l')
           test "$count" -eq 2
+          sentinel=$($compose run --rm --entrypoint bash postgres-backup -c 'cat /var/backups/kaya-postgres/DO_NOT_DELETE_SENTINEL.txt')
+          test "$sentinel" = "phase8-sentinel-immutable"
           $compose run --rm postgres-backup verify
       - name: Restore drill and diagnostics
         env:
@@ -86,20 +115,52 @@ jobs:
           compose="docker compose -p $project -f docker-compose.yml -f docker-compose.phase8-production-ci.yml --profile postgres-ops"
           $compose run --rm postgres-backup restore-drill
           $compose run --rm postgres-backup diagnostics
+      - name: Linux regression suite
+        run: |
+          docker build --file Dockerfile.test --tag kaya:phase8-tests-${GITHUB_SHA} .
+          docker run --rm -v "$PWD:/workspace" -w /workspace kaya:phase8-tests-${GITHUB_SHA} \
+            pytest -q tests/test_authentication_policy.py tests/test_database_password_file.py tests/test_database_migrations.py \
+            tests/test_phase6_cutover.py tests/test_postgres_deployment.py tests/test_postgres_operations.py \
+            tests/test_high_availability_framework.py tests/test_audit_controls.py
+      - name: PostgreSQL integration suite
+        env:
+          KAYA_IMAGE: kaya:phase8b-${{ github.sha }}
+          KAYA_DATA_DIR: ./phase8-data
+          KAYA_UPLOAD_DIR: ./phase8-uploads
+          KAYA_POSTGRES_BACKUP_DIR: ./phase8-backups
+          KAYA_POSTGRES_PASSWORD_DIR: ./phase8-secrets
+          KAYA_PHASE8_VOLUME_PREFIX: kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
+        run: |
+          project=kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
+          compose="docker compose -p $project -f docker-compose.yml -f docker-compose.phase8-production-ci.yml"
+          password=$($compose exec -T postgres cat /run/kaya-secrets/postgres_password)
+          docker build --file Dockerfile.test --tag kaya:phase8-tests-${GITHUB_SHA} .
+          docker run --rm --network "${project}_default" -e "KAYA_TEST_POSTGRES_URL=postgresql+psycopg://kaya:$password@postgres:5432/kaya" \
+            -v "$PWD:/workspace" -w /workspace kaya:phase8-tests-${GITHUB_SHA} \
+            pytest -q tests/test_database_engine_compatibility.py
+      - name: Generate acceptance evidence
+        if: always()
+        env:
+          PHASE8_PASS_ROWS: 1,2,3,4,5,6,7,8,9,10,11,12,19,20,21,23,38,40,43,44,46,47,48,49,50,51
+          PHASE8_BLOCKED_ROWS: 13,14,15,16,17,18,22,24,25,26,27,28,29,30,31,32,33,34,35,36,37,39,41,42,45
+        run: python scripts/phase8_acceptance_evidence.py --output phase8_acceptance.tsv
       - name: Upload redacted failure evidence
-        if: failure()
+        if: always()
         run: |
           project=kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
           docker compose -p $project -f docker-compose.yml -f docker-compose.phase8-production-ci.yml logs --no-color > phase8-docker.log || true
           sed -E 's/(password|secret|token|cookie|csrf)[^=]*=[^[:space:]]+/\1=[REDACTED]/gi' phase8-docker.log > phase8-docker-redacted.log
           rm -f phase8-docker.log
       - name: Publish redacted failure evidence
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: phase8-redacted-evidence
-          path: phase8-docker-redacted.log
-          if-no-files-found: ignore
+          path: |
+            phase8-docker-redacted.log
+            phase8_acceptance.tsv
+            phase8-live-write.log
+          if-no-files-found: warn
       - name: Dispose exact Phase 8 resources
         if: always()
         run: docker compose -p kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }} -f docker-compose.yml -f docker-compose.phase8-production-ci.yml down -v --remove-orphans

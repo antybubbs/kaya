@@ -86,6 +86,7 @@
     <div><dt>Pool</dt><dd class="mono">{{ about.postgres_diagnostics.pool.status }}</dd></div>
     <div><dt>Latest verified backup</dt><dd>{{ about.postgres_diagnostics.latest_backup or 'none recorded' }}</dd></div>
     <div><dt>Backup count</dt><dd>{{ about.postgres_diagnostics.backup_count }}</dd></div>
+    <div><dt>Largest index</dt><dd>{% if about.postgres_diagnostics.largest_indexes %}{{ about.postgres_diagnostics.largest_indexes[0].name }} ({{ about.postgres_diagnostics.largest_indexes[0].bytes }} bytes){% else %}none{% endif %}</dd></div>
   </dl>
 </section>
 {% endif %}
