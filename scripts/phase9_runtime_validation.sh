@@ -104,9 +104,9 @@ scenario 19 "PostgreSQL outage after cutover" bash -c 'compose stop postgres >/d
 scenario 20 "No SQLite fallback" bash -c '! compose logs --no-color kaya | grep -q "fallback"'
 scenario 21 "PostgreSQL recovery" bash -c 'compose start postgres >/dev/null; wait_pg; wait_app'
 docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c "chown -R $(id -u):$(id -g) /data"
-rm -f "$ROOT/data/kaya.db"
+docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c 'rm -f /data/kaya.db'
 scenario 22 "Missing retained SQLite post-cutover" bash -c 'compose restart kaya >/dev/null && wait_app && [[ "$(revision)" == "20260818_02" ]]'
-printf 'corrupt\n' > "$ROOT/data/kaya.db"
+docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c "printf 'corrupt\\n' > /data/kaya.db"
 scenario 23 "Corrupted retained SQLite post-cutover" bash -c 'compose restart kaya >/dev/null && wait_app && [[ "$(revision)" == "20260818_02" ]]'
 source_backup="$(find "$ROOT/data/backups" -type f -name '*.sqlite3' | head -n 1)"
 cp "$source_backup" "$ROOT/data/kaya.db"
