@@ -10,6 +10,9 @@ on:
       - "docker-compose.phase8-production-ci.yml"
       - "docker-entrypoint.sh"
       - "scripts/kaya_postgres_backup_worker.sh"
+      - "scripts/phase8_live_write.py"
+      - "scripts/phase8_acceptance_evidence.py"
+      - "Dockerfile.test"
       - "app/services/postgres_diagnostics.py"
       - "app/db/**"
       - "app/core/config.py"
@@ -24,6 +27,9 @@ on:
       - "docker-compose.phase8-production-ci.yml"
       - "docker-entrypoint.sh"
       - "scripts/kaya_postgres_backup_worker.sh"
+      - "scripts/phase8_live_write.py"
+      - "scripts/phase8_acceptance_evidence.py"
+      - "Dockerfile.test"
       - "app/services/postgres_diagnostics.py"
       - "app/db/**"
       - "app/core/config.py"
@@ -127,7 +133,7 @@ jobs:
       - name: Linux regression suite
         run: |
           docker build --file Dockerfile.test --tag kaya:phase8-tests-${GITHUB_SHA} .
-          docker run --rm -e PYTHONPATH=/workspace -e SECRET_KEY=phase8-ci-only-secret-key-012345678901234567890123456789 \
+          docker run --rm -e PYTHONPATH=/workspace -e SECRET_KEY=phase8-ci-only-secret-key-012345678901234567890123456789 -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
             -v "$PWD:/workspace" -w /workspace kaya:phase8-tests-${GITHUB_SHA} \
             pytest -q tests/test_authentication_policy.py tests/test_database_password_file.py tests/test_database_migrations.py \
             tests/test_phase6_cutover.py tests/test_postgres_deployment.py tests/test_postgres_operations.py \
@@ -145,7 +151,7 @@ jobs:
           compose="docker compose -p $project -f docker-compose.yml -f docker-compose.phase8-production-ci.yml"
           password=$($compose exec -T postgres cat /run/kaya-secrets/postgres_password)
           docker build --file Dockerfile.test --tag kaya:phase8-tests-${GITHUB_SHA} .
-          docker run --rm --network "${project}_default" -e PYTHONPATH=/workspace -e SECRET_KEY=phase8-ci-only-secret-key-012345678901234567890123456789 -e "KAYA_TEST_POSTGRES_URL=postgresql+psycopg://kaya:$password@postgres:5432/kaya" \
+          docker run --rm --network "${project}_default" -e PYTHONPATH=/workspace -e SECRET_KEY=phase8-ci-only-secret-key-012345678901234567890123456789 -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= -e "KAYA_TEST_POSTGRES_URL=postgresql+psycopg://kaya:$password@postgres:5432/kaya" \
             -v "$PWD:/workspace" -w /workspace kaya:phase8-tests-${GITHUB_SHA} \
             pytest -q tests/test_database_engine_compatibility.py
       - name: Generate acceptance evidence
