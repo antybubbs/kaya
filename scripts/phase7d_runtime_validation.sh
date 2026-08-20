@@ -175,7 +175,7 @@ state="$(compose exec -T kaya python -c "import json; print(json.load(open('/app
 [[ "$state" == "POSTGRES_ACTIVE" ]]
 test -f "$PHASE7D_ROOT/data/kaya.db"
 test -f "$PHASE7D_ROOT/data/kaya-database-upgrade-report.json"
-test "$(find "$PHASE7D_ROOT/data/backups" -type f | wc -l)" -gt 0
+test "$(compose exec -T kaya sh -c 'find /app/data/backups -type f | wc -l' | tr -d '\r')" -gt 0
 enable_high_availability_fixture
 legacy_dns_client_id="$(assert_dns_client_id)"
 run_http_smoke "" "$legacy_dns_client_id"
