@@ -46,6 +46,11 @@ source_hash() { find "$ROOT/data" -maxdepth 1 -type f \( -name 'kaya.db' -o -nam
 setup_token() { compose exec -T kaya sh -c "sed -n 's/^SETUP_TOKEN=//p' /app/data/.runtime.env" | tr -d '\r'; }
 smoke() { PHASE7D_HTTP_BASE="http://127.0.0.1:$PORT" KAYA_SETUP_TOKEN="$(setup_token)" python "$ROOT_DIR/scripts/phase7d_http_smoke.py"; }
 test_suite() { docker run --rm -e PYTHONPATH=/workspace -e APP_ENV=test -e SECRET_KEY=phase9-synthetic-secret-key-012345678901234567890123 -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= -v "$ROOT_DIR:/workspace" -w /workspace "$TEST_IMAGE" "$@"; }
+production_sqlite_rejection() {
+  local output status=0
+  output="$(docker run --rm -e APP_ENV=production -e DATABASE_URL=sqlite:////app/data/kaya.db -e SECRET_KEY=phase9-secret-012345678901234567890123456789 -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= "$IMAGE" true 2>&1)" || status=$?
+  (( status != 0 )) && grep -q 'requires PostgreSQL' <<<"$output"
+}
 
 cleanup() {
   set +e
@@ -56,12 +61,13 @@ trap cleanup EXIT
 
 mkdir -p "$ROOT/data/remote-recordings" "$ROOT/uploads" "$ROOT/secrets" "$ROOT/backups"
 docker build --file "$ROOT_DIR/Dockerfile" --tag "$IMAGE" "$ROOT_DIR"
-export -f compose wait_pg wait_app revision state source_hash setup_token smoke test_suite
+export ROOT_DIR PROJECT ROOT IMAGE TEST_IMAGE PORT
+export -f compose wait_pg wait_app revision state source_hash setup_token smoke test_suite production_sqlite_rejection
 
 fresh_install() { compose up -d; wait_pg; wait_app; [[ "$(revision)" == "20260818_02" ]]; }
 scenario 1 "Fresh install uses PostgreSQL" fresh_install
 scenario 2 "Fresh install has no authoritative SQLite" test ! -e "$ROOT/data/kaya.db"
-scenario 3 "Fresh production startup fails closed without PostgreSQL" bash -c "! docker run --rm -e APP_ENV=production -e DATABASE_URL=sqlite:////app/data/kaya.db -e SECRET_KEY=phase9-secret-012345678901234567890123456789 -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= '$IMAGE' true 2>&1 | grep -q 'requires PostgreSQL'"
+scenario 3 "Fresh production startup fails closed without PostgreSQL" production_sqlite_rejection
 scenario 4 "Existing PostgreSQL startup" wait_app
 scenario 5 "Existing PostgreSQL representative writes" smoke
 scenario 6 "Existing PostgreSQL restart" bash -c 'compose restart kaya >/dev/null && wait_app'
