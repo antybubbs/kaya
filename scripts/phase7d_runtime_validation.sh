@@ -246,6 +246,15 @@ export KAYA_POSTGRES_TEST_PORT=55439
 restore_project=kaya_phase7d_restore
 RESTORE_PROJECTS+=("$restore_project")
 docker compose -p "$restore_project" -f "$ROOT_DIR/docker-compose.postgres-test.yml" up -d
+for _ in $(seq 1 60); do
+    if docker compose -p "$restore_project" -f "$ROOT_DIR/docker-compose.postgres-test.yml" exec -T postgres \
+        pg_isready -U kaya_test -d kaya_test >/dev/null 2>&1; then
+        break
+    fi
+    sleep 1
+done
+docker compose -p "$restore_project" -f "$ROOT_DIR/docker-compose.postgres-test.yml" exec -T postgres \
+    pg_isready -U kaya_test -d kaya_test >/dev/null
 docker compose -p "$restore_project" -f "$ROOT_DIR/docker-compose.postgres-test.yml" exec -T postgres \
     pg_restore -U kaya_test -d kaya_test --exit-on-error --no-owner < "$backup"
 restore_revision="$(docker compose -p "$restore_project" -f "$ROOT_DIR/docker-compose.postgres-test.yml" exec -T postgres psql -U kaya_test -d kaya_test -Atc 'SELECT version_num FROM alembic_version' | tr -d '\r')"
