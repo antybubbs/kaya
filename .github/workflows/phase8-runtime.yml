@@ -127,7 +127,7 @@ jobs:
       - name: Linux regression suite
         run: |
           docker build --file Dockerfile.test --tag kaya:phase8-tests-${GITHUB_SHA} .
-          docker run --rm -v "$PWD:/workspace" -w /workspace kaya:phase8-tests-${GITHUB_SHA} \
+          docker run --rm -e PYTHONPATH=/workspace -v "$PWD:/workspace" -w /workspace kaya:phase8-tests-${GITHUB_SHA} \
             pytest -q tests/test_authentication_policy.py tests/test_database_password_file.py tests/test_database_migrations.py \
             tests/test_phase6_cutover.py tests/test_postgres_deployment.py tests/test_postgres_operations.py \
             tests/test_high_availability_framework.py tests/test_audit_controls.py
@@ -144,7 +144,7 @@ jobs:
           compose="docker compose -p $project -f docker-compose.yml -f docker-compose.phase8-production-ci.yml"
           password=$($compose exec -T postgres cat /run/kaya-secrets/postgres_password)
           docker build --file Dockerfile.test --tag kaya:phase8-tests-${GITHUB_SHA} .
-          docker run --rm --network "${project}_default" -e "KAYA_TEST_POSTGRES_URL=postgresql+psycopg://kaya:$password@postgres:5432/kaya" \
+          docker run --rm --network "${project}_default" -e PYTHONPATH=/workspace -e "KAYA_TEST_POSTGRES_URL=postgresql+psycopg://kaya:$password@postgres:5432/kaya" \
             -v "$PWD:/workspace" -w /workspace kaya:phase8-tests-${GITHUB_SHA} \
             pytest -q tests/test_database_engine_compatibility.py
       - name: Generate acceptance evidence
