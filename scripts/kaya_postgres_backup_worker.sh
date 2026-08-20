@@ -43,7 +43,7 @@ backup() {
   archive="$BACKUP_DIR/kaya-$stamp.dump"
   metadata="$archive.json"
   tmp="$archive.tmp"
-  trap 'rm -f -- "\${tmp:-}"' EXIT
+  trap 'rm -f -- "${tmp:-}"' EXIT
   (umask 077; pg_dump --format=custom --no-owner --no-privileges --file="$tmp" --username="$DB_USER" --dbname="$DB_NAME")
   revision="$(psql --username="$DB_USER" --dbname="$DB_NAME" --tuples-only --no-align --command="SELECT COALESCE((SELECT version_num FROM alembic_version LIMIT 1), 'unknown');" | tr -d '[:space:]')"
   postgres_version="$(psql --username="$DB_USER" --dbname="$DB_NAME" --tuples-only --no-align --command="SELECT replace(replace(version(), chr(10), ' '), chr(13), ' ');" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
