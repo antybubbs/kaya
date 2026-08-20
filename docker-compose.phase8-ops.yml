@@ -25,6 +25,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      kaya:
+        condition: service_healthy
     networks:
       - default
 

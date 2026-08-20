@@ -49,7 +49,7 @@ jobs:
           KAYA_POSTGRES_PASSWORD_DIR: ./phase8-secrets
           KAYA_PHASE8_VOLUME_PREFIX: kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
           KAYA_PORT: 18080
-        run: docker compose -p kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }} -f docker-compose.yml -f docker-compose.phase8-production-ci.yml up -d kaya postgres
+        run: docker compose -p kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }} -f docker-compose.yml -f docker-compose.phase8-production-ci.yml up -d --wait --wait-timeout 180 kaya postgres
       - name: Seed synthetic fixture
         run: |
           project=kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}

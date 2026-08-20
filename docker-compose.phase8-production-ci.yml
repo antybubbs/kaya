@@ -31,6 +31,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      kaya:
+        condition: service_healthy
 
 volumes:
   kaya_postgres_data:
