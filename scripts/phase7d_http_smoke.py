@@ -22,6 +22,13 @@ def route_status_is_acceptable(status: int) -> bool:
     return status in ROUTE_SUCCESS_STATUSES
 
 
+def dns_client_detail_path(client_id: str) -> str:
+    """Build a detail path only from a discovered positive database ID."""
+    if not client_id.isdecimal() or int(client_id) < 1:
+        raise ValueError(f"invalid discovered DNS client ID: {client_id!r}")
+    return f"/networking/dns-manager/clients/{client_id}"
+
+
 class Client:
     def __init__(self) -> None:
         self.jar = http.cookiejar.CookieJar()
@@ -101,7 +108,6 @@ def main() -> None:
     routes = [
         "/dashboard",
         "/networking/dns-manager/clients",
-        "/networking/dns-manager/clients/1",
         "/infrastructure/vm-docker-manager",
         "/high-availability",
         "/infrastructure/asset-manager",
@@ -109,6 +115,9 @@ def main() -> None:
         "/system/audit-logs",
         "/system/about",
     ]
+    dns_client_id = os.environ.get("KAYA_DNS_CLIENT_ID", "").strip()
+    if dns_client_id:
+        routes.insert(2, dns_client_detail_path(dns_client_id))
     for route in routes:
         status, url, _body = client.request("GET", route)
         if not route_status_is_acceptable(status):

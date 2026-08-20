@@ -64,13 +64,27 @@ setup_token() {
 
 run_http_smoke() {
     local token="${1:-}"
+    local dns_client_id="${2:-}"
+    local smoke_env=("PHASE7D_HTTP_BASE=http://127.0.0.1:${PHASE7D_HTTP_PORT}")
     if [[ -n "$token" ]]; then
-        KAYA_SETUP_TOKEN="$token" PHASE7D_HTTP_BASE="http://127.0.0.1:${PHASE7D_HTTP_PORT}" \
-            python scripts/phase7d_http_smoke.py
-    else
-        PHASE7D_HTTP_BASE="http://127.0.0.1:${PHASE7D_HTTP_PORT}" \
-            python scripts/phase7d_http_smoke.py
+        smoke_env+=("KAYA_SETUP_TOKEN=$token")
     fi
+    if [[ -n "$dns_client_id" ]]; then
+        smoke_env+=("KAYA_DNS_CLIENT_ID=$dns_client_id")
+    fi
+    env "${smoke_env[@]}" python scripts/phase7d_http_smoke.py
+}
+
+dns_client_id() {
+    compose exec -T postgres psql -U kaya -d kaya -Atc \
+        'SELECT id FROM dns_recognised_devices ORDER BY id LIMIT 1' | tr -d '\r' | tail -n 1
+}
+
+assert_dns_client_id() {
+    local actual
+    actual="$(dns_client_id)"
+    [[ "$actual" =~ ^[1-9][0-9]*$ ]] || { echo "expected a migrated DNS client ID, got: $actual" >&2; return 1; }
+    printf '%s\n' "$actual"
 }
 
 fingerprint_sqlite() {
@@ -145,7 +159,8 @@ state="$(python -c "import json; print(json.load(open('$PHASE7D_ROOT/data/kaya-d
 test -f "$PHASE7D_ROOT/data/kaya.db"
 test -f "$PHASE7D_ROOT/data/kaya-database-upgrade-report.json"
 test "$(find "$PHASE7D_ROOT/data/backups" -type f | wc -l)" -gt 0
-run_http_smoke
+legacy_dns_client_id="$(assert_dns_client_id)"
+run_http_smoke "" "$legacy_dns_client_id"
 legacy_after="$(fingerprint_sqlite "$PHASE7D_ROOT/data")"
 [[ "$legacy_before" == "$legacy_after" ]]
 legacy_hash="$(secret_hash)"
@@ -154,6 +169,7 @@ compose up -d
 wait_for_kaya
 assert_revision
 [[ "$(secret_hash)" == "$legacy_hash" ]]
+run_http_smoke "" "$legacy_dns_client_id"
 ! compose logs --no-color kaya | grep -q 'Preparing controlled SQLite' || true
 echo 'legacy migration, retained SQLite, HTTP smoke, and down/up persistence passed'
 
