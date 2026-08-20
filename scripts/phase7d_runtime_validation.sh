@@ -171,7 +171,7 @@ legacy_before="$(fingerprint_sqlite "$PHASE7D_ROOT/data")"
 compose up -d
 wait_for_kaya
 assert_revision
-state="$(python -c "import json; print(json.load(open('$PHASE7D_ROOT/data/kaya-database-upgrade.json', encoding='utf-8'))['state'])")"
+state="$(compose exec -T kaya python -c "import json; print(json.load(open('/app/data/kaya-database-upgrade.json', encoding='utf-8'))['state'])" | tr -d '\r')"
 [[ "$state" == "POSTGRES_ACTIVE" ]]
 test -f "$PHASE7D_ROOT/data/kaya.db"
 test -f "$PHASE7D_ROOT/data/kaya-database-upgrade-report.json"
