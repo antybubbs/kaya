@@ -83,7 +83,7 @@ scenario 9 "No SQLite migration rerun" bash -c '! compose logs --no-color kaya |
 # Replace the fresh project with an isolated legacy fixture while retaining
 # the same run-scoped resource naming and cleanup boundary.
 compose down -v --remove-orphans >/dev/null
-rm -f "$ROOT/data/kaya.db"
+docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c 'rm -f /data/kaya.db'
 docker run --rm --entrypoint python -e PYTHONPATH=/app -v "$ROOT/data:/app/data" -w /app "$IMAGE" scripts/generate_sqlite_migration_fixture.py /app/data/kaya.db --functional
 legacy_before="$(source_hash)"
 mkdir -p "$ROOT/data/backups"
