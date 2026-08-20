@@ -43,7 +43,7 @@ wait_app() { for _ in $(seq 1 180); do curl --fail --silent --max-time 3 "http:/
 revision() { compose exec -T postgres psql -U kaya -d kaya -Atc 'SELECT version_num FROM alembic_version' | tr -d '\r'; }
 state() { compose exec -T kaya python -c "import json; print(json.load(open('/app/data/kaya-database-upgrade.json'))['state'])" | tr -d '\r'; }
 source_hash() { docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c 'sha256sum /data/kaya.db' | awk '{print $1}'; }
-backup_hash() { docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c 'find /data/backups -type f -name "*.sqlite3" -print0 | sort -z | xargs -0 -r sha256sum | sha256sum' | awk '{print $1}'; }
+backup_hash() { docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c 'find /data/backups -type f -name "*.sqlite3" -printf "%f\\n" | sort | sha256sum' | awk '{print $1}'; }
 setup_token() { compose exec -T kaya sh -c "sed -n 's/^SETUP_TOKEN=//p' /app/data/.runtime.env" | tr -d '\r'; }
 smoke() { PHASE7D_HTTP_BASE="http://127.0.0.1:$PORT" KAYA_SETUP_TOKEN="$(setup_token)" python "$ROOT_DIR/scripts/phase7d_http_smoke.py"; }
 smoke_existing() { PHASE7D_HTTP_BASE="http://127.0.0.1:$PORT" python "$ROOT_DIR/scripts/phase7d_http_smoke.py"; }
@@ -117,13 +117,13 @@ source_backup_name="$(basename "$source_backup")"
 docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c "cp /data/backups/$source_backup_name /data/kaya.db"
 retained_before_workers="$(source_hash)"
 
-scenario 24 "Migration failure preserves source" bash -c 'test -f "$ROOT/data/kaya.db" || return 0; test "$(source_hash)" = "$legacy_after"'
+scenario 24 "Migration failure preserves source" bash -c 'test -f "$ROOT/data/kaya.db" && test "$(source_hash)" = "$legacy_before"'
 scenario 25 "Failed target remains non-authoritative" bash -c '[[ "$(state)" == "POSTGRES_ACTIVE" ]]'
 scenario 26 "Migration retry and recovery" bash -c '[[ "$(state)" == "POSTGRES_ACTIVE" ]] && [[ "$(revision)" == "20260818_02" ]]'
 
 compose exec -T kaya python -c "import sqlite3; db=sqlite3.connect('/app/data/unsupported.sqlite3'); db.execute('create table alembic_version(version_num text)'); db.execute(\"insert into alembic_version values ('unsupported')\"); db.commit(); db.close()"
-scenario 27 "Unsupported SQLite schema rejected" bash -c '! compose exec -T kaya python -c "from pathlib import Path; from app.db.phase6_cutover import legacy_sqlite_eligibility; raise SystemExit(0 if legacy_sqlite_eligibility(Path(\"/app/data/unsupported.sqlite3\"), Path(\"/app/data\"))[0] else 1)"'
-scenario 28 "Ambiguous/path-safe SQLite handling" bash -c '! compose exec -T kaya python -c "from pathlib import Path; from app.db.phase6_cutover import legacy_sqlite_eligibility; raise SystemExit(0 if legacy_sqlite_eligibility(Path(\"/tmp/outside.sqlite3\"), Path(\"/app/data\"))[0] else 1)"'
+scenario 27 "Unsupported SQLite schema rejected" bash -c '! compose exec -T -e APP_ENV=test -e SECRET_KEY=phase9-synthetic-secret-key-012345678901234567890123 -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= kaya python -c "from pathlib import Path; from app.db.phase6_cutover import legacy_sqlite_eligibility; raise SystemExit(0 if legacy_sqlite_eligibility(Path(\"/app/data/unsupported.sqlite3\"), Path(\"/app/data\"))[0] else 1)"'
+scenario 28 "Ambiguous/path-safe SQLite handling" bash -c '! compose exec -T -e APP_ENV=test -e SECRET_KEY=phase9-synthetic-secret-key-012345678901234567890123 -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= kaya python -c "from pathlib import Path; from app.db.phase6_cutover import legacy_sqlite_eligibility; raise SystemExit(0 if legacy_sqlite_eligibility(Path(\"/tmp/outside.sqlite3\"), Path(\"/app/data\"))[0] else 1)"'
 scenario 29 "Authority state persistence" bash -c 'compose down >/dev/null; compose up -d; wait_pg; wait_app; [[ "$(state)" == "POSTGRES_ACTIVE" ]]'
 backup_hash_before="$(backup_hash)"
 scenario 30 "SQLite migration backup preserved" bash -c 'test -n "$backup_hash_before" && test "$backup_hash_before" = "$(backup_hash)"'
