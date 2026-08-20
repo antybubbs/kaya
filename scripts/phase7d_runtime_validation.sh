@@ -217,7 +217,9 @@ compose exec -T postgres psql -U kaya -d kaya -c "INSERT INTO audit_logs (user_i
 compose stop postgres
 start_time="$SECONDS"
 set +e
-curl --silent --show-error --max-time 20 "http://127.0.0.1:${PHASE7D_HTTP_PORT}/healthz" >/dev/null
+# /healthz is intentionally a process-liveness probe; use a DB-backed route to
+# prove the authoritative PostgreSQL outage is visible to application traffic.
+curl --fail --silent --show-error --max-time 20 "http://127.0.0.1:${PHASE7D_HTTP_PORT}/api/site-timezone" >/dev/null
 curl_status=$?
 set -e
 outage_seconds=$((SECONDS - start_time))
