@@ -66,8 +66,9 @@ jobs:
           KAYA_SETUP_TOKEN="$token" python scripts/phase7d_http_smoke.py
       - name: Create retention sentinel
         run: |
-          mkdir -p phase8-backups
-          printf 'phase8-sentinel-immutable\n' > phase8-backups/DO_NOT_DELETE_SENTINEL.txt
+          project=kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
+          compose="docker compose -p $project -f docker-compose.yml -f docker-compose.phase8-production-ci.yml --profile postgres-ops"
+          $compose run --rm --entrypoint bash postgres-backup -c "printf 'phase8-sentinel-immutable\\n' > /var/backups/kaya-postgres/DO_NOT_DELETE_SENTINEL.txt"
       - name: Backup during authenticated live writes
         env:
           PHASE7D_HTTP_BASE: http://127.0.0.1:18080
