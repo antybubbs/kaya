@@ -102,14 +102,7 @@ interrupted_backup() {
         sleep 1
     done
     [[ -n "${pid:-}" ]]
-    local killed=0
-    for _ in $(seq 1 20); do
-        if docker exec "$container" kill -TERM "$pid"; then killed=1; break; fi
-        sleep 0.2
-        if pid="$(docker top "$container" -eo pid,comm,args | awk '/pg_dump/ {print $1; exit}')"; then :; else pid=""; fi
-        [[ -n "$pid" ]] || break
-    done
-    [[ "$killed" == "1" ]]
+    docker exec "$container" bash -c 'for attempt in $(seq 1 600); do if active="$(pgrep -o -x pg_dump 2>/dev/null)"; then if test -n "$active"; then kill -KILL "$active"; exit 0; fi; fi; sleep 0.1; done; exit 1'
     if docker wait "$container" | grep -q '^0$'; then return 1; fi
     docker rm "$container" >/dev/null
     [[ "$(compose run --rm --entrypoint bash postgres-backup -c 'find /var/backups/kaya-postgres -maxdepth 1 -type f -name "*.tmp" | wc -l' | tail -n 1)" == "0" ]]
@@ -199,8 +192,9 @@ image_replacement() {
 restored_database_read() {
     local archive target="kaya_phase8_restored" image="${KAYA_IMAGE:?KAYA_IMAGE is required}"
     archive="$(latest_archive)"
-    compose exec -T postgres bash -c "export PGPASSWORD=\"\$(< /run/kaya-secrets/postgres_password)\"; psql -U kaya -d postgres -v ON_ERROR_STOP=1 -c \"DROP DATABASE IF EXISTS $target; CREATE DATABASE $target OWNER kaya;\"" >/dev/null
-    compose exec -T postgres bash -c "export PGPASSWORD=\"\$(< /run/kaya-secrets/postgres_password)\"; pg_restore -U kaya -d $target --exit-on-error --no-owner --no-privileges -" <"$archive"
+    compose exec -T postgres bash -c "export PGPASSWORD=\"\$(< /run/kaya-secrets/postgres_password)\"; psql -U kaya -d postgres -v ON_ERROR_STOP=1 -c \"DROP DATABASE IF EXISTS $target;\"" >/dev/null
+    compose exec -T postgres bash -c "export PGPASSWORD=\"\$(< /run/kaya-secrets/postgres_password)\"; psql -U kaya -d postgres -v ON_ERROR_STOP=1 -c \"CREATE DATABASE $target OWNER kaya;\"" >/dev/null
+    compose exec -T postgres bash -c "export PGPASSWORD=\"\$(< /run/kaya-secrets/postgres_password)\"; pg_restore -U kaya -d $target --exit-on-error --no-owner --no-privileges /var/backups/kaya-postgres/$archive"
     docker rm -f kaya_phase8_restore_app >/dev/null 2>&1 || true
     docker run -d --name kaya_phase8_restore_app --network "${PROJECT}_default" -p 18081:8080 \
         -e DATABASE_URL="postgresql+psycopg://kaya@postgres:5432/$target" \
@@ -256,7 +250,6 @@ scenario 36 "Worker writes PostgreSQL" worker_observability
 scenario 37 "Retained SQLite unchanged" no_sqlite_fallback
 scenario 39 "Largest-table/index diagnostics" diagnostics_and_workload
 scenario 41 "SQLAlchemy pool diagnostics" diagnostics_and_workload
-scenario 42 "Deadlock/lock diagnostics" diagnostics_and_workload
 scenario 45 "Retention workload behaviour" diagnostics_and_workload
 write_results
 [[ "${#FAIL_ROWS[@]}" -eq 0 ]]

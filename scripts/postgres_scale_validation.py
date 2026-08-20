@@ -64,18 +64,18 @@ def _insert_seed_data(connection, clients: int) -> tuple[int, int, int]:
     return provider_id, user_id, client_start_id
 
 
-def _insert_scale_data(connection, provider_id: int, user_id: int, client_start_id: int, traffic_rows: int, metric_rows: int, audit_rows: int) -> None:
+def _insert_scale_data(connection, provider_id: int, user_id: int, client_start_id: int, client_count: int, traffic_rows: int, metric_rows: int, audit_rows: int) -> None:
     connection.execute(
         text(
             "INSERT INTO dns_client_traffic_events "
             "(dns_client_id, provider_id, event_key, client_ip, domain, query_type, status, reply_type, reply_time_ms, "
             "upstream, is_blocked, observed_at, created_at) "
-            "SELECT :client_start_id + ((g - 1) % 3000), :provider_id, md5(g::text), '10.20.' || (((g - 1) % 3000) / 256) || '.' || (((g - 1) % 3000) % 256), "
+            "SELECT :client_start_id + ((g - 1) % :client_count), :provider_id, md5(g::text), '10.20.' || (((g - 1) % :client_count) / 256) || '.' || (((g - 1) % :client_count) % 256), "
             "'www-' || (g % 10000) || '.example.invalid', 'A', 'NOERROR', 'A', (g % 40)::double precision, '10.0.0.1', "
             "(g % 10 = 0), CURRENT_TIMESTAMP - ((g % 2160)::text || ' minutes')::interval, CURRENT_TIMESTAMP "
             "FROM generate_series(1, :rows) AS source(g)"
         ),
-        {"rows": traffic_rows, "provider_id": provider_id, "client_start_id": client_start_id},
+        {"rows": traffic_rows, "provider_id": provider_id, "client_start_id": client_start_id, "client_count": client_count},
     )
     connection.execute(
         text(
@@ -239,7 +239,7 @@ def run(database_url: str, *, traffic_rows: int, clients: int, metric_rows: int,
     started = time.perf_counter()
     with engine.begin() as connection:
         provider_id, user_id, client_start_id = _insert_seed_data(connection, clients)
-        _insert_scale_data(connection, provider_id, user_id, client_start_id, traffic_rows, metric_rows, audit_rows)
+        _insert_scale_data(connection, provider_id, user_id, client_start_id, clients, traffic_rows, metric_rows, audit_rows)
         connection.execute(text("ANALYZE"))
     generation_seconds = time.perf_counter() - started
     queries = [
