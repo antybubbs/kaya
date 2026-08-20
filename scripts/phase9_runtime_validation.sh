@@ -55,6 +55,7 @@ production_sqlite_rejection() {
 cleanup() {
   set +e
   compose down -v --remove-orphans >/dev/null 2>&1
+  docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c "chown -R $(id -u):$(id -g) /data" >/dev/null 2>&1
   rm -rf -- "$ROOT"
 }
 trap cleanup EXIT
@@ -69,10 +70,12 @@ scenario 1 "Fresh install uses PostgreSQL" fresh_install
 scenario 2 "Fresh install has no authoritative SQLite" test ! -e "$ROOT/data/kaya.db"
 scenario 3 "Fresh production startup fails closed without PostgreSQL" production_sqlite_rejection
 scenario 4 "Existing PostgreSQL startup" wait_app
+compose exec -T postgres psql -U kaya -d kaya -v ON_ERROR_STOP=1 -c "INSERT INTO remote_manager_settings (key, value, updated_at) VALUES ('high_availability_enabled', '1', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at;" >/dev/null
 scenario 5 "Existing PostgreSQL representative writes" smoke
 scenario 6 "Existing PostgreSQL restart" bash -c 'compose restart kaya >/dev/null && wait_app'
 scenario 7 "Existing PostgreSQL image replacement" bash -c 'compose up -d --force-recreate kaya >/dev/null && wait_app && [[ "$(revision)" == "20260818_02" ]]'
 
+docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c "chown -R $(id -u):$(id -g) /data"
 touch "$ROOT/data/kaya.db"
 scenario 8 "Active PostgreSQL with stale SQLite present" bash -c 'compose restart kaya >/dev/null && wait_app && [[ "$(revision)" == "20260818_02" ]]'
 scenario 9 "No SQLite migration rerun" bash -c '! compose logs --no-color kaya | grep -q "Preparing controlled SQLite"'
