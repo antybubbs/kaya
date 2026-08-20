@@ -87,6 +87,12 @@ assert_dns_client_id() {
     printf '%s\n' "$actual"
 }
 
+enable_high_availability_fixture() {
+    compose exec -T postgres psql -U kaya -d kaya -v ON_ERROR_STOP=1 -c \
+        "INSERT INTO remote_manager_settings (key, value, updated_at) VALUES ('high_availability_enabled', '1', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at;" \
+        >/dev/null
+}
+
 fingerprint_sqlite() {
     local data="$1"
     find "$data" -maxdepth 1 -type f \( -name 'kaya.db' -o -name 'kaya.db-wal' -o -name 'kaya.db-shm' \) -print0 \
@@ -133,6 +139,7 @@ assert_revision
 [[ "$(secret_mode)" == "600 100 101" ]]
 fresh_hash="$(secret_hash)"
 ! compose logs --no-color kaya | grep -q 'Preparing controlled SQLite'
+enable_high_availability_fixture
 run_http_smoke "$(setup_token)"
 compose down
 compose up -d
@@ -159,6 +166,7 @@ state="$(python -c "import json; print(json.load(open('$PHASE7D_ROOT/data/kaya-d
 test -f "$PHASE7D_ROOT/data/kaya.db"
 test -f "$PHASE7D_ROOT/data/kaya-database-upgrade-report.json"
 test "$(find "$PHASE7D_ROOT/data/backups" -type f | wc -l)" -gt 0
+enable_high_availability_fixture
 legacy_dns_client_id="$(assert_dns_client_id)"
 run_http_smoke "" "$legacy_dns_client_id"
 legacy_after="$(fingerprint_sqlite "$PHASE7D_ROOT/data")"
@@ -178,6 +186,7 @@ configure_project kaya_phase7d_existing_pg "$RUN_ROOT/existing-pg" 18093 18993 "
 compose up -d
 wait_for_kaya
 assert_revision
+enable_high_availability_fixture
 run_http_smoke "$(setup_token)"
 compose down
 compose up -d
