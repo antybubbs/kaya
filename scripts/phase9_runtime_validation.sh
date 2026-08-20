@@ -48,6 +48,29 @@ legacy_backup_valid() { test -n "$(backup_hash)" && docker run --rm --user 0 --e
 migration_source_preserved() { test -f "$ROOT/data/kaya.db" && docker run --rm --user 0 --entrypoint python -v "$ROOT/data:/data" "$IMAGE" -c 'import sqlite3; c=sqlite3.connect("/data/kaya.db"); assert c.execute("pragma quick_check").fetchone()[0] == "ok"; c.close()'; }
 backup_preserved() { test -n "$backup_hash_before" && test "$backup_hash_before" = "$(backup_hash)"; }
 retention_separated() { test -s "$pg_backup" && test "$(sha256sum "$pg_backup" | awk '{print $1}')" = "$pg_backup_hash" && docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c 'test -f /data/backups/DO_NOT_DELETE_SENTINEL.txt'; }
+retry_env() { printf '%s\n' -e APP_ENV=test -e SECRET_KEY=phase9-synthetic-secret-key-012345678901234567890123 -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= -e KAYA_TEST_MODE=true -e KAYA_POSTGRES_DATABASE_URL=postgresql+psycopg://kaya@postgres:5432/phase9_retry -e DATABASE_URL=postgresql+psycopg://kaya@postgres:5432/phase9_retry; }
+retry_state() { local key="$1"; docker run --rm --user 0 --entrypoint python -v "$ROOT:/phase9" "$IMAGE" -c "import json; print(json.load(open('/phase9/retry-data/kaya-database-upgrade.json'))['$key'])"; }
+induce_retry_failure() {
+  compose exec -T postgres createdb -U kaya phase9_retry >/dev/null 2>&1 || true
+  local status=0
+  docker run --rm --user 0 --network "${PROJECT}_default" --entrypoint python -v "$ROOT:/phase9" -w /app \
+    -e APP_ENV=test -e SECRET_KEY=phase9-synthetic-secret-key-012345678901234567890123 -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
+    -e KAYA_TEST_MODE=true -e KAYA_TEST_FAILPOINT=fail_during_copy -e KAYA_POSTGRES_DATABASE_URL=postgresql+psycopg://kaya@postgres:5432/phase9_retry \
+    -e DATABASE_URL=postgresql+psycopg://kaya@postgres:5432/phase9_retry "$IMAGE" scripts/kaya_phase6_upgrade.py \
+    --source /phase9/data/kaya.db --target-url postgresql+psycopg://kaya@postgres:5432/phase9_retry --backup-dir /phase9/retry-backups --data-dir /phase9/retry-data || status=$?
+  (( status != 0 ))
+}
+verify_failed_retry() { test "$(retry_state state)" = FAILED && migration_source_preserved; }
+retry_recovery() {
+  local migration_id source_fingerprint
+  migration_id="$(retry_state migration_id)"; source_fingerprint="$(retry_state source_fingerprint)"
+  docker run --rm --user 0 --network "${PROJECT}_default" --entrypoint python -v "$ROOT:/phase9" -w /app \
+    -e APP_ENV=test -e SECRET_KEY=phase9-synthetic-secret-key-012345678901234567890123 -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
+    -e KAYA_POSTGRES_DATABASE_URL=postgresql+psycopg://kaya@postgres:5432/phase9_retry -e DATABASE_URL=postgresql+psycopg://kaya@postgres:5432/phase9_retry "$IMAGE" scripts/kaya_phase6_upgrade.py \
+    --source /phase9/data/kaya.db --target-url postgresql+psycopg://kaya@postgres:5432/phase9_retry --backup-dir /phase9/retry-backups --data-dir /phase9/retry-data \
+    --clean-failed-target --migration-id "$migration_id" --source-fingerprint "$source_fingerprint" >/dev/null
+  compose exec -T postgres psql -U kaya -d phase9_retry -Atc 'select version_num from alembic_version' | tr -d '\r' | grep -qx 20260818_02
+}
 setup_token() { compose exec -T kaya sh -c "sed -n 's/^SETUP_TOKEN=//p' /app/data/.runtime.env" | tr -d '\r'; }
 smoke() { PHASE7D_HTTP_BASE="http://127.0.0.1:$PORT" KAYA_SETUP_TOKEN="$(setup_token)" python "$ROOT_DIR/scripts/phase7d_http_smoke.py"; }
 smoke_existing() { PHASE7D_HTTP_BASE="http://127.0.0.1:$PORT" python "$ROOT_DIR/scripts/phase7d_http_smoke.py"; }
@@ -69,7 +92,7 @@ trap cleanup EXIT
 mkdir -p "$ROOT/data/remote-recordings" "$ROOT/uploads" "$ROOT/secrets" "$ROOT/backups"
 docker build --file "$ROOT_DIR/Dockerfile" --tag "$IMAGE" "$ROOT_DIR"
 export ROOT_DIR PROJECT ROOT IMAGE TEST_IMAGE PORT PRIMARY ISOLATION
-export -f compose wait_pg wait_app revision state source_hash backup_hash legacy_backup_valid migration_source_preserved backup_preserved retention_separated setup_token smoke smoke_existing test_suite production_sqlite_rejection
+export -f compose wait_pg wait_app revision state source_hash backup_hash legacy_backup_valid migration_source_preserved backup_preserved retention_separated retry_state induce_retry_failure verify_failed_retry retry_recovery setup_token smoke smoke_existing test_suite production_sqlite_rejection
 
 fresh_install() { compose up -d; wait_pg; wait_app; [[ "$(revision)" == "20260818_02" ]]; }
 scenario 1 "Fresh install uses PostgreSQL" fresh_install
@@ -121,9 +144,9 @@ source_backup_name="$(basename "$source_backup")"
 docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c "cp /data/backups/$source_backup_name /data/kaya.db"
 retained_before_workers="$(source_hash)"
 
-scenario 24 "Migration failure preserves source" migration_source_preserved
-scenario 25 "Failed target remains non-authoritative" bash -c '[[ "$(state)" == "POSTGRES_ACTIVE" ]]'
-scenario 26 "Migration retry and recovery" bash -c '[[ "$(state)" == "POSTGRES_ACTIVE" ]] && [[ "$(revision)" == "20260818_02" ]]'
+scenario 24 "Migration failure preserves source" induce_retry_failure
+scenario 25 "Failed target remains non-authoritative" verify_failed_retry
+scenario 26 "Migration retry and recovery" retry_recovery
 
 compose exec -T kaya python -c "import sqlite3; db=sqlite3.connect('/app/data/unsupported.sqlite3'); db.execute('create table alembic_version(version_num text)'); db.execute(\"insert into alembic_version values ('unsupported')\"); db.commit(); db.close()"
 scenario 27 "Unsupported SQLite schema rejected" bash -c '! compose exec -T -e APP_ENV=test -e SECRET_KEY=phase9-synthetic-secret-key-012345678901234567890123 -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= kaya python -c "from pathlib import Path; from app.db.phase6_cutover import legacy_sqlite_eligibility; raise SystemExit(0 if legacy_sqlite_eligibility(Path(\"/app/data/unsupported.sqlite3\"), Path(\"/app/data\"))[0] else 1)"'
