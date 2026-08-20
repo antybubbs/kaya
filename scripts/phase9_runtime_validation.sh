@@ -86,8 +86,7 @@ compose down -v --remove-orphans >/dev/null
 docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c 'rm -f /data/kaya.db'
 docker run --rm --entrypoint python -e PYTHONPATH=/app -e APP_ENV=test -e SECRET_KEY=phase9-synthetic-secret-key-012345678901234567890123 -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= -v "$ROOT/data:/app/data" -w /app "$IMAGE" scripts/generate_sqlite_migration_fixture.py /app/data/kaya.db --functional
 legacy_before="$(source_hash)"
-mkdir -p "$ROOT/data/backups"
-printf 'phase9-sentinel-immutable\n' > "$ROOT/data/backups/DO_NOT_DELETE_SENTINEL.txt"
+docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c "mkdir -p /data/backups && printf 'phase9-sentinel-immutable\\n' > /data/backups/DO_NOT_DELETE_SENTINEL.txt"
 compose up -d postgres; wait_pg; compose up -d kaya; wait_app
 scenario 10 "Legacy SQLite detected" bash -c '[[ "$(state)" == "POSTGRES_ACTIVE" ]]'
 scenario 11 "Legacy SQLite verified backup" bash -c 'test "$(find "$ROOT/data/backups" -type f | wc -l)" -gt 0 && [[ "$(source_hash)" == "$legacy_before" ]]'
