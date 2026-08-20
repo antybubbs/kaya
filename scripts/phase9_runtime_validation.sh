@@ -42,7 +42,7 @@ wait_pg() { for _ in $(seq 1 90); do compose exec -T postgres pg_isready -U kaya
 wait_app() { for _ in $(seq 1 180); do curl --fail --silent --max-time 3 "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1 && return 0; sleep 2; done; return 1; }
 revision() { compose exec -T postgres psql -U kaya -d kaya -Atc 'SELECT version_num FROM alembic_version' | tr -d '\r'; }
 state() { compose exec -T kaya python -c "import json; print(json.load(open('/app/data/kaya-database-upgrade.json'))['state'])" | tr -d '\r'; }
-source_hash() { find "$ROOT/data" -maxdepth 1 -type f \( -name 'kaya.db' -o -name 'kaya.db-wal' -o -name 'kaya.db-shm' \) -print0 | sort -z | xargs -0 -r sha256sum | sha256sum | awk '{print $1}'; }
+source_hash() { docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c 'sha256sum /data/kaya.db' | awk '{print $1}'; }
 backup_hash() { docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c 'find /data/backups -type f -name "*.sqlite3" -print0 | sort -z | xargs -0 -r sha256sum | sha256sum' | awk '{print $1}'; }
 setup_token() { compose exec -T kaya sh -c "sed -n 's/^SETUP_TOKEN=//p' /app/data/.runtime.env" | tr -d '\r'; }
 smoke() { PHASE7D_HTTP_BASE="http://127.0.0.1:$PORT" KAYA_SETUP_TOKEN="$(setup_token)" python "$ROOT_DIR/scripts/phase7d_http_smoke.py"; }
@@ -113,7 +113,8 @@ docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c "prin
 scenario 23 "Corrupted retained SQLite post-cutover" bash -c 'compose restart kaya >/dev/null && wait_app && [[ "$(revision)" == "20260818_02" ]]'
 docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c "chown -R $(id -u):$(id -g) /data/backups"
 source_backup="$(find "$ROOT/data/backups" -type f -name '*.sqlite3' | head -n 1)"
-cp "$source_backup" "$ROOT/data/kaya.db"
+source_backup_name="$(basename "$source_backup")"
+docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c "cp /data/backups/$source_backup_name /data/kaya.db"
 retained_before_workers="$(source_hash)"
 
 scenario 24 "Migration failure preserves source" bash -c 'test -f "$ROOT/data/kaya.db" || return 0; test "$(source_hash)" = "$legacy_after"'
