@@ -34,17 +34,6 @@ def generate(
             INSERT INTO users (email, password_hash, role, is_active, totp_enabled, authentication_type, is_break_glass, role_source, created_at, updated_at)
             VALUES ('synthetic@example.invalid', :password_hash, 'admin', 1, 0, 'local', 0, 'local', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         """), {"password_hash": hash_password("synthetic-admin-password")})
-        for module_key in (
-            "asset_manager", "backup_manager", "compute_manager", "dashboard",
-            "dns_manager", "domain_manager", "high_availability", "licence_manager",
-            "network_monitor", "rack_manager", "remote_manager", "runbooks",
-            "secret_vault", "secure_send", "vlan_ip_manager",
-        ):
-            connection.execute(text("""
-                INSERT INTO user_module_permissions (user_id, module_key, allowed, created_by, created_at, updated_at)
-                SELECT id, :module_key, 1, id, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-                FROM users WHERE email = 'synthetic@example.invalid'
-            """), {"module_key": module_key})
         connection.execute(text("""
             INSERT INTO dns_providers (name, provider_type, base_url, auth_method, ssl_verify, timeout_seconds, is_enabled, created_at, updated_at)
             VALUES ('Synthetic DNS', 'pihole', 'https://dns.invalid', 'password', 1, 10, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
@@ -121,6 +110,21 @@ def generate_functional(path: Path) -> None:
         insert(connection, "notification_preferences", id=1, user_id=2, event_type="synthetic.unread", in_app_enabled=True, push_enabled=False, email_enabled=False, minimum_severity="info", recovery_enabled=True, timezone="UTC", created_at=now, updated_at=now)
         insert(connection, "push_subscriptions", id=1, user_id=2, endpoint_hash="synthetic-endpoint-hash", encrypted_subscription=encrypt_secret("synthetic-push-subscription"), device_label="Synthetic browser", browser_family="Test", operating_system="Linux", status="active", created_at=now)
         insert(connection, "audit_logs", id=100, user_id=2, action="synthetic.read", entity="dns_client", entity_id="1", ip_address="192.0.2.20", detail="Synthetic audit detail", category="activity", severity="info", status_code=200, request_id="synthetic-audit-request", capture_tier="standard", created_at=now)
+        for module_key in (
+            "asset_manager", "backup_manager", "compute_manager", "dashboard",
+            "dns_manager", "domain_manager", "high_availability", "licence_manager",
+            "network_monitor", "rack_manager", "remote_manager", "runbooks",
+            "secret_vault", "secure_send", "vlan_ip_manager",
+        ):
+            connection.execute(text("""
+                INSERT INTO user_module_permissions (user_id, module_key, allowed, created_by, created_at, updated_at)
+                SELECT id, :module_key, 1, id, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                FROM users WHERE email = 'synthetic@example.invalid'
+                AND NOT EXISTS (
+                    SELECT 1 FROM user_module_permissions
+                    WHERE user_id = users.id AND module_key = :module_key
+                )
+            """), {"module_key": module_key})
 
 
 def main() -> None:
