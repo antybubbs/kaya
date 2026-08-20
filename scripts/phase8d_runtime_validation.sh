@@ -59,7 +59,7 @@ backup_count() {
 }
 
 latest_archive() {
-    compose run --rm --entrypoint bash postgres-backup -c 'find /var/backups/kaya-postgres -maxdepth 1 -type f -name "kaya-*.dump" -printf "%T@ %f\n" | sort -nr | awk "NR == 1 {sub(/^[^ ]+ /, \"\"); print}"' | tail -n 1
+    compose run --rm --entrypoint bash postgres-backup -c 'find /var/backups/kaya-postgres -maxdepth 1 -type f -name "kaya-*.dump" -printf "%T@ %f\n" | sort -nr | cut -d" " -f2-' | tail -n 1
 }
 
 backup_must_fail() {
@@ -93,7 +93,7 @@ constrained_destination() {
 interrupted_backup() {
     local container pid
     compose exec -T postgres psql -U kaya -d kaya -v ON_ERROR_STOP=1 -c \
-        "CREATE TABLE IF NOT EXISTS phase8_interrupt_fixture (id integer PRIMARY KEY, payload text NOT NULL); TRUNCATE phase8_interrupt_fixture; INSERT INTO phase8_interrupt_fixture SELECT g, repeat('phase8-interrupt-', 400) FROM generate_series(1, 200000) AS source(g);" >/dev/null
+        "CREATE TABLE IF NOT EXISTS phase8_interrupt_fixture (id integer PRIMARY KEY, payload text NOT NULL); TRUNCATE phase8_interrupt_fixture; INSERT INTO phase8_interrupt_fixture SELECT g, repeat('phase8-interrupt-', 400) FROM generate_series(1, 500000) AS source(g);" >/dev/null
     compose run -d --no-deps postgres-backup backup >phase8-interrupted-container.txt
     container="$(tr -d '\r\n' < phase8-interrupted-container.txt)"
     for _ in $(seq 1 120); do
@@ -102,7 +102,14 @@ interrupted_backup() {
         sleep 1
     done
     [[ -n "${pid:-}" ]]
-    docker exec "$container" kill -TERM "$pid"
+    local killed=0
+    for _ in $(seq 1 20); do
+        if docker exec "$container" kill -TERM "$pid"; then killed=1; break; fi
+        sleep 0.2
+        if pid="$(docker top "$container" -eo pid,comm,args | awk '/pg_dump/ {print $1; exit}')"; then :; else pid=""; fi
+        [[ -n "$pid" ]] || break
+    done
+    [[ "$killed" == "1" ]]
     if docker wait "$container" | grep -q '^0$'; then return 1; fi
     docker rm "$container" >/dev/null
     [[ "$(compose run --rm --entrypoint bash postgres-backup -c 'find /var/backups/kaya-postgres -maxdepth 1 -type f -name "*.tmp" | wc -l' | tail -n 1)" == "0" ]]
