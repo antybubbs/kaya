@@ -4,8 +4,9 @@
 **Documentation version:** `dev`
 
 Kaya's supported production architecture is Docker Compose with PostgreSQL
-16.14 as the normal database. SQLite remains available for legacy/recovery
-operations and local development; it is not the default production database.
+16.14 as the only production database authority. SQLite remains available for
+controlled legacy/recovery operations and local development; it cannot be a
+fresh-install database or a runtime fallback. See [SQLite lifecycle policy](sqlite-lifecycle-policy.md).
 
 ## Phase 7 runtime validation in CI
 
@@ -60,7 +61,7 @@ existing `./data` mount and start it normally:
 docker compose up -d
 ```
 
-When `/app/data/kaya.db` exists and the PostgreSQL database is empty, Kaya
+When an eligible legacy `/app/data/kaya.db` exists and the PostgreSQL database is empty, Kaya
 enters the proven Phase 6 controlled upgrade path before starting application
 workers. It validates SQLite, creates or reuses a verified backup under
 `/app/data/backups`, migrates through the existing SQLite-to-PostgreSQL engine,
@@ -316,8 +317,8 @@ consistent unit rather than copying only `kaya.db`.
 # Existing SQLite to PostgreSQL upgrade
 
 Phase 6 upgrades an existing SQLite installation through a separate Compose
-override. The base Compose file remains SQLite-compatible for new and
-not-yet-migrated installations.
+override. The base Compose file is PostgreSQL-first; the override is retained
+for controlled legacy upgrade validation and operator recovery.
 
 Before upgrading, ensure the existing `/app/data` storage is persistent and
 that the PostgreSQL password file is private and contains a strong generated

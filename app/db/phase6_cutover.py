@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sqlite3
 import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -16,7 +17,7 @@ from sqlalchemy import create_engine, inspect, text
 
 from app.core.config import redact_database_url, sqlite_database_path
 from app.db.phase6_test_hooks import hit as test_failpoint, validate_configuration as validate_test_configuration
-from app.db.sqlite_to_postgres import migrate, preflight
+from app.db.sqlite_to_postgres import _heads, migrate, preflight
 from app.core.config import get_settings, postgres_engine_options
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,34 @@ class Installation:
     source_path: Path | None
     state_path: Path
     reason: str = ""
+
+
+def legacy_sqlite_eligibility(source_path: Path, data_dir: Path) -> tuple[bool, str]:
+    """Validate a controlled legacy source before automatic migration starts."""
+    source = source_path.resolve()
+    data_root = data_dir.resolve()
+    try:
+        source.relative_to(data_root)
+    except ValueError:
+        return False, "legacy SQLite source is outside the configured data directory"
+    if not source.is_file():
+        return False, "legacy SQLite source does not exist"
+    try:
+        with sqlite3.connect(f"file:{source.as_posix()}?mode=ro", uri=True) as connection:
+            connection.execute("PRAGMA query_only=ON")
+            if connection.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+                return False, "legacy SQLite source failed integrity validation"
+            revision = connection.execute(
+                "SELECT version_num FROM alembic_version"
+            ).fetchall()
+    except (OSError, sqlite3.DatabaseError) as exc:
+        return False, f"legacy SQLite source is not a valid Kaya database ({type(exc).__name__})"
+    if len(revision) != 1 or not revision[0][0]:
+        return False, "legacy SQLite source has no single Alembic revision"
+    expected_head, _ = _heads()
+    if revision[0][0] != expected_head:
+        return False, f"legacy SQLite revision {revision[0][0]} is unsupported; expected {expected_head}"
+    return True, "eligible legacy Kaya SQLite source"
 
 
 def state_path(data_dir: Path) -> Path:
@@ -117,7 +146,7 @@ def detect_installation(database_url: str, data_dir: Path) -> Installation:
     if engine_name == "postgresql":
         return Installation(UpgradeState.EXISTING_POSTGRES_INSTALL, engine_name, None, marker)
     if engine_name == "sqlite" and source is not None:
-        return Installation(UpgradeState.NEW_POSTGRES_INSTALL, engine_name, source, marker, "SQLite source does not exist")
+        return Installation(UpgradeState.UNSUPPORTED_OR_AMBIGUOUS, engine_name, source, marker, "SQLite is not a valid fresh-install database; configure PostgreSQL")
     return Installation(UpgradeState.UNSUPPORTED_OR_AMBIGUOUS, engine_name, source, marker, "database configuration is not supported")
 
 

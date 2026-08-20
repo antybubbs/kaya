@@ -20,7 +20,12 @@ if ! docker compose version >/dev/null 2>&1; then
   exit 1
 fi
 
-sudo mkdir -p "$APP_DIR/data/remote-recordings" "$APP_DIR/uploads"
+sudo mkdir -p "$APP_DIR/data/remote-recordings" "$APP_DIR/data/secrets" "$APP_DIR/uploads"
+if [ ! -f "$APP_DIR/data/secrets/postgres_password" ]; then
+  umask 077
+  python3 -c 'import secrets; print(secrets.token_urlsafe(64))' | sudo tee "$APP_DIR/data/secrets/postgres_password" >/dev/null
+  sudo chmod 600 "$APP_DIR/data/secrets/postgres_password"
+fi
 sudo chown -R "$(id -u):$(id -g)" "$APP_DIR"
 
 cat > "$APP_DIR/docker-compose.yml" <<COMPOSE
@@ -32,7 +37,11 @@ services:
     container_name: kaya
     restart: unless-stopped
     environment:
-      DATABASE_URL: sqlite:////app/data/kaya.db
+      DATABASE_URL: postgresql+psycopg://kaya@postgres:5432/kaya
+      KAYA_POSTGRES_DATABASE_URL: postgresql+psycopg://kaya@postgres:5432/kaya
+      KAYA_SQLITE_SOURCE_URL: sqlite:////app/data/kaya.db
+      KAYA_PHASE6_AUTO_UPGRADE: "true"
+      DATABASE_PASSWORD_FILE: /run/kaya-secrets/postgres_password
       FORWARDED_ALLOW_IPS: \${FORWARDED_ALLOW_IPS:-127.0.0.1}
     ports:
       - "\${KAYA_PORT:-8080}:8080"
@@ -40,6 +49,7 @@ services:
       - ./data:/app/data
       - ./uploads:/app/uploads
       - ./data/remote-recordings:/app/data/remote-recordings
+      - kaya_postgres_secret:/run/kaya-secrets:ro
     security_opt:
       - no-new-privileges:true
     cap_add:
@@ -59,7 +69,9 @@ services:
     restart: unless-stopped
     command: ["uvicorn", "app.security_gateway:app", "--host", "0.0.0.0", "--port", "8999", "--proxy-headers", "--forwarded-allow-ips", "\${FORWARDED_ALLOW_IPS:-127.0.0.1}", "--no-access-log", "--no-server-header"]
     environment:
-      DATABASE_URL: sqlite:////app/data/kaya.db
+      DATABASE_URL: postgresql+psycopg://kaya@postgres:5432/kaya
+      KAYA_POSTGRES_DATABASE_URL: postgresql+psycopg://kaya@postgres:5432/kaya
+      DATABASE_PASSWORD_FILE: /run/kaya-secrets/postgres_password
       FORWARDED_ALLOW_IPS: \${FORWARDED_ALLOW_IPS:-127.0.0.1}
       SKIP_DATABASE_MIGRATIONS: "true"
       KAYA_GATEWAY_MODE: "true"
@@ -67,6 +79,7 @@ services:
       - "\${KAYA_SECURE_SEND_PORT:-8999}:8999"
     volumes:
       - ./data:/app/data
+      - kaya_postgres_secret:/run/kaya-secrets:ro
     depends_on:
       kaya:
         condition: service_healthy
@@ -81,6 +94,35 @@ services:
     image: guacamole/guacd:1.6.0
     container_name: kaya-guacd
     restart: unless-stopped
+
+  postgres:
+    image: postgres:16.14
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: kaya
+      POSTGRES_USER: kaya
+      POSTGRES_PASSWORD_FILE: /run/kaya-secrets/postgres_password
+    secrets:
+      - postgres_password
+    volumes:
+      - kaya_postgres_data:/var/lib/postgresql/data
+      - kaya_postgres_secret:/run/kaya-secrets:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kaya -d kaya"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+secrets:
+  postgres_password:
+    file: ./data/secrets/postgres_password
+
+volumes:
+  kaya_postgres_data:
+    name: kaya_postgres_data
+  kaya_postgres_secret:
+    name: kaya_postgres_secret
 
 networks:
   default:

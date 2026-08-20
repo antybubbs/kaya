@@ -232,7 +232,7 @@ Browser
 Reverse Proxy
    │
 Kaya
-├── SQLite Database
+├── PostgreSQL Database
 ├── Upload Storage
 └── Guacamole (SSH / RDP)
 ```

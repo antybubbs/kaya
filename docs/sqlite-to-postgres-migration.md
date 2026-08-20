@@ -20,7 +20,9 @@ Before any SQLite connection is opened, the command creates a mode-700 `sqlite-t
 
 `--dry-run` performs source, target, revision, table-inventory, and local-filesystem capacity checks without creating a backup or copying rows. Reports contain counts, hashes, timings, sequence results, WAL growth, and validation state, but never row contents, secrets, passwords, or full DSNs.
 
-This command is not invoked by application startup and does not change the default database engine or the existing-user Compose upgrade path.
+This command is not invoked by ordinary application startup. Fresh production
+Compose is PostgreSQL-only; the controlled Phase 6 upgrade path is the only
+automatic startup path that may read an eligible retained SQLite source.
 
 ## Phase 6 test instrumentation
 

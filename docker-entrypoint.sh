@@ -95,6 +95,10 @@ fi
 CONFIGURED_DATABASE_URL="${DATABASE_URL:-}"
 SQLITE_SOURCE_URL="${KAYA_SQLITE_SOURCE_URL:-}"
 SQLITE_SOURCE_PATH="${SQLITE_SOURCE_URL#sqlite:///}"
+if [ "${APP_ENV:-production}" = "production" ] && [ "$CONFIGURED_DATABASE_URL" != "${CONFIGURED_DATABASE_URL#sqlite}" ]; then
+    echo "Production Kaya requires PostgreSQL; SQLite is reserved for controlled legacy migration and recovery tooling." >&2
+    exit 1
+fi
 POSTGRES_SCHEMA_READY="false"
 if [ "$CONFIGURED_DATABASE_URL" != "${CONFIGURED_DATABASE_URL#postgresql}" ]; then
     if gosu kaya python -c "from sqlalchemy import inspect; from app.db.session import engine; raise SystemExit(0 if inspect(engine).has_table('alembic_version') else 1)"; then
@@ -103,6 +107,10 @@ if [ "$CONFIGURED_DATABASE_URL" != "${CONFIGURED_DATABASE_URL#postgresql}" ]; th
 fi
 
 if [ "${KAYA_PHASE6_AUTO_UPGRADE:-false}" = "true" ] && [ -n "$SQLITE_SOURCE_URL" ] && [ -f "$SQLITE_SOURCE_PATH" ] && [ "${AUTHORITATIVE_ENGINE:-}" != "postgresql" ] && [ "$POSTGRES_SCHEMA_READY" != "true" ]; then
+    if ! KAYA_LEGACY_SOURCE="$SQLITE_SOURCE_PATH" KAYA_LEGACY_DATA_DIR="${DATA_DIR:-/app/data}" gosu kaya python -c "import os; from pathlib import Path; from app.db.phase6_cutover import legacy_sqlite_eligibility; ok, reason = legacy_sqlite_eligibility(Path(os.environ['KAYA_LEGACY_SOURCE']), Path(os.environ['KAYA_LEGACY_DATA_DIR'])); print(reason); raise SystemExit(0 if ok else 1)"; then
+        echo "Legacy SQLite source is not an eligible Kaya database; refusing automatic migration." >&2
+        exit 1
+    fi
     echo "Preparing controlled SQLite to PostgreSQL upgrade..."
     gosu kaya python -m scripts.kaya_phase6_upgrade \
         --source "$SQLITE_SOURCE_PATH" \

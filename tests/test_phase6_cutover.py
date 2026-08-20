@@ -10,6 +10,7 @@ from app.db.phase6_cutover import (
     _write_state,
     authoritative_database_url,
     detect_installation,
+    legacy_sqlite_eligibility,
 )
 
 
@@ -28,6 +29,13 @@ def test_detects_existing_postgres_without_sqlite_guess(tmp_path: Path):
 
     assert detected.state == UpgradeState.EXISTING_POSTGRES_INSTALL
     assert detected.source_path is None
+
+
+def test_missing_sqlite_source_is_not_treated_as_fresh_install(tmp_path: Path):
+    detected = detect_installation(f"sqlite:///{tmp_path / 'missing.db'}", tmp_path)
+
+    assert detected.state == UpgradeState.UNSUPPORTED_OR_AMBIGUOUS
+    assert "fresh-install" in detected.reason
 
 
 def test_postgres_authority_refuses_sqlite_fallback(tmp_path: Path):
@@ -65,3 +73,23 @@ def test_cutover_pending_is_a_durable_non_authoritative_state(tmp_path: Path):
     value = json.loads(path.read_text(encoding="utf-8"))
     assert value["state"] == "CUTOVER_PENDING"
     assert value["database_engine"] == "postgresql"
+
+
+def test_arbitrary_sqlite_file_is_not_migration_eligible(tmp_path: Path):
+    source = tmp_path / "kaya.db"
+    source.write_bytes(b"not sqlite")
+
+    eligible, reason = legacy_sqlite_eligibility(source, tmp_path)
+
+    assert not eligible
+    assert "valid Kaya database" in reason
+
+
+def test_sqlite_source_outside_data_directory_is_rejected(tmp_path: Path):
+    source = tmp_path.parent / "outside.sqlite3"
+    source.touch()
+
+    eligible, reason = legacy_sqlite_eligibility(source, tmp_path)
+
+    assert not eligible
+    assert "outside" in reason
