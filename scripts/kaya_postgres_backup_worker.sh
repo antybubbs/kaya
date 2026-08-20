@@ -11,6 +11,9 @@ PASSWORD_FILE="${POSTGRES_PASSWORD_FILE:-/run/kaya-secrets/postgres_password}"
 RETENTION="${KAYA_POSTGRES_BACKUP_RETENTION:-7}"
 
 die() { echo "kaya-postgres-backup: $*" >&2; exit 1; }
+cleanup_backup_tmp() {
+  if [[ -n "${tmp_cleanup:-}" ]]; then rm -f -- "$tmp_cleanup"; fi
+}
 [[ "$RETENTION" =~ ^[1-9][0-9]*$ ]] || die "retention must be a positive integer"
 [[ -d "$BACKUP_DIR" ]] || die "backup destination does not exist"
 chmod 700 "$BACKUP_DIR" || die "backup destination permissions could not be secured"
@@ -43,7 +46,8 @@ backup() {
   archive="$BACKUP_DIR/kaya-$stamp.dump"
   metadata="$archive.json"
   tmp="$archive.tmp"
-  trap 'rm -f -- "${tmp:-}"' EXIT
+  tmp_cleanup="$tmp"
+  trap cleanup_backup_tmp EXIT
   (umask 077; pg_dump --format=custom --no-owner --no-privileges --file="$tmp" --username="$DB_USER" --dbname="$DB_NAME")
   revision="$(psql --username="$DB_USER" --dbname="$DB_NAME" --tuples-only --no-align --command="SELECT COALESCE((SELECT version_num FROM alembic_version LIMIT 1), 'unknown');" | tr -d '[:space:]')"
   postgres_version="$(psql --username="$DB_USER" --dbname="$DB_NAME" --tuples-only --no-align --command="SELECT replace(replace(version(), chr(10), ' '), chr(13), ' ');" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
