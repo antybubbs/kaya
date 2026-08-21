@@ -66,6 +66,7 @@ wait_ready() {
 
 start_stack() {
     compose up -d >/dev/null && wait_ready && \
+        compose exec -T --user postgres postgres psql -d postgres -c 'ALTER ROLE kaya NOSUPERUSER;' >/dev/null && \
         compose exec -T postgres psql -U kaya -d kaya -c \
         "INSERT INTO remote_manager_settings (key, value, updated_at) VALUES ('high_availability_enabled', '1', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at;" >/dev/null
 }
@@ -134,7 +135,8 @@ retained_sqlite() { sha256sum "$ROOT/data/retained-legacy.sqlite3" | awk '{print
 
 restore_app() {
     local archive="$1" container="${PROJECT}_restore_app" target="kaya_phase11_restore"
-    compose exec -T postgres psql -U kaya -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS $target; CREATE DATABASE $target OWNER kaya;" >/dev/null
+    compose exec -T postgres psql -U kaya -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS $target;" >/dev/null
+    compose exec -T postgres psql -U kaya -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE $target OWNER kaya;" >/dev/null
     compose --profile phase11-ops run --rm --no-deps --entrypoint bash postgres-backup -c \
         "export PGPASSWORD=\"\$(<\"\$POSTGRES_PASSWORD_FILE\")\"; pg_restore --exit-on-error --no-owner --no-privileges -U kaya -d \"$target\" \"/var/backups/kaya-postgres/$archive\""
     docker rm -f "$container" >/dev/null 2>&1 || true
