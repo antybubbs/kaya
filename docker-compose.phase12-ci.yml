@@ -47,6 +47,8 @@ services:
       - "${PHASE12_HTTP_PORT:-18132}:8080"
     environment:
       POSTGRES_BACKUP_DIR: /var/backups/kaya-postgres
+      SECRET_KEY: phase12-synthetic-secret-key-012345678901234567890123
+      ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
     volumes: !override
       - type: bind
         source: ${PHASE12_ROOT:?PHASE12_ROOT is required}/data
