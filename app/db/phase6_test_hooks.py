@@ -99,6 +99,16 @@ def worker_write(subsystem: str, database_engine: str) -> None:
         )
 
 
+def database_identity(context: str, database_role: str) -> None:
+    """Record a redacted database role for an explicitly instrumented test."""
+    if _test_mode():
+        record(
+            "phase12.db.identity",
+            context=" ".join(str(context).split())[:80],
+            database_role=" ".join(str(database_role).split())[:80],
+        )
+
+
 def hit(name: str) -> None:
     """Trigger one predefined test checkpoint at most once per process."""
     validate_configuration()

@@ -49,6 +49,8 @@ services:
       POSTGRES_BACKUP_DIR: /var/backups/kaya-postgres
       SECRET_KEY: phase12-synthetic-secret-key-012345678901234567890123
       ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      KAYA_TEST_MODE: "true"
+      KAYA_TEST_OBSERVABILITY_FILE: /app/data/phase12-observability.jsonl
     volumes: !override
       - type: bind
         source: ${PHASE12_ROOT:?PHASE12_ROOT is required}/data

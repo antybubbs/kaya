@@ -1,4 +1,5 @@
 import logging
+import os
 import random
 import time
 from contextlib import contextmanager
@@ -13,7 +14,10 @@ from app.core.config import get_settings, postgres_engine_options, sqlite_databa
 from app.db.dialect import verify_database_connection
 from app.core.performance import install_engine_timing
 from app.db.sqlite_temp import configure_sqlite_temp_directory
-from app.db.phase6_test_hooks import worker_write as record_worker_write
+from app.db.phase6_test_hooks import (
+    database_identity as record_database_identity,
+    worker_write as record_worker_write,
+)
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -163,7 +167,7 @@ def _track_transaction_start(session, transaction, connection):
     if transaction.nested:
         return
     context = _write_context.get() or {}
-    session.info["kaya_transaction_trace"] = {
+    trace = {
         "started": perf_counter(),
         "commit_started": None,
         "session_id": id(session),
@@ -174,6 +178,17 @@ def _track_transaction_start(session, transaction, connection):
         "wrote": False,
         "database_engine": connection.engine.dialect.name,
     }
+    session.info["kaya_transaction_trace"] = trace
+    if (
+        connection.engine.dialect.name == "postgresql"
+        and os.environ.get("KAYA_TEST_MODE", "false").lower() == "true"
+        and os.environ.get("KAYA_TEST_OBSERVABILITY_FILE", "").strip()
+    ):
+        try:
+            database_role = connection.exec_driver_sql("SELECT current_user").scalar_one()
+        except Exception:
+            database_role = "unavailable"
+        record_database_identity(trace["subsystem"], str(database_role))
 
 
 @event.listens_for(Session, "after_flush")

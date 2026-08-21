@@ -90,6 +90,14 @@ fresh_role_probe="$(fresh_compose exec -T postgres psql -U kaya_bootstrap -d kay
 record_pass 1 '{"topology":"fresh bootstrap and constrained runtime roles"}'
 record_pass 2 '{"runtime_role":"kaya","rolsuper":false}'
 record_pass 3 '{"database_owner":"kaya","schema_owner":"pg_database_owner or kaya"}'
+for _ in $(seq 1 90); do curl --fail --silent --max-time 3 "http://127.0.0.1:${PHASE12_HTTP_PORT:-18132}/healthz" >/dev/null 2>&1 && break; sleep 2; done
+curl --fail --silent --max-time 3 "http://127.0.0.1:${PHASE12_HTTP_PORT:-18132}/healthz" >/dev/null
+grep -q '"event": "phase12.db.identity"' "$fresh_root/data/phase12-observability.jsonl" &&
+  grep -q '"context": "http_request".*"database_role": "kaya"' "$fresh_root/data/phase12-observability.jsonl"
+record_pass 4 '{"http_observation":"phase12 test-only DB identity probe","database_role":"kaya"}'
+fresh_compose exec -T kaya python -c 'from app.db.phase6_test_hooks import worker_write; from app.db.session import SessionLocal, database_write_context; from app.models.models import AuditLog; db=SessionLocal(); ctx=database_write_context("dns_collector", "phase12_fresh_worker"); ctx.__enter__(); db.add(AuditLog(action="phase12.fresh.worker", entity="synthetic", entity_id="fresh", detail="synthetic", category="activity", severity="info", status_code=200, capture_tier="standard")); db.commit(); worker_write("dns_collector", "postgresql"); ctx.__exit__(None, None, None); db.close()'
+grep -q '"context": "dns_collector".*"database_role": "kaya"' "$fresh_root/data/phase12-observability.jsonl"
+record_pass 5 '{"worker_observation":"phase12 test-only DB identity probe","database_role":"kaya"}'
 fresh_compose down >/dev/null
 "${compose[@]}" up -d --wait --wait-timeout 120 postgres-secret-init postgres
 resources_created=true

@@ -48,6 +48,19 @@ def test_observability_contains_no_row_data(tmp_path: Path, monkeypatch):
     assert "row" not in contents.lower()
 
 
+def test_database_identity_observation_is_redacted_and_test_only(tmp_path: Path, monkeypatch):
+    destination = tmp_path / "observability.jsonl"
+    monkeypatch.setenv("KAYA_TEST_MODE", "true")
+    monkeypatch.setenv("KAYA_TEST_OBSERVABILITY_FILE", str(destination))
+
+    from app.db.phase6_test_hooks import database_identity
+
+    database_identity("http_request", "kaya")
+    contents = destination.read_text(encoding="utf-8")
+    assert '"event": "phase12.db.identity"' in contents
+    assert '"database_role": "kaya"' in contents
+
+
 def test_production_configuration_rejects_failpoint(monkeypatch):
     config.get_settings.cache_clear()
     monkeypatch.setenv("APP_ENV", "production")
