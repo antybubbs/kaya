@@ -114,7 +114,7 @@ role_privileges() {
     probe="$(compose exec -T postgres psql -U kaya -d kaya -Atc \
         "SELECT (rolsuper = false AND rolcreaterole = false AND rolcreatedb = false AND rolcanlogin = true AND has_database_privilege('kaya', current_database(), 'CONNECT') AND has_schema_privilege('kaya', 'public', 'USAGE') AND pg_get_userbyid(datdba) = 'kaya' AND pg_get_userbyid(nspowner) = 'kaya') || '|' || rolsuper || '|' || rolcreaterole || '|' || rolcreatedb || '|' || rolcanlogin || '|' || has_database_privilege('kaya', current_database(), 'CONNECT') || '|' || has_schema_privilege('kaya', 'public', 'USAGE') || '|' || (pg_get_userbyid(datdba) = 'kaya') || '|' || (pg_get_userbyid(nspowner) = 'kaya') FROM pg_roles, pg_database, pg_namespace WHERE rolname='kaya' AND datname=current_database() AND nspname='public';" | tr -d '\r')"
     echo "role privilege probe=$probe"
-    [[ "$probe" == "t|f|f|f|t|t|t|t|t" ]]
+    [[ "$probe" == "true|false|false|false|true|true|true|true|true" ]]
 }
 
 role_metadata() {
