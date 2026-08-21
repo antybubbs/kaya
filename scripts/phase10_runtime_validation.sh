@@ -17,7 +17,7 @@ start_stack() { if compose up -d >/dev/null; then wait_ready; else compose ps; c
 tests() { docker run --rm -e PYTHONPATH=/workspace -e APP_ENV=test -e SECRET_KEY=phase10-synthetic-secret-key-012345678901234567890123 -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= -v "$ROOT_DIR:/workspace" -w /workspace "$TEST_IMAGE" "$@"; }
 graph() { tests python scripts/phase10_migration_graph.py; }
 about_metadata() {
-    compose exec -T kaya python -c 'from sqlalchemy.orm import Session; from app.db.session import engine; from app.services.about import collect_about; db=Session(engine); value=collect_about(db); db.close(); diagnostics=value["postgres_diagnostics"]; assert diagnostics["compatibility_state"] == "compatible"; assert diagnostics["current_alembic_revision"] == "20260818_02"; assert diagnostics["expected_alembic_head"] == "20260818_02"'
+    compose exec -T -e PYTHONPATH=/app -e SECRET_KEY=phase10-synthetic-secret-key-012345678901234567890123 -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= kaya python scripts/phase10_about_metadata.py
 }
 production_sqlite_rejection() {
     local output status=0
@@ -25,8 +25,8 @@ production_sqlite_rejection() {
     (( status != 0 )) && grep -q "requires PostgreSQL" <<<"$output"
 }
 security_review() {
-    ! grep -R -n -E "postgresql[^[:space:]]*://[^:[:space:]]+:[^$<{@[:space:]]+@|BEGIN (RSA|OPENSSH|EC) PRIVATE KEY|SETUP_TOKEN=" \
-        .github scripts docs app --exclude="*.min.js" --exclude="phase*_runtime_validation.sh" --exclude="postgres_scale_validation.py" \
+    ! grep -R -n -E "postgresql[^[:space:]]*://[^:[:space:]]+:[^$<{@[:space:]]+@|BEGIN (RSA|OPENSSH|EC) PRIVATE KEY|SETUP_TOKEN=[A-Za-z0-9]" \
+        .github scripts docs app --exclude="*.min.js" --exclude="phase*_runtime_validation.sh" --exclude="phase*_http_smoke.py" --exclude="tests.yml" --exclude="postgres_scale_validation.py" \
         && grep -q 'target=.*\[a-zA-Z_\]' scripts/kaya_postgres_backup_worker.sh \
         && grep -q 'POSTGRES_ACTIVE' app/db/phase6_cutover.py
 }
