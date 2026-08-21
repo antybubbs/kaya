@@ -293,11 +293,14 @@ for _ in $(seq 1 90); do
 done
 
 tests() {
-  docker run --rm --network "${PHASE12_PROJECT}_default" -e PYTHONPATH=/workspace -e APP_ENV=test \
+  docker run --rm --network "${PHASE12_PROJECT}_default" \
+    -v "${PHASE12_PROJECT}_postgres_secret:/run/kaya-secrets:ro" \
+    -e PYTHONPATH=/workspace -e APP_ENV=test \
     -e SECRET_KEY=phase12-test-synthetic-secret-012345678901234567890123 \
     -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
-    -e KAYA_TEST_POSTGRES_URL=postgresql+psycopg://kaya:phase12-synthetic-app-password@postgres:5432/kaya \
-    -v "$PWD:/workspace" -w /workspace "$PHASE12_TEST_IMAGE" "$@"
+    -e KAYA_TEST_POSTGRES_URL=postgresql+psycopg://kaya@postgres:5432/kaya \
+    -v "$PWD:/workspace" -w /workspace --entrypoint bash "$PHASE12_TEST_IMAGE" \
+    -lc 'export PGPASSWORD="$(cat /run/kaya-secrets/postgres_password)"; exec "$@"' -- "$@"
 }
 tests pytest -q tests/test_phase6_cutover.py
 record_pass 51 '{"suite":"Phase 6 SQLite migration regression","result":"passed"}'
