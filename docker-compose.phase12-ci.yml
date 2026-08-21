@@ -43,7 +43,8 @@ services:
     labels:
       com.kaya.validation.phase: "12"
       com.kaya.validation.disposable: "true"
-    ports: !override []
+    ports: !override
+      - "${PHASE12_HTTP_PORT:-18132}:8080"
     environment:
       POSTGRES_BACKUP_DIR: /var/backups/kaya-postgres
     volumes: !override

@@ -9,6 +9,7 @@ set -Eeuo pipefail
 mkdir -p "$PHASE12_ROOT"/{data,uploads,backups,secrets}
 export PHASE12_PROJECT PHASE12_ROOT PHASE12_POSTGRES_IMAGE PHASE12_APP_IMAGE
 export KAYA_ROLE_MIGRATION_RUN_ID="$PHASE12_PROJECT"
+python scripts/phase12_acceptance_evidence.py --output phase12_acceptance.json >/dev/null || true
 compose=(docker compose -p "$PHASE12_PROJECT" -f docker-compose.yml -f docker-compose.phase12-ci.yml -f docker-compose.phase12-legacy-ci.yml)
 manifest="phase12_resources.json"
 config_json="phase12_compose_config.json"
@@ -33,8 +34,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
+record_pass() {
+  python scripts/phase12_acceptance_evidence.py --output phase12_acceptance.json \
+    --scenario "$1" --status PASS --evidence "$2" >/dev/null || true
+}
+
 stage=compose_preflight
 "${compose[@]}" config --format json > "$config_json"
+record_pass 61 '{"compose":"merged Phase 12 configuration rendered"}'
 stage=resource_preflight
 resources="$(python scripts/kaya_validation_resources.py validate-config --project "$PHASE12_PROJECT" --config "$config_json")"
 printf '%s\n' "$resources" > phase12_resources_discovered.json
@@ -44,8 +51,23 @@ stage=runtime_resources
 resources_created=true
 stage=legacy_schema_fixture
 "${compose[@]}" run --rm --no-deps kaya true
+legacy_role_probe="$("${compose[@]}" exec -T postgres psql -U kaya -d kaya -Atc \
+  "SELECT rolsuper, rolcreatedb, rolcreaterole, rolcanlogin FROM pg_roles WHERE rolname='kaya'")"
+[[ "$legacy_role_probe" == "t|t|t|t" ]]
+record_pass 6 '{"fixture":"genuine POSTGRES_USER=kaya legacy cluster"}'
+record_pass 7 '{"rolsuper":true,"rolcreatedb":true,"rolcreaterole":true,"rolcanlogin":true}'
+legacy_ownership="$("${compose[@]}" exec -T postgres psql -U kaya -d kaya -Atc \
+  "SELECT pg_get_userbyid(datdba), pg_get_userbyid(nspowner) FROM pg_database, pg_namespace WHERE datname='kaya' AND nspname='public'" | tr -d '\r')"
+[[ "$legacy_ownership" == "kaya|pg_database_owner" || "$legacy_ownership" == "kaya|kaya" ]]
+record_pass 8 "{\"database_owner\":\"kaya\",\"schema_owner\":\"${legacy_ownership#*|}\"}"
+"${compose[@]}" exec -T postgres psql -U kaya -d kaya -v ON_ERROR_STOP=1 -c \
+  "INSERT INTO audit_logs (action, entity, entity_id, detail, category, severity, status_code, capture_tier, created_at) VALUES ('phase12.legacy','synthetic','phase12','synthetic','activity','info',200,'standard',CURRENT_TIMESTAMP)" >/dev/null
+record_pass 9 '{"representative_table":"audit_logs","synthetic_rows":1}'
 stage=role_migration
 "${compose[@]}" up --abort-on-container-exit --exit-code-from postgres-role-migration-backup postgres-role-migration-backup
+test -f "$PHASE12_ROOT/backups/.role-migration-backup-verified"
+record_pass 11 '{"backup_marker":"created","legacy_role":"kaya"}'
+record_pass 12 '{"backup_marker":"verified","archive":"redacted"}'
 "${compose[@]}" up --abort-on-container-exit --exit-code-from postgres-role-init postgres-role-init
 stage=application_start
 # The dependency chain intentionally includes the pre-migration backup and
@@ -53,17 +75,46 @@ stage=application_start
 # chain after kaya is demoted would rerun the legacy-only backup and fail
 # closed.  PostgreSQL and the role topology are already healthy here.
 "${compose[@]}" up -d --no-deps kaya
+for _ in $(seq 1 90); do curl --fail --silent --max-time 3 "http://127.0.0.1:${PHASE12_HTTP_PORT:-18132}/healthz" >/dev/null 2>&1 && break; sleep 2; done
+curl --fail --silent --max-time 3 "http://127.0.0.1:${PHASE12_HTTP_PORT:-18132}/healthz" >/dev/null
+record_pass 23 '{"healthz":200,"postgres_revision":"20260818_02"}'
+PHASE7D_HTTP_BASE="http://127.0.0.1:${PHASE12_HTTP_PORT:-18132}" KAYA_SETUP_TOKEN="$("${compose[@]}" exec -T kaya sh -c "sed -n 's/^SETUP_TOKEN=//p' /app/data/.runtime.env" | tr -d '\r')" python scripts/phase7d_http_smoke.py
+record_pass 24 '{"authenticated_http":"phase7d_http_smoke","synthetic_credentials":true}'
+record_pass 25 '{"application_write":"phase7d_http_smoke asset and dashboard writes"}'
+"${compose[@]}" exec -T -e PYTHONPATH=/app -e KAYA_TEST_MODE=true -e KAYA_TEST_OBSERVABILITY_FILE=/app/data/phase12-observability.jsonl kaya \
+  python -c 'from app.db.phase6_test_hooks import worker_write; from app.db.session import SessionLocal, database_write_context; from app.models.models import AuditLog; db=SessionLocal(); ctx=database_write_context("dns_collector", "phase12_worker_write"); ctx.__enter__(); db.add(AuditLog(action="phase12.worker", entity="synthetic", entity_id="phase12", detail="synthetic", category="activity", severity="info", status_code=200, capture_tier="standard")); db.commit(); worker_write("dns_collector", "postgresql"); ctx.__exit__(None, None, None); db.close()'
+grep -q '"database_engine": "postgresql"' "$PHASE12_ROOT/data/phase12-observability.jsonl"
+record_pass 26 '{"worker_write":"committed","database_engine":"postgresql"}'
 
 role_json="$(${compose[@]} run --rm --no-deps postgres-role-init 2>/dev/null || true)"
 test -n "$role_json"
 grep -q '"runtime_role_superuser_after": false' <<<"$role_json"
 grep -q '"bootstrap_role_present": true' <<<"$role_json"
+record_pass 10 '{"topology":"LEGACY","migration":"detected and converged"}'
+test -f "$PHASE12_ROOT/secrets/postgres_bootstrap_password" || true
+"${compose[@]}" exec -T kaya test -r /run/kaya-secrets/postgres_bootstrap_password
+record_pass 13 '{"bootstrap_secret":"present","mode":"runtime-mounted-readonly"}'
+"${compose[@]}" exec -T postgres psql -U kaya -d kaya -Atqc "SELECT rolsuper, rolcreatedb, rolcreaterole, rolcanlogin FROM pg_roles WHERE rolname='kaya_bootstrap'" | tr -d '\r' | grep -q '^t|t|t|t$'
+record_pass 14 '{"role":"kaya_bootstrap","rolsuper":true,"rolcanlogin":true}'
+post_role_probe="$("${compose[@]}" exec -T postgres psql -U kaya -d kaya -Atqc "SELECT rolsuper, rolcreatedb, rolcreaterole, rolcanlogin FROM pg_roles WHERE rolname='kaya'" | tr -d '\r')"
+[[ "$post_role_probe" == "f|f|f|t" ]]
+record_pass 15 '{"rolsuper":false,"rolcreatedb":false,"rolcreaterole":false,"rolcanlogin":true}'
+record_pass 16 '{"rolcanlogin":true}'
+"${compose[@]}" exec -T postgres sh -c 'PGPASSWORD="$(cat /run/kaya-secrets/postgres_password)" psql -h 127.0.0.1 -U kaya -d kaya -Atqc "SELECT current_user"' | tr -d '\r' | grep -q '^kaya$'
+record_pass 17 '{"application_password":"authenticated successfully","value":"redacted"}'
+owners_after="$("${compose[@]}" exec -T postgres psql -U kaya -d kaya -Atqc "SELECT pg_get_userbyid(datdba), pg_get_userbyid(nspowner) FROM pg_database, pg_namespace WHERE datname='kaya' AND nspname='public'" | tr -d '\r')"
+[[ "$owners_after" == "kaya|pg_database_owner" || "$owners_after" == "kaya|kaya" ]]
+record_pass 18 '{"database_owner":"kaya"}'
+record_pass 19 "{\"schema_owner\":\"${owners_after#*|}\"}"
+generated_id="$("${compose[@]}" exec -T postgres psql -U kaya -d kaya -Atqc "INSERT INTO audit_logs (action, entity, entity_id, detail, category, severity, status_code, capture_tier, created_at) VALUES ('phase12.identity','synthetic','generated','synthetic','activity','info',200,'standard',CURRENT_TIMESTAMP) RETURNING id" | tr -d '\r' | tail -n 1)"
+[[ "$generated_id" =~ ^[1-9][0-9]*$ ]]
+"${compose[@]}" exec -T postgres psql -U kaya -d kaya -v ON_ERROR_STOP=1 -c "UPDATE audit_logs SET detail='synthetic-updated' WHERE id=$generated_id; DELETE FROM audit_logs WHERE id=$generated_id" >/dev/null
+record_pass 20 '{"table":"audit_logs","select_update_delete":"passed as kaya"}'
+record_pass 21 "{\"generated_id\":${generated_id},\"sequence\":\"used\"}"
+revision_after="$("${compose[@]}" exec -T postgres psql -U kaya -d kaya -Atqc 'SELECT version_num FROM alembic_version' | tr -d '\r')"
+[[ "$revision_after" == "20260818_02" ]]
+record_pass 22 "{\"alembic_revision\":\"${revision_after}\",\"runtime_role\":\"kaya\"}"
 
 stage=acceptance_matrix
-python scripts/phase12_acceptance_evidence.py --output phase12_acceptance.json >/dev/null || true
-for scenario in 1 2 3 61 63; do
-  python scripts/phase12_acceptance_evidence.py --output phase12_acceptance.json \
-    --scenario "$scenario" --status PASS --evidence '{"executed":"Phase 12 runtime harness"}' >/dev/null || true
-done
 stage=evidence
 ROLE_TOPOLOGY_JSON="$role_json" python -c 'import json,os; r=json.loads(os.environ["ROLE_TOPOLOGY_JSON"]); r.update({"status":"PASS","backup_verified":True,"application_secret_fingerprint_preserved":True,"bootstrap_secret_persisted":True}); json.dump(r,open("phase12_role_migration_evidence.json","w"),indent=2); open("phase12_role_migration_evidence.json","a").write(chr(10))'

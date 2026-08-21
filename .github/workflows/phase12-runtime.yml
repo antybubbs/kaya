@@ -37,6 +37,7 @@ jobs:
       PHASE12_ROOT: ./phase12-data
       PHASE12_POSTGRES_IMAGE: postgres:16.14
       PHASE12_APP_IMAGE: kaya:phase12-${{ github.sha }}
+      PHASE12_HTTP_PORT: 18132
     steps:
       - uses: actions/checkout@v4
       - name: Build disposable application image
