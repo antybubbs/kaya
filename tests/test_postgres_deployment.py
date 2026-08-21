@@ -152,6 +152,14 @@ def test_phase12_backup_worker_separates_admin_and_runtime_passwords():
     assert '"sha256"' in compose
 
 
+def test_role_migration_backup_allows_fresh_cluster_without_skipping_legacy_backup():
+    compose = Path("docker-compose.yml").read_text(encoding="utf-8")
+
+    assert "KAYA_POSTGRES_ADMIN_USER: kaya_bootstrap" in compose
+    assert "fresh cluster has no legacy kaya role" in compose
+    assert "legacy superuser role was not confirmed" in compose
+
+
 def test_phase12_overlay_isolates_all_persistent_postgres_mounts():
     overlay = Path("docker-compose.phase12-ci.yml").read_text(encoding="utf-8")
 

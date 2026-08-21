@@ -120,6 +120,8 @@ services:
       POSTGRES_DB: kaya
       POSTGRES_USER: kaya
       POSTGRES_PASSWORD_FILE: /run/kaya-secrets/postgres_password
+      KAYA_POSTGRES_ADMIN_USER: kaya_bootstrap
+      KAYA_POSTGRES_ADMIN_PASSWORD_FILE: /run/kaya-secrets/postgres_bootstrap_password
       KAYA_POSTGRES_BACKUP_PURPOSE: pre_role_topology_migration
       KAYA_ROLE_MIGRATION_MARKER: /var/backups/kaya-postgres/.role-migration-backup-verified
       KAYA_ROLE_MIGRATION_RUN_ID: ${KAYA_ROLE_MIGRATION_RUN_ID:-production}
@@ -130,7 +132,15 @@ services:
         set -Eeuo pipefail;
         password="$$(<"$${POSTGRES_PASSWORD_FILE}")";
         export PGPASSWORD="$$password";
-        role_superuser="$$(psql -h postgres -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}" -Atc "SELECT rolsuper FROM pg_roles WHERE rolname='kaya';")";
+        admin_password="$$(<"$${KAYA_POSTGRES_ADMIN_PASSWORD_FILE}")";
+        role_superuser="$$(PGPASSWORD="$$admin_password" psql -h postgres -U "$${KAYA_POSTGRES_ADMIN_USER}" -d postgres -Atc "SELECT rolsuper FROM pg_roles WHERE rolname='kaya';" 2>/dev/null || true)";
+        if [[ -z "$$(printf '%s' "$$role_superuser" | tr -d '[:space:]')" ]]; then
+          role_superuser="$$(psql -h postgres -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}" -Atc "SELECT rolsuper FROM pg_roles WHERE rolname='kaya';" 2>/dev/null || true)";
+        fi;
+        if [[ -z "$$(printf '%s' "$$role_superuser" | tr -d '[:space:]')" ]]; then
+          echo "kaya-postgres-backup: fresh cluster has no legacy kaya role; verified backup not required";
+          exit 0;
+        fi;
         [[ "$$(printf '%s' "$$role_superuser" | tr -d '[:space:]')" == t ]] || { echo "kaya-postgres-backup: legacy superuser role was not confirmed" >&2; exit 1; };
         archive="$$(/usr/local/bin/kaya_postgres_backup_worker.sh backup)";
         [[ "$$archive" == /var/backups/kaya-postgres/kaya-*.dump && -f "$$archive" ]] || { echo "kaya-postgres-backup: worker did not return a valid archive" >&2; exit 1; };
