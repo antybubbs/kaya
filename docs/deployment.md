@@ -365,3 +365,52 @@ preserved, and refuses an ambiguous retry. Review the logs and use the
 explicit Phase 6 retry/target-cleanup procedure after confirming the failed
 target is not active. Do not delete a database or use ad-hoc SQL against a
 production target.
+
+## PostgreSQL role topology upgrades
+
+Current PostgreSQL deployments use two identities. `kaya_bootstrap` is the
+private setup/backup identity created by the PostgreSQL bootstrap process;
+`kaya` is the application identity and is `LOGIN NOSUPERUSER NOCREATEDB
+NOCREATEROLE`. The application and workers receive only the `kaya` secret.
+
+On startup, PostgreSQL becomes healthy, then Kaya checks the existing role
+topology. A legacy volume whose Docker bootstrap user is the superuser
+`kaya` is backed up and verified before the role-topology helper runs. The
+helper creates a persistent bootstrap secret, renames the official cluster
+bootstrap role to `kaya_bootstrap`, creates a constrained `kaya` role using
+the existing application password, transfers only objects in Kaya's `public`
+schema, and preserves database/schema ownership. It never mass-reassigns
+system objects and fails closed for ambiguous ownership or missing backup
+evidence. Normal startup then prepares the schema and starts the application
+and workers.
+
+The two secret files are `postgres_password` and
+`postgres_bootstrap_password` under the configured secret directory. They are
+created once with mode `0600` and are not printed or placed in command-line
+arguments. Losing the bootstrap secret requires the documented operator
+secret-recovery procedure; routinely making `kaya` superuser is not a
+supported recovery action. Database archives do not recreate cluster roles,
+so a restore must run the normal role-topology bootstrap before Kaya starts.
+
+### Validation cleanup isolation and the deleted Phase 6 secret volume
+
+Disposable Phase 12 validation resources use a run-scoped
+`kaya_phase12...` project name, rendered-Compose preflight, Docker project and
+validation labels, and a recorded resource manifest. Cleanup first removes
+the project containers without `-v`, then removes only manifest entries whose
+names and labels prove current-run ownership. Fixed names such as
+`kaya_phase6_postgres_secret`, `kaya_postgres_data`, and
+`kaya_postgres_secret` are rejected before startup. Unknown or label-mismatched
+resources are left in place and reported.
+
+The earlier Phase 12 incident removed `kaya_phase6_postgres_secret` because an
+early CI overlay left the base fixed-name secret mount active and a project
+cleanup used `docker compose ... down -v`. That volume was the deployment/
+Phase 6 secret store for `postgres_password` (and, in the current topology,
+the bootstrap secret file); it was not a database volume. No secret value is
+reconstructed here. If an actual supported deployment still needs the volume,
+an operator must retrieve the original secret from an authorized surviving
+mount or backup, or perform the documented credential-rotation procedure with
+explicit approval. Regenerating a random file may invalidate PostgreSQL
+authentication and is not an automatic recovery action. The current running
+local Kaya container was verified not to mount that volume.

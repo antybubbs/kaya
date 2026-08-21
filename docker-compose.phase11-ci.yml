@@ -14,9 +14,17 @@ services:
     image: ${PHASE11_POSTGRES_IMAGE:?PHASE11_POSTGRES_IMAGE is required}
 
   postgres-role-init:
+    image: ${KAYA_IMAGE}
+    volumes: !override
+      - postgres_secret:/run/kaya-secrets:ro
+      - ${PHASE11_ROOT}/backups:/var/backups/kaya-postgres:ro
+
+  postgres-role-migration-backup:
     image: ${PHASE11_POSTGRES_IMAGE}
     volumes: !override
       - postgres_secret:/run/kaya-secrets:ro
+      - ${PHASE11_ROOT}/backups:/var/backups/kaya-postgres
+      - ./scripts/kaya_postgres_backup_worker.sh:/usr/local/bin/kaya_postgres_backup_worker.sh:ro
 
   postgres-backup:
     image: ${PHASE11_POSTGRES_IMAGE}
@@ -25,6 +33,7 @@ services:
       POSTGRES_DB: kaya
       POSTGRES_USER: kaya
       KAYA_POSTGRES_ADMIN_USER: kaya_bootstrap
+      KAYA_POSTGRES_ADMIN_PASSWORD_FILE: /run/kaya-secrets/postgres_bootstrap_password
       POSTGRES_PASSWORD_FILE: /run/kaya-secrets/postgres_password
       PGHOST: postgres
       KAYA_POSTGRES_BACKUP_RETENTION: "20"

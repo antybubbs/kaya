@@ -9,6 +9,7 @@ DB_USER="${POSTGRES_USER:-kaya}"
 ADMIN_USER="${KAYA_POSTGRES_ADMIN_USER:-}"
 export PGHOST="${PGHOST:-postgres}"
 PASSWORD_FILE="${POSTGRES_PASSWORD_FILE:-/run/kaya-secrets/postgres_password}"
+ADMIN_PASSWORD_FILE="${KAYA_POSTGRES_ADMIN_PASSWORD_FILE:-$PASSWORD_FILE}"
 RETENTION="${KAYA_POSTGRES_BACKUP_RETENTION:-7}"
 KAYA_VERSION="${KAYA_VERSION:-unknown}"
 KAYA_BUILD_SHA="${KAYA_BUILD_SHA:-unknown}"
@@ -17,7 +18,13 @@ BACKUP_PURPOSE="${KAYA_POSTGRES_BACKUP_PURPOSE:-manual}"
 die() { echo "kaya-postgres-backup: $*" >&2; exit 1; }
 admin_psql() {
   [[ -n "$ADMIN_USER" ]] || die "KAYA_POSTGRES_ADMIN_USER is required for database lifecycle operations"
+  local previous_password="${PGPASSWORD:-}"
+  if [[ -r "$ADMIN_PASSWORD_FILE" ]]; then
+    PGPASSWORD="$(<"$ADMIN_PASSWORD_FILE")"
+    export PGPASSWORD
+  fi
   psql --username="$ADMIN_USER" "$@"
+  if [[ -n "$previous_password" ]]; then PGPASSWORD="$previous_password"; export PGPASSWORD; else unset PGPASSWORD; fi
 }
 cleanup_backup_tmp() {
   if [[ -n "${tmp_cleanup:-}" ]]; then rm -f -- "$tmp_cleanup"; fi
@@ -58,7 +65,11 @@ backup() {
   tmp_cleanup="$tmp"
   trap cleanup_backup_tmp EXIT
   (umask 077; pg_dump --format=custom --no-owner --no-privileges --file="$tmp" --username="$DB_USER" --dbname="$DB_NAME")
-  revision="$(psql --username="$DB_USER" --dbname="$DB_NAME" --tuples-only --no-align --command="SELECT COALESCE((SELECT version_num FROM alembic_version LIMIT 1), 'unknown');" | tr -d '[:space:]')"
+  if psql --username="$DB_USER" --dbname="$DB_NAME" --tuples-only --no-align --command="SELECT to_regclass('public.alembic_version') IS NOT NULL;" | tr -d '[:space:]' | grep -qx t; then
+    revision="$(psql --username="$DB_USER" --dbname="$DB_NAME" --tuples-only --no-align --command="SELECT COALESCE((SELECT version_num FROM public.alembic_version LIMIT 1), 'unknown');" | tr -d '[:space:]')"
+  else
+    revision="unknown"
+  fi
   postgres_version="$(psql --username="$DB_USER" --dbname="$DB_NAME" --tuples-only --no-align --command="SELECT replace(replace(version(), chr(10), ' '), chr(13), ' ');" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
   [[ "$revision" != "unknown" && -n "$revision" && -n "$postgres_version" ]] || die "database revision or PostgreSQL version metadata is unavailable"
   mv -- "$tmp" "$archive"

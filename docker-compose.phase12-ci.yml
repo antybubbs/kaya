@@ -1,0 +1,153 @@
+# Disposable Phase 12 overlay. All resources are project-scoped by the workflow.
+services:
+  guacd:
+    container_name: ${PHASE12_PROJECT}_guacd
+    labels:
+      com.kaya.validation.phase: "12"
+      com.kaya.validation.disposable: "true"
+
+  postgres-secret-init:
+    image: ${PHASE12_APP_IMAGE}
+    labels:
+      com.kaya.validation.phase: "12"
+      com.kaya.validation.disposable: "true"
+    volumes: !override
+      - type: volume
+        source: postgres_secret
+        target: /run/kaya-secrets
+      - type: bind
+        source: ${PHASE12_ROOT}/secrets
+        target: /run/kaya-host-secrets
+        read_only: true
+
+  postgres:
+    image: ${PHASE12_POSTGRES_IMAGE:?PHASE12_POSTGRES_IMAGE is required}
+    labels:
+      com.kaya.validation.phase: "12"
+      com.kaya.validation.disposable: "true"
+    volumes: !override
+      - type: volume
+        source: postgres_data
+        target: /var/lib/postgresql/data
+      - type: volume
+        source: postgres_secret
+        target: /run/kaya-secrets
+        read_only: true
+      - type: bind
+        source: ${PHASE12_ROOT}/backups
+        target: /var/backups/kaya-postgres
+
+  kaya:
+    image: ${PHASE12_APP_IMAGE:?PHASE12_APP_IMAGE is required}
+    container_name: ${PHASE12_PROJECT}_kaya
+    labels:
+      com.kaya.validation.phase: "12"
+      com.kaya.validation.disposable: "true"
+    ports: !override []
+    environment:
+      POSTGRES_BACKUP_DIR: /var/backups/kaya-postgres
+    volumes: !override
+      - type: bind
+        source: ${PHASE12_ROOT:?PHASE12_ROOT is required}/data
+        target: /app/data
+      - type: bind
+        source: ${PHASE12_ROOT}/uploads
+        target: /app/uploads
+      - type: bind
+        source: ${PHASE12_ROOT}/data/remote-recordings
+        target: /app/data/remote-recordings
+      - type: bind
+        source: ${PHASE12_ROOT}/backups
+        target: /var/backups/kaya-postgres
+        read_only: true
+      - type: volume
+        source: postgres_secret
+        target: /run/kaya-secrets
+        read_only: true
+
+  secure-send-gateway:
+    image: ${PHASE12_APP_IMAGE}
+    container_name: ${PHASE12_PROJECT}_secure_send
+    labels:
+      com.kaya.validation.phase: "12"
+      com.kaya.validation.disposable: "true"
+    ports: !override []
+    volumes: !override
+      - type: bind
+        source: ${PHASE12_ROOT}/data
+        target: /app/data
+      - type: volume
+        source: postgres_secret
+        target: /run/kaya-secrets
+        read_only: true
+
+  postgres-role-init:
+    image: ${PHASE12_APP_IMAGE:?PHASE12_APP_IMAGE is required}
+    labels:
+      com.kaya.validation.phase: "12"
+      com.kaya.validation.disposable: "true"
+    volumes: !override
+      - type: volume
+        source: postgres_secret
+        target: /run/kaya-secrets
+        read_only: true
+      - type: bind
+        source: ${PHASE12_ROOT}/backups
+        target: /var/backups/kaya-postgres
+        read_only: true
+
+  postgres-role-migration-backup:
+    image: ${PHASE12_POSTGRES_IMAGE}
+    labels:
+      com.kaya.validation.phase: "12"
+      com.kaya.validation.disposable: "true"
+    volumes: !override
+      - type: volume
+        source: postgres_secret
+        target: /run/kaya-secrets
+        read_only: true
+      - type: bind
+        source: ${PHASE12_ROOT}/backups
+        target: /var/backups/kaya-postgres
+      - type: bind
+        source: ./scripts/kaya_postgres_backup_worker.sh
+        target: /usr/local/bin/kaya_postgres_backup_worker.sh
+        read_only: true
+
+  postgres-backup:
+    image: ${PHASE12_POSTGRES_IMAGE}
+    labels:
+      com.kaya.validation.phase: "12"
+      com.kaya.validation.disposable: "true"
+    profiles: [phase12-ops]
+    environment:
+      POSTGRES_DB: kaya
+      POSTGRES_USER: kaya
+      KAYA_POSTGRES_ADMIN_USER: kaya_bootstrap
+      KAYA_POSTGRES_ADMIN_PASSWORD_FILE: /run/kaya-secrets/postgres_bootstrap_password
+      POSTGRES_PASSWORD_FILE: /run/kaya-secrets/postgres_password
+      PGHOST: postgres
+    entrypoint: ["/bin/bash", "/usr/local/bin/kaya_postgres_backup_worker.sh"]
+    command: ["backup"]
+    volumes:
+      - ${PHASE12_ROOT}/backups:/var/backups/kaya-postgres
+      - postgres_secret:/run/kaya-secrets:ro
+      - ./scripts/kaya_postgres_backup_worker.sh:/usr/local/bin/kaya_postgres_backup_worker.sh:ro
+
+volumes:
+  postgres_data:
+    name: ${PHASE12_PROJECT}_postgres_data
+    labels:
+      com.kaya.validation.phase: "12"
+      com.kaya.validation.disposable: "true"
+  postgres_secret:
+    name: ${PHASE12_PROJECT}_postgres_secret
+    labels:
+      com.kaya.validation.phase: "12"
+      com.kaya.validation.disposable: "true"
+
+networks:
+  default:
+    labels:
+      com.kaya.validation.phase: "12"
+      com.kaya.validation.disposable: "true"

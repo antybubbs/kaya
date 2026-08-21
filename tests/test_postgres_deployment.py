@@ -1,6 +1,23 @@
+import hashlib
+import json
+import sys
+import types
 from pathlib import Path
 
 from app.core.config import redact_database_url
+
+
+def _role_topology_module(monkeypatch):
+    import importlib.util
+
+    monkeypatch.setitem(sys.modules, "psycopg", types.SimpleNamespace(connect=None))
+    spec = importlib.util.spec_from_file_location(
+        "kaya_postgres_role_topology", "scripts/kaya_postgres_role_topology.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_postgresql_url_redaction_removes_password_and_preserves_identity():
@@ -41,10 +58,100 @@ def test_primary_compose_separates_bootstrap_and_runtime_postgres_roles():
 
     assert "POSTGRES_USER: kaya_bootstrap" in compose
     assert "postgres-role-init:" in compose
-    assert "CREATE ROLE kaya LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE" in compose
-    assert "ALTER DATABASE kaya OWNER TO kaya;" in compose
-    assert "ALTER SCHEMA public OWNER TO kaya;" in compose
+    assert "postgres-role-migration-backup:" in compose
+    assert "postgres_bootstrap_password" in compose
+    assert "scripts/kaya_postgres_role_topology.py" in compose
+    assert "KAYA_ROLE_MIGRATION_RUN_ID" in compose
     assert "service_completed_successfully" in compose
+
+
+def test_phase12_role_topology_helper_is_fail_closed_and_scoped():
+    helper = Path("scripts/kaya_postgres_role_topology.py").read_text(encoding="utf-8")
+
+    assert 'APP_ROLE = "kaya"' in helper
+    assert 'BOOTSTRAP_ROLE = "kaya_bootstrap"' in helper
+    assert "KAYA_ROLE_MIGRATION_MARKER" in helper
+    assert "ambiguous or unsafe Kaya PostgreSQL role topology" in helper
+    assert "REASSIGN OWNED" not in helper
+    assert "pg_namespace" in helper
+    assert "public" in helper
+
+
+def test_phase12_backup_marker_is_bound_to_verified_archive(tmp_path, monkeypatch):
+    module = _role_topology_module(monkeypatch)
+    archive = tmp_path / "kaya-20260821T000000Z.dump"
+    archive.write_bytes(b"synthetic disposable archive")
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    metadata = {
+        "verification_state": "verified",
+        "sha256": digest,
+        "alembic_revision": "20260818_02",
+    }
+    archive.with_name(f"{archive.name}.json").write_text(json.dumps(metadata), encoding="utf-8")
+    archive.with_name(f"{archive.name}.sha256").write_text(f"{digest}  {archive}\n", encoding="utf-8")
+    marker = tmp_path / ".role-migration-backup-verified"
+    marker.write_text(
+        json.dumps(
+            {
+                "archive": archive.name,
+                "sha256": digest,
+                "archive_bytes": archive.stat().st_size,
+                "source_database": "kaya",
+                "source_role": "kaya",
+                "alembic_revision": "20260818_02",
+                "backup_purpose": "pre_role_topology_migration",
+                "run_id": "test-run",
+            }
+        ),
+        encoding="utf-8",
+    )
+    marker.chmod(0o600)
+    monkeypatch.setattr(module.stat, "S_IMODE", lambda _mode: 0)
+    monkeypatch.setenv("KAYA_ROLE_MIGRATION_RUN_ID", "test-run")
+    module.verify_backup_marker(marker)
+    archive.write_bytes(b"tampered")
+    try:
+        module.verify_backup_marker(marker)
+    except RuntimeError as exc:
+        assert "not bound" in str(exc)
+    else:
+        raise AssertionError("tampered archive was accepted")
+
+
+def test_phase12_acceptance_matrix_fails_closed_for_unexecuted_rows():
+    evidence = Path("scripts/phase12_acceptance_evidence.py").read_text(encoding="utf-8")
+
+    assert 'dict.fromkeys(SCENARIOS, "BLOCKED")' in evidence
+    assert "PHASE12_PASS_ROWS" in evidence
+
+
+def test_phase12_legacy_overlay_uses_historical_postgres_bootstrap_user():
+    overlay = Path("docker-compose.phase12-legacy-ci.yml").read_text(encoding="utf-8")
+
+    assert "POSTGRES_USER: kaya" in overlay
+    assert "POSTGRES_PASSWORD_FILE: /run/kaya-secrets/postgres_password" in overlay
+    assert "kaya_bootstrap" not in overlay
+
+
+def test_phase12_backup_worker_separates_admin_and_runtime_passwords():
+    worker = Path("scripts/kaya_postgres_backup_worker.sh").read_text(encoding="utf-8")
+
+    assert 'ADMIN_PASSWORD_FILE="${KAYA_POSTGRES_ADMIN_PASSWORD_FILE:-$PASSWORD_FILE}"' in worker
+    assert "admin_psql" in worker
+    compose = Path("docker-compose.yml").read_text(encoding="utf-8")
+    assert "legacy superuser role was not confirmed" in compose
+    assert "backup evidence is incomplete" in compose
+    assert '"sha256"' in compose
+
+
+def test_phase12_overlay_isolates_all_persistent_postgres_mounts():
+    overlay = Path("docker-compose.phase12-ci.yml").read_text(encoding="utf-8")
+
+    assert "postgres-secret-init:" in overlay
+    assert "source: postgres_data" in overlay
+    assert "source: postgres_secret" in overlay
+    assert "container_name: ${PHASE12_PROJECT}_kaya" in overlay
+    assert "ports: !override []" in overlay
 
 
 def test_phase11_backup_lifecycle_uses_admin_role_without_granting_app_createdb():

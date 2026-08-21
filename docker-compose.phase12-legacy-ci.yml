@@ -1,0 +1,10 @@
+# Historical disposable fixture: PostgreSQL initializes with kaya as the
+# Docker-created cluster bootstrap role. This overlay is Phase 12 only.
+services:
+  postgres:
+    environment:
+      POSTGRES_DB: kaya
+      POSTGRES_USER: kaya
+      POSTGRES_PASSWORD_FILE: /run/kaya-secrets/postgres_password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kaya -d kaya"]
