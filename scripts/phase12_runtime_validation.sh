@@ -11,6 +11,13 @@ export PHASE12_PROJECT PHASE12_ROOT PHASE12_POSTGRES_IMAGE PHASE12_APP_IMAGE
 export KAYA_ROLE_MIGRATION_RUN_ID="$PHASE12_PROJECT"
 python scripts/phase12_acceptance_evidence.py --output phase12_acceptance.json >/dev/null || true
 compose=(docker compose -p "$PHASE12_PROJECT" -f docker-compose.yml -f docker-compose.phase12-ci.yml -f docker-compose.phase12-legacy-ci.yml)
+fresh_project="${PHASE12_PROJECT}_fresh"
+fresh_root="${PHASE12_ROOT}-fresh"
+fresh_compose() {
+  PHASE12_PROJECT="$fresh_project" PHASE12_ROOT="$fresh_root" PHASE12_POSTGRES_IMAGE="$PHASE12_POSTGRES_IMAGE" \
+    PHASE12_APP_IMAGE="$PHASE12_APP_IMAGE" PHASE12_HTTP_PORT="${PHASE12_HTTP_PORT:-18132}" \
+    docker compose -p "$fresh_project" -f docker-compose.yml -f docker-compose.phase12-ci.yml "$@"
+}
 manifest="phase12_resources.json"
 config_json="phase12_compose_config.json"
 stage=initialization
@@ -24,6 +31,8 @@ cleanup() {
     python scripts/kaya_validation_resources.py cleanup --manifest "$manifest"
   fi
   python scripts/kaya_validation_resources.py cleanup-compose --project "$PHASE12_PROJECT" >/dev/null 2>&1 || true
+  fresh_compose down >/dev/null 2>&1 || true
+  python scripts/kaya_validation_resources.py cleanup-compose --project "$fresh_project" >/dev/null 2>&1 || true
   # Phase 12A is the authoritative protected-resource cleanup probe.  Run it
   # only after the role-topology stack has been torn down, and record row 63
   # only when its disposable-resource and protected-sentinel assertions pass.
@@ -73,6 +82,15 @@ resources="$(python scripts/kaya_validation_resources.py validate-config --proje
 printf '%s\n' "$resources" > phase12_resources_discovered.json
 python scripts/kaya_validation_resources.py record --project "$PHASE12_PROJECT" --resources phase12_resources_discovered.json --manifest "$manifest"
 stage=runtime_resources
+mkdir -p "$fresh_root"/{data,uploads,backups,secrets}
+fresh_compose up -d --wait --wait-timeout 120
+fresh_role_probe="$(fresh_compose exec -T postgres psql -U kaya_bootstrap -d kaya -Atc \
+  "SELECT (SELECT rolsuper FROM pg_roles WHERE rolname='kaya_bootstrap'), (SELECT rolsuper FROM pg_roles WHERE rolname='kaya'), (SELECT rolcanlogin FROM pg_roles WHERE rolname='kaya'), (SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname='kaya'), (SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname='public')" | tr -d '\r')"
+[[ "$fresh_role_probe" == "t|f|t|kaya|pg_database_owner" || "$fresh_role_probe" == "t|f|t|kaya|kaya" ]]
+record_pass 1 '{"topology":"fresh bootstrap and constrained runtime roles"}'
+record_pass 2 '{"runtime_role":"kaya","rolsuper":false}'
+record_pass 3 '{"database_owner":"kaya","schema_owner":"pg_database_owner or kaya"}'
+fresh_compose down >/dev/null
 "${compose[@]}" up -d --wait --wait-timeout 120 postgres-secret-init postgres
 resources_created=true
 stage=legacy_schema_fixture
