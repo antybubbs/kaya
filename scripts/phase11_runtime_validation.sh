@@ -65,8 +65,7 @@ wait_ready() {
 }
 
 start_stack() {
-    compose up -d >/dev/null && wait_ready && \
-        compose exec -T postgres psql -U kaya -d postgres -c 'ALTER ROLE kaya NOSUPERUSER;' >/dev/null
+    compose up -d >/dev/null && wait_ready
 }
 setup_token() { compose exec -T kaya sh -c "sed -n 's/^SETUP_TOKEN=//p' /app/data/.runtime.env" | tr -d '\r'; }
 smoke() { PHASE7D_HTTP_BASE="http://127.0.0.1:$PORT" KAYA_SETUP_TOKEN="$(setup_token)" python "$ROOT_DIR/scripts/phase7d_http_smoke.py"; }
@@ -116,7 +115,7 @@ role_privileges() {
 locale_inventory() { compose exec -T postgres psql -U kaya -d kaya -Atc "SELECT pg_encoding_to_char(encoding), datcollate, datctype, datlocprovider FROM pg_database WHERE datname=current_database();" | grep -q '|'; }
 extension_inventory() { compose exec -T postgres psql -U kaya -d kaya -Atc 'SELECT extname FROM pg_extension ORDER BY extname;' | grep -q plpgsql; }
 sequence_validation() { compose exec -T postgres psql -U kaya -d kaya -Atc "INSERT INTO audit_logs (action, entity, entity_id, detail, category, severity, status_code, capture_tier, created_at) VALUES ('phase11.sequence','test','synthetic','synthetic','activity','info',200,'standard',CURRENT_TIMESTAMP) RETURNING id;" | tr -d '\r' | grep -Eq '^[1-9][0-9]*$'; }
-representative_data() { compose exec -T postgres psql -U kaya -d kaya -c "INSERT INTO hardware_assets (asset_tag, name, status) VALUES ('PHASE11-SYNTHETIC', 'Phase 11 synthetic asset', 'In use') ON CONFLICT (asset_tag) DO NOTHING;" >/dev/null && compose exec -T postgres psql -U kaya -d kaya -Atc "SELECT count(*) FROM users" | tr -d '\r' | grep -q '[1-9]'; }
+representative_data() { compose exec -T postgres psql -U kaya -d kaya -c "INSERT INTO hardware_assets (asset_tag, name, status, created_at, updated_at) VALUES ('PHASE11-SYNTHETIC', 'Phase 11 synthetic asset', 'In use', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) ON CONFLICT (asset_tag) DO NOTHING;" >/dev/null && compose exec -T postgres psql -U kaya -d kaya -Atc "SELECT count(*) FROM users" | tr -d '\r' | grep -q '[1-9]'; }
 post_write() { compose exec -T postgres psql -U kaya -d kaya -c "INSERT INTO audit_logs (action, entity, entity_id, detail, category, severity, status_code, capture_tier, created_at) VALUES ('phase11.post_upgrade','test','synthetic','synthetic','activity','info',200,'standard',CURRENT_TIMESTAMP);" >/dev/null; }
 worker_write() {
     compose exec -T -e PYTHONPATH=/app \

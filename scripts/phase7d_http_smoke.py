@@ -73,6 +73,8 @@ class Client:
         status, _, body = self.request("GET", "/setup")
         if status not in {200, 303}:
             raise AssertionError(f"GET /setup returned {status}")
+        if status == 303:
+            return
         if not setup_token:
             return
         csrf = self.csrf(body)
