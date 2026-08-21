@@ -6,7 +6,7 @@ services:
       - ${KAYA_POSTGRES_BACKUP_DIR:-./postgres-backups}:/var/backups/kaya-postgres:ro
 
   postgres-backup:
-    image: postgres:16.14
+    image: ${KAYA_POSTGRES_IMAGE:-postgres:16.14}
     profiles: [postgres-ops]
     restart: unless-stopped
     environment:

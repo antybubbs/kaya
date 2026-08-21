@@ -239,6 +239,18 @@ It deliberately excludes connection strings, usernames, passwords, backup
 contents, and query values. `/healthz` remains a liveness check; database
 readiness is exercised by the existing DB-backed application smoke path.
 
+### PostgreSQL 16 patch upgrades
+
+PostgreSQL patch upgrades are a separate operation from Kaya application
+updates, legacy SQLite migration and future PostgreSQL major upgrades. The
+production image is explicitly pinned to `postgres:16.14`. Follow the
+[PostgreSQL 16 patch-upgrade runbook](postgresql-patch-upgrade.md), create and
+verify a `pre_postgres_upgrade` backup, and run the read-only preflight before
+changing the image. Do not use `docker compose down -v`, do not mount a
+PostgreSQL 16 data directory into PostgreSQL 17, and do not assume that
+changing back to an older PostgreSQL binary is a safe rollback. A verified
+backup is the authoritative database rollback mechanism.
+
 The supported architecture is:
 
 ```text

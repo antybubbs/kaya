@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Runs inside a postgres:16.14 container. Passwords are read from a mounted
+# Runs inside the pinned PostgreSQL container. Passwords are read from a mounted
 # secret file and never placed in command arguments or backup metadata.
 BACKUP_DIR="${KAYA_POSTGRES_BACKUP_DIR:-/var/backups/kaya-postgres}"
 DB_NAME="${POSTGRES_DB:-kaya}"
@@ -11,12 +11,14 @@ PASSWORD_FILE="${POSTGRES_PASSWORD_FILE:-/run/kaya-secrets/postgres_password}"
 RETENTION="${KAYA_POSTGRES_BACKUP_RETENTION:-7}"
 KAYA_VERSION="${KAYA_VERSION:-unknown}"
 KAYA_BUILD_SHA="${KAYA_BUILD_SHA:-unknown}"
+BACKUP_PURPOSE="${KAYA_POSTGRES_BACKUP_PURPOSE:-manual}"
 
 die() { echo "kaya-postgres-backup: $*" >&2; exit 1; }
 cleanup_backup_tmp() {
   if [[ -n "${tmp_cleanup:-}" ]]; then rm -f -- "$tmp_cleanup"; fi
 }
 [[ "$RETENTION" =~ ^[1-9][0-9]*$ ]] || die "retention must be a positive integer"
+[[ "$BACKUP_PURPOSE" =~ ^[a-z][a-z0-9_]{0,63}$ ]] || die "backup purpose is invalid"
 [[ -d "$BACKUP_DIR" ]] || die "backup destination does not exist"
 chmod 700 "$BACKUP_DIR" || die "backup destination permissions could not be secured"
 [[ -w "$BACKUP_DIR" ]] || die "backup destination is not writable"
@@ -59,10 +61,11 @@ backup() {
   archive_bytes="$(stat -c '%s' "$archive")"
   (umask 077
     json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
-    printf '{\n  "archive_bytes": %s,\n  "archive_format": "custom",\n  "created_at": "%s",\n  "postgresql_version": "%s",\n  "kaya_version": "%s",\n  "kaya_build_sha": "%s",\n  "sha256": "%s",\n  "alembic_revision": "%s"\n}\n' "$archive_bytes" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(json_escape "$postgres_version")" "$(json_escape "$KAYA_VERSION")" "$(json_escape "$KAYA_BUILD_SHA")" "$digest" "$revision" > "$metadata"
+    printf '{\n  "archive_bytes": %s,\n  "archive_format": "custom",\n  "created_at": "%s",\n  "postgresql_version": "%s",\n  "kaya_version": "%s",\n  "kaya_build_sha": "%s",\n  "backup_purpose": "%s",\n  "verification_state": "pending",\n  "sha256": "%s",\n  "alembic_revision": "%s"\n}\n' "$archive_bytes" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(json_escape "$postgres_version")" "$(json_escape "$KAYA_VERSION")" "$(json_escape "$KAYA_BUILD_SHA")" "$(json_escape "$BACKUP_PURPOSE")" "$digest" "$revision" > "$metadata"
     printf '%s  %s\n' "$digest" "$archive" > "$archive.sha256"
   )
   verify "$archive"
+  sed -i 's/"verification_state": "pending"/"verification_state": "verified"/' "$metadata"
   find "$BACKUP_DIR" -maxdepth 1 -type f -name 'kaya-*.dump' -printf '%T@ %p\n' | sort -nr | awk -v keep="$RETENTION" 'NR > keep {sub(/^[^ ]+ /, ""); print}' | while IFS= read -r old; do rm -f -- "$old" "$old.json" "$old.sha256"; done
   echo "$archive"
 }

@@ -1,0 +1,40 @@
+# Disposable Phase 11 overlay. It changes only image pins, names and mounts.
+services:
+  kaya:
+    environment:
+      POSTGRES_BACKUP_DIR: /var/backups/kaya-postgres
+    volumes: !override
+      - ${PHASE11_ROOT:?PHASE11_ROOT is required}/data:/app/data
+      - ${PHASE11_ROOT}/uploads:/app/uploads
+      - ${PHASE11_ROOT}/data/remote-recordings:/app/data/remote-recordings
+      - ${PHASE11_ROOT}/backups:/var/backups/kaya-postgres:ro
+      - postgres_secret:/run/kaya-secrets:ro
+
+  postgres:
+    image: ${PHASE11_POSTGRES_IMAGE:?PHASE11_POSTGRES_IMAGE is required}
+
+  postgres-backup:
+    image: ${PHASE11_POSTGRES_IMAGE}
+    profiles: [phase11-ops]
+    environment:
+      POSTGRES_DB: kaya
+      POSTGRES_USER: kaya
+      POSTGRES_PASSWORD_FILE: /run/kaya-secrets/postgres_password
+      PGHOST: postgres
+      KAYA_POSTGRES_BACKUP_RETENTION: "20"
+      KAYA_POSTGRES_BACKUP_PURPOSE: ${PHASE11_BACKUP_PURPOSE:-manual}
+    entrypoint: ["/bin/bash", "/usr/local/bin/kaya_postgres_backup_worker.sh"]
+    command: ["backup"]
+    volumes:
+      - ${PHASE11_ROOT}/backups:/var/backups/kaya-postgres
+      - postgres_secret:/run/kaya-secrets:ro
+      - ./scripts/kaya_postgres_backup_worker.sh:/usr/local/bin/kaya_postgres_backup_worker.sh:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+    name: ${PHASE11_PROJECT}_postgres_data
+  postgres_secret:
+    name: ${PHASE11_PROJECT}_postgres_secret

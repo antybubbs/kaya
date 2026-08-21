@@ -27,7 +27,7 @@ def test_postgresql_compose_keeps_database_private_and_password_external():
 def test_primary_compose_uses_postgresql_and_keeps_sqlite_for_controlled_upgrade():
     compose = Path("docker-compose.yml").read_text(encoding="utf-8")
 
-    assert "image: postgres:16.14" in compose
+    assert "image: ${KAYA_POSTGRES_IMAGE:-postgres:16.14}" in compose
     assert "DATABASE_URL: postgresql+psycopg://kaya@postgres:5432/kaya" in compose
     assert "KAYA_SQLITE_SOURCE_URL: sqlite:////app/data/kaya.db" in compose
     assert "kaya_phase6_postgres_secret:/run/kaya-secrets:ro" in compose

@@ -1,15 +1,19 @@
 # Kaya database platform policy
 
 Kaya production uses PostgreSQL major version 16, pinned by the supported
-Compose deployment to `postgres:16.14`. Alembic is the schema authority and
+Compose deployment to `postgres:16.14`. The pin is changed only to an
+explicitly reviewed PostgreSQL 16.x tag after Phase 11 validation. Alembic is
+the schema authority and
 the packaged migration graph must contain exactly one complete head.
 
 Patch upgrades within PostgreSQL 16 are supported only after a verified
-PostgreSQL backup, a controlled stop/start or image replacement, health and
-revision checks, and a representative application smoke test. Production
-Compose remains deterministically pinned; operators upgrade the patch image
-deliberately and retain the previous image only as a rollback option when its
-schema remains compatible.
+PostgreSQL backup, the read-only `kaya_postgres_upgrade.py preflight`, a
+controlled stop/start or image replacement, health and revision checks, and a
+representative application smoke test. Production Compose remains
+deterministically pinned; operators upgrade the patch image deliberately and
+retain the previous image only as a rollback option when its schema remains
+compatible. Verified backup restore, not an assumed binary downgrade, is the
+authoritative database rollback path.
 
 Major upgrades such as PostgreSQL 16 to 17 are a separate future phase. They
 require backup verification, extension review, disposable rehearsal, restore
