@@ -26,6 +26,7 @@ resources_created=false
 
 cleanup() {
   status=$?
+  final_status="$status"
   set +e
   "${compose[@]}" down >/dev/null 2>&1
   if [[ -f "$manifest" ]]; then
@@ -43,6 +44,9 @@ cleanup() {
       --scenario 63 --status PASS \
       --evidence '{"cleanup":"exact disposable resources removed","protected_sentinel":"preserved","unknown_resources":"fail-closed"}' >/dev/null || true
   fi
+  if python scripts/phase12_acceptance_evidence.py --output phase12_acceptance.json >/dev/null; then
+    final_status=0
+  fi
   rm -f -- "$manifest" "$config_json" phase12_resources_discovered.json
   if [[ ! -f phase12_acceptance.json ]]; then
     PHASE12_FAILURE_STAGE="${stage:-unknown}" PHASE12_FAILURE_STATUS="$status" python -c 'import json,os; json.dump({"phase":"12","status":"FAIL","stage":os.environ["PHASE12_FAILURE_STAGE"],"first_failure":"validation stopped before the complete matrix","resources_created":False,"cleanup_status":"attempted"},open("phase12_acceptance.json","w"),indent=2); open("phase12_acceptance.json","a").write(chr(10))'
@@ -50,6 +54,8 @@ cleanup() {
   if [[ ! -f phase12_role_migration_evidence.json ]]; then
     printf '%s\n' '{"status":"FAIL","stage":"evidence_generation","secrets":"not read"}' > phase12_role_migration_evidence.json
   fi
+  trap - EXIT
+  exit "$final_status"
 }
 trap cleanup EXIT
 
