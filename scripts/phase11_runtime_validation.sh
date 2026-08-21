@@ -65,7 +65,9 @@ wait_ready() {
 }
 
 start_stack() {
-    compose up -d >/dev/null && wait_ready
+    compose up -d >/dev/null && wait_ready && \
+        compose exec -T postgres psql -U kaya -d kaya -c \
+        "INSERT INTO remote_manager_settings (key, value, updated_at) VALUES ('high_availability_enabled', '1', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at;" >/dev/null
 }
 setup_token() { compose exec -T kaya sh -c "sed -n 's/^SETUP_TOKEN=//p' /app/data/.runtime.env" | tr -d '\r'; }
 smoke() { PHASE7D_HTTP_BASE="http://127.0.0.1:$PORT" KAYA_SETUP_TOKEN="$(setup_token)" python "$ROOT_DIR/scripts/phase7d_http_smoke.py"; }
@@ -108,8 +110,11 @@ unsupported_major_probe() {
 }
 
 role_privileges() {
-    compose exec -T postgres psql -U kaya -d kaya -Atc \
-        "SELECT rolsuper = false AND has_database_privilege('kaya', current_database(), 'CONNECT') AND has_schema_privilege('kaya', 'public', 'USAGE') FROM pg_roles WHERE rolname='kaya';" | tr -d '\r' | grep -qx true
+    local probe
+    probe="$(compose exec -T postgres psql -U kaya -d kaya -Atc \
+        "SELECT (rolsuper = false AND has_database_privilege('kaya', current_database(), 'CONNECT') AND has_schema_privilege('kaya', 'public', 'USAGE')) || '|' || rolsuper || '|' || has_database_privilege('kaya', current_database(), 'CONNECT') || '|' || has_schema_privilege('kaya', 'public', 'USAGE') FROM pg_roles WHERE rolname='kaya';" | tr -d '\r')"
+    echo "role privilege probe=$probe"
+    [[ "$probe" == "t|f|t|t" ]]
 }
 
 locale_inventory() { compose exec -T postgres psql -U kaya -d kaya -Atc "SELECT pg_encoding_to_char(encoding), datcollate, datctype, datlocprovider FROM pg_database WHERE datname=current_database();" | grep -q '|'; }
@@ -130,7 +135,8 @@ retained_sqlite() { sha256sum "$ROOT/data/retained-legacy.sqlite3" | awk '{print
 restore_app() {
     local archive="$1" container="${PROJECT}_restore_app" target="kaya_phase11_restore"
     compose exec -T postgres psql -U kaya -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS $target; CREATE DATABASE $target OWNER kaya;" >/dev/null
-    compose --profile phase11-ops run --rm --no-deps --entrypoint pg_restore postgres-backup --exit-on-error --no-owner --no-privileges -U kaya -d "$target" "/var/backups/kaya-postgres/$archive"
+    compose --profile phase11-ops run --rm --no-deps --entrypoint bash postgres-backup -c \
+        "export PGPASSWORD=\"\$(<\"\$POSTGRES_PASSWORD_FILE\")\"; pg_restore --exit-on-error --no-owner --no-privileges -U kaya -d \"$target\" \"/var/backups/kaya-postgres/$archive\""
     docker rm -f "$container" >/dev/null 2>&1 || true
     docker run -d --name "$container" --network "${PROJECT}_default" -p "$((PORT + 1)):8080" \
         -e DATABASE_URL="postgresql+psycopg://kaya@postgres:5432/$target" \
