@@ -174,7 +174,7 @@ def migrate_cluster_bootstrap_role(conn, app_password: str, bootstrap_password: 
                     item record;
                 BEGIN
                     FOR item IN
-                        SELECT c.relkind, n.nspname, c.relname
+                        SELECT c.oid AS relid, c.relkind, n.nspname, c.relname
                         FROM pg_class c
                         JOIN pg_namespace n ON n.oid = c.relnamespace
                         WHERE c.relowner = 'kaya_bootstrap'::regrole
@@ -183,7 +183,15 @@ def migrate_cluster_bootstrap_role(conn, app_password: str, bootstrap_password: 
                         IF item.relkind IN ('r', 'p', 'f') THEN
                             EXECUTE format('ALTER TABLE %I.%I OWNER TO kaya', item.nspname, item.relname);
                         ELSIF item.relkind = 'S' THEN
-                            EXECUTE format('ALTER SEQUENCE %I.%I OWNER TO kaya', item.nspname, item.relname);
+                            IF NOT EXISTS (
+                                SELECT 1
+                                FROM pg_depend
+                                WHERE classid = 'pg_class'::regclass
+                                  AND objid = item.relid
+                                  AND deptype = 'a'
+                            ) THEN
+                                EXECUTE format('ALTER SEQUENCE %I.%I OWNER TO kaya', item.nspname, item.relname);
+                            END IF;
                         ELSIF item.relkind IN ('v', 'm') THEN
                             EXECUTE format('ALTER %s %I.%I OWNER TO kaya',
                                            CASE WHEN item.relkind = 'v' THEN 'VIEW' ELSE 'MATERIALIZED VIEW' END,
