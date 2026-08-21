@@ -155,6 +155,12 @@ def test_phase12_overlay_isolates_all_persistent_postgres_mounts():
     assert "ports: !override []" in overlay
 
 
+def test_phase12_runtime_starts_application_without_rerunning_legacy_backup():
+    script = Path("scripts/phase12_runtime_validation.sh").read_text(encoding="utf-8")
+
+    assert 'up -d --no-deps kaya' in script
+
+
 def test_phase11_backup_lifecycle_uses_admin_role_without_granting_app_createdb():
     compose = Path("docker-compose.phase11-ci.yml").read_text(encoding="utf-8")
     worker = Path("scripts/kaya_postgres_backup_worker.sh").read_text(encoding="utf-8")

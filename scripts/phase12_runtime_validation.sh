@@ -48,7 +48,11 @@ stage=role_migration
 "${compose[@]}" up --abort-on-container-exit --exit-code-from postgres-role-migration-backup postgres-role-migration-backup
 "${compose[@]}" up --abort-on-container-exit --exit-code-from postgres-role-init postgres-role-init
 stage=application_start
-"${compose[@]}" up -d kaya
+# The dependency chain intentionally includes the pre-migration backup and
+# role-init services.  They have already run successfully; re-evaluating that
+# chain after kaya is demoted would rerun the legacy-only backup and fail
+# closed.  PostgreSQL and the role topology are already healthy here.
+"${compose[@]}" up -d --no-deps kaya
 
 role_json="$(${compose[@]} run --rm --no-deps postgres-role-init 2>/dev/null || true)"
 test -n "$role_json"
