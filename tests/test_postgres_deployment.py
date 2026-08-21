@@ -187,6 +187,9 @@ def test_phase12_runtime_validates_workflow_and_exact_cleanup():
     script = Path("scripts/phase12_runtime_validation.sh").read_text(encoding="utf-8")
 
     assert "workflow_dispatch:" in Path(".github/workflows/phase12-runtime.yml").read_text(encoding="utf-8")
+    workflow = Path(".github/workflows/phase12-runtime.yml").read_text(encoding="utf-8")
+    assert "cancel-in-progress: false" in workflow
+    assert "GITHUB_RUN_ID % 1000" in workflow
     assert "record_pass 62" in script
     assert "phase12a_cleanup_validation.sh" in script
     assert "--scenario 63 --status PASS" in script

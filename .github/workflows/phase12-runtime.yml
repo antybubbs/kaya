@@ -32,6 +32,9 @@ jobs:
     name: Disposable Phase 12 role-topology migration matrix
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    concurrency:
+      group: phase12-runtime-${{ github.ref }}
+      cancel-in-progress: false
     env:
       PHASE12_PROJECT: kaya_phase12_${{ github.run_id }}_${{ github.run_attempt }}
       PHASE12_ROOT: ./phase12-data
@@ -42,6 +45,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build disposable application image
         run: docker build --file Dockerfile --tag "$PHASE12_APP_IMAGE" .
+      - name: Select run-scoped HTTP port
+        run: echo "PHASE12_HTTP_PORT=$((18000 + GITHUB_RUN_ID % 1000))" >> "$GITHUB_ENV"
       - name: Run Phase 12 validation
         run: bash scripts/phase12_runtime_validation.sh
       - name: Upload redacted evidence
