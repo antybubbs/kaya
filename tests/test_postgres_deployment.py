@@ -79,6 +79,13 @@ def test_phase12_role_topology_helper_is_fail_closed_and_scoped():
     assert "public" in helper
 
 
+def test_phase12_partial_role_recovery_does_not_parameterize_ddl_password():
+    helper = Path("scripts/kaya_postgres_role_topology.py").read_text(encoding="utf-8")
+
+    assert "ALTER ROLE %%I LOGIN SUPERUSER CREATEDB CREATEROLE PASSWORD %%L" in helper
+    assert 'ALTER ROLE kaya_bootstrap LOGIN SUPERUSER CREATEDB CREATEROLE PASSWORD %s' not in helper
+
+
 def test_phase12_backup_marker_is_bound_to_verified_archive(tmp_path, monkeypatch):
     module = _role_topology_module(monkeypatch)
     archive = tmp_path / "kaya-20260821T000000Z.dump"

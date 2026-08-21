@@ -345,7 +345,11 @@ def main() -> int:
                     repair_role_sql(bootstrap_conn)
             else:
                 with admin.cursor() as cur:
-                    cur.execute("ALTER ROLE kaya_bootstrap LOGIN SUPERUSER CREATEDB CREATEROLE PASSWORD %s", (bootstrap_password,))
+                    cur.execute(
+                        "SELECT format('ALTER ROLE %%I LOGIN SUPERUSER CREATEDB CREATEROLE PASSWORD %%L', %s::text, %s::text)",
+                        (BOOTSTRAP_ROLE, bootstrap_password),
+                    )
+                    cur.execute(cur.fetchone()[0])
                 admin.commit()
                 with connect(BOOTSTRAP_ROLE, bootstrap_password) as bootstrap_conn:
                     repair_role_sql(bootstrap_conn)
