@@ -45,7 +45,8 @@ resources_created=true
 stage=legacy_schema_fixture
 "${compose[@]}" run --rm --no-deps kaya true
 stage=role_migration
-"${compose[@]}" up --abort-on-container-exit --exit-code-from postgres-role-init postgres-role-migration-backup postgres-role-init
+"${compose[@]}" up --abort-on-container-exit --exit-code-from postgres-role-migration-backup postgres-role-migration-backup
+"${compose[@]}" up --abort-on-container-exit --exit-code-from postgres-role-init postgres-role-init
 stage=application_start
 "${compose[@]}" up -d kaya
 
