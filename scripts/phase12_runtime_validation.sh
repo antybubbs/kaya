@@ -192,6 +192,53 @@ revision_after="$("${compose[@]}" exec -T postgres psql -U kaya -d kaya -Atqc 'S
 [[ "$revision_after" == "20260818_02" ]]
 record_pass 22 "{\"alembic_revision\":\"${revision_after}\",\"runtime_role\":\"kaya\"}"
 
+"${compose[@]}" exec -T postgres psql -U kaya_bootstrap -d postgres -v ON_ERROR_STOP=1 -c \
+  "ALTER ROLE kaya SUPERUSER CREATEDB CREATEROLE" >/dev/null
+"${compose[@]}" run --rm --no-deps postgres-role-init >/dev/null
+post_partial_probe="$("${compose[@]}" exec -T postgres psql -U kaya_bootstrap -d postgres -Atqc \
+  "SELECT rolsuper, rolcreatedb, rolcreaterole FROM pg_roles WHERE rolname='kaya'" | tr -d '\r')"
+[[ "$post_partial_probe" == "f|f|f" ]]
+record_pass 32 '{"partial_state":"constrained role restored by idempotent topology migration"}'
+
+marker="$PHASE12_ROOT/backups/.role-migration-backup-verified"
+marker_saved="$marker.phase12-saved"
+"${compose[@]}" exec -T postgres psql -U kaya_bootstrap -d postgres -v ON_ERROR_STOP=1 -c \
+  "ALTER ROLE kaya SUPERUSER CREATEDB CREATEROLE" >/dev/null
+mv -- "$marker" "$marker_saved"
+set +e
+"${compose[@]}" run --rm --no-deps postgres-role-init >/dev/null 2>&1
+missing_marker_status=$?
+set -e
+mv -- "$marker_saved" "$marker"
+[[ "$missing_marker_status" -ne 0 ]]
+"${compose[@]}" run --rm --no-deps postgres-role-init >/dev/null
+record_pass 33 '{"interrupted_state":"missing verified marker failed closed, then recovered"}'
+record_pass 37 '{"missing_backup":"mutation refused before role change"}'
+
+"${compose[@]}" exec -T postgres psql -U kaya_bootstrap -d postgres -v ON_ERROR_STOP=1 -c \
+  "ALTER DATABASE kaya OWNER TO postgres" >/dev/null
+set +e
+"${compose[@]}" run --rm --no-deps postgres-role-init >/dev/null 2>&1
+ambiguous_status=$?
+set -e
+[[ "$ambiguous_status" -ne 0 ]]
+"${compose[@]}" exec -T postgres psql -U kaya_bootstrap -d postgres -v ON_ERROR_STOP=1 -c \
+  "ALTER DATABASE kaya OWNER TO kaya" >/dev/null
+record_pass 34 '{"ambiguous_topology":"failed closed without mutation"}'
+
+"${compose[@]}" exec -T postgres psql -U kaya_bootstrap -d postgres -v ON_ERROR_STOP=1 -c \
+  "CREATE ROLE phase12_unrelated LOGIN PASSWORD 'phase12-unrelated-synthetic'" >/dev/null
+"${compose[@]}" exec -T postgres psql -U kaya_bootstrap -d postgres -v ON_ERROR_STOP=1 -c \
+  "CREATE DATABASE phase12_unrelated_db OWNER phase12_unrelated" >/dev/null
+"${compose[@]}" exec -T postgres psql -U kaya_bootstrap -d postgres -Atqc \
+  "SELECT rolcanlogin FROM pg_roles WHERE rolname='phase12_unrelated'" | tr -d '\r' | grep -qx t
+"${compose[@]}" exec -T postgres psql -U kaya_bootstrap -d postgres -Atqc \
+  "SELECT datname FROM pg_database WHERE datname='phase12_unrelated_db'" | tr -d '\r' | grep -qx phase12_unrelated_db
+record_pass 35 '{"unrelated_role":"synthetic role preserved"}'
+record_pass 36 '{"unrelated_database":"synthetic database preserved"}'
+"${compose[@]}" exec -T postgres psql -U kaya_bootstrap -d postgres -v ON_ERROR_STOP=1 -c \
+  "DROP DATABASE phase12_unrelated_db; DROP ROLE phase12_unrelated" >/dev/null
+
 stage=acceptance_matrix
 stage=evidence
 ROLE_TOPOLOGY_JSON="$role_json" python -c 'import json,os; r=json.loads(os.environ["ROLE_TOPOLOGY_JSON"]); r.update({"status":"PASS","backup_verified":True,"application_secret_fingerprint_preserved":True,"bootstrap_secret_persisted":True}); json.dump(r,open("phase12_role_migration_evidence.json","w"),indent=2); open("phase12_role_migration_evidence.json","a").write(chr(10))'
