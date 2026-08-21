@@ -33,6 +33,7 @@ from app.db.compatibility import (
     migrate_pre_alembic_database,
 )
 from app.db.dialect import capabilities
+from app.db.platform_compatibility import validate_postgres_platform
 from app.db.validation import (
     DatabaseValidationError,
     SQLITE_BUSY_TIMEOUT_MS,
@@ -154,11 +155,11 @@ def _prepare_postgresql_database(
     """Prepare an already-provisioned PostgreSQL database without SQLite file logic."""
     config = _alembic_config(settings.database_url)
     script = ScriptDirectory.from_config(config)
+    try:
+        validate_postgres_platform(engine, script)
+    except RuntimeError as exc:
+        raise DatabaseMigrationError(str(exc)) from exc
     heads = script.get_heads()
-    if len(heads) != 1:
-        raise DatabaseMigrationError(
-            f"Multiple Alembic migration heads detected: {', '.join(sorted(heads)) or 'none'}."
-        )
     target_revision = heads[0]
     with engine.connect() as connection:
         connection.execute(text("SELECT 1"))

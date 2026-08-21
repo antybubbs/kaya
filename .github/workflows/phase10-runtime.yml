@@ -1,0 +1,66 @@
+name: Phase 10 Database Platform Compatibility Validation
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/phase10-runtime.yml"
+      - "scripts/phase10_*.py"
+      - "scripts/phase10_*.sh"
+      - "app/db/**"
+      - "app/services/postgres_diagnostics.py"
+      - "scripts/kaya_postgres_backup_worker.sh"
+      - "tests/test_phase10_platform.py"
+      - "tests/test_phase6_cutover.py"
+      - "docs/database-platform-policy.md"
+      - "docker-compose*.yml"
+  pull_request:
+    paths:
+      - ".github/workflows/phase10-runtime.yml"
+      - "scripts/phase10_*.py"
+      - "scripts/phase10_*.sh"
+      - "app/db/**"
+      - "app/services/postgres_diagnostics.py"
+      - "scripts/kaya_postgres_backup_worker.sh"
+      - "tests/test_phase10_platform.py"
+      - "tests/test_phase6_cutover.py"
+      - "docs/database-platform-policy.md"
+      - "docker-compose*.yml"
+
+jobs:
+  compatibility:
+    name: Disposable Phase 10 database platform matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PHASE10_PROJECT: kaya_phase10_${{ github.run_id }}_${{ github.run_attempt }}
+      PHASE10_ROOT: ./phase10-data
+      PHASE10_PORT: 18110
+      PHASE10_IMAGE: kaya:phase10-${{ github.sha }}
+      PHASE10_TEST_IMAGE: kaya:phase10-tests-${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build disposable images
+        run: |
+          docker build --file Dockerfile --tag "$PHASE10_IMAGE" .
+          docker build --file Dockerfile.test --tag "$PHASE10_TEST_IMAGE" .
+      - name: Validate database platform matrix
+        run: bash scripts/phase10_runtime_validation.sh
+      - name: Publish redacted Phase 10 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase10-acceptance-evidence
+          path: |
+            phase10_acceptance.json
+            phase10_migration_graph.json
+          if-no-files-found: warn
+      - name: Dispose exact Phase 10 resources
+        if: always()
+        run: |
+          PHASE7D_PROJECT="$PHASE10_PROJECT" \
+          PHASE7D_ROOT=./phase10-data \
+          PHASE7D_IMAGE="$PHASE10_IMAGE" \
+          PHASE7D_HTTP_PORT=18110 \
+          PHASE7D_GATEWAY_PORT=18210 \
+          docker compose -p "$PHASE10_PROJECT" -f docker-compose.yml -f docker-compose.phase7d-ci.yml down -v --remove-orphans

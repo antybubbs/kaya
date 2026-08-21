@@ -2,16 +2,21 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+import app.db.phase6_cutover as phase6_cutover
 from app.db.phase6_cutover import (
     UpgradeState,
     _write_state,
     authoritative_database_url,
     detect_installation,
     legacy_sqlite_eligibility,
+    run_upgrade,
+    state_path,
 )
+from app.db.sqlite_to_postgres import SQLiteToPostgresError
 
 
 def test_detects_existing_sqlite_install_from_config_and_file(tmp_path: Path):
@@ -93,3 +98,56 @@ def test_sqlite_source_outside_data_directory_is_rejected(tmp_path: Path):
 
     assert not eligible
     assert "outside" in reason
+
+
+def test_preflight_failure_records_failed_state(tmp_path: Path, monkeypatch):
+    source = tmp_path / "kaya.db"
+    source.touch()
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    monkeypatch.setattr(
+        phase6_cutover,
+        "detect_installation",
+        lambda *_args: SimpleNamespace(state=UpgradeState.SQLITE_ACTIVE),
+    )
+    monkeypatch.setattr(
+        phase6_cutover,
+        "preflight",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("synthetic preflight failure")),
+    )
+
+    with pytest.raises(RuntimeError, match="synthetic preflight failure"):
+        run_upgrade(source, "postgresql+psycopg://kaya@db/kaya", tmp_path / "backups", data_dir)
+
+    state = json.loads(state_path(data_dir).read_text(encoding="utf-8"))
+    assert state["state"] == UpgradeState.FAILED.value
+    assert state["error"] == "RuntimeError"
+    assert state["recovery_artifacts_retained"] is True
+
+
+def test_migration_id_survives_failed_retry_state(tmp_path: Path, monkeypatch):
+    source = tmp_path / "kaya.db"
+    source.touch()
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    migration_id = "phase10-synthetic-migration"
+    monkeypatch.setattr(
+        phase6_cutover,
+        "detect_installation",
+        lambda *_args: SimpleNamespace(state=UpgradeState.SQLITE_ACTIVE),
+    )
+    monkeypatch.setattr(
+        phase6_cutover,
+        "preflight",
+        lambda *_args: {"source_fingerprint": "a" * 64, "target_revision": "20260818_02"},
+    )
+    failure = SQLiteToPostgresError("synthetic migration failure")
+    failure.migration_id = migration_id
+    monkeypatch.setattr(phase6_cutover, "migrate", lambda *_args, **_kwargs: (_ for _ in ()).throw(failure))
+
+    with pytest.raises(SQLiteToPostgresError, match="synthetic migration failure"):
+        run_upgrade(source, "postgresql+psycopg://kaya@db/kaya", tmp_path / "backups", data_dir)
+
+    state = json.loads(state_path(data_dir).read_text(encoding="utf-8"))
+    assert state["state"] == UpgradeState.FAILED.value
+    assert state["migration_id"] == migration_id

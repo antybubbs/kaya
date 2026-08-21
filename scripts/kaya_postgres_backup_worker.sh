@@ -9,6 +9,8 @@ DB_USER="${POSTGRES_USER:-kaya}"
 export PGHOST="${PGHOST:-postgres}"
 PASSWORD_FILE="${POSTGRES_PASSWORD_FILE:-/run/kaya-secrets/postgres_password}"
 RETENTION="${KAYA_POSTGRES_BACKUP_RETENTION:-7}"
+KAYA_VERSION="${KAYA_VERSION:-unknown}"
+KAYA_BUILD_SHA="${KAYA_BUILD_SHA:-unknown}"
 
 die() { echo "kaya-postgres-backup: $*" >&2; exit 1; }
 cleanup_backup_tmp() {
@@ -56,7 +58,8 @@ backup() {
   digest="$(sha256sum "$archive" | awk '{print $1}')"
   archive_bytes="$(stat -c '%s' "$archive")"
   (umask 077
-    printf '{\n  "archive_bytes": %s,\n  "created_at": "%s",\n  "postgresql_version": "%s",\n  "sha256": "%s",\n  "alembic_revision": "%s"\n}\n' "$archive_bytes" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$postgres_version" "$digest" "$revision" > "$metadata"
+    json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+    printf '{\n  "archive_bytes": %s,\n  "archive_format": "custom",\n  "created_at": "%s",\n  "postgresql_version": "%s",\n  "kaya_version": "%s",\n  "kaya_build_sha": "%s",\n  "sha256": "%s",\n  "alembic_revision": "%s"\n}\n' "$archive_bytes" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(json_escape "$postgres_version")" "$(json_escape "$KAYA_VERSION")" "$(json_escape "$KAYA_BUILD_SHA")" "$digest" "$revision" > "$metadata"
     printf '%s  %s\n' "$digest" "$archive" > "$archive.sha256"
   )
   verify "$archive"

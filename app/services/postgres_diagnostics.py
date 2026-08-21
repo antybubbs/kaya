@@ -7,13 +7,16 @@ from pathlib import Path
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
+from app.db.migrations import CURRENT_REVISION
+from app.db.platform_compatibility import SUPPORTED_POSTGRES_MAJOR
+
 
 def collect_postgres_diagnostics(engine: Engine, backup_directory: Path) -> dict:
     if engine.dialect.name != "postgresql":
         return {"available": False, "reason": "PostgreSQL is not the active database"}
     with engine.connect() as connection:
         database = connection.execute(
-            text("SELECT current_database(), pg_database_size(current_database()), version()")
+            text("SELECT current_database(), pg_database_size(current_database()), version(), current_setting('server_version_num')")
         ).one()
         activity = connection.execute(
             text("SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()")
@@ -42,6 +45,11 @@ def collect_postgres_diagnostics(engine: Engine, backup_directory: Path) -> dict
         "database": database[0],
         "database_bytes": int(database[1]),
         "server_version": str(database[2]).split(" on ", 1)[0],
+        "server_version_num": int(database[3]),
+        "postgres_major_supported": SUPPORTED_POSTGRES_MAJOR,
+        "current_alembic_revision": _revision(engine),
+        "expected_alembic_head": CURRENT_REVISION,
+        "compatibility_state": "compatible" if int(database[3]) // 10000 == SUPPORTED_POSTGRES_MAJOR else "unsupported_postgresql_major",
         "active_connections": int(activity),
         "deadlocks": int(deadlocks or 0),
         "pool": {
@@ -56,3 +64,11 @@ def collect_postgres_diagnostics(engine: Engine, backup_directory: Path) -> dict
         "latest_backup": archives[0].name if archives else None,
         "backup_count": len(archives),
     }
+
+
+def _revision(engine: Engine) -> str | None:
+    with engine.connect() as connection:
+        try:
+            return connection.execute(text("SELECT version_num FROM alembic_version LIMIT 1")).scalar_one_or_none()
+        except Exception:
+            return None

@@ -7,6 +7,9 @@ Kaya's supported production architecture is Docker Compose with PostgreSQL
 16.14 as the only production database authority. SQLite remains available for
 controlled legacy/recovery operations and local development; it cannot be a
 fresh-install database or a runtime fallback. See [SQLite lifecycle policy](sqlite-lifecycle-policy.md).
+The supported platform, PostgreSQL major-version guard, patch-update policy,
+backup compatibility metadata, and fail-closed schema rules are documented in
+[Database platform policy](database-platform-policy.md).
 
 ## Phase 7 runtime validation in CI
 
