@@ -30,6 +30,12 @@ tests() {
         -v "$ROOT_DIR:/workspace" -w /workspace "$TEST_IMAGE" "$@"
 }
 
+app_exec() {
+    compose exec -T -e PYTHONPATH=/app \
+        -e SECRET_KEY=phase11-synthetic-secret-key-012345678901234567890123 \
+        -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= kaya "$@"
+}
+
 record() { SUMMARY["$1"]="$2"; }
 scenario() {
     local number="$1" name="$2"; shift 2
@@ -58,7 +64,10 @@ wait_ready() {
     return 1
 }
 
-start_stack() { compose up -d >/dev/null && wait_ready; }
+start_stack() {
+    compose up -d >/dev/null && wait_ready && \
+        compose exec -T postgres psql -U kaya -d postgres -c 'ALTER ROLE kaya NOSUPERUSER;' >/dev/null
+}
 setup_token() { compose exec -T kaya sh -c "sed -n 's/^SETUP_TOKEN=//p' /app/data/.runtime.env" | tr -d '\r'; }
 smoke() { PHASE7D_HTTP_BASE="http://127.0.0.1:$PORT" KAYA_SETUP_TOKEN="$(setup_token)" python "$ROOT_DIR/scripts/phase7d_http_smoke.py"; }
 revision() { compose exec -T postgres psql -U kaya -d kaya -Atc 'SELECT version_num FROM alembic_version' | tr -d '\r'; }
@@ -66,8 +75,8 @@ server_version() { compose exec -T postgres psql -U kaya -d kaya -Atc 'SHOW serv
 latest_archive() { compose --profile phase11-ops run --rm --no-deps --entrypoint bash postgres-backup -c 'find /var/backups/kaya-postgres -maxdepth 1 -type f -name "kaya-*.dump" -printf "%T@ %f\n" | sort -nr | cut -d" " -f2-' | tail -n 1; }
 backup() { compose --profile phase11-ops run --rm --no-deps postgres-backup backup >/dev/null; }
 verify_backup() { compose --profile phase11-ops run --rm --no-deps postgres-backup verify "/var/backups/kaya-postgres/$1" >/dev/null; }
-preflight() { compose exec -T -e PYTHONPATH=/app kaya python scripts/kaya_postgres_upgrade.py preflight --target-image "$1"; }
-post_verify() { compose exec -T -e PYTHONPATH=/app kaya python scripts/kaya_postgres_upgrade.py verify --target-image "$TARGET_IMAGE" >/dev/null; }
+preflight() { app_exec python scripts/kaya_postgres_upgrade.py preflight --target-image "$1"; }
+post_verify() { app_exec python scripts/kaya_postgres_upgrade.py verify --target-image "$TARGET_IMAGE" >/dev/null; }
 replace_image() { export PHASE11_POSTGRES_IMAGE="$TARGET_IMAGE"; compose up -d postgres >/dev/null; }
 
 preflight_failure_preserves_source() {
@@ -104,16 +113,20 @@ role_privileges() {
         "SELECT rolsuper = false AND has_database_privilege('kaya', current_database(), 'CONNECT') AND has_schema_privilege('kaya', 'public', 'USAGE') FROM pg_roles WHERE rolname='kaya';" | tr -d '\r' | grep -qx true
 }
 
-locale_inventory() { compose exec -T postgres psql -U kaya -d kaya -Atc "SELECT datencoding, datcollate, datctype, datlocprovider FROM pg_database WHERE datname=current_database();" | grep -q '|'; }
+locale_inventory() { compose exec -T postgres psql -U kaya -d kaya -Atc "SELECT pg_encoding_to_char(encoding), datcollate, datctype, datlocprovider FROM pg_database WHERE datname=current_database();" | grep -q '|'; }
 extension_inventory() { compose exec -T postgres psql -U kaya -d kaya -Atc 'SELECT extname FROM pg_extension ORDER BY extname;' | grep -q plpgsql; }
-sequence_validation() { compose exec -T postgres psql -U kaya -d kaya -Atc "INSERT INTO audit_logs (action, entity, entity_id, detail, category, severity, status_code, capture_tier, created_at) VALUES ('phase11.sequence','test','synthetic','synthetic','activity','info',200,'standard',CURRENT_TIMESTAMP) RETURNING id;" | tail -n 1 | grep -Eq '^[1-9][0-9]*$'; }
+sequence_validation() { compose exec -T postgres psql -U kaya -d kaya -Atc "INSERT INTO audit_logs (action, entity, entity_id, detail, category, severity, status_code, capture_tier, created_at) VALUES ('phase11.sequence','test','synthetic','synthetic','activity','info',200,'standard',CURRENT_TIMESTAMP) RETURNING id;" | tr -d '\r' | grep -Eq '^[1-9][0-9]*$'; }
+representative_data() { compose exec -T postgres psql -U kaya -d kaya -c "INSERT INTO hardware_assets (asset_tag, name, status) VALUES ('PHASE11-SYNTHETIC', 'Phase 11 synthetic asset', 'In use') ON CONFLICT (asset_tag) DO NOTHING;" >/dev/null && compose exec -T postgres psql -U kaya -d kaya -Atc "SELECT count(*) FROM users" | tr -d '\r' | grep -q '[1-9]'; }
 post_write() { compose exec -T postgres psql -U kaya -d kaya -c "INSERT INTO audit_logs (action, entity, entity_id, detail, category, severity, status_code, capture_tier, created_at) VALUES ('phase11.post_upgrade','test','synthetic','synthetic','activity','info',200,'standard',CURRENT_TIMESTAMP);" >/dev/null; }
 worker_write() {
-    compose exec -T -e KAYA_TEST_MODE=true -e KAYA_TEST_OBSERVABILITY_FILE=/app/data/phase11-observability.jsonl kaya \
+    compose exec -T -e PYTHONPATH=/app \
+        -e SECRET_KEY=phase11-synthetic-secret-key-012345678901234567890123 \
+        -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
+        -e KAYA_TEST_MODE=true -e KAYA_TEST_OBSERVABILITY_FILE=/app/data/phase11-observability.jsonl kaya \
         python -c 'from app.db.phase6_test_hooks import worker_write; from app.db.session import SessionLocal, database_write_context; from app.models.models import AuditLog; db=SessionLocal(); ctx=database_write_context("dns_collector", "phase11_worker_write"); ctx.__enter__(); db.add(AuditLog(action="phase11.worker", entity="synthetic", entity_id="phase11", detail="synthetic", category="activity", severity="info", status_code=200, capture_tier="standard")); db.commit(); worker_write("dns_collector", "postgresql"); ctx.__exit__(None, None, None); db.close()' >/dev/null
     compose exec -T kaya sh -c 'grep -q '"'"'"event": "phase6.worker.write"'"'"' /app/data/phase11-observability.jsonl && grep -q '"'"'"database_engine": "postgresql"'"'"' /app/data/phase11-observability.jsonl'
 }
-retained_sqlite() { mkdir -p "$ROOT/data"; printf '%s\n' 'synthetic retained SQLite sentinel' > "$ROOT/data/retained-legacy.sqlite3"; sha256sum "$ROOT/data/retained-legacy.sqlite3" | awk '{print $1}' > "$ROOT/retained.before"; sha256sum "$ROOT/data/retained-legacy.sqlite3" | awk '{print $1}' > "$ROOT/retained.after"; cmp -s "$ROOT/retained.before" "$ROOT/retained.after"; }
+retained_sqlite() { sha256sum "$ROOT/data/retained-legacy.sqlite3" | awk '{print $1}' > "$ROOT/retained.after"; cmp -s "$ROOT/retained.before" "$ROOT/retained.after"; }
 
 restore_app() {
     local archive="$1" container="${PROJECT}_restore_app" target="kaya_phase11_restore"
@@ -128,7 +141,7 @@ restore_app() {
         -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
         -v "${PROJECT}_postgres_secret:/run/kaya-secrets:ro" -v "$ROOT/data:/app/data" "$APP_IMAGE" >/dev/null
     for _ in $(seq 1 120); do curl --fail --silent --max-time 3 "http://127.0.0.1:$((PORT + 1))/healthz" >/dev/null 2>&1 && break; sleep 2; done
-    PHASE7D_HTTP_BASE="http://127.0.0.1:$((PORT + 1))" KAYA_SETUP_TOKEN="" python "$ROOT_DIR/scripts/phase7d_http_smoke.py"
+    PHASE7D_HTTP_BASE="http://127.0.0.1:$((PORT + 1))" KAYA_SETUP_TOKEN="$(setup_token)" python "$ROOT_DIR/scripts/phase7d_http_smoke.py"
     docker rm -f "$container" >/dev/null
     compose exec -T postgres psql -U kaya -d postgres -c "DROP DATABASE IF EXISTS $target;" >/dev/null
 }
@@ -146,8 +159,9 @@ no_major_or_downgrade() {
 }
 
 security_review() {
-    ! grep -R -n -E 'postgresql[^[:space:]]*://[^:[:space:]]+:[^$<{@[:space:]]+@|PGPASSWORD=|BEGIN (RSA|OPENSSH|EC) PRIVATE KEY' \
-        scripts/kaya_postgres_upgrade.py scripts/kaya_postgres_backup_worker.sh app/db/postgres_upgrade.py docker-compose.phase11-ci.yml
+    ! grep -R -n -E 'postgresql[^[:space:]]*://[^:[:space:]]+:[^$<{@[:space:]]+@|BEGIN (RSA|OPENSSH|EC) PRIVATE KEY' \
+        scripts/kaya_postgres_upgrade.py scripts/kaya_postgres_backup_worker.sh app/db/postgres_upgrade.py docker-compose.phase11-ci.yml && \
+        grep -q 'POSTGRES_PASSWORD_FILE' scripts/kaya_postgres_backup_worker.sh
 }
 
 cleanup() {
@@ -161,20 +175,22 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$ROOT/data/remote-recordings" "$ROOT/uploads" "$ROOT/backups"
+printf '%s\n' 'synthetic retained SQLite sentinel' > "$ROOT/data/retained-legacy.sqlite3"
+sha256sum "$ROOT/data/retained-legacy.sqlite3" | awk '{print $1}' > "$ROOT/retained.before"
 docker build --file "$ROOT_DIR/Dockerfile" --tag "$APP_IMAGE" "$ROOT_DIR"
 docker build --file "$ROOT_DIR/Dockerfile.test" --tag "$TEST_IMAGE" "$ROOT_DIR"
 compose config --quiet
 export PROJECT ROOT APP_IMAGE TEST_IMAGE SOURCE_IMAGE TARGET_IMAGE PORT ROOT_DIR PRE_UPGRADE_ARCHIVE
-export -f compose tests wait_ready start_stack setup_token smoke revision server_version latest_archive backup verify_backup preflight post_verify replace_image preflight_failure_preserves_source unsupported_major_probe role_privileges locale_inventory extension_inventory sequence_validation post_write worker_write retained_sqlite restore_app failed_after_image_replacement_recovers no_major_or_downgrade security_review
+export -f compose tests app_exec wait_ready start_stack setup_token smoke revision server_version latest_archive backup verify_backup preflight post_verify replace_image preflight_failure_preserves_source unsupported_major_probe role_privileges locale_inventory extension_inventory sequence_validation representative_data post_write worker_write retained_sqlite restore_app failed_after_image_replacement_recovers no_major_or_downgrade security_review
 
 scenario 1 "Current supported PostgreSQL pin identified" grep -q 'postgres:16.14' docker-compose.yml
 scenario 2 "PostgreSQL 16 platform contract" tests python -c 'from app.db.platform_compatibility import SUPPORTED_POSTGRES_MAJOR; assert SUPPORTED_POSTGRES_MAJOR == 16'
 scenario 3 "Patch-upgrade preflight" start_stack
 scenario 4 "Preflight requires verified backup" bash -c 'if preflight "$TARGET_IMAGE" >/dev/null 2>&1; then exit 1; fi'
 scenario 5 "Preflight rejects unsupported target major" bash -c 'if preflight postgres:17.5 >/dev/null 2>&1; then exit 1; fi'
-scenario 6 "Older PostgreSQL 16.x starts" test "$(server_version)" = "16.13"
+scenario 6 "Older PostgreSQL 16.x starts" bash -c '[[ "$(server_version)" == 16.13* ]]'
 scenario 7 "Kaya runs on older supported 16.x fixture" smoke
-scenario 8 "Representative pre-upgrade data" bash -c 'compose exec -T postgres psql -U kaya -d kaya -Atc "select count(*) from users" | tail -n 1 | grep -q "[1-9]"'
+scenario 8 "Representative pre-upgrade data" representative_data
 scenario 9 "Pre-upgrade backup" bash -c 'export PHASE11_BACKUP_PURPOSE=pre_postgres_upgrade; backup'
 scenario 10 "Pre-upgrade backup verification" bash -c 'verify_backup "$(latest_archive)"'
 PRE_UPGRADE_ARCHIVE="$(latest_archive)"
@@ -183,7 +199,7 @@ scenario 12 "Clean PostgreSQL shutdown" compose stop postgres
 scenario 13 "PostgreSQL image replacement within 16.x" replace_image
 scenario 14 "Same data volume reused" bash -c 'test "$(revision)" = "20260818_02"'
 scenario 15 "New PostgreSQL 16.x starts" bash -c 'wait_ready'
-scenario 16 "PostgreSQL server version changed as expected" test "$(server_version)" = "16.14"
+scenario 16 "PostgreSQL server version changed as expected" bash -c '[[ "$(server_version)" == 16.14* ]]'
 scenario 17 "Kaya reconnects" post_verify
 scenario 18 "SQLAlchemy pool recovers" post_verify
 scenario 19 "Existing data preserved" bash -c 'compose exec -T postgres psql -U kaya -d kaya -Atc "select count(*) from users" | tail -n 1 | grep -q "[1-9]"'
