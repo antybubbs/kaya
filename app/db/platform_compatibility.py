@@ -110,6 +110,8 @@ def validate_postgres_platform(
                 "Use a compatible/newer Kaya image or restore a compatible backup."
             ) from exc
         if current not in traversed:
+            if current == graph["current_head"]:
+                return version
             raise DatabasePlatformCompatibilityError(
                 "Database schema is newer than this Kaya image supports. "
                 "Use a compatible/newer Kaya image or restore a compatible backup."

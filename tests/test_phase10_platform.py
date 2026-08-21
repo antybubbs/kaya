@@ -95,3 +95,14 @@ def test_schema_newer_than_application_fails_closed(monkeypatch):
     monkeypatch.setattr("app.db.platform_compatibility.inspect", lambda _connection: SimpleNamespace(get_table_names=lambda: ["alembic_version"]))
     with pytest.raises(DatabasePlatformCompatibilityError, match="newer"):
         validate_postgres_platform(_Engine(("16.14", "160014"), ("future",)), script)
+
+
+def test_old_image_refuses_schema_newer_than_packaged_head(monkeypatch):
+    script = _script()
+    monkeypatch.setattr(script, "iterate_revisions", lambda *_args, **_kwargs: iter([]))
+    monkeypatch.setattr(
+        "app.db.platform_compatibility.inspect",
+        lambda _connection: SimpleNamespace(get_table_names=lambda: ["alembic_version"]),
+    )
+    with pytest.raises(DatabasePlatformCompatibilityError, match="newer"):
+        validate_postgres_platform(_Engine(("16.14", "160014"), ("future",)), script)
