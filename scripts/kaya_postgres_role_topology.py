@@ -247,7 +247,9 @@ def verify(conn) -> dict[str, object]:
     if app is None or not app["rolcanlogin"] or app["rolsuper"] or app["rolcreatedb"] or app["rolcreaterole"]:
         raise RuntimeError("runtime PostgreSQL role does not satisfy the constrained-role policy")
     if db_owner != APP_ROLE or schema_owner != APP_ROLE:
-        raise RuntimeError("Kaya database/schema ownership is not safely established")
+        raise RuntimeError(
+            f"Kaya database/schema ownership is not safely established: database={db_owner!r} schema={schema_owner!r}"
+        )
     if bootstrap is None or not bootstrap["rolcanlogin"] or not bootstrap["rolsuper"]:
         raise RuntimeError("bootstrap PostgreSQL role is missing or lacks required setup capability")
     return {
