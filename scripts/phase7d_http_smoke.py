@@ -106,6 +106,9 @@ def main() -> None:
     client = Client()
     client.expect("GET", "/healthz", {200})
     client.setup_if_needed()
+    if os.environ.get("KAYA_PHASE7D_SETUP_ONLY") == "1":
+        print("phase7d synthetic setup completed")
+        return
     client.login()
     routes = [
         "/dashboard",
