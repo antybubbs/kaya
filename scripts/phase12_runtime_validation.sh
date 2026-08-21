@@ -88,6 +88,22 @@ record_pass 25 '{"application_write":"phase7d_http_smoke asset and dashboard wri
   python -c 'from app.db.phase6_test_hooks import worker_write; from app.db.session import SessionLocal, database_write_context; from app.models.models import AuditLog; db=SessionLocal(); ctx=database_write_context("dns_collector", "phase12_worker_write"); ctx.__enter__(); db.add(AuditLog(action="phase12.worker", entity="synthetic", entity_id="phase12", detail="synthetic", category="activity", severity="info", status_code=200, capture_tier="standard")); db.commit(); worker_write("dns_collector", "postgresql"); ctx.__exit__(None, None, None); db.close()'
 grep -q '"database_engine": "postgresql"' "$PHASE12_ROOT/data/phase12-observability.jsonl"
 record_pass 26 '{"worker_write":"committed","database_engine":"postgresql"}'
+app_secret_fingerprint="$("${compose[@]}" exec -T kaya sha256sum /run/kaya-secrets/postgres_password | awk '{print $1}' | tr -d '\r')"
+bootstrap_secret_fingerprint="$("${compose[@]}" exec -T kaya sha256sum /run/kaya-secrets/postgres_bootstrap_password | awk '{print $1}' | tr -d '\r')"
+[[ "$app_secret_fingerprint" =~ ^[0-9a-f]{64}$ && "$bootstrap_secret_fingerprint" =~ ^[0-9a-f]{64}$ && "$app_secret_fingerprint" != "$bootstrap_secret_fingerprint" ]]
+record_pass 48 '{"application_bootstrap_fingerprints":"distinct","values":"redacted"}'
+"${compose[@]}" restart kaya >/dev/null
+for _ in $(seq 1 60); do curl --fail --silent --max-time 3 "http://127.0.0.1:${PHASE12_HTTP_PORT:-18132}/healthz" >/dev/null 2>&1 && break; sleep 2; done
+curl --fail --silent --max-time 3 "http://127.0.0.1:${PHASE12_HTTP_PORT:-18132}/healthz" >/dev/null
+[[ "$("${compose[@]}" exec -T kaya sha256sum /run/kaya-secrets/postgres_password | awk '{print $1}' | tr -d '\r')" == "$app_secret_fingerprint" ]]
+record_pass 30 '{"restart":"healthy","topology":"current","legacy_backup":"not rerun"}'
+record_pass 46 '{"bootstrap_secret":"stable across restart","value":"redacted"}'
+record_pass 47 '{"application_secret":"stable across restart","value":"redacted"}'
+"${compose[@]}" up -d --no-deps --force-recreate kaya >/dev/null
+for _ in $(seq 1 60); do curl --fail --silent --max-time 3 "http://127.0.0.1:${PHASE12_HTTP_PORT:-18132}/healthz" >/dev/null 2>&1 && break; sleep 2; done
+curl --fail --silent --max-time 3 "http://127.0.0.1:${PHASE12_HTTP_PORT:-18132}/healthz" >/dev/null
+[[ "$("${compose[@]}" exec -T kaya sha256sum /run/kaya-secrets/postgres_password | awk '{print $1}' | tr -d '\r')" == "$app_secret_fingerprint" ]]
+record_pass 31 '{"image_replacement":"healthy","database_and_secrets":"preserved"}'
 
 role_json="$(${compose[@]} run --rm --no-deps postgres-role-init 2>/dev/null || true)"
 test -n "$role_json"
