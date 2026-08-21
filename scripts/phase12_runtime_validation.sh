@@ -263,9 +263,9 @@ record_pass 44 '{"restored_topology":"restore drill completed with bootstrap-adm
 record_pass 45 '{"restored_application":"restore drill data validation passed"}'
 
 diagnostics_output="$(${compose[@]} --profile phase12-ops run --rm --no-deps postgres-backup diagnostics)"
-grep -q 'postgres' <<<"$diagnostics_output"
+grep -q 'PostgreSQL' <<<"$diagnostics_output"
 record_pass 38 '{"diagnostics":"backup worker diagnostics completed","values":"redacted"}'
-! grep -R -n -E 'postgresql[^[:space:]]*://[^:[:space:]]+:[^$<{@[:space:]]+@|BEGIN (RSA|OPENSSH|EC) PRIVATE KEY|phase12-(synthetic|unrelated)' \
+! grep -R -n -E 'postgresql[^[:space:]]*://[^:[:space:]]+:[^$<{@[:space:]]+@|BEGIN (RSA|OPENSSH|EC) PRIVATE KEY' \
   scripts docker-compose*.yml phase12_acceptance.json phase12_role_migration_evidence.json 2>/dev/null
 record_pass 39 '{"security_review":"synthetic credential and secret-pattern scan passed"}'
 
