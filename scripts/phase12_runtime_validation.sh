@@ -83,7 +83,14 @@ printf '%s\n' "$resources" > phase12_resources_discovered.json
 python scripts/kaya_validation_resources.py record --project "$PHASE12_PROJECT" --resources phase12_resources_discovered.json --manifest "$manifest"
 stage=runtime_resources
 mkdir -p "$fresh_root"/{data,uploads,backups,secrets}
-fresh_compose up -d --wait --wait-timeout 120
+fresh_compose up -d
+for _ in $(seq 1 90); do
+  fresh_compose exec -T postgres pg_isready -U kaya_bootstrap -d kaya >/dev/null 2>&1 && \
+    curl --fail --silent --max-time 3 "http://127.0.0.1:${PHASE12_HTTP_PORT:-18132}/healthz" >/dev/null 2>&1 && break
+  sleep 2
+done
+fresh_compose exec -T postgres pg_isready -U kaya_bootstrap -d kaya >/dev/null
+curl --fail --silent --max-time 3 "http://127.0.0.1:${PHASE12_HTTP_PORT:-18132}/healthz" >/dev/null
 fresh_role_probe="$(fresh_compose exec -T postgres psql -U kaya_bootstrap -d kaya -Atc \
   "SELECT (SELECT rolsuper FROM pg_roles WHERE rolname='kaya_bootstrap'), (SELECT rolsuper FROM pg_roles WHERE rolname='kaya'), (SELECT rolcanlogin FROM pg_roles WHERE rolname='kaya'), (SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname='kaya'), (SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname='public')" | tr -d '\r')"
 [[ "$fresh_role_probe" == "t|f|t|kaya|pg_database_owner" || "$fresh_role_probe" == "t|f|t|kaya|kaya" ]]
