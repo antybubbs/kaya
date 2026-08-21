@@ -66,9 +66,9 @@ wait_ready() {
 
 start_stack() {
     compose up -d >/dev/null && wait_ready && \
-        compose exec -T --user postgres postgres psql -d postgres -c 'ALTER ROLE kaya NOSUPERUSER;' >/dev/null && \
+        compose exec -T --user postgres postgres psql -U postgres -d postgres -c 'ALTER ROLE kaya NOSUPERUSER;' >/dev/null && \
         compose exec -T postgres psql -U kaya -d kaya -c \
-        "INSERT INTO remote_manager_settings (key, value, updated_at) VALUES ('high_availability_enabled', '1', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at;" >/dev/null
+        "INSERT INTO remote_manager_settings (key, value, updated_at) VALUES ('high_availability_enabled', '1', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at; INSERT INTO user_module_permissions (user_id, module_key, allowed, created_by, created_at, updated_at) SELECT id, 'high_availability', true, id, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP FROM users WHERE role = 'admin' ON CONFLICT (user_id, module_key) DO UPDATE SET allowed = true, updated_at = EXCLUDED.updated_at;" >/dev/null
 }
 setup_token() { compose exec -T kaya sh -c "sed -n 's/^SETUP_TOKEN=//p' /app/data/.runtime.env" | tr -d '\r'; }
 smoke() { PHASE7D_HTTP_BASE="http://127.0.0.1:$PORT" KAYA_SETUP_TOKEN="$(setup_token)" python "$ROOT_DIR/scripts/phase7d_http_smoke.py"; }
