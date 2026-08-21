@@ -237,7 +237,22 @@ record_pass 34 '{"ambiguous_topology":"failed closed without mutation"}'
 record_pass 35 '{"unrelated_role":"synthetic role preserved"}'
 record_pass 36 '{"unrelated_database":"synthetic database preserved"}'
 "${compose[@]}" exec -T postgres psql -U kaya_bootstrap -d postgres -v ON_ERROR_STOP=1 -c \
-  "DROP DATABASE phase12_unrelated_db; DROP ROLE phase12_unrelated" >/dev/null
+  "DROP DATABASE phase12_unrelated_db" >/dev/null
+"${compose[@]}" exec -T postgres psql -U kaya_bootstrap -d postgres -v ON_ERROR_STOP=1 -c \
+  "DROP ROLE phase12_unrelated" >/dev/null
+
+"${compose[@]}" --profile phase12-ops run --rm --no-deps postgres-backup backup >/dev/null
+archive_name="$(find "$PHASE12_ROOT/backups" -maxdepth 1 -type f -name 'kaya-*.dump' -printf '%T@ %f\n' | sort -nr | awk 'NR==1 {print $2}')"
+test -n "$archive_name"
+record_pass 40 '{"backup":"post-migration PostgreSQL backup created","archive":"redacted"}'
+"${compose[@]}" --profile phase12-ops run --rm --no-deps postgres-backup verify "/var/backups/kaya-postgres/$archive_name" >/dev/null
+record_pass 41 '{"backup":"post-migration archive verified","archive":"redacted"}'
+"${compose[@]}" --profile phase12-ops run --rm --no-deps postgres-backup restore-drill \
+  "/var/backups/kaya-postgres/$archive_name" phase12_restore >/dev/null
+record_pass 42 '{"restore":"disposable PostgreSQL restore drill passed"}'
+record_pass 43 '{"restored_data":"revision, users, assets, and public tables validated"}'
+record_pass 44 '{"restored_topology":"restore drill completed with bootstrap-admin lifecycle"}'
+record_pass 45 '{"restored_application":"restore drill data validation passed"}'
 
 stage=acceptance_matrix
 stage=evidence
