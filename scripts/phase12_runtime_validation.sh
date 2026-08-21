@@ -121,3 +121,4 @@ record_pass 22 "{\"alembic_revision\":\"${revision_after}\",\"runtime_role\":\"k
 stage=acceptance_matrix
 stage=evidence
 ROLE_TOPOLOGY_JSON="$role_json" python -c 'import json,os; r=json.loads(os.environ["ROLE_TOPOLOGY_JSON"]); r.update({"status":"PASS","backup_verified":True,"application_secret_fingerprint_preserved":True,"bootstrap_secret_persisted":True}); json.dump(r,open("phase12_role_migration_evidence.json","w"),indent=2); open("phase12_role_migration_evidence.json","a").write(chr(10))'
+python scripts/phase12_acceptance_evidence.py --output phase12_acceptance.json
