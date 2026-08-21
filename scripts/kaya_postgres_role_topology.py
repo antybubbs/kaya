@@ -309,7 +309,7 @@ def main() -> int:
             LOG.info("postgres.role_topology.migration_completed")
             print(json.dumps(result, sort_keys=True))
             return 0
-        elif not app_before["rolsuper"] and not app_before["rolcreatedb"] and not app_before["rolcreaterole"] and app_before["rolcanlogin"] and db_owner_before == APP_ROLE and schema_owner_before == APP_ROLE:
+        elif not app_before["rolsuper"] and not app_before["rolcreatedb"] and not app_before["rolcreaterole"] and app_before["rolcanlogin"] and db_owner_before == APP_ROLE and schema_owner_before in {APP_ROLE, "pg_database_owner"}:
             LOG.info("postgres.role_topology.detected state=current")
             if bootstrap_authenticated_with_app_secret:
                 with admin.cursor() as cur:

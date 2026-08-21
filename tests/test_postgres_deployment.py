@@ -75,6 +75,7 @@ def test_phase12_role_topology_helper_is_fail_closed_and_scoped():
     assert "REASSIGN OWNED" not in helper
     assert "pg_namespace" in helper
     assert 'schema_owner not in {APP_ROLE, "pg_database_owner"}' in helper
+    assert 'schema_owner_before in {APP_ROLE, "pg_database_owner"}' in helper
     assert "public" in helper
 
 
