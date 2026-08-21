@@ -5,9 +5,16 @@ services:
     container_name: ${PHASE12A_PROJECT:?PHASE12A_PROJECT is required}_kaya
     ports: !override []
     volumes: !override
-      - ${PHASE12A_ROOT:?PHASE12A_ROOT is required}/data:/app/data
-      - ${PHASE12A_ROOT}/uploads:/app/uploads
-      - postgres_secret:/run/kaya-secrets:ro
+      - type: bind
+        source: ${PHASE12A_ROOT:?PHASE12A_ROOT is required}/data
+        target: /app/data
+      - type: bind
+        source: ${PHASE12A_ROOT}/uploads
+        target: /app/uploads
+      - type: volume
+        source: postgres_secret
+        target: /run/kaya-secrets
+        read_only: true
     labels:
       com.kaya.validation.phase: "12a"
       com.kaya.validation.disposable: "true"
@@ -17,8 +24,13 @@ services:
     container_name: ${PHASE12A_PROJECT}_secure_send
     ports: !override []
     volumes: !override
-      - ${PHASE12A_ROOT}/data:/app/data
-      - postgres_secret:/run/kaya-secrets:ro
+      - type: bind
+        source: ${PHASE12A_ROOT}/data
+        target: /app/data
+      - type: volume
+        source: postgres_secret
+        target: /run/kaya-secrets
+        read_only: true
     labels:
       com.kaya.validation.phase: "12a"
       com.kaya.validation.disposable: "true"
@@ -32,8 +44,13 @@ services:
   postgres-secret-init:
     image: ${KAYA_IMAGE:-ghcr.io/antybubbs/kaya:latest}
     volumes: !override
-      - postgres_secret:/run/kaya-secrets
-      - ${PHASE12A_ROOT}/secrets:/run/kaya-host-secrets:ro
+      - type: volume
+        source: postgres_secret
+        target: /run/kaya-secrets
+      - type: bind
+        source: ${PHASE12A_ROOT}/secrets
+        target: /run/kaya-host-secrets
+        read_only: true
     labels:
       com.kaya.validation.phase: "12a"
       com.kaya.validation.disposable: "true"
@@ -41,9 +58,16 @@ services:
   postgres:
     image: ${PHASE12A_POSTGRES_IMAGE:-postgres:16.14}
     volumes: !override
-      - postgres_data:/var/lib/postgresql/data
-      - postgres_secret:/run/kaya-secrets:ro
-      - ${PHASE12A_ROOT}/backups:/var/backups/kaya-postgres
+      - type: volume
+        source: postgres_data
+        target: /var/lib/postgresql/data
+      - type: volume
+        source: postgres_secret
+        target: /run/kaya-secrets
+        read_only: true
+      - type: bind
+        source: ${PHASE12A_ROOT}/backups
+        target: /var/backups/kaya-postgres
     labels:
       com.kaya.validation.phase: "12a"
       com.kaya.validation.disposable: "true"
@@ -51,8 +75,13 @@ services:
   postgres-role-migration-backup:
     image: ${PHASE12A_POSTGRES_IMAGE:-postgres:16.14}
     volumes: !override
-      - postgres_secret:/run/kaya-secrets:ro
-      - ${PHASE12A_ROOT}/backups:/var/backups/kaya-postgres
+      - type: volume
+        source: postgres_secret
+        target: /run/kaya-secrets
+        read_only: true
+      - type: bind
+        source: ${PHASE12A_ROOT}/backups
+        target: /var/backups/kaya-postgres
     labels:
       com.kaya.validation.phase: "12a"
       com.kaya.validation.disposable: "true"
@@ -60,8 +89,14 @@ services:
   postgres-role-init:
     image: ${KAYA_IMAGE:-ghcr.io/antybubbs/kaya:latest}
     volumes: !override
-      - postgres_secret:/run/kaya-secrets:ro
-      - ${PHASE12A_ROOT}/backups:/var/backups/kaya-postgres:ro
+      - type: volume
+        source: postgres_secret
+        target: /run/kaya-secrets
+        read_only: true
+      - type: bind
+        source: ${PHASE12A_ROOT}/backups
+        target: /var/backups/kaya-postgres
+        read_only: true
     labels:
       com.kaya.validation.phase: "12a"
       com.kaya.validation.disposable: "true"

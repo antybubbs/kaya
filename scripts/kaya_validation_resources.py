@@ -13,6 +13,8 @@ from typing import Any
 
 PROJECT_RE = re.compile(r"^kaya_phase(?:7d|8|9|10|11|12a?)_[a-z0-9][a-z0-9_-]*$")
 SAFE_RESOURCE_RE = re.compile(r"^kaya_phase(?:7d|8|9|10|11|12a?)_[a-z0-9][a-z0-9_-]*$")
+IDENTIFIER_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+RUN_VALUE_RE = re.compile(r"^[0-9]+$")
 PROTECTED_NAMES = frozenset(
     {
         "kaya_phase6_postgres_secret",
@@ -27,6 +29,25 @@ def valid_project(project: str) -> bool:
     return bool(PROJECT_RE.fullmatch(project))
 
 
+def phase12a_project_name(run_id: str, run_attempt: str) -> str:
+    if run_id == "local":
+        if run_attempt != "1":
+            raise ValueError("local Phase 12A runs must use attempt 1")
+    elif not RUN_VALUE_RE.fullmatch(run_id):
+        raise ValueError("GITHUB_RUN_ID must contain decimal digits")
+    if not RUN_VALUE_RE.fullmatch(run_attempt):
+        raise ValueError("GITHUB_RUN_ATTEMPT must contain decimal digits")
+    project = f"kaya_phase12a_{run_id}_{run_attempt}"
+    if not valid_project(project):
+        raise ValueError("generated Phase 12A project is not valid")
+    return project
+
+
+def validate_identifier(value: str, field: str = "resource identifier") -> None:
+    if not IDENTIFIER_RE.fullmatch(value):
+        raise RuntimeError(f"{field} contains an unsafe character: {value}")
+
+
 def run(*args: str) -> str:
     return subprocess.check_output(args, text=True, stderr=subprocess.STDOUT).strip()
 
@@ -37,6 +58,7 @@ def labels(kind: str, name: str) -> dict[str, str]:
 
 
 def validate_name(name: str, project: str) -> None:
+    validate_identifier(name)
     if name in PROTECTED_NAMES:
         raise RuntimeError(f"protected resource name is in the Phase 12 mutable set: {name}")
     if not SAFE_RESOURCE_RE.fullmatch(name) or not name.startswith(project + "_"):
@@ -58,8 +80,11 @@ def validate_config(config: dict[str, Any], project: str) -> dict[str, list[str]
             found["containers"].append(container_name)
         for mount in service.get("volumes", []):
             source = mount.get("source") if isinstance(mount, dict) else str(mount).split(":", 1)[0]
-            if isinstance(mount, dict) and mount.get("type") in {"bind", "tmpfs"}:
+            mount_type = mount.get("type") if isinstance(mount, dict) else None
+            if mount_type in {"bind", "tmpfs"}:
                 continue
+            if mount_type == "volume" and source not in volume_actual:
+                raise RuntimeError(f"service {service_name} references undefined named volume: {source}")
             source = volume_actual.get(source, source)
             if source and not source.startswith(".") and not source.startswith("/") and not source.startswith("${"):
                 validate_name(source, project)
@@ -170,10 +195,15 @@ def main() -> int:
     compose_clean.add_argument("--dry-run", action="store_true")
     validate_project = sub.add_parser("validate-project")
     validate_project.add_argument("--project", required=True)
+    name = sub.add_parser("phase12a-project")
+    name.add_argument("--run-id", required=True)
+    name.add_argument("--run-attempt", required=True)
     args = parser.parse_args()
     if args.action == "validate-project":
         if not valid_project(args.project):
             raise SystemExit("invalid disposable validation project")
+    elif args.action == "phase12a-project":
+        print(phase12a_project_name(args.run_id, args.run_attempt))
     elif args.action == "validate-config":
         resources = validate_config(json.loads(args.config.read_text(encoding="utf-8-sig")), args.project)
         print(json.dumps(resources, sort_keys=True))

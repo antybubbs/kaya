@@ -38,4 +38,4 @@ jobs:
           path: |
             phase12a_cleanup_acceptance.json
             phase12a_resource_inventory.json
-          if-no-files-found: warn
+          if-no-files-found: error
