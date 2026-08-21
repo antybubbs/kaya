@@ -331,7 +331,8 @@ tests pytest -q tests/test_postgres_deployment.py tests/test_phase6_test_hooks.p
 record_pass 58 '{"suite":"migration and role focused tests","result":"passed"}'
 tests pytest -q tests/test_postgres_deployment.py tests/test_postgres_operations.py tests/test_phase6_cutover.py
 record_pass 59 '{"suite":"non-Docker regression suite","result":"passed"}'
-tests pytest -q tests/test_backup_agent_protocol_v2_security.py tests/test_database_password_file.py
+tests pytest -q tests/test_authentication_policy.py tests/test_secret_vault.py \
+  tests/test_oidc_security.py tests/test_release_security_boundaries.py tests/test_database_password_file.py
 record_pass 60 '{"suite":"security tests","result":"passed"}'
 
 stage=acceptance_matrix
