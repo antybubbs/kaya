@@ -270,7 +270,9 @@ record_pass 38 '{"diagnostics":"backup worker diagnostics completed","values":"r
 record_pass 39 '{"security_review":"synthetic credential and secret-pattern scan passed"}'
 
 compose_patch() {
-  PHASE12_POSTGRES_IMAGE="$1" "${compose[@]}" "$2" "$3"
+  local image="$1"
+  shift
+  PHASE12_POSTGRES_IMAGE="$image" "${compose[@]}" "$@"
 }
 "${compose[@]}" stop postgres >/dev/null
 compose_patch postgres:16.13 up -d postgres
