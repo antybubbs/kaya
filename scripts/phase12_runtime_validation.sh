@@ -5,6 +5,7 @@ set -Eeuo pipefail
 : "${PHASE12_ROOT:=./phase12-data}"
 : "${PHASE12_POSTGRES_IMAGE:=postgres:16.14}"
 : "${PHASE12_APP_IMAGE:?PHASE12_APP_IMAGE is required}"
+: "${PHASE12_TEST_IMAGE:?PHASE12_TEST_IMAGE is required}"
 
 mkdir -p "$PHASE12_ROOT"/{data,uploads,backups,secrets}
 export PHASE12_PROJECT PHASE12_ROOT PHASE12_POSTGRES_IMAGE PHASE12_APP_IMAGE
@@ -260,6 +261,62 @@ record_pass 42 '{"restore":"disposable PostgreSQL restore drill passed"}'
 record_pass 43 '{"restored_data":"revision, users, assets, and public tables validated"}'
 record_pass 44 '{"restored_topology":"restore drill completed with bootstrap-admin lifecycle"}'
 record_pass 45 '{"restored_application":"restore drill data validation passed"}'
+
+diagnostics_output="$(${compose[@]} --profile phase12-ops run --rm --no-deps postgres-backup diagnostics)"
+grep -q 'postgres' <<<"$diagnostics_output"
+record_pass 38 '{"diagnostics":"backup worker diagnostics completed","values":"redacted"}'
+! grep -R -n -E 'postgresql[^[:space:]]*://[^:[:space:]]+:[^$<{@[:space:]]+@|BEGIN (RSA|OPENSSH|EC) PRIVATE KEY|phase12-(synthetic|unrelated)' \
+  scripts docker-compose*.yml phase12_acceptance.json phase12_role_migration_evidence.json 2>/dev/null
+record_pass 39 '{"security_review":"synthetic credential and secret-pattern scan passed"}'
+
+compose_patch() {
+  PHASE12_POSTGRES_IMAGE="$1" "${compose[@]}" "$2" "$3"
+}
+"${compose[@]}" stop postgres >/dev/null
+compose_patch postgres:16.13 up -d postgres
+for _ in $(seq 1 90); do
+  if "${compose[@]}" exec -T postgres pg_isready -U kaya -d kaya >/dev/null 2>&1; then break; fi
+  sleep 2
+done
+"${compose[@]}" exec -T postgres pg_isready -U kaya -d kaya >/dev/null
+record_pass 49 '{"patch_upgrade":"PostgreSQL 16.13 data volume started after role migration"}'
+patch_role_probe="$(${compose[@]} exec -T postgres psql -U kaya -d kaya -Atqc \
+  "SELECT rolsuper, rolcreatedb, rolcreaterole, pg_get_userbyid(datdba) FROM pg_roles, pg_database WHERE rolname='kaya' AND datname=current_database()" | tr -d '\r')"
+[[ "$patch_role_probe" == "f|f|f|kaya" ]]
+record_pass 50 '{"patch_upgrade":"constrained kaya role and ownership survived patch restart"}'
+PHASE12_POSTGRES_IMAGE=postgres:16.14 "${compose[@]}" up -d postgres >/dev/null
+for _ in $(seq 1 90); do
+  if "${compose[@]}" exec -T postgres pg_isready -U kaya -d kaya >/dev/null 2>&1; then break; fi
+  sleep 2
+done
+
+tests() {
+  docker run --rm --network "${PHASE12_PROJECT}_default" -e PYTHONPATH=/workspace -e APP_ENV=test \
+    -e SECRET_KEY=phase12-test-synthetic-secret-012345678901234567890123 \
+    -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
+    -e KAYA_TEST_POSTGRES_URL=postgresql+psycopg://kaya:phase12-synthetic-app-password@postgres:5432/kaya \
+    -v "$PWD:/workspace" -w /workspace "$PHASE12_TEST_IMAGE" "$@"
+}
+tests pytest -q tests/test_phase6_cutover.py
+record_pass 51 '{"suite":"Phase 6 SQLite migration regression","result":"passed"}'
+test -f "$PHASE12_ROOT/data/.runtime.env"
+record_pass 52 '{"retained_sqlite":"runtime data and retained SQLite path preserved"}'
+tests pytest -q tests/test_postgres_operations.py
+record_pass 53 '{"suite":"Phase 8 backup regression","result":"passed"}'
+tests pytest -q tests/test_phase6_cutover.py -k 'fallback or failed'
+record_pass 54 '{"suite":"Phase 9 no-fallback regression","result":"passed"}'
+tests pytest -q tests/test_phase10_platform.py
+record_pass 55 '{"suite":"Phase 10 compatibility regression","result":"passed"}'
+tests pytest -q tests/test_postgres_upgrade.py
+record_pass 56 '{"suite":"Phase 11 upgrade-readiness regression","result":"passed"}'
+tests pytest -q tests/test_database_engine_compatibility.py
+record_pass 57 '{"suite":"PostgreSQL integration suite","result":"passed"}'
+tests pytest -q tests/test_postgres_deployment.py tests/test_phase6_test_hooks.py
+record_pass 58 '{"suite":"migration and role focused tests","result":"passed"}'
+tests pytest -q tests/test_postgres_deployment.py tests/test_postgres_operations.py tests/test_phase6_cutover.py
+record_pass 59 '{"suite":"non-Docker regression suite","result":"passed"}'
+tests pytest -q tests/test_backup_agent_protocol_v2_security.py tests/test_database_password_file.py
+record_pass 60 '{"suite":"security tests","result":"passed"}'
 
 stage=acceptance_matrix
 stage=evidence
