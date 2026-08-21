@@ -165,7 +165,7 @@ docker build --file "$ROOT_DIR/Dockerfile" --tag "$APP_IMAGE" "$ROOT_DIR"
 docker build --file "$ROOT_DIR/Dockerfile.test" --tag "$TEST_IMAGE" "$ROOT_DIR"
 compose config --quiet
 export PROJECT ROOT APP_IMAGE TEST_IMAGE SOURCE_IMAGE TARGET_IMAGE PORT ROOT_DIR PRE_UPGRADE_ARCHIVE
-export -f compose tests wait_ready start_stack setup_token smoke revision server_version latest_archive backup verify_backup preflight post_verify replace_image preflight_failure_preserves_source unsupported_major_probe role_privileges locale_inventory extension_inventory sequence_validation post_write retained_sqlite restore_app failed_after_image_replacement no_major_or_downgrade security_review
+export -f compose tests wait_ready start_stack setup_token smoke revision server_version latest_archive backup verify_backup preflight post_verify replace_image preflight_failure_preserves_source unsupported_major_probe role_privileges locale_inventory extension_inventory sequence_validation post_write worker_write retained_sqlite restore_app failed_after_image_replacement_recovers no_major_or_downgrade security_review
 
 scenario 1 "Current supported PostgreSQL pin identified" grep -q 'postgres:16.14' docker-compose.yml
 scenario 2 "PostgreSQL 16 platform contract" tests python -c 'from app.db.platform_compatibility import SUPPORTED_POSTGRES_MAJOR; assert SUPPORTED_POSTGRES_MAJOR == 16'
