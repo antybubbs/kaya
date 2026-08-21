@@ -53,10 +53,10 @@ retry_state() { local key="$1"; docker run --rm --user 0 --entrypoint python -v 
 induce_retry_failure() {
   compose exec -T postgres createdb -U kaya phase9_retry >/dev/null 2>&1 || true
   local status=0
-  docker run --rm --user 0 --network "${PROJECT}_default" --entrypoint python -v "$ROOT:/phase9" -w /app \
+  docker run --rm --user 0 --network "${PROJECT}_default" --entrypoint python -v "$ROOT:/phase9" -v "${PROJECT}_postgres_secret:/run/kaya-secrets:ro" -w /app \
     -e PYTHONPATH=/app -e APP_ENV=test -e SECRET_KEY=phase9-synthetic-secret-key-012345678901234567890123 -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
     -e KAYA_TEST_MODE=true -e KAYA_TEST_FAILPOINT=fail_during_copy -e KAYA_POSTGRES_DATABASE_URL=postgresql+psycopg://kaya@postgres:5432/phase9_retry \
-    -e DATABASE_URL=postgresql+psycopg://kaya@postgres:5432/phase9_retry "$IMAGE" scripts/kaya_phase6_upgrade.py \
+    -e DATABASE_URL=postgresql+psycopg://kaya@postgres:5432/phase9_retry -e DATABASE_PASSWORD_FILE=/run/kaya-secrets/postgres_password "$IMAGE" scripts/kaya_phase6_upgrade.py \
     --source /phase9/data/kaya.db --target-url postgresql+psycopg://kaya@postgres:5432/phase9_retry --backup-dir /phase9/retry-backups --data-dir /phase9/retry-data || status=$?
   (( status != 0 ))
 }
@@ -64,9 +64,9 @@ verify_failed_retry() { test "$(retry_state state)" = FAILED && migration_source
 retry_recovery() {
   local migration_id source_fingerprint
   migration_id="$(retry_state migration_id)"; source_fingerprint="$(retry_state source_fingerprint)"
-  docker run --rm --user 0 --network "${PROJECT}_default" --entrypoint python -v "$ROOT:/phase9" -w /app \
+  docker run --rm --user 0 --network "${PROJECT}_default" --entrypoint python -v "$ROOT:/phase9" -v "${PROJECT}_postgres_secret:/run/kaya-secrets:ro" -w /app \
     -e PYTHONPATH=/app -e APP_ENV=test -e SECRET_KEY=phase9-synthetic-secret-key-012345678901234567890123 -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
-    -e KAYA_POSTGRES_DATABASE_URL=postgresql+psycopg://kaya@postgres:5432/phase9_retry -e DATABASE_URL=postgresql+psycopg://kaya@postgres:5432/phase9_retry "$IMAGE" scripts/kaya_phase6_upgrade.py \
+    -e KAYA_POSTGRES_DATABASE_URL=postgresql+psycopg://kaya@postgres:5432/phase9_retry -e DATABASE_URL=postgresql+psycopg://kaya@postgres:5432/phase9_retry -e DATABASE_PASSWORD_FILE=/run/kaya-secrets/postgres_password "$IMAGE" scripts/kaya_phase6_upgrade.py \
     --source /phase9/data/kaya.db --target-url postgresql+psycopg://kaya@postgres:5432/phase9_retry --backup-dir /phase9/retry-backups --data-dir /phase9/retry-data \
     --clean-failed-target --migration-id "$migration_id" --source-fingerprint "$source_fingerprint" >/dev/null
   compose exec -T postgres psql -U kaya -d phase9_retry -Atc 'select version_num from alembic_version' | tr -d '\r' | grep -qx 20260818_02

@@ -181,6 +181,7 @@ def run_upgrade(source_path: Path, target_url: str, backup_dir: Path, data_dir: 
     if installation.state not in {UpgradeState.SQLITE_ACTIVE, UpgradeState.PRECHECK}:
         raise RuntimeError(f"SQLite upgrade is not eligible from state {installation.state}.")
     _write_state(marker, UpgradeState.PRECHECK, database_engine="sqlite", source_path=str(source_path))
+    dry_run: dict[str, Any] = {}
     try:
         dry_run = preflight(source_path, target_url)
         _write_state(marker, UpgradeState.MAINTENANCE, database_engine="sqlite", source_fingerprint=dry_run["source_fingerprint"], target_revision=dry_run["target_revision"], progress="writes and background workers are stopped before conversion")
@@ -216,6 +217,7 @@ def run_upgrade(source_path: Path, target_url: str, backup_dir: Path, data_dir: 
             source_path=str(source_path),
             source_fingerprint=dry_run.get("source_fingerprint"),
             target_revision=dry_run.get("target_revision"),
+            migration_id=getattr(exc, "migration_id", None),
             error=type(exc).__name__,
             recovery_artifacts_retained=True,
         )

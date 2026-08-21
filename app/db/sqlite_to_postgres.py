@@ -52,6 +52,8 @@ HA_CLUSTER_NODE_REFERENCE_COLUMNS = (
 class SQLiteToPostgresError(RuntimeError):
     """A safe conversion failure; the source and target remain inspectable."""
 
+    migration_id: str | None = None
+
 
 def _memory_snapshot() -> dict[str, int | None]:
     """Read process RSS/high-water memory; excludes PostgreSQL and filesystem cache."""
@@ -689,9 +691,11 @@ def migrate(
         except Exception:
             logger.exception("Could not mark failed migration target as incomplete")
         detail = f" {storage_classification}" if storage_classification else ""
-        raise SQLiteToPostgresError(
+        failure = SQLiteToPostgresError(
             f"SQLite-to-PostgreSQL migration failed; source and target were preserved.{detail}"
-        ) from exc
+        )
+        failure.migration_id = report["migration_id"]
+        raise failure from exc
     finally:
         source_connection.close()
     report["duration_seconds"] = round(time.monotonic() - started, 3)
