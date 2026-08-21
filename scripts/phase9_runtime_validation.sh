@@ -54,7 +54,7 @@ induce_retry_failure() {
   compose exec -T postgres createdb -U kaya phase9_retry >/dev/null 2>&1 || true
   local status=0
   docker run --rm --user 0 --network "${PROJECT}_default" --entrypoint python -v "$ROOT:/phase9" -w /app \
-    -e APP_ENV=test -e SECRET_KEY=phase9-synthetic-secret-key-012345678901234567890123 -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
+    -e PYTHONPATH=/app -e APP_ENV=test -e SECRET_KEY=phase9-synthetic-secret-key-012345678901234567890123 -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
     -e KAYA_TEST_MODE=true -e KAYA_TEST_FAILPOINT=fail_during_copy -e KAYA_POSTGRES_DATABASE_URL=postgresql+psycopg://kaya@postgres:5432/phase9_retry \
     -e DATABASE_URL=postgresql+psycopg://kaya@postgres:5432/phase9_retry "$IMAGE" scripts/kaya_phase6_upgrade.py \
     --source /phase9/data/kaya.db --target-url postgresql+psycopg://kaya@postgres:5432/phase9_retry --backup-dir /phase9/retry-backups --data-dir /phase9/retry-data || status=$?
@@ -65,7 +65,7 @@ retry_recovery() {
   local migration_id source_fingerprint
   migration_id="$(retry_state migration_id)"; source_fingerprint="$(retry_state source_fingerprint)"
   docker run --rm --user 0 --network "${PROJECT}_default" --entrypoint python -v "$ROOT:/phase9" -w /app \
-    -e APP_ENV=test -e SECRET_KEY=phase9-synthetic-secret-key-012345678901234567890123 -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
+    -e PYTHONPATH=/app -e APP_ENV=test -e SECRET_KEY=phase9-synthetic-secret-key-012345678901234567890123 -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
     -e KAYA_POSTGRES_DATABASE_URL=postgresql+psycopg://kaya@postgres:5432/phase9_retry -e DATABASE_URL=postgresql+psycopg://kaya@postgres:5432/phase9_retry "$IMAGE" scripts/kaya_phase6_upgrade.py \
     --source /phase9/data/kaya.db --target-url postgresql+psycopg://kaya@postgres:5432/phase9_retry --backup-dir /phase9/retry-backups --data-dir /phase9/retry-data \
     --clean-failed-target --migration-id "$migration_id" --source-fingerprint "$source_fingerprint" >/dev/null
