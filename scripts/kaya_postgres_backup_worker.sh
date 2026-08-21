@@ -6,6 +6,7 @@ set -Eeuo pipefail
 BACKUP_DIR="${KAYA_POSTGRES_BACKUP_DIR:-/var/backups/kaya-postgres}"
 DB_NAME="${POSTGRES_DB:-kaya}"
 DB_USER="${POSTGRES_USER:-kaya}"
+ADMIN_USER="${KAYA_POSTGRES_ADMIN_USER:-}"
 export PGHOST="${PGHOST:-postgres}"
 PASSWORD_FILE="${POSTGRES_PASSWORD_FILE:-/run/kaya-secrets/postgres_password}"
 RETENTION="${KAYA_POSTGRES_BACKUP_RETENTION:-7}"
@@ -14,6 +15,10 @@ KAYA_BUILD_SHA="${KAYA_BUILD_SHA:-unknown}"
 BACKUP_PURPOSE="${KAYA_POSTGRES_BACKUP_PURPOSE:-manual}"
 
 die() { echo "kaya-postgres-backup: $*" >&2; exit 1; }
+admin_psql() {
+  [[ -n "$ADMIN_USER" ]] || die "KAYA_POSTGRES_ADMIN_USER is required for database lifecycle operations"
+  psql --username="$ADMIN_USER" "$@"
+}
 cleanup_backup_tmp() {
   if [[ -n "${tmp_cleanup:-}" ]]; then rm -f -- "$tmp_cleanup"; fi
 }
@@ -76,8 +81,8 @@ restore_drill() {
   verify "$archive"
   metadata="$archive.json"
   expected_revision="$(sed -n 's/.*\"alembic_revision\": \"\([^\"]*\)\".*/\1/p' "$metadata")"
-  psql --username="$DB_USER" --dbname=postgres --command="DROP DATABASE IF EXISTS \"$target\";" >/dev/null
-  psql --username="$DB_USER" --dbname=postgres --command="CREATE DATABASE \"$target\";" >/dev/null
+  admin_psql --dbname=postgres --command="DROP DATABASE IF EXISTS \"$target\";" >/dev/null
+  admin_psql --dbname=postgres --command="CREATE DATABASE \"$target\" OWNER \"$DB_USER\";" >/dev/null
   pg_restore --exit-on-error --no-owner --no-privileges --username="$DB_USER" --dbname="$target" "$archive"
   restored_revision="$(psql --username="$DB_USER" --dbname="$target" --tuples-only --no-align --command='SELECT version_num FROM alembic_version LIMIT 1;' | tr -d '[:space:]')"
   [[ -n "$expected_revision" && "$restored_revision" == "$expected_revision" ]] || die "restored Alembic revision does not match backup metadata"
@@ -85,7 +90,7 @@ restore_drill() {
   asset_count="$(psql --username="$DB_USER" --dbname="$target" --tuples-only --no-align --command='SELECT count(*) FROM hardware_assets;' | tr -d '[:space:]')"
   [[ "$user_count" =~ ^[1-9][0-9]*$ && "$asset_count" =~ ^[1-9][0-9]*$ ]] || die "restored representative data is missing"
   psql --username="$DB_USER" --dbname="$target" --tuples-only --no-align --command="SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public';" | grep -q '[1-9]' || die "restore drill has no public tables"
-  psql --username="$DB_USER" --dbname=postgres --command="DROP DATABASE \"$target\";" >/dev/null
+  admin_psql --dbname=postgres --command="DROP DATABASE \"$target\";" >/dev/null
   echo "restore-drill passed revision=$restored_revision users=$user_count assets=$asset_count"
 }
 diagnostics() {

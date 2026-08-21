@@ -66,9 +66,6 @@ wait_ready() {
 
 start_stack() {
     compose up -d >/dev/null && wait_ready && \
-        if compose exec -T postgres psql -U kaya -d postgres -Atc "SELECT rolsuper FROM pg_roles WHERE rolname = 'kaya';" | tr -d '\r' | grep -qx t; then \
-            compose exec -T postgres psql -U kaya -d postgres -c 'ALTER ROLE kaya NOSUPERUSER;' >/dev/null; \
-        fi && \
         compose exec -T postgres psql -U kaya -d kaya -c \
         "INSERT INTO remote_manager_settings (key, value, updated_at) VALUES ('high_availability_enabled', '1', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at; INSERT INTO user_module_permissions (user_id, module_key, allowed, created_by, created_at, updated_at) SELECT id, 'high_availability', true, id, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP FROM users ON CONFLICT (user_id, module_key) DO UPDATE SET allowed = true, updated_at = EXCLUDED.updated_at;" >/dev/null
 }
@@ -115,9 +112,19 @@ unsupported_major_probe() {
 role_privileges() {
     local probe
     probe="$(compose exec -T postgres psql -U kaya -d kaya -Atc \
-        "SELECT (rolsuper = false AND has_database_privilege('kaya', current_database(), 'CONNECT') AND has_schema_privilege('kaya', 'public', 'USAGE')) || '|' || rolsuper || '|' || has_database_privilege('kaya', current_database(), 'CONNECT') || '|' || has_schema_privilege('kaya', 'public', 'USAGE') FROM pg_roles WHERE rolname='kaya';" | tr -d '\r')"
+        "SELECT (rolsuper = false AND rolcreaterole = false AND rolcreatedb = false AND rolcanlogin = true AND has_database_privilege('kaya', current_database(), 'CONNECT') AND has_schema_privilege('kaya', 'public', 'USAGE') AND pg_get_userbyid(datdba) = 'kaya' AND pg_get_userbyid(nspowner) = 'kaya') || '|' || rolsuper || '|' || rolcreaterole || '|' || rolcreatedb || '|' || rolcanlogin || '|' || has_database_privilege('kaya', current_database(), 'CONNECT') || '|' || has_schema_privilege('kaya', 'public', 'USAGE') || '|' || (pg_get_userbyid(datdba) = 'kaya') || '|' || (pg_get_userbyid(nspowner) = 'kaya') FROM pg_roles, pg_database, pg_namespace WHERE rolname='kaya' AND datname=current_database() AND nspname='public';" | tr -d '\r')"
     echo "role privilege probe=$probe"
-    [[ "$probe" == "t|f|t|t" ]]
+    [[ "$probe" == "t|f|f|f|t|t|t|t|t" ]]
+}
+
+role_metadata() {
+    compose exec -T postgres psql -U kaya -d kaya -Atc \
+        "SELECT current_user || '|' || rolsuper || '|' || rolcreaterole || '|' || rolcreatedb || '|' || rolcanlogin || '|' || pg_get_userbyid(datdba) || '|' || pg_get_userbyid(nspowner) FROM pg_roles, pg_database, pg_namespace WHERE rolname='kaya' AND datname=current_database() AND nspname='public';" | tr -d '\r'
+}
+
+privilege_persistence() {
+    [[ -n "${ROLE_BEFORE:-}" ]] || return 1
+    [[ "$(role_metadata)" == "$ROLE_BEFORE" ]] && role_privileges && sequence_validation && representative_data
 }
 
 locale_inventory() { compose exec -T postgres psql -U kaya -d kaya -Atc "SELECT pg_encoding_to_char(encoding), datcollate, datctype, datlocprovider FROM pg_database WHERE datname=current_database();" | grep -q '|'; }
@@ -137,8 +144,8 @@ retained_sqlite() { sha256sum "$ROOT/data/retained-legacy.sqlite3" | awk '{print
 
 restore_app() {
     local archive="$1" container="${PROJECT}_restore_app" target="kaya_phase11_restore"
-    compose exec -T postgres psql -U kaya -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS $target;" >/dev/null
-    compose exec -T postgres psql -U kaya -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE $target OWNER kaya;" >/dev/null
+    compose exec -T postgres bash -c 'export PGPASSWORD="$(< /run/kaya-secrets/postgres_password)"; psql -U kaya_bootstrap -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS kaya_phase11_restore;"' >/dev/null
+    compose exec -T postgres bash -c 'export PGPASSWORD="$(< /run/kaya-secrets/postgres_password)"; psql -U kaya_bootstrap -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE kaya_phase11_restore OWNER kaya;"' >/dev/null
     compose --profile phase11-ops run --rm --no-deps --entrypoint bash postgres-backup -c \
         "export PGPASSWORD=\"\$(<\"\$POSTGRES_PASSWORD_FILE\")\"; pg_restore --exit-on-error --no-owner --no-privileges -U kaya -d \"$target\" \"/var/backups/kaya-postgres/$archive\""
     docker rm -f "$container" >/dev/null 2>&1 || true
@@ -152,7 +159,7 @@ restore_app() {
     for _ in $(seq 1 120); do curl --fail --silent --max-time 3 "http://127.0.0.1:$((PORT + 1))/healthz" >/dev/null 2>&1 && break; sleep 2; done
     PHASE7D_HTTP_BASE="http://127.0.0.1:$((PORT + 1))" KAYA_SETUP_TOKEN="$(setup_token)" python "$ROOT_DIR/scripts/phase7d_http_smoke.py"
     docker rm -f "$container" >/dev/null
-    compose exec -T postgres psql -U kaya -d postgres -c "DROP DATABASE IF EXISTS $target;" >/dev/null
+    compose exec -T postgres bash -c 'export PGPASSWORD="$(< /run/kaya-secrets/postgres_password)"; psql -U kaya_bootstrap -d postgres -c "DROP DATABASE IF EXISTS kaya_phase11_restore;"' >/dev/null
 }
 
 failed_after_image_replacement_recovers() {
@@ -195,6 +202,7 @@ export -f compose tests app_exec wait_ready start_stack setup_token smoke revisi
 scenario 1 "Current supported PostgreSQL pin identified" grep -q 'postgres:16.14' docker-compose.yml
 scenario 2 "PostgreSQL 16 platform contract" tests python -c 'from app.db.platform_compatibility import SUPPORTED_POSTGRES_MAJOR; assert SUPPORTED_POSTGRES_MAJOR == 16'
 scenario 3 "Patch-upgrade preflight" start_stack
+ROLE_BEFORE="$(role_metadata)"
 scenario 4 "Preflight requires verified backup" bash -c 'if preflight "$TARGET_IMAGE" >/dev/null 2>&1; then exit 1; fi'
 scenario 5 "Preflight rejects unsupported target major" bash -c 'if preflight postgres:17.5 >/dev/null 2>&1; then exit 1; fi'
 scenario 6 "Older PostgreSQL 16.x starts" bash -c '[[ "$(server_version)" == 16.13* ]]'
@@ -227,7 +235,7 @@ scenario 30 "Restored representative data" bash -c 'verify_backup "$PRE_UPGRADE_
 scenario 31 "Kaya reads restored DB" restore_app "$PRE_UPGRADE_ARCHIVE"
 scenario 32 "Kaya writes restored DB" post_write
 scenario 33 "PostgreSQL role remains non-superuser" role_privileges
-scenario 34 "DB ownership/privileges preserved" role_privileges
+scenario 34 "DB ownership/privileges preserved" privilege_persistence
 scenario 35 "Installed extension inventory" extension_inventory
 scenario 36 "Encoding/collation/locale inventory" locale_inventory
 scenario 37 "PostgreSQL 15 rejected/handled per policy" unsupported_major_probe 15 postgres:15.14

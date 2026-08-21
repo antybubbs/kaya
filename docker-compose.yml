@@ -22,8 +22,8 @@ services:
       - ${KAYA_DATA_DIR:-./data}/remote-recordings:/app/data/remote-recordings
       - kaya_phase6_postgres_secret:/run/kaya-secrets:ro
     depends_on:
-      postgres:
-        condition: service_healthy
+      postgres-role-init:
+        condition: service_completed_successfully
     security_opt:
       - no-new-privileges:true
     cap_add:
@@ -93,7 +93,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_DB: kaya
-      POSTGRES_USER: kaya
+      POSTGRES_USER: kaya_bootstrap
       POSTGRES_PASSWORD_FILE: /run/kaya-secrets/postgres_password
     volumes:
       - kaya_postgres_data:/var/lib/postgresql/data
@@ -103,11 +103,38 @@ services:
       postgres-secret-init:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U kaya -d kaya"]
+      test: ["CMD-SHELL", "pg_isready -U kaya_bootstrap -d kaya"]
       interval: 5s
       timeout: 5s
       retries: 30
       start_period: 10s
+
+  postgres-role-init:
+    image: ${KAYA_POSTGRES_IMAGE:-postgres:16.14}
+    restart: "no"
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: kaya_bootstrap
+      POSTGRES_PASSWORD_FILE: /run/kaya-secrets/postgres_password
+    entrypoint: ["/bin/bash", "-ec"]
+    command:
+      - >-
+        password="$$(<"$${POSTGRES_PASSWORD_FILE}")";
+        export PGPASSWORD="$$password";
+        {
+          printf '%s\n' "\\set app_password '$$password'";
+          printf '%s\n' "SELECT format('CREATE ROLE kaya LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD %L', :'app_password') WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'kaya');";
+          printf '%s\n' '\\gexec';
+          printf '%s\n' "ALTER ROLE kaya LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD :'app_password';";
+          printf '%s\n' 'ALTER DATABASE kaya OWNER TO kaya;';
+        } | psql -h postgres -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}" -v ON_ERROR_STOP=1;
+        psql -h postgres -U "$${POSTGRES_USER}" -d kaya -v ON_ERROR_STOP=1 -c 'ALTER SCHEMA public OWNER TO kaya;';
+        unset PGPASSWORD password
+    volumes:
+      - kaya_phase6_postgres_secret:/run/kaya-secrets:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
 
 networks:
   default:

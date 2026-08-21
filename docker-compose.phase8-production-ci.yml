@@ -21,6 +21,7 @@ services:
     environment:
       POSTGRES_DB: kaya
       POSTGRES_USER: kaya
+      KAYA_POSTGRES_ADMIN_USER: kaya_bootstrap
       POSTGRES_PASSWORD_FILE: /run/kaya-secrets/postgres_password
       PGHOST: postgres
       KAYA_POSTGRES_BACKUP_RETENTION: ${KAYA_POSTGRES_BACKUP_RETENTION:-2}

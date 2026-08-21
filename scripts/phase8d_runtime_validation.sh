@@ -210,8 +210,8 @@ image_replacement() {
 restored_database_read() {
     local archive target="kaya_phase8_restored" image="${KAYA_IMAGE:?KAYA_IMAGE is required}"
     archive="$(latest_archive)"
-    compose exec -T postgres bash -c "export PGPASSWORD=\"\$(< /run/kaya-secrets/postgres_password)\"; psql -U kaya -d postgres -v ON_ERROR_STOP=1 -c \"DROP DATABASE IF EXISTS $target;\"" >/dev/null
-    compose exec -T postgres bash -c "export PGPASSWORD=\"\$(< /run/kaya-secrets/postgres_password)\"; psql -U kaya -d postgres -v ON_ERROR_STOP=1 -c \"CREATE DATABASE $target OWNER kaya;\"" >/dev/null
+    compose exec -T postgres bash -c "export PGPASSWORD=\"\$(< /run/kaya-secrets/postgres_password)\"; psql -U kaya_bootstrap -d postgres -v ON_ERROR_STOP=1 -c \"DROP DATABASE IF EXISTS $target;\"" >/dev/null
+    compose exec -T postgres bash -c "export PGPASSWORD=\"\$(< /run/kaya-secrets/postgres_password)\"; psql -U kaya_bootstrap -d postgres -v ON_ERROR_STOP=1 -c \"CREATE DATABASE $target OWNER kaya;\"; psql -U kaya_bootstrap -d $target -v ON_ERROR_STOP=1 -c \"ALTER SCHEMA public OWNER TO kaya;\"" >/dev/null
     compose exec -T postgres bash -c "export PGPASSWORD=\"\$(< /run/kaya-secrets/postgres_password)\"; pg_restore -U kaya -d $target --exit-on-error --no-owner --no-privileges /var/backups/kaya-postgres/$archive"
     docker rm -f kaya_phase8_restore_app >/dev/null 2>&1 || true
     docker run -d --name kaya_phase8_restore_app --network "${PROJECT}_default" -p 18081:8080 \

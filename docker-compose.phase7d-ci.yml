@@ -37,6 +37,10 @@ services:
       - postgres_secret:/run/kaya-secrets:ro
       - ${PHASE7D_ROOT}/backups:/var/backups/kaya-postgres
 
+  postgres-role-init:
+    volumes: !override
+      - postgres_secret:/run/kaya-secrets:ro
+
 volumes:
   postgres_data:
     name: ${PHASE7D_PROJECT}_postgres_data

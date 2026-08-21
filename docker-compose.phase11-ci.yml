@@ -13,12 +13,18 @@ services:
   postgres:
     image: ${PHASE11_POSTGRES_IMAGE:?PHASE11_POSTGRES_IMAGE is required}
 
+  postgres-role-init:
+    image: ${PHASE11_POSTGRES_IMAGE}
+    volumes: !override
+      - postgres_secret:/run/kaya-secrets:ro
+
   postgres-backup:
     image: ${PHASE11_POSTGRES_IMAGE}
     profiles: [phase11-ops]
     environment:
       POSTGRES_DB: kaya
       POSTGRES_USER: kaya
+      KAYA_POSTGRES_ADMIN_USER: kaya_bootstrap
       POSTGRES_PASSWORD_FILE: /run/kaya-secrets/postgres_password
       PGHOST: postgres
       KAYA_POSTGRES_BACKUP_RETENTION: "20"
