@@ -24,6 +24,15 @@ cleanup() {
     python scripts/kaya_validation_resources.py cleanup --manifest "$manifest"
   fi
   python scripts/kaya_validation_resources.py cleanup-compose --project "$PHASE12_PROJECT" >/dev/null 2>&1 || true
+  # Phase 12A is the authoritative protected-resource cleanup probe.  Run it
+  # only after the role-topology stack has been torn down, and record row 63
+  # only when its disposable-resource and protected-sentinel assertions pass.
+  if GITHUB_RUN_ID="${GITHUB_RUN_ID:-local}" GITHUB_RUN_ATTEMPT="${GITHUB_RUN_ATTEMPT:-1}" \
+      bash scripts/phase12a_cleanup_validation.sh >/dev/null 2>&1; then
+    python scripts/phase12_acceptance_evidence.py --output phase12_acceptance.json \
+      --scenario 63 --status PASS \
+      --evidence '{"cleanup":"exact disposable resources removed","protected_sentinel":"preserved","unknown_resources":"fail-closed"}' >/dev/null || true
+  fi
   rm -f -- "$manifest" "$config_json" phase12_resources_discovered.json
   if [[ ! -f phase12_acceptance.json ]]; then
     PHASE12_FAILURE_STAGE="${stage:-unknown}" PHASE12_FAILURE_STATUS="$status" python -c 'import json,os; json.dump({"phase":"12","status":"FAIL","stage":os.environ["PHASE12_FAILURE_STAGE"],"first_failure":"validation stopped before the complete matrix","resources_created":False,"cleanup_status":"attempted"},open("phase12_acceptance.json","w"),indent=2); open("phase12_acceptance.json","a").write(chr(10))'
@@ -42,6 +51,23 @@ record_pass() {
 stage=compose_preflight
 "${compose[@]}" config --format json > "$config_json"
 record_pass 61 '{"compose":"merged Phase 12 configuration rendered"}'
+python - <<'PY'
+from pathlib import Path
+
+workflow = Path('.github/workflows/phase12-runtime.yml').read_text(encoding='utf-8')
+required = (
+    'workflow_dispatch:',
+    'push:',
+    'pull_request:',
+    'Phase 12 PostgreSQL Role Topology Migration Validation',
+    'scripts/phase12_runtime_validation.sh',
+)
+missing = [item for item in required if item not in workflow]
+if missing:
+    raise SystemExit(f'workflow validation missing required entry: {missing!r}')
+PY
+bash -n scripts/phase12_runtime_validation.sh scripts/phase12a_cleanup_validation.sh
+record_pass 62 '{"workflow":"dispatch and push/pull_request triggers plus shell syntax validated"}'
 stage=resource_preflight
 resources="$(python scripts/kaya_validation_resources.py validate-config --project "$PHASE12_PROJECT" --config "$config_json")"
 printf '%s\n' "$resources" > phase12_resources_discovered.json

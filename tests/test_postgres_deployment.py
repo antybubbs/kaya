@@ -168,6 +168,15 @@ def test_phase12_runtime_starts_application_without_rerunning_legacy_backup():
     assert 'up -d --no-deps kaya' in script
 
 
+def test_phase12_runtime_validates_workflow_and_exact_cleanup():
+    script = Path("scripts/phase12_runtime_validation.sh").read_text(encoding="utf-8")
+
+    assert "workflow_dispatch:" in Path(".github/workflows/phase12-runtime.yml").read_text(encoding="utf-8")
+    assert "record_pass 62" in script
+    assert "phase12a_cleanup_validation.sh" in script
+    assert "--scenario 63 --status PASS" in script
+
+
 def test_phase11_backup_lifecycle_uses_admin_role_without_granting_app_createdb():
     compose = Path("docker-compose.phase11-ci.yml").read_text(encoding="utf-8")
     worker = Path("scripts/kaya_postgres_backup_worker.sh").read_text(encoding="utf-8")
