@@ -134,11 +134,17 @@ setup_token="$("${compose[@]}" exec -T kaya sh -c "sed -n 's/^SETUP_TOKEN=//p' /
 PHASE7D_HTTP_BASE="http://127.0.0.1:${PHASE12_HTTP_PORT:-18132}" KAYA_SETUP_TOKEN="$setup_token" KAYA_PHASE7D_SETUP_ONLY=1 python scripts/phase7d_http_smoke.py
 "${compose[@]}" exec -T kaya python -c 'from app.db.session import SessionLocal; from app.models.models import RemoteManagerSetting, User, UserModulePermission; db=SessionLocal(); user=db.query(User).filter_by(email="synthetic@example.invalid").one(); permission=db.query(UserModulePermission).filter_by(user_id=user.id, module_key="high_availability").first(); permission=permission or UserModulePermission(user_id=user.id, module_key="high_availability", allowed=True, created_by=user.id); db.add(permission); setting=db.query(RemoteManagerSetting).filter_by(key="high_availability_enabled").first(); setting=setting or RemoteManagerSetting(key="high_availability_enabled"); setting.value="1"; db.add(setting); db.commit(); db.close()'
 PHASE7D_HTTP_BASE="http://127.0.0.1:${PHASE12_HTTP_PORT:-18132}" python scripts/phase7d_http_smoke.py
+grep -q '"context": "http_request".*"database_role": "kaya"' "$PHASE12_ROOT/data/phase12-observability.jsonl"
+record_pass 27 '{"http_observation":"phase12 test-only DB identity probe","database_role":"kaya"}'
+! grep -q '"database_role": "kaya_bootstrap"' "$PHASE12_ROOT/data/phase12-observability.jsonl"
+record_pass 29 '{"bootstrap_role_observation":"absent from runtime HTTP identity evidence"}'
 record_pass 24 '{"authenticated_http":"phase7d_http_smoke","synthetic_credentials":true}'
 record_pass 25 '{"application_write":"phase7d_http_smoke asset and dashboard writes"}'
 "${compose[@]}" exec -T -e PYTHONPATH=/app -e KAYA_TEST_MODE=true -e KAYA_TEST_OBSERVABILITY_FILE=/app/data/phase12-observability.jsonl kaya \
   python -c 'from app.db.phase6_test_hooks import worker_write; from app.db.session import SessionLocal, database_write_context; from app.models.models import AuditLog; db=SessionLocal(); ctx=database_write_context("dns_collector", "phase12_worker_write"); ctx.__enter__(); db.add(AuditLog(action="phase12.worker", entity="synthetic", entity_id="phase12", detail="synthetic", category="activity", severity="info", status_code=200, capture_tier="standard")); db.commit(); worker_write("dns_collector", "postgresql"); ctx.__exit__(None, None, None); db.close()'
 grep -q '"database_engine": "postgresql"' "$PHASE12_ROOT/data/phase12-observability.jsonl"
+grep -q '"context": "dns_collector".*"database_role": "kaya"' "$PHASE12_ROOT/data/phase12-observability.jsonl"
+record_pass 28 '{"worker_observation":"phase12 test-only DB identity probe","database_role":"kaya"}'
 record_pass 26 '{"worker_write":"committed","database_engine":"postgresql"}'
 app_secret_fingerprint="$("${compose[@]}" exec -T kaya sha256sum /run/kaya-secrets/postgres_password | awk '{print $1}' | tr -d '\r')"
 bootstrap_secret_fingerprint="$("${compose[@]}" exec -T kaya sha256sum /run/kaya-secrets/postgres_bootstrap_password | awk '{print $1}' | tr -d '\r')"
