@@ -223,14 +223,14 @@ record_pass 33 '{"interrupted_state":"missing verified marker failed closed, the
 record_pass 37 '{"missing_backup":"mutation refused before role change"}'
 
 "${compose[@]}" exec -T postgres psql -U kaya_bootstrap -d postgres -v ON_ERROR_STOP=1 -c \
-  "ALTER DATABASE kaya OWNER TO postgres" >/dev/null
+  "ALTER SCHEMA public OWNER TO kaya_bootstrap" >/dev/null
 set +e
 "${compose[@]}" run --rm --no-deps postgres-role-init >/dev/null 2>&1
 ambiguous_status=$?
 set -e
 [[ "$ambiguous_status" -ne 0 ]]
 "${compose[@]}" exec -T postgres psql -U kaya_bootstrap -d postgres -v ON_ERROR_STOP=1 -c \
-  "ALTER DATABASE kaya OWNER TO kaya" >/dev/null
+  "ALTER SCHEMA public OWNER TO kaya" >/dev/null
 record_pass 34 '{"ambiguous_topology":"failed closed without mutation"}'
 
 "${compose[@]}" exec -T postgres psql -U kaya_bootstrap -d postgres -v ON_ERROR_STOP=1 -c \
