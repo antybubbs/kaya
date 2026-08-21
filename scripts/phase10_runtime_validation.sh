@@ -27,12 +27,12 @@ production_sqlite_rejection() {
 security_review() {
     ! grep -R -n -E "postgresql[^[:space:]]*://[^:[:space:]]+:[^$<{@[:space:]]+@|BEGIN (RSA|OPENSSH|EC) PRIVATE KEY|SETUP_TOKEN=[A-Za-z0-9]" \
         .github scripts docs app --exclude="*.min.js" --exclude="phase*_runtime_validation.sh" --exclude="phase*_http_smoke.py" --exclude="tests.yml" --exclude="postgres_scale_validation.py" \
-        && grep -q 'target=.*\[a-zA-Z_\]' scripts/kaya_postgres_backup_worker.sh \
+        && grep -q 'target=.*[a-zA-Z_]' scripts/kaya_postgres_backup_worker.sh \
         && grep -q 'POSTGRES_ACTIVE' app/db/phase6_cutover.py
 }
 export PROJECT ROOT ROOT_DIR IMAGE TEST_IMAGE PORT
 export -f compose wait_ready start_stack tests graph about_metadata production_sqlite_rejection security_review
-cleanup() { set +e; compose down -v --remove-orphans >/dev/null 2>&1; docker run --rm --user 0 --entrypoint sh -v "$ROOT:/data" "$IMAGE" -c 'chown -R 1000:1000 /data' >/dev/null 2>&1; rm -rf -- "$ROOT"; }
+cleanup() { set +e; compose down -v --remove-orphans >/dev/null 2>&1; docker run --rm --user 0 --entrypoint sh -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" -v "$ROOT:/data" "$IMAGE" -c 'chown -R "$HOST_UID:$HOST_GID" /data' >/dev/null 2>&1; rm -rf -- "$ROOT"; }
 trap cleanup EXIT
 
 mkdir -p "$ROOT/data/remote-recordings" "$ROOT/uploads" "$ROOT/secrets" "$ROOT/backups"
