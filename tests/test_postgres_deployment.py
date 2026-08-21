@@ -121,10 +121,16 @@ def test_phase12_backup_marker_is_bound_to_verified_archive(tmp_path, monkeypatc
 
 
 def test_phase12_acceptance_matrix_fails_closed_for_unexecuted_rows():
-    evidence = Path("scripts/phase12_acceptance_evidence.py").read_text(encoding="utf-8")
+    import importlib.util
 
-    assert 'dict.fromkeys(SCENARIOS, "BLOCKED")' in evidence
-    assert "PHASE12_PASS_ROWS" in evidence
+    spec = importlib.util.spec_from_file_location("phase12_acceptance_evidence", "scripts/phase12_acceptance_evidence.py")
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    assert sorted(module.SCENARIOS) == list(range(1, 64))
+    assert len(module.SCENARIOS) == 63
+    assert len(set(module.SCENARIOS)) == 63
+    assert all(row["status"] == "BLOCKED" for row in module.fresh().values())
 
 
 def test_phase12_legacy_overlay_uses_historical_postgres_bootstrap_user():
