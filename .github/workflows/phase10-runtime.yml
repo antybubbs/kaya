@@ -63,4 +63,5 @@ jobs:
           PHASE7D_IMAGE="$PHASE10_IMAGE" \
           PHASE7D_HTTP_PORT=18110 \
           PHASE7D_GATEWAY_PORT=18210 \
-          docker compose -p "$PHASE10_PROJECT" -f docker-compose.yml -f docker-compose.phase7d-ci.yml down -v --remove-orphans
+          docker compose -p "$PHASE10_PROJECT" -f docker-compose.yml -f docker-compose.phase7d-ci.yml down --remove-orphans
+          python scripts/kaya_validation_resources.py cleanup-compose --project "$PHASE10_PROJECT"

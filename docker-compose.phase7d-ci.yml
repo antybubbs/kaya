@@ -40,6 +40,13 @@ services:
   postgres-role-init:
     volumes: !override
       - postgres_secret:/run/kaya-secrets:ro
+      - ${PHASE7D_ROOT}/backups:/var/backups/kaya-postgres:ro
+
+  postgres-role-migration-backup:
+    volumes: !override
+      - postgres_secret:/run/kaya-secrets:ro
+      - ${PHASE7D_ROOT}/backups:/var/backups/kaya-postgres
+      - ./scripts/kaya_postgres_backup_worker.sh:/usr/local/bin/kaya_postgres_backup_worker.sh:ro
 
 volumes:
   postgres_data:

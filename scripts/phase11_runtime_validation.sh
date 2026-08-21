@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT="${PHASE11_PROJECT:?PHASE11_PROJECT is required}"
+python "$ROOT_DIR/scripts/kaya_validation_resources.py" validate-project --project "$PROJECT"
 ROOT="${PHASE11_ROOT:?PHASE11_ROOT is required}"
 APP_IMAGE="${PHASE11_APP_IMAGE:?PHASE11_APP_IMAGE is required}"
 TEST_IMAGE="${PHASE11_TEST_IMAGE:?PHASE11_TEST_IMAGE is required}"
@@ -144,8 +145,8 @@ retained_sqlite() { sha256sum "$ROOT/data/retained-legacy.sqlite3" | awk '{print
 
 restore_app() {
     local archive="$1" container="${PROJECT}_restore_app" target="kaya_phase11_restore"
-    compose exec -T postgres bash -c 'export PGPASSWORD="$(< /run/kaya-secrets/postgres_password)"; psql -U kaya_bootstrap -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS kaya_phase11_restore;"' >/dev/null
-    compose exec -T postgres bash -c 'export PGPASSWORD="$(< /run/kaya-secrets/postgres_password)"; psql -U kaya_bootstrap -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE kaya_phase11_restore OWNER kaya;"' >/dev/null
+    compose exec -T postgres bash -c 'export PGPASSWORD="$(< /run/kaya-secrets/postgres_bootstrap_password)"; psql -U kaya_bootstrap -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS kaya_phase11_restore;"' >/dev/null
+    compose exec -T postgres bash -c 'export PGPASSWORD="$(< /run/kaya-secrets/postgres_bootstrap_password)"; psql -U kaya_bootstrap -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE kaya_phase11_restore OWNER kaya;"' >/dev/null
     compose --profile phase11-ops run --rm --no-deps --entrypoint bash postgres-backup -c \
         "export PGPASSWORD=\"\$(<\"\$POSTGRES_PASSWORD_FILE\")\"; pg_restore --exit-on-error --no-owner --no-privileges -U kaya -d \"$target\" \"/var/backups/kaya-postgres/$archive\""
     docker rm -f "$container" >/dev/null 2>&1 || true
@@ -159,7 +160,7 @@ restore_app() {
     for _ in $(seq 1 120); do curl --fail --silent --max-time 3 "http://127.0.0.1:$((PORT + 1))/healthz" >/dev/null 2>&1 && break; sleep 2; done
     PHASE7D_HTTP_BASE="http://127.0.0.1:$((PORT + 1))" KAYA_SETUP_TOKEN="$(setup_token)" python "$ROOT_DIR/scripts/phase7d_http_smoke.py"
     docker rm -f "$container" >/dev/null
-    compose exec -T postgres bash -c 'export PGPASSWORD="$(< /run/kaya-secrets/postgres_password)"; psql -U kaya_bootstrap -d postgres -c "DROP DATABASE IF EXISTS kaya_phase11_restore;"' >/dev/null
+    compose exec -T postgres bash -c 'export PGPASSWORD="$(< /run/kaya-secrets/postgres_bootstrap_password)"; psql -U kaya_bootstrap -d postgres -c "DROP DATABASE IF EXISTS kaya_phase11_restore;"' >/dev/null
 }
 
 failed_after_image_replacement_recovers() {
@@ -182,7 +183,8 @@ security_review() {
 
 cleanup() {
     set +e
-    compose down -v --remove-orphans >/dev/null 2>&1
+    compose down --remove-orphans >/dev/null 2>&1
+    python "$ROOT_DIR/scripts/kaya_validation_resources.py" cleanup-compose --project "$PROJECT" >/dev/null 2>&1
     docker rm -f "${PROJECT}_pg15" "${PROJECT}_pg17" "${PROJECT}_restore_app" >/dev/null 2>&1
     docker run --rm --user 0 --entrypoint sh -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
         -v "$ROOT:/data" "$APP_IMAGE" -c 'chown -R "$HOST_UID:$HOST_GID" /data' >/dev/null 2>&1
@@ -258,7 +260,7 @@ scenario 53 "Non-Docker regression suite" tests pytest -q tests/test_postgres_de
 scenario 54 "Security/secret review" security_review
 scenario 55 "Compose validation" compose config --quiet
 scenario 56 "Workflow validation" bash -c 'grep -q workflow_dispatch "$ROOT_DIR/.github/workflows/phase11-runtime.yml"'
-scenario 57 "Cleanup/isolation" bash -c 'compose down -v --remove-orphans >/dev/null; test "$(docker ps -aq --filter "name=^${PROJECT}_" | wc -l)" = 0'
+scenario 57 "Cleanup/isolation" bash -c 'compose down --remove-orphans >/dev/null; python "$ROOT_DIR/scripts/kaya_validation_resources.py" cleanup-compose --project "$PROJECT" >/dev/null; test "$(docker ps -aq --filter "name=^${PROJECT}_" | wc -l)" = 0'
 
 export PHASE11_PASS_ROWS="$(IFS=,; echo "${PASS_ROWS[*]}")"
 export PHASE11_FAIL_ROWS="$(IFS=,; echo "${FAIL_ROWS[*]}")"

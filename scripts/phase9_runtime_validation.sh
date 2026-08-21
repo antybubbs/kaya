@@ -6,6 +6,7 @@ set -Eeuo pipefail
 # migration and application behaviour; this script adds lifecycle assertions.
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT="${PHASE9_PROJECT:?PHASE9_PROJECT is required}"
+python "$ROOT_DIR/scripts/kaya_validation_resources.py" validate-project --project "$PROJECT"
 ROOT="${PHASE9_ROOT:?PHASE9_ROOT is required}"
 IMAGE="${PHASE9_IMAGE:?PHASE9_IMAGE is required}"
 TEST_IMAGE="${PHASE9_TEST_IMAGE:-$IMAGE}"
@@ -83,7 +84,8 @@ production_sqlite_rejection() {
 
 cleanup() {
   set +e
-  compose down -v --remove-orphans >/dev/null 2>&1
+  compose down --remove-orphans >/dev/null 2>&1
+  python "$ROOT_DIR/scripts/kaya_validation_resources.py" cleanup-compose --project "$PROJECT" >/dev/null 2>&1
   docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c "chown -R $(id -u):$(id -g) /data" >/dev/null 2>&1
   rm -rf -- "$ROOT"
 }
@@ -111,7 +113,8 @@ scenario 9 "No SQLite migration rerun" bash -c '! compose logs --no-color kaya |
 
 # Replace the fresh project with an isolated legacy fixture while retaining
 # the same run-scoped resource naming and cleanup boundary.
-compose down -v --remove-orphans >/dev/null
+compose down --remove-orphans >/dev/null
+python "$ROOT_DIR/scripts/kaya_validation_resources.py" cleanup-compose --project "$PROJECT" >/dev/null
 docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c 'rm -f /data/kaya.db'
 docker run --rm --entrypoint python -e PYTHONPATH=/app -e APP_ENV=test -e SECRET_KEY=phase9-synthetic-secret-key-012345678901234567890123 -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= -v "$ROOT/data:/app/data" -w /app "$IMAGE" scripts/generate_sqlite_migration_fixture.py /app/data/kaya.db --functional
 legacy_before="$(source_hash)"
@@ -173,7 +176,7 @@ scenario 43 "Compose validation" docker compose -f "$PRIMARY" -f "$ISOLATION" co
 scenario 44 "Migration-chain validation" bash -c '[[ "$(revision)" == "20260818_02" ]]'
 
 resource_count="$(docker ps -aq --filter "name=^${PROJECT}_" | wc -l)"
-cleanup_phase9() { compose down -v --remove-orphans >/dev/null; [[ "$(docker ps -aq --filter "name=^${PROJECT}_" | wc -l)" == "0" ]]; }
+cleanup_phase9() { compose down --remove-orphans >/dev/null; python "$ROOT_DIR/scripts/kaya_validation_resources.py" cleanup-compose --project "$PROJECT" >/dev/null; [[ "$(docker ps -aq --filter "name=^${PROJECT}_" | wc -l)" == "0" ]]; }
 scenario 45 "Cleanup and isolation" cleanup_phase9
 
 export PHASE9_PASS_ROWS="$(IFS=,; echo "${PASS_ROWS[*]}")"

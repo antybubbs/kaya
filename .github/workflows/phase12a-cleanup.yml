@@ -1,0 +1,41 @@
+name: Phase 12A Cleanup Isolation Validation
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/phase12a-cleanup.yml'
+      - 'docker-compose.yml'
+      - 'docker-compose.phase12a-ci.yml'
+      - 'scripts/kaya_validation_resources.py'
+      - 'scripts/phase12a_*.py'
+      - 'scripts/phase12a_*.sh'
+      - 'tests/test_validation_resources.py'
+  pull_request:
+    paths:
+      - '.github/workflows/phase12a-cleanup.yml'
+      - 'docker-compose.yml'
+      - 'docker-compose.phase12a-ci.yml'
+      - 'scripts/kaya_validation_resources.py'
+      - 'scripts/phase12a_*.py'
+      - 'scripts/phase12a_*.sh'
+      - 'tests/test_validation_resources.py'
+
+jobs:
+  cleanup-isolation:
+    name: Disposable Phase 12A cleanup isolation matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run static and Docker sentinel validation
+        run: bash scripts/phase12a_cleanup_validation.sh
+      - name: Upload redacted Phase 12A evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase12a-cleanup-evidence
+          path: |
+            phase12a_cleanup_acceptance.json
+            phase12a_resource_inventory.json
+          if-no-files-found: warn

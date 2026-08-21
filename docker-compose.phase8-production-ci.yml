@@ -2,26 +2,27 @@
 # Phase 8-specific disposable names; the service graph remains docker-compose.yml.
 services:
   kaya:
-    container_name: kaya_phase8_kaya
+    container_name: ${KAYA_PHASE8_PROJECT:?KAYA_PHASE8_PROJECT is required}_kaya
     environment:
       KAYA_TEST_MODE: "true"
       KAYA_TEST_OBSERVABILITY_FILE: /app/data/phase8-observability.jsonl
   secure-send-gateway:
-    container_name: kaya_phase8_secure_send
+    container_name: ${KAYA_PHASE8_PROJECT}_secure_send
   guacd:
-    container_name: kaya_phase8_guacd
+    container_name: ${KAYA_PHASE8_PROJECT}_guacd
   postgres-secret-init:
-    container_name: kaya_phase8_postgres_secret_init
+    container_name: ${KAYA_PHASE8_PROJECT}_postgres_secret_init
   postgres:
-    container_name: kaya_phase8_postgres
+    container_name: ${KAYA_PHASE8_PROJECT}_postgres
   postgres-backup:
     image: postgres:16.14
-    container_name: kaya_phase8_backup
+    container_name: ${KAYA_PHASE8_PROJECT}_backup
     profiles: [postgres-ops]
     environment:
       POSTGRES_DB: kaya
       POSTGRES_USER: kaya
       KAYA_POSTGRES_ADMIN_USER: kaya_bootstrap
+      KAYA_POSTGRES_ADMIN_PASSWORD_FILE: /run/kaya-secrets/postgres_bootstrap_password
       POSTGRES_PASSWORD_FILE: /run/kaya-secrets/postgres_password
       PGHOST: postgres
       KAYA_POSTGRES_BACKUP_RETENTION: ${KAYA_POSTGRES_BACKUP_RETENTION:-2}

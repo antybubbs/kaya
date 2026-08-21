@@ -20,6 +20,7 @@ compose() {
 
 configure_project() {
     local project="$1" root="$2" http_port="$3" gateway_port="$4" image="$5"
+    python "$ROOT_DIR/scripts/kaya_validation_resources.py" validate-project --project "$project"
     export PHASE7D_PROJECT="$project" PHASE7D_ROOT="$root"
     export PHASE7D_HTTP_PORT="$http_port" PHASE7D_GATEWAY_PORT="$gateway_port"
     export PHASE7D_IMAGE="$image"
@@ -108,10 +109,12 @@ cleanup() {
         compose logs --no-color 2>&1 \
             | sed -E 's/(setup token: ).*/\1[REDACTED]/Ig; s/(password|secret|key)=([^ ]+)/\1=[REDACTED]/Ig' \
             > "$RUN_ROOT/logs/${project}.log"
-        docker compose -p "$project" -f "$PRIMARY_FILE" -f "$OVERRIDE_FILE" down -v --remove-orphans >/dev/null 2>&1
+        docker compose -p "$project" -f "$PRIMARY_FILE" -f "$OVERRIDE_FILE" down --remove-orphans >/dev/null 2>&1
+        python "$ROOT_DIR/scripts/kaya_validation_resources.py" cleanup-compose --project "$project" >/dev/null 2>&1
     done
     for project in "${RESTORE_PROJECTS[@]}"; do
-        docker compose -p "$project" -f "$ROOT_DIR/docker-compose.postgres-test.yml" down -v --remove-orphans >/dev/null 2>&1
+        docker compose -p "$project" -f "$ROOT_DIR/docker-compose.postgres-test.yml" down --remove-orphans >/dev/null 2>&1
+        python "$ROOT_DIR/scripts/kaya_validation_resources.py" cleanup-compose --project "$project" >/dev/null 2>&1
     done
     docker image rm "$IMAGE_A" "$IMAGE_B" >/dev/null 2>&1
 }
@@ -245,6 +248,7 @@ test -s "$backup"
 export KAYA_POSTGRES_TEST_PORT=55439
 restore_project=kaya_phase7d_restore
 RESTORE_PROJECTS+=("$restore_project")
+python "$ROOT_DIR/scripts/kaya_validation_resources.py" validate-project --project "$restore_project"
 docker compose -p "$restore_project" -f "$ROOT_DIR/docker-compose.postgres-test.yml" up -d
 for _ in $(seq 1 60); do
     if docker compose -p "$restore_project" -f "$ROOT_DIR/docker-compose.postgres-test.yml" exec -T postgres \

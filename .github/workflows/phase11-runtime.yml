@@ -87,4 +87,5 @@ jobs:
           PHASE7D_GATEWAY_PORT=18220 \
           docker compose -p "$PHASE11_PROJECT" \
             -f docker-compose.yml -f docker-compose.phase7d-ci.yml -f docker-compose.phase11-ci.yml \
-            down -v --remove-orphans
+            down --remove-orphans
+          python scripts/kaya_validation_resources.py cleanup-compose --project "$PHASE11_PROJECT"

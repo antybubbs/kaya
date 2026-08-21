@@ -1,0 +1,85 @@
+# Cleanup-isolation-only overlay. It is never used for role-migration runtime tests.
+services:
+  kaya:
+    image: ${KAYA_IMAGE:-ghcr.io/antybubbs/kaya:latest}
+    container_name: ${PHASE12A_PROJECT:?PHASE12A_PROJECT is required}_kaya
+    ports: !override []
+    volumes: !override
+      - ${PHASE12A_ROOT:?PHASE12A_ROOT is required}/data:/app/data
+      - ${PHASE12A_ROOT}/uploads:/app/uploads
+      - postgres_secret:/run/kaya-secrets:ro
+    labels:
+      com.kaya.validation.phase: "12a"
+      com.kaya.validation.disposable: "true"
+
+  secure-send-gateway:
+    image: ${KAYA_IMAGE:-ghcr.io/antybubbs/kaya:latest}
+    container_name: ${PHASE12A_PROJECT}_secure_send
+    ports: !override []
+    volumes: !override
+      - ${PHASE12A_ROOT}/data:/app/data
+      - postgres_secret:/run/kaya-secrets:ro
+    labels:
+      com.kaya.validation.phase: "12a"
+      com.kaya.validation.disposable: "true"
+
+  guacd:
+    container_name: ${PHASE12A_PROJECT}_guacd
+    labels:
+      com.kaya.validation.phase: "12a"
+      com.kaya.validation.disposable: "true"
+
+  postgres-secret-init:
+    image: ${KAYA_IMAGE:-ghcr.io/antybubbs/kaya:latest}
+    volumes: !override
+      - postgres_secret:/run/kaya-secrets
+      - ${PHASE12A_ROOT}/secrets:/run/kaya-host-secrets:ro
+    labels:
+      com.kaya.validation.phase: "12a"
+      com.kaya.validation.disposable: "true"
+
+  postgres:
+    image: ${PHASE12A_POSTGRES_IMAGE:-postgres:16.14}
+    volumes: !override
+      - postgres_data:/var/lib/postgresql/data
+      - postgres_secret:/run/kaya-secrets:ro
+      - ${PHASE12A_ROOT}/backups:/var/backups/kaya-postgres
+    labels:
+      com.kaya.validation.phase: "12a"
+      com.kaya.validation.disposable: "true"
+
+  postgres-role-migration-backup:
+    image: ${PHASE12A_POSTGRES_IMAGE:-postgres:16.14}
+    volumes: !override
+      - postgres_secret:/run/kaya-secrets:ro
+      - ${PHASE12A_ROOT}/backups:/var/backups/kaya-postgres
+    labels:
+      com.kaya.validation.phase: "12a"
+      com.kaya.validation.disposable: "true"
+
+  postgres-role-init:
+    image: ${KAYA_IMAGE:-ghcr.io/antybubbs/kaya:latest}
+    volumes: !override
+      - postgres_secret:/run/kaya-secrets:ro
+      - ${PHASE12A_ROOT}/backups:/var/backups/kaya-postgres:ro
+    labels:
+      com.kaya.validation.phase: "12a"
+      com.kaya.validation.disposable: "true"
+
+volumes:
+  postgres_data:
+    name: ${PHASE12A_PROJECT}_postgres_data
+    labels:
+      com.kaya.validation.phase: "12a"
+      com.kaya.validation.disposable: "true"
+  postgres_secret:
+    name: ${PHASE12A_PROJECT}_postgres_secret
+    labels:
+      com.kaya.validation.phase: "12a"
+      com.kaya.validation.disposable: "true"
+
+networks:
+  default:
+    labels:
+      com.kaya.validation.phase: "12a"
+      com.kaya.validation.disposable: "true"

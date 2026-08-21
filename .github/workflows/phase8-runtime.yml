@@ -53,6 +53,7 @@ jobs:
       KAYA_POSTGRES_BACKUP_DIR: ./phase8-backups
       KAYA_POSTGRES_PASSWORD_DIR: ./phase8-secrets
       KAYA_PHASE8_VOLUME_PREFIX: kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
+      KAYA_PHASE8_PROJECT: kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
       KAYA_PORT: 18080
     steps:
       - uses: actions/checkout@v4
@@ -66,6 +67,7 @@ jobs:
           KAYA_POSTGRES_BACKUP_DIR: ./phase8-backups
           KAYA_POSTGRES_PASSWORD_DIR: ./phase8-secrets
           KAYA_PHASE8_VOLUME_PREFIX: kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
+          KAYA_PHASE8_PROJECT: kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
           KAYA_PORT: 18080
         run: docker compose -p kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }} -f docker-compose.yml -f docker-compose.phase8-production-ci.yml up -d --wait --wait-timeout 180 kaya postgres
       - name: Seed synthetic fixture
@@ -199,4 +201,7 @@ jobs:
           if-no-files-found: warn
       - name: Dispose exact Phase 8 resources
         if: always()
-        run: docker compose -p kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }} -f docker-compose.yml -f docker-compose.phase8-production-ci.yml down -v --remove-orphans
+        run: |
+          project=kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
+          docker compose -p "$project" -f docker-compose.yml -f docker-compose.phase8-production-ci.yml down --remove-orphans
+          python scripts/kaya_validation_resources.py cleanup-compose --project "$project"

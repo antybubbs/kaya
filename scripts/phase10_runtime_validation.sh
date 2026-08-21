@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT="${PHASE10_PROJECT:?PHASE10_PROJECT is required}"
+python "$ROOT_DIR/scripts/kaya_validation_resources.py" validate-project --project "$PROJECT"
 ROOT="${PHASE10_ROOT:?PHASE10_ROOT is required}"
 IMAGE="${PHASE10_IMAGE:?PHASE10_IMAGE is required}"
 TEST_IMAGE="${PHASE10_TEST_IMAGE:?PHASE10_TEST_IMAGE is required}"
@@ -32,7 +33,7 @@ security_review() {
 }
 export PROJECT ROOT ROOT_DIR IMAGE TEST_IMAGE PORT
 export -f compose wait_ready start_stack tests graph about_metadata production_sqlite_rejection security_review
-cleanup() { set +e; compose down -v --remove-orphans >/dev/null 2>&1; docker run --rm --user 0 --entrypoint sh -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" -v "$ROOT:/data" "$IMAGE" -c 'chown -R "$HOST_UID:$HOST_GID" /data' >/dev/null 2>&1; rm -rf -- "$ROOT"; }
+cleanup() { set +e; compose down --remove-orphans >/dev/null 2>&1; python "$ROOT_DIR/scripts/kaya_validation_resources.py" cleanup-compose --project "$PROJECT" >/dev/null 2>&1; docker run --rm --user 0 --entrypoint sh -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" -v "$ROOT:/data" "$IMAGE" -c 'chown -R "$HOST_UID:$HOST_GID" /data' >/dev/null 2>&1; rm -rf -- "$ROOT"; }
 trap cleanup EXIT
 
 mkdir -p "$ROOT/data/remote-recordings" "$ROOT/uploads" "$ROOT/secrets" "$ROOT/backups"
@@ -83,7 +84,7 @@ scenario 41 "Security/secret review" security_review
 scenario 42 "Compose validation" compose config --quiet
 scenario 43 "Workflow validation" bash -c 'grep -q workflow_dispatch .github/workflows/phase10-runtime.yml'
 scenario 44 "Historical migration graph integrity" graph
-scenario 45 "Cleanup/isolation" bash -c 'compose down -v --remove-orphans >/dev/null; test "$(docker ps -aq --filter "name=^${PROJECT}_" | wc -l)" = 0'
+scenario 45 "Cleanup/isolation" bash -c 'compose down --remove-orphans >/dev/null; python "$ROOT_DIR/scripts/kaya_validation_resources.py" cleanup-compose --project "$PROJECT" >/dev/null; test "$(docker ps -aq --filter "name=^${PROJECT}_" | wc -l)" = 0'
 
 export PHASE10_PASS_ROWS="$(IFS=,; echo "${PASS_ROWS[*]}")" PHASE10_FAIL_ROWS="$(IFS=,; echo "${FAIL_ROWS[*]}")"
 summary_input="$(for n in "${!SUMMARY[@]}"; do printf "%s\t%s\n" "$n" "${SUMMARY[$n]}"; done)"
