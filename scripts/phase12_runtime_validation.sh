@@ -293,15 +293,26 @@ for _ in $(seq 1 90); do
 done
 
 tests() {
+  test_run=$((test_run + 1))
+  local test_db="phase12_suite_${test_run}" status
+  "${compose[@]}" exec -T postgres psql -U kaya_bootstrap -d postgres -v ON_ERROR_STOP=1 -c \
+    "CREATE DATABASE ${test_db} OWNER kaya" >/dev/null
+  set +e
   docker run --rm --network "${PHASE12_PROJECT}_default" \
     -v "${PHASE12_PROJECT}_postgres_secret:/run/kaya-secrets:ro" \
     -e PYTHONPATH=/workspace -e APP_ENV=test \
     -e SECRET_KEY=phase12-test-synthetic-secret-012345678901234567890123 \
     -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
-    -e KAYA_TEST_POSTGRES_URL=postgresql+psycopg://kaya@postgres:5432/kaya \
+    -e KAYA_TEST_POSTGRES_URL="postgresql+psycopg://kaya@postgres:5432/${test_db}" \
     -v "$PWD:/workspace" -w /workspace --entrypoint bash "$PHASE12_TEST_IMAGE" \
     -lc 'export PGPASSWORD="$(cat /run/kaya-secrets/postgres_password)"; exec "$@"' -- "$@"
+  status=$?
+  set -e
+  "${compose[@]}" exec -T postgres psql -U kaya_bootstrap -d postgres -v ON_ERROR_STOP=1 -c \
+    "DROP DATABASE ${test_db}" >/dev/null
+  return "$status"
 }
+test_run=0
 tests pytest -q tests/test_phase6_cutover.py
 record_pass 51 '{"suite":"Phase 6 SQLite migration regression","result":"passed"}'
 test -f "$PHASE12_ROOT/data/.runtime.env"
