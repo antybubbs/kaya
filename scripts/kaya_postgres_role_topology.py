@@ -246,7 +246,10 @@ def verify(conn) -> dict[str, object]:
     db_owner, schema_owner = ownership(conn)
     if app is None or not app["rolcanlogin"] or app["rolsuper"] or app["rolcreatedb"] or app["rolcreaterole"]:
         raise RuntimeError("runtime PostgreSQL role does not satisfy the constrained-role policy")
-    if db_owner != APP_ROLE or schema_owner != APP_ROLE:
+    # PostgreSQL 15+ reports the special public-schema owner as
+    # pg_database_owner.  With the database owned by kaya, that role is the
+    # effective schema owner and is safe for the constrained runtime role.
+    if db_owner != APP_ROLE or schema_owner not in {APP_ROLE, "pg_database_owner"}:
         raise RuntimeError(
             f"Kaya database/schema ownership is not safely established: database={db_owner!r} schema={schema_owner!r}"
         )
