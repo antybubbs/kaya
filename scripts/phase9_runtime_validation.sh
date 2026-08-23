@@ -52,7 +52,8 @@ retention_separated() { test -s "$pg_backup" && test "$(sha256sum "$pg_backup" |
 retry_env() { printf '%s\n' -e APP_ENV=test -e SECRET_KEY=phase9-synthetic-secret-key-012345678901234567890123 -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= -e KAYA_TEST_MODE=true -e KAYA_POSTGRES_DATABASE_URL=postgresql+psycopg://kaya@postgres:5432/phase9_retry -e DATABASE_URL=postgresql+psycopg://kaya@postgres:5432/phase9_retry; }
 retry_state() { local key="$1"; docker run --rm --user 0 --entrypoint python -v "$ROOT:/phase9" "$IMAGE" -c "import json; print(json.load(open('/phase9/retry-data/kaya-database-upgrade.json'))['$key'])"; }
 induce_retry_failure() {
-  compose exec -T postgres createdb -U kaya phase9_retry >/dev/null 2>&1 || true
+  compose exec -T postgres bash -c \
+    'export PGPASSWORD="$(< /run/kaya-secrets/postgres_bootstrap_password)"; psql -U kaya_bootstrap -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE phase9_retry OWNER kaya;"'
   local status=0
   docker run --rm --user 0 --network "${PROJECT}_default" --entrypoint python -v "$ROOT:/phase9" -v "${PROJECT}_postgres_secret:/run/kaya-secrets:ro" -w /app \
     -e PYTHONPATH=/app -e APP_ENV=test -e SECRET_KEY=phase9-synthetic-secret-key-012345678901234567890123 -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \

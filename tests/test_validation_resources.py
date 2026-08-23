@@ -160,6 +160,8 @@ def test_phase9_retry_fixture_cleanup_is_exact_and_run_scoped():
     assert '"$fixture:/phase9-cleanup:rw"' in script
     assert "test ! -L /phase9-cleanup" in script
     assert "find /phase9-cleanup -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +" in script
+    assert "CREATE DATABASE phase9_retry OWNER kaya" in script
+    assert "createdb -U kaya phase9_retry" not in script
     assert "chmod -R 777" not in script
 
 
