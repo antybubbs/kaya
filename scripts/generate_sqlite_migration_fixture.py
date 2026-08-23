@@ -135,6 +135,11 @@ def main() -> None:
     parser.add_argument("--audit-rows", type=int, default=10)
     parser.add_argument("--audit-payload-bytes", type=int, default=0)
     parser.add_argument("--functional", action="store_true")
+    parser.add_argument(
+        "--historical-revision",
+        choices=("20260813_01",),
+        help="Downgrade the generated functional fixture to a supported historical revision.",
+    )
     arguments = parser.parse_args()
     if arguments.functional:
         generate_functional(arguments.path)
@@ -145,6 +150,11 @@ def main() -> None:
             arguments.metric_rows,
             arguments.audit_rows,
             arguments.audit_payload_bytes,
+        )
+    if arguments.historical_revision:
+        command.downgrade(
+            _alembic_config(f"sqlite:///{arguments.path.resolve().as_posix()}"),
+            arguments.historical_revision,
         )
     print(f"synthetic SQLite source created: rows={arguments.traffic_rows}/{arguments.metric_rows}/{arguments.audit_rows}")
 

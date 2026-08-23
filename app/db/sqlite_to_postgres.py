@@ -202,7 +202,9 @@ def _source_tables(connection: sqlite3.Connection) -> set[str]:
     }
 
 
-def _validate_source(path: Path, expected_head: str) -> tuple[str, str, set[str]]:
+def _validate_source(
+    path: Path, expected_head: str, *, allow_historical: bool = False
+) -> tuple[str, str, set[str]]:
     if not path.is_file():
         raise SQLiteToPostgresError("Source SQLite database is not a regular file.")
     fingerprint_before = _source_fingerprint(path)
@@ -220,7 +222,7 @@ def _validate_source(path: Path, expected_head: str) -> tuple[str, str, set[str]
         if foreign_keys:
             raise SQLiteToPostgresError("SQLite foreign_key_check found orphaned rows.")
         revision = _read_source_revision(connection)
-        if revision != expected_head:
+        if revision != expected_head and not allow_historical:
             raise SQLiteToPostgresError(
                 f"Source revision {revision!r} is unsupported; upgrade it explicitly to {expected_head!r} first."
             )
@@ -551,13 +553,17 @@ def _validate_target(engine: Engine, source_path: Path, source_connection: sqlit
     report["validation_seconds"] = round(time.monotonic() - validation_started, 3)
 
 
-def preflight(source_path: Path, target_url: str) -> dict[str, Any]:
+def preflight(
+    source_path: Path, target_url: str, allow_historical: bool = False
+) -> dict[str, Any]:
     expected_head, _ = _heads()
     source_path = source_path.resolve()
     sqlite_temp_directory = configure_sqlite_temp_directory(source_path)
     backup_directory = source_path.parent / "backups"
     test_failpoint("before_source_capture")
-    revision, fingerprint, tables = _validate_source(source_path, expected_head)
+    revision, fingerprint, tables = _validate_source(
+        source_path, expected_head, allow_historical=allow_historical
+    )
     test_record("sqlite.source_capture", boundary="preflight", fingerprint=fingerprint)
     test_failpoint("after_source_capture")
     target = create_engine(target_url, **postgres_engine_options(get_settings()))

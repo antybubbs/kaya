@@ -13,10 +13,12 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from alembic.util.exc import CommandError
 from sqlalchemy import create_engine, inspect, text
 
 from app.core.config import redact_database_url, sqlite_database_path
 from app.db.phase6_test_hooks import hit as test_failpoint, validate_configuration as validate_test_configuration
+from app.db.migrations import prepare_database
 from app.db.sqlite_to_postgres import _heads, migrate, preflight
 from app.core.config import get_settings, postgres_engine_options
 
@@ -68,6 +70,12 @@ def legacy_sqlite_eligibility(source_path: Path, data_dir: Path) -> tuple[bool, 
             connection.execute("PRAGMA query_only=ON")
             if connection.execute("PRAGMA quick_check").fetchone()[0] != "ok":
                 return False, "legacy SQLite source failed integrity validation"
+            tables = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                )
+            }
             revision = connection.execute(
                 "SELECT version_num FROM alembic_version"
             ).fetchall()
@@ -75,10 +83,81 @@ def legacy_sqlite_eligibility(source_path: Path, data_dir: Path) -> tuple[bool, 
         return False, f"legacy SQLite source is not a valid Kaya database ({type(exc).__name__})"
     if len(revision) != 1 or not revision[0][0]:
         return False, "legacy SQLite source has no single Alembic revision"
+    if "users" not in tables:
+        return False, "legacy SQLite source is missing the required users table"
+    expected_head, script = _heads()
+    source_revision = revision[0][0]
+    try:
+        script.get_revision(source_revision)
+    except (KeyError, TypeError, CommandError):
+        return False, f"legacy SQLite revision {source_revision} is unknown"
+
+    pending = [expected_head]
+    visited: set[str] = set()
+    while pending:
+        current = pending.pop()
+        if current in visited:
+            continue
+        visited.add(current)
+        if current == source_revision:
+            if source_revision == expected_head:
+                return True, "eligible legacy Kaya SQLite source at current head"
+            return True, (
+                f"eligible legacy Kaya SQLite source; revision {source_revision} "
+                f"will be upgraded to {expected_head} before PostgreSQL conversion"
+            )
+        revision_node = script.get_revision(current)
+        down_revision = revision_node.down_revision
+        if isinstance(down_revision, tuple):
+            pending.extend(down_revision)
+        elif down_revision:
+            pending.append(down_revision)
+    return False, f"legacy SQLite revision {source_revision} is not an ancestor of {expected_head}"
+
+
+def _upgrade_supported_legacy_sqlite(
+    source_path: Path, backup_dir: Path, data_dir: Path, source_revision: str
+) -> None:
+    """Upgrade a known historical SQLite revision with a verified backup first."""
     expected_head, _ = _heads()
-    if revision[0][0] != expected_head:
-        return False, f"legacy SQLite revision {revision[0][0]} is unsupported; expected {expected_head}"
-    return True, "eligible legacy Kaya SQLite source"
+    if source_revision == expected_head:
+        return
+    eligible, reason = legacy_sqlite_eligibility(source_path, data_dir)
+    if not eligible:
+        raise RuntimeError(reason)
+    logger.info(
+        "legacy_sqlite schema_upgrade state=starting source_revision=%s target_revision=%s",
+        source_revision,
+        expected_head,
+    )
+    settings = get_settings().model_copy(
+        update={
+            "database_url": f"sqlite:///{source_path.resolve().as_posix()}",
+            "data_dir": str(data_dir.resolve()),
+            "migration_backup_dir": str(backup_dir.resolve()),
+            # A verified pre-DDL backup is mandatory for this transition.
+            "migration_backups_enabled": True,
+        }
+    )
+    source_engine = create_engine(settings.database_url)
+    try:
+        result = prepare_database(source_engine, settings)
+    finally:
+        source_engine.dispose()
+    if result.previous_revision != source_revision or result.backup is None:
+        raise RuntimeError(
+            "historical SQLite upgrade did not create the required verified backup"
+        )
+    if result.current_revision != expected_head:
+        raise RuntimeError(
+            f"historical SQLite upgrade stopped at {result.current_revision}; expected {expected_head}"
+        )
+    logger.info(
+        "legacy_sqlite schema_upgrade state=complete source_revision=%s target_revision=%s backup=%s validation=passed",
+        source_revision,
+        expected_head,
+        result.backup.database_path.name,
+    )
 
 
 def state_path(data_dir: Path) -> Path:
@@ -183,8 +262,19 @@ def run_upgrade(source_path: Path, target_url: str, backup_dir: Path, data_dir: 
     _write_state(marker, UpgradeState.PRECHECK, database_engine="sqlite", source_path=str(source_path))
     dry_run: dict[str, Any] = {}
     try:
-        dry_run = preflight(source_path, target_url)
+        dry_run = preflight(source_path, target_url, True)
         _write_state(marker, UpgradeState.MAINTENANCE, database_engine="sqlite", source_fingerprint=dry_run["source_fingerprint"], target_revision=dry_run["target_revision"], progress="writes and background workers are stopped before conversion")
+        source_revision = dry_run.get("source_revision")
+        if source_revision and source_revision != dry_run.get("target_revision"):
+            _upgrade_supported_legacy_sqlite(
+                source_path,
+                backup_dir,
+                data_dir,
+                source_revision,
+            )
+            # Re-capture the source after Alembic has completed.  The converter
+            # remains current-head-only and therefore cannot consume the old file.
+            dry_run = preflight(source_path, target_url)
         def transition(name: str) -> None:
             state = UpgradeState(name)
             _write_state(

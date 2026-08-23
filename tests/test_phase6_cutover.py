@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from alembic import command
 
 import app.db.phase6_cutover as phase6_cutover
 from app.db.phase6_cutover import (
@@ -13,9 +15,11 @@ from app.db.phase6_cutover import (
     authoritative_database_url,
     detect_installation,
     legacy_sqlite_eligibility,
+    _upgrade_supported_legacy_sqlite,
     run_upgrade,
     state_path,
 )
+from app.db.migrations import _alembic_config
 from app.db.sqlite_to_postgres import SQLiteToPostgresError
 
 
@@ -98,6 +102,32 @@ def test_sqlite_source_outside_data_directory_is_rejected(tmp_path: Path):
 
     assert not eligible
     assert "outside" in reason
+
+
+def test_historical_sqlite_revision_is_eligible_and_upgraded_with_backup(tmp_path: Path):
+    source = tmp_path / "kaya.db"
+    command.upgrade(_alembic_config(f"sqlite:///{source.as_posix()}"), "20260813_01")
+    with sqlite3.connect(source) as connection:
+        connection.execute(
+            "INSERT INTO users (email, password_hash, role, is_active, totp_enabled, "
+            "authentication_type, is_break_glass, role_source, created_at, updated_at) "
+            "VALUES ('historical@example.invalid', 'fake-hash', 'admin', 1, 0, "
+            "'local', 0, 'local', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+        )
+        connection.commit()
+
+    eligible, reason = legacy_sqlite_eligibility(source, tmp_path)
+    assert eligible
+    assert "20260813_01" in reason
+    _upgrade_supported_legacy_sqlite(source, tmp_path / "backups", tmp_path, "20260813_01")
+
+    with sqlite3.connect(source) as connection:
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "20260818_02"
+        assert connection.execute("SELECT email FROM users").fetchone()[0] == "historical@example.invalid"
+    backups = list((tmp_path / "backups").glob("*.sqlite3"))
+    assert len(backups) == 1
+    metadata = json.loads(backups[0].with_suffix(".json").read_text(encoding="utf-8"))
+    assert metadata["source_revision"] == "20260813_01"
 
 
 def test_preflight_failure_records_failed_state(tmp_path: Path, monkeypatch):
