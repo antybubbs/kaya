@@ -141,6 +141,7 @@ jobs:
           PHASE8_PORT: 18080
           PHASE8_DATA_ROOT: ./phase8-data
           PHASE8_RESULT_FILE: phase8d-results.env
+          PHASE8_PROGRESS_FILE: phase8d-progress.log
           PHASE8_PASS_ROWS: 1,2,3,4,5,6,7,8,9,10,11,12,19,20,21,23,38,40,43,44,46,47,48,49,50,51
           KAYA_IMAGE: kaya:phase8b-${{ github.sha }}
           KAYA_PHASE8_VOLUME_PREFIX: kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
@@ -195,6 +196,7 @@ jobs:
             phase8-docker-redacted.log
             phase8_acceptance.json
             phase8d-results.env
+            phase8d-progress.log
             phase8-scale-report.json
             phase8-interrupted.log
             phase8-live-write.log

@@ -9,9 +9,11 @@ PROJECT="${PHASE8_PROJECT:?PHASE8_PROJECT is required}"
 PORT="${PHASE8_PORT:?PHASE8_PORT is required}"
 DATA_ROOT="${PHASE8_DATA_ROOT:?PHASE8_DATA_ROOT is required}"
 RESULT_FILE="${PHASE8_RESULT_FILE:-phase8d-results.env}"
+PROGRESS_FILE="${PHASE8_PROGRESS_FILE:-phase8d-progress.log}"
 IFS=',' read -r -a PASS_ROWS <<< "${PHASE8_PASS_ROWS:-}"
 FAIL_ROWS=()
 METRICS='{}'
+: >"$PROGRESS_FILE"
 
 compose() {
     docker compose -p "$PROJECT" -f "$ROOT_DIR/docker-compose.yml" -f "$ROOT_DIR/docker-compose.phase8-production-ci.yml" --profile postgres-ops "$@"
@@ -25,6 +27,7 @@ set_metric() {
 scenario() {
     local number="$1" name="$2"; shift 2
     local started ended
+    printf '%s scenario=%s phase=start\n' "$(date -u +%FT%TZ)" "$number" >>"$PROGRESS_FILE"
     started="$(date +%s%3N)"
     if "$@"; then
         PASS_ROWS+=("$number")
@@ -34,6 +37,7 @@ scenario() {
     fi
     ended="$(date +%s%3N)"
     set_metric "$number" "$((ended - started))ms"
+    printf '%s scenario=%s phase=end\n' "$(date -u +%FT%TZ)" "$number" >>"$PROGRESS_FILE"
 }
 
 wait_for_postgres() {
