@@ -124,7 +124,10 @@ def _upgrade_supported_legacy_sqlite(
     expected_head, _ = _heads()
     if source_revision == expected_head:
         return source_path
-    eligible, reason = legacy_sqlite_eligibility(source_path, data_dir)
+    # The CLI accepts an explicitly supplied source and may keep state and
+    # retry artifacts in a separate directory.  The entrypoint still applies
+    # the stricter configured-data-root check before invoking this path.
+    eligible, reason = legacy_sqlite_eligibility(source_path, source_path.parent)
     if not eligible:
         raise RuntimeError(reason)
     logger.info(
