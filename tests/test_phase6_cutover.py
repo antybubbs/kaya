@@ -119,11 +119,15 @@ def test_historical_sqlite_revision_is_eligible_and_upgraded_with_backup(tmp_pat
     eligible, reason = legacy_sqlite_eligibility(source, tmp_path)
     assert eligible
     assert "20260813_01" in reason
-    _upgrade_supported_legacy_sqlite(source, tmp_path / "backups", tmp_path, "20260813_01")
+    working_source = _upgrade_supported_legacy_sqlite(
+        source, tmp_path / "backups", tmp_path, "20260813_01"
+    )
 
     with sqlite3.connect(source) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "20260818_02"
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "20260813_01"
         assert connection.execute("SELECT email FROM users").fetchone()[0] == "historical@example.invalid"
+    with sqlite3.connect(working_source) as connection:
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "20260818_02"
     backups = list((tmp_path / "backups").glob("*.sqlite3"))
     assert len(backups) == 1
     metadata = json.loads(backups[0].with_suffix(".json").read_text(encoding="utf-8"))

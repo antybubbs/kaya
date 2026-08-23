@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import sqlite3
 import tempfile
 from dataclasses import dataclass
@@ -17,6 +18,7 @@ from alembic.util.exc import CommandError
 from sqlalchemy import create_engine, inspect, text
 
 from app.core.config import redact_database_url, sqlite_database_path
+from app.db.backup import create_sqlite_backup
 from app.db.phase6_test_hooks import hit as test_failpoint, validate_configuration as validate_test_configuration
 from app.db.migrations import prepare_database
 from app.db.sqlite_to_postgres import _heads, migrate, preflight
@@ -117,11 +119,11 @@ def legacy_sqlite_eligibility(source_path: Path, data_dir: Path) -> tuple[bool, 
 
 def _upgrade_supported_legacy_sqlite(
     source_path: Path, backup_dir: Path, data_dir: Path, source_revision: str
-) -> None:
-    """Upgrade a known historical SQLite revision with a verified backup first."""
+) -> Path:
+    """Upgrade a verified working copy of a known historical SQLite revision."""
     expected_head, _ = _heads()
     if source_revision == expected_head:
-        return
+        return source_path
     eligible, reason = legacy_sqlite_eligibility(source_path, data_dir)
     if not eligible:
         raise RuntimeError(reason)
@@ -130,13 +132,29 @@ def _upgrade_supported_legacy_sqlite(
         source_revision,
         expected_head,
     )
+    source_backup = create_sqlite_backup(
+        source_path,
+        backup_dir,
+        source_revision=source_revision,
+        target_revision=expected_head,
+    )
+    file_descriptor, working_name = tempfile.mkstemp(
+        prefix=".kaya-historical-upgrade-",
+        suffix=".sqlite3",
+        dir=data_dir,
+    )
+    os.close(file_descriptor)
+    working_path = Path(working_name)
+    shutil.copyfile(source_backup.database_path, working_path)
+    os.chmod(working_path, 0o600)
     settings = get_settings().model_copy(
         update={
-            "database_url": f"sqlite:///{source_path.resolve().as_posix()}",
+            "database_url": f"sqlite:///{working_path.resolve().as_posix()}",
             "data_dir": str(data_dir.resolve()),
             "migration_backup_dir": str(backup_dir.resolve()),
-            # A verified pre-DDL backup is mandatory for this transition.
-            "migration_backups_enabled": True,
+            # The immutable source backup above is the mandatory pre-DDL backup;
+            # the working copy must not create a second source artifact.
+            "migration_backups_enabled": False,
         }
     )
     source_engine = create_engine(settings.database_url)
@@ -144,9 +162,9 @@ def _upgrade_supported_legacy_sqlite(
         result = prepare_database(source_engine, settings)
     finally:
         source_engine.dispose()
-    if result.previous_revision != source_revision or result.backup is None:
+    if result.previous_revision != source_revision:
         raise RuntimeError(
-            "historical SQLite upgrade did not create the required verified backup"
+            "historical SQLite working copy had an unexpected Alembic revision"
         )
     if result.current_revision != expected_head:
         raise RuntimeError(
@@ -156,8 +174,9 @@ def _upgrade_supported_legacy_sqlite(
         "legacy_sqlite schema_upgrade state=complete source_revision=%s target_revision=%s backup=%s validation=passed",
         source_revision,
         expected_head,
-        result.backup.database_path.name,
+        source_backup.database_path.name,
     )
+    return working_path
 
 
 def state_path(data_dir: Path) -> Path:
@@ -265,8 +284,9 @@ def run_upgrade(source_path: Path, target_url: str, backup_dir: Path, data_dir: 
         dry_run = preflight(source_path, target_url, True)
         _write_state(marker, UpgradeState.MAINTENANCE, database_engine="sqlite", source_fingerprint=dry_run["source_fingerprint"], target_revision=dry_run["target_revision"], progress="writes and background workers are stopped before conversion")
         source_revision = dry_run.get("source_revision")
+        conversion_source = source_path
         if source_revision and source_revision != dry_run.get("target_revision"):
-            _upgrade_supported_legacy_sqlite(
+            conversion_source = _upgrade_supported_legacy_sqlite(
                 source_path,
                 backup_dir,
                 data_dir,
@@ -274,7 +294,7 @@ def run_upgrade(source_path: Path, target_url: str, backup_dir: Path, data_dir: 
             )
             # Re-capture the source after Alembic has completed.  The converter
             # remains current-head-only and therefore cannot consume the old file.
-            dry_run = preflight(source_path, target_url)
+            dry_run = preflight(conversion_source, target_url)
         def transition(name: str) -> None:
             state = UpgradeState(name)
             _write_state(
@@ -286,7 +306,7 @@ def run_upgrade(source_path: Path, target_url: str, backup_dir: Path, data_dir: 
             )
 
         test_failpoint("fail_state")
-        report = migrate(source_path, target_url, backup_dir, state_callback=transition)
+        report = migrate(conversion_source, target_url, backup_dir, state_callback=transition)
         if report.get("result") != "COMPLETED":
             raise RuntimeError("SQLite migration did not complete.")
         source_fingerprint = dry_run["source_fingerprint"]

