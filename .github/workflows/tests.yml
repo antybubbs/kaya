@@ -13,6 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       SECRET_KEY: phase8-ci-only-secret-key-012345678901234567890123456789
+      ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -37,6 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       SECRET_KEY: phase8-ci-only-secret-key-012345678901234567890123456789
+      ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
     services:
       postgres:
         image: postgres:16.14
