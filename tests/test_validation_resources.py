@@ -153,6 +153,9 @@ def test_phase8_one_shot_backup_workers_do_not_restart_dependencies():
     assert "/api/site-timezone" in script
     assert "ready_checks >= 2" in script
     assert "compose create --no-deps postgres kaya" in script
+    assert "compose start postgres >/dev/null" in script
+    assert "wait_for_postgres" in script
+    assert "compose start kaya >/dev/null" in script
     assert "compose create --no-deps --force-recreate kaya" in script
 
 

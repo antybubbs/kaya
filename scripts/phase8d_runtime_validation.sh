@@ -171,7 +171,9 @@ restart_kaya() {
 compose_cycle() {
     compose down --remove-orphans >/dev/null
     compose create --no-deps postgres kaya >/dev/null
-    compose start postgres kaya >/dev/null
+    compose start postgres >/dev/null
+    wait_for_postgres
+    compose start kaya >/dev/null
     wait_for_kaya
 }
 
