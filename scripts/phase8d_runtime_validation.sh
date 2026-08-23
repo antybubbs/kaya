@@ -165,7 +165,7 @@ restart_kaya() {
 
 compose_cycle() {
     compose down --remove-orphans >/dev/null
-    compose up -d --wait --wait-timeout 180 kaya postgres >/dev/null
+    compose up -d --no-deps --wait --wait-timeout 180 kaya postgres >/dev/null
     wait_for_kaya
 }
 
