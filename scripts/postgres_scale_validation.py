@@ -38,6 +38,12 @@ def _insert_seed_data(connection, clients: int) -> tuple[int, int, int]:
             "(SELECT id FROM compute_hosts WHERE name = 'scale-compute-1')"
         )
     )
+    connection.execute(
+        text(
+            "DELETE FROM compute_events WHERE host_id IN "
+            "(SELECT id FROM compute_hosts WHERE name = 'scale-compute-1')"
+        )
+    )
     connection.execute(text("DELETE FROM compute_hosts WHERE name = 'scale-compute-1'"))
     provider_id = connection.execute(
         text(
