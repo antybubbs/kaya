@@ -154,7 +154,7 @@ def test_phase12_backup_worker_separates_admin_and_runtime_passwords():
     assert 'ADMIN_PASSWORD_FILE="${KAYA_POSTGRES_ADMIN_PASSWORD_FILE:-$PASSWORD_FILE}"' in worker
     assert "admin_psql" in worker
     compose = Path("docker-compose.yml").read_text(encoding="utf-8")
-    assert "legacy superuser role was not confirmed" in compose
+    assert "ambiguous or unsafe Kaya PostgreSQL role topology" in compose
     assert "backup evidence is incomplete" in compose
     assert '"sha256"' in compose
 
@@ -163,8 +163,22 @@ def test_role_migration_backup_allows_fresh_cluster_without_skipping_legacy_back
     compose = Path("docker-compose.yml").read_text(encoding="utf-8")
 
     assert "KAYA_POSTGRES_ADMIN_USER: kaya_bootstrap" in compose
-    assert "fresh cluster has no legacy kaya role" in compose
-    assert "legacy superuser role was not confirmed" in compose
+    assert "postgres.role_backup state=fresh action=not_required" in compose
+    assert "postgres.role_backup state=legacy action=verified_backup_required" in compose
+
+
+def test_role_migration_backup_requires_conclusive_current_topology_invariants():
+    compose = Path("docker-compose.yml").read_text(encoding="utf-8")
+
+    assert "role_topology_already_migrated" in compose
+    assert "rolname='kaya_bootstrap'" in compose
+    assert "NOT rolsuper" in compose
+    assert "NOT rolcreatedb" in compose
+    assert "NOT rolcreaterole" in compose
+    assert "rolcanlogin" in compose
+    assert "pg_get_userbyid(datdba)" in compose
+    assert "pg_get_userbyid(nspowner)" in compose
+    assert "role_state=ambiguous" in compose
 
 
 def test_phase12_overlay_isolates_all_persistent_postgres_mounts():
@@ -181,6 +195,9 @@ def test_phase12_runtime_starts_application_without_rerunning_legacy_backup():
     script = Path("scripts/phase12_runtime_validation.sh").read_text(encoding="utf-8")
 
     assert 'up -d --no-deps kaya' in script
+    assert 'rm -sf postgres-role-init postgres-role-migration-backup' in script
+    assert 'up --abort-on-container-exit --exit-code-from postgres-role-init postgres-role-init' in script
+    assert '"legacy_backup":"not required"' in script
 
 
 def test_phase12_runtime_validates_workflow_and_exact_cleanup():

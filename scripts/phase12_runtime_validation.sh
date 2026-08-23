@@ -136,10 +136,12 @@ record_pass 11 '{"backup_marker":"created","legacy_role":"kaya"}'
 record_pass 12 '{"backup_marker":"verified","archive":"redacted"}'
 "${compose[@]}" up --abort-on-container-exit --exit-code-from postgres-role-init postgres-role-init
 stage=application_start
-# The dependency chain intentionally includes the pre-migration backup and
-# role-init services.  They have already run successfully; re-evaluating that
-# chain after kaya is demoted would rerun the legacy-only backup and fail
-# closed.  PostgreSQL and the role topology are already healthy here.
+# Re-run the startup dependency boundary after the legacy topology has been
+# migrated.  This is the production restart case: the reused PostgreSQL volume
+# must classify the current topology as safe without creating a legacy backup,
+# and role-init must remain idempotent.
+"${compose[@]}" rm -sf postgres-role-init postgres-role-migration-backup >/dev/null
+"${compose[@]}" up --abort-on-container-exit --exit-code-from postgres-role-init postgres-role-init >/dev/null
 "${compose[@]}" up -d --no-deps kaya
 for _ in $(seq 1 90); do curl --fail --silent --max-time 3 "http://127.0.0.1:${PHASE12_HTTP_PORT:-18132}/healthz" >/dev/null 2>&1 && break; sleep 2; done
 curl --fail --silent --max-time 3 "http://127.0.0.1:${PHASE12_HTTP_PORT:-18132}/healthz" >/dev/null
@@ -168,7 +170,7 @@ record_pass 48 '{"application_bootstrap_fingerprints":"distinct","values":"redac
 for _ in $(seq 1 60); do curl --fail --silent --max-time 3 "http://127.0.0.1:${PHASE12_HTTP_PORT:-18132}/healthz" >/dev/null 2>&1 && break; sleep 2; done
 curl --fail --silent --max-time 3 "http://127.0.0.1:${PHASE12_HTTP_PORT:-18132}/healthz" >/dev/null
 [[ "$("${compose[@]}" exec -T kaya sha256sum /run/kaya-secrets/postgres_password | awk '{print $1}' | tr -d '\r')" == "$app_secret_fingerprint" ]]
-record_pass 30 '{"restart":"healthy","topology":"current","legacy_backup":"not rerun"}'
+record_pass 30 '{"restart":"healthy","topology":"current","legacy_backup":"not required","backup_stage":"current topology accepted","role_init":"idempotent"}'
 record_pass 46 '{"bootstrap_secret":"stable across restart","value":"redacted"}'
 record_pass 47 '{"application_secret":"stable across restart","value":"redacted"}'
 "${compose[@]}" up -d --no-deps --force-recreate kaya >/dev/null

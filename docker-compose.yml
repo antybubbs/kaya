@@ -133,15 +133,35 @@ services:
         password="$$(<"$${POSTGRES_PASSWORD_FILE}")";
         export PGPASSWORD="$$password";
         admin_password="$$(<"$${KAYA_POSTGRES_ADMIN_PASSWORD_FILE}")";
-        role_superuser="$$(PGPASSWORD="$$admin_password" psql -h postgres -U "$${KAYA_POSTGRES_ADMIN_USER}" -d postgres -Atc "SELECT rolsuper FROM pg_roles WHERE rolname='kaya';" 2>/dev/null || true)";
-        if [[ -z "$$(printf '%s' "$$role_superuser" | tr -d '[:space:]')" ]]; then
-          role_superuser="$$(psql -h postgres -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}" -Atc "SELECT rolsuper FROM pg_roles WHERE rolname='kaya';" 2>/dev/null || true)";
+        role_state="$$(PGPASSWORD="$$admin_password" psql -h postgres -U "$${KAYA_POSTGRES_ADMIN_USER}" -d postgres -Atc "SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='kaya') THEN 'fresh' WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname='kaya_bootstrap') AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname='kaya' AND NOT rolsuper AND NOT rolcreatedb AND NOT rolcreaterole AND rolcanlogin) AND (SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname='kaya') = 'kaya' THEN 'current_candidate' WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname='kaya' AND rolsuper) AND (SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname='kaya') = 'kaya' THEN 'legacy_candidate' ELSE 'ambiguous' END;" 2>/dev/null || true)";
+        if [[ -z "$$(printf '%s' "$$role_state" | tr -d '[:space:]')" ]]; then
+          role_state="$$(psql -h postgres -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}" -Atc "SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='kaya') THEN 'fresh' WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname='kaya_bootstrap') AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname='kaya' AND NOT rolsuper AND NOT rolcreatedb AND NOT rolcreaterole AND rolcanlogin) AND (SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname='kaya') = 'kaya' THEN 'current_candidate' WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname='kaya' AND rolsuper) AND (SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname='kaya') = 'kaya' THEN 'legacy_candidate' ELSE 'ambiguous' END;" 2>/dev/null || true)";
         fi;
-        if [[ -z "$$(printf '%s' "$$role_superuser" | tr -d '[:space:]')" ]]; then
-          echo "kaya-postgres-backup: fresh cluster has no legacy kaya role; verified backup not required";
+        role_state="$$(printf '%s' "$$role_state" | tr -d '[:space:]')";
+        if [[ "$$role_state" == fresh ]]; then
+          echo "postgres.role_backup state=fresh action=not_required";
           exit 0;
         fi;
-        [[ "$$(printf '%s' "$$role_superuser" | tr -d '[:space:]')" == t ]] || { echo "kaya-postgres-backup: legacy superuser role was not confirmed" >&2; exit 1; };
+        if [[ "$$role_state" == current_candidate || "$$role_state" == legacy_candidate ]]; then
+          schema_owner="$$(PGPASSWORD="$$admin_password" psql -h postgres -U "$${KAYA_POSTGRES_ADMIN_USER}" -d "$${POSTGRES_DB}" -Atc "SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname='public';" 2>/dev/null || true)";
+          if [[ -z "$$(printf '%s' "$$schema_owner" | tr -d '[:space:]')" ]]; then
+            schema_owner="$$(psql -h postgres -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}" -Atc "SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname='public';" 2>/dev/null || true)";
+          fi;
+          schema_owner="$$(printf '%s' "$$schema_owner" | tr -d '[:space:]')";
+          if [[ "$$schema_owner" != kaya && "$$schema_owner" != pg_database_owner ]]; then
+            role_state=ambiguous;
+          elif [[ "$$role_state" == current_candidate ]]; then
+            role_state=current;
+          else
+            role_state=legacy;
+          fi;
+        fi;
+        if [[ "$$role_state" == current ]]; then
+          echo "postgres.role_backup state=current action=not_required reason=role_topology_already_migrated";
+          exit 0;
+        fi;
+        [[ "$$role_state" == legacy ]] || { echo "kaya-postgres-backup: ambiguous or unsafe Kaya PostgreSQL role topology" >&2; exit 1; };
+        echo "postgres.role_backup state=legacy action=verified_backup_required";
         archive="$$(/usr/local/bin/kaya_postgres_backup_worker.sh backup)";
         [[ "$$archive" == /var/backups/kaya-postgres/kaya-*.dump && -f "$$archive" ]] || { echo "kaya-postgres-backup: worker did not return a valid archive" >&2; exit 1; };
         metadata="$$archive.json";
