@@ -23,6 +23,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Materialize pinned Docker agent dependency
+        run: |
+          git clone --no-checkout https://github.com/antybubbs/Kaya-Docker-Agent.git external/Kaya-Docker-Agent
+          git -C external/Kaya-Docker-Agent fetch --depth 1 origin 62a2352c2fbb4588652159db984fa5b6fed9d652
+          git -C external/Kaya-Docker-Agent checkout --detach 62a2352c2fbb4588652159db984fa5b6fed9d652
       - name: Install test dependencies
         run: python -m pip install -r requirements.txt pytest ruff
       - name: Compose configuration
