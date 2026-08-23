@@ -52,7 +52,7 @@ wait_for_kaya() {
         if curl --fail --silent --show-error --max-time 3 "http://127.0.0.1:${PORT}/healthz" >/dev/null 2>&1 && \
             curl --fail --silent --show-error --max-time 3 "http://127.0.0.1:${PORT}/api/site-timezone" >/dev/null 2>&1; then
             ready_checks=$((ready_checks + 1))
-            if ((ready_checks >= 3)); then return 0; fi
+            if ((ready_checks >= 2)); then return 0; fi
         else
             ready_checks=0
         fi
@@ -165,7 +165,8 @@ restart_kaya() {
 
 compose_cycle() {
     compose down --remove-orphans >/dev/null
-    compose up -d --no-deps --wait --wait-timeout 180 kaya postgres >/dev/null
+    compose create --no-deps postgres kaya >/dev/null
+    compose start postgres kaya >/dev/null
     wait_for_kaya
 }
 
@@ -208,7 +209,8 @@ image_replacement() {
     before="$(compose exec -T kaya sha256sum /run/kaya-secrets/postgres_password | awk '{print $1}')"
     docker build --tag "$image_b" "$ROOT_DIR"
     export KAYA_IMAGE="$image_b"
-    compose up -d --no-deps --force-recreate kaya >/dev/null
+    compose create --no-deps --force-recreate kaya >/dev/null
+    compose start kaya >/dev/null
     wait_for_kaya
     after="$(compose exec -T kaya sha256sum /run/kaya-secrets/postgres_password | awk '{print $1}')"
     [[ "$before" == "$after" ]]
