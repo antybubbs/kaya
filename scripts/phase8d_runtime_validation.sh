@@ -122,7 +122,8 @@ interrupted_backup() {
     if docker exec "$container" bash -c 'for attempt in $(seq 1 600); do if active="$(pgrep -o -x pg_dump 2>/dev/null)"; then if test -n "$active"; then kill -KILL "$active"; exit 0; fi; fi; sleep 0.1; done; exit 1'; then
         killed=1
     fi
-    compose exec -T postgres psql -U kaya -d kaya -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE query LIKE '%pg_sleep(120)%';" >/dev/null
+    compose exec -T postgres psql -U kaya -d kaya -c \
+        "SELECT pg_terminate_backend(l.pid) FROM pg_locks AS l JOIN pg_class AS c ON c.oid = l.relation WHERE c.relname = 'phase8_interrupt_fixture' AND l.granted AND l.pid <> pg_backend_pid();" >/dev/null
     status="$(docker wait "$container")"
     docker logs "$container" >phase8-interrupted.log 2>&1
     docker rm "$container" >/dev/null
