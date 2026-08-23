@@ -152,11 +152,10 @@ def test_phase8_one_shot_backup_workers_do_not_restart_dependencies():
     assert "compose run --rm --entrypoint bash postgres-backup" not in script
     assert "/api/site-timezone" in script
     assert "ready_checks >= 2" in script
-    assert "compose create --no-deps postgres kaya" in script
-    assert "compose start postgres >/dev/null" in script
+    assert "compose up -d --no-deps postgres" in script
     assert "wait_for_postgres" in script
-    assert "compose start kaya >/dev/null" in script
-    assert "compose create --no-deps --force-recreate kaya" in script
+    assert "compose up -d --no-deps kaya" in script
+    assert "compose up -d --no-deps --force-recreate kaya" in script
 
 
 def test_phase9_retry_fixture_cleanup_is_exact_and_run_scoped():

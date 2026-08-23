@@ -170,10 +170,9 @@ restart_kaya() {
 
 compose_cycle() {
     compose down --remove-orphans >/dev/null
-    compose create --no-deps postgres kaya >/dev/null
-    compose start postgres >/dev/null
+    compose up -d --no-deps postgres >/dev/null
     wait_for_postgres
-    compose start kaya >/dev/null
+    compose up -d --no-deps kaya >/dev/null
     wait_for_kaya
 }
 
@@ -216,8 +215,7 @@ image_replacement() {
     before="$(compose exec -T kaya sha256sum /run/kaya-secrets/postgres_password | awk '{print $1}')"
     docker build --tag "$image_b" "$ROOT_DIR"
     export KAYA_IMAGE="$image_b"
-    compose create --no-deps --force-recreate kaya >/dev/null
-    compose start kaya >/dev/null
+    compose up -d --no-deps --force-recreate kaya >/dev/null
     wait_for_kaya
     after="$(compose exec -T kaya sha256sum /run/kaya-secrets/postgres_password | awk '{print $1}')"
     [[ "$before" == "$after" ]]
