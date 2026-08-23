@@ -26,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PHASE13_PROJECT: kaya_phase13_${{ github.run_id }}_${{ github.run_attempt }}
-      PHASE13_ROOT: ${{ runner.temp }}/kaya-phase13-${{ github.run_id }}-${{ github.run_attempt }}
+      PHASE13_ROOT: ./phase13-data-${{ github.run_id }}-${{ github.run_attempt }}
       PHASE13_APP_IMAGE: kaya-phase13-app:${{ github.sha }}
       PHASE13_TEST_IMAGE: kaya-phase13-test:${{ github.sha }}
     steps:
