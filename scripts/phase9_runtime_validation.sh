@@ -176,7 +176,20 @@ scenario 43 "Compose validation" docker compose -f "$PRIMARY" -f "$ISOLATION" co
 scenario 44 "Migration-chain validation" bash -c '[[ "$(revision)" == "20260818_02" ]]'
 
 resource_count="$(docker ps -aq --filter "name=^${PROJECT}_" | wc -l)"
-cleanup_phase9() { compose down --remove-orphans >/dev/null; python "$ROOT_DIR/scripts/kaya_validation_resources.py" cleanup-compose --project "$PROJECT" >/dev/null; [[ "$(docker ps -aq --filter "name=^${PROJECT}_" | wc -l)" == "0" ]]; }
+cleanup_owned_retry_fixture() {
+  local fixture="$ROOT/retry-data"
+  if [[ -d "$fixture" && ! -L "$fixture" ]]; then
+    docker run --rm --user 0 --entrypoint sh -v "$fixture:/phase9-cleanup:rw" "$IMAGE" -c \
+      'test ! -L /phase9-cleanup; find /phase9-cleanup -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +'
+    rmdir -- "$fixture"
+  fi
+}
+cleanup_phase9() {
+  compose down --remove-orphans >/dev/null
+  cleanup_owned_retry_fixture
+  python "$ROOT_DIR/scripts/kaya_validation_resources.py" cleanup-compose --project "$PROJECT" >/dev/null
+  [[ "$(docker ps -aq --filter "name=^${PROJECT}_" | wc -l)" == "0" ]]
+}
 scenario 45 "Cleanup and isolation" cleanup_phase9
 
 export PHASE9_PASS_ROWS="$(IFS=,; echo "${PASS_ROWS[*]}")"

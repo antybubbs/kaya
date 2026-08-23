@@ -52,6 +52,7 @@ jobs:
       PHASE11_TARGET_IMAGE: postgres:16.14
       PHASE11_APP_IMAGE: kaya:phase11-${{ github.sha }}
       PHASE11_TEST_IMAGE: kaya:phase11-tests-${{ github.sha }}
+      KAYA_IMAGE: kaya:phase11-${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
       - name: Verify selected PostgreSQL image tags
@@ -80,6 +81,7 @@ jobs:
           PHASE11_PROJECT="$PHASE11_PROJECT" \
           PHASE11_ROOT=./phase11-data \
           PHASE11_POSTGRES_IMAGE="$PHASE11_TARGET_IMAGE" \
+          KAYA_IMAGE="$PHASE11_APP_IMAGE" \
           PHASE7D_PROJECT="$PHASE11_PROJECT" \
           PHASE7D_ROOT=./phase11-data \
           PHASE7D_IMAGE="$PHASE11_APP_IMAGE" \

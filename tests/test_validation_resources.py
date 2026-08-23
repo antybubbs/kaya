@@ -141,3 +141,30 @@ def test_phase7_to_11_validation_has_no_unguarded_volume_teardown():
     assert "docker volume prune" not in text
     assert "docker system prune" not in text
     assert "cleanup-compose --project" in text
+
+
+def test_phase8_one_shot_backup_workers_do_not_restart_dependencies():
+    workflow = Path(".github/workflows/phase8-runtime.yml").read_text(encoding="utf-8")
+    script = Path("scripts/phase8d_runtime_validation.sh").read_text(encoding="utf-8")
+
+    assert "run --rm --no-deps --entrypoint bash postgres-backup" in workflow
+    assert "compose run --rm --no-deps" in script
+    assert "compose run --rm --entrypoint bash postgres-backup" not in script
+
+
+def test_phase9_retry_fixture_cleanup_is_exact_and_run_scoped():
+    script = Path("scripts/phase9_runtime_validation.sh").read_text(encoding="utf-8")
+
+    assert "cleanup_owned_retry_fixture" in script
+    assert 'fixture="$ROOT/retry-data"' in script
+    assert '"$fixture:/phase9-cleanup:rw"' in script
+    assert "test ! -L /phase9-cleanup" in script
+    assert "find /phase9-cleanup -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +" in script
+    assert "chmod -R 777" not in script
+
+
+def test_phase11_cleanup_resolves_the_candidate_application_image():
+    workflow = Path(".github/workflows/phase11-runtime.yml").read_text(encoding="utf-8")
+
+    assert "KAYA_IMAGE: kaya:phase11-${{ github.sha }}" in workflow
+    assert 'KAYA_IMAGE="$PHASE11_APP_IMAGE"' in workflow

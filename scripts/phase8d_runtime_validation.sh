@@ -55,16 +55,16 @@ wait_for_kaya() {
 }
 
 backup_count() {
-    compose run --rm --entrypoint bash postgres-backup -c 'find /var/backups/kaya-postgres -maxdepth 1 -type f -name "kaya-*.dump" | wc -l' | tail -n 1
+    compose run --rm --no-deps --entrypoint bash postgres-backup -c 'find /var/backups/kaya-postgres -maxdepth 1 -type f -name "kaya-*.dump" | wc -l' | tail -n 1
 }
 
 latest_archive() {
-    compose run --rm --entrypoint bash postgres-backup -c 'find /var/backups/kaya-postgres -maxdepth 1 -type f -name "kaya-*.dump" -printf "%T@ %f\n" | sort -nr | cut -d" " -f2-' | grep '^kaya-' | tail -n 1
+    compose run --rm --no-deps --entrypoint bash postgres-backup -c 'find /var/backups/kaya-postgres -maxdepth 1 -type f -name "kaya-*.dump" -printf "%T@ %f\n" | sort -nr | cut -d" " -f2-' | grep '^kaya-' | tail -n 1
 }
 
 backup_must_fail() {
     local output="$1"; shift
-    if compose run --rm "$@" >"$output" 2>&1; then return 1; fi
+    if compose run --rm --no-deps "$@" >"$output" 2>&1; then return 1; fi
     return 0
 }
 
@@ -77,9 +77,9 @@ missing_destination() {
 }
 
 unwritable_destination() {
-    compose run --rm --entrypoint bash postgres-backup -c 'mkdir -p /var/backups/kaya-postgres/unwritable && chmod 500 /var/backups/kaya-postgres/unwritable'
+    compose run --rm --no-deps --entrypoint bash postgres-backup -c 'mkdir -p /var/backups/kaya-postgres/unwritable && chmod 500 /var/backups/kaya-postgres/unwritable'
     backup_must_fail phase8-unwritable.log --user 100:101 -e POSTGRES_PASSWORD_FILE=/dev/null -e KAYA_POSTGRES_BACKUP_DIR=/var/backups/kaya-postgres/unwritable postgres-backup backup
-    [[ "$(compose run --rm --entrypoint bash postgres-backup -c 'find /var/backups/kaya-postgres/unwritable -type f | wc -l' | tail -n 1)" == "0" ]]
+    [[ "$(compose run --rm --no-deps --entrypoint bash postgres-backup -c 'find /var/backups/kaya-postgres/unwritable -type f | wc -l' | tail -n 1)" == "0" ]]
 }
 
 constrained_destination() {
@@ -119,7 +119,7 @@ interrupted_backup() {
     status="$(docker wait "$container")"
     docker logs "$container" >phase8-interrupted.log 2>&1
     docker rm "$container" >/dev/null
-    tmp_count="$(compose run --rm --entrypoint bash postgres-backup -c 'find /var/backups/kaya-postgres -maxdepth 1 -type f -name "*.tmp" | wc -l' | tail -n 1)"
+    tmp_count="$(compose run --rm --no-deps --entrypoint bash postgres-backup -c 'find /var/backups/kaya-postgres -maxdepth 1 -type f -name "*.tmp" | wc -l' | tail -n 1)"
     printf 'killed=%s status=%s tmp_count=%s\n' "$killed" "$status" "$tmp_count" >>phase8-interrupted.log
     [[ "$killed" == "1" ]]
     [[ "$status" != "0" ]]
@@ -130,20 +130,20 @@ partial_archive() {
     local archive partial
     archive="$(latest_archive)"
     partial="${archive}.partial"
-    compose run --rm --entrypoint bash postgres-backup -c "cp /var/backups/kaya-postgres/$archive /var/backups/kaya-postgres/$partial; cp /var/backups/kaya-postgres/$archive.json /var/backups/kaya-postgres/$partial.json; cp /var/backups/kaya-postgres/$archive.sha256 /var/backups/kaya-postgres/$partial.sha256; truncate -s -1 /var/backups/kaya-postgres/$partial"
+    compose run --rm --no-deps --entrypoint bash postgres-backup -c "cp /var/backups/kaya-postgres/$archive /var/backups/kaya-postgres/$partial; cp /var/backups/kaya-postgres/$archive.json /var/backups/kaya-postgres/$partial.json; cp /var/backups/kaya-postgres/$archive.sha256 /var/backups/kaya-postgres/$partial.sha256; truncate -s -1 /var/backups/kaya-postgres/$partial"
     backup_must_fail phase8-partial.log --entrypoint bash postgres-backup -c "pg_restore --list /var/backups/kaya-postgres/$partial"
     backup_must_fail phase8-partial-verify.log verify "/var/backups/kaya-postgres/$partial"
-    compose run --rm --entrypoint bash postgres-backup -c "rm -f /var/backups/kaya-postgres/$partial /var/backups/kaya-postgres/$partial.json /var/backups/kaya-postgres/$partial.sha256"
+    compose run --rm --no-deps --entrypoint bash postgres-backup -c "rm -f /var/backups/kaya-postgres/$partial /var/backups/kaya-postgres/$partial.json /var/backups/kaya-postgres/$partial.sha256"
 }
 
 corrupt_archive() {
     local archive corrupt
     archive="$(latest_archive)"
     corrupt="${archive}.corrupt"
-    compose run --rm --entrypoint bash postgres-backup -c "cp /var/backups/kaya-postgres/$archive /var/backups/kaya-postgres/$corrupt; cp /var/backups/kaya-postgres/$archive.json /var/backups/kaya-postgres/$corrupt.json; cp /var/backups/kaya-postgres/$archive.sha256 /var/backups/kaya-postgres/$corrupt.sha256; printf X | dd of=/var/backups/kaya-postgres/$corrupt bs=1 seek=32 conv=notrunc status=none"
+    compose run --rm --no-deps --entrypoint bash postgres-backup -c "cp /var/backups/kaya-postgres/$archive /var/backups/kaya-postgres/$corrupt; cp /var/backups/kaya-postgres/$archive.json /var/backups/kaya-postgres/$corrupt.json; cp /var/backups/kaya-postgres/$archive.sha256 /var/backups/kaya-postgres/$corrupt.sha256; printf X | dd of=/var/backups/kaya-postgres/$corrupt bs=1 seek=32 conv=notrunc status=none"
     backup_must_fail phase8-corrupt.log verify "/var/backups/kaya-postgres/$corrupt"
     backup_must_fail phase8-corrupt-restore.log restore-drill "/var/backups/kaya-postgres/$corrupt" kaya_phase8_corrupt
-    compose run --rm --entrypoint bash postgres-backup -c "rm -f /var/backups/kaya-postgres/$corrupt /var/backups/kaya-postgres/$corrupt.json /var/backups/kaya-postgres/$corrupt.sha256"
+    compose run --rm --no-deps --entrypoint bash postgres-backup -c "rm -f /var/backups/kaya-postgres/$corrupt /var/backups/kaya-postgres/$corrupt.json /var/backups/kaya-postgres/$corrupt.sha256"
 }
 
 restart_postgres() {

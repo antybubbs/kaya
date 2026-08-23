@@ -87,7 +87,7 @@ jobs:
         run: |
           project=kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
           compose="docker compose -p $project -f docker-compose.yml -f docker-compose.phase8-production-ci.yml --profile postgres-ops"
-          $compose run --rm --entrypoint bash postgres-backup -c "printf 'phase8-sentinel-immutable\\n' > /var/backups/kaya-postgres/DO_NOT_DELETE_SENTINEL.txt"
+          $compose run --rm --no-deps --entrypoint bash postgres-backup -c "printf 'phase8-sentinel-immutable\\n' > /var/backups/kaya-postgres/DO_NOT_DELETE_SENTINEL.txt"
       - name: Backup during authenticated live writes
         env:
           PHASE7D_HTTP_BASE: http://127.0.0.1:18080
@@ -98,7 +98,7 @@ jobs:
           python scripts/phase8_live_write.py > phase8-live-write.log 2>&1 &
           writer=$!
           backup_started=$(date +%s.%N)
-          $compose run --rm postgres-backup backup > phase8-live-backup.log
+          $compose run --rm --no-deps postgres-backup backup > phase8-live-backup.log
           backup_finished=$(date +%s.%N)
           wait "$writer"
           cat phase8-live-write.log
@@ -114,14 +114,14 @@ jobs:
         run: |
           project=kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
           compose="docker compose -p $project -f docker-compose.yml -f docker-compose.phase8-production-ci.yml --profile postgres-ops"
-          $compose run --rm postgres-backup backup
-          $compose run --rm postgres-backup backup
-          $compose run --rm postgres-backup backup
-          count=$($compose run --rm --entrypoint bash postgres-backup -c 'find /var/backups/kaya-postgres -maxdepth 1 -name "kaya-*.dump" | wc -l')
+          $compose run --rm --no-deps postgres-backup backup
+          $compose run --rm --no-deps postgres-backup backup
+          $compose run --rm --no-deps postgres-backup backup
+          count=$($compose run --rm --no-deps --entrypoint bash postgres-backup -c 'find /var/backups/kaya-postgres -maxdepth 1 -name "kaya-*.dump" | wc -l')
           test "$count" -eq 2
-          sentinel=$($compose run --rm --entrypoint bash postgres-backup -c 'cat /var/backups/kaya-postgres/DO_NOT_DELETE_SENTINEL.txt')
+          sentinel=$($compose run --rm --no-deps --entrypoint bash postgres-backup -c 'cat /var/backups/kaya-postgres/DO_NOT_DELETE_SENTINEL.txt')
           test "$sentinel" = "phase8-sentinel-immutable"
-          $compose run --rm postgres-backup verify
+          $compose run --rm --no-deps postgres-backup verify
       - name: Restore drill and diagnostics
         env:
           KAYA_IMAGE: kaya:phase8b-${{ github.sha }}
@@ -133,8 +133,8 @@ jobs:
         run: |
           project=kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
           compose="docker compose -p $project -f docker-compose.yml -f docker-compose.phase8-production-ci.yml --profile postgres-ops"
-          $compose run --rm postgres-backup restore-drill
-          $compose run --rm postgres-backup diagnostics
+          $compose run --rm --no-deps postgres-backup restore-drill
+          $compose run --rm --no-deps postgres-backup diagnostics
       - name: Phase 8D runtime scenarios
         env:
           PHASE8_PROJECT: kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
