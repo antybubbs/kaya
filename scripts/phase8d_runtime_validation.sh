@@ -100,7 +100,7 @@ constrained_destination() {
 interrupted_backup() {
     local container pid lock_ready=0 killed=0 status tmp_count
     compose exec -T postgres psql -U kaya -d kaya -v ON_ERROR_STOP=1 -c \
-        "CREATE TABLE IF NOT EXISTS phase8_interrupt_fixture (id integer PRIMARY KEY, payload text NOT NULL); TRUNCATE phase8_interrupt_fixture; INSERT INTO phase8_interrupt_fixture SELECT g, repeat('phase8-interrupt-', 400) FROM generate_series(1, 200000) AS source(g);" >/dev/null
+        "CREATE TABLE IF NOT EXISTS phase8_interrupt_fixture (id integer PRIMARY KEY, payload text NOT NULL); TRUNCATE phase8_interrupt_fixture; INSERT INTO phase8_interrupt_fixture SELECT g, repeat('phase8-interrupt-', 100) FROM generate_series(1, 10000) AS source(g);" >/dev/null
     compose exec -d postgres psql -U kaya -d kaya -c "BEGIN; LOCK TABLE phase8_interrupt_fixture IN ACCESS EXCLUSIVE MODE; SELECT pg_sleep(120);" >/dev/null
     for _ in $(seq 1 30); do
         if compose exec -T postgres psql -U kaya -d kaya -Atc \
