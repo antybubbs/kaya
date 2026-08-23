@@ -208,7 +208,7 @@ image_replacement() {
     before="$(compose exec -T kaya sha256sum /run/kaya-secrets/postgres_password | awk '{print $1}')"
     docker build --tag "$image_b" "$ROOT_DIR"
     export KAYA_IMAGE="$image_b"
-    compose up -d --force-recreate kaya >/dev/null
+    compose up -d --no-deps --force-recreate kaya >/dev/null
     wait_for_kaya
     after="$(compose exec -T kaya sha256sum /run/kaya-secrets/postgres_password | awk '{print $1}')"
     [[ "$before" == "$after" ]]
