@@ -15,6 +15,7 @@ jobs:
       SECRET_KEY: phase8-ci-only-secret-key-012345678901234567890123456789
       ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
       DATABASE_URL: sqlite:////tmp/kaya-ci-tests.db
+      DATA_DIR: /tmp/kaya-ci-data
       UPLOAD_DIR: /tmp/kaya-ci-uploads
       RECORDING_DIR: /tmp/kaya-ci-recordings
     steps:
@@ -43,6 +44,7 @@ jobs:
       SECRET_KEY: phase8-ci-only-secret-key-012345678901234567890123456789
       ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
       DATABASE_URL: sqlite:////tmp/kaya-ci-tests.db
+      DATA_DIR: /tmp/kaya-ci-data
       UPLOAD_DIR: /tmp/kaya-ci-uploads
       RECORDING_DIR: /tmp/kaya-ci-recordings
     services:
