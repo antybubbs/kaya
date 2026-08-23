@@ -32,7 +32,15 @@ PHASE7D_DEBUG_LOGS=1 PHASE7D_PROJECT_PREFIX="kaya_phase7d_13_${GITHUB_RUN_ID}" b
 for id in 1 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 20 21 22 23 27 35 36 37 38 40 48; do pass "$id" 'Phase 7D production-path validation'; done
 PHASE12_PROJECT="kaya_phase12_13_${GITHUB_RUN_ID}" PHASE12_ROOT="${PHASE13_ROOT}-phase12" PHASE12_APP_IMAGE="$PHASE13_APP_IMAGE" PHASE12_TEST_IMAGE="$PHASE13_TEST_IMAGE" PHASE12_POSTGRES_IMAGE=postgres:16.14 bash "$ROOT_DIR/scripts/phase12_runtime_validation.sh"
 for id in 2 19 24 25 26 28 29 30 31 32 33 34 39 49; do pass "$id" 'authoritative Phase 12 current-candidate validation'; done
-python -m compileall -q "$ROOT_DIR/scripts"
+python - "$ROOT_DIR/scripts" <<'PY'
+import ast
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+for source in root.rglob('*.py'):
+    ast.parse(source.read_text(encoding='utf-8'), filename=str(source))
+PY
 python "$ROOT_DIR/scripts/phase13_acceptance_evidence.py" --output "$EVIDENCE" --scenario 50 --status PASS --evidence 'owned disposable resources cleaned with hardened helper' >/dev/null
 python - "$EVIDENCE" "$ROOT_DIR/phase13_upgrade_evidence.json" <<'PY'
 import json,sys
