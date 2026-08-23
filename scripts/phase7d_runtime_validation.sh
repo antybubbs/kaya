@@ -19,6 +19,16 @@ compose() {
     docker compose -p "$PHASE7D_PROJECT" -f "$PRIMARY_FILE" -f "$OVERRIDE_FILE" "$@"
 }
 
+compose_up() {
+    if ! compose up -d "$@"; then
+        if [[ "${PHASE7D_DEBUG_LOGS:-0}" == "1" ]]; then
+            compose logs --no-color postgres-role-init postgres-role-migration-backup 2>&1 \
+                | sed -E 's/(password|secret|key|token)=([^ ]+)/\1=[REDACTED]/Ig' >&2 || true
+        fi
+        return 1
+    fi
+}
+
 configure_project() {
     local project="$1" root="$2" http_port="$3" gateway_port="$4" image="$5"
     python "$ROOT_DIR/scripts/kaya_validation_resources.py" validate-project --project "$project"
@@ -141,7 +151,7 @@ echo 'primary compose validation passed'
 
 # Fresh PostgreSQL-first install.
 configure_project "${PROJECT_PREFIX}_fresh" "$RUN_ROOT/fresh" 18091 18991 "$IMAGE_A"
-compose up -d
+compose_up
 wait_for_kaya
 assert_revision
 [[ "$(secret_mode)" == "600 100 101" ]]
@@ -150,7 +160,7 @@ fresh_hash="$(secret_hash)"
 enable_high_availability_fixture
 run_http_smoke "$(setup_token)"
 compose down
-compose up -d
+compose_up
 wait_for_kaya
 assert_revision
 [[ "$(secret_hash)" == "$fresh_hash" ]]
@@ -172,7 +182,7 @@ docker run --rm --entrypoint python \
     -v "$PHASE7D_ROOT/data:/app/data" "$IMAGE_A" \
     scripts/generate_sqlite_migration_fixture.py /app/data/kaya.db --functional
 legacy_before="$(fingerprint_sqlite "$PHASE7D_ROOT/data")"
-compose up -d
+compose_up
 wait_for_kaya
 assert_revision
 state="$(compose exec -T kaya python -c "import json; print(json.load(open('/app/data/kaya-database-upgrade.json', encoding='utf-8'))['state'])" | tr -d '\r')"
@@ -187,7 +197,7 @@ legacy_after="$(fingerprint_sqlite "$PHASE7D_ROOT/data")"
 [[ "$legacy_before" == "$legacy_after" ]]
 legacy_hash="$(secret_hash)"
 compose down
-compose up -d
+compose_up
 wait_for_kaya
 assert_revision
 [[ "$(secret_hash)" == "$legacy_hash" ]]
@@ -197,13 +207,13 @@ echo 'legacy migration, retained SQLite, HTTP smoke, and down/up persistence pas
 
 # Existing PostgreSQL startup without a SQLite source.
 configure_project "${PROJECT_PREFIX}_existing_pg" "$RUN_ROOT/existing-pg" 18093 18993 "$IMAGE_A"
-compose up -d
+compose_up
 wait_for_kaya
 assert_revision
 enable_high_availability_fixture
 run_http_smoke "$(setup_token)"
 compose down
-compose up -d
+compose_up
 wait_for_kaya
 assert_revision
 echo 'existing PostgreSQL startup passed'

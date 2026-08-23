@@ -25,10 +25,10 @@ pass 42 'primary Compose healthcheck inspected'
 pass 43 'primary Compose restart policies inspected'
 for spec in '44|docs/deployment.md|install' '45|docs/deployment.md|upgrade' '46|docs/deployment.md|rollback' '47|.github/workflows/tests.yml|PostgreSQL'; do
   IFS='|' read -r id file needle <<<"$spec"
-  test -f "$ROOT_DIR/$file" && rg -qi "$needle" "$ROOT_DIR/$file" && pass "$id" "$file contains required production guidance"
+  test -f "$ROOT_DIR/$file" && grep -Eiq "$needle" "$ROOT_DIR/$file" && pass "$id" "$file contains required production guidance"
 done
 export GITHUB_RUN_ID="${GITHUB_RUN_ID:-local}" GITHUB_RUN_ATTEMPT="${GITHUB_RUN_ATTEMPT:-1}"
-PHASE7D_PROJECT_PREFIX="kaya_phase7d_13_${GITHUB_RUN_ID}" bash "$ROOT_DIR/scripts/phase7d_runtime_validation.sh"
+PHASE7D_DEBUG_LOGS=1 PHASE7D_PROJECT_PREFIX="kaya_phase7d_13_${GITHUB_RUN_ID}" bash "$ROOT_DIR/scripts/phase7d_runtime_validation.sh"
 for id in 1 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 20 21 22 23 27 35 36 37 38 40 48; do pass "$id" 'Phase 7D production-path validation'; done
 PHASE12_PROJECT="kaya_phase12_13_${GITHUB_RUN_ID}" PHASE12_ROOT="${PHASE13_ROOT}-phase12" PHASE12_APP_IMAGE="$PHASE13_APP_IMAGE" PHASE12_TEST_IMAGE="$PHASE13_TEST_IMAGE" PHASE12_POSTGRES_IMAGE=postgres:16.14 bash "$ROOT_DIR/scripts/phase12_runtime_validation.sh"
 for id in 2 19 24 25 26 28 29 30 31 32 33 34 39 49; do pass "$id" 'authoritative Phase 12 current-candidate validation'; done
