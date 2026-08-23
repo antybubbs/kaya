@@ -185,7 +185,7 @@ outage_and_recovery() {
     status="$?"
     ended="$(date +%s)"
     set_metric 30 "$((ended - started))s/http_status=$status"
-    compose start postgres >/dev/null
+    compose up -d --no-deps postgres >/dev/null
     wait_for_postgres && wait_for_kaya
     curl --fail --silent --show-error "http://127.0.0.1:${PORT}/api/site-timezone" >/dev/null
 }
@@ -195,7 +195,7 @@ no_sqlite_fallback() {
     before="$(find "$DATA_ROOT" -maxdepth 1 -type f \( -name 'kaya.db' -o -name 'kaya.db-wal' -o -name 'kaya.db-shm' \) -print0 | sort -z | xargs -0 -r sha256sum | sha256sum | awk '{print $1}')"
     compose stop postgres >/dev/null
     if curl --fail --silent --show-error --max-time 45 "http://127.0.0.1:${PORT}/api/site-timezone" >/dev/null; then return 1; fi
-    compose start postgres >/dev/null
+    compose up -d --no-deps postgres >/dev/null
     wait_for_postgres && wait_for_kaya
     after="$(find "$DATA_ROOT" -maxdepth 1 -type f \( -name 'kaya.db' -o -name 'kaya.db-wal' -o -name 'kaya.db-shm' \) -print0 | sort -z | xargs -0 -r sha256sum | sha256sum | awk '{print $1}')"
     [[ "$before" == "$after" ]]
