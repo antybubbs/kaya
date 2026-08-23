@@ -48,7 +48,8 @@ wait_for_postgres() {
 wait_for_kaya() {
     local deadline=$((SECONDS + 180))
     while ((SECONDS < deadline)); do
-        if curl --fail --silent --show-error --max-time 3 "http://127.0.0.1:${PORT}/healthz" >/dev/null 2>&1; then return 0; fi
+        if curl --fail --silent --show-error --max-time 3 "http://127.0.0.1:${PORT}/healthz" >/dev/null 2>&1 && \
+            curl --fail --silent --show-error --max-time 3 "http://127.0.0.1:${PORT}/api/site-timezone" >/dev/null 2>&1; then return 0; fi
         sleep 2
     done
     return 1

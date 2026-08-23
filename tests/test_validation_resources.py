@@ -150,6 +150,7 @@ def test_phase8_one_shot_backup_workers_do_not_restart_dependencies():
     assert "run --rm --no-deps --entrypoint bash postgres-backup" in workflow
     assert "compose run --rm --no-deps" in script
     assert "compose run --rm --entrypoint bash postgres-backup" not in script
+    assert "/api/site-timezone" in script
 
 
 def test_phase9_retry_fixture_cleanup_is_exact_and_run_scoped():
