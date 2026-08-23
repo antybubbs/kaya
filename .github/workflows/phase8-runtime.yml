@@ -167,7 +167,7 @@ jobs:
         run: |
           project=kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
           compose="docker compose -p $project -f docker-compose.yml -f docker-compose.phase8-production-ci.yml"
-          $compose exec -T postgres bash -c 'export PGPASSWORD="$(< /run/kaya-secrets/postgres_password)"; psql -U kaya -d postgres -c "CREATE DATABASE kaya_phase8_compat OWNER kaya;"'
+          $compose exec -T postgres bash -c 'export PGPASSWORD="$(< /run/kaya-secrets/postgres_bootstrap_password)"; psql -U kaya_bootstrap -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE kaya_phase8_compat OWNER kaya;"'
           docker build --file Dockerfile.test --tag kaya:phase8-tests-${GITHUB_SHA} .
           docker run --rm --network "${project}_default" -e PYTHONPATH=/workspace -e SECRET_KEY=phase8-ci-only-secret-key-012345678901234567890123456789 -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= -e KAYA_TEST_POSTGRES_URL=postgresql+psycopg://kaya@postgres:5432/kaya_phase8_compat \
             -v "${KAYA_PHASE8_VOLUME_PREFIX}_postgres_secret:/run/kaya-secrets:ro" -v "$PWD:/workspace" -w /workspace kaya:phase8-tests-${GITHUB_SHA} \
