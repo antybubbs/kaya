@@ -205,6 +205,7 @@ def test_phase12_runtime_starts_application_without_rerunning_legacy_backup():
     assert 'up -d --no-deps kaya' in script
     assert 'rm -sf postgres-role-init postgres-role-migration-backup' in script
     assert 'up --abort-on-container-exit --exit-code-from postgres-role-init postgres-role-init' in script
+    assert "postgres.role_backup state=current action=not_required reason=role_topology_already_migrated' <<<\"$current_backup_log\"" in script
     assert '"legacy_backup":"not required"' in script
 
 

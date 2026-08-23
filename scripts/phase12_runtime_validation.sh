@@ -142,6 +142,8 @@ stage=application_start
 # and role-init must remain idempotent.
 "${compose[@]}" rm -sf postgres-role-init postgres-role-migration-backup >/dev/null
 "${compose[@]}" up --abort-on-container-exit --exit-code-from postgres-role-init postgres-role-init >/dev/null
+current_backup_log="$("${compose[@]}" logs --no-color postgres-role-migration-backup)"
+grep -q 'postgres.role_backup state=current action=not_required reason=role_topology_already_migrated' <<<"$current_backup_log"
 "${compose[@]}" up -d --no-deps kaya
 for _ in $(seq 1 90); do curl --fail --silent --max-time 3 "http://127.0.0.1:${PHASE12_HTTP_PORT:-18132}/healthz" >/dev/null 2>&1 && break; sleep 2; done
 curl --fail --silent --max-time 3 "http://127.0.0.1:${PHASE12_HTTP_PORT:-18132}/healthz" >/dev/null
