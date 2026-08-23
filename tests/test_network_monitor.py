@@ -221,8 +221,6 @@ def test_external_probe_runs_after_read_transaction_is_finished(monkeypatch):
     monitor_id = add_monitor(factory)
     observed = []
 
-    db = None
-
     def fake_probe(*_args):
         observed.append(db.in_transaction())
         return True, 5, 0, None

@@ -44,6 +44,7 @@ from app.services.notification_registry import EVENT_TYPES
 from app.services.notification_outbox import enqueue_notification, process_outbox
 from app.services import notification_outbox
 from app.services import notification_delivery
+from app.services import notification_runtime
 from app.services.notifications import (
     cleanup_retention,
     preference_allows,
@@ -788,7 +789,12 @@ def test_web_push_key_management_routes_are_admin_only():
         assert dependency.dependency is require_admin
 
 
-def test_admin_mobile_pwa_health_uses_latest_success_over_historical_failure(db):
+def test_admin_mobile_pwa_health_uses_latest_success_over_historical_failure(db, monkeypatch):
+    monkeypatch.setattr(
+        notification_runtime,
+        "SessionLocal",
+        sessionmaker(bind=db.get_bind()),
+    )
     admin = user(db, "health-admin@example.invalid", role="admin")
     failure_at = datetime(2026, 8, 10, 11, 55)
     success_at = datetime(2026, 8, 10, 12, 1)
@@ -831,9 +837,9 @@ def test_admin_mobile_pwa_health_uses_latest_success_over_historical_failure(db)
     db.add(attempt)
     db.commit()
 
-    response = notification_router.notification_admin_page(
-        SimpleNamespace(), db=db, user=admin
-    )
+    request = csrf_request()
+    request.url_for = lambda name, **kwargs: f"/{name}"
+    response = notification_router.notification_admin_page(request, db=db, user=admin)
     device = response.context["web_push"]["devices"][0]
     assert device["status"] == "Active"
     assert device["failure_is_historical"] is True

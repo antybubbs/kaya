@@ -522,6 +522,7 @@ def test_client_traffic_history_is_persisted_and_deduplicated():
     make = factory()
     with make() as db:
         provider = setup_provider(db)
+        setting(db, "dns_traffic_history_days", "3650")
         client = observe_client(db, provider, observation(), datetime.utcnow())
         db.commit()
         normalised = NormalisedClient("ip", client.current_ip, client.hostname, client.current_ip, client.normalised_mac or "-", device_id=client.id)

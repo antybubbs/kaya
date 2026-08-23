@@ -729,7 +729,11 @@ def test_rejected_old_action_result_cannot_starve_failover_proof_or_heartbeats(t
     event_id = state.queue_event("automatic_failover_completed", "warning", "Local failover completed without requiring Kaya.")
     monkeypatch.setattr(keepalived_runtime, "refresh_vip_state", lambda value: None)
     monkeypatch.setattr(failover_runtime, "refresh_dhcp_state", lambda value: None)
-    monkeypatch.setattr(transport.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0))
+    monkeypatch.setattr(
+        transport.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
     calls = []
     desired = {
         "cluster_generation": 4,
