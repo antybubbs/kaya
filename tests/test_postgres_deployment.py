@@ -65,6 +65,14 @@ def test_primary_compose_separates_bootstrap_and_runtime_postgres_roles():
     assert "service_completed_successfully" in compose
 
 
+def test_phase7d_backup_probe_runs_with_postgres_client_image():
+    overlay = Path("docker-compose.phase7d-ci.yml").read_text(encoding="utf-8")
+
+    section = overlay.split("  postgres-role-migration-backup:", 1)[1].split("\n\n", 1)[0]
+    assert "image: ${KAYA_POSTGRES_IMAGE:-postgres:16.14}" in section
+    assert "image: ${PHASE7D_IMAGE}" not in section
+
+
 def test_phase12_role_topology_helper_is_fail_closed_and_scoped():
     helper = Path("scripts/kaya_postgres_role_topology.py").read_text(encoding="utf-8")
 
