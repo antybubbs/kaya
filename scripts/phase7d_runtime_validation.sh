@@ -13,6 +13,7 @@ PRIMARY_FILE="$ROOT_DIR/docker-compose.yml"
 OVERRIDE_FILE="$ROOT_DIR/docker-compose.phase7d-ci.yml"
 PROJECTS=()
 RESTORE_PROJECTS=()
+PROJECT_PREFIX="${PHASE7D_PROJECT_PREFIX:-kaya_phase7d}"
 
 compose() {
     docker compose -p "$PHASE7D_PROJECT" -f "$PRIMARY_FILE" -f "$OVERRIDE_FILE" "$@"
@@ -131,7 +132,7 @@ KAYA_RUNTIME_GID="$(docker run --rm --entrypoint sh "$IMAGE_A" -c 'id -g kaya')"
 [[ "$KAYA_RUNTIME_UID" =~ ^[1-9][0-9]*$ ]]
 [[ "$KAYA_RUNTIME_GID" =~ ^[1-9][0-9]*$ ]]
 
-export PHASE7D_PROJECT="kaya_phase7d_config" PHASE7D_ROOT="$RUN_ROOT/config"
+export PHASE7D_PROJECT="${PROJECT_PREFIX}_config" PHASE7D_ROOT="$RUN_ROOT/config"
 export PHASE7D_IMAGE="$IMAGE_A" PHASE7D_HTTP_PORT=18090 PHASE7D_GATEWAY_PORT=18990
 docker compose -p "$PHASE7D_PROJECT" -f "$PRIMARY_FILE" -f "$OVERRIDE_FILE" config --quiet
 grep -q 'postgres:16.14' <(docker compose -p "$PHASE7D_PROJECT" -f "$PRIMARY_FILE" -f "$OVERRIDE_FILE" config)
@@ -139,7 +140,7 @@ grep -q 'postgres:16.14' <(docker compose -p "$PHASE7D_PROJECT" -f "$PRIMARY_FIL
 echo 'primary compose validation passed'
 
 # Fresh PostgreSQL-first install.
-configure_project kaya_phase7d_fresh "$RUN_ROOT/fresh" 18091 18991 "$IMAGE_A"
+configure_project "${PROJECT_PREFIX}_fresh" "$RUN_ROOT/fresh" 18091 18991 "$IMAGE_A"
 compose up -d
 wait_for_kaya
 assert_revision
@@ -157,7 +158,7 @@ run_http_smoke
 echo 'fresh install, HTTP smoke, writes, and down/up persistence passed'
 
 # Legacy SQLite through the primary production Compose architecture.
-configure_project kaya_phase7d_legacy "$RUN_ROOT/legacy" 18092 18992 "$IMAGE_A"
+configure_project "${PROJECT_PREFIX}_legacy" "$RUN_ROOT/legacy" 18092 18992 "$IMAGE_A"
 docker run --rm --entrypoint chown \
     -v "$PHASE7D_ROOT/data:/app/data" "$IMAGE_A" \
     -R "$KAYA_RUNTIME_UID:$KAYA_RUNTIME_GID" /app/data
@@ -195,7 +196,7 @@ run_http_smoke "" "$legacy_dns_client_id"
 echo 'legacy migration, retained SQLite, HTTP smoke, and down/up persistence passed'
 
 # Existing PostgreSQL startup without a SQLite source.
-configure_project kaya_phase7d_existing_pg "$RUN_ROOT/existing-pg" 18093 18993 "$IMAGE_A"
+configure_project "${PROJECT_PREFIX}_existing_pg" "$RUN_ROOT/existing-pg" 18093 18993 "$IMAGE_A"
 compose up -d
 wait_for_kaya
 assert_revision
@@ -208,7 +209,7 @@ assert_revision
 echo 'existing PostgreSQL startup passed'
 
 # Image replacement against the migrated project.
-export PHASE7D_PROJECT=kaya_phase7d_legacy PHASE7D_ROOT="$RUN_ROOT/legacy" PHASE7D_IMAGE="$IMAGE_B" PHASE7D_HTTP_PORT=18092 PHASE7D_GATEWAY_PORT=18992
+export PHASE7D_PROJECT="${PROJECT_PREFIX}_legacy" PHASE7D_ROOT="$RUN_ROOT/legacy" PHASE7D_IMAGE="$IMAGE_B" PHASE7D_HTTP_PORT=18092 PHASE7D_GATEWAY_PORT=18992
 compose up -d --force-recreate kaya secure-send-gateway
 wait_for_kaya
 assert_revision
@@ -246,7 +247,7 @@ backup="$RUN_ROOT/legacy/backups/phase7d.dump"
 compose exec -T postgres pg_dump -U kaya -d kaya --format=custom --no-owner > "$backup"
 test -s "$backup"
 export KAYA_POSTGRES_TEST_PORT=55439
-restore_project=kaya_phase7d_restore
+restore_project="${PROJECT_PREFIX}_restore"
 RESTORE_PROJECTS+=("$restore_project")
 python "$ROOT_DIR/scripts/kaya_validation_resources.py" validate-project --project "$restore_project"
 docker compose -p "$restore_project" -f "$ROOT_DIR/docker-compose.postgres-test.yml" up -d

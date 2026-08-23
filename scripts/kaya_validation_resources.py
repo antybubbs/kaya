@@ -11,8 +11,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-PROJECT_RE = re.compile(r"^kaya_phase(?:7d|8|9|10|11|12a?)_[a-z0-9][a-z0-9_-]*$")
-SAFE_RESOURCE_RE = re.compile(r"^kaya_phase(?:7d|8|9|10|11|12a?)_[a-z0-9][a-z0-9_-]*$")
+PROJECT_RE = re.compile(r"^kaya_phase(?:7d|8|9|10|11|12a?|13)_[a-z0-9][a-z0-9_-]*$")
+SAFE_RESOURCE_RE = re.compile(r"^kaya_phase(?:7d|8|9|10|11|12a?|13)_[a-z0-9][a-z0-9_-]*$")
 IDENTIFIER_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 RUN_VALUE_RE = re.compile(r"^[0-9]+$")
 PROTECTED_NAMES = frozenset(
