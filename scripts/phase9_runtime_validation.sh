@@ -47,6 +47,28 @@ source_hash() { docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "
 backup_hash() { docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c 'find /data/backups -type f -name "*.sqlite3" -printf "%f\\n" | sort | sha256sum' | awk '{print $1}'; }
 legacy_backup_valid() { test -n "$(backup_hash)" && docker run --rm --user 0 --entrypoint python -v "$ROOT/data:/data" "$IMAGE" -c 'import sqlite3; c=sqlite3.connect("/data/kaya.db"); assert c.execute("pragma quick_check").fetchone()[0] == "ok"; c.close()'; }
 historical_backup_valid() { docker run --rm --user 0 --entrypoint python -v "$ROOT/data:/data" "$IMAGE" -c 'import glob, json; assert any(json.load(open(path))["source_revision"] == "20260813_01" for path in glob.glob("/data/backups/*.json"))'; }
+migration_report_valid() { compose exec -T kaya python -c 'import json; r=json.load(open("/app/data/kaya-database-upgrade-report.json", encoding="utf-8")); assert r["result"] == "COMPLETED" and r["rejected_rows"] == 0 and r["skipped_rows"] == 0 and r["foreign_key_violations"] == 0 and len(r["dependency_order"]) == 104'; }
+legacy_relationships_valid() {
+  compose exec -T postgres psql -U kaya -d kaya -Atc "SELECT
+    (SELECT count(*) FROM dns_client_events e LEFT JOIN dns_recognised_devices d ON d.id=e.dns_client_id WHERE d.id IS NULL) +
+    (SELECT count(*) FROM dns_client_events e LEFT JOIN dns_providers p ON p.id=e.provider_id WHERE e.provider_id IS NOT NULL AND p.id IS NULL) +
+    (SELECT count(*) FROM dns_client_hostname_history h LEFT JOIN dns_recognised_devices d ON d.id=h.dns_client_id WHERE d.id IS NULL) +
+    (SELECT count(*) FROM dns_client_ip_history h LEFT JOIN dns_providers p ON p.id=h.provider_id WHERE h.provider_id IS NOT NULL AND p.id IS NULL) +
+    (SELECT count(*) FROM dns_client_observations o LEFT JOIN dns_recognised_devices d ON d.id=o.dns_client_id WHERE d.id IS NULL) +
+    (SELECT count(*) FROM dns_client_traffic_events e LEFT JOIN dns_recognised_devices d ON d.id=e.dns_client_id WHERE d.id IS NULL) +
+    (SELECT count(*) FROM dns_insights i LEFT JOIN dns_providers p ON p.id=i.provider_id WHERE p.id IS NULL) +
+    (SELECT count(*) FROM dns_investigations i LEFT JOIN dns_providers p ON p.id=i.provider_id WHERE i.provider_id IS NOT NULL AND p.id IS NULL) +
+    (SELECT count(*) FROM ha_agent_action_results a LEFT JOIN ha_nodes n ON n.id=a.node_id WHERE n.id IS NULL) +
+    (SELECT count(*) FROM ha_agent_credentials c LEFT JOIN ha_nodes n ON n.id=c.node_id WHERE n.id IS NULL) +
+    (SELECT count(*) FROM ha_backups b LEFT JOIN ha_sync_runs s ON s.id=b.sync_run_id WHERE s.id IS NULL) +
+    (SELECT count(*) FROM ha_drift_items d LEFT JOIN ha_sync_runs s ON s.id=d.sync_run_id WHERE s.id IS NULL) +
+    (SELECT count(*) FROM ha_events e LEFT JOIN ha_nodes n ON n.id=e.node_id WHERE e.node_id IS NOT NULL AND n.id IS NULL) +
+    (SELECT count(*) FROM ha_failover_runs f LEFT JOIN ha_nodes n ON n.id=f.target_node_id WHERE n.id IS NULL) +
+    (SELECT count(*) FROM ha_health_checks h LEFT JOIN ha_nodes n ON n.id=h.node_id WHERE h.node_id IS NOT NULL AND n.id IS NULL) +
+    (SELECT count(*) FROM ha_lease_replication_states s LEFT JOIN ha_nodes n ON n.id=s.source_node_id WHERE n.id IS NULL) +
+    (SELECT count(*) FROM ha_lease_snapshots s LEFT JOIN ha_nodes n ON n.id=s.target_node_id WHERE n.id IS NULL) = 0" | tr -d '\r' | grep -qx 1
+}
+legacy_fk_logs_clean() { ! compose logs --no-color kaya postgres | grep -Eiq 'foreignkeyviolation|foreign key constraint|missing-parent|rejected insert'; }
 migration_source_preserved() { test -f "$ROOT/data/kaya.db" && docker run --rm --user 0 --entrypoint python -v "$ROOT/data:/data" "$IMAGE" -c 'import sqlite3; c=sqlite3.connect("/data/kaya.db"); assert c.execute("pragma quick_check").fetchone()[0] == "ok"; c.close()'; }
 backup_preserved() { test -n "$backup_hash_before" && test "$backup_hash_before" = "$(backup_hash)"; }
 retention_separated() { test -s "$pg_backup" && test "$(sha256sum "$pg_backup" | awk '{print $1}')" = "$pg_backup_hash" && docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c 'test -f /data/backups/DO_NOT_DELETE_SENTINEL.txt'; }
@@ -96,7 +118,7 @@ trap cleanup EXIT
 mkdir -p "$ROOT/data/remote-recordings" "$ROOT/uploads" "$ROOT/secrets" "$ROOT/backups"
 docker build --file "$ROOT_DIR/Dockerfile" --tag "$IMAGE" "$ROOT_DIR"
 export ROOT_DIR PROJECT ROOT IMAGE TEST_IMAGE PORT PRIMARY ISOLATION
-export -f compose wait_pg wait_app revision state source_hash backup_hash legacy_backup_valid historical_backup_valid migration_source_preserved backup_preserved retention_separated retry_state induce_retry_failure verify_failed_retry retry_recovery setup_token smoke smoke_existing test_suite production_sqlite_rejection
+export -f compose wait_pg wait_app revision state source_hash backup_hash legacy_backup_valid historical_backup_valid migration_report_valid legacy_relationships_valid legacy_fk_logs_clean migration_source_preserved backup_preserved retention_separated retry_state induce_retry_failure verify_failed_retry retry_recovery setup_token smoke smoke_existing test_suite production_sqlite_rejection
 
 fresh_install() { compose up -d; wait_pg; wait_app; [[ "$(revision)" == "20260818_02" ]]; }
 scenario 1 "Fresh install uses PostgreSQL" fresh_install
@@ -126,7 +148,7 @@ docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c "chow
 compose exec -T postgres psql -U kaya -d kaya -v ON_ERROR_STOP=1 -c "INSERT INTO remote_manager_settings (key, value, updated_at) VALUES ('high_availability_enabled', '1', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at;" >/dev/null
 scenario 10 "Legacy SQLite detected" bash -c '[[ "$(state)" == "POSTGRES_ACTIVE" ]]'
 scenario 11 "Legacy SQLite verified backup" legacy_backup_valid
-scenario 12 "Legacy SQLite migration" bash -c '[[ "$(revision)" == "20260818_02" ]] && historical_backup_valid'
+scenario 12 "Legacy SQLite migration" bash -c '[[ "$(revision)" == "20260818_02" ]] && historical_backup_valid && migration_report_valid && legacy_relationships_valid && legacy_fk_logs_clean'
 scenario 13 "PostgreSQL cutover" bash -c '[[ "$(state)" == "POSTGRES_ACTIVE" ]]'
 scenario 14 "Migrated authenticated HTTP smoke" smoke_existing
 scenario 15 "Migrated representative writes" smoke_existing
