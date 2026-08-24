@@ -66,7 +66,7 @@ legacy_relationships_valid() {
     (SELECT count(*) FROM ha_failover_runs f LEFT JOIN ha_nodes n ON n.id=f.target_node_id WHERE n.id IS NULL) +
     (SELECT count(*) FROM ha_health_checks h LEFT JOIN ha_nodes n ON n.id=h.node_id WHERE h.node_id IS NOT NULL AND n.id IS NULL) +
     (SELECT count(*) FROM ha_lease_replication_states s LEFT JOIN ha_nodes n ON n.id=s.source_node_id WHERE n.id IS NULL) +
-    (SELECT count(*) FROM ha_lease_snapshots s LEFT JOIN ha_nodes n ON n.id=s.target_node_id WHERE n.id IS NULL) = 0" | tr -d '\r' | grep -qx 1
+    (SELECT count(*) FROM ha_lease_snapshots s LEFT JOIN ha_nodes n ON n.id=s.target_node_id WHERE n.id IS NULL) = 0" | tr -d '\r' | grep -qx t
 }
 legacy_fk_logs_clean() { ! compose logs --no-color kaya postgres | grep -Eiq 'foreignkeyviolation|foreign key constraint|missing-parent|rejected insert'; }
 migration_source_preserved() { test -f "$ROOT/data/kaya.db" && docker run --rm --user 0 --entrypoint python -v "$ROOT/data:/data" "$IMAGE" -c 'import sqlite3; c=sqlite3.connect("/data/kaya.db"); assert c.execute("pragma quick_check").fetchone()[0] == "ok"; c.close()'; }
