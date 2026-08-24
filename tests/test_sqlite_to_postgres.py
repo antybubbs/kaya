@@ -7,10 +7,13 @@ from collections import namedtuple
 from pathlib import Path
 
 import pytest
+from sqlalchemy import create_engine, text
 from app.db.sqlite_to_postgres import (
     SQLiteToPostgresError,
     _convert_value,
     _classify_sqlite_storage_error,
+    _dependency_edges,
+    _dependency_plan,
     _local_preflight_filesystems,
     _validate_source,
     _source_fingerprint,
@@ -69,6 +72,60 @@ def test_source_validation_rejects_old_revision_without_mutation(tmp_path: Path)
         _validate_source(source, "20260818_02")
     assert source.read_bytes() == changed
     assert before != changed
+
+
+def test_source_validation_rejects_sqlite_orphans_without_mutation(tmp_path: Path):
+    source = tmp_path / "orphan.sqlite3"
+    generate(source, traffic_rows=1, metric_rows=1, audit_rows=1)
+    with sqlite3.connect(source) as connection:
+        connection.execute("PRAGMA foreign_keys=OFF")
+        connection.execute(
+            "INSERT INTO dns_client_events (id, dns_client_id, event_type, event_summary, source, created_at) "
+            "VALUES (999, 999999, 'synthetic-orphan', 'synthetic orphan', 'fixture', CURRENT_TIMESTAMP)"
+        )
+        connection.commit()
+    before = _source_fingerprint(source)
+    with pytest.raises(SQLiteToPostgresError, match="foreign_key_check"):
+        _validate_source(source, "20260818_02")
+    assert _source_fingerprint(source) == before
+
+
+def test_dependency_plan_orders_full_reflected_graph_and_handles_cycles():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    tables, edges = _dependency_edges(engine)
+    plan = _dependency_plan(engine)
+    positions = {table: index for index, table in enumerate(plan.order)}
+    deferred = set(plan.deferred)
+
+    assert len(plan.order) == len(tables)
+    assert plan.order == _dependency_plan(engine).order
+    assert plan.deferred == _dependency_plan(engine).deferred
+    assert plan.cycles
+    assert any({"dns_providers", "ha_clusters", "ha_nodes"} <= set(cycle) for cycle in plan.cycles)
+    assert any(cycle == ("runbook_pages",) for cycle in plan.cycles)
+    assert any(edge.label == "dns_providers.ha_cluster_id->ha_clusters.id" for edge in deferred)
+    assert any(edge.label == "runbook_pages.parent_id->runbook_pages.id" for edge in deferred)
+    for edge in edges:
+        if edge in deferred or edge.child_table == edge.parent_table:
+            continue
+        assert positions[edge.parent_table] < positions[edge.child_table], edge.label
+
+
+def test_functional_fixture_contains_dns_and_ha_parent_child_relationships(tmp_path: Path):
+    source = tmp_path / "functional.sqlite3"
+    from scripts.generate_sqlite_migration_fixture import generate_functional
+
+    generate_functional(source)
+    with create_engine(f"sqlite:///{source.as_posix()}").connect() as connection:
+        assert connection.execute(text("SELECT count(*) FROM dns_providers")).scalar_one() >= 1
+        assert connection.execute(text("SELECT count(*) FROM dns_recognised_devices WHERE provider_id = 1")).scalar_one() >= 1
+        assert connection.execute(text("SELECT count(*) FROM dns_client_events WHERE dns_client_id = 1 AND provider_id = 1")).scalar_one() >= 1
+        assert connection.execute(text("SELECT count(*) FROM dns_client_observations WHERE dns_client_id = 1 AND provider_id = 1")).scalar_one() >= 1
+        assert connection.execute(text("SELECT count(*) FROM dns_client_traffic_events WHERE dns_client_id = 1 AND provider_id = 1")).scalar_one() >= 1
+        assert connection.execute(text("SELECT count(*) FROM ha_clusters")).scalar_one() >= 1
+        assert connection.execute(text("SELECT count(*) FROM ha_nodes WHERE cluster_id = 1")).scalar_one() >= 2
+        assert connection.execute(text("SELECT count(*) FROM ha_lease_replication_states WHERE source_node_id = 1 AND target_node_id = 2")).scalar_one() >= 1
 
 
 def test_filesystem_preflight_accounts_for_shared_source_backup_and_temp_filesystem(tmp_path: Path):

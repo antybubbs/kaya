@@ -9,6 +9,7 @@ import shutil
 import sqlite3
 import time
 from collections import defaultdict, deque
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -42,11 +43,30 @@ STATE_FAILED = "FAILED"
 DEFAULT_BATCH_SIZE = 2_000
 SUPPORTED_POSTGRES_MAJOR = 16
 ALEMBIC_SEEDED_DATA_TABLES = {"hardware_asset_tag_sequences"}
-HA_CLUSTER_NODE_REFERENCE_COLUMNS = (
-    "authoritative_node_id",
-    "current_active_node_id",
-    "preferred_node_id",
-)
+
+
+@dataclass(frozen=True)
+class ForeignKeyDependency:
+    """One reflected child-to-parent dependency in the PostgreSQL target."""
+
+    child_table: str
+    child_columns: tuple[str, ...]
+    parent_table: str
+    parent_columns: tuple[str, ...]
+    nullable: bool
+
+    @property
+    def label(self) -> str:
+        child = ",".join(self.child_columns)
+        parent = ",".join(self.parent_columns)
+        return f"{self.child_table}.{child}->{self.parent_table}.{parent}"
+
+
+@dataclass(frozen=True)
+class DependencyPlan:
+    order: tuple[str, ...]
+    cycles: tuple[tuple[str, ...], ...]
+    deferred: tuple[ForeignKeyDependency, ...]
 
 
 class SQLiteToPostgresError(RuntimeError):
@@ -270,17 +290,108 @@ def _prepare_target(engine: Engine, target_url: str, expected_head: str) -> None
     )
 
 
-def _copy_order(engine: Engine) -> tuple[list[str], list[list[str]]]:
+def _dependency_edges(engine: Engine) -> tuple[list[str], list[ForeignKeyDependency]]:
     inspector = inspect(engine)
     tables = sorted(_application_tables())
+    nullability = {
+        table: {column["name"]: bool(column.get("nullable", True)) for column in inspector.get_columns(table)}
+        for table in tables
+    }
+    edges: list[ForeignKeyDependency] = []
+    for child_table in tables:
+        for foreign_key in inspector.get_foreign_keys(child_table):
+            parent_table = foreign_key.get("referred_table")
+            child_columns = tuple(foreign_key.get("constrained_columns") or ())
+            parent_columns = tuple(foreign_key.get("referred_columns") or ())
+            if parent_table not in nullability or not child_columns or len(child_columns) != len(parent_columns):
+                continue
+            edges.append(
+                ForeignKeyDependency(
+                    child_table=child_table,
+                    child_columns=child_columns,
+                    parent_table=parent_table,
+                    parent_columns=parent_columns,
+                    nullable=all(nullability[child_table].get(column, True) for column in child_columns),
+                )
+            )
+    return tables, sorted(edges, key=lambda edge: edge.label)
+
+
+def _strongly_connected_components(tables: list[str], edges: list[ForeignKeyDependency]) -> list[tuple[str, ...]]:
+    adjacency: dict[str, set[str]] = {table: set() for table in tables}
+    for edge in edges:
+        adjacency[edge.parent_table].add(edge.child_table)
+    index = 0
+    indices: dict[str, int] = {}
+    lowlinks: dict[str, int] = {}
+    stack: list[str] = []
+    on_stack: set[str] = set()
+    components: list[tuple[str, ...]] = []
+
+    def visit(table: str) -> None:
+        nonlocal index
+        indices[table] = index
+        lowlinks[table] = index
+        index += 1
+        stack.append(table)
+        on_stack.add(table)
+        for child in sorted(adjacency[table]):
+            if child not in indices:
+                visit(child)
+                lowlinks[table] = min(lowlinks[table], lowlinks[child])
+            elif child in on_stack:
+                lowlinks[table] = min(lowlinks[table], indices[child])
+        if lowlinks[table] == indices[table]:
+            component = []
+            while True:
+                member = stack.pop()
+                on_stack.remove(member)
+                component.append(member)
+                if member == table:
+                    break
+            components.append(tuple(sorted(component)))
+
+    for table in tables:
+        if table not in indices:
+            visit(table)
+    return sorted(components)
+
+
+def _cyclic_components(tables: list[str], edges: list[ForeignKeyDependency]) -> list[tuple[str, ...]]:
+    components = _strongly_connected_components(tables, edges)
+    return [
+        component
+        for component in components
+        if len(component) > 1
+        or any(edge.child_table == edge.parent_table == component[0] for edge in edges)
+    ]
+
+
+def _dependency_plan(engine: Engine) -> DependencyPlan:
+    tables, all_edges = _dependency_edges(engine)
+    original_cycles = _cyclic_components(tables, all_edges)
+    deferred: list[ForeignKeyDependency] = []
+    active_edges = list(all_edges)
+    while cycles := _cyclic_components(tables, active_edges):
+        component = cycles[0]
+        members = set(component)
+        candidates = sorted(
+            (edge for edge in active_edges if edge.child_table in members and edge.parent_table in members and edge.nullable),
+            key=lambda edge: edge.label,
+        )
+        if not candidates:
+            raise SQLiteToPostgresError(
+                f"Foreign-key cycle has no nullable edge that can be safely deferred: {', '.join(component)}."
+            )
+        deferred.append(candidates[0])
+        active_edges.remove(candidates[0])
+
     parents: dict[str, set[str]] = {table: set() for table in tables}
     children: dict[str, set[str]] = defaultdict(set)
-    for table in tables:
-        for foreign_key in inspector.get_foreign_keys(table):
-            parent = foreign_key.get("referred_table")
-            if parent in parents and parent != table:
-                parents[table].add(parent)
-                children[parent].add(table)
+    for edge in active_edges:
+        if edge.parent_table != edge.child_table:
+            parents[edge.child_table].add(edge.parent_table)
+            children[edge.parent_table].add(edge.child_table)
     ready = deque(sorted(table for table, dependencies in parents.items() if not dependencies))
     ordered: list[str] = []
     while ready:
@@ -290,12 +401,15 @@ def _copy_order(engine: Engine) -> tuple[list[str], list[list[str]]]:
             parents[child].discard(table)
             if not parents[child]:
                 ready.append(child)
-    cycles = []
-    remaining = sorted(table for table in tables if table not in ordered)
-    if remaining:
-        cycles.append(remaining)
-        ordered.extend(remaining)
-    return ordered, cycles
+    if len(ordered) != len(tables):
+        raise SQLiteToPostgresError("Unable to produce a complete foreign-key-safe table order.")
+    return DependencyPlan(tuple(ordered), tuple(original_cycles), tuple(sorted(deferred, key=lambda edge: edge.label)))
+
+
+def _copy_order(engine: Engine) -> tuple[list[str], list[list[str]]]:
+    """Compatibility wrapper for callers that only need the ordered tables."""
+    plan = _dependency_plan(engine)
+    return list(plan.order), [list(cycle) for cycle in plan.cycles]
 
 
 def _state_create(engine: Engine, migration_id: str, source_fingerprint: str, source_revision: str, target_revision: str) -> None:
@@ -421,7 +535,14 @@ def _table_source_rows(connection: sqlite3.Connection, table: str, columns: list
         yield [dict(zip(columns, row, strict=True)) for row in rows]
 
 
-def _copy_table(source: sqlite3.Connection, target: Engine, table_name: str, batch_size: int, memory_callback: Any = None) -> dict[str, Any]:
+def _copy_table(
+    source: sqlite3.Connection,
+    target: Engine,
+    table_name: str,
+    batch_size: int,
+    memory_callback: Any = None,
+    deferred_columns: frozenset[str] = frozenset(),
+) -> dict[str, Any]:
     source_columns = [row[1] for row in source.execute(f"PRAGMA table_info({table_name})")]
     target_table = Base.metadata.tables[table_name]
     columns = [column.name for column in target_table.columns if column.name in source_columns]
@@ -443,23 +564,19 @@ def _copy_table(source: sqlite3.Connection, target: Engine, table_name: str, bat
     source_hash = hashlib.sha256()
     for rows in _table_source_rows(source, table_name, columns, batch_size):
         converted = [{column: _convert_value(row[column], target_table.c[column]) for column in columns} for row in rows]
-        if table_name == "ha_clusters":
-            # HA clusters and nodes form a legitimate cycle: the cluster points
-            # at active/preferred nodes while each node points back to cluster.
-            # Insert the cluster row first and restore these references after
-            # the node/lease tables have been copied.
-            for row in converted:
-                for column in HA_CLUSTER_NODE_REFERENCE_COLUMNS:
-                    if column in row:
-                        row[column] = None
+        insert_rows = [row.copy() for row in converted]
+        for row in insert_rows:
+            for column in deferred_columns:
+                if column in row:
+                    row[column] = None
         to_insert = []
-        for row in converted:
+        for row, insert_row in zip(converted, insert_rows, strict=True):
             key = tuple(row[column] for column in primary_key)
             if key in existing:
                 if _hash_rows([row], columns) != _hash_rows([existing[key]], columns):
                     raise SQLiteToPostgresError(f"Target contains conflicting pre-existing data in {table_name} primary key {key!r}.")
                 continue
-            to_insert.append(row)
+            to_insert.append(insert_row)
         if to_insert:
             with target.begin() as connection:
                 connection.execute(target_table.insert(), to_insert)
@@ -467,34 +584,51 @@ def _copy_table(source: sqlite3.Connection, target: Engine, table_name: str, bat
         source_hash.update(encoded)
         count += len(converted)
         batches += 1
-        logger.info("migration_progress table=%s copied=%s batch=%s", table_name, count, batches)
+        logger.info("copy table=%s state=progress copied=%s batch=%s", table_name, count, batches)
         if memory_callback is not None and batches % 25 == 0:
             memory_callback(f"copy:{table_name}:batch={batches}")
-    return {"source_rows": count, "copied_rows": count, "batches": batches, "elapsed_seconds": round(time.monotonic() - started, 3), "rows_per_second": round(count / max(time.monotonic() - started, 0.001), 2), "source_hash": source_hash.hexdigest()}
+    elapsed = time.monotonic() - started
+    return {"source_rows": count, "copied_rows": count, "batches": batches, "elapsed_seconds": round(elapsed, 3), "rows_per_second": round(count / max(elapsed, 0.001), 2), "source_hash": source_hash.hexdigest()}
 
 
-def _restore_ha_cluster_node_references(source: sqlite3.Connection, target: Engine) -> None:
-    """Restore the legitimate HA cluster/node cycle after both sides exist."""
-    columns = ", ".join(("id", *HA_CLUSTER_NODE_REFERENCE_COLUMNS))
-    rows = source.execute(f"SELECT {columns} FROM ha_clusters ORDER BY id").fetchall()
-    if not rows:
-        return
-    with target.begin() as connection:
+def _quote_identifier(identifier: str) -> str:
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+def _restore_deferred_foreign_keys(
+    source: sqlite3.Connection,
+    target: Engine,
+    dependencies: tuple[ForeignKeyDependency, ...],
+) -> None:
+    for dependency in dependencies:
+        primary_key = [column.name for column in Base.metadata.tables[dependency.child_table].primary_key.columns]
+        if not primary_key:
+            raise SQLiteToPostgresError(f"Cannot restore deferred foreign key without a primary key: {dependency.label}.")
+        columns = list(dict.fromkeys((*primary_key, *dependency.child_columns)))
+        selected = ", ".join(_quote_identifier(column) for column in columns)
+        rows = source.execute(
+            f"SELECT {selected} FROM {_quote_identifier(dependency.child_table)} ORDER BY "
+            f"{', '.join(_quote_identifier(column) for column in primary_key)}"
+        ).fetchall()
+        if not rows:
+            continue
+        assignments = ", ".join(f"{_quote_identifier(column)} = :set_{column}" for column in dependency.child_columns)
+        predicate = " AND ".join(f"{_quote_identifier(column)} = :key_{column}" for column in primary_key)
+        statement = text(
+            f"UPDATE {_quote_identifier(dependency.child_table)} SET {assignments} WHERE {predicate}"
+        )
+        parameters = []
         for row in rows:
-            values = dict(zip(("id", *HA_CLUSTER_NODE_REFERENCE_COLUMNS), row, strict=True))
-            connection.execute(
-                text(
-                    "UPDATE ha_clusters SET authoritative_node_id=:authoritative_node_id, "
-                    "current_active_node_id=:current_active_node_id, "
-                    "preferred_node_id=:preferred_node_id WHERE id=:id"
-                ),
-                values,
+            values = dict(zip(columns, row, strict=True))
+            parameters.append(
+                {
+                    **{f"set_{column}": values[column] for column in dependency.child_columns},
+                    **{f"key_{column}": values[column] for column in primary_key},
+                }
             )
-
-
-def _is_foreign_key_failure(exc: Exception) -> bool:
-    message = str(exc).lower()
-    return "foreignkeyviolation" in message or "foreign key constraint" in message
+        with target.begin() as connection:
+            connection.execute(statement, parameters)
+        logger.info("copy deferred_fk=restored dependency=%s rows=%s", dependency.label, len(rows))
 
 
 def _repair_sequences(engine: Engine) -> list[dict[str, Any]]:
@@ -549,6 +683,7 @@ def _validate_target(engine: Engine, source_path: Path, source_connection: sqlit
         violations = connection.execute(text("SELECT count(*) FROM pg_constraint WHERE contype = 'f' AND convalidated = false")).scalar_one()
     if violations:
         raise SQLiteToPostgresError("PostgreSQL contains unvalidated foreign-key constraints.")
+    report["foreign_key_violations"] = 0
     _state_update(engine, report["migration_id"], state=STATE_COMPLETED, validation_state="PASSED", completed_at=datetime.now(UTC).replace(tzinfo=None), current_table=None)
     report["validation_seconds"] = round(time.monotonic() - validation_started, 3)
 
@@ -597,7 +732,7 @@ def migrate(
         raise SQLiteToPostgresError(f"Source table inventory is unsupported; missing={missing[:8]} extra={extra[:8]}.")
     target = create_engine(target_url, **postgres_engine_options(get_settings()))
     _target_eligibility(target)
-    report: dict[str, Any] = {"migration_id": str(uuid4()), "source_engine": "sqlite", "target_engine": "postgresql", "source_revision": revision, "target_revision": expected_head, "source_size_bytes": source_path.stat().st_size, "target_size_bytes": None, "batch_size": batch_size, "tables": {}, "sequence_repair": [], "started_at": datetime.now(UTC).isoformat(), "result": "DRY_RUN" if dry_run else "INCOMPLETE"}
+    report: dict[str, Any] = {"migration_id": str(uuid4()), "source_engine": "sqlite", "target_engine": "postgresql", "source_revision": revision, "target_revision": expected_head, "source_size_bytes": source_path.stat().st_size, "target_size_bytes": None, "batch_size": batch_size, "tables": {}, "sequence_repair": [], "rejected_rows": 0, "skipped_rows": 0, "started_at": datetime.now(UTC).isoformat(), "result": "DRY_RUN" if dry_run else "INCOMPLETE"}
     _record_memory(report, "after_source_validation")
     report["known_local_filesystems"] = filesystems
     report["postgresql_target_capacity"] = "unknown_remote_or_container_filesystem"
@@ -631,39 +766,50 @@ def migrate(
         test_failpoint("after_postgres_prepare")
         with target.connect() as connection:
             wal_start = connection.execute(text("SELECT pg_current_wal_lsn()")).scalar_one()
-        order, cycles = _copy_order(target)
-        report["dependency_cycles"] = cycles
+        plan = _dependency_plan(target)
+        report["dependency_order"] = list(plan.order)
+        report["dependency_cycles"] = [list(cycle) for cycle in plan.cycles]
+        report["deferred_foreign_keys"] = [dependency.label for dependency in plan.deferred]
+        logger.info(
+            "migration_copy_order tables=%s deferred_foreign_keys=%s order=%s",
+            len(plan.order),
+            len(plan.deferred),
+            ",".join(plan.order),
+        )
         _state_update(target, report["migration_id"], state=STATE_COPYING)
         if state_callback is not None:
             state_callback("MIGRATING")
         copy_started = time.monotonic()
-        pending = list(order)
-        while pending:
-            deferred: list[str] = []
-            progressed = False
-            for table_name in pending:
-                _state_update(target, report["migration_id"], current_table=table_name)
-                try:
-                    report["tables"][table_name] = _copy_table(
-                        source_connection,
-                        target,
-                        table_name,
-                        batch_size,
-                        memory_callback=lambda stage: _record_memory(report, stage),
-                    )
-                    _record_memory(report, f"after_table:{table_name}")
-                except Exception as exc:
-                    if not _is_foreign_key_failure(exc):
-                        raise
-                    deferred.append(table_name)
-                    continue
-                progressed = True
-                _state_update(target, report["migration_id"], copied_rows=report["tables"][table_name]["copied_rows"])
-                test_failpoint("fail_during_copy")
-            if deferred and not progressed:
-                raise SQLiteToPostgresError(f"Unable to resolve foreign-key copy cycle: {deferred!r}.")
-            pending = deferred
-        _restore_ha_cluster_node_references(source_connection, target)
+        completed_tables = 0
+        deferred_by_table: dict[str, frozenset[str]] = defaultdict(frozenset)
+        for dependency in plan.deferred:
+            deferred_by_table[dependency.child_table] = frozenset(
+                (*deferred_by_table[dependency.child_table], *dependency.child_columns)
+            )
+        for table_name in plan.order:
+            _state_update(target, report["migration_id"], current_table=table_name)
+            total_rows = source_connection.execute(f"SELECT count(*) FROM {table_name}").fetchone()[0]
+            logger.info("copy table=%s state=starting rows=%s", table_name, total_rows)
+            report["tables"][table_name] = _copy_table(
+                source_connection,
+                target,
+                table_name,
+                batch_size,
+                memory_callback=lambda stage: _record_memory(report, stage),
+                deferred_columns=deferred_by_table[table_name],
+            )
+            _record_memory(report, f"after_table:{table_name}")
+            logger.info(
+                "copy table=%s state=complete elapsed=%s rows_per_second=%s",
+                table_name,
+                report["tables"][table_name]["elapsed_seconds"],
+                report["tables"][table_name]["rows_per_second"],
+            )
+            completed_tables += 1
+            logger.info("migration progress tables=%s/%s", completed_tables, len(plan.order))
+            _state_update(target, report["migration_id"], copied_rows=report["tables"][table_name]["copied_rows"])
+            test_failpoint("fail_during_copy")
+        _restore_deferred_foreign_keys(source_connection, target, plan.deferred)
         report["data_copy_seconds"] = round(time.monotonic() - copy_started, 3)
         sequence_started = time.monotonic()
         report["sequence_repair"] = _repair_sequences(target)
