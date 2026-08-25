@@ -27,6 +27,7 @@ def main() -> int:
     if not target_url.startswith("postgresql"):
         parser.error("--target-url or KAYA_POSTGRES_DATABASE_URL must be a PostgreSQL URL")
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    recovery_backup = None
     if args.clean_failed_target:
         if not args.migration_id or not args.source_fingerprint:
             parser.error("--clean-failed-target requires --migration-id and --source-fingerprint")
@@ -36,8 +37,14 @@ def main() -> int:
             args.source_fingerprint,
             args.data_dir.resolve(),
         )
-        prepare_failed_retry(args.data_dir.resolve(), args.source_fingerprint)
-    run_upgrade(args.source.resolve(), target_url, args.backup_dir.resolve(), args.data_dir.resolve())
+        recovery_backup = prepare_failed_retry(args.data_dir.resolve(), args.source_fingerprint)
+    run_upgrade(
+        args.source.resolve(),
+        target_url,
+        args.backup_dir.resolve(),
+        args.data_dir.resolve(),
+        recovery_backup=recovery_backup,
+    )
     return 0
 
 

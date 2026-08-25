@@ -9,7 +9,11 @@ import pytest
 from alembic import command
 
 import app.db.phase6_cutover as phase6_cutover
-from app.db.backup import canonical_snapshot_fingerprint, create_sqlite_backup
+from app.db.backup import (
+    canonical_snapshot_fingerprint,
+    create_sqlite_backup,
+    isolated_sqlite_snapshot,
+)
 from app.db.phase6_cutover import (
     UpgradeState,
     _write_state,
@@ -44,7 +48,45 @@ def test_canonical_snapshot_ignores_wal_checkpoint_representation(tmp_path: Path
     assert snapshot_before == snapshot_after
 
 
-def test_failed_source_identity_rejects_logical_change_but_tolerates_wal_change(tmp_path: Path):
+def test_isolated_snapshot_copies_committed_wal_without_shm_and_preserves_source(
+    tmp_path: Path,
+):
+    source = tmp_path / "kaya.db"
+    with sqlite3.connect(source) as connection:
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA wal_autocheckpoint=0")
+        connection.execute("CREATE TABLE records (id INTEGER PRIMARY KEY, value TEXT)")
+        connection.execute("INSERT INTO records(value) VALUES ('A')")
+        connection.commit()
+        connection.execute("INSERT INTO records(value) VALUES ('B')")
+        connection.commit()
+        wal = source.with_name(source.name + "-wal")
+        assert wal.is_file()
+        source_bytes = source.read_bytes()
+        wal_bytes = wal.read_bytes()
+        source_stat = source.stat()
+        wal_stat = wal.stat()
+        shm = source.with_name(source.name + "-shm")
+        shm.write_bytes(b"stale synthetic shm")
+
+        with isolated_sqlite_snapshot(source, tmp_path) as isolated:
+            assert not isolated.with_name(isolated.name + "-shm").exists()
+            with sqlite3.connect(isolated) as snapshot_connection:
+                assert snapshot_connection.execute(
+                    "SELECT value FROM records ORDER BY id"
+                ).fetchall() == [("A",), ("B",)]
+
+        assert source.read_bytes() == source_bytes
+        assert wal.read_bytes() == wal_bytes
+        assert source.stat().st_size == source_stat.st_size
+        assert wal.stat().st_size == wal_stat.st_size
+        assert source.stat().st_mtime_ns == source_stat.st_mtime_ns
+        assert wal.stat().st_mtime_ns == wal_stat.st_mtime_ns
+
+
+def test_failed_source_identity_rejects_logical_change_but_tolerates_wal_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     source = tmp_path / "kaya.db"
     with sqlite3.connect(source) as connection:
         connection.execute("PRAGMA journal_mode=WAL")
@@ -71,6 +113,14 @@ def test_failed_source_identity_rejects_logical_change_but_tolerates_wal_change(
     with sqlite3.connect(source) as connection:
         connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
+    original_read_revision = phase6_cutover._read_sqlite_revision
+
+    def refuse_live_revision(path: Path) -> str:
+        if path == source.resolve():
+            raise sqlite3.OperationalError("disk I/O error")
+        return original_read_revision(path)
+
+    monkeypatch.setattr(phase6_cutover, "_read_sqlite_revision", refuse_live_revision)
     _, _, _, snapshot = phase6_cutover._validate_failed_source_identity(
         tmp_path, "migration-1", original_physical
     )

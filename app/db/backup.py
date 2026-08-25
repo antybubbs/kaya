@@ -5,9 +5,10 @@ import json
 import logging
 import os
 import sqlite3
+import shutil
 import tempfile
 import time
-from contextlib import closing
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,6 +22,7 @@ from app.db.validation import (
 logger = logging.getLogger(__name__)
 BACKUP_OPERATION_TIMEOUT_SECONDS = 600.0
 _HASH_CHUNK_BYTES = 1024 * 1024
+_SNAPSHOT_COPY_CHUNK_BYTES = 8 * 1024 * 1024
 
 
 class DatabaseBackupError(RuntimeError):
@@ -41,6 +43,69 @@ def _file_sha256(path: Path) -> str:
         while chunk := handle.read(_HASH_CHUNK_BYTES):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _snapshot_source_manifest(source: Path) -> tuple[tuple[str, int, int, str], ...]:
+    """Capture immutable metadata for the SQLite main/WAL pair."""
+    manifest = []
+    for candidate in (source, source.with_name(source.name + "-wal")):
+        if not candidate.is_file():
+            manifest.append((candidate.name, 0, 0, "missing"))
+            continue
+        stat = candidate.stat()
+        manifest.append((candidate.name, stat.st_size, stat.st_mtime_ns, _file_sha256(candidate)))
+    return tuple(manifest)
+
+
+def _copy_snapshot_file(source: Path, destination: Path, *, label: str) -> None:
+    copied = 0
+    next_progress = 256 * 1024 * 1024
+    with source.open("rb") as source_handle, destination.open("xb") as destination_handle:
+        while chunk := source_handle.read(_SNAPSHOT_COPY_CHUNK_BYTES):
+            destination_handle.write(chunk)
+            copied += len(chunk)
+            if copied >= next_progress:
+                logger.info("database.recovery source_snapshot=copy_progress file=%s bytes=%s", label, copied)
+                next_progress += 256 * 1024 * 1024
+        destination_handle.flush()
+        os.fsync(destination_handle.fileno())
+
+
+@contextmanager
+def isolated_sqlite_snapshot(source: Path, workspace: Path):
+    """Yield a WAL-aware SQLite copy without importing the source SHM file."""
+    source = source.resolve()
+    workspace = workspace.resolve()
+    workspace.mkdir(parents=True, exist_ok=True)
+    main_size = source.stat().st_size
+    wal = source.with_name(source.name + "-wal")
+    wal_size = wal.stat().st_size if wal.is_file() else 0
+    # Recovery may still need a historical conversion working copy after this
+    # snapshot, so reserve both managed SQLite copies plus the WAL and margin.
+    required_bytes = (main_size * 2) + wal_size + max(main_size // 20, 16 * 1024 * 1024)
+    available_bytes = shutil.disk_usage(workspace).free
+    logger.info(
+        "database.recovery source_snapshot=space_check available_bytes=%s required_bytes=%s",
+        available_bytes,
+        required_bytes,
+    )
+    if available_bytes < required_bytes:
+        raise DatabaseBackupError("Insufficient space for an isolated SQLite recovery snapshot.")
+    before = _snapshot_source_manifest(source)
+    logger.info("database.recovery source_snapshot=creating")
+    if wal.is_file():
+        logger.info("database.recovery source_snapshot=wal_detected bytes=%s", wal_size)
+    with tempfile.TemporaryDirectory(prefix=".kaya-recovery-snapshot-", dir=workspace) as temporary_dir:
+        snapshot = Path(temporary_dir) / source.name
+        _copy_snapshot_file(source, snapshot, label=source.name)
+        if wal.is_file():
+            _copy_snapshot_file(wal, snapshot.with_name(snapshot.name + "-wal"), label=wal.name)
+        after = _snapshot_source_manifest(source)
+        if before != after:
+            raise DatabaseBackupError("SQLite source changed while the recovery snapshot was being copied.")
+        validate_sqlite_readable(snapshot)
+        logger.info("database.recovery source_snapshot=validated")
+        yield snapshot
 
 
 def canonical_snapshot_fingerprint(source: Path, workspace: Path | None = None) -> str:
