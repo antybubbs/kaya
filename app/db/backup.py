@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 BACKUP_OPERATION_TIMEOUT_SECONDS = 600.0
 _HASH_CHUNK_BYTES = 1024 * 1024
 _SNAPSHOT_COPY_CHUNK_BYTES = 8 * 1024 * 1024
+_SNAPSHOT_SAFETY_MARGIN_MIN_BYTES = 16 * 1024 * 1024
 
 
 class DatabaseBackupError(RuntimeError):
@@ -73,6 +74,11 @@ def _copy_snapshot_file(source: Path, destination: Path, *, label: str) -> None:
         os.fsync(destination_handle.fileno())
 
 
+def isolated_snapshot_required_bytes(source_size: int, wal_size: int) -> int:
+    """Return peak additional space for the isolated snapshot only."""
+    return source_size + wal_size + max(source_size // 20, _SNAPSHOT_SAFETY_MARGIN_MIN_BYTES)
+
+
 @contextmanager
 def isolated_sqlite_snapshot(source: Path, workspace: Path):
     """Yield a WAL-aware SQLite copy without importing the source SHM file."""
@@ -82,9 +88,10 @@ def isolated_sqlite_snapshot(source: Path, workspace: Path):
     main_size = source.stat().st_size
     wal = source.with_name(source.name + "-wal")
     wal_size = wal.stat().st_size if wal.is_file() else 0
-    # Recovery may still need a historical conversion working copy after this
-    # snapshot, so reserve both managed SQLite copies plus the WAL and margin.
-    required_bytes = (main_size * 2) + wal_size + max(main_size // 20, 16 * 1024 * 1024)
+    # The verified-backup retry path destroys this snapshot before creating a
+    # historical conversion working copy. Only the snapshot's peak allocation
+    # is concurrent here; the existing 5%/minimum margin is unchanged.
+    required_bytes = isolated_snapshot_required_bytes(main_size, wal_size)
     available_bytes = shutil.disk_usage(workspace).free
     logger.info(
         "database.recovery source_snapshot=space_check available_bytes=%s required_bytes=%s",
@@ -97,17 +104,20 @@ def isolated_sqlite_snapshot(source: Path, workspace: Path):
     logger.info("database.recovery source_snapshot=creating")
     if wal.is_file():
         logger.info("database.recovery source_snapshot=wal_detected bytes=%s", wal_size)
-    with tempfile.TemporaryDirectory(prefix=".kaya-recovery-snapshot-", dir=workspace) as temporary_dir:
-        snapshot = Path(temporary_dir) / source.name
-        _copy_snapshot_file(source, snapshot, label=source.name)
-        if wal.is_file():
-            _copy_snapshot_file(wal, snapshot.with_name(snapshot.name + "-wal"), label=wal.name)
-        after = _snapshot_source_manifest(source)
-        if before != after:
-            raise DatabaseBackupError("SQLite source changed while the recovery snapshot was being copied.")
-        validate_sqlite_readable(snapshot)
-        logger.info("database.recovery source_snapshot=validated")
-        yield snapshot
+    try:
+        with tempfile.TemporaryDirectory(prefix=".kaya-recovery-snapshot-", dir=workspace) as temporary_dir:
+            snapshot = Path(temporary_dir) / source.name
+            _copy_snapshot_file(source, snapshot, label=source.name)
+            if wal.is_file():
+                _copy_snapshot_file(wal, snapshot.with_name(snapshot.name + "-wal"), label=wal.name)
+            after = _snapshot_source_manifest(source)
+            if before != after:
+                raise DatabaseBackupError("SQLite source changed while the recovery snapshot was being copied.")
+            validate_sqlite_readable(snapshot)
+            logger.info("database.recovery source_snapshot=validated")
+            yield snapshot
+    finally:
+        logger.info("database.recovery source_snapshot=destroyed")
 
 
 def _digest_field(digest: Any, tag: bytes, value: bytes) -> None:

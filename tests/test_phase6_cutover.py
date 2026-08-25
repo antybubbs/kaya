@@ -12,6 +12,7 @@ import app.db.phase6_cutover as phase6_cutover
 from app.db.backup import (
     canonical_snapshot_fingerprint,
     create_sqlite_backup,
+    isolated_snapshot_required_bytes,
     isolated_sqlite_snapshot,
 )
 from app.db.phase6_cutover import (
@@ -28,6 +29,33 @@ from app.db.phase6_cutover import (
 )
 from app.db.migrations import _alembic_config
 from app.db.sqlite_to_postgres import SQLiteToPostgresError
+
+
+def test_recovery_snapshot_space_models_only_concurrent_snapshot(tmp_path: Path):
+    source_size = 2_400_000_000
+    wal_size = 20_000_000
+    available = 4_430_000_000
+
+    required = isolated_snapshot_required_bytes(source_size, wal_size)
+
+    assert required == source_size + wal_size + source_size // 20
+    assert available >= required
+    assert available < (source_size * 2) + wal_size + source_size // 20
+
+    source = tmp_path / "source.sqlite3"
+    with sqlite3.connect(source) as connection:
+        connection.execute("CREATE TABLE records(value TEXT)")
+        connection.execute("INSERT INTO records VALUES ('fixture')")
+        connection.commit()
+    events: list[str] = []
+    snapshot_path: Path | None = None
+    with isolated_sqlite_snapshot(source, tmp_path) as isolated:
+        snapshot_path = isolated
+        events.append("snapshot_active")
+    events.append("snapshot_destroyed")
+    assert snapshot_path is not None and not snapshot_path.exists()
+    events.append("working_copy")
+    assert events == ["snapshot_active", "snapshot_destroyed", "working_copy"]
 
 
 def test_canonical_snapshot_ignores_wal_checkpoint_representation(tmp_path: Path):
