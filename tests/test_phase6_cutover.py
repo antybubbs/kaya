@@ -46,6 +46,25 @@ def test_canonical_snapshot_ignores_wal_checkpoint_representation(tmp_path: Path
 
     assert physical_before != physical_after
     assert snapshot_before == snapshot_after
+    assert len({canonical_snapshot_fingerprint(source, tmp_path) for _ in range(3)}) == 1
+
+    with sqlite3.connect(source) as connection:
+        connection.execute("INSERT INTO records(value) VALUES ('inserted')")
+        connection.commit()
+    inserted = canonical_snapshot_fingerprint(source, tmp_path)
+    assert inserted != snapshot_after
+
+    with sqlite3.connect(source) as connection:
+        connection.execute("UPDATE records SET value = 'updated' WHERE id = 1")
+        connection.commit()
+    updated = canonical_snapshot_fingerprint(source, tmp_path)
+    assert updated != inserted
+
+    with sqlite3.connect(source) as connection:
+        connection.execute("DELETE FROM records WHERE id = 1")
+        connection.commit()
+    deleted = canonical_snapshot_fingerprint(source, tmp_path)
+    assert deleted != updated
 
 
 def test_isolated_snapshot_copies_committed_wal_without_shm_and_preserves_source(

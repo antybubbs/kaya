@@ -6,12 +6,14 @@ import logging
 import os
 import sqlite3
 import shutil
+import struct
 import tempfile
 import time
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from app.db.validation import (
     SQLITE_BUSY_TIMEOUT_MS,
@@ -108,6 +110,71 @@ def isolated_sqlite_snapshot(source: Path, workspace: Path):
         yield snapshot
 
 
+def _digest_field(digest: Any, tag: bytes, value: bytes) -> None:
+    digest.update(tag)
+    digest.update(len(value).to_bytes(8, "big"))
+    digest.update(value)
+
+
+def _digest_sqlite_value(digest: Any, sqlite_type: str, value: object) -> None:
+    _digest_field(digest, b"type\0", sqlite_type.encode("ascii"))
+    if value is None:
+        _digest_field(digest, b"value\0", b"null")
+    elif sqlite_type == "integer":
+        _digest_field(digest, b"value\0", struct.pack(">q", int(value)))
+    elif sqlite_type == "real":
+        _digest_field(digest, b"value\0", struct.pack(">d", float(value)))
+    elif sqlite_type == "text":
+        _digest_field(digest, b"value\0", str(value).encode("utf-8"))
+    elif sqlite_type == "blob":
+        _digest_field(digest, b"value\0", bytes(value))
+    else:
+        raise DatabaseBackupError(f"Unsupported SQLite storage type {sqlite_type!r}.")
+
+
+def _quote_sqlite_identifier(identifier: str) -> str:
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+def _logical_sqlite_fingerprint(path: Path) -> str:
+    """Hash SQLite schema and rows deterministically without rewriting the DB."""
+    digest = hashlib.sha256()
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute("PRAGMA query_only=ON")
+        schema_rows = connection.execute(
+            "SELECT type, name, tbl_name, COALESCE(sql, '') "
+            "FROM sqlite_master "
+            "WHERE name NOT LIKE 'sqlite_stat%' "
+            "ORDER BY type, name, tbl_name"
+        )
+        for schema_row in schema_rows:
+            _digest_field(digest, b"schema\0", "\x1f".join(str(item) for item in schema_row).encode("utf-8"))
+        tables = connection.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type = 'table' AND (name NOT LIKE 'sqlite_%' OR name = 'sqlite_sequence') "
+            "ORDER BY name"
+        ).fetchall()
+        for (table_name,) in tables:
+            quoted_table = _quote_sqlite_identifier(table_name)
+            columns = connection.execute(f"PRAGMA table_info({quoted_table})").fetchall()
+            column_names = [row[1] for row in columns]
+            _digest_field(digest, b"table\0", table_name.encode("utf-8"))
+            for column in columns:
+                _digest_field(digest, b"column\0", "\x1f".join(str(item) for item in column).encode("utf-8"))
+            quoted_columns = [_quote_sqlite_identifier(name) for name in column_names]
+            select_columns = ", ".join(
+                f"typeof({column}), {column}" for column in quoted_columns
+            )
+            order_columns = ", ".join(quoted_columns)
+            for row in connection.execute(
+                f"SELECT {select_columns} FROM {quoted_table} ORDER BY {order_columns}"
+            ):
+                _digest_field(digest, b"row\0", b"start")
+                for index in range(0, len(row), 2):
+                    _digest_sqlite_value(digest, str(row[index]), row[index + 1])
+    return digest.hexdigest()
+
+
 def canonical_snapshot_fingerprint(source: Path, workspace: Path | None = None) -> str:
     """Hash a consistent SQLite snapshot, independent of source WAL layout."""
     source = source.resolve()
@@ -115,14 +182,13 @@ def canonical_snapshot_fingerprint(source: Path, workspace: Path | None = None) 
     with tempfile.TemporaryDirectory(prefix=".kaya-snapshot-", dir=workspace) as temporary_dir:
         snapshot = Path(temporary_dir) / "snapshot.sqlite3"
         source_uri = f"file:{source.as_posix()}?mode=ro"
-        with sqlite3.connect(source_uri, uri=True) as source_connection:
+        with closing(sqlite3.connect(source_uri, uri=True)) as source_connection:
             source_connection.execute("PRAGMA query_only=ON")
-            with sqlite3.connect(snapshot) as snapshot_connection:
+            with closing(sqlite3.connect(snapshot)) as snapshot_connection:
                 source_connection.backup(snapshot_connection)
                 snapshot_connection.commit()
-                snapshot_connection.execute("VACUUM")
         validate_sqlite_readable(snapshot)
-        return _file_sha256(snapshot)
+        return _logical_sqlite_fingerprint(snapshot)
 
 
 def _source_fingerprint(source: Path) -> str:

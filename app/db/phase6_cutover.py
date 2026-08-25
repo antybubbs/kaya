@@ -302,14 +302,27 @@ def _verified_backup_snapshot(
                 str(physical_match).lower(),
             )
         candidate = backup_dir / backup_path
+        if not candidate.is_file():
+            logger.warning("database.recovery backup_candidate=rejected reason=missing")
+            continue
         try:
-            if not candidate.is_file() or metadata.get("backup_sha256") != _file_sha256(candidate):
+            if metadata.get("backup_sha256") != _file_sha256(candidate):
+                logger.warning("database.recovery backup_candidate=rejected reason=sha_mismatch")
                 continue
             validate_sqlite_readable(candidate)
             snapshot = canonical_snapshot_fingerprint(candidate, data_dir)
-        except (OSError, RuntimeError, ValueError, sqlite3.DatabaseError):
+        except (OSError, RuntimeError, ValueError, sqlite3.DatabaseError) as exc:
+            message = str(exc).lower()
+            if "disk is full" in message or "no space left" in message or "insufficient space" in message:
+                logger.error("database.recovery backup_candidate=rejected reason=disk_full")
+                raise RuntimeError(
+                    "Recovery snapshot cannot be created: insufficient disk space."
+                ) from exc
+            reason = "sqlite_invalid" if isinstance(exc, RuntimeError) else "snapshot_failed"
+            logger.warning("database.recovery backup_candidate=rejected reason=%s", reason)
             continue
         if metadata.get("snapshot_fingerprint") not in {None, snapshot}:
+            logger.warning("database.recovery backup_candidate=rejected reason=snapshot_identity_mismatch")
             continue
         logger.info("database.recovery backup_sha=validated backup_revision=validated")
         logger.info("database.recovery backup_lineage=validated")
