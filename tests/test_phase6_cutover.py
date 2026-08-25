@@ -213,10 +213,11 @@ def test_failed_source_identity_rejects_logical_change_but_tolerates_wal_change(
         return original_read_revision(path)
 
     monkeypatch.setattr(phase6_cutover, "_read_sqlite_revision", refuse_live_revision)
-    _, _, _, snapshot = phase6_cutover._validate_failed_source_identity(
+    _, _, _, snapshot, verified_backup = phase6_cutover._validate_failed_source_identity(
         tmp_path, "migration-1", legacy_physical_fingerprint
     )
     assert snapshot == backup.snapshot_fingerprint
+    assert verified_backup == backup.database_path
 
     with sqlite3.connect(source) as connection:
         connection.execute("INSERT INTO records(value) VALUES ('changed')")
@@ -336,6 +337,52 @@ def test_historical_sqlite_revision_is_eligible_and_upgraded_with_backup(tmp_pat
     assert len(backups) == 1
     metadata = json.loads(backups[0].with_suffix(".json").read_text(encoding="utf-8"))
     assert metadata["source_revision"] == "20260813_01"
+
+
+def test_legacy_ab_correlation_reuses_verified_backup_when_physical_a_differs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    verified_backup = tmp_path / "backups" / "pre-migration-original.sqlite3"
+    verified_backup.parent.mkdir()
+    verified_backup.write_bytes(b"verified-original-backup")
+    target_revision = "20260818_02"
+    conversion_fingerprint = "cca3b071a0bd02274aecbcab899310516efe0032f7cffab0297566a92f43ddda"
+
+    monkeypatch.setattr(
+        phase6_cutover,
+        "_heads",
+        lambda: (target_revision, SimpleNamespace()),
+    )
+    monkeypatch.setattr(phase6_cutover, "validate_sqlite_readable", lambda _path: None)
+    monkeypatch.setattr(
+        phase6_cutover,
+        "prepare_database",
+        lambda *_args, **_kwargs: SimpleNamespace(current_revision=target_revision),
+    )
+    monkeypatch.setattr(
+        phase6_cutover,
+        "_source_fingerprint",
+        lambda _path: conversion_fingerprint,
+    )
+    monkeypatch.setattr(
+        phase6_cutover,
+        "get_settings",
+        lambda: SimpleNamespace(
+            model_copy=lambda update: SimpleNamespace(database_url=update["database_url"])
+        ),
+    )
+
+    assert phase6_cutover._legacy_historical_target_matches(
+        tmp_path,
+        tmp_path / "kaya.db",
+        "20260813_01",
+        {
+            "source_fingerprint": conversion_fingerprint,
+            "source_revision": target_revision,
+            "target_revision": target_revision,
+        },
+        verified_backup,
+    )
 
 
 def test_preflight_failure_records_failed_state(tmp_path: Path, monkeypatch):

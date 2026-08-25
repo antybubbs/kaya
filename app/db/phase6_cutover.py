@@ -332,7 +332,7 @@ def _verified_backup_snapshot(
 
 def _validate_failed_source_identity(
     data_dir: Path, migration_id: str, original_source_fingerprint: str
-) -> tuple[dict[str, Any], Path, str, str]:
+) -> tuple[dict[str, Any], Path, str, str, Path]:
     persisted = _read_state(state_path(data_dir))
     if not persisted or persisted.get("state") != UpgradeState.FAILED.value:
         raise RuntimeError("Refusing recovery: source marker is not FAILED.")
@@ -341,7 +341,7 @@ def _validate_failed_source_identity(
     if _original_source_fingerprint(persisted) != original_source_fingerprint:
         raise RuntimeError("Refusing recovery: source fingerprint does not match FAILED marker.")
     source = _persisted_source_path(persisted, data_dir)
-    backup_snapshot, backup_revision, _ = _verified_backup_snapshot(
+    backup_snapshot, backup_revision, verified_backup = _verified_backup_snapshot(
         data_dir, persisted, source, str(persisted.get("source_revision") or "")
     )
     with isolated_sqlite_snapshot(source, data_dir) as isolated_source:
@@ -357,7 +357,7 @@ def _validate_failed_source_identity(
     if persisted_snapshot and persisted_snapshot != backup_snapshot:
         raise RuntimeError("Refusing recovery: persisted source snapshot identity is invalid.")
     logger.info("database.recovery identity_mode=stable_snapshot backup_lineage=validated logical_source_identity=matched")
-    return persisted, source, source_revision, backup_snapshot
+    return persisted, source, source_revision, backup_snapshot, verified_backup
 
 
 def _legacy_historical_target_matches(
@@ -365,9 +365,9 @@ def _legacy_historical_target_matches(
     source: Path,
     source_revision: str,
     row: Any,
-    original_source_fingerprint: str,
+    verified_backup: Path,
 ) -> bool:
-    """Prove the old A/B marker shape came from a retained historical upgrade."""
+    """Prove the old A/B marker came from the validated original backup."""
     target_revision = row["target_revision"]
     conversion_fingerprint = row["source_fingerprint"]
     expected_head, _ = _heads()
@@ -379,54 +379,40 @@ def _legacy_historical_target_matches(
         or target_revision != expected_head
     ):
         return False
-    eligible, _ = legacy_sqlite_eligibility(source, data_dir)
-    if not eligible:
+    if not verified_backup.is_file():
         return False
     backup_dir = data_dir / "backups"
-    for metadata_path in backup_dir.glob("*.json"):
-        try:
-            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        backup_name = metadata.get("backup_filename")
-        backup_path = Path(backup_name) if isinstance(backup_name, str) else None
-        if (
-            metadata.get("source_fingerprint") == original_source_fingerprint
-            and metadata.get("source_revision") == source_revision
-            and metadata.get("target_revision") == target_revision
-            and backup_path is not None
-            and not backup_path.is_absolute()
-            and backup_path.name == backup_name
-            and (backup_dir / backup_path).is_file()
-        ):
+    try:
+        validate_sqlite_readable(verified_backup)
+        with tempfile.TemporaryDirectory(prefix=".kaya-recovery-", dir=data_dir) as temporary_dir:
+            working_path = Path(temporary_dir) / "conversion.sqlite3"
+            shutil.copyfile(verified_backup, working_path)
+            settings = get_settings().model_copy(
+                update={
+                    "database_url": f"sqlite:///{working_path.resolve().as_posix()}",
+                    "data_dir": str(data_dir.resolve()),
+                    "migration_backup_dir": str(backup_dir.resolve()),
+                    "migration_backups_enabled": False,
+                }
+            )
+            source_engine = create_engine(settings.database_url)
             try:
-                backup_file = backup_dir / backup_path
-                if metadata.get("backup_sha256") != _file_sha256(backup_file):
-                    continue
-                validate_sqlite_readable(backup_file)
-                with tempfile.TemporaryDirectory(prefix=".kaya-recovery-", dir=data_dir) as temporary_dir:
-                    working_path = Path(temporary_dir) / "conversion.sqlite3"
-                    shutil.copyfile(backup_file, working_path)
-                    settings = get_settings().model_copy(
-                        update={
-                            "database_url": f"sqlite:///{working_path.resolve().as_posix()}",
-                            "data_dir": str(data_dir.resolve()),
-                            "migration_backup_dir": str(backup_dir.resolve()),
-                            "migration_backups_enabled": False,
-                        }
-                    )
-                    source_engine = create_engine(settings.database_url)
-                    try:
-                        result = prepare_database(source_engine, settings)
-                    finally:
-                        source_engine.dispose()
-                    if result.current_revision != target_revision:
-                        return False
-                    expected_conversion_fingerprint = _source_fingerprint(working_path)
-            except (OSError, RuntimeError, sqlite3.DatabaseError):
+                result = prepare_database(source_engine, settings)
+            finally:
+                source_engine.dispose()
+            if result.current_revision != target_revision:
                 return False
-            return conversion_fingerprint == expected_conversion_fingerprint
-    return False
+            expected_conversion_fingerprint = _source_fingerprint(working_path)
+    except (OSError, RuntimeError, sqlite3.DatabaseError):
+        return False
+    matched = conversion_fingerprint == expected_conversion_fingerprint
+    if matched:
+        logger.info(
+            "database.recovery conversion_identity=validated source_revision=%s target_revision=%s",
+            source_revision,
+            target_revision,
+        )
+    return matched
 
 
 def _write_state(path: Path, state: UpgradeState, **values: Any) -> None:
@@ -625,8 +611,9 @@ def clean_failed_target(
     source_path: Path | None = None
     source_revision: str | None = None
     source_snapshot: str | None = None
+    verified_backup: Path | None = None
     if data_dir is not None:
-        _, source_path, source_revision, source_snapshot = _validate_failed_source_identity(
+        _, source_path, source_revision, source_snapshot, verified_backup = _validate_failed_source_identity(
             data_dir, migration_id, source_fingerprint
         )
     target = create_engine(target_url, **postgres_engine_options(get_settings()))
@@ -674,6 +661,7 @@ def clean_failed_target(
                 data_dir is None
                 or source_path is None
                 or source_revision is None
+                or verified_backup is None
                 or not _legacy_historical_target_matches(
                     data_dir,
                     source_path,
@@ -683,7 +671,7 @@ def clean_failed_target(
                         "source_revision": row.get("source_revision"),
                         "target_revision": row.get("target_revision"),
                     },
-                    source_fingerprint,
+                    verified_backup,
                 )
             ):
                 raise RuntimeError("Refusing cleanup: target conversion source identity does not match.")
@@ -692,8 +680,9 @@ def clean_failed_target(
                 data_dir is None
                 or source_path is None
                 or source_revision is None
+                or verified_backup is None
                 or not _legacy_historical_target_matches(
-                    data_dir, source_path, source_revision, row, source_fingerprint
+                    data_dir, source_path, source_revision, row, verified_backup
                 )
             ):
                 raise RuntimeError("Refusing cleanup: target is not the matching failed migration target.")
@@ -708,10 +697,9 @@ def clean_failed_target(
 def prepare_failed_retry(data_dir: Path, source_fingerprint: str) -> Path:
     """Permit retry only after a matching failed source marker is verified."""
     marker = state_path(data_dir)
-    persisted, source, source_revision, source_snapshot = _validate_failed_source_identity(
+    persisted, source, _, source_snapshot, verified_backup = _validate_failed_source_identity(
         data_dir, str((_read_state(marker) or {}).get("migration_id") or ""), source_fingerprint
     )
-    _, _, backup_path = _verified_backup_snapshot(data_dir, persisted, source, source_revision)
     values: dict[str, Any] = {
         "database_engine": "sqlite",
         "source_path": str(source),
@@ -723,4 +711,4 @@ def prepare_failed_retry(data_dir: Path, source_fingerprint: str) -> Path:
     if persisted.get("conversion_source_fingerprint"):
         values["conversion_source_fingerprint"] = persisted["conversion_source_fingerprint"]
     _write_state(marker, UpgradeState.PRECHECK, **values)
-    return backup_path
+    return verified_backup
