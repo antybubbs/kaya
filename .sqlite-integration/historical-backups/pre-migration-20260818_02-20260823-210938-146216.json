@@ -1,0 +1,9 @@
+{
+  "backup_filename": "pre-migration-20260818_02-20260823-210938-146216.sqlite3",
+  "backup_sha256": "2e2bcbe61a1582e47164fd1bc45f854aa929774a2b3ce59a59590dcbdb13c325",
+  "created_at": "2026-08-23T21:09:38.168380+00:00",
+  "source_filename": "historical-fixture.db",
+  "source_fingerprint": "3dd28ba433955f18274c861705ca094f91283e236c267041214bde6755943a51",
+  "source_revision": "20260813_01",
+  "target_revision": "20260818_02"
+}
