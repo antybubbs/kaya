@@ -246,6 +246,36 @@ def _verified_backup_snapshot(
     backup_dir = data_dir / "backups"
     original_fingerprint = _original_source_fingerprint(persisted)
     target_revision = persisted.get("target_revision")
+    stable_marker = bool(persisted.get("original_source_snapshot_fingerprint"))
+    expected_head, script = _heads()
+
+    def is_supported_lineage(candidate_revision: Any) -> bool:
+        if not isinstance(candidate_revision, str) or not candidate_revision:
+            return False
+        if not isinstance(target_revision, str) or not target_revision:
+            return False
+        try:
+            script.get_revision(candidate_revision)
+            script.get_revision(target_revision)
+        except (KeyError, TypeError, CommandError):
+            return False
+        pending = [target_revision]
+        visited: set[str] = set()
+        while pending:
+            current = pending.pop()
+            if current in visited:
+                continue
+            visited.add(current)
+            if current == candidate_revision:
+                return True
+            revision = script.get_revision(current)
+            down_revision = revision.down_revision
+            if isinstance(down_revision, tuple):
+                pending.extend(item for item in down_revision if item)
+            elif down_revision:
+                pending.append(down_revision)
+        return candidate_revision == expected_head == target_revision
+
     for metadata_path in backup_dir.glob("*.json"):
         try:
             metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -253,16 +283,24 @@ def _verified_backup_snapshot(
             continue
         backup_name = metadata.get("backup_filename")
         backup_path = Path(backup_name) if isinstance(backup_name, str) else None
+        candidate_revision = metadata.get("source_revision")
+        physical_match = metadata.get("source_fingerprint") == original_fingerprint
         if (
             metadata.get("source_filename") != source.name
             or (source_revision and metadata.get("source_revision") != source_revision)
             or metadata.get("target_revision") != target_revision
-            or metadata.get("source_fingerprint") != original_fingerprint
+            or not is_supported_lineage(candidate_revision)
+            or (stable_marker and not physical_match)
             or backup_path is None
             or backup_path.is_absolute()
             or backup_path.name != backup_name
         ):
             continue
+        if not stable_marker:
+            logger.info(
+                "database.recovery backup_candidate=legacy_original physical_fingerprint_match=%s",
+                str(physical_match).lower(),
+            )
         candidate = backup_dir / backup_path
         try:
             if not candidate.is_file() or metadata.get("backup_sha256") != _file_sha256(candidate):
@@ -273,6 +311,7 @@ def _verified_backup_snapshot(
             continue
         if metadata.get("snapshot_fingerprint") not in {None, snapshot}:
             continue
+        logger.info("database.recovery backup_sha=validated backup_revision=validated")
         logger.info("database.recovery backup_lineage=validated")
         return snapshot, str(metadata["source_revision"]), candidate
     raise RuntimeError("Refusing recovery: no verified pre-migration backup proves the source lineage.")

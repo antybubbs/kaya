@@ -95,19 +95,22 @@ def test_failed_source_identity_rejects_logical_change_but_tolerates_wal_change(
         connection.execute("CREATE TABLE records (id INTEGER PRIMARY KEY, value TEXT)")
         connection.execute("INSERT INTO records(value) VALUES ('stable')")
         connection.commit()
-    original_physical = phase6_cutover._source_fingerprint(source)
     backup = create_sqlite_backup(
         source,
         tmp_path / "backups",
         source_revision="20260813_01",
         target_revision="20260818_02",
     )
+    metadata = json.loads(backup.metadata_path.read_text(encoding="utf-8"))
+    metadata["source_fingerprint"] = "94bd1ee74473482b0d1e133c71a514db9387e8f50ce10a44e0081c0696703e63"
+    backup.metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    legacy_physical_fingerprint = "2b3efd12bd96a10dc61270417518ff3c01bcbd0b9a455b25b6a7c2dcb040f354"
     _write_state(
         state_path(tmp_path),
         UpgradeState.FAILED,
         migration_id="migration-1",
         source_path=str(source),
-        source_fingerprint=original_physical,
+        source_fingerprint=legacy_physical_fingerprint,
         target_revision="20260818_02",
     )
     with sqlite3.connect(source) as connection:
@@ -122,7 +125,7 @@ def test_failed_source_identity_rejects_logical_change_but_tolerates_wal_change(
 
     monkeypatch.setattr(phase6_cutover, "_read_sqlite_revision", refuse_live_revision)
     _, _, _, snapshot = phase6_cutover._validate_failed_source_identity(
-        tmp_path, "migration-1", original_physical
+        tmp_path, "migration-1", legacy_physical_fingerprint
     )
     assert snapshot == backup.snapshot_fingerprint
 
@@ -130,7 +133,9 @@ def test_failed_source_identity_rejects_logical_change_but_tolerates_wal_change(
         connection.execute("INSERT INTO records(value) VALUES ('changed')")
         connection.commit()
     with pytest.raises(RuntimeError, match="logical SQLite source changed"):
-        phase6_cutover._validate_failed_source_identity(tmp_path, "migration-1", original_physical)
+        phase6_cutover._validate_failed_source_identity(
+            tmp_path, "migration-1", legacy_physical_fingerprint
+        )
 
 
 def test_detects_existing_sqlite_install_from_config_and_file(tmp_path: Path):
