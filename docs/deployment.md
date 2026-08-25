@@ -378,9 +378,11 @@ docker compose run --rm --no-deps kaya python -m scripts.kaya_phase6_upgrade --s
 ```
 
 The entrypoint recognises only this complete recovery command shape. The
-provided fingerprint is the original authoritative SQLite source identity;
-Kaya derives and validates any historical conversion-working-copy identity
-from retained migration artifacts. It does
+provided fingerprint is the legacy-compatible original source identity; Kaya
+validates it against a canonical logical snapshot of the retained verified
+backup, so legitimate WAL/checkpoint representation changes do not invalidate
+recovery. Historical conversion-working-copy identity is derived and
+validated from retained migration artifacts. It does
 not bypass recovery checks for normal startup, arbitrary Python commands, or
 incomplete recovery arguments. The recovery CLI then requires the target
 marker to be `FAILED` with the exact migration ID and source fingerprint, and

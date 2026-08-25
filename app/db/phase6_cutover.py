@@ -18,7 +18,12 @@ from alembic.util.exc import CommandError
 from sqlalchemy import create_engine, inspect, text
 
 from app.core.config import redact_database_url, sqlite_database_path
-from app.db.backup import create_sqlite_backup
+from app.db.backup import (
+    _file_sha256,
+    canonical_snapshot_fingerprint,
+    create_sqlite_backup,
+)
+from app.db.validation import validate_sqlite_readable
 from app.db.phase6_test_hooks import hit as test_failpoint, validate_configuration as validate_test_configuration
 from app.db.migrations import prepare_database
 from app.db.sqlite_to_postgres import _heads, _source_fingerprint, migrate, preflight
@@ -230,9 +235,49 @@ def _read_sqlite_revision(source: Path) -> str:
     return str(row[0])
 
 
+def _verified_backup_snapshot(
+    data_dir: Path,
+    persisted: dict[str, Any],
+    source: Path,
+    source_revision: str,
+) -> str:
+    backup_dir = data_dir / "backups"
+    original_fingerprint = _original_source_fingerprint(persisted)
+    target_revision = persisted.get("target_revision")
+    for metadata_path in backup_dir.glob("*.json"):
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        backup_name = metadata.get("backup_filename")
+        backup_path = Path(backup_name) if isinstance(backup_name, str) else None
+        if (
+            metadata.get("source_filename") != source.name
+            or metadata.get("source_revision") != source_revision
+            or metadata.get("target_revision") != target_revision
+            or metadata.get("source_fingerprint") != original_fingerprint
+            or backup_path is None
+            or backup_path.is_absolute()
+            or backup_path.name != backup_name
+        ):
+            continue
+        candidate = backup_dir / backup_path
+        try:
+            if not candidate.is_file() or metadata.get("backup_sha256") != _file_sha256(candidate):
+                continue
+            validate_sqlite_readable(candidate)
+            snapshot = canonical_snapshot_fingerprint(candidate, data_dir)
+        except (OSError, RuntimeError, ValueError, sqlite3.DatabaseError):
+            continue
+        if metadata.get("snapshot_fingerprint") not in {None, snapshot}:
+            continue
+        return snapshot
+    raise RuntimeError("Refusing recovery: no verified pre-migration backup proves the source lineage.")
+
+
 def _validate_failed_source_identity(
     data_dir: Path, migration_id: str, original_source_fingerprint: str
-) -> tuple[dict[str, Any], Path, str]:
+) -> tuple[dict[str, Any], Path, str, str]:
     persisted = _read_state(state_path(data_dir))
     if not persisted or persisted.get("state") != UpgradeState.FAILED.value:
         raise RuntimeError("Refusing recovery: source marker is not FAILED.")
@@ -241,9 +286,17 @@ def _validate_failed_source_identity(
     if _original_source_fingerprint(persisted) != original_source_fingerprint:
         raise RuntimeError("Refusing recovery: source fingerprint does not match FAILED marker.")
     source = _persisted_source_path(persisted, data_dir)
+    source_revision = _read_sqlite_revision(source)
+    backup_snapshot = _verified_backup_snapshot(data_dir, persisted, source, source_revision)
+    if canonical_snapshot_fingerprint(source, data_dir) != backup_snapshot:
+        raise RuntimeError("Refusing recovery: logical SQLite source changed after failure.")
     if _source_fingerprint(source) != original_source_fingerprint:
-        raise RuntimeError("Refusing recovery: original SQLite source changed after failure.")
-    return persisted, source, _read_sqlite_revision(source)
+        logger.info("database.recovery legacy_physical_fingerprint=mismatch_tolerated")
+    persisted_snapshot = persisted.get("original_source_snapshot_fingerprint")
+    if persisted_snapshot and persisted_snapshot != backup_snapshot:
+        raise RuntimeError("Refusing recovery: persisted source snapshot identity is invalid.")
+    logger.info("database.recovery identity_mode=stable_snapshot backup_lineage=validated logical_source_identity=matched")
+    return persisted, source, source_revision, backup_snapshot
 
 
 def _legacy_historical_target_matches(
@@ -286,9 +339,13 @@ def _legacy_historical_target_matches(
             and (backup_dir / backup_path).is_file()
         ):
             try:
+                backup_file = backup_dir / backup_path
+                if metadata.get("backup_sha256") != _file_sha256(backup_file):
+                    continue
+                validate_sqlite_readable(backup_file)
                 with tempfile.TemporaryDirectory(prefix=".kaya-recovery-", dir=data_dir) as temporary_dir:
                     working_path = Path(temporary_dir) / "conversion.sqlite3"
-                    shutil.copyfile(backup_dir / backup_path, working_path)
+                    shutil.copyfile(backup_file, working_path)
                     settings = get_settings().model_copy(
                         update={
                             "database_url": f"sqlite:///{working_path.resolve().as_posix()}",
@@ -394,12 +451,22 @@ def run_upgrade(source_path: Path, target_url: str, backup_dir: Path, data_dir: 
     dry_run: dict[str, Any] = {}
     original_source_fingerprint: str | None = None
     conversion_source_fingerprint: str | None = None
+    original_source_snapshot_fingerprint: str | None = None
     try:
         dry_run = preflight(source_path, target_url, True)
         original_source_fingerprint = dry_run["source_fingerprint"]
         conversion_source_fingerprint = original_source_fingerprint
-        _write_state(marker, UpgradeState.MAINTENANCE, database_engine="sqlite", source_fingerprint=original_source_fingerprint, original_source_fingerprint=original_source_fingerprint, conversion_source_fingerprint=conversion_source_fingerprint, target_revision=dry_run["target_revision"], progress="writes and background workers are stopped before conversion")
         source_revision = dry_run.get("source_revision")
+        verified_backup = create_sqlite_backup(
+            source_path,
+            backup_dir,
+            source_revision=source_revision,
+            target_revision=dry_run["target_revision"],
+        )
+        original_source_snapshot_fingerprint = verified_backup.snapshot_fingerprint
+        if not original_source_snapshot_fingerprint:
+            raise RuntimeError("Verified SQLite backup has no stable snapshot identity.")
+        _write_state(marker, UpgradeState.MAINTENANCE, database_engine="sqlite", source_path=str(source_path), source_revision=source_revision, source_fingerprint=original_source_fingerprint, original_source_fingerprint=original_source_fingerprint, original_source_snapshot_fingerprint=original_source_snapshot_fingerprint, conversion_source_fingerprint=conversion_source_fingerprint, target_revision=dry_run["target_revision"], progress="writes and background workers are stopped before conversion")
         conversion_source = source_path
         if source_revision and source_revision != dry_run.get("target_revision"):
             conversion_source = _upgrade_supported_legacy_sqlite(
@@ -420,6 +487,7 @@ def run_upgrade(source_path: Path, target_url: str, backup_dir: Path, data_dir: 
                 database_engine="sqlite" if state in {UpgradeState.BACKED_UP, UpgradeState.POSTGRES_PREPARED, UpgradeState.MIGRATING, UpgradeState.VALIDATING} else "postgresql",
                 source_fingerprint=original_source_fingerprint,
                 original_source_fingerprint=original_source_fingerprint,
+                original_source_snapshot_fingerprint=original_source_snapshot_fingerprint,
                 conversion_source_fingerprint=conversion_source_fingerprint,
                 target_revision=dry_run["target_revision"],
             )
@@ -431,15 +499,16 @@ def run_upgrade(source_path: Path, target_url: str, backup_dir: Path, data_dir: 
             backup_dir,
             state_callback=transition,
             original_source_fingerprint=original_source_fingerprint,
+            original_source_snapshot_fingerprint=original_source_snapshot_fingerprint,
         )
         if report.get("result") != "COMPLETED":
             raise RuntimeError("SQLite migration did not complete.")
-        _write_state(marker, UpgradeState.POSTGRES_READY, database_engine="postgresql", target_url=redact_database_url(target_url), source_fingerprint=original_source_fingerprint, original_source_fingerprint=original_source_fingerprint, conversion_source_fingerprint=report["conversion_source_fingerprint"], target_revision=report["target_revision"], migration_id=report["migration_id"])
+        _write_state(marker, UpgradeState.POSTGRES_READY, database_engine="postgresql", target_url=redact_database_url(target_url), source_fingerprint=original_source_fingerprint, original_source_fingerprint=original_source_fingerprint, original_source_snapshot_fingerprint=original_source_snapshot_fingerprint, conversion_source_fingerprint=report["conversion_source_fingerprint"], target_revision=report["target_revision"], migration_id=report["migration_id"])
         safe_report = {key: value for key, value in report.items() if key not in {"source_backup"} or isinstance(value, dict)}
         _write_state(report_path(data_dir), UpgradeState.POSTGRES_READY, **safe_report)
-        _write_state(marker, UpgradeState.CUTOVER_PENDING, database_engine="sqlite", target_url=redact_database_url(target_url), source_path=str(source_path), source_fingerprint=original_source_fingerprint, original_source_fingerprint=original_source_fingerprint, conversion_source_fingerprint=report["conversion_source_fingerprint"], target_revision=report["target_revision"], migration_id=report["migration_id"])
+        _write_state(marker, UpgradeState.CUTOVER_PENDING, database_engine="sqlite", target_url=redact_database_url(target_url), source_path=str(source_path), source_fingerprint=original_source_fingerprint, original_source_fingerprint=original_source_fingerprint, original_source_snapshot_fingerprint=original_source_snapshot_fingerprint, conversion_source_fingerprint=report["conversion_source_fingerprint"], target_revision=report["target_revision"], migration_id=report["migration_id"])
         test_failpoint("pause_cutover_pending")
-        _write_state(marker, UpgradeState.POSTGRES_ACTIVE, database_engine="postgresql", target_url=redact_database_url(target_url), source_path=str(source_path), source_fingerprint=original_source_fingerprint, original_source_fingerprint=original_source_fingerprint, conversion_source_fingerprint=report["conversion_source_fingerprint"], target_revision=report["target_revision"], migration_id=report["migration_id"], recovery_artifacts_retained=True)
+        _write_state(marker, UpgradeState.POSTGRES_ACTIVE, database_engine="postgresql", target_url=redact_database_url(target_url), source_path=str(source_path), source_fingerprint=original_source_fingerprint, original_source_fingerprint=original_source_fingerprint, original_source_snapshot_fingerprint=original_source_snapshot_fingerprint, conversion_source_fingerprint=report["conversion_source_fingerprint"], target_revision=report["target_revision"], migration_id=report["migration_id"], recovery_artifacts_retained=True)
         test_failpoint("pause_after_postgres_active")
         logger.info("database migration and cutover completed source=%s target=%s", source_path.name, redact_database_url(target_url))
         return report
@@ -451,6 +520,7 @@ def run_upgrade(source_path: Path, target_url: str, backup_dir: Path, data_dir: 
             source_path=str(source_path),
             source_fingerprint=original_source_fingerprint or dry_run.get("source_fingerprint"),
             original_source_fingerprint=original_source_fingerprint or dry_run.get("source_fingerprint"),
+            original_source_snapshot_fingerprint=original_source_snapshot_fingerprint,
             conversion_source_fingerprint=conversion_source_fingerprint or dry_run.get("source_fingerprint"),
             target_revision=dry_run.get("target_revision"),
             migration_id=getattr(exc, "migration_id", None),
@@ -470,8 +540,9 @@ def clean_failed_target(
     """Reset only a target proven to be this upgrade's failed, non-active target."""
     source_path: Path | None = None
     source_revision: str | None = None
+    source_snapshot: str | None = None
     if data_dir is not None:
-        _, source_path, source_revision = _validate_failed_source_identity(
+        _, source_path, source_revision, source_snapshot = _validate_failed_source_identity(
             data_dir, migration_id, source_fingerprint
         )
     target = create_engine(target_url, **postgres_engine_options(get_settings()))
@@ -483,6 +554,7 @@ def clean_failed_target(
         optional_columns = {
             "original_source_fingerprint",
             "conversion_source_fingerprint",
+            "original_source_snapshot_fingerprint",
             "source_revision",
             "target_revision",
         }
@@ -504,6 +576,11 @@ def clean_failed_target(
         if "original_source_fingerprint" in columns:
             if row["original_source_fingerprint"] != source_fingerprint:
                 raise RuntimeError("Refusing cleanup: target original source fingerprint does not match.")
+            if (
+                source_snapshot is None
+                or row.get("original_source_snapshot_fingerprint") != source_snapshot
+            ):
+                raise RuntimeError("Refusing cleanup: target logical source snapshot identity does not match.")
             if (
                 not isinstance(row.get("conversion_source_fingerprint"), str)
                 or len(row["conversion_source_fingerprint"]) != 64
@@ -547,7 +624,7 @@ def clean_failed_target(
 def prepare_failed_retry(data_dir: Path, source_fingerprint: str) -> None:
     """Permit retry only after a matching failed source marker is verified."""
     marker = state_path(data_dir)
-    persisted, source, _ = _validate_failed_source_identity(
+    persisted, source, _, source_snapshot = _validate_failed_source_identity(
         data_dir, str((_read_state(marker) or {}).get("migration_id") or ""), source_fingerprint
     )
     values: dict[str, Any] = {
@@ -555,6 +632,7 @@ def prepare_failed_retry(data_dir: Path, source_fingerprint: str) -> None:
         "source_path": str(source),
         "source_fingerprint": source_fingerprint,
         "original_source_fingerprint": source_fingerprint,
+        "original_source_snapshot_fingerprint": source_snapshot,
         "recovery_artifacts_retained": True,
     }
     if persisted.get("conversion_source_fingerprint"):

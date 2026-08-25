@@ -421,9 +421,12 @@ def _state_create(
     *,
     original_source_fingerprint: str | None = None,
     conversion_source_fingerprint: str | None = None,
+    original_source_snapshot_fingerprint: str | None = None,
 ) -> None:
     original_source_fingerprint = original_source_fingerprint or source_fingerprint
     conversion_source_fingerprint = conversion_source_fingerprint or source_fingerprint
+    if not original_source_snapshot_fingerprint:
+        raise SQLiteToPostgresError("A verified original SQLite snapshot is required for migration state.")
     with engine.begin() as connection:
         connection.execute(text(f"""
             CREATE TABLE {STATE_TABLE} (
@@ -431,6 +434,7 @@ def _state_create(
                 source_fingerprint VARCHAR(64) NOT NULL,
                 original_source_fingerprint VARCHAR(64) NOT NULL,
                 conversion_source_fingerprint VARCHAR(64) NOT NULL,
+                original_source_snapshot_fingerprint VARCHAR(64) NOT NULL,
                 source_revision VARCHAR(80) NOT NULL,
                 target_revision VARCHAR(80) NOT NULL,
                 started_at TIMESTAMP NOT NULL,
@@ -443,8 +447,8 @@ def _state_create(
             )
         """))
         connection.execute(
-            text(f"INSERT INTO {STATE_TABLE} (migration_id, source_fingerprint, original_source_fingerprint, conversion_source_fingerprint, source_revision, target_revision, started_at, state) VALUES (:id, :fingerprint, :original_fingerprint, :conversion_fingerprint, :source_revision, :target_revision, :started_at, :state)"),
-            {"id": migration_id, "fingerprint": source_fingerprint, "original_fingerprint": original_source_fingerprint, "conversion_fingerprint": conversion_source_fingerprint, "source_revision": source_revision, "target_revision": target_revision, "started_at": datetime.now(UTC).replace(tzinfo=None), "state": STATE_PREPARING},
+            text(f"INSERT INTO {STATE_TABLE} (migration_id, source_fingerprint, original_source_fingerprint, conversion_source_fingerprint, original_source_snapshot_fingerprint, source_revision, target_revision, started_at, state) VALUES (:id, :fingerprint, :original_fingerprint, :conversion_fingerprint, :original_snapshot_fingerprint, :source_revision, :target_revision, :started_at, :state)"),
+            {"id": migration_id, "fingerprint": source_fingerprint, "original_fingerprint": original_source_fingerprint, "conversion_fingerprint": conversion_source_fingerprint, "original_snapshot_fingerprint": original_source_snapshot_fingerprint, "source_revision": source_revision, "target_revision": target_revision, "started_at": datetime.now(UTC).replace(tzinfo=None), "state": STATE_PREPARING},
         )
 
 
@@ -729,6 +733,7 @@ def migrate(
     dry_run: bool = False,
     state_callback: Callable[[str], None] | None = None,
     original_source_fingerprint: str | None = None,
+    original_source_snapshot_fingerprint: str | None = None,
 ) -> dict[str, Any]:
     started = time.monotonic()
     source_path = source_path.resolve()
@@ -748,6 +753,7 @@ def migrate(
     _target_eligibility(target)
     original_source_fingerprint = original_source_fingerprint or fingerprint_before
     report: dict[str, Any] = {"migration_id": str(uuid4()), "source_engine": "sqlite", "target_engine": "postgresql", "source_revision": revision, "target_revision": expected_head, "source_size_bytes": source_path.stat().st_size, "target_size_bytes": None, "batch_size": batch_size, "tables": {}, "sequence_repair": [], "rejected_rows": 0, "started_at": datetime.now(UTC).isoformat(), "result": "DRY_RUN" if dry_run else "INCOMPLETE", "original_source_fingerprint": original_source_fingerprint, "conversion_source_fingerprint": fingerprint_before}
+    report["original_source_snapshot_fingerprint"] = original_source_snapshot_fingerprint
     _record_memory(report, "after_source_validation")
     report["known_local_filesystems"] = filesystems
     report["postgresql_target_capacity"] = "unknown_remote_or_container_filesystem"
@@ -764,6 +770,10 @@ def migrate(
         "path": backup.database_path.name,
         "size_bytes": backup.database_path.stat().st_size,
     }
+    original_source_snapshot_fingerprint = original_source_snapshot_fingerprint or backup.snapshot_fingerprint
+    if not original_source_snapshot_fingerprint:
+        raise SQLiteToPostgresError("Verified SQLite backup has no stable snapshot identity.")
+    report["original_source_snapshot_fingerprint"] = original_source_snapshot_fingerprint
     test_record("sqlite.source_capture", boundary="after_backup", fingerprint=_source_fingerprint(source_path))
     if state_callback is not None:
         state_callback("BACKED_UP")
@@ -781,6 +791,7 @@ def migrate(
             expected_head,
             original_source_fingerprint=original_source_fingerprint,
             conversion_source_fingerprint=fingerprint_before,
+            original_source_snapshot_fingerprint=original_source_snapshot_fingerprint,
         )
         _prepare_target(target, target_url, expected_head)
         _record_memory(report, "after_target_preparation")

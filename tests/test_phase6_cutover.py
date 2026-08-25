@@ -9,6 +9,7 @@ import pytest
 from alembic import command
 
 import app.db.phase6_cutover as phase6_cutover
+from app.db.backup import canonical_snapshot_fingerprint, create_sqlite_backup
 from app.db.phase6_cutover import (
     UpgradeState,
     _write_state,
@@ -23,6 +24,63 @@ from app.db.phase6_cutover import (
 )
 from app.db.migrations import _alembic_config
 from app.db.sqlite_to_postgres import SQLiteToPostgresError
+
+
+def test_canonical_snapshot_ignores_wal_checkpoint_representation(tmp_path: Path):
+    source = tmp_path / "kaya.db"
+    with sqlite3.connect(source) as connection:
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("CREATE TABLE records (id INTEGER PRIMARY KEY, value TEXT)")
+        connection.execute("INSERT INTO records(value) VALUES ('stable')")
+        connection.commit()
+    physical_before = phase6_cutover._source_fingerprint(source)
+    snapshot_before = canonical_snapshot_fingerprint(source, tmp_path)
+    with sqlite3.connect(source) as connection:
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    physical_after = phase6_cutover._source_fingerprint(source)
+    snapshot_after = canonical_snapshot_fingerprint(source, tmp_path)
+
+    assert physical_before != physical_after
+    assert snapshot_before == snapshot_after
+
+
+def test_failed_source_identity_rejects_logical_change_but_tolerates_wal_change(tmp_path: Path):
+    source = tmp_path / "kaya.db"
+    with sqlite3.connect(source) as connection:
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("CREATE TABLE alembic_version (version_num TEXT)")
+        connection.execute("INSERT INTO alembic_version VALUES ('20260813_01')")
+        connection.execute("CREATE TABLE records (id INTEGER PRIMARY KEY, value TEXT)")
+        connection.execute("INSERT INTO records(value) VALUES ('stable')")
+        connection.commit()
+    original_physical = phase6_cutover._source_fingerprint(source)
+    backup = create_sqlite_backup(
+        source,
+        tmp_path / "backups",
+        source_revision="20260813_01",
+        target_revision="20260818_02",
+    )
+    _write_state(
+        state_path(tmp_path),
+        UpgradeState.FAILED,
+        migration_id="migration-1",
+        source_path=str(source),
+        source_fingerprint=original_physical,
+        target_revision="20260818_02",
+    )
+    with sqlite3.connect(source) as connection:
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+    _, _, _, snapshot = phase6_cutover._validate_failed_source_identity(
+        tmp_path, "migration-1", original_physical
+    )
+    assert snapshot == backup.snapshot_fingerprint
+
+    with sqlite3.connect(source) as connection:
+        connection.execute("INSERT INTO records(value) VALUES ('changed')")
+        connection.commit()
+    with pytest.raises(RuntimeError, match="logical SQLite source changed"):
+        phase6_cutover._validate_failed_source_identity(tmp_path, "migration-1", original_physical)
 
 
 def test_detects_existing_sqlite_install_from_config_and_file(tmp_path: Path):
@@ -177,6 +235,11 @@ def test_migration_id_survives_failed_retry_state(tmp_path: Path, monkeypatch):
         "preflight",
         lambda *_args: {"source_fingerprint": "a" * 64, "target_revision": "20260818_02"},
     )
+    monkeypatch.setattr(
+        phase6_cutover,
+        "create_sqlite_backup",
+        lambda *_args, **_kwargs: SimpleNamespace(snapshot_fingerprint="s" * 64),
+    )
     failure = SQLiteToPostgresError("synthetic migration failure")
     failure.migration_id = migration_id
     monkeypatch.setattr(phase6_cutover, "migrate", lambda *_args, **_kwargs: (_ for _ in ()).throw(failure))
@@ -210,6 +273,11 @@ def test_historical_upgrade_persists_original_and_conversion_identities(tmp_path
     )
     monkeypatch.setattr(phase6_cutover, "preflight", lambda *_args: next(preflights))
     monkeypatch.setattr(phase6_cutover, "_upgrade_supported_legacy_sqlite", lambda *_args: working)
+    monkeypatch.setattr(
+        phase6_cutover,
+        "create_sqlite_backup",
+        lambda *_args, **_kwargs: SimpleNamespace(snapshot_fingerprint="s" * 64),
+    )
 
     def fake_migrate(*_args, state_callback=None, original_source_fingerprint=None, **_kwargs):
         if state_callback:
@@ -227,6 +295,7 @@ def test_historical_upgrade_persists_original_and_conversion_identities(tmp_path
     state = json.loads(state_path(data_dir).read_text(encoding="utf-8"))
     assert state["original_source_fingerprint"] == "a" * 64
     assert state["conversion_source_fingerprint"] == "b" * 64
+    assert state["original_source_snapshot_fingerprint"] == "s" * 64
     assert state["source_fingerprint"] == "a" * 64
     assert state["migration_id"] == "migration-1"
 
@@ -247,14 +316,24 @@ def test_failed_retry_requires_matching_source_fingerprint(tmp_path: Path):
 
 def test_failed_retry_recomputes_original_source_identity(tmp_path: Path):
     source = tmp_path / "kaya.db"
-    source.write_bytes(b"stable source")
+    with sqlite3.connect(source) as connection:
+        connection.execute("CREATE TABLE alembic_version (version_num TEXT)")
+        connection.execute("INSERT INTO alembic_version VALUES ('20260818_02')")
+        connection.commit()
     fingerprint = phase6_cutover._source_fingerprint(source)
+    backup = create_sqlite_backup(
+        source,
+        tmp_path / "backups",
+        source_revision="20260818_02",
+        target_revision="20260818_02",
+    )
     _write_state(
         state_path(tmp_path),
         UpgradeState.FAILED,
         migration_id="migration-1",
         source_path=str(source),
         source_fingerprint=fingerprint,
+        target_revision="20260818_02",
     )
 
     prepare_failed_retry(tmp_path, fingerprint)
@@ -262,6 +341,7 @@ def test_failed_retry_recomputes_original_source_identity(tmp_path: Path):
     state = json.loads(state_path(tmp_path).read_text(encoding="utf-8"))
     assert state["state"] == UpgradeState.PRECHECK.value
     assert state["original_source_fingerprint"] == fingerprint
+    assert state["original_source_snapshot_fingerprint"] == backup.snapshot_fingerprint
 
     source.write_bytes(b"changed source")
     _write_state(

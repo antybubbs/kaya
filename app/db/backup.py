@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import sqlite3
+import tempfile
 import time
 from contextlib import closing
 from dataclasses import dataclass
@@ -31,6 +32,7 @@ class MigrationBackup:
     database_path: Path
     metadata_path: Path
     action: str = "created"
+    snapshot_fingerprint: str | None = None
 
 
 def _file_sha256(path: Path) -> str:
@@ -39,6 +41,23 @@ def _file_sha256(path: Path) -> str:
         while chunk := handle.read(_HASH_CHUNK_BYTES):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def canonical_snapshot_fingerprint(source: Path, workspace: Path | None = None) -> str:
+    """Hash a consistent SQLite snapshot, independent of source WAL layout."""
+    source = source.resolve()
+    workspace = (workspace or source.parent).resolve()
+    with tempfile.TemporaryDirectory(prefix=".kaya-snapshot-", dir=workspace) as temporary_dir:
+        snapshot = Path(temporary_dir) / "snapshot.sqlite3"
+        source_uri = f"file:{source.as_posix()}?mode=ro"
+        with sqlite3.connect(source_uri, uri=True) as source_connection:
+            source_connection.execute("PRAGMA query_only=ON")
+            with sqlite3.connect(snapshot) as snapshot_connection:
+                source_connection.backup(snapshot_connection)
+                snapshot_connection.commit()
+                snapshot_connection.execute("VACUUM")
+        validate_sqlite_readable(snapshot)
+        return _file_sha256(snapshot)
 
 
 def _source_fingerprint(source: Path) -> str:
@@ -118,7 +137,11 @@ def _reusable_backup(
                 source_revision,
                 target_revision,
             )
-            return MigrationBackup(backup_path, metadata_path, "reused")
+            snapshot_fingerprint = canonical_snapshot_fingerprint(backup_path, backup_directory)
+            if metadata.get("snapshot_fingerprint") not in {None, snapshot_fingerprint}:
+                logger.warning("Ignoring reusable migration backup with failed snapshot identity verification")
+                continue
+            return MigrationBackup(backup_path, metadata_path, "reused", snapshot_fingerprint)
     return None
 
 
@@ -217,6 +240,7 @@ def create_sqlite_backup(
         os.chmod(backup_path, 0o600)
         validate_sqlite_readable(backup_path)
         backup_sha256 = _file_sha256(backup_path)
+        snapshot_fingerprint = canonical_snapshot_fingerprint(backup_path, backup_directory)
         metadata_path.write_text(
             json.dumps(
                 {
@@ -227,6 +251,7 @@ def create_sqlite_backup(
                     "backup_filename": backup_path.name,
                     "source_fingerprint": source_fingerprint,
                     "backup_sha256": backup_sha256,
+                    "snapshot_fingerprint": snapshot_fingerprint,
                 },
                 indent=2,
                 sort_keys=True,
@@ -257,7 +282,7 @@ def create_sqlite_backup(
         source_revision,
         target_revision,
     )
-    return MigrationBackup(backup_path, metadata_path, "created")
+    return MigrationBackup(backup_path, metadata_path, "created", snapshot_fingerprint)
 
 
 def prune_migration_backups(backup_directory: Path, retention_count: int) -> None:
