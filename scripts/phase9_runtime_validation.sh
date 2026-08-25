@@ -96,14 +96,16 @@ retry_normal_refusal() {
   (( status != 0 )) && grep -q 'operator recovery is required before startup' <<<"$output"
 }
 retry_recovery() {
-  local migration_id source_fingerprint
+  local migration_id source_fingerprint output
   migration_id="$(retry_state migration_id)"; source_fingerprint="$(retry_state source_fingerprint)"
-  compose run --rm --no-deps -v "$ROOT/retry-data:/app/data" \
+  output="$(compose run --rm --no-deps -v "$ROOT/retry-data:/app/data" \
     -e KAYA_POSTGRES_DATABASE_URL=postgresql+psycopg://kaya@postgres:5432/phase9_retry \
     -e DATABASE_URL=postgresql+psycopg://kaya@postgres:5432/phase9_retry kaya \
     python -m scripts.kaya_phase6_upgrade \
     --source /app/data/kaya.db --backup-dir /app/data/backups --data-dir /app/data \
-    --clean-failed-target --migration-id "$migration_id" --source-fingerprint "$source_fingerprint" >/dev/null
+    --clean-failed-target --migration-id "$migration_id" --source-fingerprint "$source_fingerprint" 2>&1)"
+  grep -q 'failed PostgreSQL migration target cleaned' <<<"$output"
+  ! grep -q 'PostgreSQL target contains an incomplete SQLite migration and is not startup-authoritative' <<<"$output"
   compose exec -T postgres psql -U kaya -d phase9_retry -Atc 'select version_num from alembic_version' | tr -d '\r' | grep -qx 20260818_02
 }
 setup_token() { compose exec -T kaya sh -c "sed -n 's/^SETUP_TOKEN=//p' /app/data/.runtime.env" | tr -d '\r'; }

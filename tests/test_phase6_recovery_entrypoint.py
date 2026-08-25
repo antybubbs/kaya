@@ -58,3 +58,12 @@ def test_entrypoint_bootstraps_runtime_secrets_before_failed_state_check():
     assert "scripts.kaya_phase6_recovery_policy" in entrypoint
     assert '"$UPGRADE_STATE" != "FAILED"' in entrypoint
     assert '"$PHASE6_RECOVERY_MODE" != "true"' in entrypoint
+
+
+def test_recovery_handoff_precedes_normal_database_preparation():
+    entrypoint = Path("docker-entrypoint.sh").read_text(encoding="utf-8")
+    handoff = entrypoint.index('exec gosu kaya "$@"')
+    normal_prepare = entrypoint.index('gosu kaya python -m app.db.cli')
+    assert handoff < normal_prepare
+    assert "startup_database_prepare=skipped" in entrypoint
+    assert "command_handoff=starting" in entrypoint

@@ -78,6 +78,7 @@ if python -m scripts.kaya_phase6_recovery_policy "$@"; then
     PHASE6_RECOVERY_MODE=true
     echo "Phase 6 recovery CLI recognised; failed-target guards remain enabled."
 fi
+PHASE6_RECOVERY_STATE=false
 
 UPGRADE_STATE_FILE="/app/data/kaya-database-upgrade.json"
 if [ -f "$UPGRADE_STATE_FILE" ]; then
@@ -89,6 +90,7 @@ if [ -f "$UPGRADE_STATE_FILE" ]; then
                 echo "Kaya database upgrade is $UPGRADE_STATE; operator recovery is required before startup." >&2
                 exit 1
             fi
+            PHASE6_RECOVERY_STATE=true
             echo "Kaya database upgrade is FAILED; running the explicit guarded recovery command."
             ;;
     esac
@@ -99,6 +101,16 @@ if [ -f "$UPGRADE_STATE_FILE" ]; then
         fi
         export DATABASE_URL="$KAYA_POSTGRES_DATABASE_URL"
     fi
+fi
+
+if [ "$PHASE6_RECOVERY_MODE" = "true" ]; then
+    if [ "$PHASE6_RECOVERY_STATE" != "true" ]; then
+        echo "Explicit Phase 6 recovery requires a FAILED migration state; refusing recovery handoff." >&2
+        exit 1
+    fi
+    echo "database.recovery startup_database_prepare=skipped"
+    echo "database.recovery command_handoff=starting"
+    exec gosu kaya "$@"
 fi
 
 CONFIGURED_DATABASE_URL="${DATABASE_URL:-}"
