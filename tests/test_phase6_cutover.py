@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 from alembic import command
 
+import app.db.backup as backup_module
 import app.db.phase6_cutover as phase6_cutover
 from app.db.backup import (
     canonical_snapshot_fingerprint,
@@ -29,6 +30,47 @@ from app.db.phase6_cutover import (
 )
 from app.db.migrations import _alembic_config
 from app.db.sqlite_to_postgres import SQLiteToPostgresError
+
+
+def test_recovery_fingerprint_makes_no_nested_copy_or_backup_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source = tmp_path / "verified.sqlite3"
+    with sqlite3.connect(source) as connection:
+        connection.execute("CREATE TABLE records(id INTEGER PRIMARY KEY, value TEXT)")
+        connection.execute("INSERT INTO records VALUES (1, 'fixture')")
+        connection.commit()
+
+    real_connect = backup_module.sqlite3.connect
+
+    class GuardedConnection:
+        def __init__(self, connection):
+            self._connection = connection
+
+        def __getattr__(self, name):
+            return getattr(self._connection, name)
+
+        def backup(self, *_args, **_kwargs):
+            raise AssertionError("logical fingerprint must not call SQLite backup")
+
+        def close(self):
+            return self._connection.close()
+
+    monkeypatch.setattr(
+        backup_module.sqlite3,
+        "connect",
+        lambda *args, **kwargs: GuardedConnection(real_connect(*args, **kwargs)),
+    )
+    monkeypatch.setattr(
+        backup_module.tempfile,
+        "TemporaryDirectory",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("logical fingerprint must not create a temporary database")
+        ),
+    )
+
+    fingerprint = backup_module.canonical_snapshot_fingerprint(source)
+    assert len(fingerprint) == 64
 
 
 def test_recovery_snapshot_space_models_only_concurrent_snapshot(tmp_path: Path):

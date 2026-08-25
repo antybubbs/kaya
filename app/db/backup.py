@@ -175,7 +175,15 @@ def _logical_sqlite_fingerprint(path: Path) -> str:
             select_columns = ", ".join(
                 f"typeof({column}), {column}" for column in quoted_columns
             )
-            order_columns = ", ".join(quoted_columns)
+            primary_key_columns = [
+                row[1] for row in sorted(columns, key=lambda item: item[5]) if row[5]
+            ]
+            # Primary-key ordering uses the existing index and avoids a large
+            # temporary sort for Kaya tables. Tables without a usable key keep
+            # the deterministic all-column fallback, which treats rows as a
+            # logical multiset without trusting physical row order.
+            order_names = primary_key_columns or column_names
+            order_columns = ", ".join(_quote_sqlite_identifier(name) for name in order_names)
             for row in connection.execute(
                 f"SELECT {select_columns} FROM {quoted_table} ORDER BY {order_columns}"
             ):
@@ -186,19 +194,9 @@ def _logical_sqlite_fingerprint(path: Path) -> str:
 
 
 def canonical_snapshot_fingerprint(source: Path, workspace: Path | None = None) -> str:
-    """Hash a consistent SQLite snapshot, independent of source WAL layout."""
-    source = source.resolve()
-    workspace = (workspace or source.parent).resolve()
-    with tempfile.TemporaryDirectory(prefix=".kaya-snapshot-", dir=workspace) as temporary_dir:
-        snapshot = Path(temporary_dir) / "snapshot.sqlite3"
-        source_uri = f"file:{source.as_posix()}?mode=ro"
-        with closing(sqlite3.connect(source_uri, uri=True)) as source_connection:
-            source_connection.execute("PRAGMA query_only=ON")
-            with closing(sqlite3.connect(snapshot)) as snapshot_connection:
-                source_connection.backup(snapshot_connection)
-                snapshot_connection.commit()
-        validate_sqlite_readable(snapshot)
-        return _logical_sqlite_fingerprint(snapshot)
+    """Hash an already-safe SQLite database without making another copy."""
+    del workspace  # Retained for compatibility with existing callers.
+    return _logical_sqlite_fingerprint(source)
 
 
 def _source_fingerprint(source: Path) -> str:

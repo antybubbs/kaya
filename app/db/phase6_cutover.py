@@ -21,7 +21,7 @@ from app.core.config import redact_database_url, sqlite_database_path
 from app.db.backup import (
     MigrationBackup,
     _file_sha256,
-    canonical_snapshot_fingerprint,
+    _logical_sqlite_fingerprint,
     create_sqlite_backup,
     isolated_sqlite_snapshot,
 )
@@ -310,7 +310,7 @@ def _verified_backup_snapshot(
                 logger.warning("database.recovery backup_candidate=rejected reason=sha_mismatch")
                 continue
             validate_sqlite_readable(candidate)
-            snapshot = canonical_snapshot_fingerprint(candidate, data_dir)
+            snapshot = _logical_sqlite_fingerprint(candidate)
         except (OSError, RuntimeError, ValueError, sqlite3.DatabaseError) as exc:
             message = str(exc).lower()
             if "disk is full" in message or "no space left" in message or "insufficient space" in message:
@@ -349,7 +349,7 @@ def _validate_failed_source_identity(
         logger.info("database.recovery source_revision=validated revision=%s", source_revision)
         if source_revision != backup_revision:
             raise RuntimeError("Refusing recovery: FAILED source revision does not match verified backup lineage.")
-        if canonical_snapshot_fingerprint(isolated_source, data_dir) != backup_snapshot:
+        if _logical_sqlite_fingerprint(isolated_source) != backup_snapshot:
             raise RuntimeError("Refusing recovery: logical SQLite source changed after failure.")
     if _source_fingerprint(source) != original_source_fingerprint:
         logger.info("database.recovery legacy_physical_fingerprint=mismatch_tolerated")
@@ -547,7 +547,7 @@ def run_upgrade(
                 target_revision=dry_run["target_revision"],
             )
         )
-        original_source_snapshot_fingerprint = verified_backup.snapshot_fingerprint or canonical_snapshot_fingerprint(source_path, data_dir)
+        original_source_snapshot_fingerprint = verified_backup.snapshot_fingerprint or _logical_sqlite_fingerprint(source_path)
         if not original_source_snapshot_fingerprint:
             raise RuntimeError("Verified SQLite backup has no stable snapshot identity.")
         _write_state(marker, UpgradeState.MAINTENANCE, database_engine="sqlite", source_path=str(state_source_path), source_revision=source_revision, source_fingerprint=original_source_fingerprint, original_source_fingerprint=original_source_fingerprint, original_source_snapshot_fingerprint=original_source_snapshot_fingerprint, conversion_source_fingerprint=conversion_source_fingerprint, target_revision=dry_run["target_revision"], progress="writes and background workers are stopped before conversion")
