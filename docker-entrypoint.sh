@@ -73,14 +73,23 @@ export SECRET_KEY
 export ENCRYPTION_KEY
 export SETUP_TOKEN
 
+PHASE6_RECOVERY_MODE=false
+if python -m scripts.kaya_phase6_recovery_policy "$@"; then
+    PHASE6_RECOVERY_MODE=true
+    echo "Phase 6 recovery CLI recognised; failed-target guards remain enabled."
+fi
+
 UPGRADE_STATE_FILE="/app/data/kaya-database-upgrade.json"
 if [ -f "$UPGRADE_STATE_FILE" ]; then
     UPGRADE_STATE="$(python -c "import json; print(json.load(open('$UPGRADE_STATE_FILE', encoding='utf-8')).get('state', ''))")"
     AUTHORITATIVE_ENGINE="$(python -c "import json; print(json.load(open('$UPGRADE_STATE_FILE', encoding='utf-8')).get('database_engine', ''))")"
     case "$UPGRADE_STATE" in
         FAILED|PRECHECK|MAINTENANCE|BACKED_UP|POSTGRES_PREPARED|MIGRATING|VALIDATING|POSTGRES_READY|CUTOVER_PENDING)
-            echo "Kaya database upgrade is $UPGRADE_STATE; operator recovery is required before startup." >&2
-            exit 1
+            if [ "$PHASE6_RECOVERY_MODE" != "true" ] || [ "$UPGRADE_STATE" != "FAILED" ]; then
+                echo "Kaya database upgrade is $UPGRADE_STATE; operator recovery is required before startup." >&2
+                exit 1
+            fi
+            echo "Kaya database upgrade is FAILED; running the explicit guarded recovery command."
             ;;
     esac
     if [ "$AUTHORITATIVE_ENGINE" = "postgresql" ]; then
@@ -106,7 +115,7 @@ if [ "$CONFIGURED_DATABASE_URL" != "${CONFIGURED_DATABASE_URL#postgresql}" ]; th
     fi
 fi
 
-if [ "${KAYA_PHASE6_AUTO_UPGRADE:-false}" = "true" ] && [ -n "$SQLITE_SOURCE_URL" ] && [ -f "$SQLITE_SOURCE_PATH" ] && [ "${AUTHORITATIVE_ENGINE:-}" != "postgresql" ] && [ "$POSTGRES_SCHEMA_READY" != "true" ]; then
+if [ "${KAYA_PHASE6_AUTO_UPGRADE:-false}" = "true" ] && [ "$PHASE6_RECOVERY_MODE" != "true" ] && [ -n "$SQLITE_SOURCE_URL" ] && [ -f "$SQLITE_SOURCE_PATH" ] && [ "${AUTHORITATIVE_ENGINE:-}" != "postgresql" ] && [ "$POSTGRES_SCHEMA_READY" != "true" ]; then
     if ! KAYA_LEGACY_SOURCE="$SQLITE_SOURCE_PATH" KAYA_LEGACY_DATA_DIR="${DATA_DIR:-/app/data}" gosu kaya python -c "import os; from pathlib import Path; from app.db.phase6_cutover import legacy_sqlite_eligibility; ok, reason = legacy_sqlite_eligibility(Path(os.environ['KAYA_LEGACY_SOURCE']), Path(os.environ['KAYA_LEGACY_DATA_DIR'])); print(reason); raise SystemExit(0 if ok else 1)"; then
         echo "Legacy SQLite source is not an eligible Kaya database; refusing automatic migration." >&2
         exit 1

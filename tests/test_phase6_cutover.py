@@ -13,8 +13,10 @@ from app.db.phase6_cutover import (
     UpgradeState,
     _write_state,
     authoritative_database_url,
+    clean_failed_target,
     detect_installation,
     legacy_sqlite_eligibility,
+    prepare_failed_retry,
     _upgrade_supported_legacy_sqlite,
     run_upgrade,
     state_path,
@@ -185,3 +187,59 @@ def test_migration_id_survives_failed_retry_state(tmp_path: Path, monkeypatch):
     state = json.loads(state_path(data_dir).read_text(encoding="utf-8"))
     assert state["state"] == UpgradeState.FAILED.value
     assert state["migration_id"] == migration_id
+
+
+def test_failed_retry_requires_failed_source_marker(tmp_path: Path):
+    _write_state(state_path(tmp_path), UpgradeState.POSTGRES_ACTIVE, source_fingerprint="a" * 64)
+
+    with pytest.raises(RuntimeError, match="source marker is not FAILED"):
+        prepare_failed_retry(tmp_path, "a" * 64)
+
+
+def test_failed_retry_requires_matching_source_fingerprint(tmp_path: Path):
+    _write_state(state_path(tmp_path), UpgradeState.FAILED, source_fingerprint="a" * 64)
+
+    with pytest.raises(RuntimeError, match="source fingerprint does not match"):
+        prepare_failed_retry(tmp_path, "b" * 64)
+
+
+@pytest.mark.parametrize(
+    ("state", "migration_id", "source_fingerprint"),
+    [
+        ("COMPLETED", "migration-1", "a" * 64),
+        ("FAILED", "different-migration", "a" * 64),
+        ("FAILED", "migration-1", "b" * 64),
+    ],
+)
+def test_failed_target_cleanup_requires_matching_marker(
+    monkeypatch, state: str, migration_id: str, source_fingerprint: str
+):
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, _statement, _parameters=None):
+            return SimpleNamespace(mappings=lambda: self, one_or_none=lambda: {
+                "state": state,
+                "migration_id": "migration-1",
+                "source_fingerprint": "a" * 64,
+            })
+
+    class FakeTarget:
+        def connect(self):
+            return FakeConnection()
+
+        def begin(self):
+            return FakeConnection()
+
+        def dispose(self):
+            return None
+
+    monkeypatch.setattr(phase6_cutover, "create_engine", lambda *_args, **_kwargs: FakeTarget())
+    monkeypatch.setattr(phase6_cutover, "inspect", lambda _target: SimpleNamespace(get_table_names=lambda: ["kaya_migration_state"]))
+
+    with pytest.raises(RuntimeError, match="matching failed migration target"):
+        clean_failed_target("postgresql+psycopg://kaya@db/kaya", migration_id, source_fingerprint)

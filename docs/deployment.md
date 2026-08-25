@@ -366,6 +366,24 @@ explicit Phase 6 retry/target-cleanup procedure after confirming the failed
 target is not active. Do not delete a database or use ad-hoc SQL against a
 production target.
 
+The normal Compose entrypoint remains fail-closed while the marker is
+`FAILED`. Recovery must use the same Compose service so the persistent runtime
+secret file and PostgreSQL password-file mount are loaded by the entrypoint.
+After obtaining the non-secret `migration_id` and `source_fingerprint` from
+the failed marker, run this exact command with the values replaced:
+
+```text
+docker compose run --rm --no-deps kaya python -m scripts.kaya_phase6_upgrade --source /app/data/kaya.db --backup-dir /app/data/backups --data-dir /app/data --clean-failed-target --migration-id <migration-id> --source-fingerprint <source-fingerprint>
+```
+
+The entrypoint recognises only this complete recovery command shape. It does
+not bypass recovery checks for normal startup, arbitrary Python commands, or
+incomplete recovery arguments. The recovery CLI then requires the target
+marker to be `FAILED` with the exact migration ID and source fingerprint, and
+requires the source marker to match before cleaning the failed target. If any
+check fails, no target cleanup occurs. Start Kaya normally afterward and
+confirm `/healthz` and the marker state are healthy/`POSTGRES_ACTIVE`.
+
 ## PostgreSQL role topology upgrades
 
 Current PostgreSQL deployments use two identities. `kaya_bootstrap` is the

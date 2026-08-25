@@ -77,6 +77,8 @@ retry_state() { local key="$1"; docker run --rm --user 0 --entrypoint python -v 
 induce_retry_failure() {
   compose exec -T postgres bash -c \
     'export PGPASSWORD="$(< /run/kaya-secrets/postgres_bootstrap_password)"; psql -U kaya_bootstrap -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE phase9_retry OWNER kaya;"'
+  docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/source:ro" -v "$ROOT/retry-data:/retry" "$IMAGE" -c \
+    'mkdir -p /retry/backups; cp /source/kaya.db /retry/kaya.db'
   local status=0
   docker run --rm --user 0 --network "${PROJECT}_default" --entrypoint python -v "$ROOT:/phase9" -v "${PROJECT}_postgres_secret:/run/kaya-secrets:ro" -w /app \
     -e PYTHONPATH=/app -e APP_ENV=test -e SECRET_KEY=phase9-synthetic-secret-key-012345678901234567890123 -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
@@ -86,13 +88,21 @@ induce_retry_failure() {
   (( status != 0 ))
 }
 verify_failed_retry() { test "$(retry_state state)" = FAILED && migration_source_preserved; }
+retry_normal_refusal() {
+  local status=0 output
+  output="$(compose run --rm --no-deps -v "$ROOT/retry-data:/app/data" \
+    -e KAYA_POSTGRES_DATABASE_URL=postgresql+psycopg://kaya@postgres:5432/phase9_retry \
+    -e DATABASE_URL=postgresql+psycopg://kaya@postgres:5432/phase9_retry kaya true 2>&1)" || status=$?
+  (( status != 0 )) && grep -q 'operator recovery is required before startup' <<<"$output"
+}
 retry_recovery() {
   local migration_id source_fingerprint
   migration_id="$(retry_state migration_id)"; source_fingerprint="$(retry_state source_fingerprint)"
-  docker run --rm --user 0 --network "${PROJECT}_default" --entrypoint python -v "$ROOT:/phase9" -v "${PROJECT}_postgres_secret:/run/kaya-secrets:ro" -w /app \
-    -e PYTHONPATH=/app -e APP_ENV=test -e SECRET_KEY=phase9-synthetic-secret-key-012345678901234567890123 -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
-    -e KAYA_POSTGRES_DATABASE_URL=postgresql+psycopg://kaya@postgres:5432/phase9_retry -e DATABASE_URL=postgresql+psycopg://kaya@postgres:5432/phase9_retry -e DATABASE_PASSWORD_FILE=/run/kaya-secrets/postgres_password "$IMAGE" scripts/kaya_phase6_upgrade.py \
-    --source /phase9/data/kaya.db --target-url postgresql+psycopg://kaya@postgres:5432/phase9_retry --backup-dir /phase9/retry-backups --data-dir /phase9/retry-data \
+  compose run --rm --no-deps -v "$ROOT/retry-data:/app/data" \
+    -e KAYA_POSTGRES_DATABASE_URL=postgresql+psycopg://kaya@postgres:5432/phase9_retry \
+    -e DATABASE_URL=postgresql+psycopg://kaya@postgres:5432/phase9_retry kaya \
+    python -m scripts.kaya_phase6_upgrade \
+    --source /app/data/kaya.db --backup-dir /app/data/backups --data-dir /app/data \
     --clean-failed-target --migration-id "$migration_id" --source-fingerprint "$source_fingerprint" >/dev/null
   compose exec -T postgres psql -U kaya -d phase9_retry -Atc 'select version_num from alembic_version' | tr -d '\r' | grep -qx 20260818_02
 }
@@ -118,7 +128,7 @@ trap cleanup EXIT
 mkdir -p "$ROOT/data/remote-recordings" "$ROOT/uploads" "$ROOT/secrets" "$ROOT/backups"
 docker build --file "$ROOT_DIR/Dockerfile" --tag "$IMAGE" "$ROOT_DIR"
 export ROOT_DIR PROJECT ROOT IMAGE TEST_IMAGE PORT PRIMARY ISOLATION
-export -f compose wait_pg wait_app revision state source_hash backup_hash legacy_backup_valid historical_backup_valid migration_report_valid legacy_relationships_valid legacy_fk_logs_clean migration_source_preserved backup_preserved retention_separated retry_state induce_retry_failure verify_failed_retry retry_recovery setup_token smoke smoke_existing test_suite production_sqlite_rejection
+export -f compose wait_pg wait_app revision state source_hash backup_hash legacy_backup_valid historical_backup_valid migration_report_valid legacy_relationships_valid legacy_fk_logs_clean migration_source_preserved backup_preserved retention_separated retry_state induce_retry_failure verify_failed_retry retry_normal_refusal retry_recovery setup_token smoke smoke_existing test_suite production_sqlite_rejection
 
 fresh_install() { compose up -d; wait_pg; wait_app; [[ "$(revision)" == "20260818_02" ]]; }
 scenario 1 "Fresh install uses PostgreSQL" fresh_install
@@ -172,7 +182,7 @@ docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c "cp /
 retained_before_workers="$(source_hash)"
 
 scenario 24 "Migration failure preserves source" induce_retry_failure
-scenario 25 "Failed target remains non-authoritative" verify_failed_retry
+scenario 25 "Failed target remains non-authoritative" bash -c 'verify_failed_retry && retry_normal_refusal'
 scenario 26 "Migration retry and recovery" retry_recovery
 
 compose exec -T kaya python -c "import sqlite3; db=sqlite3.connect('/app/data/unsupported.sqlite3'); db.execute('create table alembic_version(version_num text)'); db.execute(\"insert into alembic_version values ('unsupported')\"); db.commit(); db.close()"
