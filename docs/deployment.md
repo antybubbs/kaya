@@ -369,14 +369,18 @@ production target.
 The normal Compose entrypoint remains fail-closed while the marker is
 `FAILED`. Recovery must use the same Compose service so the persistent runtime
 secret file and PostgreSQL password-file mount are loaded by the entrypoint.
-After obtaining the non-secret `migration_id` and `source_fingerprint` from
-the failed marker, run this exact command with the values replaced:
+After obtaining the non-secret `migration_id` and original
+`source_fingerprint` from the failed marker, run this exact command with the
+values replaced:
 
 ```text
 docker compose run --rm --no-deps kaya python -m scripts.kaya_phase6_upgrade --source /app/data/kaya.db --backup-dir /app/data/backups --data-dir /app/data --clean-failed-target --migration-id <migration-id> --source-fingerprint <source-fingerprint>
 ```
 
-The entrypoint recognises only this complete recovery command shape. It does
+The entrypoint recognises only this complete recovery command shape. The
+provided fingerprint is the original authoritative SQLite source identity;
+Kaya derives and validates any historical conversion-working-copy identity
+from retained migration artifacts. It does
 not bypass recovery checks for normal startup, arbitrary Python commands, or
 incomplete recovery arguments. The recovery CLI then requires the target
 marker to be `FAILED` with the exact migration ID and source fingerprint, and

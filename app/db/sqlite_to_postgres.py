@@ -412,12 +412,25 @@ def _copy_order(engine: Engine) -> tuple[list[str], list[list[str]]]:
     return list(plan.order), [list(cycle) for cycle in plan.cycles]
 
 
-def _state_create(engine: Engine, migration_id: str, source_fingerprint: str, source_revision: str, target_revision: str) -> None:
+def _state_create(
+    engine: Engine,
+    migration_id: str,
+    source_fingerprint: str,
+    source_revision: str,
+    target_revision: str,
+    *,
+    original_source_fingerprint: str | None = None,
+    conversion_source_fingerprint: str | None = None,
+) -> None:
+    original_source_fingerprint = original_source_fingerprint or source_fingerprint
+    conversion_source_fingerprint = conversion_source_fingerprint or source_fingerprint
     with engine.begin() as connection:
         connection.execute(text(f"""
             CREATE TABLE {STATE_TABLE} (
                 migration_id VARCHAR(80) PRIMARY KEY,
                 source_fingerprint VARCHAR(64) NOT NULL,
+                original_source_fingerprint VARCHAR(64) NOT NULL,
+                conversion_source_fingerprint VARCHAR(64) NOT NULL,
                 source_revision VARCHAR(80) NOT NULL,
                 target_revision VARCHAR(80) NOT NULL,
                 started_at TIMESTAMP NOT NULL,
@@ -430,8 +443,8 @@ def _state_create(engine: Engine, migration_id: str, source_fingerprint: str, so
             )
         """))
         connection.execute(
-            text(f"INSERT INTO {STATE_TABLE} (migration_id, source_fingerprint, source_revision, target_revision, started_at, state) VALUES (:id, :fingerprint, :source_revision, :target_revision, :started_at, :state)"),
-            {"id": migration_id, "fingerprint": source_fingerprint, "source_revision": source_revision, "target_revision": target_revision, "started_at": datetime.now(UTC).replace(tzinfo=None), "state": STATE_PREPARING},
+            text(f"INSERT INTO {STATE_TABLE} (migration_id, source_fingerprint, original_source_fingerprint, conversion_source_fingerprint, source_revision, target_revision, started_at, state) VALUES (:id, :fingerprint, :original_fingerprint, :conversion_fingerprint, :source_revision, :target_revision, :started_at, :state)"),
+            {"id": migration_id, "fingerprint": source_fingerprint, "original_fingerprint": original_source_fingerprint, "conversion_fingerprint": conversion_source_fingerprint, "source_revision": source_revision, "target_revision": target_revision, "started_at": datetime.now(UTC).replace(tzinfo=None), "state": STATE_PREPARING},
         )
 
 
@@ -715,6 +728,7 @@ def migrate(
     batch_size: int = DEFAULT_BATCH_SIZE,
     dry_run: bool = False,
     state_callback: Callable[[str], None] | None = None,
+    original_source_fingerprint: str | None = None,
 ) -> dict[str, Any]:
     started = time.monotonic()
     source_path = source_path.resolve()
@@ -732,7 +746,8 @@ def migrate(
         raise SQLiteToPostgresError(f"Source table inventory is unsupported; missing={missing[:8]} extra={extra[:8]}.")
     target = create_engine(target_url, **postgres_engine_options(get_settings()))
     _target_eligibility(target)
-    report: dict[str, Any] = {"migration_id": str(uuid4()), "source_engine": "sqlite", "target_engine": "postgresql", "source_revision": revision, "target_revision": expected_head, "source_size_bytes": source_path.stat().st_size, "target_size_bytes": None, "batch_size": batch_size, "tables": {}, "sequence_repair": [], "rejected_rows": 0, "skipped_rows": 0, "started_at": datetime.now(UTC).isoformat(), "result": "DRY_RUN" if dry_run else "INCOMPLETE"}
+    original_source_fingerprint = original_source_fingerprint or fingerprint_before
+    report: dict[str, Any] = {"migration_id": str(uuid4()), "source_engine": "sqlite", "target_engine": "postgresql", "source_revision": revision, "target_revision": expected_head, "source_size_bytes": source_path.stat().st_size, "target_size_bytes": None, "batch_size": batch_size, "tables": {}, "sequence_repair": [], "rejected_rows": 0, "started_at": datetime.now(UTC).isoformat(), "result": "DRY_RUN" if dry_run else "INCOMPLETE", "original_source_fingerprint": original_source_fingerprint, "conversion_source_fingerprint": fingerprint_before}
     _record_memory(report, "after_source_validation")
     report["known_local_filesystems"] = filesystems
     report["postgresql_target_capacity"] = "unknown_remote_or_container_filesystem"
@@ -758,7 +773,15 @@ def migrate(
     try:
         # Create the marker before Alembic changes the target.  A hard interruption
         # during schema preparation must remain visibly non-authoritative at startup.
-        _state_create(target, report["migration_id"], fingerprint_before, revision, expected_head)
+        _state_create(
+            target,
+            report["migration_id"],
+            fingerprint_before,
+            revision,
+            expected_head,
+            original_source_fingerprint=original_source_fingerprint,
+            conversion_source_fingerprint=fingerprint_before,
+        )
         _prepare_target(target, target_url, expected_head)
         _record_memory(report, "after_target_preparation")
         if state_callback is not None:

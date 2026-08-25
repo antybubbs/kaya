@@ -189,6 +189,48 @@ def test_migration_id_survives_failed_retry_state(tmp_path: Path, monkeypatch):
     assert state["migration_id"] == migration_id
 
 
+def test_historical_upgrade_persists_original_and_conversion_identities(tmp_path: Path, monkeypatch):
+    source = tmp_path / "kaya.db"
+    source.write_bytes(b"original-source")
+    working = tmp_path / ".kaya-historical-upgrade.sqlite3"
+    working.write_bytes(b"conversion-source")
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    preflights = iter(
+        [
+            {"source_fingerprint": "a" * 64, "source_revision": "20260813_01", "target_revision": "20260818_02"},
+            {"source_fingerprint": "b" * 64, "source_revision": "20260818_02", "target_revision": "20260818_02"},
+        ]
+    )
+    monkeypatch.setattr(phase6_cutover, "validate_test_configuration", lambda: None)
+    monkeypatch.setattr(
+        phase6_cutover,
+        "detect_installation",
+        lambda *_args: SimpleNamespace(state=UpgradeState.SQLITE_ACTIVE),
+    )
+    monkeypatch.setattr(phase6_cutover, "preflight", lambda *_args: next(preflights))
+    monkeypatch.setattr(phase6_cutover, "_upgrade_supported_legacy_sqlite", lambda *_args: working)
+
+    def fake_migrate(*_args, state_callback=None, original_source_fingerprint=None, **_kwargs):
+        if state_callback:
+            state_callback("MIGRATING")
+        return {
+            "migration_id": "migration-1",
+            "target_revision": "20260818_02",
+            "conversion_source_fingerprint": "b" * 64,
+            "result": "COMPLETED",
+        }
+
+    monkeypatch.setattr(phase6_cutover, "migrate", fake_migrate)
+    run_upgrade(source, "postgresql+psycopg://kaya@db/kaya", tmp_path / "backups", data_dir)
+
+    state = json.loads(state_path(data_dir).read_text(encoding="utf-8"))
+    assert state["original_source_fingerprint"] == "a" * 64
+    assert state["conversion_source_fingerprint"] == "b" * 64
+    assert state["source_fingerprint"] == "a" * 64
+    assert state["migration_id"] == "migration-1"
+
+
 def test_failed_retry_requires_failed_source_marker(tmp_path: Path):
     _write_state(state_path(tmp_path), UpgradeState.POSTGRES_ACTIVE, source_fingerprint="a" * 64)
 
@@ -201,6 +243,36 @@ def test_failed_retry_requires_matching_source_fingerprint(tmp_path: Path):
 
     with pytest.raises(RuntimeError, match="source fingerprint does not match"):
         prepare_failed_retry(tmp_path, "b" * 64)
+
+
+def test_failed_retry_recomputes_original_source_identity(tmp_path: Path):
+    source = tmp_path / "kaya.db"
+    source.write_bytes(b"stable source")
+    fingerprint = phase6_cutover._source_fingerprint(source)
+    _write_state(
+        state_path(tmp_path),
+        UpgradeState.FAILED,
+        migration_id="migration-1",
+        source_path=str(source),
+        source_fingerprint=fingerprint,
+    )
+
+    prepare_failed_retry(tmp_path, fingerprint)
+
+    state = json.loads(state_path(tmp_path).read_text(encoding="utf-8"))
+    assert state["state"] == UpgradeState.PRECHECK.value
+    assert state["original_source_fingerprint"] == fingerprint
+
+    source.write_bytes(b"changed source")
+    _write_state(
+        state_path(tmp_path),
+        UpgradeState.FAILED,
+        migration_id="migration-1",
+        source_path=str(source),
+        source_fingerprint=fingerprint,
+    )
+    with pytest.raises(RuntimeError, match="source changed after failure"):
+        prepare_failed_retry(tmp_path, fingerprint)
 
 
 @pytest.mark.parametrize(
@@ -239,7 +311,18 @@ def test_failed_target_cleanup_requires_matching_marker(
             return None
 
     monkeypatch.setattr(phase6_cutover, "create_engine", lambda *_args, **_kwargs: FakeTarget())
-    monkeypatch.setattr(phase6_cutover, "inspect", lambda _target: SimpleNamespace(get_table_names=lambda: ["kaya_migration_state"]))
+    monkeypatch.setattr(
+        phase6_cutover,
+        "inspect",
+        lambda _target: SimpleNamespace(
+            get_table_names=lambda: ["kaya_migration_state"],
+            get_columns=lambda _table: [
+                {"name": "state"},
+                {"name": "migration_id"},
+                {"name": "source_fingerprint"},
+            ],
+        ),
+    )
 
     with pytest.raises(RuntimeError, match="matching failed migration target"):
         clean_failed_target("postgresql+psycopg://kaya@db/kaya", migration_id, source_fingerprint)

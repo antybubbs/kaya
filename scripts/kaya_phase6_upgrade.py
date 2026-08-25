@@ -30,7 +30,12 @@ def main() -> int:
     if args.clean_failed_target:
         if not args.migration_id or not args.source_fingerprint:
             parser.error("--clean-failed-target requires --migration-id and --source-fingerprint")
-        clean_failed_target(target_url, args.migration_id, args.source_fingerprint)
+        clean_failed_target(
+            target_url,
+            args.migration_id,
+            args.source_fingerprint,
+            args.data_dir.resolve(),
+        )
         prepare_failed_retry(args.data_dir.resolve(), args.source_fingerprint)
     run_upgrade(args.source.resolve(), target_url, args.backup_dir.resolve(), args.data_dir.resolve())
     return 0

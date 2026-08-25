@@ -48,6 +48,12 @@ backup_hash() { docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "
 legacy_backup_valid() { test -n "$(backup_hash)" && docker run --rm --user 0 --entrypoint python -v "$ROOT/data:/data" "$IMAGE" -c 'import sqlite3; c=sqlite3.connect("/data/kaya.db"); assert c.execute("pragma quick_check").fetchone()[0] == "ok"; c.close()'; }
 historical_backup_valid() { docker run --rm --user 0 --entrypoint python -v "$ROOT/data:/data" "$IMAGE" -c 'import glob, json; assert any(json.load(open(path))["source_revision"] == "20260813_01" for path in glob.glob("/data/backups/*.json"))'; }
 migration_report_valid() { compose exec -T kaya python -c 'import json; r=json.load(open("/app/data/kaya-database-upgrade-report.json", encoding="utf-8")); assert r["result"] == "COMPLETED" and r["rejected_rows"] == 0 and r["skipped_rows"] == 0 and r["foreign_key_violations"] == 0 and len(r["dependency_order"]) == 104'; }
+historical_identity_valid() {
+  local source_identity target_identity
+  source_identity="$(compose exec -T kaya python -c 'import json; s=json.load(open("/app/data/kaya-database-upgrade.json", encoding="utf-8")); print("|".join((s["migration_id"], s["original_source_fingerprint"], s["conversion_source_fingerprint"])))' | tr -d '\r')"
+  target_identity="$(compose exec -T postgres psql -U kaya -d kaya -Atc "SELECT migration_id || '|' || original_source_fingerprint || '|' || conversion_source_fingerprint FROM kaya_migration_state ORDER BY started_at DESC LIMIT 1" | tr -d '\r')"
+  test -n "$source_identity" && test "$source_identity" = "$target_identity"
+}
 legacy_relationships_valid() {
   compose exec -T postgres psql -U kaya -d kaya -Atc "SELECT
     (SELECT count(*) FROM dns_client_events e LEFT JOIN dns_recognised_devices d ON d.id=e.dns_client_id WHERE d.id IS NULL) +
@@ -80,11 +86,11 @@ induce_retry_failure() {
   docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/source:ro" -v "$ROOT/retry-data:/retry" "$IMAGE" -c \
     'mkdir -p /retry/backups; cp /source/kaya.db /retry/kaya.db'
   local status=0
-  docker run --rm --user 0 --network "${PROJECT}_default" --entrypoint python -v "$ROOT:/phase9" -v "${PROJECT}_postgres_secret:/run/kaya-secrets:ro" -w /app \
+  docker run --rm --user 0 --network "${PROJECT}_default" --entrypoint python -v "$ROOT/retry-data:/app/data" -v "${PROJECT}_postgres_secret:/run/kaya-secrets:ro" -w /app \
     -e PYTHONPATH=/app -e APP_ENV=test -e SECRET_KEY=phase9-synthetic-secret-key-012345678901234567890123 -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
     -e KAYA_TEST_MODE=true -e KAYA_TEST_FAILPOINT=fail_during_copy -e KAYA_POSTGRES_DATABASE_URL=postgresql+psycopg://kaya@postgres:5432/phase9_retry \
     -e DATABASE_URL=postgresql+psycopg://kaya@postgres:5432/phase9_retry -e DATABASE_PASSWORD_FILE=/run/kaya-secrets/postgres_password "$IMAGE" scripts/kaya_phase6_upgrade.py \
-    --source /phase9/data/kaya.db --target-url postgresql+psycopg://kaya@postgres:5432/phase9_retry --backup-dir /phase9/retry-backups --data-dir /phase9/retry-data || status=$?
+    --source /app/data/kaya.db --target-url postgresql+psycopg://kaya@postgres:5432/phase9_retry --backup-dir /app/data/backups --data-dir /app/data || status=$?
   (( status != 0 ))
 }
 verify_failed_retry() { test "$(retry_state state)" = FAILED && migration_source_preserved; }
@@ -130,7 +136,7 @@ trap cleanup EXIT
 mkdir -p "$ROOT/data/remote-recordings" "$ROOT/uploads" "$ROOT/secrets" "$ROOT/backups"
 docker build --file "$ROOT_DIR/Dockerfile" --tag "$IMAGE" "$ROOT_DIR"
 export ROOT_DIR PROJECT ROOT IMAGE TEST_IMAGE PORT PRIMARY ISOLATION
-export -f compose wait_pg wait_app revision state source_hash backup_hash legacy_backup_valid historical_backup_valid migration_report_valid legacy_relationships_valid legacy_fk_logs_clean migration_source_preserved backup_preserved retention_separated retry_state induce_retry_failure verify_failed_retry retry_normal_refusal retry_recovery setup_token smoke smoke_existing test_suite production_sqlite_rejection
+export -f compose wait_pg wait_app revision state source_hash backup_hash legacy_backup_valid historical_backup_valid migration_report_valid historical_identity_valid legacy_relationships_valid legacy_fk_logs_clean migration_source_preserved backup_preserved retention_separated retry_state induce_retry_failure verify_failed_retry retry_normal_refusal retry_recovery setup_token smoke smoke_existing test_suite production_sqlite_rejection
 
 fresh_install() { compose up -d; wait_pg; wait_app; [[ "$(revision)" == "20260818_02" ]]; }
 scenario 1 "Fresh install uses PostgreSQL" fresh_install
@@ -160,7 +166,7 @@ docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c "chow
 compose exec -T postgres psql -U kaya -d kaya -v ON_ERROR_STOP=1 -c "INSERT INTO remote_manager_settings (key, value, updated_at) VALUES ('high_availability_enabled', '1', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at;" >/dev/null
 scenario 10 "Legacy SQLite detected" bash -c '[[ "$(state)" == "POSTGRES_ACTIVE" ]]'
 scenario 11 "Legacy SQLite verified backup" legacy_backup_valid
-scenario 12 "Legacy SQLite migration" bash -c '[[ "$(revision)" == "20260818_02" ]] && historical_backup_valid && migration_report_valid && legacy_relationships_valid && legacy_fk_logs_clean'
+scenario 12 "Legacy SQLite migration" bash -c '[[ "$(revision)" == "20260818_02" ]] && historical_backup_valid && migration_report_valid && historical_identity_valid && legacy_relationships_valid && legacy_fk_logs_clean'
 scenario 13 "PostgreSQL cutover" bash -c '[[ "$(state)" == "POSTGRES_ACTIVE" ]]'
 scenario 14 "Migrated authenticated HTTP smoke" smoke_existing
 scenario 15 "Migrated representative writes" smoke_existing
