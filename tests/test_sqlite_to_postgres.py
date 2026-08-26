@@ -10,11 +10,16 @@ import pytest
 from sqlalchemy import create_engine, text
 from app.db.sqlite_to_postgres import (
     SQLiteToPostgresError,
+    _canonical,
     _convert_value,
+    _copy_table,
     _classify_sqlite_storage_error,
     _dependency_edges,
     _dependency_plan,
+    _first_hash_divergence,
     _local_preflight_filesystems,
+    _stream_source_hash,
+    _stream_target_hash,
     _validate_source,
     _source_fingerprint,
 )
@@ -30,6 +35,55 @@ def test_boolean_conversion_accepts_only_sqlite_boolean_values():
     assert _convert_value(None, column) is None
     with pytest.raises(SQLiteToPostgresError):
         _convert_value(2, column)
+
+
+def test_datetime_conversion_respects_naive_model_semantics():
+    column = Base.metadata.tables["network_monitor_checks"].c.checked_at
+    assert _convert_value("2026-08-26T12:00:00Z", column).tzinfo is None
+    assert _convert_value("2026-08-26T12:00:00+00:00", column).tzinfo is None
+    assert _convert_value("2026-08-26T12:00:00.123456", column).microsecond == 123456
+
+
+def test_network_monitor_checks_copy_and_validation_canonicalize_historical_float_storage(tmp_path: Path):
+    source = sqlite3.connect(":memory:")
+    source.execute(
+        "CREATE TABLE network_monitor_checks ("
+        "id INTEGER PRIMARY KEY, monitor_id INTEGER NOT NULL, status VARCHAR(30) NOT NULL, "
+        "health_state VARCHAR(30), latency_ms INTEGER, packet_loss_percent INTEGER, "
+        "response_time_ms INTEGER, error VARCHAR(500), checked_at DATETIME NOT NULL)"
+    )
+    source.execute(
+        "INSERT INTO network_monitor_checks "
+        "VALUES (1, 1, 'up', NULL, 12, NULL, 8, NULL, '2026-08-26 12:00:00')"
+    )
+    source.commit()
+    target = create_engine(f"sqlite:///{(tmp_path / 'target.sqlite3').as_posix()}")
+    Base.metadata.create_all(target)
+
+    _copy_table(source, target, "network_monitor_checks", batch_size=10)
+    source_result = _stream_source_hash(
+        source, "network_monitor_checks", [column.name for column in Base.metadata.tables["network_monitor_checks"].columns]
+    )
+    target_result = _stream_target_hash(
+        target, "network_monitor_checks", [column.name for column in Base.metadata.tables["network_monitor_checks"].columns]
+    )
+    assert source_result[1] == target_result[1]
+    assert _canonical(_convert_value(12, Base.metadata.tables["network_monitor_checks"].c.latency_ms)) == _canonical(12.0)
+
+    with target.begin() as connection:
+        connection.execute(text("UPDATE network_monitor_checks SET latency_ms = 13.0 WHERE id = 1"))
+    diagnostic = _first_hash_divergence(
+        source, target, "network_monitor_checks", [column.name for column in Base.metadata.tables["network_monitor_checks"].columns]
+    )
+    assert diagnostic is not None
+    assert diagnostic["column"] == "latency_ms"
+    assert diagnostic["source_type"] == "float"
+    assert diagnostic["target_type"] == "float"
+    assert diagnostic["source_digest"] != diagnostic["target_digest"]
+    assert "source_value" not in diagnostic
+    assert "target_value" not in diagnostic
+    source.close()
+    target.dispose()
 
 
 def test_source_validation_requires_current_head_and_does_not_write(tmp_path: Path):

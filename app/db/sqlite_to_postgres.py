@@ -11,6 +11,7 @@ import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
@@ -22,7 +23,7 @@ except ImportError:  # pragma: no cover - Windows has no resource module
 
 from alembic import command
 from alembic.script import ScriptDirectory
-from sqlalchemy import Boolean, Date, DateTime, LargeBinary, create_engine, inspect, text
+from sqlalchemy import Boolean, Date, DateTime, Float, LargeBinary, Numeric, create_engine, inspect, text
 from sqlalchemy.engine import Engine
 
 from app.db.backup import MigrationBackup, create_sqlite_backup
@@ -460,11 +461,27 @@ def _state_update(engine: Engine, migration_id: str, **values: Any) -> None:
 
 
 def _canonical(value: Any) -> Any:
-    if isinstance(value, bytes):
-        return {"binary_sha256": hashlib.sha256(value).hexdigest(), "length": len(value)}
-    if isinstance(value, (datetime,)):
-        return value.isoformat()
-    return value
+    """Represent logical application values consistently across database drivers."""
+    if value is None:
+        return {"type": "null"}
+    if isinstance(value, bool):
+        return {"type": "boolean", "value": value}
+    if isinstance(value, int):
+        return {"type": "integer", "value": str(value)}
+    if isinstance(value, float):
+        return {"type": "float", "value": value.hex()}
+    if isinstance(value, Decimal):
+        return {"type": "numeric", "value": str(value.normalize())}
+    if isinstance(value, datetime):
+        return {"type": "datetime", "value": value.isoformat(timespec="microseconds")}
+    if isinstance(value, date):
+        return {"type": "date", "value": value.isoformat()}
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        binary = bytes(value)
+        return {"type": "binary", "sha256": hashlib.sha256(binary).hexdigest(), "length": len(binary)}
+    if isinstance(value, str):
+        return {"type": "text", "value": value}
+    return {"type": type(value).__name__, "value": str(value)}
 
 
 def _hash_rows(rows: list[dict[str, Any]], columns: list[str]) -> str:
@@ -485,6 +502,78 @@ def _update_digest(digest: Any, rows: list[dict[str, Any]], columns: list[str], 
             default=str,
         ).encode("utf-8")
         digest.update(encoded + b"\n")
+
+
+def _canonical_cell(value: Any, column: Any) -> Any:
+    return _canonical(_convert_value(value, column))
+
+
+def _canonical_digest(value: Any) -> str:
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _safe_row_identity(row: dict[str, Any], columns: list[str], table_name: str) -> str:
+    if "id" in columns:
+        return str(row.get("id"))
+    encoded = json.dumps(
+        {column: _canonical(row.get(column)) for column in columns},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(f"{table_name}:".encode("utf-8") + encoded).hexdigest()
+
+
+def _first_hash_divergence(
+    source_connection: sqlite3.Connection, engine: Engine, table_name: str, columns: list[str]
+) -> dict[str, Any] | None:
+    """Find the first differing canonical cell with bounded streaming reads."""
+    table = Base.metadata.tables[table_name]
+    order = "id" if "id" in columns else ", ".join(columns)
+    source_cursor = source_connection.execute(f"SELECT {', '.join(columns)} FROM {table_name} ORDER BY {order}")
+    with engine.connect() as connection:
+        target_result = connection.execution_options(
+            stream_results=True, max_row_buffer=DEFAULT_BATCH_SIZE
+        ).execute(text(f"SELECT {', '.join(columns)} FROM {table_name} ORDER BY {order}"))
+        target_rows = target_result.mappings()
+        try:
+            position = 0
+            while True:
+                source_row = source_cursor.fetchone()
+                target_row = target_rows.fetchone()
+                if source_row is None or target_row is None:
+                    if source_row != target_row:
+                        return {
+                            "table": table_name,
+                            "row_position": position,
+                            "column": "<row-count>",
+                            "source_type": "present" if source_row is not None else "missing",
+                            "target_type": "present" if target_row is not None else "missing",
+                            "source_digest": None,
+                            "target_digest": None,
+                        }
+                    return None
+                source_mapping = dict(zip(columns, source_row, strict=True))
+                target_mapping = dict(target_row)
+                for column_name in columns:
+                    source_canonical = _canonical_cell(source_mapping[column_name], table.c[column_name])
+                    target_canonical = _canonical_cell(target_mapping[column_name], table.c[column_name])
+                    if source_canonical != target_canonical:
+                        return {
+                            "table": table_name,
+                            "row_position": position,
+                            "primary_key": _safe_row_identity(source_mapping, columns, table_name),
+                            "column": column_name,
+                            "source_type": source_canonical["type"],
+                            "target_type": target_canonical["type"],
+                            "source_digest": _canonical_digest(source_canonical),
+                            "target_digest": _canonical_digest(target_canonical),
+                        }
+                position += 1
+        finally:
+            target_result.close()
 
 
 def _stream_source_hash(connection: sqlite3.Connection, table_name: str, columns: list[str]) -> tuple[int, str, Any, Any]:
@@ -538,8 +627,13 @@ def _convert_value(value: Any, column: Any) -> Any:
         raise SQLiteToPostgresError(f"Malformed Boolean value encountered in column {column.name!r}.")
     if isinstance(column.type, LargeBinary) and isinstance(value, memoryview):
         return value.tobytes()
+    if isinstance(column.type, Float) and isinstance(value, (int, float, Decimal)) and not isinstance(value, bool):
+        return float(value)
+    if isinstance(column.type, Numeric) and not isinstance(value, Decimal):
+        return Decimal(str(value))
     if isinstance(column.type, DateTime) and isinstance(value, str):
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed.replace(tzinfo=None) if not column.type.timezone else parsed
     if isinstance(column.type, Date) and isinstance(value, str):
         return date.fromisoformat(value)
     return value
@@ -674,6 +768,7 @@ def _validate_target(engine: Engine, source_path: Path, source_connection: sqlit
     validation_started = time.monotonic()
     _state_update(engine, report["migration_id"], state=STATE_VALIDATING, validation_state="RUNNING")
     for table_name in sorted(_application_tables()):
+        logger.info("validation table=%s state=started", table_name)
         source_count = source_connection.execute(f"SELECT count(*) FROM {table_name}").fetchone()[0]
         with engine.connect() as connection:
             target_count = connection.execute(text(f"SELECT count(*) FROM {table_name}")).scalar_one()
@@ -686,7 +781,14 @@ def _validate_target(engine: Engine, source_path: Path, source_connection: sqlit
         target_count, target_hash, target_min_id, target_max_id = _stream_target_hash(engine, table_name, columns)
         _record_memory(report, f"validation:{table_name}:after_target_hash")
         if source_count != target_count or source_hash != target_hash:
+            diagnostic = _first_hash_divergence(source_connection, engine, table_name, columns)
+            if diagnostic:
+                logger.error(
+                    "validation mismatch %s",
+                    " ".join(f"{key}={value}" for key, value in diagnostic.items()),
+                )
             raise SQLiteToPostgresError(f"Deterministic integrity hash mismatch for {table_name}.")
+        logger.info("validation table=%s hash=matched", table_name)
         report["tables"][table_name]["target_rows"] = target_count
         report["tables"][table_name]["source_min_id"] = source_min_id
         report["tables"][table_name]["target_min_id"] = target_min_id
