@@ -70,12 +70,10 @@ record_pass 61 '{"compose":"merged Phase 12 configuration rendered"}'
 python - <<'PY'
 from pathlib import Path
 
-workflow = Path('.github/workflows/phase12-runtime.yml').read_text(encoding='utf-8')
+workflow = Path('.github/workflows/database-deep-validation.yml').read_text(encoding='utf-8')
 required = (
     'workflow_dispatch:',
-    'push:',
-    'pull_request:',
-    'Phase 12 PostgreSQL Role Topology Migration Validation',
+    'Database Deep Validation',
     'scripts/phase12_runtime_validation.sh',
 )
 missing = [item for item in required if item not in workflow]
@@ -83,7 +81,7 @@ if missing:
     raise SystemExit(f'workflow validation missing required entry: {missing!r}')
 PY
 bash -n scripts/phase12_runtime_validation.sh scripts/phase12a_cleanup_validation.sh
-record_pass 62 '{"workflow":"dispatch and push/pull_request triggers plus shell syntax validated"}'
+record_pass 62 '{"workflow":"manual dispatch trigger plus shell syntax validated"}'
 stage=resource_preflight
 resources="$(python scripts/kaya_validation_resources.py validate-config --project "$PHASE12_PROJECT" --config "$config_json")"
 printf '%s\n' "$resources" > phase12_resources_discovered.json

@@ -1,4 +1,4 @@
-name: Tests
+name: CI
 
 on:
   push:
@@ -12,7 +12,7 @@ jobs:
   python:
     runs-on: ubuntu-latest
     env:
-      SECRET_KEY: phase8-ci-only-secret-key-012345678901234567890123456789
+      SECRET_KEY: ci-only-secret-key-012345678901234567890123456789
       ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
     steps:
       - uses: actions/checkout@v4
@@ -35,7 +35,7 @@ jobs:
       - name: Verify synthetic CI configuration
         run: python -c "import os; assert len(os.environ['SECRET_KEY']) >= 32"
       - name: Unit and regression tests
-        # Docker integration runs on the host-Docker Phase 7 workflow; do not
+        # Docker integration runs in the dedicated database workflow; do not
         # attempt to nest Docker inside this Python test job.
         run: python -m pytest -q --ignore=tests/test_sqlite_temp_exhaustion_docker.py
       - name: Ruff
@@ -46,7 +46,7 @@ jobs:
   postgresql:
     runs-on: ubuntu-latest
     env:
-      SECRET_KEY: phase8-ci-only-secret-key-012345678901234567890123456789
+      SECRET_KEY: ci-only-secret-key-012345678901234567890123456789
       ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
     services:
       postgres:

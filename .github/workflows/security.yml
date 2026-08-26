@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - main
+      - dev
+      - Kaya
   pull_request:
   schedule:
     - cron: "17 4 * * 1"

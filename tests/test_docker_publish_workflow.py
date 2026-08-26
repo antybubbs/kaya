@@ -2,7 +2,7 @@ import re
 from pathlib import Path
 
 
-WORKFLOW = Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
+WORKFLOW = Path(".github/workflows/docker.yml").read_text(encoding="utf-8")
 MAKEFILE = Path("Makefile").read_text(encoding="utf-8")
 STABLE_TAG = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
 

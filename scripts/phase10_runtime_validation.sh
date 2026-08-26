@@ -82,7 +82,7 @@ scenario 39 "Migration-specific test suite" tests pytest -q tests/test_phase6_cu
 scenario 40 "Non-Docker regression suite" tests pytest -q tests/test_phase6_cutover.py tests/test_postgres_deployment.py tests/test_postgres_operations.py
 scenario 41 "Security/secret review" security_review
 scenario 42 "Compose validation" compose config --quiet
-scenario 43 "Workflow validation" bash -c 'grep -q workflow_dispatch .github/workflows/phase10-runtime.yml'
+scenario 43 "Workflow validation" bash -c 'grep -q workflow_dispatch .github/workflows/database-deep-validation.yml'
 scenario 44 "Historical migration graph integrity" graph
 scenario 45 "Cleanup/isolation" bash -c 'compose down --remove-orphans >/dev/null; python "$ROOT_DIR/scripts/kaya_validation_resources.py" cleanup-compose --project "$PROJECT" >/dev/null; test "$(docker ps -aq --filter "name=^${PROJECT}_" | wc -l)" = 0'
 

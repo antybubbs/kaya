@@ -118,7 +118,7 @@ def test_phase12_cleanup_has_no_broad_destructive_commands_or_protected_names():
     files = [
         Path("scripts/phase12_runtime_validation.sh"),
         Path("scripts/phase12a_cleanup_validation.sh"),
-        Path(".github/workflows/phase12-runtime.yml"),
+        Path(".github/workflows/database-deep-validation.yml"),
         Path("ci/compose/docker-compose.phase12a-ci.yml"),
     ]
     text = "\n".join(path.read_text(encoding="utf-8") for path in files)
@@ -133,8 +133,7 @@ def test_phase12_cleanup_has_no_broad_destructive_commands_or_protected_names():
 def test_phase7_to_11_validation_has_no_unguarded_volume_teardown():
     paths = list(Path("scripts").glob("phase[7-9]*_runtime_validation.sh"))
     paths += [Path("scripts/phase10_runtime_validation.sh"), Path("scripts/phase11_runtime_validation.sh")]
-    paths += list(Path(".github/workflows").glob("phase[7-9]*-runtime.yml"))
-    paths += [Path(".github/workflows/phase10-runtime.yml"), Path(".github/workflows/phase11-runtime.yml")]
+    paths += [Path(".github/workflows/database.yml"), Path(".github/workflows/database-deep-validation.yml")]
     text = "\n".join(path.read_text(encoding="utf-8") for path in paths)
 
     assert "down -v" not in text
@@ -144,7 +143,7 @@ def test_phase7_to_11_validation_has_no_unguarded_volume_teardown():
 
 
 def test_phase8_one_shot_backup_workers_do_not_restart_dependencies():
-    workflow = Path(".github/workflows/phase8-runtime.yml").read_text(encoding="utf-8")
+    workflow = Path(".github/workflows/database-deep-validation.yml").read_text(encoding="utf-8")
     script = Path("scripts/phase8d_runtime_validation.sh").read_text(encoding="utf-8")
 
     assert "run --rm --no-deps --entrypoint bash postgres-backup" in workflow
@@ -172,7 +171,7 @@ def test_phase9_retry_fixture_cleanup_is_exact_and_run_scoped():
 
 
 def test_phase11_cleanup_resolves_the_candidate_application_image():
-    workflow = Path(".github/workflows/phase11-runtime.yml").read_text(encoding="utf-8")
+    workflow = Path(".github/workflows/database-deep-validation.yml").read_text(encoding="utf-8")
 
     assert "KAYA_IMAGE: kaya:phase11-${{ github.sha }}" in workflow
     assert 'KAYA_IMAGE="$PHASE11_APP_IMAGE"' in workflow

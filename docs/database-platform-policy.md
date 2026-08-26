@@ -2,7 +2,7 @@
 
 Kaya production uses PostgreSQL major version 16, pinned by the supported
 Compose deployment to `postgres:16.14`. The pin is changed only to an
-explicitly reviewed PostgreSQL 16.x tag after Phase 11 validation. Alembic is
+explicitly reviewed PostgreSQL 16.x tag after PostgreSQL upgrade validation. Alembic is
 the schema authority and
 the packaged migration graph must contain exactly one complete head.
 

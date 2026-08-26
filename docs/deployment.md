@@ -11,12 +11,12 @@ The supported platform, PostgreSQL major-version guard, patch-update policy,
 backup compatibility metadata, and fail-closed schema rules are documented in
 [Database platform policy](database-platform-policy.md).
 
-## Phase 7 runtime validation in CI
+## Database integration validation in CI
 
-The repository provides `.github/workflows/phase7d-runtime.yml` for the
+The repository provides `.github/workflows/database.yml` for the
 expensive production-Compose acceptance matrix. It runs manually through
 `workflow_dispatch`, and automatically when database, migration, deployment,
-Compose, Docker entrypoint, or Phase 7 validation files change on `main`,
+Compose, Docker entrypoint, or database validation files change on `main`,
 `dev`, `Kaya`, or a pull request. Documentation-only changes do not trigger
 this matrix.
 

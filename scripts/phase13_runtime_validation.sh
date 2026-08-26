@@ -23,7 +23,7 @@ grep -q 'postgres:16.14' <<<"$config"
 pass 41 'primary Compose keeps PostgreSQL private and pinned to 16.14'
 pass 42 'primary Compose healthcheck inspected'
 pass 43 'primary Compose restart policies inspected'
-for spec in '44|docs/deployment.md|install' '45|docs/deployment.md|upgrade' '46|docs/deployment.md|rollback' '47|.github/workflows/tests.yml|PostgreSQL'; do
+for spec in '44|docs/deployment.md|install' '45|docs/deployment.md|upgrade' '46|docs/deployment.md|rollback' '47|.github/workflows/ci.yml|PostgreSQL'; do
   IFS='|' read -r id file needle <<<"$spec"
   test -f "$ROOT_DIR/$file" && grep -Eiq "$needle" "$ROOT_DIR/$file" && pass "$id" "$file contains required production guidance"
 done

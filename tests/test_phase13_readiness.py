@@ -20,12 +20,12 @@ def test_phase13_registry_is_exactly_fifty_fail_closed_rows(tmp_path):
     assert document["summary"] == {"PASS": 0, "FAIL": 0, "BLOCKED": 50}
 
 
-def test_phase13_workflow_has_manual_and_change_triggers():
-    workflow = (ROOT / ".github/workflows/phase13-runtime.yml").read_text(encoding="utf-8")
+def test_deep_validation_workflow_is_manual_and_retains_rollout_evidence():
+    workflow = (ROOT / ".github/workflows/database-deep-validation.yml").read_text(encoding="utf-8")
     assert "workflow_dispatch:" in workflow
-    assert "push:" in workflow and "pull_request:" in workflow
+    assert "push:" not in workflow and "pull_request:" not in workflow
     assert "phase13_acceptance.json" in workflow
-    assert "Phase 13 PostgreSQL Production Rollout Readiness" in workflow
+    assert "PostgreSQL production rollout readiness" in workflow
 
 
 def test_phase13_runner_uses_primary_compose_and_authoritative_regressions():
