@@ -1219,6 +1219,36 @@ def test_global_notification_menu_closes_outside_and_escape():
     assert 'menu.open = false' in client
 
 
+def test_global_notification_popover_has_isolated_overlay_layout_and_single_loading_state():
+    root = Path(__file__).resolve().parents[1]
+    base = (root / "app/templates/base.html").read_text(encoding="utf-8")
+    css = (root / "app/static/css/notifications.css").read_text(encoding="utf-8")
+
+    assert "display:flex;flex-direction:column" in css
+    assert "position:fixed" in css
+    assert "overflow-y:auto" in css
+    assert "z-index:100" in css
+    assert ".notification-popover>footer a{flex:1 1 0" in css
+    assert base.count("Loading notifications") == 1
+    assert "data-notification-mark-all" in base
+    assert base.index("data-notification-mark-all") < base.index("data-notification-list")
+    assert base.index('href="/notifications"') < base.index('href="/profile/notifications"')
+
+
+def test_notification_centre_uses_scoped_compact_layout_contract():
+    root = Path(__file__).resolve().parents[1]
+    template = (root / "app/templates/notifications.html").read_text(encoding="utf-8")
+    css = (root / "app/static/css/notifications.css").read_text(encoding="utf-8")
+
+    assert "notification-filters" in template
+    assert "notification-centre-item" in template
+    assert "notification-item-actions" in template
+    assert ".notification-hero h1{font-size:24px" in css
+    assert ".notification-centre-item{gap:10px;padding:12px 14px}" in css
+    assert ".notification-item-actions button,.notification-item-actions .button" in css
+    assert "@media(max-width:850px){.notification-filters{padding:14px}" in css
+
+
 def test_generate_api_is_post_only_and_csrf_protected(db):
     route = next(
         item

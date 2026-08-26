@@ -1,3 +1,4 @@
+import logging
 import os
 import platform
 import shutil
@@ -25,6 +26,8 @@ from app.models.models import (
 from app.db.session import engine
 from app.services.version import version_status
 from app.services.postgres_diagnostics import collect_postgres_diagnostics
+
+logger = logging.getLogger(__name__)
 
 PACKAGE_NAMES = [
     "fastapi",
@@ -164,7 +167,7 @@ def disk_info(path: Path) -> dict[str, str]:
     }
 
 
-def storage_rows() -> list[dict[str, str]]:
+def storage_rows(database_size_bytes: int | None = None) -> list[dict[str, str]]:
     settings = get_settings()
     db_path = sqlite_path(settings.database_url)
     upload_path = Path(settings.upload_dir)
@@ -175,7 +178,9 @@ def storage_rows() -> list[dict[str, str]]:
         {
             "label": "Database",
             "size": (
-                human_bytes(directory_size(db_path)) if db_path else "external database"
+                human_bytes(directory_size(db_path))
+                if db_path
+                else human_bytes(database_size_bytes) if database_size_bytes is not None else "unavailable"
             ),
         },
         {"label": "Uploads", "size": human_bytes(directory_size(upload_path))},
@@ -205,6 +210,21 @@ def collect_about(db: Session) -> dict:
     version = version_status()
     db_path = sqlite_path(settings.database_url)
     data_path = db_path.parent if db_path else Path(settings.data_dir)
+    try:
+        postgres_diagnostics = collect_postgres_diagnostics(
+            engine, Path(settings.postgres_backup_dir)
+        )
+    except Exception as exc:
+        logger.warning("about postgres diagnostics unavailable error=%s", type(exc).__name__)
+        postgres_diagnostics = {
+            "available": False,
+            "reason": "PostgreSQL diagnostics unavailable",
+        }
+    database_size_bytes = (
+        postgres_diagnostics.get("database_bytes")
+        if postgres_diagnostics.get("available")
+        else None
+    )
     return {
         "version": version,
         "app": {
@@ -223,10 +243,8 @@ def collect_about(db: Session) -> dict:
         "cpu": cpu_info(),
         "memory": memory_info(),
         "disk": disk_info(data_path),
-        "storage_rows": storage_rows(),
+        "storage_rows": storage_rows(database_size_bytes),
         "packages": package_versions(),
         "module_counts": module_counts(db),
-        "postgres_diagnostics": collect_postgres_diagnostics(
-            engine, Path(settings.postgres_backup_dir)
-        ),
+        "postgres_diagnostics": postgres_diagnostics,
     }

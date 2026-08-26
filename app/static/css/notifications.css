@@ -13,3 +13,30 @@ html[data-kaya-theme=light-ops] .notification-popover{background:#fff}
 html[data-kaya-theme=light-ops] .notification-policy-card{background:rgba(15,23,42,.025)}
 @media(max-width:1200px){.notification-policy-card{grid-template-columns:repeat(2,minmax(0,1fr))}.notification-policy-identity{grid-column:1/-1}.notification-policy-actions{align-items:flex-start;align-self:end;flex-direction:row;justify-content:flex-start}.notification-policy-actions [role=status]{align-self:center;text-align:left}}
 @media(max-width:720px){.notification-policy-heading{align-items:flex-start;flex-direction:column;gap:6px}.notification-policy-card{grid-template-columns:1fr}.notification-policy-identity{grid-column:auto}.notification-policy-group,.notification-policy-cooldown{border-top:1px solid var(--line);padding-top:12px}.notification-policy-group legend{padding-top:0}.notification-policy-actions{border-top:1px solid var(--line);padding-top:12px}.notification-policy-actions button{width:100%}}
+
+/* Keep the notification centre aligned with Kaya's compact page scale. */
+.notification-hero h1{font-size:24px;line-height:1.2}
+.notification-hero p{font-size:13px}
+.notification-filters{padding:14px;}
+.notification-centre-item{gap:10px;padding:12px 14px}
+.notification-centre-item h2{font-size:15px;line-height:1.25}
+.notification-centre-item p{line-height:1.35}
+.notification-item-actions{align-items:center;flex-wrap:wrap}
+.notification-item-actions button,.notification-item-actions .button{font-size:12px;line-height:1.2;min-height:30px;padding:6px 10px}
+.notification-item-actions .button.small{margin-top:0}
+.notification-centre-item>div{min-width:0}
+@media(max-width:850px){.notification-filters{padding:14px}.notification-centre-item{gap:8px;padding:12px 14px}.notification-item-actions{grid-column:2}}
+
+/* The header notification is an anchored overlay, not part of document flow. */
+.notification-popover{display:flex;flex-direction:column;max-height:min(620px,calc(100dvh - 80px));min-width:min(360px,calc(100vw - 24px));overflow:hidden}
+.notification-popover>header{align-items:flex-start;flex:0 0 auto}
+.notification-popover>header>div{flex:1 1 auto;min-width:0}
+.notification-popover>header button{flex:0 0 auto;white-space:nowrap}
+.notification-recent{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain}
+.notification-recent-item{min-width:0}
+.notification-recent-item>div{min-width:0;overflow-wrap:anywhere}
+.notification-recent-item strong,.notification-recent-item p{overflow-wrap:anywhere}
+.notification-popover>footer{flex:0 0 auto}
+.notification-popover>footer a{flex:1 1 0;min-width:0;overflow-wrap:anywhere}
+.notification-popover>footer a:last-child{text-align:right}
+@media(max-width:1023px){.notification-menu{position:static}.notification-popover{bottom:auto;left:12px;max-height:calc(100dvh - 76px);min-width:0;position:fixed;right:12px;top:calc(56px + env(safe-area-inset-top) + 8px);width:auto}}
