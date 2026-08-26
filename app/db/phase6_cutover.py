@@ -371,17 +371,70 @@ def _legacy_historical_target_matches(
     target_revision = row["target_revision"]
     conversion_fingerprint = row["source_fingerprint"]
     expected_head, _ = _heads()
+
+    def reject(reason: str) -> bool:
+        logger.warning("database.recovery conversion_backup=rejected reason=%s", reason)
+        return False
+
     if (
         not isinstance(conversion_fingerprint, str)
         or len(conversion_fingerprint) != 64
+        or any(character not in "0123456789abcdef" for character in conversion_fingerprint)
         or source_revision == row["source_revision"]
         or row["source_revision"] != expected_head
         or target_revision != expected_head
     ):
-        return False
-    if not verified_backup.is_file():
-        return False
+        return reject("target_identity_mismatch")
     backup_dir = data_dir / "backups"
+    retained_conversion: Path | None = None
+    retained_logical_fingerprint: str | None = None
+    for metadata_path in sorted(backup_dir.glob("*.json"), reverse=True):
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if (
+            metadata.get("source_revision") != row["source_revision"]
+            or metadata.get("target_revision") != target_revision
+            or metadata.get("source_fingerprint") != conversion_fingerprint
+        ):
+            continue
+        backup_name = metadata.get("backup_filename")
+        if (
+            not isinstance(backup_name, str)
+            or not backup_name
+            or Path(backup_name).is_absolute()
+            or Path(backup_name).name != backup_name
+        ):
+            return reject("conversion_backup_filename_invalid")
+        candidate = (backup_dir / backup_name).resolve()
+        try:
+            candidate.relative_to(backup_dir.resolve())
+        except ValueError:
+            return reject("conversion_backup_path_invalid")
+        if not candidate.is_file():
+            logger.warning("database.recovery conversion_backup=rejected reason=conversion_backup_missing")
+            continue
+        try:
+            if metadata.get("backup_sha256") != _file_sha256(candidate):
+                logger.warning("database.recovery conversion_backup=rejected reason=conversion_backup_sha_mismatch")
+                continue
+            validate_sqlite_readable(candidate)
+            retained_logical_fingerprint = _logical_sqlite_fingerprint(candidate)
+        except (OSError, RuntimeError, ValueError, sqlite3.DatabaseError):
+            logger.warning("database.recovery conversion_backup=rejected reason=conversion_backup_sqlite_invalid")
+            continue
+        retained_conversion = candidate
+        logger.info(
+            "database.recovery conversion_backup=validated source_revision=%s target_revision=%s",
+            row["source_revision"],
+            target_revision,
+        )
+        break
+    if retained_conversion is None or retained_logical_fingerprint is None:
+        return reject("conversion_backup_missing")
+    if not verified_backup.is_file():
+        return reject("original_backup_missing")
     try:
         validate_sqlite_readable(verified_backup)
         with tempfile.TemporaryDirectory(prefix=".kaya-recovery-", dir=data_dir) as temporary_dir:
@@ -401,18 +454,24 @@ def _legacy_historical_target_matches(
             finally:
                 source_engine.dispose()
             if result.current_revision != target_revision:
+                logger.warning("database.recovery rebuilt_conversion=rejected reason=conversion_revision_mismatch")
                 return False
-            expected_conversion_fingerprint = _source_fingerprint(working_path)
+            rebuilt_logical_fingerprint = _logical_sqlite_fingerprint(working_path)
     except (OSError, RuntimeError, sqlite3.DatabaseError):
+        logger.warning("database.recovery rebuilt_conversion=rejected reason=conversion_upgrade_failed")
         return False
-    matched = conversion_fingerprint == expected_conversion_fingerprint
-    if matched:
-        logger.info(
-            "database.recovery conversion_identity=validated source_revision=%s target_revision=%s",
-            source_revision,
-            target_revision,
-        )
-    return matched
+    if retained_conversion is None or conversion_fingerprint != row["source_fingerprint"]:
+        return reject("conversion_target_identity_mismatch")
+    logger.info("database.recovery conversion_target_identity=matched")
+    if rebuilt_logical_fingerprint != retained_logical_fingerprint:
+        return reject("conversion_logical_identity_mismatch")
+    logger.info(
+        "database.recovery rebuilt_conversion_revision=validated conversion_logical_identity=matched "
+        "source_revision=%s target_revision=%s",
+        source_revision,
+        target_revision,
+    )
+    return True
 
 
 def _write_state(path: Path, state: UpgradeState, **values: Any) -> None:

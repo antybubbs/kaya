@@ -345,6 +345,8 @@ def test_legacy_ab_correlation_reuses_verified_backup_when_physical_a_differs(
     verified_backup = tmp_path / "backups" / "pre-migration-original.sqlite3"
     verified_backup.parent.mkdir()
     verified_backup.write_bytes(b"verified-original-backup")
+    retained_backup = verified_backup.parent / "pre-migration-conversion.sqlite3"
+    retained_backup.write_bytes(b"retained-conversion-backup")
     target_revision = "20260818_02"
     conversion_fingerprint = "cca3b071a0bd02274aecbcab899310516efe0032f7cffab0297566a92f43ddda"
 
@@ -354,15 +356,29 @@ def test_legacy_ab_correlation_reuses_verified_backup_when_physical_a_differs(
         lambda: (target_revision, SimpleNamespace()),
     )
     monkeypatch.setattr(phase6_cutover, "validate_sqlite_readable", lambda _path: None)
+    monkeypatch.setattr(phase6_cutover, "_file_sha256", lambda path: "b" * 64 if path == retained_backup else "a" * 64)
+    (retained_backup.with_suffix(".json")).write_text(
+        json.dumps(
+            {
+                "source_revision": target_revision,
+                "target_revision": target_revision,
+                "source_fingerprint": conversion_fingerprint,
+                "backup_filename": retained_backup.name,
+                "backup_sha256": "b" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(phase6_cutover, "_logical_sqlite_fingerprint", lambda path: "logical-b")
+    monkeypatch.setattr(
+        phase6_cutover,
+        "_source_fingerprint",
+        lambda _path: (_ for _ in ()).throw(AssertionError("rebuilt B' physical identity must not be read")),
+    )
     monkeypatch.setattr(
         phase6_cutover,
         "prepare_database",
         lambda *_args, **_kwargs: SimpleNamespace(current_revision=target_revision),
-    )
-    monkeypatch.setattr(
-        phase6_cutover,
-        "_source_fingerprint",
-        lambda _path: conversion_fingerprint,
     )
     monkeypatch.setattr(
         phase6_cutover,
