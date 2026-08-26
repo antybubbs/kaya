@@ -41,28 +41,36 @@ def test_postgresql_compose_keeps_database_private_and_password_external():
     assert "pg_isready" in compose
 
 
-def test_primary_compose_uses_postgresql_and_keeps_sqlite_for_controlled_upgrade():
+def test_primary_compose_is_postgresql_only_and_keeps_database_private():
     compose = Path("docker-compose.yml").read_text(encoding="utf-8")
 
     assert "image: ${KAYA_POSTGRES_IMAGE:-postgres:16.14}" in compose
     assert "DATABASE_URL: postgresql+psycopg://kaya@postgres:5432/kaya" in compose
-    assert "KAYA_SQLITE_SOURCE_URL: sqlite:////app/data/kaya.db" in compose
-    assert "kaya_phase6_postgres_secret:/run/kaya-secrets:ro" in compose
+    assert "KAYA_SQLITE_SOURCE_URL" not in compose
+    assert "KAYA_PHASE6_AUTO_UPGRADE" not in compose
+    assert "sqlite-postgres-upgrade" not in compose
+    assert "kaya_postgres_password" in compose
     assert "kaya_postgres_data:/var/lib/postgresql/data" in compose
-    assert "${KAYA_POSTGRES_BACKUP_DIR:-./postgres-backups}:/var/backups/kaya-postgres" in compose
     assert "5432:" not in compose
 
 
-def test_primary_compose_separates_bootstrap_and_runtime_postgres_roles():
+def test_upgrade_compose_is_explicit_and_contains_sqlite_runner():
+    overlay = Path("docker-compose.upgrade.yml").read_text(encoding="utf-8")
+
+    assert "sqlite-postgres-upgrade:" in overlay
+    assert "KAYA_SQLITE_SOURCE_URL: sqlite:////app/data/kaya.db" in overlay
+    assert "scripts.kaya_phase6_upgrade" in overlay
+    assert "--source" in overlay
+    assert "--backup-dir" in overlay
+    assert "kaya_upgrade_secrets" in overlay
+    assert "KAYA_PHASE6_AUTO_UPGRADE" not in overlay
+
+
+def test_upgrade_workflow_is_not_part_of_normal_startup():
     compose = Path("docker-compose.yml").read_text(encoding="utf-8")
 
-    assert "POSTGRES_USER: kaya_bootstrap" in compose
-    assert "postgres-role-init:" in compose
-    assert "postgres-role-migration-backup:" in compose
-    assert "postgres_bootstrap_password" in compose
-    assert "scripts/kaya_postgres_role_topology.py" in compose
-    assert "KAYA_ROLE_MIGRATION_RUN_ID" in compose
-    assert "service_completed_successfully" in compose
+    assert "depends_on:\n      postgres:\n        condition: service_healthy" in compose
+    assert "service_completed_successfully" not in compose
 
 
 def test_phase7d_backup_probe_runs_with_postgres_client_image():
@@ -161,32 +169,29 @@ def test_phase12_backup_worker_separates_admin_and_runtime_passwords():
 
     assert 'ADMIN_PASSWORD_FILE="${KAYA_POSTGRES_ADMIN_PASSWORD_FILE:-$PASSWORD_FILE}"' in worker
     assert "admin_psql" in worker
-    compose = Path("docker-compose.yml").read_text(encoding="utf-8")
-    assert "ambiguous or unsafe Kaya PostgreSQL role topology" in compose
-    assert "backup evidence is incomplete" in compose
-    assert '"sha256"' in compose
+    topology = Path("scripts/kaya_postgres_role_topology.py").read_text(encoding="utf-8")
+    assert "ambiguous or unsafe Kaya PostgreSQL role topology" in topology
+    assert '"sha256"' in Path("scripts/kaya_postgres_backup_worker.sh").read_text(encoding="utf-8")
 
 
-def test_role_migration_backup_allows_fresh_cluster_without_skipping_legacy_backup():
-    compose = Path("docker-compose.yml").read_text(encoding="utf-8")
+def test_role_migration_backup_validation_remains_in_runtime_suite():
+    script = Path("scripts/phase12_runtime_validation.sh").read_text(encoding="utf-8")
 
-    assert "KAYA_POSTGRES_ADMIN_USER: kaya_bootstrap" in compose
-    assert "postgres.role_backup state=fresh action=not_required" in compose
-    assert "postgres.role_backup state=legacy action=verified_backup_required" in compose
+    assert "kaya_bootstrap" in script
+    assert "postgres-role-migration-backup" in script
+    assert "postgres-role-init" in script
 
 
 def test_role_migration_backup_requires_conclusive_current_topology_invariants():
-    compose = Path("docker-compose.yml").read_text(encoding="utf-8")
+    script = Path("scripts/phase12_runtime_validation.sh").read_text(encoding="utf-8")
 
-    assert "role_topology_already_migrated" in compose
-    assert "rolname='kaya_bootstrap'" in compose
-    assert "NOT rolsuper" in compose
-    assert "NOT rolcreatedb" in compose
-    assert "NOT rolcreaterole" in compose
-    assert "rolcanlogin" in compose
-    assert "pg_get_userbyid(datdba)" in compose
-    assert "pg_get_userbyid(nspowner)" in compose
-    assert "role_state=ambiguous" in compose
+    helper = Path("scripts/kaya_postgres_role_topology.py").read_text(encoding="utf-8")
+    assert "role_topology_already_migrated" in script
+    assert "rolname='kaya_bootstrap'" in script
+    assert "rolcanlogin" in helper
+    assert "pg_get_userbyid(d.datdba)" in helper
+    assert "pg_get_userbyid(n.nspowner)" in helper
+    assert "ambiguous or unsafe Kaya PostgreSQL role topology" in helper
 
 
 def test_phase12_overlay_isolates_all_persistent_postgres_mounts():

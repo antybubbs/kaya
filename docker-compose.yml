@@ -10,9 +10,7 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://kaya@postgres:5432/kaya
       KAYA_POSTGRES_DATABASE_URL: postgresql+psycopg://kaya@postgres:5432/kaya
-      KAYA_SQLITE_SOURCE_URL: sqlite:////app/data/kaya.db
-      DATABASE_PASSWORD_FILE: /run/kaya-secrets/postgres_password
-      KAYA_PHASE6_AUTO_UPGRADE: "true"
+      DATABASE_PASSWORD_FILE: /run/secrets/kaya_postgres_password
       FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
     ports:
       - "${KAYA_PORT:-8080}:8080"
@@ -20,10 +18,11 @@ services:
       - ${KAYA_DATA_DIR:-./data}:/app/data
       - ${KAYA_UPLOAD_DIR:-./uploads}:/app/uploads
       - ${KAYA_DATA_DIR:-./data}/remote-recordings:/app/data/remote-recordings
-      - kaya_phase6_postgres_secret:/run/kaya-secrets:ro
+    secrets:
+      - kaya_postgres_password
     depends_on:
-      postgres-role-init:
-        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
     security_opt:
       - no-new-privileges:true
     cap_add:
@@ -37,6 +36,7 @@ services:
       start_period: 120s
     tmpfs:
       - /tmp:size=128m,noexec,nosuid
+
   secure-send-gateway:
     image: ${KAYA_IMAGE:-ghcr.io/antybubbs/kaya:latest}
     container_name: kaya-secure-send
@@ -45,7 +45,7 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://kaya@postgres:5432/kaya
       KAYA_POSTGRES_DATABASE_URL: postgresql+psycopg://kaya@postgres:5432/kaya
-      DATABASE_PASSWORD_FILE: /run/kaya-secrets/postgres_password
+      DATABASE_PASSWORD_FILE: /run/secrets/kaya_postgres_password
       FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
       SKIP_DATABASE_MIGRATIONS: "true"
       KAYA_GATEWAY_MODE: "true"
@@ -53,7 +53,8 @@ services:
       - "${KAYA_SECURE_SEND_PORT:-8999}:8999"
     volumes:
       - ${KAYA_DATA_DIR:-./data}:/app/data
-      - kaya_phase6_postgres_secret:/run/kaya-secrets:ro
+    secrets:
+      - kaya_postgres_password
     depends_on:
       kaya:
         condition: service_healthy
@@ -66,149 +67,40 @@ services:
       - /tmp:size=64m,noexec,nosuid
       - /app/data/secret-vault:size=1m,noexec,nosuid
       - /app/data/remote-recordings:size=1m,noexec,nosuid
+
   guacd:
     image: guacamole/guacd:1.6.0
     container_name: kaya-guacd
     restart: unless-stopped
-
-  postgres-secret-init:
-    image: ${KAYA_IMAGE:-ghcr.io/antybubbs/kaya:latest}
-    restart: "no"
-    entrypoint: ["python"]
-    command:
-      - -c
-      - >-
-        import os,secrets;
-        app_target='/run/kaya-secrets/postgres_password';
-        bootstrap_target='/run/kaya-secrets/postgres_bootstrap_password';
-        app_host='/run/kaya-host-secrets/postgres_password';
-        bootstrap_host='/run/kaya-host-secrets/postgres_bootstrap_password';
-        app_value=open(app_host,'rb').read() if os.path.isfile(app_host) else secrets.token_urlsafe(64).encode();
-        bootstrap_value=open(bootstrap_host,'rb').read() if os.path.isfile(bootstrap_host) else secrets.token_urlsafe(64).encode();
-        open(app_target,'xb').write(app_value) if not os.path.exists(app_target) else None;
-        open(bootstrap_target,'xb').write(bootstrap_value) if not os.path.exists(bootstrap_target) else None;
-        [os.chown(path,100,101) or os.chmod(path,0o600) for path in (app_target,bootstrap_target)]
-    volumes:
-      - kaya_phase6_postgres_secret:/run/kaya-secrets
-      - ${KAYA_POSTGRES_PASSWORD_DIR:-./data/secrets}:/run/kaya-host-secrets:ro
 
   postgres:
     image: ${KAYA_POSTGRES_IMAGE:-postgres:16.14}
     restart: unless-stopped
     environment:
       POSTGRES_DB: kaya
-      POSTGRES_USER: kaya_bootstrap
-      POSTGRES_PASSWORD_FILE: /run/kaya-secrets/postgres_bootstrap_password
+      POSTGRES_USER: kaya
+      POSTGRES_PASSWORD_FILE: /run/secrets/kaya_postgres_password
+    secrets:
+      - kaya_postgres_password
     volumes:
       - kaya_postgres_data:/var/lib/postgresql/data
-      - kaya_phase6_postgres_secret:/run/kaya-secrets:ro
-      - ${KAYA_POSTGRES_BACKUP_DIR:-./postgres-backups}:/var/backups/kaya-postgres
-    depends_on:
-      postgres-secret-init:
-        condition: service_completed_successfully
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U kaya_bootstrap -d kaya"]
+      test: ["CMD-SHELL", "pg_isready -U kaya -d kaya"]
       interval: 5s
       timeout: 5s
       retries: 30
       start_period: 10s
 
-  postgres-role-migration-backup:
-    image: ${KAYA_POSTGRES_IMAGE:-postgres:16.14}
-    restart: "no"
-    environment:
-      POSTGRES_DB: kaya
-      POSTGRES_USER: kaya
-      POSTGRES_PASSWORD_FILE: /run/kaya-secrets/postgres_password
-      KAYA_POSTGRES_ADMIN_USER: kaya_bootstrap
-      KAYA_POSTGRES_ADMIN_PASSWORD_FILE: /run/kaya-secrets/postgres_bootstrap_password
-      KAYA_POSTGRES_BACKUP_PURPOSE: pre_role_topology_migration
-      KAYA_ROLE_MIGRATION_MARKER: /var/backups/kaya-postgres/.role-migration-backup-verified
-      KAYA_ROLE_MIGRATION_RUN_ID: ${KAYA_ROLE_MIGRATION_RUN_ID:-production}
-      PGHOST: postgres
-    entrypoint: ["/bin/bash", "-ec"]
-    command:
-      - >-
-        set -Eeuo pipefail;
-        password="$$(<"$${POSTGRES_PASSWORD_FILE}")";
-        export PGPASSWORD="$$password";
-        admin_password="$$(<"$${KAYA_POSTGRES_ADMIN_PASSWORD_FILE}")";
-        role_state="$$(PGPASSWORD="$$admin_password" psql -h postgres -U "$${KAYA_POSTGRES_ADMIN_USER}" -d postgres -Atc "SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='kaya') THEN 'fresh' WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname='kaya_bootstrap') AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname='kaya' AND NOT rolsuper AND NOT rolcreatedb AND NOT rolcreaterole AND rolcanlogin) AND (SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname='kaya') = 'kaya' THEN 'current_candidate' WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname='kaya' AND rolsuper) AND (SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname='kaya') = 'kaya' THEN 'legacy_candidate' ELSE 'ambiguous' END;" 2>/dev/null || true)";
-        if [[ -z "$$(printf '%s' "$$role_state" | tr -d '[:space:]')" ]]; then
-          role_state="$$(psql -h postgres -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}" -Atc "SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='kaya') THEN 'fresh' WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname='kaya_bootstrap') AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname='kaya' AND NOT rolsuper AND NOT rolcreatedb AND NOT rolcreaterole AND rolcanlogin) AND (SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname='kaya') = 'kaya' THEN 'current_candidate' WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname='kaya' AND rolsuper) AND (SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname='kaya') = 'kaya' THEN 'legacy_candidate' ELSE 'ambiguous' END;" 2>/dev/null || true)";
-        fi;
-        role_state="$$(printf '%s' "$$role_state" | tr -d '[:space:]')";
-        if [[ "$$role_state" == fresh ]]; then
-          echo "postgres.role_backup state=fresh action=not_required";
-          exit 0;
-        fi;
-        if [[ "$$role_state" == current_candidate || "$$role_state" == legacy_candidate ]]; then
-          schema_owner="$$(PGPASSWORD="$$admin_password" psql -h postgres -U "$${KAYA_POSTGRES_ADMIN_USER}" -d "$${POSTGRES_DB}" -Atc "SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname='public';" 2>/dev/null || true)";
-          if [[ -z "$$(printf '%s' "$$schema_owner" | tr -d '[:space:]')" ]]; then
-            schema_owner="$$(psql -h postgres -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}" -Atc "SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname='public';" 2>/dev/null || true)";
-          fi;
-          schema_owner="$$(printf '%s' "$$schema_owner" | tr -d '[:space:]')";
-          if [[ "$$schema_owner" != kaya && "$$schema_owner" != pg_database_owner ]]; then
-            role_state=ambiguous;
-          elif [[ "$$role_state" == current_candidate ]]; then
-            role_state=current;
-          else
-            role_state=legacy;
-          fi;
-        fi;
-        if [[ "$$role_state" == current ]]; then
-          echo "postgres.role_backup state=current action=not_required reason=role_topology_already_migrated";
-          exit 0;
-        fi;
-        [[ "$$role_state" == legacy ]] || { echo "kaya-postgres-backup: ambiguous or unsafe Kaya PostgreSQL role topology" >&2; exit 1; };
-        echo "postgres.role_backup state=legacy action=verified_backup_required";
-        archive="$$(/usr/local/bin/kaya_postgres_backup_worker.sh backup)";
-        [[ "$$archive" == /var/backups/kaya-postgres/kaya-*.dump && -f "$$archive" ]] || { echo "kaya-postgres-backup: worker did not return a valid archive" >&2; exit 1; };
-        metadata="$$archive.json";
-        sha256="$$(sed -n 's/.*\"sha256\": \"\([^\"]*\)\".*/\1/p' "$$metadata")";
-        archive_bytes="$$(stat -c '%s' "$$archive")";
-        revision="$$(sed -n 's/.*\"alembic_revision\": \"\([^\"]*\)\".*/\1/p' "$$metadata")";
-        run_id="$${KAYA_ROLE_MIGRATION_RUN_ID:-production}";
-        [[ "$$run_id" =~ ^[A-Za-z0-9_.-]{1,128}$$ && "$$sha256" =~ ^[a-f0-9]{64}$$ && "$$archive_bytes" =~ ^[0-9]+$$ && -n "$$revision" ]] || { echo "kaya-postgres-backup: backup evidence is incomplete" >&2; exit 1; };
-        marker_tmp="$${KAYA_ROLE_MIGRATION_MARKER}.tmp";
-        umask 077;
-        printf '{\n  "archive": "%s",\n  "sha256": "%s",\n  "archive_bytes": %s,\n  "source_database": "%s",\n  "source_role": "%s",\n  "alembic_revision": "%s",\n  "backup_purpose": "%s",\n  "run_id": "%s"\n}\n' "$$(basename "$$archive")" "$$sha256" "$$archive_bytes" "$${POSTGRES_DB}" "$${POSTGRES_USER}" "$$revision" "$${KAYA_POSTGRES_BACKUP_PURPOSE}" "$$run_id" > "$$marker_tmp";
-        chmod 600 "$$marker_tmp";
-        mv -- "$$marker_tmp" "$${KAYA_ROLE_MIGRATION_MARKER}";
-        unset PGPASSWORD password
-    volumes:
-      - kaya_phase6_postgres_secret:/run/kaya-secrets:ro
-      - ${KAYA_POSTGRES_BACKUP_DIR:-./postgres-backups}:/var/backups/kaya-postgres
-      - ./scripts/kaya_postgres_backup_worker.sh:/usr/local/bin/kaya_postgres_backup_worker.sh:ro
-    depends_on:
-      postgres:
-        condition: service_healthy
+secrets:
+  kaya_postgres_password:
+    file: ${KAYA_POSTGRES_PASSWORD_FILE:-./data/secrets/postgres_password}
 
-  postgres-role-init:
-    image: ${KAYA_IMAGE:-ghcr.io/antybubbs/kaya:latest}
-    restart: "no"
-    environment:
-      KAYA_APP_PASSWORD_FILE: /run/kaya-secrets/postgres_password
-      KAYA_BOOTSTRAP_PASSWORD_FILE: /run/kaya-secrets/postgres_bootstrap_password
-      KAYA_ROLE_MIGRATION_MARKER: /var/backups/kaya-postgres/.role-migration-backup-verified
-      KAYA_ROLE_MIGRATION_RUN_ID: ${KAYA_ROLE_MIGRATION_RUN_ID:-production}
-    entrypoint: ["python"]
-    command: ["scripts/kaya_postgres_role_topology.py"]
-    volumes:
-      - kaya_phase6_postgres_secret:/run/kaya-secrets:ro
-      - ${KAYA_POSTGRES_BACKUP_DIR:-./postgres-backups}:/var/backups/kaya-postgres:ro
-    depends_on:
-      postgres-role-migration-backup:
-        condition: service_completed_successfully
+volumes:
+  kaya_postgres_data:
+    name: kaya_postgres_data
 
 networks:
   default:
     driver: bridge
     driver_opts:
       com.docker.network.driver.mtu: "1280"
-
-volumes:
-  kaya_postgres_data:
-    name: kaya_postgres_data
-  kaya_phase6_postgres_secret:
-    name: kaya_phase6_postgres_secret

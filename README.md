@@ -157,9 +157,9 @@ My suggestion, install Kaya and sort the settings out in your Site Administratio
 The repository's `docker-compose.yml` is the supported production stack. It
 starts Kaya, PostgreSQL 16.14, the secure-send gateway and guacd. PostgreSQL
 is private to the Compose network and is persisted in the Docker volume
-`kaya_postgres_data`; it is not published on host port 5432. The stack also
-retains `/app/data/kaya.db` as the legacy source used by the controlled Phase 6
-upgrade path for existing SQLite installations.
+`kaya_postgres_data`; it is not published on host port 5432. Existing SQLite
+installations use the separate, explicit `docker-compose.upgrade.yml` override
+described in the deployment guide.
 
 Launch:
 
@@ -167,13 +167,16 @@ Launch:
 docker compose up -d
 ```
 
+For an existing SQLite installation, stop the old Kaya deployment, preserve
+the existing data directory and follow the [SQLite upgrade procedure](docs/deployment.md#existing-sqlite-to-postgresql-upgrade).
+
 ------------------------------------------------------------------------
 
 # Persistent Data
 
   | Path        | Description                    |
   |-------------| -------------------------------|
-  |`./data`     | Database and application data  | 
+  |`./data`     | Application data and retained legacy/upgrade artifacts  |
   |`./uploads`  | User uploads                   |
   |`./data/remote-recordings`| SSH and RDP session recordings |
   |`kaya_postgres_data`| PostgreSQL production database |

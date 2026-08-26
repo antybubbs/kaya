@@ -39,8 +39,6 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://kaya@postgres:5432/kaya
       KAYA_POSTGRES_DATABASE_URL: postgresql+psycopg://kaya@postgres:5432/kaya
-      KAYA_SQLITE_SOURCE_URL: sqlite:////app/data/kaya.db
-      KAYA_PHASE6_AUTO_UPGRADE: "true"
       DATABASE_PASSWORD_FILE: /run/kaya-secrets/postgres_password
       FORWARDED_ALLOW_IPS: \${FORWARDED_ALLOW_IPS:-127.0.0.1}
     ports:

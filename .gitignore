@@ -8,3 +8,15 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# Local migration and integration outputs; source scripts and fixtures remain tracked.
+*.sqlite3
+*.sqlite3-*
+*.dump
+*.dump.json
+*.dump.sha256
+*-migration-report.json
+*-scale-report.json
+phase*-harness-*/
+phase*-runtime-*/
+migration-workspace-*/
