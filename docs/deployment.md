@@ -85,9 +85,8 @@ After successful conversion, use only the normal deployment:
 docker compose up -d
 ```
 
-The legacy `docker-compose.phase6-upgrade.yml` remains available for isolated
-historical CI/operator recovery and validation. It is not the documented
-upgrade entry point.
+Historical phase-specific Compose files used by CI remain under
+`ci/compose/`; they are not documented deployment entry points.
 
 ## Docker Service
 
@@ -217,7 +216,7 @@ If using remote backup targets, verify credentials and mount/access behaviour ou
 ## PostgreSQL operations
 
 Kaya's PostgreSQL deployment includes an opt-in native backup worker in
-`docker-compose.phase8-ops.yml`. It uses the pinned `postgres:16.14` client,
+`ci/compose/docker-compose.phase8-ops.yml`. It uses the pinned `postgres:16.14` client,
 writes custom-format `pg_dump` archives to the persistent
 `KAYA_POSTGRES_BACKUP_DIR`, verifies each archive with `pg_restore --list` and
 a SHA-256 sidecar, and applies a count-based retention policy. The worker reads
@@ -227,7 +226,7 @@ placed in command arguments, filenames, metadata, or logs.
 Enable the scheduled worker explicitly with the `postgres-ops` profile:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.phase8-ops.yml --profile postgres-ops up -d postgres-backup
+docker compose -f docker-compose.yml -f ci/compose/docker-compose.phase8-ops.yml --profile postgres-ops up -d postgres-backup
 ```
 
 Set `KAYA_POSTGRES_BACKUP_INTERVAL_SECONDS`, `KAYA_POSTGRES_BACKUP_RETENTION`,
@@ -291,19 +290,19 @@ PostgreSQL backups use the PostgreSQL 16 tools inside the pinned database
 container, not SQLite file copying:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.postgres.yml exec -T postgres \
+docker compose -f docker-compose.yml exec -T postgres \
   pg_dump -U kaya -d kaya --format=custom --no-owner \
   --file=/var/backups/kaya-postgres/kaya-postgresql-$(date -u +%Y%m%dT%H%M%SZ)-20260818_02.dump
 ```
 
 Backups are timestamped under `/var/backups/kaya-postgres`, backed by the host
-directory `./postgres-backups` by default when the backup mount is added. Restore is explicit and must target
+directory `./postgres-backups` by default. Restore is explicit and must target
 a new or disposable empty database:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.postgres.yml exec -T postgres \
+docker compose -f docker-compose.yml exec -T postgres \
   createdb -U kaya kaya_restore
-docker compose -f docker-compose.yml -f docker-compose.postgres.yml exec -T postgres \
+docker compose -f docker-compose.yml exec -T postgres \
   pg_restore -U kaya -d kaya_restore --exit-on-error --no-owner \
   /var/backups/kaya-postgres/kaya-postgresql-YYYYMMDDTHHMMSSZ.dump
 ```

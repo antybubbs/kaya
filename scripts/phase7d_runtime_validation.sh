@@ -10,7 +10,7 @@ RUN_ROOT="${RUNNER_TEMP:-/tmp}/kaya-phase7d-${GITHUB_RUN_ID:-local}-${GITHUB_RUN
 IMAGE_A="kaya:phase7d-a-${GITHUB_SHA:-local}"
 IMAGE_B="kaya:phase7d-b-${GITHUB_SHA:-local}"
 PRIMARY_FILE="$ROOT_DIR/docker-compose.yml"
-OVERRIDE_FILE="$ROOT_DIR/docker-compose.phase7d-ci.yml"
+OVERRIDE_FILE="$ROOT_DIR/ci/compose/docker-compose.phase7d-ci.yml"
 PROJECTS=()
 RESTORE_PROJECTS=()
 PROJECT_PREFIX="${PHASE7D_PROJECT_PREFIX:-kaya_phase7d}"
@@ -124,7 +124,7 @@ cleanup() {
         python "$ROOT_DIR/scripts/kaya_validation_resources.py" cleanup-compose --project "$project" >/dev/null 2>&1
     done
     for project in "${RESTORE_PROJECTS[@]}"; do
-        docker compose -p "$project" -f "$ROOT_DIR/docker-compose.postgres-test.yml" down --remove-orphans >/dev/null 2>&1
+        docker compose -p "$project" -f "$ROOT_DIR/ci/compose/docker-compose.postgres-test.yml" down --remove-orphans >/dev/null 2>&1
         python "$ROOT_DIR/scripts/kaya_validation_resources.py" cleanup-compose --project "$project" >/dev/null 2>&1
     done
     docker image rm "$IMAGE_A" "$IMAGE_B" >/dev/null 2>&1
@@ -260,19 +260,19 @@ export KAYA_POSTGRES_TEST_PORT=55439
 restore_project="${PROJECT_PREFIX}_restore"
 RESTORE_PROJECTS+=("$restore_project")
 python "$ROOT_DIR/scripts/kaya_validation_resources.py" validate-project --project "$restore_project"
-docker compose -p "$restore_project" -f "$ROOT_DIR/docker-compose.postgres-test.yml" up -d
+docker compose -p "$restore_project" -f "$ROOT_DIR/ci/compose/docker-compose.postgres-test.yml" up -d
 for _ in $(seq 1 60); do
-    if docker compose -p "$restore_project" -f "$ROOT_DIR/docker-compose.postgres-test.yml" exec -T postgres \
+    if docker compose -p "$restore_project" -f "$ROOT_DIR/ci/compose/docker-compose.postgres-test.yml" exec -T postgres \
         pg_isready -U kaya_test -d kaya_test >/dev/null 2>&1; then
         break
     fi
     sleep 1
 done
-docker compose -p "$restore_project" -f "$ROOT_DIR/docker-compose.postgres-test.yml" exec -T postgres \
+docker compose -p "$restore_project" -f "$ROOT_DIR/ci/compose/docker-compose.postgres-test.yml" exec -T postgres \
     pg_isready -U kaya_test -d kaya_test >/dev/null
-docker compose -p "$restore_project" -f "$ROOT_DIR/docker-compose.postgres-test.yml" exec -T postgres \
+docker compose -p "$restore_project" -f "$ROOT_DIR/ci/compose/docker-compose.postgres-test.yml" exec -T postgres \
     pg_restore -U kaya_test -d kaya_test --exit-on-error --no-owner < "$backup"
-restore_revision="$(docker compose -p "$restore_project" -f "$ROOT_DIR/docker-compose.postgres-test.yml" exec -T postgres psql -U kaya_test -d kaya_test -Atc 'SELECT version_num FROM alembic_version' | tr -d '\r')"
+restore_revision="$(docker compose -p "$restore_project" -f "$ROOT_DIR/ci/compose/docker-compose.postgres-test.yml" exec -T postgres psql -U kaya_test -d kaya_test -Atc 'SELECT version_num FROM alembic_version' | tr -d '\r')"
 [[ "$restore_revision" == "20260818_02" ]]
 echo 'PostgreSQL backup and separate restore passed'
 

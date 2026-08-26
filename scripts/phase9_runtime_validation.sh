@@ -12,7 +12,7 @@ IMAGE="${PHASE9_IMAGE:?PHASE9_IMAGE is required}"
 TEST_IMAGE="${PHASE9_TEST_IMAGE:-$IMAGE}"
 PORT="${PHASE9_PORT:-18100}"
 PRIMARY="$ROOT_DIR/docker-compose.yml"
-ISOLATION="$ROOT_DIR/docker-compose.phase7d-ci.yml"
+ISOLATION="$ROOT_DIR/ci/compose/docker-compose.phase7d-ci.yml"
 PASS_ROWS=()
 FAIL_ROWS=()
 declare -A SUMMARY DURATION

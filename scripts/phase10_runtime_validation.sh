@@ -10,7 +10,7 @@ TEST_IMAGE="${PHASE10_TEST_IMAGE:?PHASE10_TEST_IMAGE is required}"
 PORT="${PHASE10_PORT:-18110}"
 PASS_ROWS=(); FAIL_ROWS=(); declare -A SUMMARY
 
-compose() { PHASE7D_PROJECT="$PROJECT" PHASE7D_ROOT="$ROOT" PHASE7D_IMAGE="$IMAGE" PHASE7D_HTTP_PORT="$PORT" PHASE7D_GATEWAY_PORT="$((PORT + 100))" docker compose -p "$PROJECT" -f "$ROOT_DIR/docker-compose.yml" -f "$ROOT_DIR/docker-compose.phase7d-ci.yml" "$@"; }
+compose() { PHASE7D_PROJECT="$PROJECT" PHASE7D_ROOT="$ROOT" PHASE7D_IMAGE="$IMAGE" PHASE7D_HTTP_PORT="$PORT" PHASE7D_GATEWAY_PORT="$((PORT + 100))" docker compose -p "$PROJECT" -f "$ROOT_DIR/docker-compose.yml" -f "$ROOT_DIR/ci/compose/docker-compose.phase7d-ci.yml" "$@"; }
 record() { SUMMARY["$1"]="$2"; }
 scenario() { local n="$1" name="$2"; shift 2; if "$@"; then PASS_ROWS+=("$n"); record "$n" "$name: verified"; else FAIL_ROWS+=("$n"); record "$n" "$name: assertion failed"; echo "Phase 10 scenario $n failed: $name" >&2; fi; }
 wait_ready() { for _ in $(seq 1 120); do compose exec -T postgres pg_isready -U kaya -d kaya >/dev/null 2>&1 && curl --fail --silent --max-time 3 "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1 && return 0; sleep 2; done; return 1; }

@@ -6,7 +6,7 @@ on:
     paths:
       - '.github/workflows/phase12a-cleanup.yml'
       - 'docker-compose.yml'
-      - 'docker-compose.phase12a-ci.yml'
+      - 'ci/compose/docker-compose.phase12a-ci.yml'
       - 'scripts/kaya_validation_resources.py'
       - 'scripts/phase12a_*.py'
       - 'scripts/phase12a_*.sh'
@@ -15,7 +15,7 @@ on:
     paths:
       - '.github/workflows/phase12a-cleanup.yml'
       - 'docker-compose.yml'
-      - 'docker-compose.phase12a-ci.yml'
+      - 'ci/compose/docker-compose.phase12a-ci.yml'
       - 'scripts/kaya_validation_resources.py'
       - 'scripts/phase12a_*.py'
       - 'scripts/phase12a_*.sh'

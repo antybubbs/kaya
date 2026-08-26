@@ -6,8 +6,8 @@ on:
     paths:
       - '.github/workflows/phase12-runtime.yml'
       - 'docker-compose.yml'
-      - 'docker-compose.phase12-ci.yml'
-      - 'docker-compose.phase12-legacy-ci.yml'
+      - 'ci/compose/docker-compose.phase12-ci.yml'
+      - 'ci/compose/docker-compose.phase12-legacy-ci.yml'
       - 'scripts/kaya_postgres_role_topology.py'
       - 'scripts/kaya_postgres_backup_worker.sh'
       - 'scripts/phase12_*.py'
@@ -18,8 +18,8 @@ on:
     paths:
       - '.github/workflows/phase12-runtime.yml'
       - 'docker-compose.yml'
-      - 'docker-compose.phase12-ci.yml'
-      - 'docker-compose.phase12-legacy-ci.yml'
+      - 'ci/compose/docker-compose.phase12-ci.yml'
+      - 'ci/compose/docker-compose.phase12-legacy-ci.yml'
       - 'scripts/kaya_postgres_role_topology.py'
       - 'scripts/kaya_postgres_backup_worker.sh'
       - 'scripts/phase12_*.py'
@@ -64,7 +64,7 @@ jobs:
       - name: Dispose exact Phase 12 resources
         if: always()
         run: |
-          docker compose -p "$PHASE12_PROJECT" -f docker-compose.yml -f docker-compose.phase12-ci.yml -f docker-compose.phase12-legacy-ci.yml down || true
+          docker compose -p "$PHASE12_PROJECT" -f docker-compose.yml -f ci/compose/docker-compose.phase12-ci.yml -f ci/compose/docker-compose.phase12-legacy-ci.yml down || true
           if [ -f phase12_resources.json ]; then
             python scripts/kaya_validation_resources.py cleanup --manifest phase12_resources.json
           fi

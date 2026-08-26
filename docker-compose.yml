@@ -84,6 +84,7 @@ services:
       - kaya_postgres_password
     volumes:
       - kaya_postgres_data:/var/lib/postgresql/data
+      - ${KAYA_POSTGRES_BACKUP_DIR:-./postgres-backups}:/var/backups/kaya-postgres
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U kaya -d kaya"]
       interval: 5s

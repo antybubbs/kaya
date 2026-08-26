@@ -2,12 +2,16 @@
 data/
 uploads/
 postgres-backups/
+postgres-backups/*
+!postgres-backups/.gitkeep
 data/secrets/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.pytest-tmp-*/
 .mypy_cache/
 .ruff_cache/
+.ruff-cache-*/
 
 # Local migration and integration outputs; source scripts and fixtures remain tracked.
 *.sqlite3
@@ -20,3 +24,6 @@ __pycache__/
 phase*-harness-*/
 phase*-runtime-*/
 migration-workspace-*/
+sqlite-tmp/
+test-data-temp/
+.sqlite-integration/

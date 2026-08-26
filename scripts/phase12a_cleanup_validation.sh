@@ -42,7 +42,7 @@ cleanup() {
 trap cleanup EXIT
 
 stage=compose_preflight
-docker compose -p "$project" -f docker-compose.yml -f docker-compose.phase12a-ci.yml config --format json > "$config"
+docker compose -p "$project" -f docker-compose.yml -f ci/compose/docker-compose.phase12a-ci.yml config --format json > "$config"
 stage=resource_preflight
 python scripts/kaya_validation_resources.py validate-config --project "$project" --config "$config" > phase12a_resources_discovered.json
 

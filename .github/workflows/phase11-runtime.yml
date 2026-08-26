@@ -6,8 +6,8 @@ on:
     paths:
       - ".github/workflows/phase11-runtime.yml"
       - "docker-compose.yml"
-      - "docker-compose.phase7d-ci.yml"
-      - "docker-compose.phase11-ci.yml"
+      - "ci/compose/docker-compose.phase7d-ci.yml"
+      - "ci/compose/docker-compose.phase11-ci.yml"
       - "scripts/phase11_*.py"
       - "scripts/phase11_*.sh"
       - "scripts/kaya_postgres_backup_worker.sh"
@@ -24,8 +24,8 @@ on:
     paths:
       - ".github/workflows/phase11-runtime.yml"
       - "docker-compose.yml"
-      - "docker-compose.phase7d-ci.yml"
-      - "docker-compose.phase11-ci.yml"
+      - "ci/compose/docker-compose.phase7d-ci.yml"
+      - "ci/compose/docker-compose.phase11-ci.yml"
       - "scripts/phase11_*.py"
       - "scripts/phase11_*.sh"
       - "scripts/kaya_postgres_backup_worker.sh"
@@ -88,6 +88,6 @@ jobs:
           PHASE7D_HTTP_PORT=18120 \
           PHASE7D_GATEWAY_PORT=18220 \
           docker compose -p "$PHASE11_PROJECT" \
-            -f docker-compose.yml -f docker-compose.phase7d-ci.yml -f docker-compose.phase11-ci.yml \
+            -f docker-compose.yml -f ci/compose/docker-compose.phase7d-ci.yml -f ci/compose/docker-compose.phase11-ci.yml \
             down --remove-orphans
           python scripts/kaya_validation_resources.py cleanup-compose --project "$PHASE11_PROJECT"

@@ -89,7 +89,7 @@ def test_phase12a_exact_github_compose_render_has_no_slash_volume_source():
             "-f",
             "docker-compose.yml",
             "-f",
-            "docker-compose.phase12a-ci.yml",
+            "ci/compose/docker-compose.phase12a-ci.yml",
             "config",
             "--format",
             "json",
@@ -119,7 +119,7 @@ def test_phase12_cleanup_has_no_broad_destructive_commands_or_protected_names():
         Path("scripts/phase12_runtime_validation.sh"),
         Path("scripts/phase12a_cleanup_validation.sh"),
         Path(".github/workflows/phase12-runtime.yml"),
-        Path("docker-compose.phase12a-ci.yml"),
+        Path("ci/compose/docker-compose.phase12a-ci.yml"),
     ]
     text = "\n".join(path.read_text(encoding="utf-8") for path in files)
 

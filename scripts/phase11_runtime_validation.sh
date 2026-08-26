@@ -21,7 +21,7 @@ compose() {
         PHASE7D_ROOT="$ROOT" PHASE7D_IMAGE="$APP_IMAGE" PHASE7D_HTTP_PORT="$PORT" \
         PHASE7D_GATEWAY_PORT="$((PORT + 100))" KAYA_IMAGE="$APP_IMAGE" \
         docker compose -p "$PROJECT" -f "$ROOT_DIR/docker-compose.yml" \
-        -f "$ROOT_DIR/docker-compose.phase7d-ci.yml" -f "$ROOT_DIR/docker-compose.phase11-ci.yml" "$@"
+        -f "$ROOT_DIR/ci/compose/docker-compose.phase7d-ci.yml" -f "$ROOT_DIR/ci/compose/docker-compose.phase11-ci.yml" "$@"
 }
 
 tests() {
@@ -177,7 +177,7 @@ no_major_or_downgrade() {
 
 security_review() {
     ! grep -R -n -E 'postgresql[^[:space:]]*://[^:[:space:]]+:[^$<{@[:space:]]+@|BEGIN (RSA|OPENSSH|EC) PRIVATE KEY' \
-        scripts/kaya_postgres_upgrade.py scripts/kaya_postgres_backup_worker.sh app/db/postgres_upgrade.py docker-compose.phase11-ci.yml && \
+        scripts/kaya_postgres_upgrade.py scripts/kaya_postgres_backup_worker.sh app/db/postgres_upgrade.py ci/compose/docker-compose.phase11-ci.yml && \
         grep -q 'POSTGRES_PASSWORD_FILE' scripts/kaya_postgres_backup_worker.sh
 }
 

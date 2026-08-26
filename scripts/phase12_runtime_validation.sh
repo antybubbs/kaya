@@ -11,13 +11,13 @@ mkdir -p "$PHASE12_ROOT"/{data,uploads,backups,secrets}
 export PHASE12_PROJECT PHASE12_ROOT PHASE12_POSTGRES_IMAGE PHASE12_APP_IMAGE
 export KAYA_ROLE_MIGRATION_RUN_ID="$PHASE12_PROJECT"
 python scripts/phase12_acceptance_evidence.py --output phase12_acceptance.json >/dev/null || true
-compose=(docker compose -p "$PHASE12_PROJECT" -f docker-compose.yml -f docker-compose.phase12-ci.yml -f docker-compose.phase12-legacy-ci.yml)
+compose=(docker compose -p "$PHASE12_PROJECT" -f docker-compose.yml -f ci/compose/docker-compose.phase12-ci.yml -f ci/compose/docker-compose.phase12-legacy-ci.yml)
 fresh_project="${PHASE12_PROJECT}_fresh"
 fresh_root="${PHASE12_ROOT}-fresh"
 fresh_compose() {
   PHASE12_PROJECT="$fresh_project" PHASE12_ROOT="$fresh_root" PHASE12_POSTGRES_IMAGE="$PHASE12_POSTGRES_IMAGE" \
     PHASE12_APP_IMAGE="$PHASE12_APP_IMAGE" PHASE12_HTTP_PORT="${PHASE12_HTTP_PORT:-18132}" \
-    docker compose -p "$fresh_project" -f docker-compose.yml -f docker-compose.phase12-ci.yml "$@"
+    docker compose -p "$fresh_project" -f docker-compose.yml -f ci/compose/docker-compose.phase12-ci.yml "$@"
 }
 manifest="phase12_resources.json"
 config_json="phase12_compose_config.json"

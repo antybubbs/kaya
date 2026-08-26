@@ -5,7 +5,7 @@ on:
     paths:
       - .github/workflows/phase13-runtime.yml
       - docker-compose.yml
-      - docker-compose.phase7d-ci.yml
+      - ci/compose/docker-compose.phase7d-ci.yml
       - scripts/phase7d_runtime_validation.sh
       - scripts/phase12_runtime_validation.sh
       - scripts/phase13_runtime_validation.sh
@@ -15,7 +15,7 @@ on:
     paths:
       - .github/workflows/phase13-runtime.yml
       - docker-compose.yml
-      - docker-compose.phase7d-ci.yml
+      - ci/compose/docker-compose.phase7d-ci.yml
       - scripts/phase7d_runtime_validation.sh
       - scripts/phase12_runtime_validation.sh
       - scripts/phase13_runtime_validation.sh

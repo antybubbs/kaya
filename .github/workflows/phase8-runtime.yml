@@ -5,9 +5,9 @@ on:
   push:
     paths:
       - ".github/workflows/phase8-runtime.yml"
-      - "docker-compose.phase8-ci.yml"
+      - "ci/compose/docker-compose.phase8-ci.yml"
       - "docker-compose.yml"
-      - "docker-compose.phase8-production-ci.yml"
+      - "ci/compose/docker-compose.phase8-production-ci.yml"
       - "docker-entrypoint.sh"
       - "scripts/kaya_postgres_backup_worker.sh"
       - "scripts/phase8_live_write.py"
@@ -24,9 +24,9 @@ on:
   pull_request:
     paths:
       - ".github/workflows/phase8-runtime.yml"
-      - "docker-compose.phase8-ci.yml"
+      - "ci/compose/docker-compose.phase8-ci.yml"
       - "docker-compose.yml"
-      - "docker-compose.phase8-production-ci.yml"
+      - "ci/compose/docker-compose.phase8-production-ci.yml"
       - "docker-entrypoint.sh"
       - "scripts/kaya_postgres_backup_worker.sh"
       - "scripts/phase8_live_write.py"
@@ -69,24 +69,24 @@ jobs:
           KAYA_PHASE8_VOLUME_PREFIX: kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
           KAYA_PHASE8_PROJECT: kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
           KAYA_PORT: 18080
-        run: docker compose -p kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }} -f docker-compose.yml -f docker-compose.phase8-production-ci.yml up -d --wait --wait-timeout 180 kaya postgres
+        run: docker compose -p kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }} -f docker-compose.yml -f ci/compose/docker-compose.phase8-production-ci.yml up -d --wait --wait-timeout 180 kaya postgres
       - name: Seed synthetic fixture
         run: |
           project=kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
-          compose="docker compose -p $project -f docker-compose.yml -f docker-compose.phase8-production-ci.yml"
+          compose="docker compose -p $project -f docker-compose.yml -f ci/compose/docker-compose.phase8-production-ci.yml"
           $compose exec -T postgres bash -c 'export PGPASSWORD="$(< /run/kaya-secrets/postgres_password)"; psql -U kaya -d kaya -c "CREATE TABLE phase8_fixture (id integer PRIMARY KEY, value text NOT NULL); INSERT INTO phase8_fixture VALUES (1, '\''synthetic'\''); INSERT INTO remote_manager_settings (key, value, updated_at) VALUES ('\''high_availability_enabled'\'', '\''1'\'', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at;"'
       - name: Authenticated smoke and representative writes
         env:
           PHASE7D_HTTP_BASE: http://127.0.0.1:18080
         run: |
           project=kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
-          compose="docker compose -p $project -f docker-compose.yml -f docker-compose.phase8-production-ci.yml"
+          compose="docker compose -p $project -f docker-compose.yml -f ci/compose/docker-compose.phase8-production-ci.yml"
           token=$($compose exec -T kaya sh -c "sed -n 's/^SETUP_TOKEN=//p' /app/data/.runtime.env")
           KAYA_SETUP_TOKEN="$token" python scripts/phase7d_http_smoke.py
       - name: Create retention sentinel
         run: |
           project=kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
-          compose="docker compose -p $project -f docker-compose.yml -f docker-compose.phase8-production-ci.yml --profile postgres-ops"
+          compose="docker compose -p $project -f docker-compose.yml -f ci/compose/docker-compose.phase8-production-ci.yml --profile postgres-ops"
           $compose run --rm --no-deps --entrypoint bash postgres-backup -c "printf 'phase8-sentinel-immutable\\n' > /var/backups/kaya-postgres/DO_NOT_DELETE_SENTINEL.txt"
       - name: Backup during authenticated live writes
         env:
@@ -94,7 +94,7 @@ jobs:
           PHASE8_WRITE_SECONDS: "20"
         run: |
           project=kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
-          compose="docker compose -p $project -f docker-compose.yml -f docker-compose.phase8-production-ci.yml --profile postgres-ops"
+          compose="docker compose -p $project -f docker-compose.yml -f ci/compose/docker-compose.phase8-production-ci.yml --profile postgres-ops"
           python scripts/phase8_live_write.py > phase8-live-write.log 2>&1 &
           writer=$!
           backup_started=$(date +%s.%N)
@@ -113,7 +113,7 @@ jobs:
           KAYA_PHASE8_VOLUME_PREFIX: kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
         run: |
           project=kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
-          compose="docker compose -p $project -f docker-compose.yml -f docker-compose.phase8-production-ci.yml --profile postgres-ops"
+          compose="docker compose -p $project -f docker-compose.yml -f ci/compose/docker-compose.phase8-production-ci.yml --profile postgres-ops"
           $compose run --rm --no-deps postgres-backup backup
           $compose run --rm --no-deps postgres-backup backup
           $compose run --rm --no-deps postgres-backup backup
@@ -132,7 +132,7 @@ jobs:
           KAYA_PHASE8_VOLUME_PREFIX: kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
         run: |
           project=kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
-          compose="docker compose -p $project -f docker-compose.yml -f docker-compose.phase8-production-ci.yml --profile postgres-ops"
+          compose="docker compose -p $project -f docker-compose.yml -f ci/compose/docker-compose.phase8-production-ci.yml --profile postgres-ops"
           $compose run --rm --no-deps postgres-backup restore-drill
           $compose run --rm --no-deps postgres-backup diagnostics
       - name: Phase 8D runtime scenarios
@@ -166,7 +166,7 @@ jobs:
           KAYA_PHASE8_VOLUME_PREFIX: kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
         run: |
           project=kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
-          compose="docker compose -p $project -f docker-compose.yml -f docker-compose.phase8-production-ci.yml"
+          compose="docker compose -p $project -f docker-compose.yml -f ci/compose/docker-compose.phase8-production-ci.yml"
           $compose exec -T postgres bash -c 'export PGPASSWORD="$(< /run/kaya-secrets/postgres_bootstrap_password)"; psql -U kaya_bootstrap -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE kaya_phase8_compat OWNER kaya;"'
           docker build --file Dockerfile.test --tag kaya:phase8-tests-${GITHUB_SHA} .
           docker run --rm --network "${project}_default" -e PYTHONPATH=/workspace -e SECRET_KEY=phase8-ci-only-secret-key-012345678901234567890123456789 -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= -e KAYA_TEST_POSTGRES_URL=postgresql+psycopg://kaya@postgres:5432/kaya_phase8_compat \
@@ -184,7 +184,7 @@ jobs:
         if: always()
         run: |
           project=kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
-          docker compose -p $project -f docker-compose.yml -f docker-compose.phase8-production-ci.yml logs --no-color > phase8-docker.log || true
+          docker compose -p $project -f docker-compose.yml -f ci/compose/docker-compose.phase8-production-ci.yml logs --no-color > phase8-docker.log || true
           sed -E 's/(password|secret|token|cookie|csrf)[^=]*=[^[:space:]]+/\1=[REDACTED]/gi' phase8-docker.log > phase8-docker-redacted.log
           rm -f phase8-docker.log
       - name: Publish redacted failure evidence
@@ -205,5 +205,5 @@ jobs:
         if: always()
         run: |
           project=kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
-          docker compose -p "$project" -f docker-compose.yml -f docker-compose.phase8-production-ci.yml down --remove-orphans
+          docker compose -p "$project" -f docker-compose.yml -f ci/compose/docker-compose.phase8-production-ci.yml down --remove-orphans
           python scripts/kaya_validation_resources.py cleanup-compose --project "$project"

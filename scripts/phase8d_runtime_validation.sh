@@ -16,7 +16,7 @@ METRICS='{}'
 : >"$PROGRESS_FILE"
 
 compose() {
-    docker compose -p "$PROJECT" -f "$ROOT_DIR/docker-compose.yml" -f "$ROOT_DIR/docker-compose.phase8-production-ci.yml" --profile postgres-ops "$@"
+    docker compose -p "$PROJECT" -f "$ROOT_DIR/docker-compose.yml" -f "$ROOT_DIR/ci/compose/docker-compose.phase8-production-ci.yml" --profile postgres-ops "$@"
 }
 
 set_metric() {

@@ -22,9 +22,9 @@ purpose and verification state.
 
 ```bash
 KAYA_POSTGRES_BACKUP_PURPOSE=pre_postgres_upgrade \
-  docker compose -f docker-compose.yml -f docker-compose.phase8-ops.yml \
+  docker compose -f docker-compose.yml -f ci/compose/docker-compose.phase8-ops.yml \
   --profile postgres-ops run --rm postgres-backup backup
-docker compose -f docker-compose.yml -f docker-compose.phase8-ops.yml \
+docker compose -f docker-compose.yml -f ci/compose/docker-compose.phase8-ops.yml \
   --profile postgres-ops run --rm postgres-backup verify
 ```
 

@@ -72,5 +72,5 @@ jobs:
       - name: Dispose exact Phase 9 resources
         if: always()
         run: |
-          docker compose -p "${PHASE9_PROJECT}" -f docker-compose.yml -f docker-compose.phase7d-ci.yml down --remove-orphans
+          docker compose -p "${PHASE9_PROJECT}" -f docker-compose.yml -f ci/compose/docker-compose.phase7d-ci.yml down --remove-orphans
           python scripts/kaya_validation_resources.py cleanup-compose --project "${PHASE9_PROJECT}"

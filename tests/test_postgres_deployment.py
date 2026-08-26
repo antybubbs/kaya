@@ -32,9 +32,9 @@ def test_postgresql_url_redaction_removes_password_and_preserves_identity():
 
 
 def test_postgresql_compose_keeps_database_private_and_password_external():
-    compose = Path("docker-compose.postgres.yml").read_text(encoding="utf-8")
+    compose = Path("docker-compose.yml").read_text(encoding="utf-8")
 
-    assert "image: postgres:16.14" in compose
+    assert "image: ${KAYA_POSTGRES_IMAGE:-postgres:16.14}" in compose
     assert "POSTGRES_PASSWORD:" not in compose
     assert "5432:" not in compose
     assert "kaya_postgres_data" in compose
@@ -74,7 +74,7 @@ def test_upgrade_workflow_is_not_part_of_normal_startup():
 
 
 def test_phase7d_backup_probe_runs_with_postgres_client_image():
-    overlay = Path("docker-compose.phase7d-ci.yml").read_text(encoding="utf-8")
+    overlay = Path("ci/compose/docker-compose.phase7d-ci.yml").read_text(encoding="utf-8")
 
     section = overlay.split("  postgres-role-migration-backup:", 1)[1].split("\n\n", 1)[0]
     assert "image: ${KAYA_POSTGRES_IMAGE:-postgres:16.14}" in section
@@ -157,7 +157,7 @@ def test_phase12_acceptance_matrix_fails_closed_for_unexecuted_rows():
 
 
 def test_phase12_legacy_overlay_uses_historical_postgres_bootstrap_user():
-    overlay = Path("docker-compose.phase12-legacy-ci.yml").read_text(encoding="utf-8")
+    overlay = Path("ci/compose/docker-compose.phase12-legacy-ci.yml").read_text(encoding="utf-8")
 
     assert "POSTGRES_USER: kaya" in overlay
     assert "POSTGRES_PASSWORD_FILE: /run/kaya-secrets/postgres_password" in overlay
@@ -195,7 +195,7 @@ def test_role_migration_backup_requires_conclusive_current_topology_invariants()
 
 
 def test_phase12_overlay_isolates_all_persistent_postgres_mounts():
-    overlay = Path("docker-compose.phase12-ci.yml").read_text(encoding="utf-8")
+    overlay = Path("ci/compose/docker-compose.phase12-ci.yml").read_text(encoding="utf-8")
 
     assert "postgres-secret-init:" in overlay
     assert "source: postgres_data" in overlay
@@ -227,7 +227,7 @@ def test_phase12_runtime_validates_workflow_and_exact_cleanup():
 
 
 def test_phase11_backup_lifecycle_uses_admin_role_without_granting_app_createdb():
-    compose = Path("docker-compose.phase11-ci.yml").read_text(encoding="utf-8")
+    compose = Path("ci/compose/docker-compose.phase11-ci.yml").read_text(encoding="utf-8")
     worker = Path("scripts/kaya_postgres_backup_worker.sh").read_text(encoding="utf-8")
 
     assert "KAYA_POSTGRES_ADMIN_USER: kaya_bootstrap" in compose
