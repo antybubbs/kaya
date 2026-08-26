@@ -228,6 +228,62 @@ def test_failed_source_identity_rejects_logical_change_but_tolerates_wal_change(
         )
 
 
+def test_stable_marker_accepts_logical_backup_when_physical_fingerprint_differs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source = tmp_path / "kaya.db"
+    with sqlite3.connect(source) as connection:
+        connection.execute("CREATE TABLE alembic_version (version_num TEXT)")
+        connection.execute("INSERT INTO alembic_version VALUES ('20260813_01')")
+        connection.execute("CREATE TABLE records (id INTEGER PRIMARY KEY, value TEXT)")
+        connection.execute("INSERT INTO records VALUES (1, 'stable')")
+        connection.commit()
+    backup = create_sqlite_backup(
+        source,
+        tmp_path / "backups",
+        source_revision="20260813_01",
+        target_revision="20260818_02",
+    )
+    metadata = json.loads(backup.metadata_path.read_text(encoding="utf-8"))
+    logical_identity = backup.snapshot_fingerprint
+    metadata["source_fingerprint"] = "2b3efd12bd96a10dc61270417518ff3c01bcbd0b9a455b25b6a7c2dcb040f354"
+    backup.metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    persisted = {
+        "state": UpgradeState.FAILED.value,
+        "source_fingerprint": "94bd1ee74473482b0d1e133c71a514db9387e8f50ce10a44e0081c0696703e63",
+        "original_source_snapshot_fingerprint": logical_identity,
+        "target_revision": "20260818_02",
+    }
+    result = phase6_cutover._verified_backup_snapshot(
+        tmp_path, persisted, source, "20260813_01"
+    )
+    assert result[2] == backup.database_path
+
+
+def test_stable_marker_rejects_logically_different_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source = tmp_path / "kaya.db"
+    source.touch()
+    backup = create_sqlite_backup(
+        source,
+        tmp_path / "backups",
+        source_revision="20260813_01",
+        target_revision="20260818_02",
+    )
+    metadata = json.loads(backup.metadata_path.read_text(encoding="utf-8"))
+    metadata["source_fingerprint"] = "94bd1ee74473482b0d1e133c71a514db9387e8f50ce10a44e0081c0696703e63"
+    backup.metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    persisted = {
+        "state": UpgradeState.FAILED.value,
+        "source_fingerprint": "94bd1ee74473482b0d1e133c71a514db9387e8f50ce10a44e0081c0696703e63",
+        "original_source_snapshot_fingerprint": "f" * 64,
+        "target_revision": "20260818_02",
+    }
+    with pytest.raises(RuntimeError, match="no verified pre-migration backup"):
+        phase6_cutover._verified_backup_snapshot(tmp_path, persisted, source, "20260813_01")
+
+
 def test_detects_existing_sqlite_install_from_config_and_file(tmp_path: Path):
     source = tmp_path / "kaya.db"
     source.touch()

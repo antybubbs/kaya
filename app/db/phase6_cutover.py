@@ -290,7 +290,6 @@ def _verified_backup_snapshot(
             or (source_revision and metadata.get("source_revision") != source_revision)
             or metadata.get("target_revision") != target_revision
             or not is_supported_lineage(candidate_revision)
-            or (stable_marker and not physical_match)
             or backup_path is None
             or backup_path.is_absolute()
             or backup_path.name != backup_name
@@ -321,7 +320,16 @@ def _verified_backup_snapshot(
             reason = "sqlite_invalid" if isinstance(exc, RuntimeError) else "snapshot_failed"
             logger.warning("database.recovery backup_candidate=rejected reason=%s", reason)
             continue
-        if metadata.get("snapshot_fingerprint") not in {None, snapshot}:
+        if stable_marker:
+            if snapshot != persisted.get("original_source_snapshot_fingerprint"):
+                logger.warning("database.recovery backup_candidate=rejected reason=marker_logical_identity_mismatch")
+                continue
+            logger.info(
+                "database.recovery backup_candidate=stable_original physical_fingerprint_match=%s",
+                str(physical_match).lower(),
+            )
+            logger.info("database.recovery backup_logical_identity=matched marker_logical_identity=matched")
+        elif metadata.get("snapshot_fingerprint") not in {None, snapshot}:
             logger.warning("database.recovery backup_candidate=rejected reason=snapshot_identity_mismatch")
             continue
         logger.info("database.recovery backup_sha=validated backup_revision=validated")
