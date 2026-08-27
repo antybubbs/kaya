@@ -109,6 +109,8 @@ jobs:
           docker run --rm --shm-size=1g \
             -e PYTHONPATH=/workspace \
             -e APP_ENV=test \
+            -e TMPDIR=/workspace/.pytest-tmp \
+            -e SQLITE_TMPDIR=/workspace/.pytest-tmp \
             -e SECRET_KEY=rc-readiness-synthetic-secret-key-012345678901234567890123 \
             -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
             -v "$PWD:/workspace" -w /workspace "$TEST_IMAGE" \
@@ -118,6 +120,7 @@ jobs:
               echo "TMPDIR=${TMPDIR-}"
               echo "SQLITE_TMPDIR=${SQLITE_TMPDIR-}"
               echo "pytest_tmp_root=/tmp/pytest-of-$(id -un)"
+              echo "pytest_basetemp=/workspace/.pytest-tmp"
               echo "workspace=/workspace"
               df -hT /tmp /workspace
               df -i /tmp /workspace
@@ -133,6 +136,8 @@ jobs:
           docker run --rm --shm-size=1g \
             -e PYTHONPATH=/workspace \
             -e APP_ENV=test \
+            -e TMPDIR=/workspace/.pytest-tmp \
+            -e SQLITE_TMPDIR=/workspace/.pytest-tmp \
             -e SECRET_KEY=rc-readiness-synthetic-secret-key-012345678901234567890123 \
             -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
             -v "$PWD:/workspace" -w /workspace "$TEST_IMAGE" \
@@ -142,7 +147,7 @@ jobs:
               for test_file in "${test_files[@]}"; do
                 echo "Running $test_file in an isolated pytest process"
                 status=0
-                pytest -q "$test_file" || status=$?
+                pytest -q --basetemp=/workspace/.pytest-tmp "$test_file" || status=$?
                 if [[ "$status" -ne 0 && "$status" -ne 5 ]]; then
                   exit "$status"
                 fi
