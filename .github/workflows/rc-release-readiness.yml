@@ -57,6 +57,7 @@ jobs:
         with:
           ref: ${{ steps.resolve.outputs.candidate_sha }}
           fetch-depth: 0
+          submodules: recursive
 
       - name: Verify candidate identity
         shell: bash
