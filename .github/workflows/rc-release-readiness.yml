@@ -111,6 +111,13 @@ jobs:
           test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
           git fetch --no-tags origin dev
           git merge-base --is-ancestor "$CANDIDATE_SHA" origin/dev
+      - name: Materialize pinned Docker agent dependency
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git clone --no-checkout https://github.com/antybubbs/Kaya-Docker-Agent.git external/Kaya-Docker-Agent
+          git -C external/Kaya-Docker-Agent fetch --depth 1 origin 62a2352c2fbb4588652159db984fa5b6fed9d652
+          git -C external/Kaya-Docker-Agent checkout --detach 62a2352c2fbb4588652159db984fa5b6fed9d652
       - name: Static checks
         shell: bash
         run: |
