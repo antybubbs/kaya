@@ -111,7 +111,15 @@ jobs:
             -e APP_ENV=test \
             -e SECRET_KEY=rc-readiness-synthetic-secret-key-012345678901234567890123 \
             -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
-            -v "$PWD:/workspace" -w /workspace "$TEST_IMAGE" pytest -q
+            -v "$PWD:/workspace" -w /workspace "$TEST_IMAGE" \
+            bash -Eeuc '
+              mapfile -t test_files < <(find . -type f -name "test_*.py" -not -path "./.git/*" | sort)
+              ((${#test_files[@]} > 0))
+              for test_file in "${test_files[@]}"; do
+                echo "Running $test_file in an isolated pytest process"
+                pytest -q "$test_file"
+              done
+            '
 
       - name: Fresh install and restart acceptance
         shell: bash
