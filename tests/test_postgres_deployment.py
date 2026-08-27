@@ -125,6 +125,16 @@ def test_phase7d_backup_probe_runs_with_postgres_client_image():
     assert "image: ${PHASE7D_IMAGE}" not in section
 
 
+def test_phase7d_runtime_uses_the_documented_explicit_sqlite_upgrade_runner():
+    script = Path("scripts/phase7d_runtime_validation.sh").read_text(encoding="utf-8")
+
+    assert 'UPGRADE_FILE="$ROOT_DIR/docker-compose.upgrade.yml"' in script
+    assert 'upgrade_compose()' in script
+    assert 'upgrade_compose run --rm sqlite-postgres-upgrade' in script
+    assert 'compose_up\nwait_for_kaya' in script
+    assert "kaya-database-upgrade-report.json" in script
+
+
 def test_phase12_role_topology_helper_is_fail_closed_and_scoped():
     helper = Path("scripts/kaya_postgres_role_topology.py").read_text(encoding="utf-8")
 

@@ -10,6 +10,7 @@ def test_permanent_workflow_set_has_no_phase_workflow_files():
         "database-deep-validation.yml",
         "database.yml",
         "docker.yml",
+        "rc-release-readiness.yml",
         "security.yml",
     ]
 

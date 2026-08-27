@@ -10,6 +10,7 @@ RUN_ROOT="${RUNNER_TEMP:-/tmp}/kaya-phase7d-${GITHUB_RUN_ID:-local}-${GITHUB_RUN
 IMAGE_A="kaya:phase7d-a-${GITHUB_SHA:-local}"
 IMAGE_B="kaya:phase7d-b-${GITHUB_SHA:-local}"
 PRIMARY_FILE="$ROOT_DIR/docker-compose.yml"
+UPGRADE_FILE="$ROOT_DIR/docker-compose.upgrade.yml"
 OVERRIDE_FILE="$ROOT_DIR/ci/compose/docker-compose.phase7d-ci.yml"
 PROJECTS=()
 RESTORE_PROJECTS=()
@@ -17,6 +18,10 @@ PROJECT_PREFIX="${PHASE7D_PROJECT_PREFIX:-kaya_phase7d}"
 
 compose() {
     docker compose -p "$PHASE7D_PROJECT" -f "$PRIMARY_FILE" -f "$OVERRIDE_FILE" "$@"
+}
+
+upgrade_compose() {
+    docker compose -p "$PHASE7D_PROJECT" -f "$PRIMARY_FILE" -f "$UPGRADE_FILE" -f "$OVERRIDE_FILE" "$@"
 }
 
 compose_up() {
@@ -35,6 +40,8 @@ configure_project() {
     export PHASE7D_PROJECT="$project" PHASE7D_ROOT="$root"
     export PHASE7D_HTTP_PORT="$http_port" PHASE7D_GATEWAY_PORT="$gateway_port"
     export PHASE7D_IMAGE="$image"
+    export KAYA_DATA_DIR="$root/data" KAYA_UPLOAD_DIR="$root/uploads"
+    export KAYA_POSTGRES_PASSWORD_DIR="$root/secrets" KAYA_POSTGRES_BACKUP_DIR="$root/backups"
     mkdir -p "$root/data/remote-recordings" "$root/uploads" "$root/secrets" "$root/backups"
     PROJECTS+=("$project")
 }
@@ -147,6 +154,8 @@ export PHASE7D_IMAGE="$IMAGE_A" PHASE7D_HTTP_PORT=18090 PHASE7D_GATEWAY_PORT=189
 docker compose -p "$PHASE7D_PROJECT" -f "$PRIMARY_FILE" -f "$OVERRIDE_FILE" config --quiet
 grep -q 'postgres:16.14' <(docker compose -p "$PHASE7D_PROJECT" -f "$PRIMARY_FILE" -f "$OVERRIDE_FILE" config)
 ! grep -q '5432:' <(docker compose -p "$PHASE7D_PROJECT" -f "$PRIMARY_FILE" -f "$OVERRIDE_FILE" config)
+docker compose -p "$PHASE7D_PROJECT" -f "$PRIMARY_FILE" -f "$UPGRADE_FILE" -f "$OVERRIDE_FILE" config --quiet
+grep -q 'sqlite-postgres-upgrade:' <(docker compose -p "$PHASE7D_PROJECT" -f "$PRIMARY_FILE" -f "$UPGRADE_FILE" -f "$OVERRIDE_FILE" config)
 echo 'primary compose validation passed'
 
 # Fresh PostgreSQL-first install.
@@ -167,7 +176,7 @@ assert_revision
 run_http_smoke
 echo 'fresh install, HTTP smoke, writes, and down/up persistence passed'
 
-# Legacy SQLite through the primary production Compose architecture.
+# Legacy SQLite through the documented explicit upgrade runner.
 configure_project "${PROJECT_PREFIX}_legacy" "$RUN_ROOT/legacy" 18092 18992 "$IMAGE_A"
 docker run --rm --entrypoint chown \
     -v "$PHASE7D_ROOT/data:/app/data" "$IMAGE_A" \
@@ -185,7 +194,21 @@ docker run --rm --entrypoint python \
     -e SETUP_TOKEN=phase7d-synthetic-setup-token \
     -v "$PHASE7D_ROOT/data:/app/data" "$IMAGE_A" \
     "${fixture_args[@]}"
+# A real pre-PostgreSQL installation already has persisted application secrets.
+# Seed only synthetic values in this disposable fixture; the upgrade entrypoint
+# must read them from the data directory and must not generate replacements.
+docker run --rm --entrypoint python \
+    -v "$PHASE7D_ROOT/data:/app/data" "$IMAGE_A" \
+    -c "from pathlib import Path; p=Path('/app/data/.runtime.env'); p.write_text('SECRET_KEY=phase7d-legacy-secret-key-012345678901234567890123\\nENCRYPTION_KEY=MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=\\nSETUP_TOKEN=phase7d-legacy-setup-token\\n', encoding='utf-8'); p.chmod(0o600)"
 legacy_before="$(fingerprint_sqlite "$PHASE7D_ROOT/data")"
+# Do not start the normal PostgreSQL-only Kaya service until the explicit
+# documented SQLite -> PostgreSQL runner has completed.
+upgrade_compose run --rm sqlite-postgres-upgrade
+test -f "$PHASE7D_ROOT/data/kaya-database-upgrade.json"
+test -f "$PHASE7D_ROOT/data/kaya-database-upgrade-report.json"
+upgrade_state="$(docker run --rm --entrypoint python -v "$PHASE7D_ROOT/data:/app/data:ro" "$IMAGE_A" -c "import json; s=json.load(open('/app/data/kaya-database-upgrade.json', encoding='utf-8')); assert s['state'] == 'POSTGRES_ACTIVE'; assert s['database_engine'] == 'postgresql'; assert s['migration_id']; print(s['state'])")"
+[[ "$upgrade_state" == "POSTGRES_ACTIVE" ]]
+docker run --rm --entrypoint python -v "$PHASE7D_ROOT/data:/app/data:ro" "$IMAGE_A" -c "import json; r=json.load(open('/app/data/kaya-database-upgrade-report.json', encoding='utf-8')); assert r['result'] == 'COMPLETED'; assert r['source_engine'] == 'sqlite'; assert r['target_engine'] == 'postgresql'; assert r['rejected_rows'] == 0; assert r['skipped_rows'] == 0; assert r['foreign_key_violations'] == 0; assert sum(t['copied_rows'] for t in r['tables'].values()) > 0"
 compose_up
 wait_for_kaya
 assert_revision
