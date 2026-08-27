@@ -102,6 +102,30 @@ jobs:
       - name: Build Linux test image
         run: docker build --file Dockerfile.test --tag "$TEST_IMAGE" .
 
+      - name: Diagnose Linux SQLite test environment
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          docker run --rm --shm-size=1g \
+            -e PYTHONPATH=/workspace \
+            -e APP_ENV=test \
+            -e SECRET_KEY=rc-readiness-synthetic-secret-key-012345678901234567890123 \
+            -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
+            -v "$PWD:/workspace" -w /workspace "$TEST_IMAGE" \
+            bash -Eeuc '
+              python --version
+              python -c "import sqlite3; print(f\"SQLite {sqlite3.sqlite_version}\")"
+              echo "TMPDIR=${TMPDIR-}"
+              echo "SQLITE_TMPDIR=${SQLITE_TMPDIR-}"
+              echo "pytest_tmp_root=/tmp/pytest-of-$(id -un)"
+              echo "workspace=/workspace"
+              df -hT /tmp /workspace
+              df -i /tmp /workspace
+              mount
+              free -m
+              ulimit -a
+            '
+
       - name: Run complete Linux test suite
         shell: bash
         run: |
