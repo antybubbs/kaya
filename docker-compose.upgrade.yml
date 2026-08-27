@@ -21,36 +21,35 @@ services:
       - /app/data
     volumes:
       - ${KAYA_DATA_DIR:-./data}:/app/data
-      - kaya_upgrade_secrets:/run/kaya-secrets:ro
+      - ${KAYA_POSTGRES_PASSWORD_DIR:-./data/secrets}:/run/kaya-secrets:ro
+    secrets: !override []
     depends_on:
       postgres:
         condition: service_healthy
 
+  kaya:
+    secrets: !override []
+
   postgres-secret-init:
     image: ${KAYA_IMAGE:-ghcr.io/antybubbs/kaya:latest}
     restart: "no"
-    entrypoint: ["python"]
-    command:
-      - -c
-      - >-
-        import os,secrets;
-        path='/run/kaya-secrets/postgres_password';
-        os.umask(0o077);
-        open(path,'xb').write(open('/run/kaya-host-secrets/postgres_password','rb').read() if os.path.isfile('/run/kaya-host-secrets/postgres_password') else secrets.token_urlsafe(64).encode()) if not os.path.exists(path) else None;
-        os.chown(path,100,101);os.chmod(path,0o600)
+    entrypoint: ["/bin/sh", "/app/scripts/init-postgres-secret.sh"]
+    command: ["/run/kaya-secrets/postgres_password"]
     volumes:
-      - kaya_upgrade_secrets:/run/kaya-secrets
-      - ${KAYA_POSTGRES_PASSWORD_DIR:-./data/secrets}:/run/kaya-host-secrets:ro
+      - ${KAYA_POSTGRES_PASSWORD_DIR:-./data/secrets}:/run/kaya-secrets
+    secrets: !override []
+
+  secure-send-gateway:
+    secrets: !override []
 
   postgres:
     environment:
       POSTGRES_PASSWORD_FILE: /run/kaya-secrets/postgres_password
     volumes:
-      - kaya_upgrade_secrets:/run/kaya-secrets:ro
+      - ${KAYA_POSTGRES_PASSWORD_DIR:-./data/secrets}:/run/kaya-secrets:ro
+    secrets: !override []
     depends_on:
       postgres-secret-init:
         condition: service_completed_successfully
 
-volumes:
-  kaya_upgrade_secrets:
-    name: kaya_upgrade_secrets
+secrets: !override {}

@@ -339,13 +339,20 @@ Phase 6 upgrades an existing SQLite installation through a separate Compose
 override. The base Compose file is PostgreSQL-first; the override is retained
 for controlled legacy upgrade validation and operator recovery.
 
-Before upgrading, ensure the existing `/app/data` storage is persistent and
-that the PostgreSQL password file is private and contains a strong generated
-password. Run the supported upgrade stack with:
+Before upgrading, ensure the existing `/app/data` storage is persistent. If a
+PostgreSQL password file already exists, keep it private; otherwise the
+upgrade bootstrap creates it securely. Run the supported upgrade stack with:
 
 ```text
 docker compose -f docker-compose.yml -f docker-compose.upgrade.yml run --rm sqlite-postgres-upgrade
 ```
+
+On a clean legacy installation, the upgrade bootstrap creates a strong
+PostgreSQL password at `./data/secrets/postgres_password` before PostgreSQL
+starts. If that file already exists, it is reused and never replaced. The
+same host file is consumed by the normal Compose stack after the upgrade; no
+manual password-file creation is required for the default path. Keep the
+directory private and do not print or commit the file.
 
 The runner invokes the durable upgrade state machine directly. It validates
 the source, creates or reuses a

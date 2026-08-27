@@ -62,8 +62,23 @@ def test_upgrade_compose_is_explicit_and_contains_sqlite_runner():
     assert "scripts.kaya_phase6_upgrade" in overlay
     assert "--source" in overlay
     assert "--backup-dir" in overlay
-    assert "kaya_upgrade_secrets" in overlay
+    assert "kaya_upgrade_secrets" not in overlay
+    assert "${KAYA_POSTGRES_PASSWORD_DIR:-./data/secrets}:/run/kaya-secrets" in overlay
+    assert 'entrypoint: ["/bin/sh", "/app/scripts/init-postgres-secret.sh"]' in overlay
+    assert "secrets: !override []" in overlay
+    assert "secrets: !override {}" in overlay
     assert "KAYA_PHASE6_AUTO_UPGRADE" not in overlay
+
+
+def test_upgrade_secret_bootstrap_is_atomic_and_does_not_expose_values():
+    helper = Path("scripts/init-postgres-secret.sh").read_text(encoding="utf-8")
+
+    assert "os.O_EXCL" in helper
+    assert "secrets.token_urlsafe(64)" in helper
+    assert "0o600" in helper
+    assert 'stream.write(secrets.token_urlsafe(64).encode("ascii"))' in helper
+    assert "cat \"$path\"" not in helper
+    assert 'echo "$' not in helper
 
 
 def test_upgrade_workflow_is_not_part_of_normal_startup():
