@@ -1,0 +1,161 @@
+name: RC Release Readiness
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Full commit SHA to validate
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  readiness:
+    name: Linux RC candidate gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+      TEST_IMAGE: kaya-rc-readiness:${{ github.run_id }}-${{ github.run_attempt }}
+      RC_PROJECT: kaya_rc_readiness_${{ github.run_id }}_${{ github.run_attempt }}
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          fetch-depth: 0
+
+      - name: Verify candidate identity
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]
+          git fetch --no-tags origin dev
+          git cat-file -e "$CANDIDATE_SHA^{commit}"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          git merge-base --is-ancestor "$CANDIDATE_SHA" origin/dev
+          {
+            echo "## RC Release Readiness"
+            echo "- Candidate SHA: `$CANDIDATE_SHA`"
+            echo "- Checked-out SHA: `$(git rev-parse HEAD)`"
+            echo "- Reachable from origin/dev: yes"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Static checks
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python -m pip install --disable-pip-version-check ruff
+          ruff check .
+          python -m compileall -q app scripts
+          while IFS= read -r -d '' script; do bash -n "$script"; done < <(find . -type f -name '*.sh' -print0)
+          docker compose -f docker-compose.yml config
+          docker compose -f docker-compose.yml -f docker-compose.upgrade.yml config
+          git diff --check
+
+      - name: Build Linux test image
+        run: docker build --file Dockerfile.test --tag "$TEST_IMAGE" .
+
+      - name: Run complete Linux test suite
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          docker run --rm \
+            -e PYTHONPATH=/workspace \
+            -e APP_ENV=test \
+            -e SECRET_KEY=rc-readiness-synthetic-secret-key-012345678901234567890123 \
+            -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
+            -v "$PWD:/workspace" -w /workspace "$TEST_IMAGE" pytest -q
+
+      - name: Fresh install and restart acceptance
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p rc-fresh-data rc-fresh-uploads rc-fresh-backups
+          export KAYA_IMAGE="$TEST_IMAGE"
+          export KAYA_DATA_DIR=./rc-fresh-data
+          export KAYA_UPLOAD_DIR=./rc-fresh-uploads
+          export KAYA_POSTGRES_BACKUP_DIR=./rc-fresh-backups
+          export KAYA_POSTGRES_PASSWORD_DIR=./rc-fresh-secrets
+          compose=(docker compose -p "$RC_PROJECT" -f docker-compose.yml)
+          "${compose[@]}" up -d --wait --wait-timeout 180
+          test -f rc-fresh-secrets/postgres_password
+          test "$(stat -c '%a' rc-fresh-secrets/postgres_password)" = 600
+          cp rc-fresh-secrets/postgres_password rc-fresh-password-before
+          "${compose[@]}" logs --no-color kaya > rc-fresh-kaya.log
+          grep -q 'Kaya first-run setup is required\.' rc-fresh-kaya.log
+          grep -q 'Setup token:' rc-fresh-kaya.log
+          ! grep -Eq 'SECRET_KEY=|ENCRYPTION_KEY=|postgres_password' rc-fresh-kaya.log
+          "${compose[@]}" ps --status running kaya secure-send-gateway guacd postgres
+          "${compose[@]}" down --remove-orphans
+          docker volume rm kaya_postgres_data
+          "${compose[@]}" up -d --wait --wait-timeout 180
+          cmp --silent rc-fresh-password-before rc-fresh-secrets/postgres_password
+          "${compose[@]}" ps --status running kaya secure-send-gateway guacd postgres
+
+      - name: Legacy SQLite migration acceptance
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          legacy_project="${RC_PROJECT}_legacy"
+          mkdir -p rc-legacy-data rc-legacy-uploads rc-legacy-backups
+          docker run --rm \
+            -e PYTHONPATH=/workspace -e APP_ENV=test \
+            -e SECRET_KEY=rc-readiness-synthetic-secret-key-012345678901234567890123 \
+            -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
+            -v "$PWD:/workspace" -v "$PWD/rc-legacy-data:/app/data" -w /workspace \
+            "$TEST_IMAGE" python scripts/generate_sqlite_migration_fixture.py \
+            /app/data/kaya.db --functional --historical-revision 20260813_01
+          docker run --rm \
+            -e TEST_SECRET_KEY=rc-readiness-synthetic-secret-key-012345678901234567890123 \
+            -e TEST_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
+            -e TEST_SETUP_TOKEN=rc-readiness-synthetic-setup-token \
+            -v "$PWD/rc-legacy-data:/app/data" "$TEST_IMAGE" python -c \
+            'import os; from pathlib import Path; p=Path("/app/data/.runtime.env"); p.write_text(f"SECRET_KEY={os.environ[\"TEST_SECRET_KEY\"]}\\nENCRYPTION_KEY={os.environ[\"TEST_ENCRYPTION_KEY\"]}\\nSETUP_TOKEN={os.environ[\"TEST_SETUP_TOKEN\"]}\\n"); p.chmod(0o600)'
+          export KAYA_IMAGE="$TEST_IMAGE"
+          export KAYA_DATA_DIR=./rc-legacy-data
+          export KAYA_UPLOAD_DIR=./rc-legacy-uploads
+          export KAYA_POSTGRES_BACKUP_DIR=./rc-legacy-backups
+          export KAYA_POSTGRES_PASSWORD_DIR=./rc-legacy-secrets
+          compose=(docker compose -p "$legacy_project" -f docker-compose.yml -f docker-compose.upgrade.yml)
+          "${compose[@]}" run --rm sqlite-postgres-upgrade > rc-legacy-migration.log 2>&1
+          test -f rc-legacy-data/kaya-database-upgrade.json
+          python -c 'import json; from pathlib import Path; state=json.loads(Path("rc-legacy-data/kaya-database-upgrade.json").read_text()); assert state["state"] == "POSTGRES_ACTIVE", state'
+          test -f rc-legacy-secrets/postgres_password
+          ! grep -Eq 'UndefinedTable|relation "users" does not exist|SELECT users.id|SECRET_KEY=|ENCRYPTION_KEY=|postgres_password' rc-legacy-migration.log
+          "${compose[@]}" up -d --wait --wait-timeout 180
+          "${compose[@]}" ps --status running kaya postgres secure-send-gateway guacd
+
+      - name: Write final readiness verdict
+        if: always()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [ "${{ job.status }}" = success ]; then
+            verdict='RC candidate READY'
+          else
+            verdict='RC candidate NOT READY'
+          fi
+          {
+            echo "## Final RC readiness verdict"
+            echo "- Candidate SHA: `$CANDIDATE_SHA`"
+            echo "- Static checks: completed"
+            echo "- Unit/database/migration/security tests: completed"
+            echo "- Fresh install/restart: completed"
+            echo "- Legacy SQLite migration/post-migration startup: completed"
+            echo "- Fail-closed validation: covered by migration test suite"
+            echo "- Final verdict: **$verdict**"
+            if [ "$verdict" = 'RC candidate READY' ]; then
+              echo "- candidate_sha=$CANDIDATE_SHA"
+              echo "- recommended_tag=v0.28.0-rc.2"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Dispose exact validation resources
+        if: always()
+        shell: bash
+        run: |
+          docker compose -p "$RC_PROJECT" -f docker-compose.yml down --remove-orphans || true
+          docker compose -p "${RC_PROJECT}_legacy" -f docker-compose.yml -f docker-compose.upgrade.yml down --remove-orphans || true

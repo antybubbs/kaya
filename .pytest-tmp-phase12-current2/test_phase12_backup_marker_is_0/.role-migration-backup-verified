@@ -1,1 +1,0 @@
-{"archive": "kaya-20260821T000000Z.dump", "sha256": "94e653113fdc2add1569c74f1ef9ecbf61e64c944f88ee5b494016c7fae33c58", "archive_bytes": 28, "source_database": "kaya", "source_role": "kaya", "alembic_revision": "20260818_02", "backup_purpose": "pre_role_topology_migration", "run_id": "test-run"}
