@@ -129,7 +129,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           docker run --rm --shm-size=1g \
-            -e PYTHONPATH=/workspace -e APP_ENV=test \
+            -e PYTHONPATH=/workspace:/workspace/external/Kaya-Docker-Agent -e APP_ENV=test \
             -e TMPDIR=/workspace/.pytest-tmp -e SQLITE_TMPDIR=/workspace/.pytest-tmp \
             -e SECRET_KEY=rc-readiness-synthetic-secret-key-012345678901234567890123 \
             -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
@@ -154,7 +154,7 @@ jobs:
           phase6_log=phase6-harness.log
           status=0
           docker run --rm --shm-size=1g \
-            -e PYTHONPATH=/workspace -e APP_ENV=test \
+            -e PYTHONPATH=/workspace:/workspace/external/Kaya-Docker-Agent -e APP_ENV=test \
             -e TMPDIR=/workspace/.pytest-tmp -e SQLITE_TMPDIR=/workspace/.pytest-tmp \
             -e SECRET_KEY=rc-readiness-synthetic-secret-key-012345678901234567890123 \
             -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
@@ -192,7 +192,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           docker run --rm --shm-size=1g \
-            -e PYTHONPATH=/workspace -e APP_ENV=test \
+            -e PYTHONPATH=/workspace:/workspace/external/Kaya-Docker-Agent -e APP_ENV=test \
             -e TMPDIR=/workspace/.pytest-tmp -e SQLITE_TMPDIR=/workspace/.pytest-tmp \
             -e SECRET_KEY=rc-readiness-synthetic-secret-key-012345678901234567890123 \
             -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \

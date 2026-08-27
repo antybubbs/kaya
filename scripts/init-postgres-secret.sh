@@ -28,3 +28,4 @@ else
     chmod 600 "$path"
     printf '%s\n' "PostgreSQL password file already exists; it was not replaced."
 fi
+chown kaya:kaya "$path"
