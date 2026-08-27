@@ -22,7 +22,7 @@ compose() {
 compose_up() {
     if ! compose up -d "$@"; then
         if [[ "${PHASE7D_DEBUG_LOGS:-0}" == "1" ]]; then
-            compose logs --no-color postgres-role-init postgres-role-migration-backup 2>&1 \
+            compose logs --no-color 2>&1 \
                 | sed -E 's/(password|secret|key|token)=([^ ]+)/\1=[REDACTED]/Ig' >&2 || true
         fi
         return 1

@@ -65,6 +65,7 @@ jobs:
       CANDIDATE_SHA: ${{ needs.resolve-candidate.outputs.candidate_sha }}
       PHASE7D_HISTORICAL_REVISION: 20260813_01
       PHASE7D_PROJECT_PREFIX: kaya_phase7d_${{ github.run_id }}_${{ github.run_attempt }}
+      PHASE7D_DEBUG_LOGS: "1"
     steps:
       - name: Check out exact candidate
         uses: actions/checkout@v4
@@ -164,16 +165,24 @@ jobs:
           if [[ "$status" -eq 0 ]]; then
             echo 'result=PASS' >> "$GITHUB_OUTPUT"
             echo 'Extended Phase 6 harness: PASS' >> "$GITHUB_STEP_SUMMARY"
-          elif [[ "$status" -eq 135 ]] \
-            && grep -q 'Fatal Python error: Bus error' "$phase6_log" \
-            && grep -q 'test_historical_sqlite_revision_is_eligible_and_upgraded_with_backup' "$phase6_log" \
-            && grep -q '20260730_01_kaya_schema_baseline.py:' "$phase6_log"; then
-            echo 'result=KNOWN_SIGBUS' >> "$GITHUB_OUTPUT"
-            {
-              echo '## Extended Phase 6 harness: FAIL - known SIGBUS'
-              echo 'Known issue: Linux CI native SIGBUS in the historical Phase 6 Alembic fixture during baseline schema/index construction.'
-              echo 'The test remains tracked and was not skipped or xfailed.'
-            } >> "$GITHUB_STEP_SUMMARY"
+          elif [[ "$status" -eq 135 ]]; then
+            has_bus=0
+            has_historical_test=0
+            has_baseline_stack=0
+            grep -Fq 'Fatal Python error: Bus error' "$phase6_log" && has_bus=1
+            grep -Fq 'test_historical_sqlite_revision_is_eligible_and_upgraded_with_backup' "$phase6_log" && has_historical_test=1
+            grep -Fq 'migrations/versions/20260730_01_kaya_schema_baseline.py' "$phase6_log" && has_baseline_stack=1
+            if (( has_bus == 1 && has_historical_test == 1 && has_baseline_stack == 1 )); then
+              echo 'result=KNOWN_SIGBUS' >> "$GITHUB_OUTPUT"
+              {
+                echo '## Extended Phase 6 harness: FAIL - known SIGBUS'
+                echo 'Known issue: Linux CI native SIGBUS in the historical Phase 6 Alembic fixture during baseline schema/index construction.'
+                echo 'The test remains tracked and was not skipped or xfailed.'
+              } >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "Unexpected Phase 6 harness failure status=$status markers bus=$has_bus historical_test=$has_historical_test baseline_stack=$has_baseline_stack" >&2
+              exit "$status"
+            fi
           else
             echo "Unexpected Phase 6 harness failure status=$status" >&2
             exit "$status"
