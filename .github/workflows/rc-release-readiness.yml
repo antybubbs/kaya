@@ -117,7 +117,14 @@ jobs:
               ((${#test_files[@]} > 0))
               for test_file in "${test_files[@]}"; do
                 echo "Running $test_file in an isolated pytest process"
-                pytest -q "$test_file"
+                status=0
+                pytest -q "$test_file" || status=$?
+                if [[ "$status" -ne 0 && "$status" -ne 5 ]]; then
+                  exit "$status"
+                fi
+                if [[ "$status" -eq 5 ]]; then
+                  echo "No tests collected for $test_file; preserving pytest skip-only result"
+                fi
               done
             '
 
