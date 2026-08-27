@@ -154,7 +154,7 @@ configure_project "${PROJECT_PREFIX}_fresh" "$RUN_ROOT/fresh" 18091 18991 "$IMAG
 compose_up
 wait_for_kaya
 assert_revision
-[[ "$(secret_mode)" == "600 100 101" ]]
+[[ "$(secret_mode)" == "600 ${KAYA_RUNTIME_UID} ${KAYA_RUNTIME_GID}" ]]
 fresh_hash="$(secret_hash)"
 ! compose logs --no-color kaya | grep -q 'Preparing controlled SQLite'
 enable_high_availability_fixture

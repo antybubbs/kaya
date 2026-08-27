@@ -3,6 +3,9 @@ set -eu
 path="${1:-./data/secrets/postgres_password}"
 parent="$(dirname "$path")"
 mkdir -p "$parent"
+kaya_uid="$(id -u kaya)"
+kaya_gid="$(id -g kaya)"
+chown "$kaya_uid:$kaya_gid" "$parent"
 chmod 700 "$parent"
 if [ ! -e "$path" ]; then
     python - "$path" <<'PY'
@@ -28,4 +31,4 @@ else
     chmod 600 "$path"
     printf '%s\n' "PostgreSQL password file already exists; it was not replaced."
 fi
-chown kaya:kaya "$path"
+chown "$kaya_uid:$kaya_gid" "$path"
