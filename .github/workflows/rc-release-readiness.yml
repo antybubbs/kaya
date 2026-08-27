@@ -57,7 +57,17 @@ jobs:
         with:
           ref: ${{ steps.resolve.outputs.candidate_sha }}
           fetch-depth: 0
-          submodules: recursive
+
+      - name: Check out required agent test dependency
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          agent_sha="$(git ls-tree HEAD external/Kaya-Docker-Agent | awk '{print $3}')"
+          test -n "$agent_sha"
+          rm -rf external/Kaya-Docker-Agent
+          git clone --no-checkout https://github.com/antybubbs/Kaya-Docker-Agent.git external/Kaya-Docker-Agent
+          git -C external/Kaya-Docker-Agent fetch --depth=1 origin "$agent_sha"
+          git -C external/Kaya-Docker-Agent checkout --detach "$agent_sha"
 
       - name: Verify candidate identity
         shell: bash
