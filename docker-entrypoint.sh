@@ -158,7 +158,9 @@ fi
 
 if [ "${SKIP_DATABASE_MIGRATIONS:-false}" != "true" ] && [ "${KAYA_GATEWAY_MODE:-false}" != "true" ]; then
     if gosu kaya python -c "from app.db.session import SessionLocal; from app.models.models import User; db=SessionLocal(); found=db.query(User.id).filter(User.role == 'admin').first(); db.close(); raise SystemExit(0 if found is None else 1)"; then
-        echo "Kaya first-run setup is required; retrieve the protected setup token from the persistent runtime secret store."
+        echo "Kaya first-run setup is required."
+        echo "Setup token: $SETUP_TOKEN"
+        echo "Open /setup in your browser to create the first administrator."
     fi
 fi
 

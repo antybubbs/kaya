@@ -47,6 +47,11 @@ is private to the Compose network and is pinned to `postgres:16.14`; port 5432
 is not published on the host. Complete the setup wizard at
 `http://SERVER-IP:8080/setup`.
 
+When the database has no administrator, Kaya logs the one-time setup token
+and directs the operator to `/setup`. The token is shown only during normal
+startup while setup is incomplete; it is not logged by migration, recovery,
+secure-send, or database tooling.
+
 Before PostgreSQL starts, Compose runs the shared password initializer. It
 creates `${KAYA_POSTGRES_PASSWORD_DIR:-./data/secrets}/postgres_password`
 automatically when absent, using cryptographically secure randomness and mode

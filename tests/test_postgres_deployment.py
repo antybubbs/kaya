@@ -101,6 +101,11 @@ def test_upgrade_runner_uses_persistent_runtime_secret_bootstrap_without_startin
     assert 'Persistent Kaya runtime secrets are required for this operation.' in entrypoint
     assert '[ "${SKIP_DATABASE_MIGRATIONS:-false}" != "true" ]' in entrypoint
     assert 'from app.models.models import User' in entrypoint
+    assert 'echo "Setup token: $SETUP_TOKEN"' in entrypoint
+    assert 'Open /setup in your browser to create the first administrator.' in entrypoint
+    assert 'SECRET_KEY=$PERSISTED_SECRET_KEY' not in entrypoint.split('if [ "${SKIP_DATABASE_MIGRATIONS:-false}"', 1)[-1]
+    assert 'ENCRYPTION_KEY=$PERSISTED_ENCRYPTION_KEY' not in entrypoint.split('if [ "${SKIP_DATABASE_MIGRATIONS:-false}"', 1)[-1]
+    assert 'postgres_password' not in entrypoint.split('if [ "${SKIP_DATABASE_MIGRATIONS:-false}"', 1)[-1]
     assert 'exec gosu kaya "$@"' in entrypoint
     assert "uvicorn" not in overlay
 
