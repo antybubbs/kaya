@@ -172,6 +172,10 @@ configure_project "${PROJECT_PREFIX}_legacy" "$RUN_ROOT/legacy" 18092 18992 "$IM
 docker run --rm --entrypoint chown \
     -v "$PHASE7D_ROOT/data:/app/data" "$IMAGE_A" \
     -R "$KAYA_RUNTIME_UID:$KAYA_RUNTIME_GID" /app/data
+fixture_args=(scripts/generate_sqlite_migration_fixture.py /app/data/kaya.db --functional)
+if [[ -n "${PHASE7D_HISTORICAL_REVISION:-}" ]]; then
+    fixture_args+=(--historical-revision "$PHASE7D_HISTORICAL_REVISION")
+fi
 docker run --rm --entrypoint python \
     -w /app \
     -e PYTHONPATH=/app \
@@ -180,7 +184,7 @@ docker run --rm --entrypoint python \
     -e ENCRYPTION_KEY=MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA= \
     -e SETUP_TOKEN=phase7d-synthetic-setup-token \
     -v "$PHASE7D_ROOT/data:/app/data" "$IMAGE_A" \
-    scripts/generate_sqlite_migration_fixture.py /app/data/kaya.db --functional
+    "${fixture_args[@]}"
 legacy_before="$(fingerprint_sqlite "$PHASE7D_ROOT/data")"
 compose_up
 wait_for_kaya
