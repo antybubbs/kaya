@@ -79,7 +79,7 @@ jobs:
           git fetch --no-tags origin dev
           git merge-base --is-ancestor "$CANDIDATE_SHA" origin/dev
       - name: Validate Compose configuration
-        run: docker compose -f docker-compose.yml -f ci/compose/docker-compose.phase7d-ci.yml config --quiet
+        run: docker compose -f docker-compose.yml config --quiet
       - name: Run strict Docker runtime acceptance
         shell: bash
         run: |
