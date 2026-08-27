@@ -37,6 +37,13 @@ if [ ! -f "$SECRETS_FILE" ]; then
     PERSISTED_ENCRYPTION_KEY="${ENCRYPTION_KEY:-}"
     PERSISTED_SETUP_TOKEN="${SETUP_TOKEN:-}"
 
+    if [ "${KAYA_REQUIRE_PERSISTED_RUNTIME_SECRETS:-false}" = "true" ] && {
+        [ -z "$PERSISTED_SECRET_KEY" ] || [ -z "$PERSISTED_ENCRYPTION_KEY" ];
+    }; then
+        echo "Persistent Kaya runtime secrets are required for this operation." >&2
+        exit 1
+    fi
+
     if [ -z "$PERSISTED_SECRET_KEY" ]; then
         PERSISTED_SECRET_KEY="$(generate_secret_key)"
     fi

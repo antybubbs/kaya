@@ -62,6 +62,7 @@ def test_upgrade_compose_is_explicit_and_contains_sqlite_runner():
     assert "scripts.kaya_phase6_upgrade" in overlay
     assert 'entrypoint: ["/usr/local/bin/kaya-entrypoint"]' in overlay
     assert 'SKIP_DATABASE_MIGRATIONS: "true"' in overlay
+    assert 'KAYA_REQUIRE_PERSISTED_RUNTIME_SECRETS: "true"' in overlay
     assert 'entrypoint: ["python", "-m", "scripts.kaya_phase6_upgrade"]' not in overlay
     assert "--source" in overlay
     assert "--backup-dir" in overlay
@@ -92,6 +93,8 @@ def test_upgrade_runner_uses_persistent_runtime_secret_bootstrap_without_startin
     assert 'command:\n      - python\n      - -m\n      - scripts.kaya_phase6_upgrade' in overlay
     assert 'SKIP_DATABASE_MIGRATIONS: "true"' in overlay
     assert 'SECRETS_FILE="/app/data/.runtime.env"' in entrypoint
+    assert 'KAYA_REQUIRE_PERSISTED_RUNTIME_SECRETS' in entrypoint
+    assert 'Persistent Kaya runtime secrets are required for this operation.' in entrypoint
     assert 'exec gosu kaya "$@"' in entrypoint
     assert "uvicorn" not in overlay
 

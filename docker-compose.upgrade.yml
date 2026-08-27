@@ -10,6 +10,7 @@ services:
       KAYA_SQLITE_SOURCE_URL: sqlite:////app/data/kaya.db
       PGHOST: postgres
       SKIP_DATABASE_MIGRATIONS: "true"
+      KAYA_REQUIRE_PERSISTED_RUNTIME_SECRETS: "true"
     entrypoint: ["/usr/local/bin/kaya-entrypoint"]
     command:
       - python
