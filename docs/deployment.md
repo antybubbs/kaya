@@ -47,9 +47,15 @@ is private to the Compose network and is pinned to `postgres:16.14`; port 5432
 is not published on the host. Complete the setup wizard at
 `http://SERVER-IP:8080/setup`.
 
-To supply an existing private password file on first installation, place it at
-`./data/secrets/postgres_password` or set `KAYA_POSTGRES_PASSWORD_FILE`. Do not
-put credentials in `DATABASE_URL`, shell arguments, logs, or committed files.
+Before PostgreSQL starts, Compose runs the shared password initializer. It
+creates `${KAYA_POSTGRES_PASSWORD_DIR:-./data/secrets}/postgres_password`
+automatically when absent, using cryptographically secure randomness and mode
+`0600`, and reuses it unchanged on later starts. No manual password-file
+creation is required. Do not put credentials in `DATABASE_URL`, shell
+arguments, logs, or committed files. Existing deployments that use the legacy
+`KAYA_POSTGRES_PASSWORD_FILE` setting should set
+`KAYA_POSTGRES_PASSWORD_DIR` to that file's containing directory when moving
+to the automatic bootstrap topology.
 
 ## Existing SQLite to PostgreSQL upgrade
 
@@ -113,7 +119,8 @@ Historical phase-specific Compose files used by CI remain under
 - `./uploads:/app/uploads`
 - `./data/remote-recordings:/app/data/remote-recordings`
 - Docker volume `kaya_postgres_data` (production PostgreSQL data)
-- Compose secret `kaya_postgres_password` (host file-backed PostgreSQL password)
+- `${KAYA_POSTGRES_PASSWORD_DIR:-./data/secrets}/postgres_password` (persistent
+  PostgreSQL password, created automatically before PostgreSQL starts)
 
 Important persistent files:
 
@@ -130,7 +137,7 @@ Important environment/configuration values include:
 
 - `DATABASE_URL` (normally PostgreSQL in the primary Compose stack)
 - `KAYA_POSTGRES_DATABASE_URL`
-- `KAYA_POSTGRES_PASSWORD_FILE` (optional host path for the PostgreSQL password file)
+- `KAYA_POSTGRES_PASSWORD_DIR` (optional host directory for the persistent PostgreSQL password)
 - `SECRET_KEY`
 - `ENCRYPTION_KEY`
 - `BASE_URL`

@@ -10,7 +10,7 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://kaya@postgres:5432/kaya
       KAYA_POSTGRES_DATABASE_URL: postgresql+psycopg://kaya@postgres:5432/kaya
-      DATABASE_PASSWORD_FILE: /run/secrets/kaya_postgres_password
+      DATABASE_PASSWORD_FILE: /run/kaya-secrets/postgres_password
       FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
     ports:
       - "${KAYA_PORT:-8080}:8080"
@@ -18,8 +18,7 @@ services:
       - ${KAYA_DATA_DIR:-./data}:/app/data
       - ${KAYA_UPLOAD_DIR:-./uploads}:/app/uploads
       - ${KAYA_DATA_DIR:-./data}/remote-recordings:/app/data/remote-recordings
-    secrets:
-      - kaya_postgres_password
+      - ${KAYA_POSTGRES_PASSWORD_DIR:-./data/secrets}:/run/kaya-secrets:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -45,7 +44,7 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://kaya@postgres:5432/kaya
       KAYA_POSTGRES_DATABASE_URL: postgresql+psycopg://kaya@postgres:5432/kaya
-      DATABASE_PASSWORD_FILE: /run/secrets/kaya_postgres_password
+      DATABASE_PASSWORD_FILE: /run/kaya-secrets/postgres_password
       FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
       SKIP_DATABASE_MIGRATIONS: "true"
       KAYA_GATEWAY_MODE: "true"
@@ -53,8 +52,7 @@ services:
       - "${KAYA_SECURE_SEND_PORT:-8999}:8999"
     volumes:
       - ${KAYA_DATA_DIR:-./data}:/app/data
-    secrets:
-      - kaya_postgres_password
+      - ${KAYA_POSTGRES_PASSWORD_DIR:-./data/secrets}:/run/kaya-secrets:ro
     depends_on:
       kaya:
         condition: service_healthy
@@ -73,28 +71,34 @@ services:
     container_name: kaya-guacd
     restart: unless-stopped
 
+  postgres-secret-init:
+    image: ${KAYA_IMAGE:-ghcr.io/antybubbs/kaya:latest}
+    restart: "no"
+    entrypoint: ["/bin/sh", "/app/scripts/init-postgres-secret.sh"]
+    command: ["/run/kaya-secrets/postgres_password"]
+    volumes:
+      - ${KAYA_POSTGRES_PASSWORD_DIR:-./data/secrets}:/run/kaya-secrets
+
   postgres:
     image: ${KAYA_POSTGRES_IMAGE:-postgres:16.14}
     restart: unless-stopped
     environment:
       POSTGRES_DB: kaya
       POSTGRES_USER: kaya
-      POSTGRES_PASSWORD_FILE: /run/secrets/kaya_postgres_password
-    secrets:
-      - kaya_postgres_password
+      POSTGRES_PASSWORD_FILE: /run/kaya-secrets/postgres_password
     volumes:
       - kaya_postgres_data:/var/lib/postgresql/data
       - ${KAYA_POSTGRES_BACKUP_DIR:-./postgres-backups}:/var/backups/kaya-postgres
+      - ${KAYA_POSTGRES_PASSWORD_DIR:-./data/secrets}:/run/kaya-secrets:ro
+    depends_on:
+      postgres-secret-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U kaya -d kaya"]
       interval: 5s
       timeout: 5s
       retries: 30
       start_period: 10s
-
-secrets:
-  kaya_postgres_password:
-    file: ${KAYA_POSTGRES_PASSWORD_FILE:-./data/secrets/postgres_password}
 
 volumes:
   kaya_postgres_data:

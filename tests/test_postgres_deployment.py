@@ -39,6 +39,10 @@ def test_postgresql_compose_keeps_database_private_and_password_external():
     assert "5432:" not in compose
     assert "kaya_postgres_data" in compose
     assert "pg_isready" in compose
+    assert "postgres-secret-init:" in compose
+    assert "service_completed_successfully" in compose
+    assert "kaya_postgres_password" not in compose
+    assert "${KAYA_POSTGRES_PASSWORD_DIR:-./data/secrets}:/run/kaya-secrets" in compose
 
 
 def test_primary_compose_is_postgresql_only_and_keeps_database_private():
@@ -49,7 +53,7 @@ def test_primary_compose_is_postgresql_only_and_keeps_database_private():
     assert "KAYA_SQLITE_SOURCE_URL" not in compose
     assert "KAYA_PHASE6_AUTO_UPGRADE" not in compose
     assert "sqlite-postgres-upgrade" not in compose
-    assert "kaya_postgres_password" in compose
+    assert "postgres-secret-init" in compose
     assert "kaya_postgres_data:/var/lib/postgresql/data" in compose
     assert "5432:" not in compose
 
@@ -105,7 +109,7 @@ def test_upgrade_workflow_is_not_part_of_normal_startup():
     compose = Path("docker-compose.yml").read_text(encoding="utf-8")
 
     assert "depends_on:\n      postgres:\n        condition: service_healthy" in compose
-    assert "service_completed_successfully" not in compose
+    assert "postgres-secret-init" in compose
 
 
 def test_phase7d_backup_probe_runs_with_postgres_client_image():
