@@ -9,8 +9,12 @@ services:
       DATABASE_PASSWORD_FILE: /run/kaya-secrets/postgres_password
       KAYA_SQLITE_SOURCE_URL: sqlite:////app/data/kaya.db
       PGHOST: postgres
-    entrypoint: ["python", "-m", "scripts.kaya_phase6_upgrade"]
+      SKIP_DATABASE_MIGRATIONS: "true"
+    entrypoint: ["/usr/local/bin/kaya-entrypoint"]
     command:
+      - python
+      - -m
+      - scripts.kaya_phase6_upgrade
       - --source
       - /app/data/kaya.db
       - --target-url

@@ -60,6 +60,9 @@ def test_upgrade_compose_is_explicit_and_contains_sqlite_runner():
     assert "sqlite-postgres-upgrade:" in overlay
     assert "KAYA_SQLITE_SOURCE_URL: sqlite:////app/data/kaya.db" in overlay
     assert "scripts.kaya_phase6_upgrade" in overlay
+    assert 'entrypoint: ["/usr/local/bin/kaya-entrypoint"]' in overlay
+    assert 'SKIP_DATABASE_MIGRATIONS: "true"' in overlay
+    assert 'entrypoint: ["python", "-m", "scripts.kaya_phase6_upgrade"]' not in overlay
     assert "--source" in overlay
     assert "--backup-dir" in overlay
     assert "kaya_upgrade_secrets" not in overlay
@@ -79,6 +82,18 @@ def test_upgrade_secret_bootstrap_is_atomic_and_does_not_expose_values():
     assert 'stream.write(secrets.token_urlsafe(64).encode("ascii"))' in helper
     assert "cat \"$path\"" not in helper
     assert 'echo "$' not in helper
+
+
+def test_upgrade_runner_uses_persistent_runtime_secret_bootstrap_without_starting_web_app():
+    overlay = Path("docker-compose.upgrade.yml").read_text(encoding="utf-8")
+    entrypoint = Path("docker-entrypoint.sh").read_text(encoding="utf-8")
+
+    assert 'entrypoint: ["/usr/local/bin/kaya-entrypoint"]' in overlay
+    assert 'command:\n      - python\n      - -m\n      - scripts.kaya_phase6_upgrade' in overlay
+    assert 'SKIP_DATABASE_MIGRATIONS: "true"' in overlay
+    assert 'SECRETS_FILE="/app/data/.runtime.env"' in entrypoint
+    assert 'exec gosu kaya "$@"' in entrypoint
+    assert "uvicorn" not in overlay
 
 
 def test_upgrade_workflow_is_not_part_of_normal_startup():

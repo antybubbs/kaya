@@ -354,6 +354,12 @@ same host file is consumed by the normal Compose stack after the upgrade; no
 manual password-file creation is required for the default path. Keep the
 directory private and do not print or commit the file.
 
+The migration runner uses Kaya's normal entrypoint bootstrap to load the
+existing `/app/data/.runtime.env` before handing off to the explicit offline
+migration command. It does not start Uvicorn or run the ordinary application
+database migration command, and it never generates replacement application
+secrets for an existing installation.
+
 The runner invokes the durable upgrade state machine directly. It validates
 the source, creates or reuses a
 verified backup under `/app/data/backups`, migrates through the existing
