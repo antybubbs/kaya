@@ -64,7 +64,7 @@ jobs:
     env:
       CANDIDATE_SHA: ${{ needs.resolve-candidate.outputs.candidate_sha }}
       PHASE7D_HISTORICAL_REVISION: 20260813_01
-      PHASE7D_PROJECT_PREFIX: kaya_rc_runtime_${{ github.run_id }}_${{ github.run_attempt }}
+      PHASE7D_PROJECT_PREFIX: kaya_phase7d_${{ github.run_id }}_${{ github.run_attempt }}
     steps:
       - name: Check out exact candidate
         uses: actions/checkout@v4
@@ -167,7 +167,7 @@ jobs:
           elif [[ "$status" -eq 135 ]] \
             && grep -q 'Fatal Python error: Bus error' "$phase6_log" \
             && grep -q 'test_historical_sqlite_revision_is_eligible_and_upgraded_with_backup' "$phase6_log" \
-            && grep -q '20260730_01_kaya_schema_baseline.py:71' "$phase6_log"; then
+            && grep -q '20260730_01_kaya_schema_baseline.py:' "$phase6_log"; then
             echo 'result=KNOWN_SIGBUS' >> "$GITHUB_OUTPUT"
             {
               echo '## Extended Phase 6 harness: FAIL - known SIGBUS'
