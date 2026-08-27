@@ -106,7 +106,7 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          docker run --rm \
+          docker run --rm --shm-size=1g \
             -e PYTHONPATH=/workspace \
             -e APP_ENV=test \
             -e SECRET_KEY=rc-readiness-synthetic-secret-key-012345678901234567890123 \
