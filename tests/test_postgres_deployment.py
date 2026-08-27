@@ -95,6 +95,8 @@ def test_upgrade_runner_uses_persistent_runtime_secret_bootstrap_without_startin
     assert 'SECRETS_FILE="/app/data/.runtime.env"' in entrypoint
     assert 'KAYA_REQUIRE_PERSISTED_RUNTIME_SECRETS' in entrypoint
     assert 'Persistent Kaya runtime secrets are required for this operation.' in entrypoint
+    assert '[ "${SKIP_DATABASE_MIGRATIONS:-false}" != "true" ]' in entrypoint
+    assert 'from app.models.models import User' in entrypoint
     assert 'exec gosu kaya "$@"' in entrypoint
     assert "uvicorn" not in overlay
 
