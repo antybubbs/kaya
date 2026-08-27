@@ -122,7 +122,7 @@ jobs:
               df -hT /tmp /workspace
               df -i /tmp /workspace
               mount
-              awk '/^(MemTotal|MemAvailable|SwapTotal|SwapFree):/ {print}' /proc/meminfo
+              awk "/^(MemTotal|MemAvailable|SwapTotal|SwapFree):/ {print}" /proc/meminfo
               ulimit -a
             '
 
