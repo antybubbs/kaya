@@ -2,6 +2,13 @@
 # security options come from docker-compose.yml; this file only prevents the
 # stable production names from colliding on a shared runner.
 services:
+  sqlite-postgres-upgrade:
+    image: ${PHASE7D_IMAGE:?PHASE7D_IMAGE is required}
+    container_name: ${PHASE7D_PROJECT:?PHASE7D_PROJECT is required}_sqlite_postgres_upgrade
+    volumes: !override
+      - ${PHASE7D_ROOT:?PHASE7D_ROOT is required}/data:/app/data
+      - postgres_secret:/run/kaya-secrets:ro
+
   kaya:
     image: ${PHASE7D_IMAGE:?PHASE7D_IMAGE is required}
     container_name: ${PHASE7D_PROJECT:?PHASE7D_PROJECT is required}_kaya

@@ -127,12 +127,15 @@ def test_phase7d_backup_probe_runs_with_postgres_client_image():
 
 def test_phase7d_runtime_uses_the_documented_explicit_sqlite_upgrade_runner():
     script = Path("scripts/phase7d_runtime_validation.sh").read_text(encoding="utf-8")
+    ci_overlay = Path("ci/compose/docker-compose.phase7d-ci.yml").read_text(encoding="utf-8")
 
     assert 'UPGRADE_FILE="$ROOT_DIR/docker-compose.upgrade.yml"' in script
     assert 'upgrade_compose()' in script
     assert 'upgrade_compose run --rm sqlite-postgres-upgrade' in script
     assert 'compose_up\nwait_for_kaya' in script
     assert "kaya-database-upgrade-report.json" in script
+    assert "sqlite-postgres-upgrade:" in ci_overlay
+    assert "postgres_secret:/run/kaya-secrets:ro" in ci_overlay
 
 
 def test_phase12_role_topology_helper_is_fail_closed_and_scoped():
