@@ -47,7 +47,7 @@ source_hash() { docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "
 backup_hash() { docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c 'find /data/backups -type f -name "*.sqlite3" -printf "%f\\n" | sort | sha256sum' | awk '{print $1}'; }
 legacy_backup_valid() { test -n "$(backup_hash)" && docker run --rm --user 0 --entrypoint python -v "$ROOT/data:/data" "$IMAGE" -c 'import sqlite3; c=sqlite3.connect("/data/kaya.db"); assert c.execute("pragma quick_check").fetchone()[0] == "ok"; c.close()'; }
 historical_backup_valid() { docker run --rm --user 0 --entrypoint python -v "$ROOT/data:/data" "$IMAGE" -c 'import glob, json; assert any(json.load(open(path))["source_revision"] == "20260813_01" for path in glob.glob("/data/backups/*.json"))'; }
-migration_report_valid() { compose exec -T kaya python -c 'import json; r=json.load(open("/app/data/kaya-database-upgrade-report.json", encoding="utf-8")); assert r["result"] == "COMPLETED" and r["rejected_rows"] == 0 and r["skipped_rows"] == 0 and r["foreign_key_violations"] == 0 and len(r["dependency_order"]) == 104'; }
+migration_report_valid() { compose exec -T kaya python -c 'import json; r=json.load(open("/app/data/kaya-database-upgrade-report.json", encoding="utf-8")); assert r["result"] == "COMPLETED" and r["rejected_rows"] == 0 and r["foreign_key_violations"] == 0 and len(r["dependency_order"]) == 104'; }
 historical_identity_valid() {
   local source_identity target_identity
   source_identity="$(compose exec -T kaya python -c 'import json; s=json.load(open("/app/data/kaya-database-upgrade.json", encoding="utf-8")); print("|".join((s["migration_id"], s["original_source_fingerprint"], s["conversion_source_fingerprint"])))' | tr -d '\r')"

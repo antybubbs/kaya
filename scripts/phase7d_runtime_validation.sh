@@ -208,7 +208,7 @@ test -f "$PHASE7D_ROOT/data/kaya-database-upgrade.json"
 test -f "$PHASE7D_ROOT/data/kaya-database-upgrade-report.json"
 upgrade_state="$(docker run --rm --entrypoint python -v "$PHASE7D_ROOT/data:/app/data:ro" "$IMAGE_A" -c "import json; s=json.load(open('/app/data/kaya-database-upgrade.json', encoding='utf-8')); assert s['state'] == 'POSTGRES_ACTIVE'; assert s['database_engine'] == 'postgresql'; assert s['migration_id']; print(s['state'])")"
 [[ "$upgrade_state" == "POSTGRES_ACTIVE" ]]
-docker run --rm --entrypoint python -v "$PHASE7D_ROOT/data:/app/data:ro" "$IMAGE_A" -c "import json; r=json.load(open('/app/data/kaya-database-upgrade-report.json', encoding='utf-8')); assert r['result'] == 'COMPLETED'; assert r['source_engine'] == 'sqlite'; assert r['target_engine'] == 'postgresql'; assert r['rejected_rows'] == 0; assert r['skipped_rows'] == 0; assert r['foreign_key_violations'] == 0; assert sum(t['copied_rows'] for t in r['tables'].values()) > 0"
+docker run --rm --entrypoint python -v "$PHASE7D_ROOT/data:/app/data:ro" "$IMAGE_A" -c "import json; r=json.load(open('/app/data/kaya-database-upgrade-report.json', encoding='utf-8')); assert r['result'] == 'COMPLETED'; assert r['source_engine'] == 'sqlite'; assert r['target_engine'] == 'postgresql'; assert r['rejected_rows'] == 0; assert r['foreign_key_violations'] == 0; assert sum(t['copied_rows'] for t in r['tables'].values()) > 0"
 compose_up
 wait_for_kaya
 assert_revision

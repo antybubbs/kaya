@@ -136,6 +136,16 @@ def test_phase7d_runtime_uses_the_documented_explicit_sqlite_upgrade_runner():
     assert "kaya-database-upgrade-report.json" in script
     assert "sqlite-postgres-upgrade:" in ci_overlay
     assert "postgres_secret:/run/kaya-secrets:ro" in ci_overlay
+    assert "r['skipped_rows']" not in script
+
+
+def test_migration_report_contract_uses_rejected_rows_not_obsolete_skipped_rows():
+    producer = Path("app/db/sqlite_to_postgres.py").read_text(encoding="utf-8")
+    phase9 = Path("scripts/phase9_runtime_validation.sh").read_text(encoding="utf-8")
+
+    assert '"rejected_rows": 0' in producer
+    assert "skipped_rows" not in producer
+    assert "skipped_rows" not in phase9
 
 
 def test_phase12_role_topology_helper_is_fail_closed_and_scoped():
