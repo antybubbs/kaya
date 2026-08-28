@@ -39,7 +39,7 @@ configure_project() {
     python "$ROOT_DIR/scripts/kaya_validation_resources.py" validate-project --project "$project"
     export PHASE7D_PROJECT="$project" PHASE7D_ROOT="$root"
     export PHASE7D_HTTP_PORT="$http_port" PHASE7D_GATEWAY_PORT="$gateway_port"
-    export PHASE7D_IMAGE="$image"
+    export PHASE7D_IMAGE="$image" KAYA_IMAGE="$image"
     export KAYA_DATA_DIR="$root/data" KAYA_UPLOAD_DIR="$root/uploads"
     export KAYA_POSTGRES_PASSWORD_DIR="$root/secrets" KAYA_POSTGRES_BACKUP_DIR="$root/backups"
     mkdir -p "$root/data/remote-recordings" "$root/uploads" "$root/secrets" "$root/backups"
