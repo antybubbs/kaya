@@ -278,11 +278,11 @@ docker run --rm --user 0 --entrypoint sh -v "${PHASE7D_PROJECT}_postgres_data:/v
 secret_volume_exec 'rm -f /run/kaya-secrets/postgres_password'
 ! secret_volume_exec 'test -e /run/kaya-secrets/postgres_password'
 set +e
-compose up -d >/dev/null 2>&1
+missing_secret_output="$(compose run --rm --no-deps postgres-secret-init 2>&1)"
 missing_secret_status=$?
 set -e
 (( missing_secret_status != 0 ))
-compose logs --no-color postgres-secret-init | grep -q 'Existing PostgreSQL data detected but the Kaya PostgreSQL password secret is missing.'
+printf '%s\n' "$missing_secret_output" | grep -q 'Existing PostgreSQL data detected but the Kaya PostgreSQL password secret is missing.'
 ! secret_volume_exec 'test -e /run/kaya-secrets/postgres_password'
 docker run --rm --user 0 --entrypoint sh -v "${PHASE7D_PROJECT}_postgres_data:/var/lib/postgresql/data:ro" "$PHASE7D_IMAGE" \
     -c 'test -s /var/lib/postgresql/data/PG_VERSION'
