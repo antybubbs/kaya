@@ -266,16 +266,15 @@ echo 'existing PostgreSQL startup passed'
 # Existing PostgreSQL with a missing secret must fail closed. This disposable
 # project also proves the supported recovery path: restore the original file
 # without changing the PostgreSQL data volume, then start normally.
-configure_project "${PROJECT_PREFIX}_missing_secret" "$RUN_ROOT/missing-secret" 18094 18994 "$IMAGE_A"
-compose_up
-wait_for_kaya
-missing_secret_recovery="$RUN_ROOT/missing-secret/recovery"
+missing_secret_recovery="$RUN_ROOT/existing-pg/recovery"
 mkdir -p "$missing_secret_recovery"
 docker run --rm --user 0 --entrypoint sh \
     -v "${PHASE7D_PROJECT}_postgres_secret:/run/kaya-secrets:ro" \
     -v "$missing_secret_recovery:/recovery" "$PHASE7D_IMAGE" \
     -c 'cp /run/kaya-secrets/postgres_password /recovery/postgres_password && chmod 600 /recovery/postgres_password'
 compose down
+docker run --rm --user 0 --entrypoint sh -v "${PHASE7D_PROJECT}_postgres_data:/var/lib/postgresql/data:ro" "$PHASE7D_IMAGE" \
+    -c 'test -s /var/lib/postgresql/data/PG_VERSION'
 secret_volume_exec 'rm -f /run/kaya-secrets/postgres_password'
 ! secret_volume_exec 'test -e /run/kaya-secrets/postgres_password'
 set +e
