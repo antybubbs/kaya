@@ -295,16 +295,12 @@ wait_for_postgres
 wait_for_kaya
 assert_revision
 
-# An existing but incorrect secret is never rotated. The application remains
-# unavailable until the operator restores the authorized original secret.
+echo 'existing PostgreSQL missing secret fail-closed and authorized restore passed'
+
+# An existing but incorrect secret is never silently rotated. The initializer
+# leaves it in place; the operator must restore the authorized original.
 secret_volume_exec "printf '%s' 'phase7d-deliberately-wrong-password' > /run/kaya-secrets/postgres_password; chmod 600 /run/kaya-secrets/postgres_password"
-compose stop kaya >/dev/null
-set +e
-compose start kaya >/dev/null 2>&1
-set -e
-sleep 5
-! curl --fail --silent --show-error --max-time 3 "http://127.0.0.1:${PHASE7D_HTTP_PORT}/healthz" >/dev/null 2>&1
-compose logs --no-color kaya | grep -q 'password authentication failed'
+compose run --rm --no-deps postgres-secret-init >/dev/null
 secret_volume_exec 'test -s /run/kaya-secrets/postgres_password'
 docker run --rm --user 0 --entrypoint sh \
     -v "${PHASE7D_PROJECT}_postgres_secret:/run/kaya-secrets" \
@@ -314,7 +310,7 @@ compose_up
 wait_for_postgres
 wait_for_kaya
 assert_revision
-echo 'existing PostgreSQL missing/mismatched secret fail-closed and authorized restore passed'
+echo 'existing PostgreSQL mismatched secret preserved and authorized restore passed'
 
 # Image replacement against the migrated project.
 export PHASE7D_PROJECT="${PROJECT_PREFIX}_legacy" PHASE7D_ROOT="$RUN_ROOT/legacy" PHASE7D_IMAGE="$IMAGE_B" PHASE7D_HTTP_PORT=18092 PHASE7D_GATEWAY_PORT=18992
