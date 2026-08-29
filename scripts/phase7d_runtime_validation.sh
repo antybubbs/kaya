@@ -80,6 +80,11 @@ secret_mode() {
     compose exec -T kaya stat -c '%a %u %g' /run/kaya-secrets/postgres_password
 }
 
+secret_volume_exec() {
+    local volume="${PHASE7D_PROJECT}_postgres_secret"
+    docker run --rm --user 0 -v "$volume:/run/kaya-secrets" "$PHASE7D_IMAGE" sh -c "$1"
+}
+
 revision() {
     compose exec -T postgres psql -U kaya -d kaya -Atc 'SELECT version_num FROM alembic_version' | tr -d '\r'
 }
@@ -257,6 +262,60 @@ compose_up
 wait_for_kaya
 assert_revision
 echo 'existing PostgreSQL startup passed'
+
+# Existing PostgreSQL with a missing secret must fail closed. This disposable
+# project also proves the supported recovery path: restore the original file
+# without changing the PostgreSQL data volume, then start normally.
+configure_project "${PROJECT_PREFIX}_missing_secret" "$RUN_ROOT/missing-secret" 18094 18994 "$IMAGE_A"
+compose_up
+wait_for_kaya
+missing_secret_recovery="$RUN_ROOT/missing-secret/recovery"
+mkdir -p "$missing_secret_recovery"
+docker run --rm --user 0 \
+    -v "${PHASE7D_PROJECT}_postgres_secret:/run/kaya-secrets:ro" \
+    -v "$missing_secret_recovery:/recovery" "$PHASE7D_IMAGE" \
+    sh -c 'cp /run/kaya-secrets/postgres_password /recovery/postgres_password && chmod 600 /recovery/postgres_password'
+compose down
+secret_volume_exec 'rm -f /run/kaya-secrets/postgres_password'
+! secret_volume_exec 'test -e /run/kaya-secrets/postgres_password'
+set +e
+compose up -d >/dev/null 2>&1
+missing_secret_status=$?
+set -e
+(( missing_secret_status != 0 ))
+compose logs --no-color postgres-secret-init | grep -q 'Existing PostgreSQL data detected but the Kaya PostgreSQL password secret is missing.'
+! secret_volume_exec 'test -e /run/kaya-secrets/postgres_password'
+docker run --rm --user 0 -v "${PHASE7D_PROJECT}_postgres_data:/var/lib/postgresql/data:ro" "$PHASE7D_IMAGE" \
+    sh -c 'test -s /var/lib/postgresql/data/PG_VERSION'
+docker run --rm --user 0 \
+    -v "${PHASE7D_PROJECT}_postgres_secret:/run/kaya-secrets" \
+    -v "$missing_secret_recovery:/recovery:ro" "$PHASE7D_IMAGE" \
+    sh -c 'cp /recovery/postgres_password /run/kaya-secrets/postgres_password && chmod 600 /run/kaya-secrets/postgres_password'
+compose_up
+wait_for_postgres
+wait_for_kaya
+assert_revision
+
+# An existing but incorrect secret is never rotated. The application remains
+# unavailable until the operator restores the authorized original secret.
+secret_volume_exec "printf '%s' 'phase7d-deliberately-wrong-password' > /run/kaya-secrets/postgres_password; chmod 600 /run/kaya-secrets/postgres_password"
+compose stop kaya >/dev/null
+set +e
+compose start kaya >/dev/null 2>&1
+set -e
+sleep 5
+! curl --fail --silent --show-error --max-time 3 "http://127.0.0.1:${PHASE7D_HTTP_PORT}/healthz" >/dev/null 2>&1
+compose logs --no-color kaya | grep -q 'password authentication failed'
+secret_volume_exec 'test -s /run/kaya-secrets/postgres_password'
+docker run --rm --user 0 \
+    -v "${PHASE7D_PROJECT}_postgres_secret:/run/kaya-secrets" \
+    -v "$missing_secret_recovery:/recovery:ro" "$PHASE7D_IMAGE" \
+    sh -c 'cp /recovery/postgres_password /run/kaya-secrets/postgres_password && chmod 600 /run/kaya-secrets/postgres_password'
+compose_up
+wait_for_postgres
+wait_for_kaya
+assert_revision
+echo 'existing PostgreSQL missing/mismatched secret fail-closed and authorized restore passed'
 
 # Image replacement against the migrated project.
 export PHASE7D_PROJECT="${PROJECT_PREFIX}_legacy" PHASE7D_ROOT="$RUN_ROOT/legacy" PHASE7D_IMAGE="$IMAGE_B" PHASE7D_HTTP_PORT=18092 PHASE7D_GATEWAY_PORT=18992

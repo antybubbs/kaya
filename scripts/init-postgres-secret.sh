@@ -1,7 +1,12 @@
 #!/bin/sh
 set -eu
 path="${1:-./data/secrets/postgres_password}"
+data_dir="${KAYA_POSTGRES_DATA_DIR:-/var/lib/postgresql/data}"
 parent="$(dirname "$path")"
+if [ ! -e "$path" ] && [ -f "$data_dir/PG_VERSION" ]; then
+    printf '%s\n' "Existing PostgreSQL data detected but the Kaya PostgreSQL password secret is missing. Startup has been stopped to prevent credential divergence. Restore the original postgres_password secret or use the supported credential-recovery procedure. No database changes were made." >&2
+    exit 1
+fi
 mkdir -p "$parent"
 kaya_uid="$(id -u kaya)"
 kaya_gid="$(id -g kaya)"

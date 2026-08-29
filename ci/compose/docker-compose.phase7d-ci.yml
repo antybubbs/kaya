@@ -36,6 +36,7 @@ services:
     image: ${PHASE7D_IMAGE}
     volumes: !override
       - postgres_secret:/run/kaya-secrets
+      - postgres_data:/var/lib/postgresql/data:ro
       - ${PHASE7D_ROOT}/secrets:/run/kaya-host-secrets:ro
 
   postgres:

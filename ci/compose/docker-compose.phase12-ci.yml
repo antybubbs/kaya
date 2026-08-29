@@ -15,6 +15,10 @@ services:
       - type: volume
         source: postgres_secret
         target: /run/kaya-secrets
+      - type: volume
+        source: postgres_data
+        target: /var/lib/postgresql/data
+        read_only: true
       - type: bind
         source: ${PHASE12_ROOT}/secrets
         target: /run/kaya-host-secrets

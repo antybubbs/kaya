@@ -62,6 +62,16 @@ arguments, logs, or committed files. Existing deployments that use the legacy
 `KAYA_POSTGRES_PASSWORD_DIR` to that file's containing directory when moving
 to the automatic bootstrap topology.
 
+The initializer also probes the PostgreSQL data volume read-only. If the
+cluster already contains `PG_VERSION` but the password file is missing,
+startup fails closed without generating a replacement or changing the
+database. Restore the original secret from an authorized backup or surviving
+deployment mount, then start the stack normally. If the original secret is
+unavailable, stop and use the separately approved credential-recovery
+procedure; do not delete the PostgreSQL volume or generate a replacement
+secret. An existing but incorrect secret is never silently rotated; database
+authentication must fail until the authorized secret is restored.
+
 ## Existing SQLite to PostgreSQL upgrade
 
 Existing SQLite installations use the explicit upgrade override. Stop Kaya

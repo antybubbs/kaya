@@ -78,6 +78,7 @@ services:
     command: ["/run/kaya-secrets/postgres_password"]
     volumes:
       - ${KAYA_POSTGRES_PASSWORD_DIR:-./data/secrets}:/run/kaya-secrets
+      - kaya_postgres_data:/var/lib/postgresql/data:ro
 
   postgres:
     image: ${KAYA_POSTGRES_IMAGE:-postgres:16.14}

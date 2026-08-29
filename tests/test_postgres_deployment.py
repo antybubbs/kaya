@@ -43,6 +43,7 @@ def test_postgresql_compose_keeps_database_private_and_password_external():
     assert "service_completed_successfully" in compose
     assert "kaya_postgres_password" not in compose
     assert "${KAYA_POSTGRES_PASSWORD_DIR:-./data/secrets}:/run/kaya-secrets" in compose
+    assert "kaya_postgres_data:/var/lib/postgresql/data:ro" in compose
 
 
 def test_primary_compose_is_postgresql_only_and_keeps_database_private():
@@ -72,6 +73,7 @@ def test_upgrade_compose_is_explicit_and_contains_sqlite_runner():
     assert "--backup-dir" in overlay
     assert "kaya_upgrade_secrets" not in overlay
     assert "${KAYA_POSTGRES_PASSWORD_DIR:-./data/secrets}:/run/kaya-secrets" in overlay
+    assert "kaya_postgres_data:/var/lib/postgresql/data:ro" in overlay
     assert 'entrypoint: ["/bin/sh", "/app/scripts/init-postgres-secret.sh"]' in overlay
     assert "secrets: !override []" in overlay
     assert "secrets: !override {}" in overlay
@@ -87,6 +89,9 @@ def test_upgrade_secret_bootstrap_is_atomic_and_does_not_expose_values():
     assert 'stream.write(secrets.token_urlsafe(64).encode("ascii"))' in helper
     assert "cat \"$path\"" not in helper
     assert 'echo "$' not in helper
+    assert 'data_dir="${KAYA_POSTGRES_DATA_DIR:-/var/lib/postgresql/data}"' in helper
+    assert 'Existing PostgreSQL data detected but the Kaya PostgreSQL password secret is missing.' in helper
+    assert 'No database changes were made.' in helper
 
 
 def test_upgrade_runner_uses_persistent_runtime_secret_bootstrap_without_starting_web_app():
@@ -136,6 +141,7 @@ def test_phase7d_runtime_uses_the_documented_explicit_sqlite_upgrade_runner():
     assert "kaya-database-upgrade-report.json" in script
     assert "sqlite-postgres-upgrade:" in ci_overlay
     assert "postgres_secret:/run/kaya-secrets:ro" in ci_overlay
+    assert "postgres_data:/var/lib/postgresql/data:ro" in ci_overlay
     assert "r['skipped_rows']" not in script
 
 

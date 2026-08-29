@@ -14,7 +14,6 @@ services:
       - type: volume
         source: postgres_secret
         target: /run/kaya-secrets
-        read_only: true
     labels:
       com.kaya.validation.phase: "12a"
       com.kaya.validation.disposable: "true"
@@ -47,6 +46,10 @@ services:
       - type: volume
         source: postgres_secret
         target: /run/kaya-secrets
+      - type: volume
+        source: postgres_data
+        target: /var/lib/postgresql/data
+        read_only: true
       - type: bind
         source: ${PHASE12A_ROOT}/secrets
         target: /run/kaya-host-secrets
