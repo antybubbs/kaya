@@ -148,6 +148,16 @@ def test_migration_report_contract_uses_rejected_rows_not_obsolete_skipped_rows(
     assert "skipped_rows" not in phase9
 
 
+def test_phase7d_restores_postgres_before_waiting_for_kaya_recovery():
+    script = Path("scripts/phase7d_runtime_validation.sh").read_text(encoding="utf-8")
+
+    outage = script.index("compose stop postgres")
+    restore = script.index("compose start postgres", outage)
+    assert script.index("wait_for_postgres", restore) < script.index("wait_for_kaya", restore)
+    second_restore = script.index("compose start postgres", restore + 1)
+    assert script.index("wait_for_postgres", second_restore) < script.index("compose up -d kaya", second_restore)
+
+
 def test_phase12_role_topology_helper_is_fail_closed_and_scoped():
     helper = Path("scripts/kaya_postgres_role_topology.py").read_text(encoding="utf-8")
 

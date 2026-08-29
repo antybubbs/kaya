@@ -59,6 +59,19 @@ wait_for_kaya() {
     return 1
 }
 
+wait_for_postgres() {
+    local deadline=$((SECONDS + 120))
+    while (( SECONDS < deadline )); do
+        if compose exec -T postgres pg_isready -U kaya -d kaya >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 2
+    done
+    echo "PostgreSQL did not become ready for $PHASE7D_PROJECT" >&2
+    compose ps postgres
+    return 1
+}
+
 secret_hash() {
     compose exec -T kaya sha256sum /run/kaya-secrets/postgres_password | awk '{print $1}'
 }
@@ -267,6 +280,7 @@ outage_seconds=$((SECONDS - start_time))
 (( outage_seconds <= 20 ))
 (( curl_status != 0 ))
 compose start postgres
+wait_for_postgres
 wait_for_kaya
 compose stop kaya postgres
 set +e
@@ -275,6 +289,7 @@ startup_status=$?
 set -e
 (( startup_status != 0 )) || ! compose ps kaya | grep -q 'healthy'
 compose start postgres
+wait_for_postgres
 compose up -d kaya
 wait_for_kaya
 echo "PostgreSQL outage fail-closed and bounded startup checks passed (${outage_seconds}s)"
