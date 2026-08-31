@@ -40,6 +40,27 @@ def test_valid_database_uses_timed_quick_and_foreign_key_checks(tmp_path, caplog
     assert "PRAGMA integrity_check" not in caplog.text
 
 
+def test_quick_check_reports_operator_progress_at_info_level(tmp_path, monkeypatch, caplog):
+    path = tmp_path / "valid.db"
+    _database(path)
+    captured = []
+
+    def fake_rows(_connection, sql, **kwargs):
+        captured.append((sql, kwargs))
+        return [("ok",)] if sql == "PRAGMA quick_check" else []
+
+    monkeypatch.setattr(validation, "_rows", fake_rows)
+    caplog.set_level(logging.INFO)
+    validation.validate_sqlite_integrity(path)
+
+    quick_check_kwargs = captured[0][1]
+    assert quick_check_kwargs["progress_interval_seconds"] == validation.QUICK_CHECK_PROGRESS_INTERVAL_SECONDS
+    assert quick_check_kwargs["progress_log_level"] == logging.INFO
+    assert "SQLite preflight starting" in caplog.text
+    assert "SQLite quick_check starting" in caplog.text
+    assert "SQLite quick_check completed" in caplog.text
+
+
 def test_locked_database_fails_after_finite_busy_timeout(tmp_path, monkeypatch):
     path = tmp_path / "locked.db"
     _database(path)

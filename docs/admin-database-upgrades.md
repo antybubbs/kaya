@@ -15,6 +15,15 @@ python -m app.db.cli --quick-check --quick-check-timeout 300
 
 A strict diagnostic timeout means the scan did not finish; it is not reported as corruption. An actual non-`ok` result remains a corruption failure.
 
+The explicit SQLite-to-PostgreSQL upgrade also runs this strict preflight before
+creating a backup or changing the source. It logs the source path, database
+size, start and completion, and an INFO-level heartbeat approximately every 30
+seconds while `quick_check` is executing. A large database can therefore remain
+quiet for a while without being assumed stuck. If the process is interrupted
+during PRECHECK, the durable state remains `PRECHECK`; rerun the same explicit
+upgrade command to resume. Normal Kaya startup remains fail-closed for
+`PRECHECK` and every other incomplete migration state.
+
 Bind mounts do not change SQLite's validation algorithm, but their storage stack can materially change elapsed time. Windows Docker Desktop file sharing and synchronisation-backed directories such as Nextcloud can add metadata, antivirus, virtualisation, and sync latency. Keep the active SQLite database on local, container-supported storage where possible; exclude the live database, `-wal`, and `-shm` files from active synchronisation. Do not remove WAL sidecars to speed up validation; Kaya reads them as part of a WAL-mode database.
 
 ### Historical SQLite type compatibility

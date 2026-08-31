@@ -1,6 +1,9 @@
 from pathlib import Path
 
-from scripts.kaya_phase6_recovery_policy import is_explicit_recovery_command
+from scripts.kaya_phase6_recovery_policy import (
+    is_explicit_recovery_command,
+    is_phase6_upgrade_command,
+)
 
 
 BASE = [
@@ -23,6 +26,28 @@ BASE = [
 
 def test_exact_recovery_command_is_recognised():
     assert is_explicit_recovery_command(BASE)
+
+
+def test_standard_upgrade_command_is_recognised_but_not_recovery():
+    command = [
+        "python",
+        "-m",
+        "scripts.kaya_phase6_upgrade",
+        "--source",
+        "/app/data/kaya.db",
+        "--backup-dir",
+        "/app/data/backups",
+        "--data-dir",
+        "/app/data",
+    ]
+    assert is_phase6_upgrade_command(command)
+    assert not is_explicit_recovery_command(command)
+
+
+def test_precheck_resume_command_requires_standard_upgrade_arguments():
+    command = ["python", "-m", "scripts.kaya_phase6_upgrade", "--source", "/app/data/kaya.db"]
+    assert not is_phase6_upgrade_command(command)
+    assert not is_phase6_upgrade_command([*command, "--clean-failed-target"])
 
 
 def test_normal_entrypoint_command_is_not_recovery():
@@ -56,6 +81,8 @@ def test_entrypoint_bootstraps_runtime_secrets_before_failed_state_check():
     entrypoint = Path("docker-entrypoint.sh").read_text(encoding="utf-8")
     assert entrypoint.index('set -a') < entrypoint.index('UPGRADE_STATE_FILE=')
     assert "scripts.kaya_phase6_recovery_policy" in entrypoint
+    assert "is_phase6_upgrade_command" in entrypoint
+    assert '"$UPGRADE_STATE" = "PRECHECK"' in entrypoint
     assert '"$UPGRADE_STATE" != "FAILED"' in entrypoint
     assert '"$PHASE6_RECOVERY_MODE" != "true"' in entrypoint
 

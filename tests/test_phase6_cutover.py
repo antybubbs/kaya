@@ -482,6 +482,32 @@ def test_preflight_failure_records_failed_state(tmp_path: Path, monkeypatch):
     assert state["recovery_artifacts_retained"] is True
 
 
+def test_keyboard_interrupt_during_precheck_leaves_resumable_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source = tmp_path / "kaya.db"
+    source.touch()
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    monkeypatch.setattr(phase6_cutover, "validate_test_configuration", lambda: None)
+    monkeypatch.setattr(
+        phase6_cutover,
+        "detect_installation",
+        lambda *_args: SimpleNamespace(state=UpgradeState.SQLITE_ACTIVE),
+    )
+
+    def interrupt(*_args):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(phase6_cutover, "preflight", interrupt)
+
+    with pytest.raises(KeyboardInterrupt):
+        run_upgrade(source, "postgresql+psycopg://kaya@db/kaya", tmp_path / "backups", data_dir)
+
+    state = json.loads(state_path(data_dir).read_text(encoding="utf-8"))
+    assert state["state"] == UpgradeState.PRECHECK.value
+
+
 def test_migration_id_survives_failed_retry_state(tmp_path: Path, monkeypatch):
     source = tmp_path / "kaya.db"
     source.touch()

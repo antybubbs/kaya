@@ -32,6 +32,7 @@ SQLITE_BUSY_TIMEOUT_MS = 15_000
 TARGETED_VALIDATION_TIMEOUT_SECONDS = 30.0
 QUICK_CHECK_TIMEOUT_SECONDS = 120.0
 VALIDATION_PROGRESS_INTERVAL_SECONDS = 5.0
+QUICK_CHECK_PROGRESS_INTERVAL_SECONDS = 30.0
 _PROGRESS_HANDLER_INSTRUCTIONS = 1_000
 
 # These columns were originally declared INTEGER and changed to Float in
@@ -303,12 +304,14 @@ def _rows(
     operation: str,
     timeout_seconds: float | None = None,
     log_timing: bool = False,
+    progress_interval_seconds: float = VALIDATION_PROGRESS_INTERVAL_SECONDS,
+    progress_log_level: int = logging.DEBUG,
 ) -> list[tuple]:
     if timeout_seconds is None:
         timeout_seconds = TARGETED_VALIDATION_TIMEOUT_SECONDS
     started = time.monotonic()
     deadline = started + timeout_seconds
-    next_progress = started + VALIDATION_PROGRESS_INTERVAL_SECONDS
+    next_progress = started + progress_interval_seconds
     timed_out = False
 
     def progress() -> int:
@@ -318,8 +321,13 @@ def _rows(
             timed_out = True
             return 1
         if now >= next_progress:
-            logger.debug("%s still running (elapsed %.3fs)", operation, now - started)
-            next_progress = now + VALIDATION_PROGRESS_INTERVAL_SECONDS
+            logger.log(
+                progress_log_level,
+                "%s still running (elapsed %.1fs)",
+                operation,
+                now - started,
+            )
+            next_progress = now + progress_interval_seconds
         return 0
 
     cursor: sqlite3.Cursor | None = None
@@ -486,14 +494,28 @@ def validate_sqlite_integrity(
     path: Path, *, quick_check_timeout_seconds: float = QUICK_CHECK_TIMEOUT_SECONDS
 ) -> None:
     """Run explicit strict integrity diagnostics; routine startup does not call this."""
+    started = time.monotonic()
+    logger.info("SQLite preflight starting")
+    logger.info("SQLite source: %s", path)
+    try:
+        size_mib = path.stat().st_size / (1024 * 1024)
+    except OSError:
+        size_mib = None
+    if size_mib is not None:
+        logger.info("SQLite database size: %.1f MiB", size_mib)
+        if size_mib >= 1024:
+            logger.warning("Large SQLite databases may take several minutes to validate")
     with _validation_connection(path) as connection:
         try:
+            logger.info("SQLite quick_check starting")
             quick_check = _rows(
                 connection,
                 "PRAGMA quick_check",
                 operation="Running PRAGMA quick_check",
                 timeout_seconds=quick_check_timeout_seconds,
                 log_timing=True,
+                progress_interval_seconds=QUICK_CHECK_PROGRESS_INTERVAL_SECONDS,
+                progress_log_level=logging.INFO,
             )
         except DatabaseValidationTimeoutError as exc:
             raise DatabaseValidationTimeoutError(
@@ -501,6 +523,9 @@ def validate_sqlite_integrity(
             ) from exc
         if quick_check != [("ok",)]:
             raise DatabaseCorruptError("SQLite quick_check reported corruption.")
+        logger.info(
+            "SQLite quick_check completed in %.1fs", time.monotonic() - started
+        )
         foreign_keys = _rows(
             connection,
             "PRAGMA foreign_key_check",
@@ -511,6 +536,7 @@ def validate_sqlite_integrity(
             raise DatabaseCorruptError(
                 "SQLite foreign_key_check reported invalid references."
             )
+    logger.info("SQLite preflight completed in %.1fs", time.monotonic() - started)
 
 
 def validate_legacy_database(path: Path) -> None:

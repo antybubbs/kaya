@@ -85,6 +85,11 @@ if python -m scripts.kaya_phase6_recovery_policy "$@"; then
     PHASE6_RECOVERY_MODE=true
     echo "Phase 6 recovery CLI recognised; failed-target guards remain enabled."
 fi
+PHASE6_UPGRADE_MODE=false
+if python -c "import sys; from scripts.kaya_phase6_recovery_policy import is_phase6_upgrade_command; raise SystemExit(0 if is_phase6_upgrade_command(sys.argv[1:]) else 1)" "$@"; then
+    PHASE6_UPGRADE_MODE=true
+    echo "Phase 6 upgrade CLI recognised; PRECHECK resume is permitted only for this command."
+fi
 PHASE6_RECOVERY_STATE=false
 
 UPGRADE_STATE_FILE="/app/data/kaya-database-upgrade.json"
@@ -93,7 +98,9 @@ if [ -f "$UPGRADE_STATE_FILE" ]; then
     AUTHORITATIVE_ENGINE="$(python -c "import json; print(json.load(open('$UPGRADE_STATE_FILE', encoding='utf-8')).get('database_engine', ''))")"
     case "$UPGRADE_STATE" in
         FAILED|PRECHECK|MAINTENANCE|BACKED_UP|POSTGRES_PREPARED|MIGRATING|VALIDATING|POSTGRES_READY|CUTOVER_PENDING)
-            if [ "$PHASE6_RECOVERY_MODE" != "true" ] || [ "$UPGRADE_STATE" != "FAILED" ]; then
+            if [ "$UPGRADE_STATE" = "PRECHECK" ] && [ "$PHASE6_UPGRADE_MODE" = "true" ]; then
+                echo "Kaya database upgrade is PRECHECK; resuming the explicit Phase 6 upgrade command."
+            elif [ "$PHASE6_RECOVERY_MODE" != "true" ] || [ "$UPGRADE_STATE" != "FAILED" ]; then
                 echo "Kaya database upgrade is $UPGRADE_STATE; operator recovery is required before startup." >&2
                 exit 1
             fi
