@@ -2,6 +2,7 @@ from pathlib import Path
 
 from scripts.kaya_phase6_recovery_policy import (
     is_explicit_recovery_command,
+    is_phase6_pretarget_retry_command,
     is_phase6_upgrade_command,
 )
 
@@ -50,6 +51,24 @@ def test_precheck_resume_command_requires_standard_upgrade_arguments():
     assert not is_phase6_upgrade_command([*command, "--clean-failed-target"])
 
 
+def test_explicit_pre_target_retry_command_is_recognised():
+    command = [
+        "python",
+        "-m",
+        "scripts.kaya_phase6_upgrade",
+        "--source",
+        "/app/data/kaya.db",
+        "--backup-dir",
+        "/app/data/backups",
+        "--data-dir",
+        "/app/data",
+        "--retry-failed-pretarget",
+    ]
+    assert is_phase6_pretarget_retry_command(command)
+    assert is_phase6_upgrade_command(command)
+    assert not is_explicit_recovery_command(command)
+
+
 def test_normal_entrypoint_command_is_not_recovery():
     assert not is_explicit_recovery_command(["sh", "-c", "exec uvicorn app.main:app"])
 
@@ -82,6 +101,7 @@ def test_entrypoint_bootstraps_runtime_secrets_before_failed_state_check():
     assert entrypoint.index('set -a') < entrypoint.index('UPGRADE_STATE_FILE=')
     assert "scripts.kaya_phase6_recovery_policy" in entrypoint
     assert "is_phase6_upgrade_command" in entrypoint
+    assert "is_phase6_pretarget_retry_command" in entrypoint
     assert '"$UPGRADE_STATE" = "PRECHECK"' in entrypoint
     assert '"$UPGRADE_STATE" != "FAILED"' in entrypoint
     assert '"$PHASE6_RECOVERY_MODE" != "true"' in entrypoint

@@ -44,6 +44,8 @@ STATE_FAILED = "FAILED"
 DEFAULT_BATCH_SIZE = 2_000
 SUPPORTED_POSTGRES_MAJOR = 16
 ALEMBIC_SEEDED_DATA_TABLES = {"hardware_asset_tag_sequences"}
+MIGRATION_SAFETY_MARGIN_MIN_BYTES = 512 * 1024 * 1024
+MIGRATION_WAL_GROWTH_MIN_BYTES = 256 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -120,19 +122,40 @@ def _filesystem_accounting(path: Path, required_bytes: int) -> dict[str, Any]:
 
 
 def _local_preflight_filesystems(
-    source_path: Path, backup_directory: Path, sqlite_temp_directory: Path
+    source_path: Path,
+    backup_directory: Path,
+    sqlite_temp_directory: Path,
+    *,
+    historical_upgrade: bool = False,
+    historical_workspace: Path | None = None,
 ) -> tuple[dict[str, Any], int]:
     source_size = source_path.stat().st_size
-    # One source-sized verified backup plus one source-sized conversion/temp
-    # allowance. Shared devices are grouped so capacity is never counted twice.
-    required_by_device: dict[Any, int] = defaultdict(int)
-    records = {
-        "sqlite_source": _filesystem_accounting(source_path, source_size * 2),
-        "sqlite_backup": _filesystem_accounting(backup_directory, source_size),
-        "sqlite_temp": _filesystem_accounting(sqlite_temp_directory, source_size),
+    wal = source_path.with_name(source_path.name + "-wal")
+    shm = source_path.with_name(source_path.name + "-shm")
+    wal_growth = max(MIGRATION_WAL_GROWTH_MIN_BYTES, source_size // 20, wal.stat().st_size if wal.is_file() else 0)
+    shm_growth = max(16 * 1024 * 1024, source_size // 100, shm.stat().st_size if shm.is_file() else 0)
+    safety_headroom = max(MIGRATION_SAFETY_MARGIN_MIN_BYTES, source_size // 10)
+    # Account for the source itself plus every source-sized copy that can be
+    # alive at the same time. Historical upgrades create an additional
+    # conversion copy before the PostgreSQL converter starts.
+    components: dict[str, tuple[Path, int]] = {
+        "sqlite_source": (source_path, source_size),
+        "verified_backup": (backup_directory, source_size),
+        "sqlite_temp_workspace": (sqlite_temp_directory, source_size),
+        "wal_shm_growth": (source_path, wal_growth + shm_growth),
+        "safety_headroom": (source_path, safety_headroom),
     }
-    for record in records.values():
-        required_by_device[record["device"]] += source_size
+    if historical_upgrade:
+        components["historical_conversion_copy"] = (
+            historical_workspace or source_path.parent,
+            source_size,
+        )
+    required_by_device: dict[Any, int] = defaultdict(int)
+    records: dict[str, Any] = {}
+    for name, (path, required) in components.items():
+        record = _filesystem_accounting(path, required)
+        records[name] = record
+        required_by_device[record["device"]] += required
     for name, record in records.items():
         record["shared_required_bytes"] = required_by_device[record["device"]]
         record["capacity_status"] = (
@@ -153,11 +176,17 @@ def _local_preflight_filesystems(
         )
     insufficient = [record for record in records.values() if record["capacity_status"] == "insufficient"]
     if insufficient:
-        names = ", ".join(name for name, record in records.items() if record["capacity_status"] == "insufficient")
-        raise SQLiteToPostgresError(
-            f"Insufficient known local filesystem capacity for migration workspace(s): {names}."
+        names = ", ".join(
+            name for name, record in records.items() if record["capacity_status"] == "insufficient"
         )
-    return records, source_size * 3
+        required = max(record["shared_required_bytes"] for record in insufficient)
+        available = min(record["available_bytes"] for record in insufficient)
+        raise SQLiteToPostgresError(
+            "Insufficient known local filesystem capacity: "
+            f"available_bytes={available} estimated_required_bytes={required} "
+            f"safety_headroom_bytes={safety_headroom} components={names}."
+        )
+    return records, sum(required for _, required in components.values())
 
 
 def _classify_sqlite_storage_error(
@@ -822,7 +851,13 @@ def preflight(
     test_failpoint("after_source_capture")
     target = create_engine(target_url, **postgres_engine_options(get_settings()))
     _target_eligibility(target)
-    filesystems, estimated = _local_preflight_filesystems(source_path, backup_directory, sqlite_temp_directory)
+    filesystems, estimated = _local_preflight_filesystems(
+        source_path,
+        backup_directory,
+        sqlite_temp_directory,
+        historical_upgrade=revision != expected_head,
+        historical_workspace=source_path.parent,
+    )
     return {"source_engine": "sqlite", "source_revision": revision, "target_engine": "postgresql", "target_revision": expected_head, "source_size_bytes": source_path.stat().st_size, "source_fingerprint": fingerprint, "source_tables": len(tables), "estimated_working_bytes": estimated, "known_local_filesystems": filesystems, "postgresql_target_capacity": "unknown_remote_or_container_filesystem", "dry_run": True}
 
 
@@ -840,7 +875,9 @@ def migrate(
     started = time.monotonic()
     source_path = source_path.resolve()
     sqlite_temp_directory = configure_sqlite_temp_directory(source_path)
-    filesystems, estimated = _local_preflight_filesystems(source_path, backup_directory, sqlite_temp_directory)
+    filesystems, estimated = _local_preflight_filesystems(
+        source_path, backup_directory, sqlite_temp_directory
+    )
     expected_head, _ = _heads()
     test_failpoint("before_source_capture")
     revision, fingerprint_before, tables = _validate_source(source_path, expected_head)

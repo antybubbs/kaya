@@ -86,9 +86,14 @@ if python -m scripts.kaya_phase6_recovery_policy "$@"; then
     echo "Phase 6 recovery CLI recognised; failed-target guards remain enabled."
 fi
 PHASE6_UPGRADE_MODE=false
+PHASE6_PRETARGET_MODE=false
 if python -c "import sys; from scripts.kaya_phase6_recovery_policy import is_phase6_upgrade_command; raise SystemExit(0 if is_phase6_upgrade_command(sys.argv[1:]) else 1)" "$@"; then
     PHASE6_UPGRADE_MODE=true
     echo "Phase 6 upgrade CLI recognised; PRECHECK resume is permitted only for this command."
+fi
+if python -c "import sys; from scripts.kaya_phase6_recovery_policy import is_phase6_pretarget_retry_command; raise SystemExit(0 if is_phase6_pretarget_retry_command(sys.argv[1:]) else 1)" "$@"; then
+    PHASE6_PRETARGET_MODE=true
+    echo "Phase 6 pre-target retry CLI recognised; PostgreSQL target absence will be verified."
 fi
 PHASE6_RECOVERY_STATE=false
 
@@ -100,12 +105,16 @@ if [ -f "$UPGRADE_STATE_FILE" ]; then
         FAILED|PRECHECK|MAINTENANCE|BACKED_UP|POSTGRES_PREPARED|MIGRATING|VALIDATING|POSTGRES_READY|CUTOVER_PENDING)
             if [ "$UPGRADE_STATE" = "PRECHECK" ] && [ "$PHASE6_UPGRADE_MODE" = "true" ]; then
                 echo "Kaya database upgrade is PRECHECK; resuming the explicit Phase 6 upgrade command."
+            elif [ "$UPGRADE_STATE" = "FAILED" ] && [ "$PHASE6_PRETARGET_MODE" = "true" ]; then
+                echo "Kaya database upgrade is FAILED before target migration; running the verified pre-target retry."
             elif [ "$PHASE6_RECOVERY_MODE" != "true" ] || [ "$UPGRADE_STATE" != "FAILED" ]; then
                 echo "Kaya database upgrade is $UPGRADE_STATE; operator recovery is required before startup." >&2
                 exit 1
             fi
             PHASE6_RECOVERY_STATE=true
-            echo "Kaya database upgrade is FAILED; running the explicit guarded recovery command."
+            if [ "$PHASE6_PRETARGET_MODE" != "true" ]; then
+                echo "Kaya database upgrade is FAILED; running the explicit guarded recovery command."
+            fi
             ;;
     esac
     if [ "$AUTHORITATIVE_ENGINE" = "postgresql" ]; then

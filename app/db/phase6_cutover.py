@@ -8,6 +8,8 @@ import os
 import shutil
 import sqlite3
 import tempfile
+import threading
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -138,7 +140,7 @@ def _upgrade_supported_legacy_sqlite(
     if not eligible:
         raise RuntimeError(reason)
     logger.info(
-        "legacy_sqlite schema_upgrade state=starting source_revision=%s target_revision=%s",
+        "Legacy SQLite schema upgrade starting source_revision=%s target_revision=%s",
         source_revision,
         expected_head,
     )
@@ -155,38 +157,96 @@ def _upgrade_supported_legacy_sqlite(
     )
     os.close(file_descriptor)
     working_path = Path(working_name)
-    shutil.copyfile(source_backup.database_path, working_path)
-    os.chmod(working_path, 0o600)
-    settings = get_settings().model_copy(
-        update={
-            "database_url": f"sqlite:///{working_path.resolve().as_posix()}",
-            "data_dir": str(data_dir.resolve()),
-            "migration_backup_dir": str(backup_dir.resolve()),
-            # The immutable source backup above is the mandatory pre-DDL backup;
-            # the working copy must not create a second source artifact.
-            "migration_backups_enabled": False,
-        }
-    )
-    source_engine = create_engine(settings.database_url)
+    started = time.monotonic()
     try:
-        result = prepare_database(source_engine, settings)
-    finally:
-        source_engine.dispose()
-    if result.previous_revision != source_revision:
-        raise RuntimeError(
-            "historical SQLite working copy had an unexpected Alembic revision"
+        shutil.copyfile(source_backup.database_path, working_path)
+        os.chmod(working_path, 0o600)
+        logger.info(
+            "Legacy SQLite schema upgrade working_copy_size=%s bytes=%s",
+            _human_size(working_path.stat().st_size),
+            working_path.stat().st_size,
         )
-    if result.current_revision != expected_head:
-        raise RuntimeError(
-            f"historical SQLite upgrade stopped at {result.current_revision}; expected {expected_head}"
+        settings = get_settings().model_copy(
+            update={
+                "database_url": f"sqlite:///{working_path.resolve().as_posix()}",
+                "data_dir": str(data_dir.resolve()),
+                "migration_backup_dir": str(backup_dir.resolve()),
+                # The immutable source backup above is the mandatory pre-DDL backup;
+                # the working copy must not create a second source artifact.
+                "migration_backups_enabled": False,
+            }
         )
+        source_engine = create_engine(settings.database_url)
+        stop_heartbeat = threading.Event()
+
+        def heartbeat() -> None:
+            while not stop_heartbeat.wait(30.0):
+                logger.info(
+                    "Historical SQLite schema upgrade still running elapsed=%.0fs",
+                    time.monotonic() - started,
+                )
+
+        heartbeat_thread = threading.Thread(
+            target=heartbeat, name="kaya-legacy-upgrade-heartbeat", daemon=True
+        )
+        heartbeat_thread.start()
+        try:
+            result = prepare_database(source_engine, settings)
+        finally:
+            stop_heartbeat.set()
+            heartbeat_thread.join(timeout=1.0)
+            source_engine.dispose()
+        if result.previous_revision != source_revision:
+            raise RuntimeError(
+                "historical SQLite working copy had an unexpected Alembic revision"
+            )
+        if result.current_revision != expected_head:
+            raise RuntimeError(
+                f"historical SQLite upgrade stopped at {result.current_revision}; expected {expected_head}"
+            )
+    except BaseException:
+        _remove_disposable_historical_copy(working_path, data_dir)
+        raise
     logger.info(
-        "legacy_sqlite schema_upgrade state=complete source_revision=%s target_revision=%s backup=%s validation=passed",
+        "Historical SQLite schema upgrade completed elapsed=%.1fs source_revision=%s target_revision=%s backup=%s validation=passed",
+        time.monotonic() - started,
         source_revision,
         expected_head,
         source_backup.database_path.name,
     )
     return working_path
+
+
+def _human_size(size: int) -> str:
+    value = float(size)
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if value < 1024 or unit == "GiB":
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{size} B"
+
+
+def _remove_disposable_historical_copy(path: Path | None, data_dir: Path) -> None:
+    if path is None:
+        return
+    try:
+        resolved = path.resolve()
+        resolved.relative_to(data_dir.resolve())
+    except (OSError, ValueError):
+        return
+    if not resolved.name.startswith(".kaya-historical-upgrade-"):
+        return
+    for candidate in (
+        resolved,
+        resolved.with_name(resolved.name + "-wal"),
+        resolved.with_name(resolved.name + "-shm"),
+    ):
+        try:
+            candidate.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Could not remove disposable historical conversion artifact")
+            return
+    logger.info("Disposable historical SQLite conversion copy removed")
 
 
 def state_path(data_dir: Path) -> Path:
@@ -580,6 +640,7 @@ def run_upgrade(
     original_source_fingerprint: str | None = None
     conversion_source_fingerprint: str | None = None
     original_source_snapshot_fingerprint: str | None = None
+    conversion_source = source_path
     try:
         dry_run = preflight(source_path, target_url, True)
         original_source_fingerprint = (persisted_recovery or {}).get("original_source_fingerprint") or dry_run["source_fingerprint"]
@@ -604,7 +665,6 @@ def run_upgrade(
         if not original_source_snapshot_fingerprint:
             raise RuntimeError("Verified SQLite backup has no stable snapshot identity.")
         _write_state(marker, UpgradeState.MAINTENANCE, database_engine="sqlite", source_path=str(state_source_path), source_revision=source_revision, source_fingerprint=original_source_fingerprint, original_source_fingerprint=original_source_fingerprint, original_source_snapshot_fingerprint=original_source_snapshot_fingerprint, conversion_source_fingerprint=conversion_source_fingerprint, target_revision=dry_run["target_revision"], progress="writes and background workers are stopped before conversion")
-        conversion_source = source_path
         if source_revision and source_revision != dry_run.get("target_revision"):
             conversion_source = _upgrade_supported_legacy_sqlite(
                 source_path,
@@ -666,6 +726,9 @@ def run_upgrade(
         )
         logger.error("database migration failed; SQLite remains authoritative and preserved")
         raise
+    finally:
+        if conversion_source.resolve() != source_path.resolve():
+            _remove_disposable_historical_copy(conversion_source, data_dir)
 
 
 def clean_failed_target(
@@ -778,4 +841,72 @@ def prepare_failed_retry(data_dir: Path, source_fingerprint: str) -> Path:
     if persisted.get("conversion_source_fingerprint"):
         values["conversion_source_fingerprint"] = persisted["conversion_source_fingerprint"]
     _write_state(marker, UpgradeState.PRECHECK, **values)
+    return verified_backup
+
+
+def _assert_pre_target_postgres_absent(target_url: str) -> None:
+    target = create_engine(target_url, **postgres_engine_options(get_settings()))
+    try:
+        tables = set(inspect(target).get_table_names())
+    except Exception as exc:
+        raise RuntimeError(
+            "Refusing pre-target retry: PostgreSQL target state could not be verified."
+        ) from exc
+    finally:
+        target.dispose()
+    if tables:
+        raise RuntimeError(
+            "Refusing pre-target retry: PostgreSQL target migration evidence exists."
+        )
+    logger.info("database.recovery pre_target_postgres=absent")
+
+
+def prepare_failed_pretarget_retry(data_dir: Path, target_url: str) -> Path:
+    """Verify a FAILED migration stopped before target creation and return its backup."""
+    persisted = _read_state(state_path(data_dir))
+    if not persisted or persisted.get("state") != UpgradeState.FAILED.value:
+        raise RuntimeError("Refusing pre-target retry: source marker is not FAILED.")
+    if "migration_id" in persisted and persisted["migration_id"] is not None:
+        raise RuntimeError("Refusing pre-target retry: migration target may have started.")
+    if persisted.get("database_engine") != "sqlite":
+        raise RuntimeError("Refusing pre-target retry: PostgreSQL is authoritative.")
+    source_fingerprint = persisted.get("source_fingerprint")
+    original_fingerprint = persisted.get("original_source_fingerprint")
+    if not isinstance(source_fingerprint, str) or len(source_fingerprint) != 64:
+        raise RuntimeError("Refusing pre-target retry: FAILED source identity is missing.")
+    if original_fingerprint is not None and original_fingerprint != source_fingerprint:
+        raise RuntimeError("Refusing pre-target retry: original source identity is inconsistent.")
+    source = _persisted_source_path(persisted, data_dir)
+    if _source_fingerprint(source) != source_fingerprint:
+        raise RuntimeError("Refusing pre-target retry: source fingerprint does not match FAILED marker.")
+    backup_snapshot, backup_revision, verified_backup = _verified_backup_snapshot(
+        data_dir, persisted, source, str(persisted.get("source_revision") or "")
+    )
+    with isolated_sqlite_snapshot(source, data_dir) as isolated_source:
+        source_revision = _read_sqlite_revision(isolated_source)
+        if source_revision != backup_revision:
+            raise RuntimeError("Refusing pre-target retry: source revision does not match backup lineage.")
+        if _logical_sqlite_fingerprint(isolated_source) != backup_snapshot:
+            raise RuntimeError("Refusing pre-target retry: source snapshot identity changed.")
+    persisted_snapshot = persisted.get("original_source_snapshot_fingerprint")
+    if not isinstance(persisted_snapshot, str) or persisted_snapshot != backup_snapshot:
+        raise RuntimeError("Refusing pre-target retry: persisted snapshot identity is invalid.")
+    conversion_fingerprint = persisted.get("conversion_source_fingerprint")
+    if conversion_fingerprint not in {None, source_fingerprint}:
+        raise RuntimeError("Refusing pre-target retry: conversion source identity is inconsistent.")
+    _assert_pre_target_postgres_absent(target_url)
+    _write_state(
+        state_path(data_dir),
+        UpgradeState.PRECHECK,
+        database_engine="sqlite",
+        source_path=str(source),
+        source_fingerprint=source_fingerprint,
+        original_source_fingerprint=source_fingerprint,
+        original_source_snapshot_fingerprint=backup_snapshot,
+        conversion_source_fingerprint=conversion_fingerprint or source_fingerprint,
+        target_revision=persisted.get("target_revision"),
+        migration_id=None,
+        recovery_artifacts_retained=True,
+    )
+    logger.info("database.recovery pre_target_retry=verified backup=retained")
     return verified_backup

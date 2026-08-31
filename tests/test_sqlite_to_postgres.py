@@ -189,10 +189,33 @@ def test_filesystem_preflight_accounts_for_shared_source_backup_and_temp_filesys
     temp = tmp_path / "sqlite-tmp"
     temp.mkdir()
     filesystems, estimated = _local_preflight_filesystems(source, backup, temp)
-    assert estimated == source.stat().st_size * 3
+    assert estimated > source.stat().st_size * 3
     assert {record["device"] for record in filesystems.values()} == {source.stat().st_dev}
     assert all(record["capacity_status"] == "sufficient" for record in filesystems.values())
-    assert all(record["shared_required_bytes"] == source.stat().st_size * 3 for record in filesystems.values())
+    assert all(
+        record["shared_required_bytes"] == estimated
+        for record in filesystems.values()
+    )
+
+
+def test_historical_preflight_includes_conversion_copy(tmp_path: Path):
+    source = tmp_path / "source.sqlite3"
+    source.write_bytes(b"synthetic source")
+    backup = tmp_path / "backups"
+    temp = tmp_path / "sqlite-tmp"
+    temp.mkdir()
+
+    _, current_estimated = _local_preflight_filesystems(source, backup, temp)
+    historical, historical_estimated = _local_preflight_filesystems(
+        source,
+        backup,
+        temp,
+        historical_upgrade=True,
+        historical_workspace=tmp_path,
+    )
+
+    assert historical_estimated == current_estimated + source.stat().st_size
+    assert "historical_conversion_copy" in historical
 
 
 def test_storage_error_classifies_exhausted_managed_temp(tmp_path: Path, monkeypatch):

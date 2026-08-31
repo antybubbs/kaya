@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -24,6 +25,7 @@ from app.db.phase6_cutover import (
     detect_installation,
     legacy_sqlite_eligibility,
     prepare_failed_retry,
+    prepare_failed_pretarget_retry,
     _upgrade_supported_legacy_sqlite,
     run_upgrade,
     state_path,
@@ -594,6 +596,159 @@ def test_failed_retry_requires_failed_source_marker(tmp_path: Path):
 
     with pytest.raises(RuntimeError, match="source marker is not FAILED"):
         prepare_failed_retry(tmp_path, "a" * 64)
+
+
+def _prepare_pretarget_failed_fixture(tmp_path: Path) -> tuple[Path, str]:
+    source = tmp_path / "kaya.db"
+    head, _ = phase6_cutover._heads()
+    with sqlite3.connect(source) as connection:
+        connection.execute("CREATE TABLE alembic_version (version_num TEXT)")
+        connection.execute("INSERT INTO alembic_version VALUES (?)", (head,))
+        connection.commit()
+    source_fingerprint = phase6_cutover._source_fingerprint(source)
+    backup = create_sqlite_backup(
+        source,
+        tmp_path / "backups",
+        source_revision=head,
+        target_revision=head,
+    )
+    _write_state(
+        state_path(tmp_path),
+        UpgradeState.FAILED,
+        database_engine="sqlite",
+        source_path=str(source),
+        source_fingerprint=source_fingerprint,
+        original_source_fingerprint=source_fingerprint,
+        original_source_snapshot_fingerprint=backup.snapshot_fingerprint,
+        conversion_source_fingerprint=source_fingerprint,
+        source_revision=head,
+        target_revision=head,
+        migration_id=None,
+        error="SQLiteToPostgresError",
+        recovery_artifacts_retained=True,
+    )
+    return source, source_fingerprint
+
+
+def test_pre_target_failed_retry_verifies_target_absence_and_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source, source_fingerprint = _prepare_pretarget_failed_fixture(tmp_path)
+    monkeypatch.setattr(phase6_cutover, "isolated_sqlite_snapshot", lambda *_args, **_kwargs: nullcontext(source))
+
+    class EmptyTarget:
+        def dispose(self):
+            return None
+
+    monkeypatch.setattr(phase6_cutover, "create_engine", lambda *_args, **_kwargs: EmptyTarget())
+    monkeypatch.setattr(
+        phase6_cutover,
+        "inspect",
+        lambda _target: SimpleNamespace(get_table_names=lambda: []),
+    )
+
+    verified_backup = prepare_failed_pretarget_retry(
+        tmp_path, "postgresql+psycopg://kaya@db/kaya"
+    )
+
+    assert verified_backup.is_file()
+    state = json.loads(state_path(tmp_path).read_text(encoding="utf-8"))
+    assert state["state"] == UpgradeState.PRECHECK.value
+    assert state["migration_id"] is None
+    assert state["source_path"] == str(source.resolve())
+
+    monkeypatch.setattr(phase6_cutover, "validate_test_configuration", lambda: None)
+    monkeypatch.setattr(
+        phase6_cutover,
+        "detect_installation",
+        lambda *_args: SimpleNamespace(state=UpgradeState.SQLITE_ACTIVE),
+    )
+    monkeypatch.setattr(
+        phase6_cutover,
+        "preflight",
+        lambda *_args: {
+            "source_fingerprint": source_fingerprint,
+            "source_revision": phase6_cutover._heads()[0],
+            "target_revision": phase6_cutover._heads()[0],
+        },
+    )
+    monkeypatch.setattr(
+        phase6_cutover,
+        "migrate",
+        lambda *_args, **_kwargs: {
+            "migration_id": "new-migration",
+            "target_revision": phase6_cutover._heads()[0],
+            "conversion_source_fingerprint": source_fingerprint,
+            "result": "COMPLETED",
+        },
+    )
+    run_upgrade(
+        source,
+        "postgresql+psycopg://kaya@db/kaya",
+        tmp_path / "backups",
+        tmp_path,
+        recovery_backup=verified_backup,
+    )
+    assert json.loads(state_path(tmp_path).read_text(encoding="utf-8"))["state"] == UpgradeState.POSTGRES_ACTIVE.value
+
+
+def test_pre_target_failed_retry_rejects_existing_postgres_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _prepare_pretarget_failed_fixture(tmp_path)
+    source = tmp_path / "kaya.db"
+    monkeypatch.setattr(phase6_cutover, "isolated_sqlite_snapshot", lambda *_args, **_kwargs: nullcontext(source))
+
+    class ExistingTarget:
+        def dispose(self):
+            return None
+
+    monkeypatch.setattr(phase6_cutover, "create_engine", lambda *_args, **_kwargs: ExistingTarget())
+    monkeypatch.setattr(
+        phase6_cutover,
+        "inspect",
+        lambda _target: SimpleNamespace(get_table_names=lambda: ["kaya_migration_state"]),
+    )
+
+    with pytest.raises(RuntimeError, match="target migration evidence exists"):
+        prepare_failed_pretarget_retry(
+            tmp_path, "postgresql+psycopg://kaya@db/kaya"
+        )
+
+
+def test_pre_target_failed_retry_rejects_snapshot_identity_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source, _ = _prepare_pretarget_failed_fixture(tmp_path)
+    state = json.loads(state_path(tmp_path).read_text(encoding="utf-8"))
+    state["original_source_snapshot_fingerprint"] = "b" * 64
+    state_path(tmp_path).write_text(json.dumps(state), encoding="utf-8")
+    monkeypatch.setattr(
+        phase6_cutover,
+        "isolated_sqlite_snapshot",
+        lambda *_args, **_kwargs: nullcontext(source),
+    )
+
+    with pytest.raises(RuntimeError, match="no verified pre-migration backup"):
+        prepare_failed_pretarget_retry(
+            tmp_path, "postgresql+psycopg://kaya@db/kaya"
+        )
+
+
+def test_disposable_historical_copy_cleanup_preserves_recovery_artifacts(tmp_path: Path):
+    working = tmp_path / ".kaya-historical-upgrade-test.sqlite3"
+    working.write_bytes(b"temporary")
+    working.with_name(working.name + "-wal").write_bytes(b"wal")
+    working.with_name(working.name + "-shm").write_bytes(b"shm")
+    retained = tmp_path / "pre-migration-retained.sqlite3"
+    retained.write_bytes(b"backup")
+
+    phase6_cutover._remove_disposable_historical_copy(working, tmp_path)
+
+    assert not working.exists()
+    assert not working.with_name(working.name + "-wal").exists()
+    assert not working.with_name(working.name + "-shm").exists()
+    assert retained.exists()
 
 
 def test_failed_retry_requires_matching_source_fingerprint(tmp_path: Path):

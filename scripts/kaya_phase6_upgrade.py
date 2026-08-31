@@ -8,7 +8,12 @@ import os
 from pathlib import Path
 
 from app.core.config import resolve_database_password
-from app.db.phase6_cutover import clean_failed_target, prepare_failed_retry, run_upgrade
+from app.db.phase6_cutover import (
+    clean_failed_target,
+    prepare_failed_pretarget_retry,
+    prepare_failed_retry,
+    run_upgrade,
+)
 
 
 def main() -> int:
@@ -18,6 +23,7 @@ def main() -> int:
     parser.add_argument("--backup-dir", type=Path, required=True)
     parser.add_argument("--data-dir", type=Path, required=True)
     parser.add_argument("--clean-failed-target", action="store_true")
+    parser.add_argument("--retry-failed-pretarget", action="store_true")
     parser.add_argument("--migration-id")
     parser.add_argument("--source-fingerprint")
     args = parser.parse_args()
@@ -28,6 +34,8 @@ def main() -> int:
         parser.error("--target-url or KAYA_POSTGRES_DATABASE_URL must be a PostgreSQL URL")
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     recovery_backup = None
+    if args.clean_failed_target and args.retry_failed_pretarget:
+        parser.error("--clean-failed-target and --retry-failed-pretarget are mutually exclusive")
     if args.clean_failed_target:
         if not args.migration_id or not args.source_fingerprint:
             parser.error("--clean-failed-target requires --migration-id and --source-fingerprint")
@@ -38,6 +46,10 @@ def main() -> int:
             args.data_dir.resolve(),
         )
         recovery_backup = prepare_failed_retry(args.data_dir.resolve(), args.source_fingerprint)
+    elif args.retry_failed_pretarget:
+        recovery_backup = prepare_failed_pretarget_retry(
+            args.data_dir.resolve(), target_url
+        )
     run_upgrade(
         args.source.resolve(),
         target_url,
