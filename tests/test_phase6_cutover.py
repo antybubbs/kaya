@@ -157,22 +157,25 @@ def test_isolated_snapshot_copies_committed_wal_without_shm_and_preserves_source
         wal_bytes = wal.read_bytes()
         source_stat = source.stat()
         wal_stat = wal.stat()
-        shm = source.with_name(source.name + "-shm")
-        shm.write_bytes(b"stale synthetic shm")
 
-        with isolated_sqlite_snapshot(source, tmp_path) as isolated:
-            assert not isolated.with_name(isolated.name + "-shm").exists()
-            with sqlite3.connect(isolated) as snapshot_connection:
-                assert snapshot_connection.execute(
-                    "SELECT value FROM records ORDER BY id"
-                ).fetchall() == [("A",), ("B",)]
+    # Retain SQLite's real sidecar as stale input; replacing it with arbitrary
+    # bytes can invalidate a shared-memory mapping and SIGBUS during teardown.
+    shm = source.with_name(source.name + "-shm")
+    assert shm.is_file()
 
-        assert source.read_bytes() == source_bytes
-        assert wal.read_bytes() == wal_bytes
-        assert source.stat().st_size == source_stat.st_size
-        assert wal.stat().st_size == wal_stat.st_size
-        assert source.stat().st_mtime_ns == source_stat.st_mtime_ns
-        assert wal.stat().st_mtime_ns == wal_stat.st_mtime_ns
+    with isolated_sqlite_snapshot(source, tmp_path) as isolated:
+        assert not isolated.with_name(isolated.name + "-shm").exists()
+        with sqlite3.connect(isolated) as snapshot_connection:
+            assert snapshot_connection.execute(
+                "SELECT value FROM records ORDER BY id"
+            ).fetchall() == [("A",), ("B",)]
+
+    assert source.read_bytes() == source_bytes
+    assert wal.read_bytes() == wal_bytes
+    assert source.stat().st_size == source_stat.st_size
+    assert wal.stat().st_size == wal_stat.st_size
+    assert source.stat().st_mtime_ns == source_stat.st_mtime_ns
+    assert wal.stat().st_mtime_ns == wal_stat.st_mtime_ns
 
 
 def test_failed_source_identity_rejects_logical_change_but_tolerates_wal_change(
@@ -792,13 +795,20 @@ def test_failed_retry_recomputes_original_source_identity(tmp_path: Path):
     assert state["original_source_fingerprint"] == fingerprint
     assert state["original_source_snapshot_fingerprint"] == backup.snapshot_fingerprint
 
-    source.write_bytes(b"changed source")
+    source.unlink()
+    with sqlite3.connect(source) as connection:
+        connection.execute("CREATE TABLE alembic_version (version_num TEXT)")
+        connection.execute("INSERT INTO alembic_version VALUES ('20260818_02')")
+        connection.execute("CREATE TABLE changed_after_failure (value TEXT)")
+        connection.commit()
     _write_state(
         state_path(tmp_path),
         UpgradeState.FAILED,
         migration_id="migration-1",
         source_path=str(source),
         source_fingerprint=fingerprint,
+        source_revision="20260818_02",
+        target_revision="20260818_02",
     )
     with pytest.raises(RuntimeError, match="source changed after failure"):
         prepare_failed_retry(tmp_path, fingerprint)

@@ -82,7 +82,7 @@ retry_env() { printf '%s\n' -e APP_ENV=test -e SECRET_KEY=phase9-synthetic-secre
 retry_state() { local key="$1"; docker run --rm --user 0 --entrypoint python -v "$ROOT:/phase9" "$IMAGE" -c "import json; print(json.load(open('/phase9/retry-data/kaya-database-upgrade.json'))['$key'])"; }
 induce_retry_failure() {
   compose exec -T postgres bash -c \
-    'export PGPASSWORD="$(< /run/kaya-secrets/postgres_bootstrap_password)"; psql -U kaya_bootstrap -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE phase9_retry OWNER kaya;"'
+    'psql -U kaya -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE phase9_retry OWNER kaya;"'
   docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/source:ro" -v "$ROOT/retry-data:/retry" "$IMAGE" -c \
     'mkdir -p /retry/backups; cp /source/kaya.db /retry/kaya.db'
   local status=0

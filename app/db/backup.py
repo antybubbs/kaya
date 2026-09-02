@@ -114,6 +114,12 @@ def isolated_sqlite_snapshot(source: Path, workspace: Path):
             if before != after:
                 raise DatabaseBackupError("SQLite source changed while the recovery snapshot was being copied.")
             validate_sqlite_readable(snapshot)
+            # SQLite may create the shared-memory sidecar while validating a
+            # WAL snapshot.  It is disposable validator state, not part of
+            # the copied snapshot, and must not be exposed to the consumer.
+            snapshot_shm = snapshot.with_name(snapshot.name + "-shm")
+            if snapshot_shm.exists():
+                snapshot_shm.unlink()
             logger.info("database.recovery source_snapshot=validated")
             yield snapshot
     finally:

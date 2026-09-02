@@ -5,6 +5,10 @@ services:
   sqlite-postgres-upgrade:
     image: ${PHASE7D_IMAGE:?PHASE7D_IMAGE is required}
     container_name: ${PHASE7D_PROJECT:?PHASE7D_PROJECT is required}_sqlite_postgres_upgrade
+    environment:
+      DATABASE_URL: postgresql+psycopg://kaya@postgres:5432/kaya
+      KAYA_POSTGRES_DATABASE_URL: postgresql+psycopg://kaya@postgres:5432/kaya
+      DATABASE_PASSWORD_FILE: /run/kaya-secrets/postgres_password
     volumes: !override
       - ${PHASE7D_ROOT:?PHASE7D_ROOT is required}/data:/app/data
       - postgres_secret:/run/kaya-secrets:ro
