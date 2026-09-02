@@ -43,7 +43,7 @@ def test_postgresql_manifest_is_actual_base_to_head_schema():
     comparison = compare_manifest_to_models(manifest, Base.metadata)
     with engine.connect() as connection:
         revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-    assert revision == "20260818_02"
+    assert revision == "20260902_01"
     assert comparison == {"missing_tables": [], "missing_columns": []}
     assert manifest["triggers"]
     assert manifest["sequences"]
@@ -315,7 +315,7 @@ def test_postgresql_trigger_migration_downgrade_and_upgrade_round_trip():
     with engine.connect() as connection:
         assert connection.execute(
             text("SELECT version_num FROM alembic_version")
-        ).scalar_one() == "20260818_02"
+        ).scalar_one() == "20260902_01"
 
 
 def test_postgresql_schema_has_no_unexpected_model_table_or_column_drift():
@@ -334,7 +334,7 @@ def test_postgresql_schema_drift_detection_rejects_missing_critical_index():
         validate_engine_schema(
             engine,
             Base.metadata,
-            require_revision="20260818_02",
+        require_revision="20260902_01",
             required_indexes=(("hardware_asset_photos", "uq_hardware_asset_photos_primary"),),
         )
 

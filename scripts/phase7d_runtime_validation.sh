@@ -92,7 +92,7 @@ revision() {
 assert_revision() {
     local actual
     actual="$(revision)"
-    [[ "$actual" == "20260818_02" ]] || { echo "unexpected Alembic revision: $actual" >&2; return 1; }
+    [[ "$actual" == "20260902_01" ]] || { echo "unexpected Alembic revision: $actual" >&2; return 1; }
 }
 
 setup_token() {
@@ -369,7 +369,7 @@ docker compose -p "$restore_project" -f "$ROOT_DIR/ci/compose/docker-compose.pos
 docker compose -p "$restore_project" -f "$ROOT_DIR/ci/compose/docker-compose.postgres-test.yml" exec -T postgres \
     pg_restore -U kaya_test -d kaya_test --exit-on-error --no-owner < "$backup"
 restore_revision="$(docker compose -p "$restore_project" -f "$ROOT_DIR/ci/compose/docker-compose.postgres-test.yml" exec -T postgres psql -U kaya_test -d kaya_test -Atc 'SELECT version_num FROM alembic_version' | tr -d '\r')"
-[[ "$restore_revision" == "20260818_02" ]]
+[[ "$restore_revision" == "20260902_01" ]]
 echo 'PostgreSQL backup and separate restore passed'
 
 echo 'Phase 7D runtime validation passed'

@@ -11,6 +11,7 @@ from app.db.postgres_upgrade import (
     latest_verified_backup,
     parse_postgres_image,
 )
+from app.db.migrations import CURRENT_REVISION
 from app.db.platform_compatibility import PlatformVersion
 
 
@@ -57,7 +58,7 @@ class _Connection:
     def execute(self, statement):
         sql = str(statement)
         if "version_num" in sql:
-            return _Result("20260818_02")
+            return _Result(CURRENT_REVISION)
         return _Result(1)
 
     def __enter__(self):

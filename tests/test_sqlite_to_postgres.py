@@ -23,6 +23,7 @@ from app.db.sqlite_to_postgres import (
     _validate_source,
     _source_fingerprint,
 )
+from app.db.migrations import CURRENT_REVISION
 from app.db.backup import create_sqlite_backup
 from app.models.models import Base
 from scripts.generate_sqlite_migration_fixture import generate
@@ -90,8 +91,8 @@ def test_source_validation_requires_current_head_and_does_not_write(tmp_path: Pa
     source = tmp_path / "source.sqlite3"
     generate(source, traffic_rows=2, metric_rows=2, audit_rows=2)
     before = source.read_bytes()
-    revision, fingerprint, tables = _validate_source(source, "20260818_02")
-    assert revision == "20260818_02"
+    revision, fingerprint, tables = _validate_source(source, CURRENT_REVISION)
+    assert revision == CURRENT_REVISION
     assert len(fingerprint) == 64
     assert tables == set(Base.metadata.tables)
     assert source.read_bytes() == before
@@ -107,8 +108,8 @@ def test_verified_backup_does_not_change_source_fingerprint(tmp_path: Path):
     create_sqlite_backup(
         source,
         tmp_path / "backups",
-        source_revision="20260818_02",
-        target_revision="20260818_02",
+        source_revision=CURRENT_REVISION,
+        target_revision=CURRENT_REVISION,
     )
 
     assert _source_fingerprint(source) == before
@@ -123,7 +124,7 @@ def test_source_validation_rejects_old_revision_without_mutation(tmp_path: Path)
         connection.commit()
     changed = source.read_bytes()
     with pytest.raises(SQLiteToPostgresError, match="upgrade it explicitly"):
-        _validate_source(source, "20260818_02")
+        _validate_source(source, CURRENT_REVISION)
     assert source.read_bytes() == changed
     assert before != changed
 
@@ -140,7 +141,7 @@ def test_source_validation_rejects_sqlite_orphans_without_mutation(tmp_path: Pat
         connection.commit()
     before = _source_fingerprint(source)
     with pytest.raises(SQLiteToPostgresError, match="foreign_key_check"):
-        _validate_source(source, "20260818_02")
+        _validate_source(source, CURRENT_REVISION)
     assert _source_fingerprint(source) == before
 
 

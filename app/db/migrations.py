@@ -48,7 +48,7 @@ from app.models.models import Base
 logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BASELINE_REVISION = "20260730_01"
-CURRENT_REVISION = "20260818_02"
+CURRENT_REVISION = "20260902_01"
 MIGRATION_STATE_TABLE = "kaya_migration_state"
 MINIMUM_MIGRATION_FREE_BYTES = 1 * 1024 * 1024
 STAGE_OPENING_DATABASE = "Opening database"

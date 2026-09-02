@@ -43,7 +43,7 @@ compose config --quiet
 scenario 1 "Fresh PostgreSQL 16 install" start_stack
 scenario 2 "Existing PostgreSQL 16 startup" bash -c 'compose restart kaya >/dev/null && wait_ready'
 scenario 3 "Representative writes" bash -c 'compose exec -T postgres psql -U kaya -d kaya -c "insert into audit_logs (action, entity, entity_id, detail, category, severity, status_code, capture_tier, created_at) values ('"'"'phase10.synthetic'"'"','"'"'test'"'"','"'"'phase10'"'"','"'"'synthetic'"'"','"'"'activity'"'"','"'"'info'"'"',200,'"'"'standard'"'"',current_timestamp)" >/dev/null'
-scenario 4 "Current schema matches expected Alembic head" bash -c 'test "$(compose exec -T postgres psql -U kaya -d kaya -Atc "select version_num from alembic_version" | tr -d "\r")" = 20260818_02'
+scenario 4 "Current schema matches expected Alembic head" bash -c 'test "$(compose exec -T postgres psql -U kaya -d kaya -Atc "select version_num from alembic_version" | tr -d "\r")" = 20260902_01'
 scenario 5 "Exactly one Alembic head" graph
 scenario 6 "Fresh PostgreSQL base to head" tests pytest -q tests/test_database_engine_compatibility.py
 scenario 7 "Supported older PostgreSQL schema to current head" tests pytest -q tests/test_postgres_deployment.py

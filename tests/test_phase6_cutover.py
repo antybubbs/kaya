@@ -30,7 +30,7 @@ from app.db.phase6_cutover import (
     run_upgrade,
     state_path,
 )
-from app.db.migrations import _alembic_config
+from app.db.migrations import CURRENT_REVISION, _alembic_config
 from app.db.sqlite_to_postgres import SQLiteToPostgresError
 
 
@@ -390,7 +390,7 @@ def test_historical_sqlite_revision_is_eligible_and_upgraded_with_backup(tmp_pat
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "20260813_01"
         assert connection.execute("SELECT email FROM users").fetchone()[0] == "historical@example.invalid"
     with sqlite3.connect(working_source) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "20260818_02"
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == CURRENT_REVISION
     backups = list((tmp_path / "backups").glob("*.sqlite3"))
     assert len(backups) == 1
     metadata = json.loads(backups[0].with_suffix(".json").read_text(encoding="utf-8"))
@@ -752,7 +752,12 @@ def test_disposable_historical_copy_cleanup_preserves_recovery_artifacts(tmp_pat
 
 
 def test_failed_retry_requires_matching_source_fingerprint(tmp_path: Path):
-    _write_state(state_path(tmp_path), UpgradeState.FAILED, source_fingerprint="a" * 64)
+    _write_state(
+        state_path(tmp_path),
+        UpgradeState.FAILED,
+        migration_id="migration-1",
+        source_fingerprint="a" * 64,
+    )
 
     with pytest.raises(RuntimeError, match="source fingerprint does not match"):
         prepare_failed_retry(tmp_path, "b" * 64)
@@ -818,11 +823,15 @@ def test_failed_target_cleanup_requires_matching_marker(
             return False
 
         def execute(self, _statement, _parameters=None):
-            return SimpleNamespace(mappings=lambda: self, one_or_none=lambda: {
-                "state": state,
-                "migration_id": "migration-1",
-                "source_fingerprint": "a" * 64,
-            })
+            return SimpleNamespace(
+                mappings=lambda: SimpleNamespace(
+                    one_or_none=lambda: {
+                        "state": state,
+                        "migration_id": "migration-1",
+                        "source_fingerprint": "a" * 64,
+                    }
+                )
+            )
 
     class FakeTarget:
         def connect(self):

@@ -12,6 +12,9 @@ services:
   kaya:
     image: ${PHASE7D_IMAGE:?PHASE7D_IMAGE is required}
     container_name: ${PHASE7D_PROJECT:?PHASE7D_PROJECT is required}_kaya
+    environment:
+      KAYA_PHASE6_AUTO_UPGRADE: "true"
+      KAYA_SQLITE_SOURCE_URL: /app/data/kaya.db
     ports: !override
       - "${PHASE7D_HTTP_PORT:?PHASE7D_HTTP_PORT is required}:8080"
     volumes: !override

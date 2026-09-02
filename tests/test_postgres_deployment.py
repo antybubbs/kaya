@@ -5,6 +5,7 @@ import types
 from pathlib import Path
 
 from app.core.config import redact_database_url
+from app.db.migrations import CURRENT_REVISION
 
 
 def _role_topology_module(monkeypatch):
@@ -193,7 +194,7 @@ def test_phase12_backup_marker_is_bound_to_verified_archive(tmp_path, monkeypatc
     metadata = {
         "verification_state": "verified",
         "sha256": digest,
-        "alembic_revision": "20260818_02",
+        "alembic_revision": CURRENT_REVISION,
     }
     archive.with_name(f"{archive.name}.json").write_text(json.dumps(metadata), encoding="utf-8")
     archive.with_name(f"{archive.name}.sha256").write_text(f"{digest}  {archive}\n", encoding="utf-8")
@@ -206,7 +207,7 @@ def test_phase12_backup_marker_is_bound_to_verified_archive(tmp_path, monkeypatc
                 "archive_bytes": archive.stat().st_size,
                 "source_database": "kaya",
                 "source_role": "kaya",
-                "alembic_revision": "20260818_02",
+                "alembic_revision": CURRENT_REVISION,
                 "backup_purpose": "pre_role_topology_migration",
                 "run_id": "test-run",
             }

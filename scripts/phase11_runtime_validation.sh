@@ -216,7 +216,7 @@ PRE_UPGRADE_ARCHIVE="$(latest_archive)"
 scenario 11 "Credential fingerprint captured" bash -c 'compose exec -T kaya sha256sum /run/kaya-secrets/postgres_password | grep -Eq "^[0-9a-f]{64}"'
 scenario 12 "Clean PostgreSQL shutdown" compose stop postgres
 scenario 13 "PostgreSQL image replacement within 16.x" replace_image
-scenario 14 "Same data volume reused" bash -c 'test "$(revision)" = "20260818_02"'
+scenario 14 "Same data volume reused" bash -c 'test "$(revision)" = "20260902_01"'
 scenario 15 "New PostgreSQL 16.x starts" bash -c 'wait_ready'
 scenario 16 "PostgreSQL server version changed as expected" bash -c '[[ "$(server_version)" == 16.14* ]]'
 scenario 17 "Kaya reconnects" post_verify
@@ -283,8 +283,8 @@ Path("phase11_upgrade_evidence.json").write_text(json.dumps({
     "target_postgres_major": 16,
     "backup_verified": True,
     "pre_upgrade_backup": archive,
-    "pre_upgrade_alembic_revision": "20260818_02",
-    "post_upgrade_alembic_revision": "20260818_02",
+"pre_upgrade_alembic_revision": "20260902_01",
+"post_upgrade_alembic_revision": "20260902_01",
     "data_volume_preserved": True,
     "credential_fingerprint_preserved": True,
     "application_recovered": True,

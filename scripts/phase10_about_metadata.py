@@ -8,5 +8,5 @@ with Session(engine) as db:
     diagnostics = collect_about(db)["postgres_diagnostics"]
 
 assert diagnostics["compatibility_state"] == "compatible"
-assert diagnostics["current_alembic_revision"] == "20260818_02"
-assert diagnostics["expected_alembic_head"] == "20260818_02"
+assert diagnostics["current_alembic_revision"] == "20260902_01"
+assert diagnostics["expected_alembic_head"] == "20260902_01"

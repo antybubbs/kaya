@@ -112,7 +112,7 @@ retry_recovery() {
     --clean-failed-target --migration-id "$migration_id" --source-fingerprint "$source_fingerprint" 2>&1)"
   grep -q 'failed PostgreSQL migration target cleaned' <<<"$output"
   ! grep -q 'PostgreSQL target contains an incomplete SQLite migration and is not startup-authoritative' <<<"$output"
-  compose exec -T postgres psql -U kaya -d phase9_retry -Atc 'select version_num from alembic_version' | tr -d '\r' | grep -qx 20260818_02
+  compose exec -T postgres psql -U kaya -d phase9_retry -Atc 'select version_num from alembic_version' | tr -d '\r' | grep -qx 20260902_01
 }
 setup_token() { compose exec -T kaya sh -c "sed -n 's/^SETUP_TOKEN=//p' /app/data/.runtime.env" | tr -d '\r'; }
 smoke() { PHASE7D_HTTP_BASE="http://127.0.0.1:$PORT" KAYA_SETUP_TOKEN="$(setup_token)" python "$ROOT_DIR/scripts/phase7d_http_smoke.py"; }
@@ -138,7 +138,7 @@ docker build --file "$ROOT_DIR/Dockerfile" --tag "$IMAGE" "$ROOT_DIR"
 export ROOT_DIR PROJECT ROOT IMAGE TEST_IMAGE PORT PRIMARY ISOLATION
 export -f compose wait_pg wait_app revision state source_hash backup_hash legacy_backup_valid historical_backup_valid migration_report_valid historical_identity_valid legacy_relationships_valid legacy_fk_logs_clean migration_source_preserved backup_preserved retention_separated retry_state induce_retry_failure verify_failed_retry retry_normal_refusal retry_recovery setup_token smoke smoke_existing test_suite production_sqlite_rejection
 
-fresh_install() { compose up -d; wait_pg; wait_app; [[ "$(revision)" == "20260818_02" ]]; }
+fresh_install() { compose up -d; wait_pg; wait_app; [[ "$(revision)" == "20260902_01" ]]; }
 scenario 1 "Fresh install uses PostgreSQL" fresh_install
 scenario 2 "Fresh install has no authoritative SQLite" test ! -e "$ROOT/data/kaya.db"
 scenario 3 "Fresh production startup fails closed without PostgreSQL" production_sqlite_rejection
@@ -146,11 +146,11 @@ scenario 4 "Existing PostgreSQL startup" wait_app
 compose exec -T postgres psql -U kaya -d kaya -v ON_ERROR_STOP=1 -c "INSERT INTO remote_manager_settings (key, value, updated_at) VALUES ('high_availability_enabled', '1', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at;" >/dev/null
 scenario 5 "Existing PostgreSQL representative writes" smoke
 scenario 6 "Existing PostgreSQL restart" bash -c 'compose restart kaya >/dev/null && wait_app'
-scenario 7 "Existing PostgreSQL image replacement" bash -c 'compose up -d --force-recreate kaya >/dev/null && wait_app && [[ "$(revision)" == "20260818_02" ]]'
+scenario 7 "Existing PostgreSQL image replacement" bash -c 'compose up -d --force-recreate kaya >/dev/null && wait_app && [[ "$(revision)" == "20260902_01" ]]'
 
 docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c "chown -R $(id -u):$(id -g) /data"
 touch "$ROOT/data/kaya.db"
-scenario 8 "Active PostgreSQL with stale SQLite present" bash -c 'compose restart kaya >/dev/null && wait_app && [[ "$(revision)" == "20260818_02" ]]'
+scenario 8 "Active PostgreSQL with stale SQLite present" bash -c 'compose restart kaya >/dev/null && wait_app && [[ "$(revision)" == "20260902_01" ]]'
 scenario 9 "No SQLite migration rerun" bash -c '! compose logs --no-color kaya | grep -q "Preparing controlled SQLite"'
 
 # Replace the fresh project with an isolated legacy fixture while retaining
@@ -166,7 +166,7 @@ docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c "chow
 compose exec -T postgres psql -U kaya -d kaya -v ON_ERROR_STOP=1 -c "INSERT INTO remote_manager_settings (key, value, updated_at) VALUES ('high_availability_enabled', '1', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at;" >/dev/null
 scenario 10 "Legacy SQLite detected" bash -c '[[ "$(state)" == "POSTGRES_ACTIVE" ]]'
 scenario 11 "Legacy SQLite verified backup" legacy_backup_valid
-scenario 12 "Legacy SQLite migration" bash -c '[[ "$(revision)" == "20260818_02" ]] && historical_backup_valid && migration_report_valid && historical_identity_valid && legacy_relationships_valid && legacy_fk_logs_clean'
+scenario 12 "Legacy SQLite migration" bash -c '[[ "$(revision)" == "20260902_01" ]] && historical_backup_valid && migration_report_valid && historical_identity_valid && legacy_relationships_valid && legacy_fk_logs_clean'
 scenario 13 "PostgreSQL cutover" bash -c '[[ "$(state)" == "POSTGRES_ACTIVE" ]]'
 scenario 14 "Migrated authenticated HTTP smoke" smoke_existing
 scenario 15 "Migrated representative writes" smoke_existing
@@ -180,9 +180,9 @@ scenario 20 "No SQLite fallback" bash -c '! compose logs --no-color kaya | grep 
 scenario 21 "PostgreSQL recovery" bash -c 'compose start postgres >/dev/null; wait_pg; wait_app'
 docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c "chown -R $(id -u):$(id -g) /data"
 docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c 'rm -f /data/kaya.db'
-scenario 22 "Missing retained SQLite post-cutover" bash -c 'compose restart kaya >/dev/null && wait_app && [[ "$(revision)" == "20260818_02" ]]'
+scenario 22 "Missing retained SQLite post-cutover" bash -c 'compose restart kaya >/dev/null && wait_app && [[ "$(revision)" == "20260902_01" ]]'
 docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c "printf 'corrupt\\n' > /data/kaya.db"
-scenario 23 "Corrupted retained SQLite post-cutover" bash -c 'compose restart kaya >/dev/null && wait_app && [[ "$(revision)" == "20260818_02" ]]'
+scenario 23 "Corrupted retained SQLite post-cutover" bash -c 'compose restart kaya >/dev/null && wait_app && [[ "$(revision)" == "20260902_01" ]]'
 docker run --rm --user 0 --entrypoint sh -v "$ROOT/data:/data" "$IMAGE" -c "chown -R $(id -u):$(id -g) /data/backups"
 source_backup="$(find "$ROOT/data/backups" -type f -name '*.sqlite3' | head -n 1)"
 source_backup_name="$(basename "$source_backup")"
@@ -206,7 +206,7 @@ scenario 31 "PostgreSQL operational backups preserved" test -s "$pg_backup"
 scenario 32 "Backup-retention separation" retention_separated
 scenario 33 "Worker writes PostgreSQL only" bash -c 'compose exec -T postgres psql -U kaya -d kaya -Atc "select count(*) from audit_logs where action like '\''phase9%'\''" >/dev/null'
 scenario 34 "Retained SQLite not mutated by workers" test "$retained_before_workers" = "$(source_hash)"
-scenario 35 "PostgreSQL diagnostics" bash -c 'compose exec -T postgres psql -U kaya -d kaya -Atc "select version_num from alembic_version" | grep -qx 20260818_02'
+scenario 35 "PostgreSQL diagnostics" bash -c 'compose exec -T postgres psql -U kaya -d kaya -Atc "select version_num from alembic_version" | grep -qx 20260902_01'
 scenario 36 "PostgreSQL backup" test -s "$pg_backup"
 scenario 37 "SQLite migration tooling" bash -c 'test -f "$ROOT_DIR/scripts/kaya_db_migrate.py" && test -f "$ROOT_DIR/scripts/generate_sqlite_migration_fixture.py"'
 scenario 38 "SQLite unit/test fixtures" test_suite pytest -q tests/test_phase6_cutover.py tests/test_sqlite_temp_workspace.py
@@ -215,7 +215,7 @@ scenario 40 "Non-Docker regression suite" test_suite pytest -q tests/test_phase6
 scenario 41 "Security and path tests" test_suite pytest -q tests/test_phase6_cutover.py
 scenario 42 "Secret/log leakage review" bash -c '! grep -R -n -E "phase9-synthetic-secret|postgresql[^[:space:]]*:[^@[:space:]]+@|SETUP_TOKEN=" phase9_acceptance.json phase9-runtime.log 2>/dev/null'
 scenario 43 "Compose validation" docker compose -f "$PRIMARY" -f "$ISOLATION" config --quiet
-scenario 44 "Migration-chain validation" bash -c '[[ "$(revision)" == "20260818_02" ]]'
+scenario 44 "Migration-chain validation" bash -c '[[ "$(revision)" == "20260902_01" ]]'
 
 resource_count="$(docker ps -aq --filter "name=^${PROJECT}_" | wc -l)"
 cleanup_owned_retry_fixture() {
