@@ -1,4 +1,5 @@
 from functools import lru_cache
+import os
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -21,8 +22,15 @@ class Settings(BaseSettings):
     base_url: str = "http://localhost:8080"
     root_path: str = ""
     database_url: str = f"sqlite:///{DEFAULT_DATA_DIR / 'kaya.db'}"
+    database_password_file: str = ""
+    database_pool_size: int = 5
+    database_max_overflow: int = 5
+    database_pool_recycle_seconds: int = 1800
+    database_connect_timeout_seconds: int = 10
+    database_pool_timeout_seconds: int = 10
     data_dir: str = str(DEFAULT_DATA_DIR)
     migration_backup_dir: str = str(DEFAULT_DATA_DIR / "backups")
+    postgres_backup_dir: str = str(DEFAULT_DATA_DIR / "postgres-backups")
     migration_backups_enabled: bool = True
     migration_backup_retention_count: int = 10
     secret_key: str = ""
@@ -48,6 +56,33 @@ class Settings(BaseSettings):
     model_config = {"extra": "ignore"}
 
 
+def resolve_database_password(database_url: str, password_file: str = "") -> str:
+    """Resolve a PostgreSQL password from a protected file without logging it."""
+    if not password_file or not database_url.startswith("postgresql"):
+        return database_url
+    url = make_url(database_url)
+    if url.password:
+        return database_url
+    try:
+        password = Path(password_file).read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise InvalidConfigurationError("DATABASE_PASSWORD_FILE could not be read.") from exc
+    if not password:
+        raise InvalidConfigurationError("DATABASE_PASSWORD_FILE is empty.")
+    return url.set(password=password).render_as_string(hide_password=False)
+
+
+def postgres_engine_options(settings: Settings) -> dict:
+    """Return bounded SQLAlchemy/psycopg options for PostgreSQL connections."""
+    return {
+        "connect_args": {
+            "connect_timeout": max(1, int(settings.database_connect_timeout_seconds)),
+        },
+        "pool_pre_ping": True,
+        "pool_timeout": max(1, int(settings.database_pool_timeout_seconds)),
+    }
+
+
 def trusted_hosts(settings: Settings) -> list[str]:
     if not settings.allowed_hosts.strip():
         return []
@@ -68,6 +103,16 @@ def trusted_hosts(settings: Settings) -> list[str]:
 def get_settings() -> Settings:
     settings = Settings()
 
+    configured_failpoint = os.environ.get("KAYA_TEST_FAILPOINT", "").strip()
+    if configured_failpoint and settings.app_env == "production":
+        raise InvalidConfigurationError(
+            "Phase 6 test failpoints are unavailable in production."
+        )
+
+    settings.database_url = resolve_database_password(
+        settings.database_url, settings.database_password_file
+    )
+
     if settings.app_env == "production":
         if not settings.secret_key or len(settings.secret_key) < 32:
             raise InvalidConfigurationError(
@@ -86,6 +131,12 @@ def get_settings() -> Settings:
         ) from exc
 
     return settings
+
+
+def redact_database_url(database_url: str) -> str:
+    """Render a database URL without its password or query parameters."""
+    url = make_url(database_url)
+    return url.set(password=None, query={}).render_as_string(hide_password=True)
 
 
 def sqlite_database_path(database_url: str) -> Path | None:

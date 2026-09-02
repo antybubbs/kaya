@@ -164,19 +164,20 @@ def _safe_vapid_claims(authorization: str | None, now: datetime) -> dict:
 def _safe_response_diagnostics(exc: Exception) -> dict:
     response = getattr(exc, "response", None)
     headers = getattr(response, "headers", {}) or {}
-    safe_names = sorted(str(name).lower() for name in headers)
+    normalised_headers = {str(name).lower(): value for name, value in headers.items()}
+    safe_names = sorted(normalised_headers)
     safe_values = {}
     for name in (
         "x-wns-error-description",
         "x-wns-notificationstatus",
         "x-wns-status",
     ):
-        value = headers.get(name)
+        value = normalised_headers.get(name)
         if value is not None:
             safe_values[name.replace("-", "_")] = " ".join(str(value).split())[:160]
     request_id = None
     for name in ("x-wns-msg-id", "ms-cv", "x-correlation-id", "x-request-id"):
-        value = headers.get(name)
+        value = normalised_headers.get(name)
         if value and len(str(value)) <= 160:
             request_id = f"{name}:{str(value)}"
             break

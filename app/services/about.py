@@ -1,15 +1,15 @@
+import logging
 import os
 import platform
 import shutil
-import sqlite3
 import sys
 from importlib import metadata
 from pathlib import Path
-from urllib.parse import urlparse
+from sqlalchemy.engine import make_url
 
 from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
+from app.core.config import get_settings, sqlite_database_path
 from app.core.formatting import human_bytes
 from app.core.paths import PACKAGE_ROOT, STATIC_DIR
 from app.models.models import (
@@ -23,7 +23,11 @@ from app.models.models import (
     RemoteAccess,
     User,
 )
+from app.db.session import engine
 from app.services.version import version_status
+from app.services.postgres_diagnostics import collect_postgres_diagnostics
+
+logger = logging.getLogger(__name__)
 
 PACKAGE_NAMES = [
     "fastapi",
@@ -56,22 +60,31 @@ def directory_size(path: Path) -> int:
 
 
 def sqlite_path(database_url: str) -> Path | None:
-    if not database_url.startswith("sqlite"):
-        return None
-    parsed = urlparse(database_url)
-    if parsed.path:
-        return Path(parsed.path)
-    return None
+    return sqlite_database_path(database_url)
 
 
-def sqlite_version() -> str:
-    return sqlite3.sqlite_version
+def database_identity() -> dict[str, str]:
+    url = make_url(get_settings().database_url)
+    if engine.dialect.name == "sqlite":
+        return {"engine": "SQLite", "database": "local file"}
+    if engine.dialect.name == "postgresql":
+        return {
+            "engine": "PostgreSQL",
+            "host": url.host or "unknown",
+            "database": url.database or "unknown",
+        }
+    return {"engine": engine.dialect.name, "database": url.database or "unknown"}
+
+
+def database_version() -> str:
+    with engine.connect() as connection:
+        return str(connection.exec_driver_sql("SELECT version()" if engine.dialect.name == "postgresql" else "select sqlite_version()").scalar_one())
 
 
 def package_versions() -> list[dict[str, str]]:
     rows = [
         {"name": "Python", "version": platform.python_version()},
-        {"name": "SQLite", "version": sqlite_version()},
+        {"name": database_identity()["engine"], "version": database_version()},
     ]
     for name in PACKAGE_NAMES:
         try:
@@ -154,7 +167,7 @@ def disk_info(path: Path) -> dict[str, str]:
     }
 
 
-def storage_rows() -> list[dict[str, str]]:
+def storage_rows(database_size_bytes: int | None = None) -> list[dict[str, str]]:
     settings = get_settings()
     db_path = sqlite_path(settings.database_url)
     upload_path = Path(settings.upload_dir)
@@ -165,7 +178,9 @@ def storage_rows() -> list[dict[str, str]]:
         {
             "label": "Database",
             "size": (
-                human_bytes(directory_size(db_path)) if db_path else "external database"
+                human_bytes(directory_size(db_path))
+                if db_path
+                else human_bytes(database_size_bytes) if database_size_bytes is not None else "unavailable"
             ),
         },
         {"label": "Uploads", "size": human_bytes(directory_size(upload_path))},
@@ -195,17 +210,28 @@ def collect_about(db: Session) -> dict:
     version = version_status()
     db_path = sqlite_path(settings.database_url)
     data_path = db_path.parent if db_path else Path(settings.data_dir)
+    try:
+        postgres_diagnostics = collect_postgres_diagnostics(
+            engine, Path(settings.postgres_backup_dir)
+        )
+    except Exception as exc:
+        logger.warning("about postgres diagnostics unavailable error=%s", type(exc).__name__)
+        postgres_diagnostics = {
+            "available": False,
+            "reason": "PostgreSQL diagnostics unavailable",
+        }
+    database_size_bytes = (
+        postgres_diagnostics.get("database_bytes")
+        if postgres_diagnostics.get("available")
+        else None
+    )
     return {
         "version": version,
         "app": {
             "name": settings.app_name,
             "environment": settings.app_env,
             "repository": settings.github_repo,
-            "database": (
-                "SQLite"
-                if settings.database_url.startswith("sqlite")
-                else "External database"
-            ),
+            "database": database_identity()["engine"],
         },
         "system": {
             "hostname": platform.node() or "unknown",
@@ -217,7 +243,8 @@ def collect_about(db: Session) -> dict:
         "cpu": cpu_info(),
         "memory": memory_info(),
         "disk": disk_info(data_path),
-        "storage_rows": storage_rows(),
+        "storage_rows": storage_rows(database_size_bytes),
         "packages": package_versions(),
         "module_counts": module_counts(db),
+        "postgres_diagnostics": postgres_diagnostics,
     }

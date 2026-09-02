@@ -672,6 +672,8 @@ def test_local_event_queue_survives_restart_and_rejects_stale_desired_state(tmp_
 
 def test_identical_dhcp_repair_desired_state_executes_once_until_result_is_delivered(tmp_path):
     state = State(tmp_path)
+    state.set("vip_owned", True)
+    state.set("observed_role", "ACTIVE")
     calls = []
     desired = {
         "cluster_generation": 4,
@@ -729,7 +731,11 @@ def test_rejected_old_action_result_cannot_starve_failover_proof_or_heartbeats(t
     event_id = state.queue_event("automatic_failover_completed", "warning", "Local failover completed without requiring Kaya.")
     monkeypatch.setattr(keepalived_runtime, "refresh_vip_state", lambda value: None)
     monkeypatch.setattr(failover_runtime, "refresh_dhcp_state", lambda value: None)
-    monkeypatch.setattr(transport.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0))
+    monkeypatch.setattr(
+        transport.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
     calls = []
     desired = {
         "cluster_generation": 4,

@@ -288,6 +288,29 @@ def test_agent_rejects_unverified_owner_demotion_and_accepts_bound_handover():
     assert result["status"] == "APPLIED"
 
 
+def test_agent_rejects_stale_promotion_after_local_vip_loss():
+    from ha_agent.failover_runtime import FailoverRuntimeError, apply_failover_action
+
+    class State:
+        values = {"vip_owned": False, "observed_role": "STANDBY", "failover_generation": 2}
+
+        def get(self, key, default=None):
+            return self.values.get(key, default)
+
+        def set(self, key, value):
+            self.values[key] = value
+
+    action = {
+        "action_id": "failover:fake:dhcp_promote:node",
+        "action_type": "DHCP_PROMOTE",
+        "generation": 2,
+        "checksum": "b" * 64,
+        "automatic": False,
+    }
+    with pytest.raises(FailoverRuntimeError, match="no longer owns the VIP"):
+        apply_failover_action(State(), action, runner=lambda command: pytest.fail("stale action invoked helper"))
+
+
 def test_transient_dhcp_release_error_continues_after_explicit_source_reports_release(monkeypatch):
     with database() as db:
         user, cluster, source, target = ready_pair(db)
@@ -575,6 +598,8 @@ def test_configuration_only_dhcp_repair_never_reads_or_replaces_live_leases(tmp_
         "failover_generation": 7,
         "failover_configuration_only": True,
         "dns_healthy": True,
+        "observed_role": "ACTIVE",
+        "vip_owned": True,
     }
     monkeypatch.setattr(helper, "_state", lambda key, default=None: values.get(key, default))
     monkeypatch.setattr(helper, "_owns_vip", lambda: True)

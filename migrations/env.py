@@ -3,6 +3,8 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
+from app.core.config import sqlite_database_path
+from app.db.sqlite_temp import configure_sqlite_temp_directory
 from app.models.models import Base
 
 config = context.config
@@ -11,6 +13,22 @@ if config.config_file_name is not None:
     # Alembic runs inside the application process.
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 target_metadata = Base.metadata
+
+
+def _reject_unsafe_sqlite_downgrade() -> None:
+    migration_context = context.get_context()
+    environment_context = migration_context.environment_context
+    command = environment_context.context_opts.get("fn") if environment_context else None
+    destination = environment_context.context_opts.get("destination_rev") if environment_context else None
+    if (
+        migration_context.dialect.name == "sqlite"
+        and getattr(command, "__name__", None) == "downgrade"
+        and destination
+        and destination < "20260810_02"
+    ):
+        raise RuntimeError(
+            "Migration downgrade is blocked for SQLite databases before 20260810_02."
+        )
 
 
 def run_migrations_offline() -> None:
@@ -27,6 +45,9 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
+    database_path = sqlite_database_path(config.get_main_option("sqlalchemy.url"))
+    if database_path is not None:
+        configure_sqlite_temp_directory(database_path)
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
@@ -39,6 +60,7 @@ def run_migrations_online() -> None:
             compare_type=True,
             render_as_batch=connection.dialect.name == "sqlite",
         )
+        _reject_unsafe_sqlite_downgrade()
         with context.begin_transaction():
             context.run_migrations()
 

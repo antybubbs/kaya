@@ -1,0 +1,38 @@
+services:
+  kaya:
+    environment:
+      POSTGRES_BACKUP_DIR: /var/backups/kaya-postgres
+    volumes:
+      - ${KAYA_POSTGRES_BACKUP_DIR:-./postgres-backups}:/var/backups/kaya-postgres:ro
+
+  postgres-backup:
+    image: ${KAYA_POSTGRES_IMAGE:-postgres:16.14}
+    profiles: [postgres-ops]
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: kaya
+      POSTGRES_USER: kaya
+      KAYA_POSTGRES_ADMIN_USER: kaya_bootstrap
+      KAYA_POSTGRES_ADMIN_PASSWORD_FILE: /run/kaya-secrets/postgres_bootstrap_password
+      POSTGRES_PASSWORD_FILE: /run/kaya-secrets/postgres_password
+      PGHOST: postgres
+      KAYA_POSTGRES_BACKUP_RETENTION: ${KAYA_POSTGRES_BACKUP_RETENTION:-7}
+      KAYA_POSTGRES_BACKUP_INTERVAL_SECONDS: ${KAYA_POSTGRES_BACKUP_INTERVAL_SECONDS:-86400}
+    entrypoint: ["/bin/bash", "/usr/local/bin/kaya_postgres_backup_worker.sh"]
+    command: ["scheduled"]
+    volumes:
+      - ${KAYA_POSTGRES_BACKUP_DIR:-./postgres-backups}:/var/backups/kaya-postgres
+      - kaya_phase6_postgres_secret:/run/kaya-secrets:ro
+      - ./scripts/kaya_postgres_backup_worker.sh:/usr/local/bin/kaya_postgres_backup_worker.sh:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kaya:
+        condition: service_healthy
+    networks:
+      - default
+
+volumes:
+  kaya_phase6_postgres_secret:
+    external: true
+    name: kaya_phase6_postgres_secret

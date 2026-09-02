@@ -1,8 +1,8 @@
 # Developer Database Migration Workflow
 
-The SQLAlchemy models describe the current application contract. The ordered Alembic revisions are the authoritative history that creates and upgrades that contract. The baseline is static and must never import mutable current metadata.
+The SQLAlchemy models describe the current application contract. The ordered Alembic revisions are the authoritative history that creates and upgrades that contract. The baseline is static and must never import mutable current metadata. Production uses PostgreSQL 16; SQLite migration support is retained only for controlled legacy upgrades. See [Database platform policy](database-platform-policy.md).
 
-SQLite is the currently supported and tested production database. The compatibility bridge is only for databases created before Alembic; it remains through v0.27 and is reviewed for removal no earlier than v0.28 after the minimum supported upgrade version and recovery evidence are documented.
+The compatibility bridge is only for databases created before Alembic and is retained for legacy recovery. Its removal requires the sunset evidence defined in the platform policy; it must not be removed merely because new installations use PostgreSQL.
 
 Common local commands are:
 

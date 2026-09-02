@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta
 import inspect
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -7,6 +9,7 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
+from starlette.requests import Request
 
 from app.db.session import Base
 from app.models.models import DHCPLeaseHistory, DHCPRange, DNSClientEvent, DNSClientHostnameHistory, DNSClientIPHistory, DNSClientObservation, DNSClientTrafficEvent, DNSProviderConfig, DNSRecognisedDevice, HACluster, IPAddress, RemoteManagerSetting, VLAN
@@ -15,6 +18,7 @@ from app.services.dns_client_repair import repair_dns_client_identities
 from app.services.dns_insights import NormalisedClient, _persist_client_traffic, _persist_dhcp_leases
 from app.routers import dns_manager
 from app.routers import ip_addresses
+from app.services import dns_collector
 
 
 def factory():
@@ -518,6 +522,7 @@ def test_client_traffic_history_is_persisted_and_deduplicated():
     make = factory()
     with make() as db:
         provider = setup_provider(db)
+        setting(db, "dns_traffic_history_days", "3650")
         client = observe_client(db, provider, observation(), datetime.utcnow())
         db.commit()
         normalised = NormalisedClient("ip", client.current_ip, client.hostname, client.current_ip, client.normalised_mac or "-", device_id=client.id)
@@ -542,6 +547,51 @@ def test_client_traffic_history_is_persisted_and_deduplicated():
         assert event.reply_time_ms == 4.0
 
 
+def test_dns_collection_releases_read_transaction_before_slow_provider_work(
+    monkeypatch, tmp_path
+):
+    database_path = tmp_path / "dns-collector.sqlite"
+    engine = create_engine(
+        f"sqlite:///{database_path}",
+        connect_args={"check_same_thread": False, "timeout": 2},
+    )
+    Base.metadata.create_all(engine)
+    make = sessionmaker(bind=engine)
+    with make() as db:
+        provider = setup_provider(db)
+        provider_id = provider.id
+
+    started = threading.Event()
+    release = threading.Event()
+    transaction_state = []
+
+    def slow_analysis(db, provider, *, known_hostnames_raw):
+        transaction_state.append(db.in_transaction())
+        started.set()
+        assert release.wait(5)
+
+    monkeypatch.setattr(dns_collector, "analyse_provider", slow_analysis)
+    worker = threading.Thread(
+        target=dns_collector.collect_provider,
+        args=(provider_id, "[]", make),
+    )
+    worker.start()
+    assert started.wait(5)
+    with make() as writer:
+        writer.add(
+            DNSProviderConfig(
+                name="Concurrent writer", provider_type="pihole", base_url="http://example.invalid"
+            )
+        )
+        started_at = time.monotonic()
+        writer.commit()
+        assert time.monotonic() - started_at < 1
+    release.set()
+    worker.join(timeout=5)
+    assert not worker.is_alive()
+    assert transaction_state == [False]
+
+
 def test_client_detail_exposes_traffic_summaries_and_history():
     template = Path("app/templates/dns_client_detail.html").read_text(encoding="utf-8")
     assert "Top requested domains" in template
@@ -559,6 +609,81 @@ def test_client_detail_exposes_traffic_summaries_and_history():
     assert "dns_client_detail.js" in template
     detail_script = Path("app/static/js/dns_client_detail.js").read_text(encoding="utf-8")
     assert "--dns-popup-left" in detail_script and "getBoundingClientRect" in detail_script
+
+
+def test_client_detail_does_not_load_large_observation_history(monkeypatch):
+    make = factory()
+    with make() as db:
+        provider = setup_provider(db)
+        now = datetime.utcnow()
+        client = DNSRecognisedDevice(
+            provider_id=provider.id,
+            provider_type="pihole",
+            identity_type="mac",
+            identity_value="00:11:22:33:44:55",
+            logical_provider_key=f"provider:{provider.id}",
+            identity_key="mac:00:11:22:33:44:55",
+            normalised_mac="00:11:22:33:44:55",
+            mac_address="00:11:22:33:44:55",
+            current_ip="192.0.2.10",
+            first_seen_at=now,
+            last_seen_at=now,
+            observation_count=10000,
+        )
+        db.add(client)
+        db.flush()
+        db.bulk_insert_mappings(DNSClientObservation, [
+            {
+                "dns_client_id": client.id,
+                "provider_id": provider.id,
+                "observation_key": f"observation-{index}",
+                "logical_provider_key": f"provider:{provider.id}",
+                "observed_at": now,
+            }
+            for index in range(10000)
+        ])
+        db.commit()
+
+        statements = []
+
+        @event.listens_for(db.bind, "before_cursor_execute")
+        def capture(connection, cursor, statement, parameters, context, executemany):
+            if statement.lstrip().upper().startswith("SELECT"):
+                statements.append(statement.lower())
+
+        rendered = {}
+        monkeypatch.setattr(
+            dns_manager,
+            "provider_for",
+            lambda provider: (_ for _ in ()).throw(TimeoutError("synthetic provider outage")),
+        )
+        monkeypatch.setattr(dns_manager.templates, "TemplateResponse", lambda request, template, context: rendered.update(context) or context)
+        request = Request({
+            "type": "http",
+            "method": "GET",
+            "path": f"/networking/dns-manager/clients/{client.id}",
+            "query_string": b"",
+            "headers": [],
+            "client": ("127.0.0.1", 1234),
+            "server": ("127.0.0.1", 8000),
+            "scheme": "http",
+            "session": {},
+        })
+        result = dns_manager.dns_client_detail(
+            request,
+            client.id,
+            q="",
+            traffic_q="",
+            traffic_status="all",
+            traffic_period="7d",
+            traffic_page=1,
+            db=db,
+            user=SimpleNamespace(role="viewer"),
+        )
+
+        assert result["client"] is rendered["client"]
+        assert rendered["client"].observation_count == 10000
+        assert "dns_client_observations" not in " ".join(statements)
 
 
 def test_exact_ip_or_mac_matches_can_be_confirmed_from_both_record_views():

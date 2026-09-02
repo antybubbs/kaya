@@ -261,6 +261,16 @@ def record_heartbeat(
     node.observed_role = heartbeat.observed_role
     node.observed_generation = heartbeat.observed_generation
     node.vip_owned = heartbeat.vip_owned
+    stable_owner = bool(
+        heartbeat.vip_owned
+        and heartbeat.observed_role == "ACTIVE"
+        and heartbeat.observed_generation >= node.cluster.role_generation
+        and heartbeat.config_generation >= node.cluster.keepalived_generation
+    )
+    if not stable_owner:
+        node.vip_stable_since = None
+    elif node.vip_stable_since is None:
+        node.vip_stable_since = received_at
     observation_status = heartbeat.dhcp_observation_status
     if observation_status is None:
         observation_status = (

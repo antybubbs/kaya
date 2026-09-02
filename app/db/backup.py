@@ -5,11 +5,15 @@ import json
 import logging
 import os
 import sqlite3
+import shutil
+import struct
+import tempfile
 import time
-from contextlib import closing
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from app.db.validation import (
     SQLITE_BUSY_TIMEOUT_MS,
@@ -20,6 +24,8 @@ from app.db.validation import (
 logger = logging.getLogger(__name__)
 BACKUP_OPERATION_TIMEOUT_SECONDS = 600.0
 _HASH_CHUNK_BYTES = 1024 * 1024
+_SNAPSHOT_COPY_CHUNK_BYTES = 8 * 1024 * 1024
+_SNAPSHOT_SAFETY_MARGIN_MIN_BYTES = 16 * 1024 * 1024
 
 
 class DatabaseBackupError(RuntimeError):
@@ -30,6 +36,8 @@ class DatabaseBackupError(RuntimeError):
 class MigrationBackup:
     database_path: Path
     metadata_path: Path
+    action: str = "created"
+    snapshot_fingerprint: str | None = None
 
 
 def _file_sha256(path: Path) -> str:
@@ -38,6 +46,163 @@ def _file_sha256(path: Path) -> str:
         while chunk := handle.read(_HASH_CHUNK_BYTES):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _snapshot_source_manifest(source: Path) -> tuple[tuple[str, int, int, str], ...]:
+    """Capture immutable metadata for the SQLite main/WAL pair."""
+    manifest = []
+    for candidate in (source, source.with_name(source.name + "-wal")):
+        if not candidate.is_file():
+            manifest.append((candidate.name, 0, 0, "missing"))
+            continue
+        stat = candidate.stat()
+        manifest.append((candidate.name, stat.st_size, stat.st_mtime_ns, _file_sha256(candidate)))
+    return tuple(manifest)
+
+
+def _copy_snapshot_file(source: Path, destination: Path, *, label: str) -> None:
+    copied = 0
+    next_progress = 256 * 1024 * 1024
+    with source.open("rb") as source_handle, destination.open("xb") as destination_handle:
+        while chunk := source_handle.read(_SNAPSHOT_COPY_CHUNK_BYTES):
+            destination_handle.write(chunk)
+            copied += len(chunk)
+            if copied >= next_progress:
+                logger.info("database.recovery source_snapshot=copy_progress file=%s bytes=%s", label, copied)
+                next_progress += 256 * 1024 * 1024
+        destination_handle.flush()
+        os.fsync(destination_handle.fileno())
+
+
+def isolated_snapshot_required_bytes(source_size: int, wal_size: int) -> int:
+    """Return peak additional space for the isolated snapshot only."""
+    return source_size + wal_size + max(source_size // 20, _SNAPSHOT_SAFETY_MARGIN_MIN_BYTES)
+
+
+@contextmanager
+def isolated_sqlite_snapshot(source: Path, workspace: Path):
+    """Yield a WAL-aware SQLite copy without importing the source SHM file."""
+    source = source.resolve()
+    workspace = workspace.resolve()
+    workspace.mkdir(parents=True, exist_ok=True)
+    main_size = source.stat().st_size
+    wal = source.with_name(source.name + "-wal")
+    wal_size = wal.stat().st_size if wal.is_file() else 0
+    # The verified-backup retry path destroys this snapshot before creating a
+    # historical conversion working copy. Only the snapshot's peak allocation
+    # is concurrent here; the existing 5%/minimum margin is unchanged.
+    required_bytes = isolated_snapshot_required_bytes(main_size, wal_size)
+    available_bytes = shutil.disk_usage(workspace).free
+    logger.info(
+        "database.recovery source_snapshot=space_check available_bytes=%s required_bytes=%s",
+        available_bytes,
+        required_bytes,
+    )
+    if available_bytes < required_bytes:
+        raise DatabaseBackupError("Insufficient space for an isolated SQLite recovery snapshot.")
+    before = _snapshot_source_manifest(source)
+    logger.info("database.recovery source_snapshot=creating")
+    if wal.is_file():
+        logger.info("database.recovery source_snapshot=wal_detected bytes=%s", wal_size)
+    try:
+        with tempfile.TemporaryDirectory(prefix=".kaya-recovery-snapshot-", dir=workspace) as temporary_dir:
+            snapshot = Path(temporary_dir) / source.name
+            _copy_snapshot_file(source, snapshot, label=source.name)
+            if wal.is_file():
+                _copy_snapshot_file(wal, snapshot.with_name(snapshot.name + "-wal"), label=wal.name)
+            after = _snapshot_source_manifest(source)
+            if before != after:
+                raise DatabaseBackupError("SQLite source changed while the recovery snapshot was being copied.")
+            validate_sqlite_readable(snapshot)
+            # SQLite may create the shared-memory sidecar while validating a
+            # WAL snapshot.  It is disposable validator state, not part of
+            # the copied snapshot, and must not be exposed to the consumer.
+            snapshot_shm = snapshot.with_name(snapshot.name + "-shm")
+            if snapshot_shm.exists():
+                snapshot_shm.unlink()
+            logger.info("database.recovery source_snapshot=validated")
+            yield snapshot
+    finally:
+        logger.info("database.recovery source_snapshot=destroyed")
+
+
+def _digest_field(digest: Any, tag: bytes, value: bytes) -> None:
+    digest.update(tag)
+    digest.update(len(value).to_bytes(8, "big"))
+    digest.update(value)
+
+
+def _digest_sqlite_value(digest: Any, sqlite_type: str, value: object) -> None:
+    _digest_field(digest, b"type\0", sqlite_type.encode("ascii"))
+    if value is None:
+        _digest_field(digest, b"value\0", b"null")
+    elif sqlite_type == "integer":
+        _digest_field(digest, b"value\0", struct.pack(">q", int(value)))
+    elif sqlite_type == "real":
+        _digest_field(digest, b"value\0", struct.pack(">d", float(value)))
+    elif sqlite_type == "text":
+        _digest_field(digest, b"value\0", str(value).encode("utf-8"))
+    elif sqlite_type == "blob":
+        _digest_field(digest, b"value\0", bytes(value))
+    else:
+        raise DatabaseBackupError(f"Unsupported SQLite storage type {sqlite_type!r}.")
+
+
+def _quote_sqlite_identifier(identifier: str) -> str:
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+def _logical_sqlite_fingerprint(path: Path) -> str:
+    """Hash SQLite schema and rows deterministically without rewriting the DB."""
+    digest = hashlib.sha256()
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute("PRAGMA query_only=ON")
+        schema_rows = connection.execute(
+            "SELECT type, name, tbl_name, COALESCE(sql, '') "
+            "FROM sqlite_master "
+            "WHERE name NOT LIKE 'sqlite_stat%' "
+            "ORDER BY type, name, tbl_name"
+        )
+        for schema_row in schema_rows:
+            _digest_field(digest, b"schema\0", "\x1f".join(str(item) for item in schema_row).encode("utf-8"))
+        tables = connection.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type = 'table' AND (name NOT LIKE 'sqlite_%' OR name = 'sqlite_sequence') "
+            "ORDER BY name"
+        ).fetchall()
+        for (table_name,) in tables:
+            quoted_table = _quote_sqlite_identifier(table_name)
+            columns = connection.execute(f"PRAGMA table_info({quoted_table})").fetchall()
+            column_names = [row[1] for row in columns]
+            _digest_field(digest, b"table\0", table_name.encode("utf-8"))
+            for column in columns:
+                _digest_field(digest, b"column\0", "\x1f".join(str(item) for item in column).encode("utf-8"))
+            quoted_columns = [_quote_sqlite_identifier(name) for name in column_names]
+            select_columns = ", ".join(
+                f"typeof({column}), {column}" for column in quoted_columns
+            )
+            primary_key_columns = [
+                row[1] for row in sorted(columns, key=lambda item: item[5]) if row[5]
+            ]
+            # Primary-key ordering uses the existing index and avoids a large
+            # temporary sort for Kaya tables. Tables without a usable key keep
+            # the deterministic all-column fallback, which treats rows as a
+            # logical multiset without trusting physical row order.
+            order_names = primary_key_columns or column_names
+            order_columns = ", ".join(_quote_sqlite_identifier(name) for name in order_names)
+            for row in connection.execute(
+                f"SELECT {select_columns} FROM {quoted_table} ORDER BY {order_columns}"
+            ):
+                _digest_field(digest, b"row\0", b"start")
+                for index in range(0, len(row), 2):
+                    _digest_sqlite_value(digest, str(row[index]), row[index + 1])
+    return digest.hexdigest()
+
+
+def canonical_snapshot_fingerprint(source: Path, workspace: Path | None = None) -> str:
+    """Hash an already-safe SQLite database without making another copy."""
+    del workspace  # Retained for compatibility with existing callers.
+    return _logical_sqlite_fingerprint(source)
 
 
 def _source_fingerprint(source: Path) -> str:
@@ -66,43 +231,62 @@ def _reusable_backup(
     target_revision: str,
     source_fingerprint: str,
 ) -> MigrationBackup | None:
-    for metadata_path in sorted(
-        backup_directory.glob("pre-migration-*.json"), reverse=True
-    ):
-        try:
-            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-            backup_filename = metadata.get("backup_filename")
-            if (
-                not isinstance(backup_filename, str)
-                or Path(backup_filename).name != backup_filename
-            ):
-                continue
-            if not (
-                metadata.get("source_filename") == source.name
-                and metadata.get("source_revision") == source_revision
-                and metadata.get("target_revision") == target_revision
-                and metadata.get("source_fingerprint") == source_fingerprint
-            ):
-                continue
-            backup_path = backup_directory / backup_filename
-            if not backup_path.is_file() or metadata.get(
-                "backup_sha256"
-            ) != _file_sha256(backup_path):
+    candidates = sorted(backup_directory.glob("pre-migration-*.json"), reverse=True)
+    for retry_mode in (False, True):
+        for metadata_path in candidates:
+            transition_matches = False
+            exact_matches = False
+            backup_path = None
+            metadata = None
+            try:
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                backup_filename = metadata.get("backup_filename")
+                if (
+                    not isinstance(backup_filename, str)
+                    or Path(backup_filename).name != backup_filename
+                ):
+                    continue
+                transition_matches = (
+                    metadata.get("source_filename") == source.name
+                    and metadata.get("source_revision") == source_revision
+                    and metadata.get("target_revision") == target_revision
+                )
+                exact_matches = (
+                    transition_matches
+                    and metadata.get("source_fingerprint") == source_fingerprint
+                )
+                if not (exact_matches or (retry_mode and transition_matches)):
+                    continue
+                backup_path = backup_directory / backup_filename
+                if not backup_path.is_file() or metadata.get(
+                    "backup_sha256"
+                ) != _file_sha256(backup_path):
+                    logger.warning(
+                        "Ignoring reusable migration backup candidate with failed digest verification"
+                    )
+                    continue
+                validate_sqlite_readable(backup_path)
+            except (OSError, ValueError, DatabaseValidationError):
                 logger.warning(
-                    "Ignoring reusable migration backup candidate with failed digest verification"
+                    "Ignoring unreadable or invalid reusable migration backup candidate"
                 )
                 continue
-            validate_sqlite_readable(backup_path)
-        except (OSError, ValueError, DatabaseValidationError):
-            logger.warning(
-                "Ignoring unreadable or invalid reusable migration backup candidate"
+            logger.debug(
+                "Reusing verified migration backup for %s database transition: %s",
+                "unchanged" if exact_matches else "retry with changed SQLite schema",
+                backup_path.name,
             )
-            continue
-        logger.debug(
-            "Reusing verified migration backup for unchanged database: %s",
-            backup_path.name,
-        )
-        return MigrationBackup(backup_path, metadata_path)
+            logger.info(
+                "migration_backup action=reused filename=%s source_revision=%s target_revision=%s",
+                backup_path.name,
+                source_revision,
+                target_revision,
+            )
+            snapshot_fingerprint = canonical_snapshot_fingerprint(backup_path, backup_directory)
+            if metadata.get("snapshot_fingerprint") not in {None, snapshot_fingerprint}:
+                logger.warning("Ignoring reusable migration backup with failed snapshot identity verification")
+                continue
+            return MigrationBackup(backup_path, metadata_path, "reused", snapshot_fingerprint)
     return None
 
 
@@ -162,9 +346,7 @@ def create_sqlite_backup(
             percent = int(((total - remaining) / total) * 100) if total else 100
             if percent >= next_milestone:
                 while percent >= next_milestone:
-                    logger.info(
-                        "Kaya database: backup progress %s%%", next_milestone
-                    )
+                    logger.info("Kaya database: backup progress %s%%", next_milestone)
                     next_milestone += 25
             elif time.monotonic() >= next_progress:
                 logger.info(
@@ -176,12 +358,18 @@ def create_sqlite_backup(
                 )
                 next_progress = time.monotonic() + 5.0
 
+        source_uri = f"file:{Path(source).resolve().as_posix()}?mode=ro"
         with closing(
-            sqlite3.connect(source, timeout=SQLITE_BUSY_TIMEOUT_MS / 1_000)
+            sqlite3.connect(
+                source_uri,
+                uri=True,
+                timeout=SQLITE_BUSY_TIMEOUT_MS / 1_000,
+            )
         ) as source_connection:
             source_connection.execute(
                 f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}"
             ).close()
+            source_connection.execute("PRAGMA query_only=ON").close()
             with closing(
                 sqlite3.connect(backup_path, timeout=SQLITE_BUSY_TIMEOUT_MS / 1_000)
             ) as backup_connection:
@@ -197,6 +385,7 @@ def create_sqlite_backup(
         os.chmod(backup_path, 0o600)
         validate_sqlite_readable(backup_path)
         backup_sha256 = _file_sha256(backup_path)
+        snapshot_fingerprint = canonical_snapshot_fingerprint(backup_path, backup_directory)
         metadata_path.write_text(
             json.dumps(
                 {
@@ -207,6 +396,7 @@ def create_sqlite_backup(
                     "backup_filename": backup_path.name,
                     "source_fingerprint": source_fingerprint,
                     "backup_sha256": backup_sha256,
+                    "snapshot_fingerprint": snapshot_fingerprint,
                 },
                 indent=2,
                 sort_keys=True,
@@ -231,7 +421,13 @@ def create_sqlite_backup(
         backup_path.name,
         time.monotonic() - backup_started,
     )
-    return MigrationBackup(backup_path, metadata_path)
+    logger.info(
+        "migration_backup action=created filename=%s source_revision=%s target_revision=%s",
+        backup_path.name,
+        source_revision,
+        target_revision,
+    )
+    return MigrationBackup(backup_path, metadata_path, "created", snapshot_fingerprint)
 
 
 def prune_migration_backups(backup_directory: Path, retention_count: int) -> None:

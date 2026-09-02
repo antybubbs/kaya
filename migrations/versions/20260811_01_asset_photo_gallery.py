@@ -1,6 +1,5 @@
 """Add the bounded hardware-asset photo gallery and preserve legacy photos."""
 
-from pathlib import PurePath
 import mimetypes
 
 from alembic import op
@@ -34,24 +33,45 @@ def upgrade() -> None:
         ["asset_id"],
         unique=True,
         sqlite_where=sa.text("is_primary = 1"),
+        postgresql_where=sa.text("is_primary = TRUE"),
     )
-    op.execute(sa.text(
-        """
-        CREATE TRIGGER hardware_asset_photos_max_five
-        BEFORE INSERT ON hardware_asset_photos
-        WHEN (SELECT COUNT(*) FROM hardware_asset_photos WHERE asset_id = NEW.asset_id) >= 5
-        BEGIN
-            SELECT RAISE(ABORT, 'hardware asset photo limit exceeded');
-        END
-        """
-    ))
+    if op.get_bind().dialect.name == "postgresql":
+        op.execute(sa.text(
+            """
+            CREATE FUNCTION kaya_hardware_asset_photos_max_five()
+            RETURNS trigger
+            LANGUAGE plpgsql
+            AS $function$
+            BEGIN
+                PERFORM pg_advisory_xact_lock(NEW.asset_id::bigint);
+                IF (SELECT COUNT(*) FROM hardware_asset_photos WHERE asset_id = NEW.asset_id) >= 5 THEN
+                    RAISE EXCEPTION 'hardware asset photo limit exceeded';
+                END IF;
+                RETURN NEW;
+            END
+            $function$;
+            CREATE TRIGGER hardware_asset_photos_max_five
+            BEFORE INSERT ON hardware_asset_photos
+            FOR EACH ROW EXECUTE FUNCTION kaya_hardware_asset_photos_max_five()
+            """
+        ))
+    else:
+        op.execute(sa.text(
+            """
+            CREATE TRIGGER hardware_asset_photos_max_five
+            BEFORE INSERT ON hardware_asset_photos
+            WHEN (SELECT COUNT(*) FROM hardware_asset_photos WHERE asset_id = NEW.asset_id) >= 5
+            BEGIN
+                SELECT RAISE(ABORT, 'hardware asset photo limit exceeded');
+            END
+            """
+        ))
 
     connection = op.get_bind()
     legacy_rows = connection.execute(
         sa.text("SELECT id, photo_filename FROM hardware_assets WHERE photo_filename IS NOT NULL AND TRIM(photo_filename) <> ''")
     ).mappings()
     for row in legacy_rows:
-        suffix = PurePath(row["photo_filename"]).suffix.lower()
         content_type = mimetypes.guess_type(row["photo_filename"])[0] or "application/octet-stream"
         connection.execute(
             sa.text(
@@ -73,7 +93,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute(sa.text("DROP TRIGGER IF EXISTS hardware_asset_photos_max_five"))
+    if op.get_bind().dialect.name == "postgresql":
+        op.execute(sa.text("DROP TRIGGER IF EXISTS hardware_asset_photos_max_five ON hardware_asset_photos"))
+        op.execute(sa.text("DROP FUNCTION IF EXISTS kaya_hardware_asset_photos_max_five()"))
+    else:
+        op.execute(sa.text("DROP TRIGGER IF EXISTS hardware_asset_photos_max_five"))
     op.drop_index("uq_hardware_asset_photos_primary", table_name="hardware_asset_photos")
     op.drop_index("ix_hardware_asset_photos_is_primary", table_name="hardware_asset_photos")
     op.drop_index("ix_hardware_asset_photos_asset_id", table_name="hardware_asset_photos")

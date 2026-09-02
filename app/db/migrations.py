@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+# SQLite-dependent modules intentionally follow the temp-directory bootstrap.
+# ruff: noqa: E402
+
 import logging
-import sqlite3
+import os
+import shutil
 import tempfile
 from contextlib import closing
 from dataclasses import dataclass, field
@@ -11,22 +15,32 @@ from time import perf_counter
 from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
 
-from app.core.config import Settings, sqlite_database_path
+from app.core.config import Settings, get_settings, sqlite_database_path
+from app.db.sqlite_temp import configure_sqlite_temp_directory
+
+_bootstrap_settings = get_settings()
+_bootstrap_database_path = sqlite_database_path(_bootstrap_settings.database_url)
+if _bootstrap_database_path is not None:
+    configure_sqlite_temp_directory(_bootstrap_database_path)
+
 from app.db.backup import MigrationBackup, create_sqlite_backup, prune_migration_backups
 from app.db.compatibility import (
     BaselineCompatibilityError,
     create_missing_baseline_objects,
     migrate_pre_alembic_database,
 )
+from app.db.dialect import capabilities
+from app.db.platform_compatibility import validate_postgres_platform
 from app.db.validation import (
     DatabaseValidationError,
     SQLITE_BUSY_TIMEOUT_MS,
     classify_sqlite_error,
     validate_legacy_database,
     validate_schema,
+    validate_engine_schema,
     validate_startup_database,
 )
 from app.models.models import Base
@@ -34,7 +48,9 @@ from app.models.models import Base
 logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BASELINE_REVISION = "20260730_01"
-CURRENT_REVISION = "20260813_01"
+CURRENT_REVISION = "20260902_01"
+MIGRATION_STATE_TABLE = "kaya_migration_state"
+MINIMUM_MIGRATION_FREE_BYTES = 1 * 1024 * 1024
 STAGE_OPENING_DATABASE = "Opening database"
 STAGE_INTEGRITY_CHECKS = "Checking database readability"
 STAGE_CREATING_BACKUP = "Creating backup"
@@ -93,6 +109,8 @@ def _alembic_config(database_url: str) -> Config:
 
 
 def _revision(path: Path) -> str | None:
+    import sqlite3
+
     try:
         return _read_revision(path)
     except sqlite3.Error as exc:
@@ -102,6 +120,8 @@ def _revision(path: Path) -> str | None:
 
 
 def _read_revision(path: Path) -> str | None:
+    import sqlite3
+
     with closing(
         sqlite3.connect(path, timeout=SQLITE_BUSY_TIMEOUT_MS / 1_000)
     ) as connection:
@@ -129,6 +149,59 @@ def _has_application_tables(engine: Engine) -> bool:
     return bool(set(inspect(engine).get_table_names()) - {"alembic_version"})
 
 
+def _prepare_postgresql_database(
+    engine: Engine, settings: Settings, progress: MigrationProgress
+) -> MigrationResult:
+    """Prepare an already-provisioned PostgreSQL database without SQLite file logic."""
+    config = _alembic_config(settings.database_url)
+    script = ScriptDirectory.from_config(config)
+    try:
+        validate_postgres_platform(engine, script)
+    except RuntimeError as exc:
+        raise DatabaseMigrationError(str(exc)) from exc
+    heads = script.get_heads()
+    target_revision = heads[0]
+    with engine.connect() as connection:
+        connection.execute(text("SELECT 1"))
+        if "alembic_version" not in inspect(engine).get_table_names():
+            previous_revision = None
+        else:
+            revisions = [
+                row[0]
+                for row in connection.execute(
+                    text("SELECT version_num FROM alembic_version")
+                )
+            ]
+            if len(revisions) > 1:
+                raise DatabaseMigrationError("The PostgreSQL database contains multiple Alembic revisions.")
+            previous_revision = revisions[0] if revisions else None
+    if not _has_application_tables(engine) or previous_revision != target_revision:
+        if previous_revision is not None:
+            script.get_revision(previous_revision)
+        progress.enter(STAGE_ALEMBIC_MIGRATION)
+        command.upgrade(config, "head")
+    progress.enter(STAGE_SCHEMA_VALIDATION)
+    with engine.connect() as connection:
+        if MIGRATION_STATE_TABLE in inspect(engine).get_table_names():
+            state = connection.execute(
+                text(f"SELECT state, validation_state FROM {MIGRATION_STATE_TABLE} ORDER BY started_at DESC LIMIT 1")
+            ).one()
+            if state.state != "COMPLETED" or state.validation_state != "PASSED":
+                raise DatabaseMigrationError(
+                    "PostgreSQL target contains an incomplete SQLite migration and is not startup-authoritative."
+                )
+    validate_engine_schema(
+        engine,
+        Base.metadata,
+        require_revision=target_revision,
+        required_indexes=(("hardware_asset_photos", "uq_hardware_asset_photos_primary"),),
+        required_triggers=("hardware_asset_photos_max_five",),
+    )
+    progress.enter(STAGE_STARTUP_COMPLETE)
+    progress.finish()
+    return MigrationResult(previous_revision, target_revision, None, False)
+
+
 def _backup_if_enabled(
     settings: Settings,
     path: Path,
@@ -154,8 +227,110 @@ def _backup_if_enabled(
     )
 
 
-def _apply_missing_baseline_objects(database_path: Path) -> None:
-    with tempfile.TemporaryDirectory(prefix="kaya-baseline-") as directory:
+def _existing_storage_path(path: Path) -> Path:
+    candidate = path.resolve()
+    while not candidate.exists() and candidate != candidate.parent:
+        candidate = candidate.parent
+    return candidate
+
+
+def _migration_footprint(path: Path) -> int:
+    return sum(
+        candidate.stat().st_size
+        for candidate in (
+            path,
+            path.with_name(path.name + "-wal"),
+            path.with_name(path.name + "-shm"),
+        )
+        if candidate.is_file()
+    )
+
+
+def _prepare_sqlite_temp_directory(database_path: Path) -> Path:
+    """Configure a Kaya-owned SQLite temp directory before opening SQLite."""
+    try:
+        temp_directory = configure_sqlite_temp_directory(database_path)
+    except RuntimeError as exc:
+        raise DatabaseMigrationError(
+            str(exc)
+        ) from exc
+    logger.info(
+        "Kaya database: SQLite migration temp directory=%s filesystem=%s",
+        temp_directory,
+        os.stat(temp_directory).st_dev,
+    )
+    return temp_directory
+
+
+def _ensure_migration_disk_space(
+    database_path: Path, backup_directory: Path, sqlite_temp_directory: Path
+) -> None:
+    """Fail before backup/DDL when storage cannot safely hold migration work."""
+    database_directory = _existing_storage_path(database_path.parent)
+    backup_location = _existing_storage_path(backup_directory)
+    temp_location = _existing_storage_path(sqlite_temp_directory)
+    database_bytes = database_path.stat().st_size if database_path.is_file() else 0
+    wal_bytes = (
+        database_path.with_name(database_path.name + "-wal").stat().st_size
+        if database_path.with_name(database_path.name + "-wal").is_file()
+        else 0
+    )
+    shm_bytes = (
+        database_path.with_name(database_path.name + "-shm").stat().st_size
+        if database_path.with_name(database_path.name + "-shm").is_file()
+        else 0
+    )
+    footprint = database_bytes + wal_bytes + shm_bytes
+    database_filesystem = os.stat(database_directory).st_dev
+    temp_filesystem = os.stat(temp_location).st_dev
+    backup_filesystem = os.stat(backup_location).st_dev
+    if database_filesystem != temp_filesystem:
+        raise DatabaseMigrationError(
+            "SQLite migration temp directory is not on the database filesystem."
+        )
+    shared_required = max(MINIMUM_MIGRATION_FREE_BYTES, footprint * 2)
+    backup_required = (
+        shared_required
+        if backup_filesystem == database_filesystem
+        else max(MINIMUM_MIGRATION_FREE_BYTES, footprint)
+    )
+    checks = (
+        (database_directory, database_filesystem, shared_required),
+        (backup_location, backup_filesystem, backup_required),
+    )
+    seen: set[int] = set()
+    for location, filesystem, required in checks:
+        if filesystem in seen:
+            continue
+        seen.add(filesystem)
+        available = shutil.disk_usage(location).free
+        logger.info(
+            "Kaya database: migration storage preflight database_path=%s database_filesystem=%s backup_filesystem=%s sqlite_temp_directory=%s sqlite_temp_filesystem=%s database_bytes=%s wal_bytes=%s shm_bytes=%s location=%s available_bytes=%s required_bytes=%s",
+            database_path,
+            database_filesystem,
+            backup_filesystem,
+            sqlite_temp_directory,
+            temp_filesystem,
+            database_bytes,
+            wal_bytes,
+            shm_bytes,
+            location,
+            available,
+            required,
+        )
+        if available < required:
+            raise DatabaseMigrationError(
+                "Insufficient free storage for a safe SQLite migration; "
+                f"at least {required} bytes is required on {location}."
+            )
+
+
+def _apply_missing_baseline_objects(
+    database_path: Path, sqlite_temp_directory: Path
+) -> None:
+    with tempfile.TemporaryDirectory(
+        dir=sqlite_temp_directory, prefix="kaya-baseline-"
+    ) as directory:
         baseline_path = Path(directory) / "baseline.sqlite3"
         baseline_config = Config(str(PROJECT_ROOT / "alembic.ini"))
         baseline_config.set_main_option(
@@ -178,11 +353,25 @@ def prepare_database(engine: Engine, settings: Settings) -> MigrationResult:
     schema_fully_validated = False
     try:
         progress.enter(STAGE_OPENING_DATABASE)
+        detected = capabilities(engine)
+        if detected.is_postgresql:
+            result = _prepare_postgresql_database(engine, settings, progress)
+            logger.info(
+                "Kaya database ready: engine=postgresql revision=%s migration_required=%s",
+                result.current_revision,
+                result.previous_revision != result.current_revision,
+            )
+            return result
+        if not detected.is_sqlite:
+            raise DatabaseMigrationError(
+                f"Unsupported database engine: {detected.name}. Kaya supports SQLite and PostgreSQL."
+            )
         database_path = sqlite_database_path(settings.database_url)
         if database_path is None:
             raise DatabaseMigrationError(
                 "Only file-backed SQLite migration is currently supported."
             )
+        sqlite_temp_directory = _prepare_sqlite_temp_directory(database_path)
         config = _alembic_config(settings.database_url)
         script = ScriptDirectory.from_config(config)
         heads = script.get_heads()
@@ -208,6 +397,11 @@ def prepare_database(engine: Engine, settings: Settings) -> MigrationResult:
             logger.info("Kaya database: fresh database detected")
             database_path.parent.mkdir(parents=True, exist_ok=True)
             migration_required = True
+            _ensure_migration_disk_space(
+                database_path,
+                Path(settings.migration_backup_dir),
+                sqlite_temp_directory,
+            )
             progress.enter(STAGE_ALEMBIC_MIGRATION)
             command.upgrade(config, "head")
             previous_revision = None
@@ -218,6 +412,11 @@ def prepare_database(engine: Engine, settings: Settings) -> MigrationResult:
                 migration_required = True
                 progress.enter(STAGE_INTEGRITY_CHECKS)
                 validate_legacy_database(database_path)
+                _ensure_migration_disk_space(
+                    database_path,
+                    Path(settings.migration_backup_dir),
+                    sqlite_temp_directory,
+                )
                 progress.enter(STAGE_CREATING_BACKUP)
                 backup = _backup_if_enabled(
                     settings,
@@ -234,7 +433,9 @@ def prepare_database(engine: Engine, settings: Settings) -> MigrationResult:
                 progress.enter(STAGE_COMPATIBILITY)
                 logger.info("Kaya database: running compatibility upgrade")
                 migrate_pre_alembic_database(database_path)
-                _apply_missing_baseline_objects(database_path)
+                _apply_missing_baseline_objects(
+                    database_path, sqlite_temp_directory
+                )
                 compatibility_applied = True
                 logger.info("Kaya database: compatibility upgrade complete")
                 progress.enter(STAGE_SCHEMA_VALIDATION)
@@ -265,6 +466,11 @@ def prepare_database(engine: Engine, settings: Settings) -> MigrationResult:
                     "Kaya database: Alembic upgrade required current=%s target=%s",
                     previous_revision,
                     target_revision,
+                )
+                _ensure_migration_disk_space(
+                    database_path,
+                    Path(settings.migration_backup_dir),
+                    sqlite_temp_directory,
                 )
                 progress.enter(STAGE_CREATING_BACKUP)
                 backup = _backup_if_enabled(

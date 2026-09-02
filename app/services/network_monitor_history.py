@@ -198,7 +198,11 @@ def _raw_points(db: Session, monitor_id: int, start: datetime, end: datetime) ->
 
 
 def _raw_aggregates(db: Session, monitor_id: int, start: datetime, end: datetime, seconds: int) -> list[dict]:
-    epoch = cast(func.strftime("%s", NetworkMonitorCheck.checked_at), Integer)
+    checked_at = NetworkMonitorCheck.checked_at
+    if db.bind.dialect.name == "postgresql":
+        epoch = cast(func.extract("epoch", checked_at), Integer)
+    else:
+        epoch = cast(func.strftime("%s", checked_at), Integer)
     bucket_epoch = (epoch - (epoch % seconds)).label("bucket_epoch")
     previous = func.lag(NetworkMonitorCheck.latency_ms).over(order_by=NetworkMonitorCheck.checked_at.asc())
     state_priority = case(

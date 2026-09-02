@@ -9,7 +9,8 @@ import pytest
 from jinja2 import Environment, FileSystemLoader
 from fastapi import HTTPException
 
-from sqlalchemy import create_engine
+from sqlalchemy import DateTime, Integer, cast, column, create_engine, func
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -220,8 +221,6 @@ def test_external_probe_runs_after_read_transaction_is_finished(monkeypatch):
     factory = session_factory()
     monitor_id = add_monitor(factory)
     observed = []
-
-    db = None
 
     def fake_probe(*_args):
         observed.append(db.in_transaction())
@@ -813,6 +812,33 @@ def test_performance_predefined_ranges_select_expected_buckets(selected, expecte
         selection = network_monitor_history.resolve_range(db, selected, now=datetime(2026, 7, 29, 12))
         assert selection["bucket_seconds"] == expected
         assert selection["end"] - selection["start"] == network_monitor_history.PERFORMANCE_RANGES[selected][0]
+
+
+def test_performance_aggregate_epoch_expression_is_postgresql_compatible():
+    checked_at = column("checked_at", DateTime())
+    expression = cast(func.extract("epoch", checked_at), Integer)
+    assert "EXTRACT(epoch FROM checked_at)" in str(expression.compile(dialect=postgresql.dialect()))
+
+
+def test_performance_aggregates_are_isolated_to_the_requested_monitor():
+    factory = session_factory()
+    monitor_id = add_monitor(factory)
+    other_id = add_monitor(factory, display_name="Other target")
+    now = datetime(2026, 7, 29, 12)
+    with factory() as db:
+        db.add_all([
+            NetworkMonitorCheck(monitor_id=monitor_id, status="up", latency_ms=12,
+                                packet_loss_percent=0, checked_at=now - timedelta(minutes=5)),
+            NetworkMonitorCheck(monitor_id=other_id, status="up", latency_ms=999,
+                                packet_loss_percent=0, checked_at=now - timedelta(minutes=5)),
+        ])
+        db.commit()
+        result = network_monitor_history.performance_history(
+            db, db.get(NetworkMonitor, monitor_id), "24h", now=now,
+        )
+
+    assert result["summary"]["total_checks"] == 1
+    assert [point["latency_avg"] for point in result["points"]] == [12]
 
 
 def test_performance_custom_range_uses_site_timezone_and_validates_bounds():

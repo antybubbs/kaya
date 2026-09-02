@@ -1,5 +1,6 @@
 import re
 
+from sqlalchemy import case, update
 from sqlalchemy.orm import Session
 
 from app.models.models import HardwareAsset, HardwareAssetTagSequence, RemoteManagerSetting
@@ -114,10 +115,22 @@ def allocate_asset_tag(db: Session, manual_tag: str | None) -> str | None:
     if settings["asset_tags_auto_generate"] != "1":
         return None
     synchronise_asset_tag_sequence(db, settings)
-    sequence = _sequence(db, lock=True)
-    number = sequence.next_number
-    sequence.next_number += 1
-    db.flush()
+    sequence_floor = max(
+        int(settings["asset_tags_start_number"]),
+        _matching_highest(db, settings) + 1,
+    )
+    next_number = db.execute(
+        update(HardwareAssetTagSequence)
+        .where(HardwareAssetTagSequence.id == 1)
+        .values(
+            next_number=case(
+                (HardwareAssetTagSequence.next_number < sequence_floor, sequence_floor + 1),
+                else_=HardwareAssetTagSequence.next_number + 1,
+            )
+        )
+        .returning(HardwareAssetTagSequence.next_number)
+    ).scalar_one()
+    number = next_number - 1
     tag = f"{settings['asset_tags_prefix']}{settings['asset_tags_separator']}{number:0>{int(settings['asset_tags_padding'])}}"
     if len(tag) > MAX_TAG_LENGTH:
         raise ValueError("Generated Asset Tag is too long.")

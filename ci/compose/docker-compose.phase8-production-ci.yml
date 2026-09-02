@@ -1,0 +1,75 @@
+# Overlay for the real deployment topology. All state names are replaced by
+# Phase 8-specific disposable names; the service graph remains docker-compose.yml.
+services:
+  kaya:
+    container_name: ${KAYA_PHASE8_PROJECT:?KAYA_PHASE8_PROJECT is required}_kaya
+    environment:
+      DATABASE_PASSWORD_FILE: /run/kaya-secrets/postgres_password
+      KAYA_POSTGRES_DATABASE_URL: postgresql+psycopg://kaya@postgres:5432/kaya
+      KAYA_TEST_MODE: "true"
+      KAYA_TEST_OBSERVABILITY_FILE: /app/data/phase8-observability.jsonl
+    volumes:
+      - kaya_phase6_postgres_secret:/run/kaya-secrets:ro
+    depends_on:
+      postgres-secret-init:
+        condition: service_completed_successfully
+  secure-send-gateway:
+    container_name: ${KAYA_PHASE8_PROJECT}_secure_send
+  guacd:
+    container_name: ${KAYA_PHASE8_PROJECT}_guacd
+  postgres-secret-init:
+    image: ${KAYA_IMAGE:-ghcr.io/antybubbs/kaya:latest}
+    container_name: ${KAYA_PHASE8_PROJECT}_postgres_secret_init
+    restart: "no"
+    entrypoint: ["python"]
+    command:
+      - -c
+      - >-
+        import os,secrets;
+        app='/run/kaya-secrets/postgres_password'; bootstrap='/run/kaya-secrets/postgres_bootstrap_password'; os.umask(0o077);
+        open(app,'xb').write(secrets.token_urlsafe(64).encode()) if not os.path.exists(app) else None;
+        open(bootstrap,'xb').write(secrets.token_urlsafe(64).encode()) if not os.path.exists(bootstrap) else None;
+        [os.chown(path,100,101) or os.chmod(path,0o600) for path in (app,bootstrap)]
+    volumes: !override
+      - kaya_phase6_postgres_secret:/run/kaya-secrets
+  postgres:
+    container_name: ${KAYA_PHASE8_PROJECT}_postgres
+    environment:
+      POSTGRES_USER: kaya_bootstrap
+      POSTGRES_PASSWORD_FILE: /run/kaya-secrets/postgres_bootstrap_password
+    volumes: !override
+      - kaya_postgres_data:/var/lib/postgresql/data
+      - kaya_phase6_postgres_secret:/run/kaya-secrets:ro
+    depends_on:
+      postgres-secret-init:
+        condition: service_completed_successfully
+  postgres-backup:
+    image: postgres:16.14
+    container_name: ${KAYA_PHASE8_PROJECT}_backup
+    profiles: [postgres-ops]
+    environment:
+      POSTGRES_DB: kaya
+      POSTGRES_USER: kaya
+      KAYA_POSTGRES_ADMIN_USER: kaya_bootstrap
+      KAYA_POSTGRES_ADMIN_PASSWORD_FILE: /run/kaya-secrets/postgres_bootstrap_password
+      POSTGRES_PASSWORD_FILE: /run/kaya-secrets/postgres_password
+      PGHOST: postgres
+      KAYA_POSTGRES_BACKUP_RETENTION: ${KAYA_POSTGRES_BACKUP_RETENTION:-2}
+      KAYA_POSTGRES_BACKUP_INTERVAL_SECONDS: ${KAYA_POSTGRES_BACKUP_INTERVAL_SECONDS:-60}
+    entrypoint: ["/bin/bash", "/usr/local/bin/kaya_postgres_backup_worker.sh"]
+    command: ["scheduled"]
+    volumes:
+      - ${KAYA_POSTGRES_BACKUP_DIR:-./phase8-backups}:/var/backups/kaya-postgres
+      - kaya_phase6_postgres_secret:/run/kaya-secrets:ro
+      - ./scripts/kaya_postgres_backup_worker.sh:/usr/local/bin/kaya_postgres_backup_worker.sh:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kaya:
+        condition: service_healthy
+
+volumes:
+  kaya_postgres_data:
+    name: ${KAYA_PHASE8_VOLUME_PREFIX:-kaya_phase8}_postgres_data
+  kaya_phase6_postgres_secret:
+    name: ${KAYA_PHASE8_VOLUME_PREFIX:-kaya_phase8}_postgres_secret

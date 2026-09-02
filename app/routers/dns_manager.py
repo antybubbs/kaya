@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timedelta
+from time import monotonic
 from typing import Any
 from urllib.parse import urlencode
 
@@ -60,6 +62,9 @@ from app.services.dns_insights import (
 from app.services.dns_providers import DNSProvider, DNSProviderResult, provider_for
 from app.services.site_settings import get_site_setting
 from app.services.table_export import export_row_matches, table_export_response, validate_export_columns, validate_export_filters, validate_export_format
+
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/networking/dns-manager", dependencies=[Depends(require_module_access("dns_manager"))])
 
@@ -851,6 +856,7 @@ def dns_client_detail(
     db: Session = Depends(get_db),
     user=Depends(require_user),
 ):
+    started = monotonic()
     client = _dns_client(db, client_id)
     like = f"%{q.strip()}%"
     records_query = db.query(IPAddress).options(joinedload(IPAddress.vlan))
@@ -863,7 +869,18 @@ def dns_client_detail(
     priority_ids = {client.suggested_ip_record_id} if client.suggested_ip_record_id else set()
     priority_records = db.query(IPAddress).filter(or_(*priority_conditions)).all() if priority_conditions else []
     if client.normalised_mac:
-        priority_records.extend(record for record in db.query(IPAddress).filter(IPAddress.mac_address.is_not(None)).all() if normalise_mac(record.mac_address) == client.normalised_mac)
+        # Keep matching database-side.  The previous implementation loaded every
+        # managed IP record into Python for each client-detail request.
+        compact_mac = client.normalised_mac.replace(":", "")
+        mac_values = {
+            client.normalised_mac,
+            client.normalised_mac.replace(":", "-"),
+            compact_mac,
+            client.normalised_mac.upper(),
+            client.normalised_mac.replace(":", "-").upper(),
+            compact_mac.upper(),
+        }
+        priority_records.extend(db.query(IPAddress).filter(IPAddress.mac_address.in_(mac_values)).all())
     if priority_ids:
         priority_records.extend(db.query(IPAddress).filter(IPAddress.id.in_(priority_ids)).all())
     priority_record_ids = {record.id for record in priority_records}
@@ -889,6 +906,7 @@ def dns_client_detail(
         traffic_period = "7d"
     if traffic_status not in {"all", "allowed", "blocked"}:
         traffic_status = "all"
+    traffic_started = monotonic()
     traffic_base = db.query(DNSClientTrafficEvent).filter(DNSClientTrafficEvent.dns_client_id == client.id)
     cutoff_days = period_days[traffic_period]
     if cutoff_days:
@@ -908,11 +926,30 @@ def dns_client_detail(
     traffic_pages = max(1, (traffic_total + traffic_page_size - 1) // traffic_page_size)
     traffic_page = min(traffic_page, traffic_pages)
     traffic_rows = traffic_query.order_by(DNSClientTrafficEvent.observed_at.desc(), DNSClientTrafficEvent.id.desc()).offset((traffic_page - 1) * traffic_page_size).limit(traffic_page_size).all()
+    traffic_duration_ms = round((monotonic() - traffic_started) * 1000, 1)
+    history_started = monotonic()
+    ip_history = db.query(DNSClientIPHistory).filter_by(dns_client_id=client.id).order_by(DNSClientIPHistory.last_seen_at.desc()).all()
+    hostname_history = db.query(DNSClientHostnameHistory).filter_by(dns_client_id=client.id).order_by(DNSClientHostnameHistory.last_seen_at.desc()).all()
+    events = db.query(DNSClientEvent).filter_by(dns_client_id=client.id).order_by(DNSClientEvent.created_at.desc()).limit(250).all()
+    history_duration_ms = round((monotonic() - history_started) * 1000, 1)
+    total_duration_ms = round((monotonic() - started) * 1000, 1)
+    log_extra = {
+        "client_id": client.id,
+        "traffic_duration_ms": traffic_duration_ms,
+        "history_duration_ms": history_duration_ms,
+        "provider_duration_ms": 0,
+        "total_duration_ms": total_duration_ms,
+        "ip_history_rows": len(ip_history),
+        "hostname_history_rows": len(hostname_history),
+        "event_rows": len(events),
+        "traffic_rows": len(traffic_rows),
+    }
+    logger.log(logging.WARNING if total_duration_ms >= 1000 else logging.DEBUG, "dns client detail timing", extra=log_extra)
     return templates.TemplateResponse(request, "dns_client_detail.html", {
         "user": user, "client": client, "display_name": client_display_name(client), "status": client_status(client, stale_days),
-        "ip_history": db.query(DNSClientIPHistory).filter_by(dns_client_id=client.id).order_by(DNSClientIPHistory.last_seen_at.desc()).all(),
-        "hostname_history": db.query(DNSClientHostnameHistory).filter_by(dns_client_id=client.id).order_by(DNSClientHostnameHistory.last_seen_at.desc()).all(),
-        "events": db.query(DNSClientEvent).filter_by(dns_client_id=client.id).order_by(DNSClientEvent.created_at.desc()).limit(250).all(),
+        "ip_history": ip_history,
+        "hostname_history": hostname_history,
+        "events": events,
         "traffic_rows": traffic_rows, "traffic_total": traffic_total, "traffic_page": traffic_page, "traffic_pages": traffic_pages,
         "traffic_filters": {"q": clean_traffic_q, "status": traffic_status, "period": traffic_period},
         "client_history_days": client_history_days, "traffic_history_days": traffic_history_days,

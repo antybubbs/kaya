@@ -180,7 +180,9 @@ Screenshots are encouraged for visible UI changes.
 
 ## 5. Database and Upgrade Rules
 
-Kaya currently uses SQLAlchemy with SQLite as its standard database.
+Kaya uses SQLAlchemy with PostgreSQL as its production database authority.
+SQLite remains an explicit development/test backend and a retained legacy
+migration/recovery source; it is not a production fallback.
 
 **Existing installations must continue to work after an update.**
 

@@ -11,4 +11,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    raise RuntimeError("This merge revision cannot be downgraded because it would recreate multiple migration heads.")
+    raise RuntimeError(
+        "Migration downgrade is blocked: this merge revision cannot be downgraded "
+        "because it would recreate multiple migration heads."
+    )

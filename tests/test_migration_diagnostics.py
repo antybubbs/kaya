@@ -76,7 +76,9 @@ def test_every_fatal_migration_stage_emits_full_traceback_for_container_logs(
     )
     monkeypatch.setattr(migrations, "migrate_pre_alembic_database", lambda _path: None)
     monkeypatch.setattr(
-        migrations, "_apply_missing_baseline_objects", lambda _path: None
+        migrations,
+        "_apply_missing_baseline_objects",
+        lambda _path, _sqlite_temp_directory: None,
     )
     monkeypatch.setattr(migrations, "validate_schema", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(

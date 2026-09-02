@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, Form, Request, WebSocketException
 from fastapi.responses import RedirectResponse
-from sqlalchemy import or_, text
+from sqlalchemy import or_
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 from starlette.requests import HTTPConnection
@@ -23,6 +23,7 @@ from app.core.totp import (
     qr_code_data_uri,
     verify_totp,
 )
+from app.db.dialect import begin_initial_setup_transaction
 from app.db.session import get_db
 from app.models.models import (
     AppSession,
@@ -562,9 +563,7 @@ def setup_submit(
         )
 
     try:
-        # Kaya uses SQLite. An immediate write transaction makes concurrent
-        # first-run submissions single-winner instead of check-then-create.
-        db.execute(text("BEGIN IMMEDIATE"))
+        begin_initial_setup_transaction(db)
         admin = db.query(User).filter(User.role == "admin").first()
         if admin:
             db.rollback()

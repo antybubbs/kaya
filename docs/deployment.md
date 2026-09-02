@@ -3,7 +3,111 @@
 **Kaya version:** `dev`  
 **Documentation version:** `dev`
 
-Kaya is designed for Docker Compose deployment.
+Kaya's supported production architecture is Docker Compose with PostgreSQL
+16.14 as the only production database authority. SQLite remains available for
+controlled legacy/recovery operations and local development; it cannot be a
+fresh-install database or a runtime fallback. See [SQLite lifecycle policy](sqlite-lifecycle-policy.md).
+The supported platform, PostgreSQL major-version guard, patch-update policy,
+backup compatibility metadata, and fail-closed schema rules are documented in
+[Database platform policy](database-platform-policy.md).
+
+## Database integration validation in CI
+
+The repository provides `.github/workflows/database.yml` for the
+expensive production-Compose acceptance matrix. It runs manually through
+`workflow_dispatch`, and automatically when database, migration, deployment,
+Compose, Docker entrypoint, or database validation files change on `main`,
+`dev`, `Kaya`, or a pull request. Documentation-only changes do not trigger
+this matrix.
+
+The workflow builds two local synthetic images and validates fresh PostgreSQL,
+legacy SQLite conversion through the primary Compose topology, existing
+PostgreSQL startup, authenticated HTTP reads/writes, down/up persistence,
+image replacement, bounded PostgreSQL outage, native backup/restore,
+credential persistence, and migration artifact retention. Every Compose
+project and volume is derived from the workflow run and is removed by an
+always-run cleanup trap. It never uses production secrets or global Docker
+prune commands.
+
+The workflow uploads only redacted service status and logs for diagnosis; it
+does not upload passwords, encryption keys, cookies, DSNs, or database files.
+A green CI execution is required before Phase 7 can be recommended READY.
+
+## New installation
+
+From a clean checkout, start the primary stack:
+
+```bash
+docker compose up -d
+```
+
+The stack starts Kaya, PostgreSQL, the secure-send gateway and guacd, waits for
+PostgreSQL health, and then runs Kaya's normal Alembic preparation. PostgreSQL
+is private to the Compose network and is pinned to `postgres:16.14`; port 5432
+is not published on the host. Complete the setup wizard at
+`http://SERVER-IP:8080/setup`.
+
+When the database has no administrator, Kaya logs the one-time setup token
+and directs the operator to `/setup`. The token is shown only during normal
+startup while setup is incomplete; it is not logged by migration, recovery,
+secure-send, or database tooling.
+
+Before PostgreSQL starts, Compose runs the shared password initializer. It
+creates `${KAYA_POSTGRES_PASSWORD_DIR:-./data/secrets}/postgres_password`
+automatically when absent, using cryptographically secure randomness and mode
+`0600`, and reuses it unchanged on later starts. No manual password-file
+creation is required. Do not put credentials in `DATABASE_URL`, shell
+arguments, logs, or committed files. Existing deployments that use the legacy
+`KAYA_POSTGRES_PASSWORD_FILE` setting should set
+`KAYA_POSTGRES_PASSWORD_DIR` to that file's containing directory when moving
+to the automatic bootstrap topology.
+
+The initializer also probes the PostgreSQL data volume read-only. If the
+cluster already contains `PG_VERSION` but the password file is missing,
+startup fails closed without generating a replacement or changing the
+database. Restore the original secret from an authorized backup or surviving
+deployment mount, then start the stack normally. If the original secret is
+unavailable, stop and use the separately approved credential-recovery
+procedure; do not delete the PostgreSQL volume or generate a replacement
+secret. An existing but incorrect secret is never silently rotated; database
+authentication must fail until the authorized secret is restored.
+
+## Existing SQLite to PostgreSQL upgrade
+
+Existing SQLite installations use the explicit upgrade override. Stop Kaya
+first and preserve the existing data directory and a separate backup:
+
+```bash
+docker compose down
+cp -a ./data ./data.sqlite-before-kaya-upgrade
+```
+
+Run the migration explicitly; do not use the upgrade file for ordinary startup:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.upgrade.yml run --rm sqlite-postgres-upgrade
+```
+
+The runner validates SQLite, creates or reuses a verified backup under
+`/app/data/backups`, migrates through the existing SQLite-to-PostgreSQL engine,
+validates the target, and records PostgreSQL as authoritative only after
+success. The original SQLite database, verified backup, and migration report
+remain retained.
+
+During this one-time operation Kaya is unavailable and normal writers are not
+started. After cutover, PostgreSQL remains authoritative across restarts and
+Kaya refuses SQLite fallback if PostgreSQL is unavailable. A failed or partial
+upgrade is recorded durably and requires the explicit Phase 6 recovery/retry
+procedure; do not delete the source database or use ad-hoc SQL.
+
+After successful conversion, use only the normal deployment:
+
+```bash
+docker compose up -d
+```
+
+Historical phase-specific Compose files used by CI remain under
+`ci/compose/`; they are not documented deployment entry points.
 
 ## Docker Service
 
@@ -20,27 +124,35 @@ Kaya is designed for Docker Compose deployment.
 ## Compose Services
 
 - `kaya`
+- `postgres` using `postgres:16.14`
+- `secure-send-gateway`
 - `guacd` using `guacamole/guacd:1.6.0`
 
 ## Persistent Volumes
 
-- `./data:/app/data`
+- `./data:/app/data` (application state, legacy SQLite source, runtime secrets and migration backups)
 - `./uploads:/app/uploads`
 - `./data/remote-recordings:/app/data/remote-recordings`
+- Docker volume `kaya_postgres_data` (production PostgreSQL data)
+- `${KAYA_POSTGRES_PASSWORD_DIR:-./data/secrets}/postgres_password` (persistent
+  PostgreSQL password, created automatically before PostgreSQL starts)
 
 Important persistent files:
 
-- `/app/data/kaya.db`
+- `/app/data/kaya.db` (legacy/recovery source; not the normal production database)
 - `/app/data/.runtime.env`
 - `/app/uploads`
 - `/app/data/remote-recordings`
 - `/app/data/backups/pre-migration-*.sqlite3` and matching revision metadata when an existing database requires migration
+- `/app/data/kaya-database-upgrade.json` and `/app/data/kaya-database-upgrade-report.json` during/after SQLite conversion
 
 ## Environment Settings
 
 Important environment/configuration values include:
 
-- `DATABASE_URL`
+- `DATABASE_URL` (normally PostgreSQL in the primary Compose stack)
+- `KAYA_POSTGRES_DATABASE_URL`
+- `KAYA_POSTGRES_PASSWORD_DIR` (optional host directory for the persistent PostgreSQL password)
 - `SECRET_KEY`
 - `ENCRYPTION_KEY`
 - `BASE_URL`
@@ -56,7 +168,7 @@ The entrypoint:
 
 - Creates persistent data/upload/recording directories.
 - Generates and preserves runtime secrets in `/app/data/.runtime.env` when not supplied.
-- Creates and verifies a timestamped pre-migration SQLite backup with SQLite's backup API before changing an existing database.
+- Does not search for or migrate SQLite databases.
 - Runs the safe `app.db` Alembic preparation lifecycle.
 - Starts Uvicorn.
 
@@ -123,8 +235,239 @@ Operational backups should include:
 
 If using remote backup targets, verify credentials and mount/access behaviour outside Kaya as well.
 
+## PostgreSQL operations
+
+Kaya's PostgreSQL deployment includes an opt-in native backup worker in
+`ci/compose/docker-compose.phase8-ops.yml`. It uses the pinned `postgres:16.14` client,
+writes custom-format `pg_dump` archives to the persistent
+`KAYA_POSTGRES_BACKUP_DIR`, verifies each archive with `pg_restore --list` and
+a SHA-256 sidecar, and applies a count-based retention policy. The worker reads
+the database password only from the mounted secret file; passwords are not
+placed in command arguments, filenames, metadata, or logs.
+
+Enable the scheduled worker explicitly with the `postgres-ops` profile:
+
+```bash
+docker compose -f docker-compose.yml -f ci/compose/docker-compose.phase8-ops.yml --profile postgres-ops up -d postgres-backup
+```
+
+Set `KAYA_POSTGRES_BACKUP_INTERVAL_SECONDS`, `KAYA_POSTGRES_BACKUP_RETENTION`,
+and `KAYA_POSTGRES_BACKUP_DIR` in the deployment environment. The worker is
+separate from Kaya's request process and does not change the active database.
+For a one-shot backup, verification, diagnostics, or restore drill, invoke the
+same disposable service with `backup`, `verify`, `diagnostics`, or
+`restore-drill`. A restore drill always targets a named disposable database;
+never point it at the production database.
+
+The admin-only About page reports PostgreSQL version, database size, active
+connections, deadlocks, SQLAlchemy pool status, and the latest verified backup.
+It deliberately excludes connection strings, usernames, passwords, backup
+contents, and query values. `/healthz` remains a liveness check; database
+readiness is exercised by the existing DB-backed application smoke path.
+
+### PostgreSQL 16 patch upgrades
+
+PostgreSQL patch upgrades are a separate operation from Kaya application
+updates, legacy SQLite migration and future PostgreSQL major upgrades. The
+production image is explicitly pinned to `postgres:16.14`. Follow the
+[PostgreSQL 16 patch-upgrade runbook](postgresql-patch-upgrade.md), create and
+verify a `pre_postgres_upgrade` backup, and run the read-only preflight before
+changing the image. Do not use `docker compose down -v`, do not mount a
+PostgreSQL 16 data directory into PostgreSQL 17, and do not assume that
+changing back to an older PostgreSQL binary is a safe rollback. A verified
+backup is the authoritative database rollback mechanism.
+
+The supported architecture is:
+
+```text
+Kaya -> PostgreSQL 16.14 container -> kaya_postgres_data volume
+```
+
+The equivalent shell helper is `scripts/init-postgres-secret.sh`. The password
+file is generated cryptographically, reused across restarts, ignored by Git,
+and never printed by Kaya. Losing it prevents reconnection to that PostgreSQL
+installation; protect it with the deployment backup.
+
+PostgreSQL is not published on a host port. Kaya reaches it through the
+private Compose network, and the service has a native `pg_isready` health
+check. Kaya waits for that health check and uses SQLAlchemy pre-ping with a
+conservative pool of five connections plus five overflow connections.
+
+The bundled `kaya` role owns only the bundled `kaya` database and is not a
+PostgreSQL superuser. It has the ownership needed for Alembic schema creation,
+migrations, and normal application DDL; it is not granted access to other
+databases.
+
+`docker compose down` preserves `kaya_postgres_data`; `docker compose down -v`
+is destructive and is not a routine upgrade command. PostgreSQL major version
+16 is pinned to `postgres:16.14`, the current supported PostgreSQL 16 minor at
+the time of this Phase 3 implementation. PostgreSQL major versions receive
+five years of upstream support; PostgreSQL 16 is scheduled for support through
+9 November 2028. Minor updates may be applied deliberately within major 16;
+major upgrades require a backup, restore, and compatibility procedure.
+
+### PostgreSQL backups and restore
+
+PostgreSQL backups use the PostgreSQL 16 tools inside the pinned database
+container, not SQLite file copying:
+
+```bash
+docker compose -f docker-compose.yml exec -T postgres \
+  pg_dump -U kaya -d kaya --format=custom --no-owner \
+  --file=/var/backups/kaya-postgres/kaya-postgresql-$(date -u +%Y%m%dT%H%M%SZ)-20260818_02.dump
+```
+
+Backups are timestamped under `/var/backups/kaya-postgres`, backed by the host
+directory `./postgres-backups` by default. Restore is explicit and must target
+a new or disposable empty database:
+
+```bash
+docker compose -f docker-compose.yml exec -T postgres \
+  createdb -U kaya kaya_restore
+docker compose -f docker-compose.yml exec -T postgres \
+  pg_restore -U kaya -d kaya_restore --exit-on-error --no-owner \
+  /var/backups/kaya-postgres/kaya-postgresql-YYYYMMDDTHHMMSSZ.dump
+```
+
+The database-container commands use its local PostgreSQL socket and do not put
+the password in command arguments or logs. `pg_restore` targets the explicitly
+created disposable database; it never drops or cleans a live target
+automatically. Validate the restored Alembic revision and start Kaya against
+the disposable target before accepting the backup.
+
+Do not point an existing SQLite installation at an empty PostgreSQL database
+outside the controlled Phase 6 path. Do not begin Phase 6 follow-on retirement
+work as part of this deployment change.
+
+## Downgrade boundary
+
+PostgreSQL is the supported production architecture from this phase onward.
+Downgrading an existing PostgreSQL installation to SQLite is not an automatic
+or supported rollback: it can lose writes and would cross the proven migration
+boundary. Roll back the application image only when its migrations are
+compatible with the current PostgreSQL revision. If a PostgreSQL restore is
+needed, restore a verified dump to a disposable database first, validate the
+Alembic revision and application startup, and preserve the original database
+until the replacement is accepted.
+
 Kaya uses SQLite WAL mode. A running database can have `kaya.db-wal` and
 `kaya.db-shm` beside `kaya.db`; these are live database state, not disposable
 temporary files. Prefer Kaya's online backup workflow. If taking a raw
 filesystem copy, stop Kaya cleanly first and copy the database directory as one
 consistent unit rather than copying only `kaya.db`.
+# Existing SQLite to PostgreSQL upgrade
+
+Phase 6 upgrades an existing SQLite installation through a separate Compose
+override. The base Compose file is PostgreSQL-first; the override is retained
+for controlled legacy upgrade validation and operator recovery.
+
+Before upgrading, ensure the existing `/app/data` storage is persistent. If a
+PostgreSQL password file already exists, keep it private; otherwise the
+upgrade bootstrap creates it securely. Run the supported upgrade stack with:
+
+```text
+docker compose -f docker-compose.yml -f docker-compose.upgrade.yml run --rm sqlite-postgres-upgrade
+```
+
+On a clean legacy installation, the upgrade bootstrap creates a strong
+PostgreSQL password at `./data/secrets/postgres_password` before PostgreSQL
+starts. If that file already exists, it is reused and never replaced. The
+same host file is consumed by the normal Compose stack after the upgrade; no
+manual password-file creation is required for the default path. Keep the
+directory private and do not print or commit the file.
+
+The migration runner uses Kaya's normal entrypoint bootstrap to load the
+existing `/app/data/.runtime.env` before handing off to the explicit offline
+migration command. It does not start Uvicorn or run the ordinary application
+database migration command, and it never generates replacement application
+secrets for an existing installation.
+
+The runner invokes the durable upgrade state machine directly. It validates
+the source, creates or reuses a
+verified backup under `/app/data/backups`, migrates through the existing
+SQLite-to-PostgreSQL engine, validates the target, and only then records
+PostgreSQL as authoritative. The PostgreSQL service must be healthy before
+copying begins.
+
+During the upgrade, Kaya is not available for normal requests and database
+writers are not started. Logs report stage and table progress without row
+contents, credentials, hashes or filesystem paths intended for operators.
+
+After success, PostgreSQL remains authoritative across restarts. Kaya does
+not fall back to SQLite if PostgreSQL is unavailable. The original
+`/app/data/kaya.db`, its verified migration backup, and the safe migration
+report are retained for recovery. Do not delete or rename them as part of the
+upgrade.
+
+If the upgrade fails, Kaya records `FAILED`, leaves SQLite and its backup
+preserved, and refuses an ambiguous retry. Review the logs and use the
+explicit Phase 6 retry/target-cleanup procedure after confirming the failed
+target is not active. Do not delete a database or use ad-hoc SQL against a
+production target.
+
+The normal Compose entrypoint remains fail-closed while the marker is
+`FAILED`. Recovery must use the explicit upgrade runner so the persistent
+upgrade secret file and PostgreSQL password-file mount are loaded.
+After obtaining the non-secret `migration_id` and original
+`source_fingerprint` from the failed marker, run this exact command with the
+values replaced:
+
+```text
+docker compose -f docker-compose.yml -f docker-compose.upgrade.yml run --rm --no-deps sqlite-postgres-upgrade --clean-failed-target --migration-id <migration-id> --source-fingerprint <source-fingerprint>
+```
+
+The explicit upgrade CLI requires the complete recovery arguments. The
+provided fingerprint is the legacy-compatible original source identity; Kaya
+validates it against a canonical logical snapshot of the retained verified
+backup, so legitimate WAL/checkpoint representation changes do not invalidate
+recovery. Historical conversion-working-copy identity is derived and
+validated from retained migration artifacts. It does
+not bypass recovery checks for normal startup, arbitrary Python commands, or
+incomplete recovery arguments. The recovery CLI then requires the target
+marker to be `FAILED` with the exact migration ID and source fingerprint, and
+requires the source marker to match before cleaning the failed target. If any
+check fails, no target cleanup occurs. Start Kaya normally afterward and
+confirm `/healthz` and the marker state are healthy/`POSTGRES_ACTIVE`.
+
+## PostgreSQL role topology upgrades
+
+Historical PostgreSQL deployments may use two identities. `kaya_bootstrap` is
+the private setup/backup identity and `kaya` is the constrained application
+identity. The normal fresh-install Compose file uses `kaya` directly and does
+not run the historical role-topology migration services.
+
+The role-topology helper and verified-backup worker remain in the repository
+for historical PostgreSQL upgrades, CI, and operator recovery. They are not
+part of ordinary `docker compose up -d`; the normal stack has no one-shot
+migration services or legacy SQLite mounts.
+
+The two secret files are `postgres_password` and
+`postgres_bootstrap_password` under the configured secret directory. They are
+created once with mode `0600` and are not printed or placed in command-line
+arguments. Losing the bootstrap secret requires the documented operator
+secret-recovery procedure; routinely making `kaya` superuser is not a
+supported recovery action. Database archives do not recreate cluster roles,
+so a restore must run the normal role-topology bootstrap before Kaya starts.
+
+### Validation cleanup isolation and the deleted Phase 6 secret volume
+
+Disposable Phase 12 validation resources use a run-scoped
+`kaya_phase12...` project name, rendered-Compose preflight, Docker project and
+validation labels, and a recorded resource manifest. Cleanup first removes
+the project containers without `-v`, then removes only manifest entries whose
+names and labels prove current-run ownership. Fixed names such as
+`kaya_phase6_postgres_secret`, `kaya_postgres_data`, and
+`kaya_postgres_secret` are rejected before startup. Unknown or label-mismatched
+resources are left in place and reported.
+
+The earlier Phase 12 incident removed `kaya_phase6_postgres_secret` because an
+early CI overlay left the base fixed-name secret mount active and a project
+cleanup used `docker compose ... down -v`. That volume was the deployment/
+Phase 6 secret store for `postgres_password` (and, in the current topology,
+the bootstrap secret file); it was not a database volume. No secret value is
+reconstructed here. If an actual supported deployment still needs the volume,
+an operator must retrieve the original secret from an authorized surviving
+mount or backup, or perform the documented credential-rotation procedure with
+explicit approval. Regenerating a random file may invalidate PostgreSQL
+authentication and is not an automatic recovery action. The current running
+local Kaya container was verified not to mount that volume.

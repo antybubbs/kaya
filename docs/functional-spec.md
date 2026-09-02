@@ -45,7 +45,7 @@ When Kaya's application version changes, the documentation version in these file
 
 Kaya is a self-hosted infrastructure management application for homelabs, small IT environments, and technical administrators. It combines inventory, documentation, remote access, DNS visibility, network monitoring, compute host monitoring, backup coordination, licence tracking, audit logs, and site administration into one server-rendered web application.
 
-The current application is a FastAPI/Jinja/SQLAlchemy application with SQLite as the default database. It uses Docker Compose for deployment, local static assets for the UI, Fernet encryption for stored secrets, Argon2 password hashing, signed session cookies, and Node.js helper processes for browser-based SSH and Guacamole/RDP bridging.
+The current application is a FastAPI/Jinja/SQLAlchemy application with PostgreSQL 16.14 as the default Docker production database and SQLite retained for legacy/recovery workflows. It uses Docker Compose for deployment, local static assets for the UI, Fernet encryption for stored secrets, Argon2 password hashing, signed session cookies, and Node.js helper processes for browser-based SSH and Guacamole/RDP bridging.
 
 ## Current Limitations And Technical Debt
 

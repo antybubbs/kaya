@@ -1,0 +1,61 @@
+services:
+  # Explicit legacy upgrade runner. Do not include this file for normal startup.
+  sqlite-postgres-upgrade:
+    image: ${KAYA_IMAGE:-ghcr.io/antybubbs/kaya:latest}
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql+psycopg://kaya@postgres:5432/kaya
+      KAYA_POSTGRES_DATABASE_URL: postgresql+psycopg://kaya@postgres:5432/kaya
+      DATABASE_PASSWORD_FILE: /run/kaya-secrets/postgres_password
+      KAYA_SQLITE_SOURCE_URL: sqlite:////app/data/kaya.db
+      PGHOST: postgres
+      SKIP_DATABASE_MIGRATIONS: "true"
+      KAYA_REQUIRE_PERSISTED_RUNTIME_SECRETS: "true"
+    entrypoint: ["/usr/local/bin/kaya-entrypoint"]
+    command:
+      - python
+      - -m
+      - scripts.kaya_phase6_upgrade
+      - --source
+      - /app/data/kaya.db
+      - --target-url
+      - postgresql+psycopg://kaya@postgres:5432/kaya
+      - --backup-dir
+      - /app/data/backups
+      - --data-dir
+      - /app/data
+    volumes:
+      - ${KAYA_DATA_DIR:-./data}:/app/data
+      - ${KAYA_POSTGRES_PASSWORD_DIR:-./data/secrets}:/run/kaya-secrets:ro
+    secrets: !override []
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  kaya:
+    secrets: !override []
+
+  postgres-secret-init:
+    image: ${KAYA_IMAGE:-ghcr.io/antybubbs/kaya:latest}
+    restart: "no"
+    entrypoint: ["/bin/sh", "/app/scripts/init-postgres-secret.sh"]
+    command: ["/run/kaya-secrets/postgres_password"]
+    volumes:
+      - ${KAYA_POSTGRES_PASSWORD_DIR:-./data/secrets}:/run/kaya-secrets
+      - kaya_postgres_data:/var/lib/postgresql/data:ro
+    secrets: !override []
+
+  secure-send-gateway:
+    secrets: !override []
+
+  postgres:
+    environment:
+      POSTGRES_PASSWORD_FILE: /run/kaya-secrets/postgres_password
+    volumes:
+      - ${KAYA_POSTGRES_PASSWORD_DIR:-./data/secrets}:/run/kaya-secrets:ro
+    secrets: !override []
+    depends_on:
+      postgres-secret-init:
+        condition: service_completed_successfully
+
+secrets: !override {}

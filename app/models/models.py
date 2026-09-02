@@ -1,9 +1,12 @@
 from datetime import datetime
 from uuid import uuid4
-from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, LargeBinary, String, Text, UniqueConstraint, text
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, LargeBinary, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.session import Base
 from app.services.user_names import user_display_name
+
+
+BYTE_COUNT = BigInteger().with_variant(Integer(), "sqlite")
 
 
 class User(Base):
@@ -700,7 +703,10 @@ class DNSClientObservation(Base):
 
 class DNSClientIPHistory(Base):
     __tablename__ = "dns_client_ip_history"
-    __table_args__ = (UniqueConstraint("dns_client_id", "ip_address", name="uq_dns_client_ip_history"),)
+    __table_args__ = (
+        UniqueConstraint("dns_client_id", "ip_address", name="uq_dns_client_ip_history"),
+        Index("ix_dns_client_ip_history_client_last_seen", "dns_client_id", "last_seen_at"),
+    )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     dns_client_id: Mapped[int] = mapped_column(ForeignKey("dns_recognised_devices.id", ondelete="CASCADE"), index=True)
     ip_address: Mapped[str] = mapped_column(String(80), index=True)
@@ -716,7 +722,10 @@ class DNSClientIPHistory(Base):
 
 class DNSClientHostnameHistory(Base):
     __tablename__ = "dns_client_hostname_history"
-    __table_args__ = (UniqueConstraint("dns_client_id", "normalised_hostname", name="uq_dns_client_hostname_history"),)
+    __table_args__ = (
+        UniqueConstraint("dns_client_id", "normalised_hostname", name="uq_dns_client_hostname_history"),
+        Index("ix_dns_client_hostname_history_client_last_seen", "dns_client_id", "last_seen_at"),
+    )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     dns_client_id: Mapped[int] = mapped_column(ForeignKey("dns_recognised_devices.id", ondelete="CASCADE"), index=True)
     hostname: Mapped[str] = mapped_column(String(255), index=True)
@@ -733,6 +742,7 @@ class DNSClientHostnameHistory(Base):
 
 class DNSClientEvent(Base):
     __tablename__ = "dns_client_events"
+    __table_args__ = (Index("ix_dns_client_events_client_created", "dns_client_id", "created_at"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     dns_client_id: Mapped[int] = mapped_column(ForeignKey("dns_recognised_devices.id", ondelete="CASCADE"), index=True)
     event_type: Mapped[str] = mapped_column(String(60), index=True)
@@ -747,7 +757,11 @@ class DNSClientEvent(Base):
 
 class DNSClientTrafficEvent(Base):
     __tablename__ = "dns_client_traffic_events"
-    __table_args__ = (UniqueConstraint("provider_id", "event_key", name="uq_dns_client_traffic_provider_event"),)
+    __table_args__ = (
+        UniqueConstraint("provider_id", "event_key", name="uq_dns_client_traffic_provider_event"),
+        Index("ix_dns_client_traffic_client_observed", "dns_client_id", "observed_at"),
+        Index("ix_dns_client_traffic_client_blocked_observed", "dns_client_id", "is_blocked", "observed_at"),
+    )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     dns_client_id: Mapped[int] = mapped_column(ForeignKey("dns_recognised_devices.id", ondelete="CASCADE"), index=True)
     provider_id: Mapped[int] = mapped_column(ForeignKey("dns_providers.id", ondelete="CASCADE"), index=True)
@@ -795,6 +809,7 @@ class HACluster(Base):
             "virtual_ip",
             unique=True,
             sqlite_where=text("virtual_ip IS NOT NULL AND deleted_at IS NULL"),
+            postgresql_where=text("virtual_ip IS NOT NULL AND deleted_at IS NULL"),
         ),
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -876,6 +891,7 @@ class HANode(Base):
     observed_role: Mapped[str | None] = mapped_column(String(30), nullable=True)
     observed_generation: Mapped[int] = mapped_column(Integer, default=0)
     vip_owned: Mapped[bool] = mapped_column(Boolean, default=False)
+    vip_stable_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     dhcp_running: Mapped[bool] = mapped_column(Boolean, default=False)
     dhcp_configured: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     dhcp_listener_active: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
@@ -1395,10 +1411,10 @@ class ComputeHost(Base):
     status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
     version: Mapped[str | None] = mapped_column(String(120), nullable=True)
     cpu_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
-    memory_used: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    memory_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    storage_used: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    storage_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    memory_used: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
+    memory_total: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
+    storage_used: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
+    storage_total: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
     metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
@@ -1418,10 +1434,10 @@ class ComputeWorkload(Base):
     status: Mapped[str] = mapped_column(String(30), default="unknown", index=True)
     cpu_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
     cpu_total: Mapped[float | None] = mapped_column(Float, nullable=True)
-    memory_used: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    memory_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    storage_used: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    storage_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    memory_used: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
+    memory_total: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
+    storage_used: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
+    storage_total: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
     uptime_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     owner: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     backup_policy: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -1442,7 +1458,7 @@ class ComputeInventoryItem(Base):
     name: Mapped[str] = mapped_column(String(500), index=True)
     kind: Mapped[str] = mapped_column(String(30), index=True)
     status: Mapped[str | None] = mapped_column(String(30), nullable=True, index=True)
-    size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    size_bytes: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
     metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     host = relationship("ComputeHost")
@@ -1454,10 +1470,10 @@ class ComputeMetric(Base):
     host_id: Mapped[int] = mapped_column(ForeignKey("compute_hosts.id"), index=True)
     workload_id: Mapped[int | None] = mapped_column(ForeignKey("compute_workloads.id"), nullable=True, index=True)
     cpu_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
-    memory_used: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    memory_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    storage_used: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    storage_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    memory_used: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
+    memory_total: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
+    storage_used: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
+    storage_total: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
     recorded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
 

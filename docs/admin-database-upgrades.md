@@ -15,6 +15,41 @@ python -m app.db.cli --quick-check --quick-check-timeout 300
 
 A strict diagnostic timeout means the scan did not finish; it is not reported as corruption. An actual non-`ok` result remains a corruption failure.
 
+If an upgrade is recorded as `FAILED` before PostgreSQL migration begins, use
+the explicit pre-target retry command below. Kaya requires a null migration ID,
+SQLite authority, matching source and snapshot identities, a verified retained
+backup, and an empty PostgreSQL target before it changes the marker back to
+`PRECHECK`:
+
+```bash
+KAYA_IMAGE=ghcr.io/antybubbs/kaya:v0.28.0-rc.6 \
+docker compose -f docker-compose.yml -f docker-compose.upgrade.yml \
+  run --rm sqlite-postgres-upgrade --retry-failed-pretarget
+```
+
+The existing `--clean-failed-target --migration-id --source-fingerprint`
+workflow remains mandatory when PostgreSQL target migration has started. Kaya
+never accepts a generic force flag and never requires manual editing of the
+state JSON. Any failed identity or target check stops the retry and retains
+the source and recovery artifacts.
+
+Before creating a backup, a historical conversion copy, or migration temp
+files, the capacity preflight accounts for the source, verified backup,
+historical conversion copy when required, SQLite temp workspace, expected WAL
+and SHM growth, and explicit safety headroom. The log reports the filesystem,
+available bytes, estimated requirement, and named workspace components. Failed
+historical conversion copies are disposable and are removed, including their
+WAL/SHM sidecars; verified backups and required recovery artifacts are retained.
+
+The explicit SQLite-to-PostgreSQL upgrade also runs this strict preflight before
+creating a backup or changing the source. It logs the source path, database
+size, start and completion, and an INFO-level heartbeat approximately every 30
+seconds while `quick_check` is executing. A large database can therefore remain
+quiet for a while without being assumed stuck. If the process is interrupted
+during PRECHECK, the durable state remains `PRECHECK`; rerun the same explicit
+upgrade command to resume. Normal Kaya startup remains fail-closed for
+`PRECHECK` and every other incomplete migration state.
+
 Bind mounts do not change SQLite's validation algorithm, but their storage stack can materially change elapsed time. Windows Docker Desktop file sharing and synchronisation-backed directories such as Nextcloud can add metadata, antivirus, virtualisation, and sync latency. Keep the active SQLite database on local, container-supported storage where possible; exclude the live database, `-wal`, and `-shm` files from active synchronisation. Do not remove WAL sidecars to speed up validation; Kaya reads them as part of a WAL-mode database.
 
 ### Historical SQLite type compatibility

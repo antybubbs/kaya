@@ -60,13 +60,22 @@ def touch_user_session(db: Session, request: Request, user: User, row: AppSessio
         return False
     now = int(time.time())
     last_sync = int(request.session.get("session_last_seen_sync") or 0)
-    if now - last_sync < SESSION_SYNC_SECONDS:
+    now_datetime = datetime.utcnow()
+    database_last_seen = row.last_seen_at
+    if now - last_sync < SESSION_SYNC_SECONDS or (
+        database_last_seen is not None
+        and (now_datetime - database_last_seen).total_seconds() < SESSION_SYNC_SECONDS
+    ):
         return True
-    request.session["session_last_seen_sync"] = now
     row.ip_address = request_ip(request)
     row.user_agent = request_user_agent(request)
-    row.last_seen_at = datetime.utcnow()
-    db.commit()
+    row.last_seen_at = now_datetime
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    request.session["session_last_seen_sync"] = now
     return True
 
 

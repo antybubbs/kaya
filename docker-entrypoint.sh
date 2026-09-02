@@ -37,6 +37,13 @@ if [ ! -f "$SECRETS_FILE" ]; then
     PERSISTED_ENCRYPTION_KEY="${ENCRYPTION_KEY:-}"
     PERSISTED_SETUP_TOKEN="${SETUP_TOKEN:-}"
 
+    if [ "${KAYA_REQUIRE_PERSISTED_RUNTIME_SECRETS:-false}" = "true" ] && {
+        [ -z "$PERSISTED_SECRET_KEY" ] || [ -z "$PERSISTED_ENCRYPTION_KEY" ];
+    }; then
+        echo "Persistent Kaya runtime secrets are required for this operation." >&2
+        exit 1
+    fi
+
     if [ -z "$PERSISTED_SECRET_KEY" ]; then
         PERSISTED_SECRET_KEY="$(generate_secret_key)"
     fi
@@ -73,6 +80,90 @@ export SECRET_KEY
 export ENCRYPTION_KEY
 export SETUP_TOKEN
 
+PHASE6_RECOVERY_MODE=false
+if python -m scripts.kaya_phase6_recovery_policy "$@"; then
+    PHASE6_RECOVERY_MODE=true
+    echo "Phase 6 recovery CLI recognised; failed-target guards remain enabled."
+fi
+PHASE6_UPGRADE_MODE=false
+PHASE6_PRETARGET_MODE=false
+if python -c "import sys; from scripts.kaya_phase6_recovery_policy import is_phase6_upgrade_command; raise SystemExit(0 if is_phase6_upgrade_command(sys.argv[1:]) else 1)" "$@"; then
+    PHASE6_UPGRADE_MODE=true
+    echo "Phase 6 upgrade CLI recognised; PRECHECK resume is permitted only for this command."
+fi
+if python -c "import sys; from scripts.kaya_phase6_recovery_policy import is_phase6_pretarget_retry_command; raise SystemExit(0 if is_phase6_pretarget_retry_command(sys.argv[1:]) else 1)" "$@"; then
+    PHASE6_PRETARGET_MODE=true
+    echo "Phase 6 pre-target retry CLI recognised; PostgreSQL target absence will be verified."
+fi
+PHASE6_RECOVERY_STATE=false
+
+UPGRADE_STATE_FILE="/app/data/kaya-database-upgrade.json"
+if [ -f "$UPGRADE_STATE_FILE" ]; then
+    UPGRADE_STATE="$(python -c "import json; print(json.load(open('$UPGRADE_STATE_FILE', encoding='utf-8')).get('state', ''))")"
+    AUTHORITATIVE_ENGINE="$(python -c "import json; print(json.load(open('$UPGRADE_STATE_FILE', encoding='utf-8')).get('database_engine', ''))")"
+    case "$UPGRADE_STATE" in
+        FAILED|PRECHECK|MAINTENANCE|BACKED_UP|POSTGRES_PREPARED|MIGRATING|VALIDATING|POSTGRES_READY|CUTOVER_PENDING)
+            if [ "$UPGRADE_STATE" = "PRECHECK" ] && [ "$PHASE6_UPGRADE_MODE" = "true" ]; then
+                echo "Kaya database upgrade is PRECHECK; resuming the explicit Phase 6 upgrade command."
+            elif [ "$UPGRADE_STATE" = "FAILED" ] && [ "$PHASE6_PRETARGET_MODE" = "true" ]; then
+                echo "Kaya database upgrade is FAILED before target migration; running the verified pre-target retry."
+            elif [ "$PHASE6_RECOVERY_MODE" != "true" ] || [ "$UPGRADE_STATE" != "FAILED" ]; then
+                echo "Kaya database upgrade is $UPGRADE_STATE; operator recovery is required before startup." >&2
+                exit 1
+            fi
+            PHASE6_RECOVERY_STATE=true
+            if [ "$PHASE6_PRETARGET_MODE" != "true" ]; then
+                echo "Kaya database upgrade is FAILED; running the explicit guarded recovery command."
+            fi
+            ;;
+    esac
+    if [ "$AUTHORITATIVE_ENGINE" = "postgresql" ]; then
+        if [ -z "${KAYA_POSTGRES_DATABASE_URL:-}" ]; then
+            echo "PostgreSQL is authoritative but KAYA_POSTGRES_DATABASE_URL is not configured; refusing SQLite fallback." >&2
+            exit 1
+        fi
+        export DATABASE_URL="$KAYA_POSTGRES_DATABASE_URL"
+    fi
+fi
+
+if [ "$PHASE6_RECOVERY_MODE" = "true" ]; then
+    if [ "$PHASE6_RECOVERY_STATE" != "true" ]; then
+        echo "Explicit Phase 6 recovery requires a FAILED migration state; refusing recovery handoff." >&2
+        exit 1
+    fi
+    echo "database.recovery startup_database_prepare=skipped"
+    echo "database.recovery command_handoff=starting"
+    exec gosu kaya "$@"
+fi
+
+CONFIGURED_DATABASE_URL="${DATABASE_URL:-}"
+SQLITE_SOURCE_URL="${KAYA_SQLITE_SOURCE_URL:-}"
+SQLITE_SOURCE_PATH="${SQLITE_SOURCE_URL#sqlite:///}"
+if [ "${APP_ENV:-production}" = "production" ] && [ "$CONFIGURED_DATABASE_URL" != "${CONFIGURED_DATABASE_URL#sqlite}" ]; then
+    echo "Production Kaya requires PostgreSQL; SQLite is reserved for controlled legacy migration and recovery tooling." >&2
+    exit 1
+fi
+POSTGRES_SCHEMA_READY="false"
+if [ "$CONFIGURED_DATABASE_URL" != "${CONFIGURED_DATABASE_URL#postgresql}" ]; then
+    if gosu kaya python -c "from sqlalchemy import inspect; from app.db.session import engine; raise SystemExit(0 if inspect(engine).has_table('alembic_version') else 1)"; then
+        POSTGRES_SCHEMA_READY="true"
+    fi
+fi
+
+if [ "${KAYA_PHASE6_AUTO_UPGRADE:-false}" = "true" ] && [ "$PHASE6_RECOVERY_MODE" != "true" ] && [ -n "$SQLITE_SOURCE_URL" ] && [ -f "$SQLITE_SOURCE_PATH" ] && [ "${AUTHORITATIVE_ENGINE:-}" != "postgresql" ] && [ "$POSTGRES_SCHEMA_READY" != "true" ]; then
+    if ! KAYA_LEGACY_SOURCE="$SQLITE_SOURCE_PATH" KAYA_LEGACY_DATA_DIR="${DATA_DIR:-/app/data}" gosu kaya python -c "import os; from pathlib import Path; from app.db.phase6_cutover import legacy_sqlite_eligibility; ok, reason = legacy_sqlite_eligibility(Path(os.environ['KAYA_LEGACY_SOURCE']), Path(os.environ['KAYA_LEGACY_DATA_DIR'])); print(reason); raise SystemExit(0 if ok else 1)"; then
+        echo "Legacy SQLite source is not an eligible Kaya database; refusing automatic migration." >&2
+        exit 1
+    fi
+    echo "Preparing controlled SQLite to PostgreSQL upgrade..."
+    gosu kaya python -m scripts.kaya_phase6_upgrade \
+        --source "$SQLITE_SOURCE_PATH" \
+        --target-url "${KAYA_POSTGRES_DATABASE_URL:-}" \
+        --backup-dir "${MIGRATION_BACKUP_DIR:-/app/data/backups}" \
+        --data-dir "${DATA_DIR:-/app/data}"
+    export DATABASE_URL="${KAYA_POSTGRES_DATABASE_URL}"
+fi
+
 
 echo "Starting Kaya with ENCRYPTION_KEY length: ${#ENCRYPTION_KEY}"
 
@@ -81,9 +172,12 @@ if [ "${SKIP_DATABASE_MIGRATIONS:-false}" != "true" ]; then
     gosu kaya python -m app.db.cli
 fi
 
-if gosu kaya python -c "from app.db.session import SessionLocal; from app.models.models import User; db=SessionLocal(); found=db.query(User.id).filter(User.role == 'admin').first(); db.close(); raise SystemExit(0 if found is None else 1)"; then
-    echo "Kaya first-run setup token: $SETUP_TOKEN"
-    echo "Enter this token on the first-run setup page. It is not accepted after an administrator exists."
+if [ "${SKIP_DATABASE_MIGRATIONS:-false}" != "true" ] && [ "${KAYA_GATEWAY_MODE:-false}" != "true" ]; then
+    if gosu kaya python -c "from app.db.session import SessionLocal; from app.models.models import User; db=SessionLocal(); found=db.query(User.id).filter(User.role == 'admin').first(); db.close(); raise SystemExit(0 if found is None else 1)"; then
+        echo "Kaya first-run setup is required."
+        echo "Setup token: $SETUP_TOKEN"
+        echo "Open /setup in your browser to create the first administrator."
+    fi
 fi
 
 exec gosu kaya "$@"

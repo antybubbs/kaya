@@ -4,13 +4,14 @@ import threading
 from time import monotonic
 
 import pytest
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
 from app.db.session import (
     SQLITE_BUSY_TIMEOUT_MS,
     configure_sqlite_connection,
+    run_with_sqlite_retry,
     verify_sqlite_pragmas,
 )
 from app.models.models import OIDCProvider, RemoteManagerSetting
@@ -108,6 +109,35 @@ def test_short_competing_write_waits_then_commits(tmp_path):
         assert connection.exec_driver_sql(
             "SELECT count(*) FROM synthetic_writers"
         ).scalar_one() == 2
+
+
+def test_central_sqlite_retry_reopens_session_after_lock(tmp_path):
+    engine = sqlite_engine(tmp_path)
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "CREATE TABLE retry_writes (id INTEGER PRIMARY KEY, value TEXT)"
+        )
+    factory = sessionmaker(bind=engine)
+    attempts = 0
+
+    def operation(db):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OperationalError(
+                "INSERT", {}, sqlite3.OperationalError("database is locked")
+            )
+        db.execute(text("INSERT INTO retry_writes(value) VALUES ('completed')"))
+
+    run_with_sqlite_retry(
+        factory,
+        operation,
+        subsystem="test",
+        operation_name="retry_write",
+    )
+    assert attempts == 2
+    with engine.connect() as connection:
+        assert connection.exec_driver_sql("SELECT count(*) FROM retry_writes").scalar_one() == 1
 
 
 def test_security_settings_cache_uses_last_known_good_on_transient_lock(

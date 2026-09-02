@@ -1,0 +1,356 @@
+name: Database Deep Validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  postgres-operations:
+    name: PostgreSQL backup and restore validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      KAYA_IMAGE: kaya:phase8b-${{ github.sha }}
+      KAYA_DATA_DIR: ./phase8-data
+      KAYA_UPLOAD_DIR: ./phase8-uploads
+      KAYA_POSTGRES_BACKUP_DIR: ./phase8-backups
+      KAYA_POSTGRES_PASSWORD_DIR: ./phase8-secrets
+      KAYA_PHASE8_VOLUME_PREFIX: kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
+      KAYA_PHASE8_PROJECT: kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
+      KAYA_PORT: 18080
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build disposable Kaya image
+        run: docker build --tag kaya:phase8b-${GITHUB_SHA} .
+      - name: Start isolated PostgreSQL 16.14
+        env:
+          KAYA_IMAGE: kaya:phase8b-${{ github.sha }}
+          KAYA_DATA_DIR: ./phase8-data
+          KAYA_UPLOAD_DIR: ./phase8-uploads
+          KAYA_POSTGRES_BACKUP_DIR: ./phase8-backups
+          KAYA_POSTGRES_PASSWORD_DIR: ./phase8-secrets
+          KAYA_PHASE8_VOLUME_PREFIX: kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
+          KAYA_PHASE8_PROJECT: kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
+          KAYA_PORT: 18080
+        run: docker compose -p kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }} -f docker-compose.yml -f ci/compose/docker-compose.phase8-production-ci.yml up -d --wait --wait-timeout 180 kaya postgres
+      - name: Seed synthetic fixture
+        run: |
+          project=kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
+          compose="docker compose -p $project -f docker-compose.yml -f ci/compose/docker-compose.phase8-production-ci.yml"
+          $compose exec -T postgres bash -c 'export PGPASSWORD="$(< /run/kaya-secrets/postgres_password)"; psql -U kaya -d kaya -c "CREATE TABLE phase8_fixture (id integer PRIMARY KEY, value text NOT NULL); INSERT INTO phase8_fixture VALUES (1, '\''synthetic'\''); INSERT INTO remote_manager_settings (key, value, updated_at) VALUES ('\''high_availability_enabled'\'', '\''1'\'', CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at;"'
+      - name: Authenticated smoke and representative writes
+        env:
+          PHASE7D_HTTP_BASE: http://127.0.0.1:18080
+        run: |
+          project=kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
+          compose="docker compose -p $project -f docker-compose.yml -f ci/compose/docker-compose.phase8-production-ci.yml"
+          token=$($compose exec -T kaya sh -c "sed -n 's/^SETUP_TOKEN=//p' /app/data/.runtime.env")
+          KAYA_SETUP_TOKEN="$token" python scripts/phase7d_http_smoke.py
+      - name: Create retention sentinel
+        run: |
+          project=kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
+          compose="docker compose -p $project -f docker-compose.yml -f ci/compose/docker-compose.phase8-production-ci.yml --profile postgres-ops"
+          $compose run --rm --no-deps --entrypoint bash postgres-backup -c "printf 'phase8-sentinel-immutable\\n' > /var/backups/kaya-postgres/DO_NOT_DELETE_SENTINEL.txt"
+      - name: Backup during authenticated live writes
+        env:
+          PHASE7D_HTTP_BASE: http://127.0.0.1:18080
+          PHASE8_WRITE_SECONDS: "20"
+        run: |
+          project=kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
+          compose="docker compose -p $project -f docker-compose.yml -f ci/compose/docker-compose.phase8-production-ci.yml --profile postgres-ops"
+          python scripts/phase8_live_write.py > phase8-live-write.log 2>&1 &
+          writer=$!
+          backup_started=$(date +%s.%N)
+          $compose run --rm --no-deps postgres-backup backup > phase8-live-backup.log
+          backup_finished=$(date +%s.%N)
+          wait "$writer"
+          cat phase8-live-write.log
+          printf 'backup-started=%s backup-finished=%s\n' "$backup_started" "$backup_finished"
+      - name: Create, verify, and retain native backups
+        env:
+          KAYA_IMAGE: kaya:phase8b-${{ github.sha }}
+          KAYA_DATA_DIR: ./phase8-data
+          KAYA_UPLOAD_DIR: ./phase8-uploads
+          KAYA_POSTGRES_BACKUP_DIR: ./phase8-backups
+          KAYA_POSTGRES_PASSWORD_DIR: ./phase8-secrets
+          KAYA_PHASE8_VOLUME_PREFIX: kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
+        run: |
+          project=kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
+          compose="docker compose -p $project -f docker-compose.yml -f ci/compose/docker-compose.phase8-production-ci.yml --profile postgres-ops"
+          $compose run --rm --no-deps postgres-backup backup
+          $compose run --rm --no-deps postgres-backup backup
+          $compose run --rm --no-deps postgres-backup backup
+          count=$($compose run --rm --no-deps --entrypoint bash postgres-backup -c 'find /var/backups/kaya-postgres -maxdepth 1 -name "kaya-*.dump" | wc -l')
+          test "$count" -eq 2
+          sentinel=$($compose run --rm --no-deps --entrypoint bash postgres-backup -c 'cat /var/backups/kaya-postgres/DO_NOT_DELETE_SENTINEL.txt')
+          test "$sentinel" = "phase8-sentinel-immutable"
+          $compose run --rm --no-deps postgres-backup verify
+      - name: Restore drill and diagnostics
+        env:
+          KAYA_IMAGE: kaya:phase8b-${{ github.sha }}
+          KAYA_DATA_DIR: ./phase8-data
+          KAYA_UPLOAD_DIR: ./phase8-uploads
+          KAYA_POSTGRES_BACKUP_DIR: ./phase8-backups
+          KAYA_POSTGRES_PASSWORD_DIR: ./phase8-secrets
+          KAYA_PHASE8_VOLUME_PREFIX: kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
+        run: |
+          project=kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
+          compose="docker compose -p $project -f docker-compose.yml -f ci/compose/docker-compose.phase8-production-ci.yml --profile postgres-ops"
+          $compose run --rm --no-deps postgres-backup restore-drill
+          $compose run --rm --no-deps postgres-backup diagnostics
+      - name: PostgreSQL operations runtime scenarios
+        env:
+          PHASE8_PROJECT: kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
+          PHASE8_PORT: 18080
+          PHASE8_DATA_ROOT: ./phase8-data
+          PHASE8_RESULT_FILE: phase8d-results.env
+          PHASE8_PROGRESS_FILE: phase8d-progress.log
+          PHASE8_PASS_ROWS: 1,2,3,4,5,6,7,8,9,10,11,12,19,20,21,23,38,40,43,44,46,47,48,49,50,51
+          KAYA_IMAGE: kaya:phase8b-${{ github.sha }}
+          KAYA_PHASE8_VOLUME_PREFIX: kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
+        run: |
+          docker build --file Dockerfile.test --tag kaya:phase8-tests-${GITHUB_SHA} .
+          bash scripts/phase8d_runtime_validation.sh
+      - name: Linux regression suite
+        run: |
+          docker build --file Dockerfile.test --tag kaya:phase8-tests-${GITHUB_SHA} .
+          docker run --rm -e PYTHONPATH=/workspace -e SECRET_KEY=phase8-ci-only-secret-key-012345678901234567890123456789 -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
+            -v "$PWD:/workspace" -w /workspace kaya:phase8-tests-${GITHUB_SHA} \
+            pytest -q tests/test_authentication_policy.py tests/test_database_password_file.py tests/test_database_migrations.py \
+            tests/test_postgres_deployment.py tests/test_postgres_operations.py \
+            tests/test_high_availability_framework.py tests/test_audit_controls.py
+          docker run --rm --shm-size=1g -e PYTHONPATH=/workspace -e SECRET_KEY=phase8-ci-only-secret-key-012345678901234567890123456789 -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
+            -v "$PWD:/workspace" -w /workspace kaya:phase8-tests-${GITHUB_SHA} \
+            pytest -q tests/test_phase6_cutover.py
+      - name: PostgreSQL integration suite
+        env:
+          KAYA_IMAGE: kaya:phase8b-${{ github.sha }}
+          KAYA_DATA_DIR: ./phase8-data
+          KAYA_UPLOAD_DIR: ./phase8-uploads
+          KAYA_POSTGRES_BACKUP_DIR: ./phase8-backups
+          KAYA_POSTGRES_PASSWORD_DIR: ./phase8-secrets
+          KAYA_PHASE8_VOLUME_PREFIX: kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
+        run: |
+          project=kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
+          compose="docker compose -p $project -f docker-compose.yml -f ci/compose/docker-compose.phase8-production-ci.yml"
+          $compose exec -T postgres bash -c 'export PGPASSWORD="$(< /run/kaya-secrets/postgres_bootstrap_password)"; psql -U kaya_bootstrap -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE kaya_phase8_compat OWNER kaya;"'
+          docker build --file Dockerfile.test --tag kaya:phase8-tests-${GITHUB_SHA} .
+          docker run --rm --network "${project}_default" -e PYTHONPATH=/workspace -e SECRET_KEY=phase8-ci-only-secret-key-012345678901234567890123456789 -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= -e KAYA_TEST_POSTGRES_URL=postgresql+psycopg://kaya@postgres:5432/kaya_phase8_compat \
+            -v "${KAYA_PHASE8_VOLUME_PREFIX}_postgres_secret:/run/kaya-secrets:ro" -v "$PWD:/workspace" -w /workspace kaya:phase8-tests-${GITHUB_SHA} \
+            bash -c 'export PGPASSWORD="$(cat /run/kaya-secrets/postgres_password)"; pytest -q tests/test_database_engine_compatibility.py'
+      - name: Generate acceptance evidence
+        if: always()
+        env:
+          PHASE8_PASS_ROWS: 1,2,3,4,5,6,7,8,9,10,11,12,19,20,21,23,38,40,43,44,46,47,48,49,50,51
+          PHASE8_BLOCKED_ROWS: 42
+        run: |
+          if test -f phase8d-results.env; then source phase8d-results.env; fi
+          python scripts/phase8_acceptance_evidence.py --output phase8_acceptance.json
+      - name: Upload redacted failure evidence
+        if: always()
+        run: |
+          project=kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
+          docker compose -p $project -f docker-compose.yml -f ci/compose/docker-compose.phase8-production-ci.yml logs --no-color > phase8-docker.log || true
+          sed -E 's/(password|secret|token|cookie|csrf)[^=]*=[^[:space:]]+/\1=[REDACTED]/gi' phase8-docker.log > phase8-docker-redacted.log
+          rm -f phase8-docker.log
+      - name: Publish redacted failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: postgresql-operations-evidence
+          path: |
+            phase8-docker-redacted.log
+            phase8_acceptance.json
+            phase8d-results.env
+            phase8d-progress.log
+            phase8-scale-report.json
+            phase8-interrupted.log
+            phase8-live-write.log
+          if-no-files-found: warn
+      - name: Dispose exact PostgreSQL operations resources
+        if: always()
+        run: |
+          project=kaya_phase8_${{ github.run_id }}_${{ github.run_attempt }}
+          docker compose -p "$project" -f docker-compose.yml -f ci/compose/docker-compose.phase8-production-ci.yml down --remove-orphans
+          python scripts/kaya_validation_resources.py cleanup-compose --project "$project"
+
+  compatibility:
+    name: Database platform compatibility validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PHASE10_PROJECT: kaya_phase10_${{ github.run_id }}_${{ github.run_attempt }}
+      PHASE10_ROOT: ./phase10-data
+      PHASE10_PORT: 18110
+      PHASE10_IMAGE: kaya:phase10-${{ github.sha }}
+      PHASE10_TEST_IMAGE: kaya:phase10-tests-${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build disposable images
+        run: |
+          docker build --file Dockerfile --tag "$PHASE10_IMAGE" .
+          docker build --file Dockerfile.test --tag "$PHASE10_TEST_IMAGE" .
+      - name: Validate database platform matrix
+        run: bash scripts/phase10_runtime_validation.sh
+      - name: Publish redacted database platform evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: database-platform-evidence
+          path: |
+            phase10_acceptance.json
+            phase10_migration_graph.json
+          if-no-files-found: warn
+      - name: Dispose exact database platform resources
+        if: always()
+        run: |
+          PHASE7D_PROJECT="$PHASE10_PROJECT" \
+          PHASE7D_ROOT=./phase10-data \
+          PHASE7D_IMAGE="$PHASE10_IMAGE" \
+          PHASE7D_HTTP_PORT=18110 \
+          PHASE7D_GATEWAY_PORT=18210 \
+          docker compose -p "$PHASE10_PROJECT" -f docker-compose.yml -f ci/compose/docker-compose.phase7d-ci.yml down --remove-orphans
+          python scripts/kaya_validation_resources.py cleanup-compose --project "$PHASE10_PROJECT"
+
+  upgrade-readiness:
+    name: PostgreSQL patch-upgrade readiness validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PHASE11_PROJECT: kaya_phase11_${{ github.run_id }}_${{ github.run_attempt }}
+      PHASE11_ROOT: ./phase11-data
+      PHASE11_PORT: 18120
+      PHASE11_SOURCE_IMAGE: postgres:16.13
+      PHASE11_TARGET_IMAGE: postgres:16.14
+      PHASE11_APP_IMAGE: kaya:phase11-${{ github.sha }}
+      PHASE11_TEST_IMAGE: kaya:phase11-tests-${{ github.sha }}
+      KAYA_IMAGE: kaya:phase11-${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify selected PostgreSQL image tags
+        run: |
+          docker manifest inspect "$PHASE11_SOURCE_IMAGE" >/dev/null
+          docker manifest inspect "$PHASE11_TARGET_IMAGE" >/dev/null
+          test "$PHASE11_SOURCE_IMAGE" != "$PHASE11_TARGET_IMAGE"
+      - name: Build disposable images
+        run: |
+          docker build --file Dockerfile --tag "$PHASE11_APP_IMAGE" .
+          docker build --file Dockerfile.test --tag "$PHASE11_TEST_IMAGE" .
+      - name: Validate PostgreSQL upgrade readiness matrix
+        run: bash scripts/phase11_runtime_validation.sh
+      - name: Publish redacted PostgreSQL upgrade evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: postgresql-upgrade-evidence
+          path: |
+            phase11_acceptance.json
+            phase11_upgrade_evidence.json
+          if-no-files-found: warn
+      - name: Dispose exact PostgreSQL upgrade resources
+        if: always()
+        run: |
+          PHASE11_PROJECT="$PHASE11_PROJECT" \
+          PHASE11_ROOT=./phase11-data \
+          PHASE11_POSTGRES_IMAGE="$PHASE11_TARGET_IMAGE" \
+          KAYA_IMAGE="$PHASE11_APP_IMAGE" \
+          PHASE7D_PROJECT="$PHASE11_PROJECT" \
+          PHASE7D_ROOT=./phase11-data \
+          PHASE7D_IMAGE="$PHASE11_APP_IMAGE" \
+          PHASE7D_HTTP_PORT=18120 \
+          PHASE7D_GATEWAY_PORT=18220 \
+          docker compose -p "$PHASE11_PROJECT" \
+            -f docker-compose.yml -f ci/compose/docker-compose.phase7d-ci.yml -f ci/compose/docker-compose.phase11-ci.yml \
+            down --remove-orphans
+          python scripts/kaya_validation_resources.py cleanup-compose --project "$PHASE11_PROJECT"
+
+  role-topology:
+    name: PostgreSQL role topology and recovery validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    concurrency:
+      group: database-role-recovery-${{ github.ref }}
+      cancel-in-progress: false
+    env:
+      PHASE12_PROJECT: kaya_phase12_${{ github.run_id }}_${{ github.run_attempt }}
+      PHASE12_ROOT: ./phase12-data
+      PHASE12_POSTGRES_IMAGE: postgres:16.14
+      PHASE12_APP_IMAGE: kaya:phase12-${{ github.sha }}
+      PHASE12_TEST_IMAGE: kaya:phase12-tests-${{ github.sha }}
+      PHASE12_HTTP_PORT: 18132
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build disposable application image
+        run: docker build --file Dockerfile --tag "$PHASE12_APP_IMAGE" .
+      - name: Build disposable test image
+        run: docker build --file Dockerfile.test --tag "$PHASE12_TEST_IMAGE" .
+      - name: Select run-scoped HTTP port
+        run: echo "PHASE12_HTTP_PORT=$((18000 + GITHUB_RUN_ID % 1000))" >> "$GITHUB_ENV"
+      - name: Run PostgreSQL role topology validation
+        run: bash scripts/phase12_runtime_validation.sh
+      - name: Upload redacted evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: postgresql-role-recovery-evidence
+          path: |
+            phase12_acceptance.json
+            phase12_role_migration_evidence.json
+          if-no-files-found: error
+      - name: Dispose exact PostgreSQL role recovery resources
+        if: always()
+        run: |
+          docker compose -p "$PHASE12_PROJECT" -f docker-compose.yml -f ci/compose/docker-compose.phase12-ci.yml -f ci/compose/docker-compose.phase12-legacy-ci.yml down || true
+          if [ -f phase12_resources.json ]; then
+            python scripts/kaya_validation_resources.py cleanup --manifest phase12_resources.json
+          fi
+          python scripts/kaya_validation_resources.py cleanup-compose --project "$PHASE12_PROJECT" || true
+
+  cleanup-isolation:
+    name: Validation-resource cleanup isolation
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run static and Docker sentinel validation
+        run: bash scripts/phase12a_cleanup_validation.sh
+      - name: Upload redacted cleanup evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-cleanup-evidence
+          path: |
+            phase12a_cleanup_acceptance.json
+            phase12a_resource_inventory.json
+          if-no-files-found: error
+
+  production-readiness:
+    name: PostgreSQL production rollout readiness
+    runs-on: ubuntu-latest
+    env:
+      PHASE13_PROJECT: kaya_phase13_${{ github.run_id }}_${{ github.run_attempt }}
+      PHASE13_ROOT: ./phase13-data-${{ github.run_id }}-${{ github.run_attempt }}
+      PHASE13_APP_IMAGE: kaya-phase13-app:${{ github.sha }}
+      PHASE13_TEST_IMAGE: kaya-phase13-test:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - run: docker build -t "$PHASE13_APP_IMAGE" -f Dockerfile .
+      - run: docker build -t "$PHASE13_TEST_IMAGE" -f Dockerfile.test .
+      - run: bash scripts/phase13_runtime_validation.sh
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: postgresql-rollout-evidence
+          path: |
+            phase13_acceptance.json
+            phase13_upgrade_evidence.json
+            phase12_acceptance.json
+            phase12_role_migration_evidence.json
+          if-no-files-found: warn
+      - if: always()
+        run: |
+          python scripts/kaya_validation_resources.py cleanup-compose --project "$PHASE13_PROJECT" || true
+          python scripts/kaya_validation_resources.py cleanup-compose --project "kaya_phase12_13_${GITHUB_RUN_ID}" || true

@@ -73,6 +73,7 @@ DHCP_SELF_HEAL_PHASES = (
 # Configuration-only DHCP repair was introduced in 0.2.11. Older agents would
 # interpret DHCP_PROMOTE as a lease restore and must not receive this repair.
 DHCP_SELF_HEAL_AGENT_VERSION = (0, 2, 11)
+DHCP_OWNER_STABILITY_SECONDS = 10
 
 
 class HAMaintenanceError(ValueError):
@@ -390,6 +391,21 @@ def start_dhcp_self_heal(
         return None
     owner_observation = dhcp_observation(owner, current)
     standby_observation = dhcp_observation(standby, current)
+    stable_since = owner.vip_stable_since
+    if (
+        stable_since is None
+        or (current - stable_since).total_seconds() < DHCP_OWNER_STABILITY_SECONDS
+        or owner.observed_role != "ACTIVE"
+        or owner.observed_generation < cluster.role_generation
+        or owner.config_generation < cluster.keepalived_generation
+    ):
+        logger.info(
+            "HA DHCP repair deferred cluster=%s owner=%s reason=vip_owner_not_stable stability_seconds=%s",
+            cluster.public_id,
+            owner.public_id,
+            max(0, int((current - stable_since).total_seconds())) if stable_since else 0,
+        )
+        return None
     hard_failure_proven = bool(
         len(topology.fresh_node_ids) == 1
         and topology.fresh_node_ids == (owner.id,)
@@ -458,6 +474,7 @@ def start_dhcp_self_heal(
             "target_node_id": repair_node.public_id,
             "drift_signature": drift_signature,
             "topology_fingerprint": topology_fingerprint,
+            "vip_stable_since": stable_since.isoformat() if stable_since else None,
             "latch_active": False,
             "automatic": requested_by is None,
             "progress": [
