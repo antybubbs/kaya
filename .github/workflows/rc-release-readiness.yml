@@ -166,7 +166,7 @@ jobs:
             -e SECRET_KEY=rc-readiness-synthetic-secret-key-012345678901234567890123 \
             -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
             -v "$PWD:/workspace" -w /workspace "$TEST_IMAGE" \
-            bash -Eeuc 'pytest -vv -s --basetemp=/workspace/.pytest-tmp tests/test_phase6_cutover.py' \
+            bash -Eeuc 'pytest -vv -s --basetemp=/workspace/.pytest-tmp tests/test_phase6_cutover.py -k "not historical_sqlite_revision_is_eligible_and_upgraded_with_backup" && pytest -vv -s --basetemp=/workspace/.pytest-tmp tests/test_phase6_cutover.py -k historical_sqlite_revision_is_eligible_and_upgraded_with_backup' \
             >"$phase6_log" 2>&1 || status=$?
           cat "$phase6_log"
           if [[ "$status" -eq 0 ]]; then

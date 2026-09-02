@@ -41,7 +41,9 @@ jobs:
       - name: Unit and regression tests
         # Docker integration runs in the dedicated database workflow; do not
         # attempt to nest Docker inside this Python test job.
-        run: python -m pytest -q --ignore=tests/test_sqlite_temp_exhaustion_docker.py
+        run: |
+          python -m pytest -q --ignore=tests/test_sqlite_temp_exhaustion_docker.py --ignore=tests/test_phase6_cutover.py
+          python -m pytest -q tests/test_phase6_cutover.py
       - name: Ruff
         run: ruff check .
       - name: Diff whitespace

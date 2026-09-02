@@ -119,8 +119,11 @@ jobs:
           docker run --rm -e PYTHONPATH=/workspace -e SECRET_KEY=phase8-ci-only-secret-key-012345678901234567890123456789 -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
             -v "$PWD:/workspace" -w /workspace kaya:phase8-tests-${GITHUB_SHA} \
             pytest -q tests/test_authentication_policy.py tests/test_database_password_file.py tests/test_database_migrations.py \
-            tests/test_phase6_cutover.py tests/test_postgres_deployment.py tests/test_postgres_operations.py \
+            tests/test_postgres_deployment.py tests/test_postgres_operations.py \
             tests/test_high_availability_framework.py tests/test_audit_controls.py
+          docker run --rm --shm-size=1g -e PYTHONPATH=/workspace -e SECRET_KEY=phase8-ci-only-secret-key-012345678901234567890123456789 -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
+            -v "$PWD:/workspace" -w /workspace kaya:phase8-tests-${GITHUB_SHA} \
+            pytest -q tests/test_phase6_cutover.py
       - name: PostgreSQL integration suite
         env:
           KAYA_IMAGE: kaya:phase8b-${{ github.sha }}
