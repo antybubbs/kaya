@@ -36,6 +36,8 @@ Future integrations may use different node counts, service-address mechanisms, d
 - Automatic failover is opt-in and automatic failback is disabled.
 - A recovered node returns as standby.
 - Ambiguous ownership, stale continuity data, or split-brain evidence blocks DHCP activation.
+- Kaya configuration repair requires the reported VIP owner to remain continuously eligible for 10 seconds (current ACTIVE role, VIP, DNS, and generations). This matches the local Keepalived hold-down and filters brief elections during service restarts; it is a stability gate, not a fixed sleep in the action path.
+- DHCP promotion is fenced both before and after activation. Losing the VIP during promotion disables DHCP and fails the action; a local BACKUP transition also remains responsible for releasing DHCP when Kaya is unavailable.
 - DNS, DHCP, Keepalived, and local agent operation do not depend on Kaya remaining online.
 - DNS Manager consumes a healthy HA Pi-hole cluster as one logical provider through its virtual IP.
 - Live cluster status separates operational standby readiness from recovery workflow and configuration-sync state. Routine comparisons can report checking or running while the standby remains operationally ready; controlled handover still requires its independent recovery stability gate.

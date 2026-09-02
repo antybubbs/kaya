@@ -108,6 +108,22 @@ def apply_failover_action(state, action, *, runner=_run):
         raise FailoverRuntimeError(
             "Refusing to disable DHCP on the current sole owner without a verified atomic handover."
         )
+    if (
+        action_type == "DHCP_DEMOTE"
+        and state.get("vip_owned") is True
+        and state.get("observed_role") == "ACTIVE"
+        and not owner_handover_authorised
+    ):
+        raise FailoverRuntimeError(
+            "Rejecting stale DHCP demotion because this node currently owns the VIP."
+        )
+    if (
+        action_type == "DHCP_PROMOTE"
+        and (state.get("vip_owned") is not True or state.get("observed_role") != "ACTIVE")
+    ):
+        raise FailoverRuntimeError(
+            "Rejecting stale DHCP promotion because this node no longer owns the VIP."
+        )
     _log_action(
         "dhcp_action_received",
         action_type=action_type,

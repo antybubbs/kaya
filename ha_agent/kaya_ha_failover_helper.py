@@ -268,6 +268,20 @@ def _automatic_allowed(generation):
     )
 
 
+def _promotion_fence(generation, automatic):
+    """Require current local VRRP authority, not just an old queued action."""
+    return (
+        (
+            _state("keepalived_generation", 0) == generation
+            if automatic
+            else _state("failover_generation", 0) == generation
+        )
+        and _state("observed_role") == "ACTIVE"
+        and _state("vip_owned", False) is True
+        and _state("dns_healthy", False) is True
+    )
+
+
 def main():
     commands = {"status", "demote", "promote", "automatic-demote", "automatic-promote"}
     if len(sys.argv) not in (2, 3) or sys.argv[1] not in commands:
@@ -290,13 +304,19 @@ def main():
     STATE_ROOT.mkdir(parents=True, exist_ok=True)
     with LOCK_FILE.open("a+") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        # Generation and VRRP state may change while waiting for the lock.
+        if automatic:
+            if not _automatic_allowed(generation):
+                raise RuntimeError("The automatic DHCP action became stale while waiting for the failover lock.")
+        elif generation != int(_state("failover_generation", 0)):
+            raise RuntimeError("The DHCP action became stale while waiting for the failover lock.")
         if sys.argv[1] in {"demote", "automatic-demote"}:
             status = _set_dhcp(False)
             print(json.dumps({"status": "applied", **status}))
             return
-        if not _owns_vip() or _state("dns_healthy", False) is not True:
+        if not _promotion_fence(generation, automatic) or not _owns_vip():
             raise RuntimeError(
-                "Promotion requires local VIP ownership and healthy DNS."
+                "Promotion requires current local VRRP authority, VIP ownership and healthy DNS."
             )
         configuration_only = (
             bool(_state("failover_configuration_only", False))
@@ -308,6 +328,13 @@ def main():
             # missing setting; do not back up or replace the live lease file.
             status = _set_dhcp(True)
             _wait_for_dns()
+            if not _promotion_fence(generation, automatic) or not _owns_vip():
+                # A lost VIP after enabling DHCP is a failed transition, never
+                # a successful configuration repair.
+                _set_dhcp(False)
+                raise RuntimeError(
+                    "Promotion was fenced because local VIP ownership changed; DHCP was disabled again."
+                )
             print(json.dumps({"status": "applied", **status, "backup_reference": None}))
             return
         backup, ownership = _backup(generation)
@@ -326,6 +353,11 @@ def main():
                 _atomic_write(LEASE_FILE, _lease_lines(lease_generation), ownership)
             status = _set_dhcp(True)
             _wait_for_dns()
+            if not _promotion_fence(generation, automatic) or not _owns_vip():
+                _set_dhcp(False)
+                raise RuntimeError(
+                    "Promotion was fenced because local VIP ownership changed; DHCP was disabled again."
+                )
         except Exception:
             try:
                 _set_dhcp(False)

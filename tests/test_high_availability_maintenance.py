@@ -90,6 +90,7 @@ def pair(db: Session, *, split: bool = False):
         config_generation=4,
         lease_generation=8,
         recovery_state="ACTIVE",
+        vip_stable_since=now - timedelta(minutes=2),
         last_heartbeat_at=now,
     )
     second = HANode(
@@ -117,6 +118,7 @@ def pair(db: Session, *, split: bool = False):
         config_generation=4,
         lease_generation=8,
         recovery_state="STANDBY_READY",
+        vip_stable_since=None,
         last_heartbeat_at=now,
     )
     db.add_all([first, second])
@@ -212,6 +214,28 @@ def test_stale_standby_cleanup_cannot_disable_new_sole_owner():
         result = json.loads(run.result_json)
         assert result["repair_cancelled"] is True
         assert result["service_movement_performed"] is False
+
+
+def test_transient_vip_owner_is_not_promoted_by_configuration_self_heal():
+    with database() as db:
+        _, cluster, first, second = pair(db)
+        now = datetime.utcnow()
+        first.vip_owned = False
+        first.dhcp_running = first.dhcp_configured = first.dhcp_listener_active = False
+        first.dhcp_runtime_state = "STOPPED"
+        second.vip_owned = True
+        second.observed_role = "ACTIVE"
+        second.vip_stable_since = now - timedelta(seconds=9)
+        second.dhcp_configured = False
+        second.dhcp_running = second.dhcp_listener_active = False
+        second.dhcp_runtime_state = "STOPPED"
+        for node in (first, second):
+            node.last_heartbeat_at = now
+            node.dhcp_observed_at = now
+        db.commit()
+
+        assert start_dhcp_self_heal(db, cluster, now=now) is None
+        assert active_maintenance(cluster) is None
 
 
 def test_reinitialisation_repairs_metadata_without_moving_an_already_correct_topology():
@@ -804,6 +828,7 @@ def test_proven_hard_failover_can_repair_surviving_owner_with_peer_offline():
         first.dhcp_running = False
         first.dhcp_listener_active = False
         first.dhcp_runtime_state = "STOPPED"
+        first.vip_stable_since = now - timedelta(minutes=2)
         second.last_heartbeat_at = now - timedelta(minutes=2)
         second.dhcp_observed_at = second.last_heartbeat_at
         db.add(HAEvent(

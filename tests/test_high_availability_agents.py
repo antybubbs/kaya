@@ -672,6 +672,8 @@ def test_local_event_queue_survives_restart_and_rejects_stale_desired_state(tmp_
 
 def test_identical_dhcp_repair_desired_state_executes_once_until_result_is_delivered(tmp_path):
     state = State(tmp_path)
+    state.set("vip_owned", True)
+    state.set("observed_role", "ACTIVE")
     calls = []
     desired = {
         "cluster_generation": 4,

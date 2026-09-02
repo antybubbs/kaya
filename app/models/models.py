@@ -891,6 +891,7 @@ class HANode(Base):
     observed_role: Mapped[str | None] = mapped_column(String(30), nullable=True)
     observed_generation: Mapped[int] = mapped_column(Integer, default=0)
     vip_owned: Mapped[bool] = mapped_column(Boolean, default=False)
+    vip_stable_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     dhcp_running: Mapped[bool] = mapped_column(Boolean, default=False)
     dhcp_configured: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     dhcp_listener_active: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
