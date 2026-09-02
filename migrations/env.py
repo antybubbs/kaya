@@ -3,6 +3,8 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
+from app.core.config import sqlite_database_path
+from app.db.sqlite_temp import configure_sqlite_temp_directory
 from app.models.models import Base
 
 config = context.config
@@ -43,6 +45,9 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
+    database_path = sqlite_database_path(config.get_main_option("sqlalchemy.url"))
+    if database_path is not None:
+        configure_sqlite_temp_directory(database_path)
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
