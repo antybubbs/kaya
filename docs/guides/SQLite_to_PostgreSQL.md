@@ -328,6 +328,8 @@ Use the command documented by the Compose file included with the release if the 
 
 The migration container will initialise the PostgreSQL target and begin the conversion process.
 
+This process may take over 30min to complete depending on the size of your DB.
+
 ---
 
 # 11. What the migration process does
