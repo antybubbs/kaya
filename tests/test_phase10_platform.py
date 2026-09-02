@@ -89,20 +89,41 @@ def test_schema_revision_missing_from_packaged_chain_fails_closed():
     monkeypatch.undo()
 
 
-def test_schema_newer_than_application_fails_closed(monkeypatch):
+def test_current_head_is_allowed(monkeypatch):
     script = _script()
-    monkeypatch.setattr(script, "iterate_revisions", lambda *_args, **_kwargs: iter([]))
     monkeypatch.setattr("app.db.platform_compatibility.inspect", lambda _connection: SimpleNamespace(get_table_names=lambda: ["alembic_version"]))
-    with pytest.raises(DatabasePlatformCompatibilityError, match="newer"):
-        validate_postgres_platform(_Engine(("16.14", "160014"), ("future",)), script)
+    validate_postgres_platform(_Engine(("16.14", "160014"), ("20260902_01",)), script)
 
 
-def test_old_image_refuses_schema_newer_than_packaged_head(monkeypatch):
+def test_known_ancestor_is_allowed(monkeypatch):
     script = _script()
-    monkeypatch.setattr(script, "iterate_revisions", lambda *_args, **_kwargs: iter([]))
     monkeypatch.setattr(
         "app.db.platform_compatibility.inspect",
         lambda _connection: SimpleNamespace(get_table_names=lambda: ["alembic_version"]),
     )
-    with pytest.raises(DatabasePlatformCompatibilityError, match="newer"):
+    validate_postgres_platform(_Engine(("16.14", "160014"), ("20260818_02",)), script)
+
+
+def test_deployed_20260818_revision_is_allowed_to_upgrade(monkeypatch):
+    script = _script()
+    monkeypatch.setattr(
+        "app.db.platform_compatibility.inspect",
+        lambda _connection: SimpleNamespace(get_table_names=lambda: ["alembic_version"]),
+    )
+    validate_postgres_platform(_Engine(("16.14", "160014"), ("20260818_02",)), script)
+
+
+def test_known_non_ancestor_is_rejected_fail_closed(monkeypatch):
+    script = _script()
+    monkeypatch.setattr(script, "get_revision", lambda _revision: SimpleNamespace(revision="future"))
+
+    def reject_non_ancestor(*_args, **_kwargs):
+        raise RuntimeError("not an ancestor")
+
+    monkeypatch.setattr(script, "iterate_revisions", reject_non_ancestor)
+    monkeypatch.setattr(
+        "app.db.platform_compatibility.inspect",
+        lambda _connection: SimpleNamespace(get_table_names=lambda: ["alembic_version"]),
+    )
+    with pytest.raises(DatabasePlatformCompatibilityError, match="not an ancestor"):
         validate_postgres_platform(_Engine(("16.14", "160014"), ("future",)), script)

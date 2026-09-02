@@ -100,20 +100,18 @@ def validate_postgres_platform(
     if revisions:
         current = revisions[0]
         try:
-            traversed = {
-                revision.revision
-                for revision in script.iterate_revisions(graph["current_head"], current)
-            }
+            script.get_revision(current)
         except Exception as exc:
             raise DatabasePlatformCompatibilityError(
                 "Database schema revision is not present in this Kaya image's migration chain. "
-                "Use a compatible/newer Kaya image or restore a compatible backup."
+                "It cannot be upgraded by this image."
             ) from exc
-        if current not in traversed:
-            if current == graph["current_head"]:
-                return version
-            raise DatabasePlatformCompatibilityError(
-                "Database schema is newer than this Kaya image supports. "
-                "Use a compatible/newer Kaya image or restore a compatible backup."
-            )
+        if current != graph["current_head"]:
+            try:
+                list(script.iterate_revisions(graph["current_head"], current))
+            except Exception as exc:
+                raise DatabasePlatformCompatibilityError(
+                    "Database schema revision is not an ancestor of this Kaya image's migration head. "
+                    "Use a compatible/newer Kaya image or restore a compatible backup."
+                ) from exc
     return version
