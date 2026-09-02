@@ -1,8 +1,3 @@
----
-title: "Migrating Kaya from SQLite to PostgreSQL"
-description: "Complete upgrade guide for migrating an existing Kaya installation from SQLite to PostgreSQL when upgrading to v0.28.0."
----
-
 # Migrating Kaya from SQLite to PostgreSQL
 
 Kaya **v0.28.0** moves the production database platform from SQLite to PostgreSQL.
