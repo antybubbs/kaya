@@ -707,6 +707,31 @@ def test_local_event_queue_survives_restart_and_rejects_stale_desired_state(tmp_
     second.db.close()
 
 
+def test_desired_state_acknowledges_role_generation_without_regressing_markers(tmp_path):
+    state = State(tmp_path)
+    state.set("last_valid_cluster_generation", 8)
+    state.set("observed_generation", 8)
+    state.set("role_generation", 8)
+
+    reconcile_desired(
+        state,
+        {"cluster_generation": 8, "role_generation": 9, "desired_role": "STANDBY"},
+    )
+
+    assert state.get("last_valid_cluster_generation") == 8
+    assert state.get("observed_generation") == 9
+    assert state.get("role_generation") == 9
+
+    reconcile_desired(
+        state,
+        {"cluster_generation": 8, "role_generation": 8, "desired_role": "STANDBY"},
+    )
+
+    assert state.get("observed_generation") == 9
+    assert state.get("role_generation") == 9
+    state.db.close()
+
+
 def test_identical_dhcp_repair_desired_state_executes_once_until_result_is_delivered(tmp_path):
     state = State(tmp_path)
     state.set("vip_owned", True)
