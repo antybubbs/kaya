@@ -26,7 +26,7 @@ from app.models.models import (
     User,
 )
 from app.routers.admin import set_high_availability_feature
-from app.routers.high_availability import active_clusters, cluster_or_404, require_ha_admin, require_high_availability, test_cluster_connection as connection_route, update_cluster_topology
+from app.routers.high_availability import active_clusters, cluster_or_404, recent_cluster_events, require_ha_admin, require_high_availability, test_cluster_connection as connection_route, update_cluster_topology
 from app.schemas.high_availability import HAClusterDraftCreate, HAClusterRead
 from app.services.ha_clusters import HADraftError, create_cluster_draft, soft_delete_cluster, validate_cluster_draft
 from app.services.ha_registry import SUPPORTED_HA_PROVIDERS
@@ -84,6 +84,29 @@ def test_high_availability_is_disabled_by_default_and_registry_is_pihole_only():
             require_high_availability(form_request("/high-availability", {}), db=db, user=object())
         assert rejected.value.status_code == 404
     assert [provider.key for provider in SUPPORTED_HA_PROVIDERS] == ["pihole"]
+
+
+def test_cluster_reads_do_not_materialise_unbounded_event_history():
+    with database() as db:
+        cluster = HACluster(name="Synthetic event history", provider_key="pihole")
+        db.add(cluster)
+        db.flush()
+        db.add_all([
+            HAEvent(
+                cluster_id=cluster.id,
+                event_type="synthetic_event",
+                severity="info",
+                source="test",
+                message=f"Synthetic event {index}",
+            )
+            for index in range(250)
+        ])
+        db.commit()
+
+        loaded = cluster_or_404(db, cluster.public_id)
+
+        assert "events" not in loaded.__dict__
+        assert len(recent_cluster_events(db, loaded)) == 100
 
 
 def test_admin_toggle_is_audited_and_preserves_dns_links_and_history():

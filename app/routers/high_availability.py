@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from pydantic import ValidationError
 from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm.attributes import set_committed_value
 
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.core.templating import templates
@@ -226,7 +227,6 @@ def cluster_or_404(db: Session, public_id: str) -> HACluster:
             selectinload(HACluster.nodes).selectinload(HANode.ha_connection),
             selectinload(HACluster.nodes).selectinload(HANode.agent_credential),
             selectinload(HACluster.health_checks).selectinload(HAHealthCheck.node),
-            selectinload(HACluster.events),
             selectinload(HACluster.failover_runs).selectinload(
                 HAFailoverRun.source_node
             ),
@@ -245,6 +245,32 @@ def cluster_or_404(db: Session, public_id: str) -> HACluster:
     if not cluster:
         raise HTTPException(status_code=404, detail="Cluster not found")
     return cluster
+
+
+def recent_cluster_events(db: Session, cluster: HACluster, *, limit: int = 100) -> list[HAEvent]:
+    """Load only the bounded activity window rendered by the events page."""
+    bounded_limit = max(1, min(int(limit), 100))
+    return (
+        db.query(HAEvent)
+        .filter(HAEvent.cluster_id == cluster.id)
+        .options(selectinload(HAEvent.node))
+        .order_by(HAEvent.occurred_at.desc())
+        .limit(bounded_limit)
+        .all()
+    )
+
+
+def unacknowledged_cluster_alert_count(db: Session, cluster: HACluster) -> int:
+    """Count current alerts without materialising the complete event history."""
+    return (
+        db.query(HAEvent.id)
+        .filter(
+            HAEvent.cluster_id == cluster.id,
+            HAEvent.severity.in_(["warning", "error", "critical"]),
+            HAEvent.acknowledged_at.is_(None),
+        )
+        .count()
+    )
 
 
 def sync_operational_summary(db: Session, cluster: HACluster) -> dict[str, object]:
@@ -400,6 +426,9 @@ def cluster_page(
     **extra,
 ):
     cluster = cluster_or_404(db, public_id)
+    if section == "events":
+        events = recent_cluster_events(db, cluster)
+        set_committed_value(cluster, "events", events)
     if section == "agents":
         extra = {**agent_management_context(request, cluster), **extra}
     return templates.TemplateResponse(
@@ -688,6 +717,7 @@ def cluster_detail_context(
         dns_advertisement_states=advertisement_states,
         dns_advertisement=active_advertisement,
         dns_advertisement_warning=DNS_ADVERTISEMENT_WARNING,
+        unacknowledged_alerts=unacknowledged_cluster_alert_count(db, cluster),
         **extra,
     )
 
