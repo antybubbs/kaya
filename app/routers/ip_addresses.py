@@ -3,7 +3,7 @@ from ipaddress import ip_address
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse
-from sqlalchemy import or_
+from sqlalchemy import case, func, or_
 from sqlalchemy.orm import Session, joinedload
 from starlette import status
 
@@ -620,12 +620,23 @@ def detail_ip_address(request: Request, record_id: int, db: Session = Depends(ge
     monitor_observations = None
     if monitor:
         since = datetime.utcnow() - timedelta(hours=24)
-        checks = db.query(NetworkMonitorCheck).filter(NetworkMonitorCheck.monitor_id == monitor.id, NetworkMonitorCheck.checked_at >= since).order_by(NetworkMonitorCheck.checked_at.desc()).all()
-        up = sum(1 for check in checks if check.status == "up")
-        latencies = [check.latency_ms for check in checks if check.latency_ms is not None]
+        summary = db.query(
+            func.count(NetworkMonitorCheck.id),
+            func.sum(case((NetworkMonitorCheck.status == "up", 1), else_=0)),
+            func.avg(NetworkMonitorCheck.latency_ms),
+        ).filter(
+            NetworkMonitorCheck.monitor_id == monitor.id,
+            NetworkMonitorCheck.checked_at >= since,
+        ).one()
+        checks = db.query(NetworkMonitorCheck).filter(
+            NetworkMonitorCheck.monitor_id == monitor.id,
+            NetworkMonitorCheck.checked_at >= since,
+        ).order_by(NetworkMonitorCheck.checked_at.desc()).limit(24).all()
+        total_checks = int(summary[0] or 0)
+        up = int(summary[1] or 0)
         monitor_observations = {
-            "checks": checks[:24], "availability": round((up / len(checks)) * 100, 1) if checks else None,
-            "average_latency": round(sum(latencies) / len(latencies)) if latencies else None,
+            "checks": checks, "availability": round((up / total_checks) * 100, 1) if total_checks else None,
+            "average_latency": round(float(summary[2])) if summary[2] is not None else None,
             "events": db.query(NetworkMonitorEvent).filter(NetworkMonitorEvent.monitor_id == monitor.id).order_by(NetworkMonitorEvent.occurred_at.desc()).limit(5).all(),
             "outages": db.query(NetworkMonitorOutage).filter(NetworkMonitorOutage.monitor_id == monitor.id, NetworkMonitorOutage.started_at >= since).count(),
         }
