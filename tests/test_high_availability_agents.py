@@ -18,6 +18,7 @@ from app.db.session import Base
 from app.models.models import HAAgentCredential, HAAgentRequest, HACluster, HAEvent, HALeaseReplicationState, HANode, NotificationEvent
 from app.schemas.high_availability import HAAgentActionResult, HAAgentEventItem, HAAgentHeartbeat, HAAgentRegister
 from app.services.ha_agents import HAAgentError, authenticate_agent_request, create_bootstrap_token, desired_state, ingest_events, prune_agent_request_history, reconcile_vip_ownership, record_action_result, record_heartbeat, register_agent, revoke_agent
+import app.services.ha_agents as ha_agents
 from app.services.ha_clusters import soft_delete_cluster
 from app.services.notification_outbox import process_outbox
 from app.services.ha_topology import reconcile_topology
@@ -190,6 +191,42 @@ def test_heartbeat_tracks_divergence_and_desired_state_has_no_commands():
         assert state["desired_role"] == "STANDBY"
         assert state["automatic_failover"] is False
         assert state["allowed_actions"] == []
+
+
+def test_steady_state_heartbeat_skips_full_reconciliation(monkeypatch):
+    with database() as db:
+        cluster, _, node = cluster_with_nodes(db)
+        now = datetime.utcnow()
+        cluster.status = "HEALTHY"
+        node.last_heartbeat_at = now
+        node.agent_version = "0.2.7"
+        node.observed_role = "STANDBY"
+        node.observed_generation = 1
+        node.vip_owned = False
+        node.dhcp_running = False
+        node.dhcp_configured = False
+        node.dhcp_listener_active = False
+        node.ftl_active = True
+        node.dhcp_observation_status = "FRESH"
+        node.dhcp_runtime_state = "STOPPED"
+        node.dns_healthy = True
+        node.peer_reachable = True
+        node.peer_icmp_probe_status = "AVAILABLE"
+        node.peer_dns_reachable = True
+        node.lease_generation = 0
+        node.config_generation = 1
+        node.keepalived_runtime_state = "RUNNING"
+        db.commit()
+        heartbeat = HAAgentHeartbeat(
+            observed_role="STANDBY", observed_generation=1, vip_owned=False,
+            dhcp_running=False, dhcp_configured=False, dhcp_listener_active=False,
+            ftl_active=True, dhcp_observation_status="FRESH", dhcp_runtime_state="STOPPED",
+            dns_healthy=True, peer_reachable=True, peer_icmp_probe_status="AVAILABLE",
+            peer_dns_reachable=True, lease_generation=0, config_generation=1,
+            agent_version="0.2.7", keepalived_runtime_state="RUNNING",
+        )
+        monkeypatch.setattr(ha_agents, "reconcile_vip_ownership", lambda *args, **kwargs: pytest.fail("steady heartbeat reconciled"))
+        record_heartbeat(db, node, heartbeat)
 
 
 def test_peer_dependent_host_resolver_is_reported_and_repair_is_generation_bound():

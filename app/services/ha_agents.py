@@ -209,6 +209,8 @@ def record_heartbeat(
     return_status: bool = False,
 ) -> HANode | tuple[HANode, bool, str | None]:
     received_at = datetime.utcnow()
+    previous_heartbeat_at = node.last_heartbeat_at
+    previous_observation = _heartbeat_observation_signature(node)
     reported_at = heartbeat.reported_at
     if reported_at is not None and reported_at.tzinfo is not None:
         reported_at = reported_at.astimezone(timezone.utc).replace(tzinfo=None)
@@ -377,23 +379,31 @@ def record_heartbeat(
                 occurred_at=node.last_heartbeat_at,
             )
         )
+    needs_reconciliation = (
+        previous_observation != _heartbeat_observation_signature(node)
+        or previous_heartbeat_at is None
+        or previous_heartbeat_at < received_at - timedelta(seconds=HEARTBEAT_FRESH_SECONDS)
+        or node.cluster.status != "HEALTHY"
+        or node.cluster.maintenance_mode
+    )
     db.commit()
     db.refresh(node)
-    reconcile_vip_ownership(db, node.cluster, reporting_node=node)
-    advance_failover(db, node.cluster)
-    from app.services.ha_recovery import evaluate_recovery
-    evaluate_recovery(db, node.cluster)
-    maintenance = active_maintenance(node.cluster)
-    if maintenance and maintenance.operation == "RECONCILE":
-        reconcile_cluster_state(db, maintenance)
-    elif maintenance and maintenance.operation == "REINITIALISE":
-        advance_reinitialisation(db, maintenance)
-    elif maintenance and maintenance.operation == "DHCP_SELF_HEAL":
-        from app.services.ha_maintenance import advance_dhcp_self_heal
-        advance_dhcp_self_heal(db, maintenance)
-    else:
-        from app.services.ha_maintenance import start_dhcp_self_heal
-        start_dhcp_self_heal(db, node.cluster)
+    if needs_reconciliation:
+        reconcile_vip_ownership(db, node.cluster, reporting_node=node)
+        advance_failover(db, node.cluster)
+        from app.services.ha_recovery import evaluate_recovery
+        evaluate_recovery(db, node.cluster)
+        maintenance = active_maintenance(node.cluster)
+        if maintenance and maintenance.operation == "RECONCILE":
+            reconcile_cluster_state(db, maintenance)
+        elif maintenance and maintenance.operation == "REINITIALISE":
+            advance_reinitialisation(db, maintenance)
+        elif maintenance and maintenance.operation == "DHCP_SELF_HEAL":
+            from app.services.ha_maintenance import advance_dhcp_self_heal
+            advance_dhcp_self_heal(db, maintenance)
+        else:
+            from app.services.ha_maintenance import start_dhcp_self_heal
+            start_dhcp_self_heal(db, node.cluster)
     if peer_changed:
         write_audit(
             db,
@@ -418,6 +428,32 @@ def record_heartbeat(
         )
     result = (node, True, "sequence_rebased" if sequence_rebased else None)
     return result if return_status else node
+
+
+def _heartbeat_observation_signature(node: HANode) -> tuple:
+    """Return only telemetry that can change HA safety decisions."""
+    return (
+        node.agent_version,
+        node.observed_role,
+        node.observed_generation,
+        node.vip_owned,
+        node.dhcp_configured,
+        node.dhcp_listener_active,
+        node.ftl_active,
+        node.dhcp_running,
+        node.dhcp_observation_status,
+        node.dhcp_runtime_state,
+        node.dns_healthy,
+        node.peer_reachable,
+        node.peer_icmp_probe_status,
+        node.peer_dns_reachable,
+        node.resolver_manager,
+        node.resolver_nameservers_json,
+        node.resolver_observation_status,
+        node.lease_generation,
+        node.config_generation,
+        node.keepalived_runtime_state,
+    )
 
 
 HEARTBEAT_FRESH_SECONDS = 45
