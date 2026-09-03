@@ -23,6 +23,7 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi import Response
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, selectinload
 from starlette import status
@@ -32,6 +33,7 @@ from app.core.config import get_settings
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.core.templating import templates
 from app.core.performance import external_call
+from app.core.performance import clear_diagnostics, diagnostics_snapshot, set_diagnostics_enabled
 from app.core.security import (
     decrypt_secret,
     encrypt_secret,
@@ -321,6 +323,8 @@ SITE_SETTING_KEYS = {
     "dashboard_show_source_age": "1",
     "dashboard_attention_required": "1",
     "dashboard_globally_disabled_widgets": "",
+    "performance_diagnostics_enabled": "",
+    "performance_diagnostics_enabled_at": "",
     "network_monitor_latency_warning_ms": "100",
     "network_monitor_latency_critical_ms": "250",
     "network_monitor_packet_loss_warning_percent": "5",
@@ -2822,6 +2826,77 @@ def about(
             **csrf_context(request),
         },
     )
+
+
+@router.get("/system/about/performance")
+def performance_page(
+    request: Request,
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    enabled = get_site_setting(db, "performance_diagnostics_enabled") == "1"
+    set_diagnostics_enabled(
+        enabled,
+        enabled_at=get_site_setting(db, "performance_diagnostics_enabled_at") or None,
+    )
+    return templates.TemplateResponse(
+        request,
+        "performance.html",
+        {"user": user, "diagnostics": diagnostics_snapshot(), **csrf_context(request)},
+    )
+
+
+@router.get("/api/system/about/performance")
+def performance_data(response: Response, user=Depends(require_admin)):
+    response.headers["Cache-Control"] = "no-store"
+    return diagnostics_snapshot()
+
+
+@router.post("/system/about/performance/toggle")
+async def performance_toggle(
+    request: Request,
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    form = await request.form()
+    validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    enabled = str(form.get("enabled") or "") == "1"
+    set_diagnostics_enabled(enabled)
+    save_site_setting(db, "performance_diagnostics_enabled", "1" if enabled else "")
+    save_site_setting(
+        db,
+        "performance_diagnostics_enabled_at",
+        diagnostics_snapshot()["state"]["enabled_at"] or "",
+    )
+    db.commit()
+    write_audit(
+        db,
+        user,
+        "performance_diagnostics_enabled" if enabled else "performance_diagnostics_disabled",
+        "performance_diagnostics",
+        detail=f"Live performance diagnostics {'enabled' if enabled else 'disabled'}.",
+        metadata={"enabled": enabled},
+    )
+    return RedirectResponse("/system/about/performance", status_code=303)
+
+
+@router.post("/system/about/performance/clear")
+async def performance_clear(
+    request: Request,
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    form = await request.form()
+    validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    clear_diagnostics()
+    write_audit(
+        db,
+        user,
+        "performance_diagnostics_cleared",
+        "performance_diagnostics",
+        detail="Cleared retained live performance diagnostics.",
+    )
+    return RedirectResponse("/system/about/performance", status_code=303)
 
 
 def wallboard_admin_context(request: Request, db: Session) -> dict:

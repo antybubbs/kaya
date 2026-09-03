@@ -5,7 +5,13 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
-from app.core.performance import log_request_metrics
+from app.core.performance import (
+    MAX_SAMPLES,
+    clear_diagnostics,
+    diagnostics_snapshot,
+    log_request_metrics,
+    set_diagnostics_enabled,
+)
 from app.db.session import Base
 from app.models.models import RemoteManagerSetting
 from app.services.site_settings import DEFAULT_SITE_SETTINGS, get_site_setting, get_site_settings
@@ -61,3 +67,37 @@ def test_dashboard_script_clears_every_interval_and_restarts_only_from_bfcache()
     script = open("app/static/js/dashboard.js", encoding="utf-8").read()
     assert "clearInterval(timer);clearInterval(tickTimer)" in script
     assert "if(event.persisted)start()" in script
+
+
+def test_diagnostics_buffer_is_disabled_and_bounded():
+    clear_diagnostics()
+    set_diagnostics_enabled(False)
+    request = SimpleNamespace(method="GET", url=SimpleNamespace(path="/assets/123?token=secret"), query_params={})
+    response = SimpleNamespace(status_code=200)
+    metrics = {"database_query_count": 0, "database_duration_ms": 0, "template_duration_ms": 0, "external_duration_ms": 0, "external_call_count": 0}
+    log_request_metrics(request=request, response=response, metrics=metrics, total_duration_ms=1)
+    assert diagnostics_snapshot()["samples"] == []
+
+    set_diagnostics_enabled(True, enabled_at="2026-01-01T00:00:00+00:00")
+    for index in range(MAX_SAMPLES + 2):
+        request.url.path = f"/assets/{index}?token=secret"
+        log_request_metrics(request=request, response=response, metrics=metrics, total_duration_ms=index)
+    samples = diagnostics_snapshot()["samples"]
+    assert len(samples) == MAX_SAMPLES
+    assert samples[0]["path"] == "/assets/{id}"
+    assert all("secret" not in str(sample) for sample in samples)
+    set_diagnostics_enabled(False)
+
+
+def test_p95_uses_interpolated_percentile_and_clear_keeps_disabled_state():
+    clear_diagnostics()
+    set_diagnostics_enabled(True)
+    request = SimpleNamespace(method="GET", url=SimpleNamespace(path="/healthz"), query_params={})
+    response = SimpleNamespace(status_code=200)
+    metrics = {"database_query_count": 0, "database_duration_ms": 0, "template_duration_ms": 0, "external_duration_ms": 0, "external_call_count": 0}
+    for duration in [100, 200, 300, 400]:
+        log_request_metrics(request=request, response=response, metrics=metrics, total_duration_ms=duration)
+    assert diagnostics_snapshot()["summary"]["p95_request_duration_ms"] == 385.0
+    clear_diagnostics()
+    assert diagnostics_snapshot()["state"]["enabled"] is True
+    set_diagnostics_enabled(False)

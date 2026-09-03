@@ -31,6 +31,7 @@ from app.models.models import (
     Vault,
     VaultBackupRecord,
 )
+from app.core.performance import record_dashboard_widget
 from app.services.compute_monitor import compute_summary
 from app.services.dns_dashboard_summary import get_dns_dashboard_summary
 from app.services.site_settings import get_site_setting, get_site_settings
@@ -809,12 +810,15 @@ def snapshot(db: Session, user: User) -> dict:
             }
             continue
         try:
+            widget_started = perf_counter()
             output[row["key"]] = {
                 "status": "ok",
                 "data": _build(db, user, row["key"]),
                 "last_successful_update": _iso(datetime.utcnow()),
             }
+            record_dashboard_widget(row["key"], (perf_counter() - widget_started) * 1000)
         except Exception:
+            record_dashboard_widget(row["key"], (perf_counter() - widget_started) * 1000)
             logger.exception(
                 "Dashboard widget failed", extra={"widget_key": row["key"]}
             )

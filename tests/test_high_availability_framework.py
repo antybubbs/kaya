@@ -17,6 +17,7 @@ from app.models.models import (
     DNSClientIPHistory,
     DNSProviderConfig,
     DNSRecognisedDevice,
+    HAEvent,
     HACluster,
     HAHealthCheck,
     HANode,
