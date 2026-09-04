@@ -37,7 +37,7 @@ DEFAULT_SITE_SETTINGS = {
     "max_upload_mb": "25",
     "trusted_hosts_enabled": "",
     "allowed_hosts": "",
-    "csp_frame_ancestors": "self",
+    "csp_frame_ancestors": "none",
     "csp_frame_ancestor_sources": "",
     "hsts_enabled": "",
     "hsts_include_subdomains": "",
@@ -362,9 +362,22 @@ def _invalid_host_reason(entry: str) -> str | None:
 def host_without_port(value: str) -> str:
     host = str(value or "").strip().lower()
     if host.startswith("["):
-        return host[1:].split("]", 1)[0]
+        closing = host.find("]")
+        if closing < 0:
+            return ""
+        remainder = host[closing + 1 :]
+        if remainder and (
+            not remainder.startswith(":")
+            or not remainder[1:].isdigit()
+            or int(remainder[1:]) > 65535
+        ):
+            return ""
+        return host[1:closing]
     if host.count(":") == 1:
-        return host.rsplit(":", 1)[0]
+        hostname, port = host.rsplit(":", 1)
+        if not port.isdigit() or int(port) > 65535:
+            return ""
+        return hostname
     return host
 
 
@@ -395,18 +408,10 @@ def host_is_allowed(host: str, allowed_hosts: list[str]) -> bool:
 
 
 def frame_ancestor_directive(security: dict[str, str]) -> str:
-    mode = (security.get("csp_frame_ancestors") or "self").strip().lower()
-    if mode == "none":
-        return "'none'"
-    if mode == "custom":
-        sources = [
-            source
-            for source in str(security.get("csp_frame_ancestor_sources") or "").replace("\r", "\n").replace(",", "\n").split("\n")
-            if source.strip()
-            for source in [source.strip()]
-        ]
-        return " ".join(["'self'", *sources]) if sources else "'self'"
-    return "'self'"
+    # Kaya has no supported iframe embedding workflow. Keep the effective
+    # policy closed even if an older database still contains the former
+    # configurable ``self`` value.
+    return "'none'"
 
 
 def hsts_header_value(security: dict[str, str]) -> str:

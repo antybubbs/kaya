@@ -62,7 +62,13 @@ from app.services.guacamole_bridge import (
     start_guacamole_bridge,
 )
 from app.services.sessions import active_user_session
-from app.services.site_settings import get_site_setting
+from app.services.site_settings import (
+    effective_allowed_hosts,
+    get_site_setting,
+    host_is_allowed,
+    host_without_port,
+    load_security_settings,
+)
 from app.services.client_ip import client_ip as trusted_client_ip
 from app.services.table_export import (
     export_row_matches,
@@ -783,26 +789,29 @@ def parsed_ssh_host_key(value: str | None) -> tuple[str, str] | None:
     return algorithm, fingerprint
 
 
-def websocket_origin_allowed(websocket: WebSocket) -> bool:
+def websocket_origin_allowed(websocket: WebSocket, db: Session) -> bool:
     origin = websocket.headers.get("origin")
     if not origin:
         return False
     parsed = urlparse(origin)
-    origin_host = parsed.hostname or ""
-    request_host = websocket.headers.get("host", "").split(":", 1)[0]
-    allowed_hosts = {request_host, "localhost", "127.0.0.1", "::1"}
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        return False
+    request_host = websocket.headers.get("host", "")
     app_settings = get_settings()
-    base_host = urlparse(app_settings.base_url).hostname
-    if base_host:
-        allowed_hosts.add(base_host)
-    allowed_hosts.update(host.strip() for host in app_settings.allowed_hosts.split(",") if host.strip())
-    for allowed_host in allowed_hosts:
-        normalized = allowed_host.split(":", 1)[0].lower()
-        if normalized.startswith("*.") and origin_host.lower().endswith(normalized[1:]):
-            return True
-        if origin_host.lower() == normalized:
-            return True
-    return False
+    security = load_security_settings(db)
+    host_filter_enabled = security.get("trusted_hosts_enabled") == "1" or bool(
+        app_settings.allowed_hosts.strip()
+    )
+    if host_filter_enabled:
+        allowed_hosts = effective_allowed_hosts(security, app_settings)
+        return host_is_allowed(request_host, allowed_hosts) and host_is_allowed(
+            parsed.hostname, allowed_hosts
+        )
+
+    # Preserve compatibility when host filtering is deliberately disabled,
+    # but do not accept an origin unrelated to the browser's current host.
+    request_host_without_port = host_without_port(request_host)
+    return bool(request_host_without_port) and parsed.hostname.casefold() == request_host_without_port.casefold()
 
 
 async def tcp_check(host: str, port: int, timeout: float = 5) -> tuple[bool, str]:
@@ -1533,11 +1542,11 @@ async def rdp_start(request: Request, remote_id: int, db: Session = Depends(get_
 
 @router.websocket("/{remote_id}/ssh/ws")
 async def ssh_websocket(websocket: WebSocket, remote_id: int):
-    if not websocket_origin_allowed(websocket):
-        await websocket.close(code=1008)
-        return
     db = SessionLocal()
     try:
+        if not websocket_origin_allowed(websocket, db):
+            await websocket.close(code=1008)
+            return
         user = authenticated_websocket_user(db, websocket)
         if not user:
             await websocket.close(code=1008)
@@ -1638,15 +1647,15 @@ async def ssh_websocket(websocket: WebSocket, remote_id: int):
 
 @router.websocket("/{remote_id}/rdp/ws")
 async def rdp_websocket(websocket: WebSocket, remote_id: int):
-    if not websocket_origin_allowed(websocket):
-        await websocket.close(code=1008)
-        return
     token = websocket.query_params.get("token", "")
     db = SessionLocal()
     remote_label_text = "Remote host"
     remote_address = ""
     remote_port = 3389
     try:
+        if not websocket_origin_allowed(websocket, db):
+            await websocket.close(code=1008)
+            return
         user = authenticated_websocket_user(db, websocket)
         if not user:
             await websocket.close(code=1008)

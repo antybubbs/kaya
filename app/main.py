@@ -5,7 +5,7 @@ from pathlib import Path
 from time import perf_counter
 from uuid import uuid4
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import (
     FileResponse,
     PlainTextResponse,
@@ -489,6 +489,21 @@ app.include_router(admin.router)
 @app.get("/healthz", include_in_schema=False)
 def healthz():
     return {"status": "ok"}
+
+
+@app.get("/.well-known/security.txt", include_in_schema=False)
+def security_txt():
+    """Publish RFC 9116 contact metadata only when explicitly configured."""
+    contact = settings.security_contact.strip()
+    if (
+        not contact
+        or "\r" in contact
+        or "\n" in contact
+        or len(contact) > 500
+        or not contact.lower().startswith(("mailto:", "https://"))
+    ):
+        raise HTTPException(status_code=404, detail="Not found")
+    return PlainTextResponse(f"Contact: {contact}\n")
 
 
 @app.get("/api/site-timezone", include_in_schema=False)

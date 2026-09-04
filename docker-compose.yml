@@ -2,7 +2,7 @@ name: kaya
 
 services:
   kaya:
-    image: ${KAYA_IMAGE:-ghcr.io/antybubbs/kaya:latest}
+    image: ${KAYA_IMAGE:-ghcr.io/antybubbs/kaya:${KAYA_VERSION:-v0.28.0}}
     build:
       context: .
     container_name: kaya
@@ -37,7 +37,7 @@ services:
       - /tmp:size=128m,noexec,nosuid
 
   secure-send-gateway:
-    image: ${KAYA_IMAGE:-ghcr.io/antybubbs/kaya:latest}
+    image: ${KAYA_IMAGE:-ghcr.io/antybubbs/kaya:${KAYA_VERSION:-v0.28.0}}
     container_name: kaya-secure-send
     restart: unless-stopped
     command: ["uvicorn", "app.security_gateway:app", "--host", "0.0.0.0", "--port", "8999", "--proxy-headers", "--forwarded-allow-ips", "${FORWARDED_ALLOW_IPS:-127.0.0.1}", "--no-access-log", "--no-server-header"]
@@ -72,7 +72,7 @@ services:
     restart: unless-stopped
 
   postgres-secret-init:
-    image: ${KAYA_IMAGE:-ghcr.io/antybubbs/kaya:latest}
+    image: ${KAYA_IMAGE:-ghcr.io/antybubbs/kaya:${KAYA_VERSION:-v0.28.0}}
     restart: "no"
     entrypoint: ["/bin/sh", "/app/scripts/init-postgres-secret.sh"]
     command: ["/run/kaya-secrets/postgres_password"]

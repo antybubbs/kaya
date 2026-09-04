@@ -1,7 +1,7 @@
 services:
   # Explicit legacy upgrade runner. Do not include this file for normal startup.
   sqlite-postgres-upgrade:
-    image: ${KAYA_IMAGE:-ghcr.io/antybubbs/kaya:latest}
+    image: ${KAYA_IMAGE:-ghcr.io/antybubbs/kaya:${KAYA_VERSION:-v0.28.0}}
     restart: "no"
     environment:
       DATABASE_URL: postgresql+psycopg://kaya@postgres:5432/kaya
@@ -36,7 +36,7 @@ services:
     secrets: !override []
 
   postgres-secret-init:
-    image: ${KAYA_IMAGE:-ghcr.io/antybubbs/kaya:latest}
+    image: ${KAYA_IMAGE:-ghcr.io/antybubbs/kaya:${KAYA_VERSION:-v0.28.0}}
     restart: "no"
     entrypoint: ["/bin/sh", "/app/scripts/init-postgres-secret.sh"]
     command: ["/run/kaya-secrets/postgres_password"]

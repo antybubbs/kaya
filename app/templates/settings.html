@@ -417,17 +417,15 @@
       <div class="remote-settings-grid">
         <label>
           <strong>Frame embedding policy</strong>
-          <small>Controls which sites can embed Kaya in a frame. Self only is the safest default for normal installs.</small>
+          <small>Kaya does not support iframe embedding. All framing is blocked.</small>
           <select name="csp_frame_ancestors">
-            <option value="self" {% if settings.get('csp_frame_ancestors', 'self') == 'self' %}selected{% endif %}>Self only</option>
-            <option value="none" {% if settings.get('csp_frame_ancestors') == 'none' %}selected{% endif %}>Block all framing</option>
-            <option value="custom" {% if settings.get('csp_frame_ancestors') == 'custom' %}selected{% endif %}>Self plus trusted sites</option>
+            <option value="none" selected>Block all framing</option>
           </select>
         </label>
         <label>
           <strong>Trusted frame sources</strong>
-          <small>Only used by "Self plus trusted sites". Use full origins such as https://portal.example.com.</small>
-          <textarea name="csp_frame_ancestor_sources" rows="3" placeholder="https://portal.example.com">{{ settings.get('csp_frame_ancestor_sources', '') }}</textarea>
+          <small>Not used; Kaya does not support iframe embedding.</small>
+          <textarea name="csp_frame_ancestor_sources" rows="3" placeholder="Not used" disabled></textarea>
         </label>
       </div>
       {{ switch('hsts_enabled', 'Enable HSTS', 'Tell browsers to use HTTPS for future visits. Enable only after HTTPS is working through your reverse proxy.') }}

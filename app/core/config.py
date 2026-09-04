@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     app_version: str = "dev"
     app_env: str = "production"
     base_url: str = "http://localhost:8080"
+    security_contact: str = ""
     root_path: str = ""
     database_url: str = f"sqlite:///{DEFAULT_DATA_DIR / 'kaya.db'}"
     database_password_file: str = ""

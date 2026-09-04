@@ -145,7 +145,7 @@ def deployment(request, db, tmp_path, monkeypatch):
         websocket: WebSocket,
         _user=Depends(require_module_access("remote_manager")),
     ):
-        if not websocket_origin_allowed(websocket):
+        if not websocket_origin_allowed(websocket, db):
             await websocket.close(code=1008)
             return
         await websocket.accept()

@@ -302,7 +302,7 @@ SITE_SETTING_KEYS = {
     "max_upload_mb": "25",
     "trusted_hosts_enabled": "",
     "allowed_hosts": "",
-    "csp_frame_ancestors": "self",
+    "csp_frame_ancestors": "none",
     "csp_frame_ancestor_sources": "",
     "hsts_enabled": "",
     "hsts_include_subdomains": "",
@@ -1017,8 +1017,8 @@ def save_security_settings(
     hsts_max_age: str,
     rdp_token_ttl_minutes: str,
 ) -> None:
-    if csp_frame_ancestors not in {"none", "self", "custom"}:
-        csp_frame_ancestors = "self"
+    if csp_frame_ancestors != "none":
+        csp_frame_ancestors = "none"
     try:
         clean_hsts_max_age = str(max(300, min(int(hsts_max_age or 31536000), 63072000)))
     except ValueError:
@@ -3728,7 +3728,7 @@ async def save_settings(
     max_upload_mb: str = Form("25"),
     trusted_hosts_enabled: str = Form(""),
     allowed_hosts: str = Form(""),
-    csp_frame_ancestors: str = Form("self"),
+    csp_frame_ancestors: str = Form("none"),
     csp_frame_ancestor_sources: str = Form(""),
     hsts_enabled: str = Form(""),
     hsts_include_subdomains: str = Form(""),
@@ -4532,7 +4532,7 @@ def send_test_email(
     max_upload_mb: str = Form("25"),
     trusted_hosts_enabled: str = Form(""),
     allowed_hosts: str = Form(""),
-    csp_frame_ancestors: str = Form("self"),
+    csp_frame_ancestors: str = Form("none"),
     csp_frame_ancestor_sources: str = Form(""),
     hsts_enabled: str = Form(""),
     hsts_include_subdomains: str = Form(""),
