@@ -333,7 +333,10 @@ set -e
 outage_seconds=$((SECONDS - start_time))
 (( outage_seconds <= 20 ))
 (( curl_status != 0 ))
-compose start postgres
+# `docker compose start postgres` can start the completed dependency without
+# recreating the stopped database service. Bring the service back through the
+# normal Compose lifecycle so the recovery gate observes a running database.
+compose up -d postgres
 wait_for_postgres
 wait_for_kaya
 compose stop kaya postgres
@@ -342,7 +345,7 @@ compose start kaya >/dev/null 2>&1
 startup_status=$?
 set -e
 (( startup_status != 0 )) || ! compose ps kaya | grep -q 'healthy'
-compose start postgres
+compose up -d postgres
 wait_for_postgres
 compose up -d kaya
 wait_for_kaya

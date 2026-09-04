@@ -159,10 +159,11 @@ def test_phase7d_restores_postgres_before_waiting_for_kaya_recovery():
     script = Path("scripts/phase7d_runtime_validation.sh").read_text(encoding="utf-8")
 
     outage = script.index("compose stop postgres")
-    restore = script.index("compose start postgres", outage)
+    restore = script.index("compose up -d postgres", outage)
     assert script.index("wait_for_postgres", restore) < script.index("wait_for_kaya", restore)
-    second_restore = script.index("compose start postgres", restore + 1)
+    second_restore = script.index("compose up -d postgres", restore + 1)
     assert script.index("wait_for_postgres", second_restore) < script.index("compose up -d kaya", second_restore)
+    assert "compose start postgres\n" not in script
 
 
 def test_phase12_role_topology_helper_is_fail_closed_and_scoped():
