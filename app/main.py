@@ -185,7 +185,9 @@ async def security_headers(request: Request, call_next):
     if settings.root_path and path.startswith(settings.root_path):
         path = path[len(settings.root_path):] or "/"
     is_remote_panel = path.startswith("/remote-manager/") and path.endswith("/panel")
-    frame_ancestors = frame_ancestor_directive(security)
+    # Remote Manager deliberately renders each live SSH/RDP session in a
+    # same-origin iframe. Keep every other Kaya document unframeable.
+    frame_ancestors = "'self'" if is_remote_panel else frame_ancestor_directive(security)
     response.headers["X-Content-Type-Options"] = "nosniff"
     if frame_ancestors == "'none'":
         response.headers["X-Frame-Options"] = "DENY"
