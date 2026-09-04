@@ -20,9 +20,11 @@ from app.core.logging import install_sensitive_authentication_log_filter
 from app.core.paths import STATIC_DIR
 from app.core.performance import (
     begin_request_metrics,
+    diagnostics_enabled,
     end_request_metrics,
     install_template_timing,
     log_request_metrics,
+    set_diagnostics_enabled,
 )
 from app.db.migrations import prepare_database
 from app.db.phase6_test_hooks import worker_started
@@ -315,7 +317,7 @@ async def audit_requests(request: Request, call_next):
 
 @app.middleware("http")
 async def performance_diagnostics(request: Request, call_next):
-    if not settings.performance_diagnostics or request.url.path.startswith("/static/"):
+    if not diagnostics_enabled() or request.url.path.startswith("/static/"):
         return await call_next(request)
     token, metrics = begin_request_metrics()
     started = perf_counter()
@@ -386,6 +388,11 @@ def bootstrap():
 @app.on_event("startup")
 async def on_startup():
     bootstrap()
+    with SessionLocal() as diagnostics_db:
+        set_diagnostics_enabled(
+            get_site_setting(diagnostics_db, "performance_diagnostics_enabled") == "1",
+            enabled_at=get_site_setting(diagnostics_db, "performance_diagnostics_enabled_at") or None,
+        )
     await asyncio.to_thread(refresh_latest_release)
     global version_check_task
     version_check_task = asyncio.create_task(version_check_loop())

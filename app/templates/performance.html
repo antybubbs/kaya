@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block extra_head %}<link rel="stylesheet" href="/static/css/performance.css?v={{ asset_version }}">{% endblock %}
+{% block content %}
+<div class="topbar">
+  <div><h1>Live Performance</h1><p class="muted">A bounded, process-local view of recent request timings.</p></div>
+  <a class="button secondary" href="/system/about">About</a>
+</div>
+
+<section class="panel performance-toolbar" data-performance-root data-csrf-token="{{ csrf_token }}">
+  <div><strong>Performance diagnostics: <span data-performance-status>{{ 'Enabled' if diagnostics.state.enabled else 'Disabled' }}</span></strong><p class="muted">Retains the most recent {{ diagnostics.state.max_samples }} samples only. These are not lifetime metrics.</p></div>
+  <div class="form-actions">
+    <form method="post" action="/system/about/performance/toggle"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="enabled" value="{{ '0' if diagnostics.state.enabled else '1' }}"><button type="submit">{{ 'Disable' if diagnostics.state.enabled else 'Enable' }} diagnostics</button></form>
+    <form method="post" action="/system/about/performance/clear"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="secondary" type="submit">Clear diagnostics</button></form>
+    <label class="performance-live"><input type="checkbox" data-performance-live> Live refresh</label>
+  </div>
+</section>
+
+<section class="cards performance-cards" data-performance-summary></section>
+<section class="panel performance-filters">
+  <div class="form-grid"><label>Route/module filter<input type="search" data-performance-route maxlength="120"></label><label>Status code<input type="number" data-performance-status-filter min="100" max="599" inputmode="numeric"></label><label class="performance-checkbox"><input type="checkbox" data-performance-slow> Slow only</label></div>
+</section>
+<section class="panel performance-table-panel"><h2>Recent requests</h2><p class="muted" data-performance-window>Window: process-local retained samples.</p><div class="table-wrap"><table class="performance-table"><thead><tr><th>Time</th><th>Method</th><th>Route</th><th>Status</th><th>Total</th><th>SQL queries</th><th>SQL time</th><th>Template</th><th>External</th><th>External time</th><th>Memory</th></tr></thead><tbody data-performance-rows><tr><td colspan="11" class="muted">No samples retained.</td></tr></tbody></table></div></section>
+<section class="panel" data-dashboard-timings hidden><h2>Dashboard Snapshot</h2><div data-dashboard-timing-rows></div></section>
+{% endblock %}
+{% block extra_scripts %}<script src="/static/js/performance.js?v={{ asset_version }}" defer></script>{% endblock %}

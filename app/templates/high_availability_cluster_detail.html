@@ -37,7 +37,7 @@
   <article><span>Service responsibilities</span><strong>{{ deployment_mode_label }}</strong><small>{% if pihole_manages_dhcp %}Pi-hole also provides device addresses{% else %}DHCP: {{ (cluster.external_dhcp_provider or 'external')|replace('_', ' ')|title }}{% endif %} · <a href="/high-availability/clusters/{{ cluster.public_id }}/topology">Review</a></small></article>
   <article><span>Automatic failover</span><strong data-ha-cluster-field="automatic_failover">{{ 'Enabled' if cluster.automatic_failover_enabled else 'Disabled' }}</strong><small>Recovered nodes return as standby</small></article>
   <article><span>Last failover</span><strong data-ha-cluster-field="last_failover_at">{{ local_time(cluster.last_failover_at, 'friendly') if cluster.last_failover_at else 'Not tested yet' }}</strong><small>Controlled or automatic handover</small></article>
-  <article><span>Attention needed</span><strong data-ha-cluster-field="unacknowledged_alerts">{{ cluster.events|selectattr('acknowledged_at', 'none')|selectattr('severity', 'in', ['warning', 'error', 'critical'])|list|length }}</strong><small><a href="/high-availability/clusters/{{ cluster.public_id }}/events">Open activity</a></small></article>
+  <article><span>Attention needed</span><strong data-ha-cluster-field="unacknowledged_alerts">{{ unacknowledged_alerts }}</strong><small><a href="/high-availability/clusters/{{ cluster.public_id }}/events">Open activity</a></small></article>
 </section>
 
 <section class="panel ha-overview-sync" data-ha-sync-state="{{ sync_summary.state|lower }}">

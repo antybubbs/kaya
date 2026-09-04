@@ -603,6 +603,7 @@
   let shuttingDown = false;
   let connected = false;
   let closeHandled = false;
+  let reconnectTimer = null;
   let idleTimer = null;
   let pendingWriteFrame = null;
   let pendingWriteChunks = [];
@@ -724,6 +725,7 @@
 
     socket.addEventListener("close", (event) => {
       const wasReady = sessionReady;
+      const shouldReconnect = wasReady && !closeHandled && !shuttingDown;
       setSessionReady(false);
       connected = false;
       sessionPassword = "";
@@ -737,7 +739,12 @@
       }
       closeHandled = false;
       passwordForm.hidden = false;
-      if (!shuttingDown) window.setTimeout(openSessionSocket, 0);
+      if (shouldReconnect) {
+        reconnectTimer = window.setTimeout(() => {
+          reconnectTimer = null;
+          openSessionSocket();
+        }, 250);
+      }
     });
 
     socket.addEventListener("error", () => {
@@ -1010,15 +1017,24 @@
     sendTerminalMessage("input", data);
   });
 
-  window.addEventListener("beforeunload", () => {
+  const shutdown = () => {
+    if (shuttingDown) return;
     shuttingDown = true;
+    if (reconnectTimer) {
+      window.clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
     clearIdleTimer();
     stopRecording();
     sessionPassword = "";
     if (socket && socket.readyState === WebSocket.OPEN) {
       sendTerminalMessage("disconnect");
     }
-  });
+    if (socket && socket.readyState === WebSocket.CONNECTING) socket.close();
+  };
+
+  window.addEventListener("beforeunload", shutdown);
+  window.addEventListener("pagehide", shutdown);
 
   if (recordingButton) {
     recordingButton.addEventListener("click", () => {

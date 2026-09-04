@@ -7,6 +7,11 @@ from contextvars import ContextVar
 import json
 import logging
 import os
+import re
+from urllib.parse import urlsplit
+from collections import deque
+from datetime import datetime, timezone
+from threading import Lock
 from time import perf_counter
 from typing import Iterator
 
@@ -15,6 +20,57 @@ from typing import Iterator
 logger = logging.getLogger("uvicorn.error")
 _request_metrics: ContextVar[dict | None] = ContextVar("request_performance_metrics", default=None)
 _template_timing_installed = False
+MAX_SAMPLES = 300
+_samples = deque(maxlen=MAX_SAMPLES)
+_samples_lock = Lock()
+_diagnostics_enabled = False
+_diagnostics_enabled_at: str | None = None
+_state_lock = Lock()
+
+
+def diagnostics_enabled() -> bool:
+    with _state_lock:
+        return _diagnostics_enabled
+
+
+def set_diagnostics_enabled(enabled: bool, *, enabled_at: str | None = None) -> None:
+    global _diagnostics_enabled, _diagnostics_enabled_at
+    with _state_lock:
+        _diagnostics_enabled = bool(enabled)
+        if enabled:
+            _diagnostics_enabled_at = enabled_at or _diagnostics_enabled_at or datetime.now(timezone.utc).isoformat()
+        else:
+            _diagnostics_enabled_at = None
+    if not enabled:
+        clear_diagnostics()
+
+
+def diagnostics_state() -> dict:
+    with _state_lock:
+        enabled, enabled_at = _diagnostics_enabled, _diagnostics_enabled_at
+    with _samples_lock:
+        count = len(_samples)
+    return {"enabled": enabled, "enabled_at": enabled_at, "sample_count": count, "max_samples": MAX_SAMPLES}
+
+
+def clear_diagnostics() -> None:
+    with _samples_lock:
+        _samples.clear()
+
+
+def _safe_route(request) -> str:
+    route = getattr(getattr(request, "scope", {}).get("route"), "path", None)
+    path = str(route or urlsplit(str(request.url.path or "/")).path or "/")
+    path = re.sub(r"/(?:[0-9]+|[0-9a-f]{8}-[0-9a-f-]{27,})", "/{id}", path, flags=re.IGNORECASE)
+    if len(path) > 300:
+        path = path[:300]
+    return path
+
+
+def record_dashboard_widget(name: str, duration_ms: float) -> None:
+    metrics = _request_metrics.get()
+    if metrics is not None and len(metrics["dashboard_widgets"]) < 50:
+        metrics["dashboard_widgets"].append({"name": str(name)[:80], "duration_ms": round(max(0.0, duration_ms), 2)})
 
 
 def begin_request_metrics():
@@ -24,6 +80,7 @@ def begin_request_metrics():
         "template_duration_ms": 0.0,
         "external_duration_ms": 0.0,
         "external_call_count": 0,
+        "dashboard_widgets": [],
     }
     return _request_metrics.set(metrics), metrics
 
@@ -106,7 +163,7 @@ def log_request_metrics(*, request, response, metrics: dict, total_duration_ms: 
     payload = {
         "event": "request_performance",
         "method": request.method,
-        "path": request.url.path,
+        "path": _safe_route(request),
         "query_keys": sorted(request.query_params.keys()),
         "status_code": response.status_code,
         "total_duration_ms": round(total_duration_ms, 2),
@@ -116,5 +173,39 @@ def log_request_metrics(*, request, response, metrics: dict, total_duration_ms: 
         "external_duration_ms": round(metrics["external_duration_ms"], 2),
         "external_call_count": metrics["external_call_count"],
         "process_rss_bytes": process_rss_bytes(),
+        "dashboard_widgets": metrics.get("dashboard_widgets", []),
     }
     logger.info(json.dumps(payload, separators=(",", ":")))
+    if diagnostics_enabled() and not is_internal_diagnostics_path(request.url.path):
+        sample = {key: payload[key] for key in payload if key not in {"event", "query_keys"}}
+        sample["timestamp"] = datetime.now(timezone.utc).isoformat()
+        with _samples_lock:
+            _samples.append(sample)
+
+
+def is_internal_diagnostics_path(path: str) -> bool:
+    return path == "/system/about/performance" or path.startswith("/api/system/about/performance")
+
+
+def diagnostics_snapshot() -> dict:
+    with _samples_lock:
+        samples = list(_samples)
+    durations = [float(item["total_duration_ms"]) for item in samples]
+    sql_durations = [float(item["database_duration_ms"]) for item in samples]
+    external_durations = [float(item["external_duration_ms"]) for item in samples if item["external_call_count"]]
+    def percentile(values: list[float], fraction: float) -> float | None:
+        if not values:
+            return None
+        ordered = sorted(values)
+        index = (len(ordered) - 1) * fraction
+        lower, upper = int(index), min(int(index) + 1, len(ordered) - 1)
+        return round(ordered[lower] + (ordered[upper] - ordered[lower]) * (index - lower), 2)
+    summary = {
+        "average_request_duration_ms": round(sum(durations) / len(durations), 2) if durations else None,
+        "p95_request_duration_ms": percentile(durations, 0.95),
+        "slowest_request_duration_ms": max(durations) if durations else None,
+        "average_sql_duration_ms": round(sum(sql_durations) / len(sql_durations), 2) if sql_durations else None,
+        "highest_sql_query_count": max((item["database_query_count"] for item in samples), default=0),
+        "average_external_duration_ms": round(sum(external_durations) / len(external_durations), 2) if external_durations else None,
+    }
+    return {"state": diagnostics_state(), "summary": summary, "samples": list(reversed(samples))}

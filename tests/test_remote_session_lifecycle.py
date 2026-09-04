@@ -5,6 +5,8 @@ ROOT = Path(__file__).parents[1]
 REMOTE_JS = (ROOT / "app/static/js/remote_session.js").read_text(encoding="utf-8")
 REMOTE_ROUTER = (ROOT / "app/routers/remote_manager.py").read_text(encoding="utf-8")
 REMOTE_TEMPLATE = (ROOT / "app/templates/_remote_session_panel.html").read_text(encoding="utf-8")
+PANEL_PAGE = (ROOT / "app/templates/remote_session.html").read_text(encoding="utf-8")
+DASHBOARD_TEMPLATE = (ROOT / "app/templates/dashboard.html").read_text(encoding="utf-8")
 SSH_SERVICE = (ROOT / "scripts/kaya-remote-manager.cjs").read_text(encoding="utf-8")
 
 
@@ -33,6 +35,20 @@ def test_session_setup_failure_is_distinct_from_target_ssh_failure():
     assert 'Remote Manager session could not be established.' in REMOTE_JS
     assert 'SSH connection refused by the target host.' in SSH_SERVICE
     assert 'SSH authentication failed. Check the username and password.' in SSH_SERVICE
+
+
+def test_socket_does_not_reconnect_after_pre_ready_rejection_or_page_teardown():
+    assert "const shouldReconnect = wasReady && !closeHandled && !shuttingDown;" in REMOTE_JS
+    assert "reconnectTimer = window.setTimeout" in REMOTE_JS
+    assert "window.clearTimeout(reconnectTimer)" in REMOTE_JS
+    assert 'window.addEventListener("pagehide", shutdown)' in REMOTE_JS
+
+
+def test_dashboard_does_not_mount_remote_session_transport():
+    assert "remote_session.js" not in DASHBOARD_TEMPLATE
+    assert "remote_workspace.js" not in DASHBOARD_TEMPLATE
+    assert "data-ssh-session" not in DASHBOARD_TEMPLATE
+    assert "remote_session.js" in PANEL_PAGE
 
 
 def test_remote_password_is_not_logged_or_written_to_audit_messages():

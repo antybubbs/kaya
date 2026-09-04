@@ -321,10 +321,23 @@ def reconcile_desired(state: State, desired: dict, *, helper_runner=None) -> Non
         state.queue_event("stale_generation_rejected", "warning", "Rejected desired state with an older cluster generation.")
         return
     state.set("last_valid_cluster_generation", incoming)
-    state.set("observed_generation", incoming)
+    # The server's recovery gate uses observed_generation as the node's
+    # acknowledgement of the role generation.  Keep the cluster-generation
+    # replay guard separate: a configuration update can be accepted without
+    # changing ownership, while a verified failover can advance role_generation
+    # without advancing cluster_generation.  Never move either local marker
+    # backwards when a late desired-state response arrives.
+    incoming_role_generation = int(desired.get("role_generation") or 0)
+    state.set(
+        "observed_generation",
+        max(int(state.get("observed_generation", 0)), incoming_role_generation),
+    )
     state.set("desired_role", desired["desired_role"])
     state.set("desired_virtual_ip", desired.get("virtual_ip"))
-    state.set("role_generation", int(desired.get("role_generation") or 0))
+    state.set(
+        "role_generation",
+        max(int(state.get("role_generation", 0)), incoming_role_generation),
+    )
     state.set("automatic_failover", bool(desired.get("automatic_failover", False)))
     state.set("maintenance_mode", bool(desired.get("maintenance_mode", False)))
     state.set("dhcp_managed", bool(desired.get("dhcp_managed", False)))
