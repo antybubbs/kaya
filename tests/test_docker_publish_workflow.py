@@ -137,7 +137,7 @@ def test_release_commands_mark_only_prereleases_as_prerelease():
     assert MAKEFILE.count("--prerelease") == 2
 
 
-def test_production_deployments_stay_on_latest():
-    expected = "ghcr.io/antybubbs/kaya:latest"
-    assert expected in Path("docker-compose.yml").read_text(encoding="utf-8")
-    assert expected in Path("install-kaya.sh").read_text(encoding="utf-8")
+def test_production_deployments_use_an_exact_release_by_default():
+    compose = Path("docker-compose.yml").read_text(encoding="utf-8")
+    assert "ghcr.io/antybubbs/kaya:${KAYA_VERSION:-v0.28.0}" in compose
+    assert "ghcr.io/antybubbs/kaya:latest" not in compose
