@@ -69,6 +69,92 @@ def test_reconciliation_idle_schedule_is_not_a_stale_worker(runtime_db):
     assert runtime._worker_is_stale("reconciliation", now) is False
 
 
+def test_active_operation_uses_current_heartbeat_and_stale_operation_is_restartable(
+    runtime_db,
+):
+    now = datetime.utcnow()
+    runtime._set_state(
+        "outbox",
+        current_operation="outbox_iteration",
+        operation_id="current-operation",
+        operation_generation=8,
+        operation_started_at=now - timedelta(seconds=runtime.WORKER_OPERATION_TIMEOUT_SECONDS + 1),
+        operation_heartbeat=now - timedelta(seconds=runtime.WORKER_OPERATION_TIMEOUT_SECONDS + 1),
+        last_loop_started=now - timedelta(hours=1),
+        last_loop_completed=now - timedelta(seconds=1),
+        next_run_at=None,
+    )
+    assert runtime._worker_is_stale("outbox", now) is True
+
+    runtime._set_state(
+        "outbox",
+        operation_id="new-operation",
+        operation_generation=9,
+        operation_started_at=now - timedelta(seconds=1),
+        operation_heartbeat=now - timedelta(seconds=1),
+    )
+    assert runtime._worker_is_stale("outbox", now) is False
+
+
+def test_late_operation_heartbeat_cannot_keep_new_operation_alive(runtime_db):
+    runtime._set_state("outbox", operation_id="new-operation")
+
+    # This models the callback from a cancelled thread after a supervisor
+    # started its replacement operation.
+    runtime._record_operation_heartbeat("outbox", "old-operation")
+    assert runtime._state_snapshot("outbox")["operation_heartbeat"] is None
+
+
+def test_stale_operation_fence_disappears_when_operation_completes(runtime_db):
+    now = datetime.utcnow()
+    runtime._set_state(
+        "outbox",
+        current_operation="outbox_iteration",
+        operation_id="stale-operation",
+        operation_started_at=now - timedelta(seconds=runtime.WORKER_OPERATION_TIMEOUT_SECONDS + 1),
+        operation_heartbeat=now - timedelta(seconds=runtime.WORKER_OPERATION_TIMEOUT_SECONDS + 1),
+    )
+    assert runtime._stale_operation_id("outbox", now) == "stale-operation"
+    runtime._set_state(
+        "outbox",
+        current_operation="idle",
+        operation_id=None,
+        operation_started_at=None,
+        operation_heartbeat=None,
+    )
+    assert runtime._stale_operation_id("outbox", now) is None
+
+
+def test_worker_restart_alert_does_not_report_restart_as_failure(runtime_db):
+    with runtime_db() as db:
+        db.add(
+            User(
+                email="runtime-admin@example.invalid",
+                password_hash="clearly-fake-hash",
+                role="admin",
+                is_active=True,
+            )
+        )
+        db.commit()
+    runtime._restart_counts["outbox"] = 8
+
+    runtime._queue_worker_failure("outbox", "stale_operation", "r" * 32)
+
+    with runtime_db() as db:
+        alert = db.query(NotificationOutbox).one()
+        assert alert.title == "Notification processing degraded"
+        assert "restarted 9 times" in alert.message
+        assert "failed" not in alert.message
+
+
+def test_worker_incident_reference_changes_only_after_recovery(runtime_db):
+    first = runtime._log_unhealthy("outbox", "stale_operation")
+    assert runtime._log_unhealthy("outbox", "stale_operation") == first
+    runtime._resolve_worker_failure("outbox")
+    second = runtime._log_unhealthy("outbox", "stale_operation")
+    assert second != first
+
+
 def test_reconciliation_isolates_a_malformed_item_and_continues(
     runtime_db, monkeypatch
 ):

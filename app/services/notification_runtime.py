@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import re
 import threading
@@ -56,6 +57,10 @@ def _initial_worker_state(name: str) -> dict:
         "last_loop_completed": None,
         "last_successful_reconciliation": None,
         "last_heartbeat": None,
+        "operation_id": None,
+        "operation_generation": 0,
+        "operation_started_at": None,
+        "operation_heartbeat": None,
         "next_run_at": None,
         "current_operation": "not_started",
         "current_record_id": None,
@@ -69,6 +74,7 @@ def _initial_worker_state(name: str) -> dict:
         "restart_not_before": None,
         "healthy_since": None,
         "degraded_since": None,
+        "incident_correlation_id": None,
     }
 
 
@@ -99,6 +105,13 @@ def _set_state(name: str, **values) -> None:
         _worker_states[name].update(values)
 
 
+def _record_operation_heartbeat(name: str, operation_id: str) -> None:
+    """Record a heartbeat only if it still belongs to the active operation."""
+    with _guard:
+        if _worker_states[name]["operation_id"] == operation_id:
+            _worker_states[name]["operation_heartbeat"] = datetime.utcnow()
+
+
 def _operation_for(name: str):
     if name == "outbox":
         return process_outbox
@@ -123,18 +136,28 @@ def _queue_worker_failure(name: str, reason: str, correlation_id: str) -> None:
                 _unhealthy_alerts.add(name)
                 return
             restarts = _restart_counts[name] + 1
-            title = (
-                "Notification processing degraded"
-                if restarts >= 3
-                else f"Notification {name} worker stopped"
-            )
-            message = (
-                f"The {name} worker has failed {restarts} times. Some notifications "
-                f"may be delayed. Review Delivery Health. Reference: {correlation_id[:8]}."
-                if restarts >= 3
-                else f"Kaya will restart the {name} worker after controlled backoff. "
-                f"Notification processing may be delayed. Reference: {correlation_id[:8]}."
-            )
+            if reason == "iteration_failure":
+                failures = max(1, _state_snapshot(name)["consecutive_failures"])
+                title = "Notification processing degraded"
+                message = (
+                    f"The {name} worker encountered {failures} consecutive iteration "
+                    "failures. Notification processing may be delayed. Review Delivery "
+                    f"Health. Reference: {correlation_id[:8]}."
+                )
+            elif restarts >= 3:
+                title = "Notification processing degraded"
+                message = (
+                    f"The {name} worker has been automatically restarted {restarts} "
+                    "times after becoming unresponsive. Notification delivery may be "
+                    f"delayed. Review Delivery Health. Reference: {correlation_id[:8]}."
+                )
+            else:
+                title = "Notification worker restarted"
+                message = (
+                    f"The {name} worker was automatically restarted after becoming "
+                    "unresponsive. Notification processing has recovered. Review "
+                    f"Delivery Health. Reference: {correlation_id[:8]}."
+                )
             enqueue_notification(
                 db,
                 event_type_id="system.background_task.failed",
@@ -173,6 +196,7 @@ def _resolve_worker_failure(name: str) -> None:
         if changed:
             logger.info("notification.worker.recovered worker_name=%s", name)
         _unhealthy_alerts.discard(name)
+        _set_state(name, incident_correlation_id=None)
     except Exception:
         logger.exception("notification.worker.failure_alert_resolve_failed worker_name=%s", name)
 
@@ -407,16 +431,31 @@ async def _worker_loop(name: str) -> None:
     while True:
         started = datetime.utcnow()
         state = _state_snapshot(name)
+        operation_id = uuid4().hex
         _set_state(
             name,
             last_loop_started=started,
+            operation_id=operation_id,
+            operation_generation=state["operation_generation"] + 1,
+            operation_started_at=started,
+            operation_heartbeat=started,
             next_run_at=None,
             current_operation=f"{name}_iteration",
             loop_iteration=state["loop_iteration"] + 1,
         )
         failed = False
+
+        def heartbeat() -> None:
+            # A late callback from a cancelled thread must not make a newer
+            # operation appear alive.
+            _record_operation_heartbeat(name, operation_id)
+
         try:
-            await asyncio.to_thread(operation)
+            heartbeat()
+            if "heartbeat" in inspect.signature(operation).parameters:
+                await asyncio.to_thread(operation, heartbeat=heartbeat)
+            else:
+                await asyncio.to_thread(operation)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -480,6 +519,9 @@ async def _worker_loop(name: str) -> None:
             name,
             current_operation="idle",
             current_record_id=None,
+            operation_id=None,
+            operation_started_at=None,
+            operation_heartbeat=None,
             next_run_at=datetime.utcnow() + timedelta(seconds=delay),
         )
         await asyncio.sleep(delay)
@@ -508,21 +550,25 @@ def _create_worker(name: str) -> asyncio.Task:
 def _worker_is_stale(name: str, now: datetime) -> bool:
     state = _state_snapshot(name)
     if state["current_operation"] == "idle":
-        due = state["next_run_at"]
-        return bool(
-            due
-            and now > due + timedelta(seconds=SUPERVISOR_INTERVAL_SECONDS * 2)
-        )
-    started = state["last_loop_started"] or state["started_at"]
+        # Sleeping until the next scheduled iteration is healthy. The task
+        # itself is the liveness signal while it is idle.
+        return False
+    heartbeat = state["operation_heartbeat"] or state["operation_started_at"]
     return bool(
-        started
-        and now > started + timedelta(seconds=WORKER_OPERATION_TIMEOUT_SECONDS)
+        state["operation_id"]
+        and heartbeat
+        and now > heartbeat + timedelta(seconds=WORKER_OPERATION_TIMEOUT_SECONDS)
     )
+
+
+def _stale_operation_id(name: str, now: datetime) -> str | None:
+    state = _state_snapshot(name)
+    return state["operation_id"] if _worker_is_stale(name, now) else None
 
 
 def _log_unhealthy(name: str, reason: str, exc: BaseException | None = None) -> str:
     state = _state_snapshot(name)
-    correlation_id = state["last_exception_correlation_id"] or uuid4().hex
+    correlation_id = state["incident_correlation_id"] or uuid4().hex
     _set_state(
         name,
         last_exception_type=type(exc).__name__ if exc else reason,
@@ -531,6 +577,7 @@ def _log_unhealthy(name: str, reason: str, exc: BaseException | None = None) -> 
         last_exception_at=datetime.utcnow(),
         healthy_since=None,
         degraded_since=state["degraded_since"] or datetime.utcnow(),
+        incident_correlation_id=correlation_id,
     )
     logger.critical(
         "notification.worker.unhealthy worker_name=%s task_id=%s exception_type=%s "
@@ -563,7 +610,10 @@ async def notification_supervisor_loop() -> None:
                 with _guard:
                     task = _tasks.get(name)
                     restart_not_before = _worker_states[name]["restart_not_before"]
-                if task and not task.done() and not _worker_is_stale(name, now):
+                stale_operation_id = (
+                    _stale_operation_id(name, now) if task and not task.done() else None
+                )
+                if task and not task.done() and stale_operation_id is None:
                     state = _state_snapshot(name)
                     if state["consecutive_failures"]:
                         correlation_id = (
@@ -595,6 +645,19 @@ async def notification_supervisor_loop() -> None:
                 if task:
                     exc = None
                     reason = "stale_operation" if not task.done() else "task_stopped"
+                    if reason == "stale_operation":
+                        # Alert persistence yields to other work. Fence the
+                        # restart against the operation observed as stale so
+                        # completion of that operation cannot be cancelled by
+                        # an old watchdog observation.
+                        with _guard:
+                            current = _worker_states[name]
+                            if (
+                                _tasks.get(name) is not task
+                                or current["operation_id"] != stale_operation_id
+                                or current["current_operation"] == "idle"
+                            ):
+                                continue
                     if task.done():
                         if task.cancelled():
                             reason = "unexpected_cancellation"
@@ -776,6 +839,10 @@ def notification_health() -> dict:
             "last_loop_completed": _utc(state["last_loop_completed"]),
             "last_successful_reconciliation": _utc(state["last_successful_reconciliation"]),
             "last_heartbeat": _utc(state["last_heartbeat"]),
+            "operation_id": state["operation_id"],
+            "operation_generation": state["operation_generation"],
+            "operation_started_at": _utc(state["operation_started_at"]),
+            "operation_heartbeat": _utc(state["operation_heartbeat"]),
             "next_run_at": _utc(state["next_run_at"]),
             "current_operation": state["current_operation"],
             "current_record_id": state["current_record_id"],
@@ -786,6 +853,7 @@ def notification_health() -> dict:
             "last_exception": state["last_exception_type"],
             "last_exception_at": _utc(state["last_exception_at"]),
             "last_exception_correlation_id": state["last_exception_correlation_id"],
+            "incident_correlation_id": state["incident_correlation_id"],
         }
     degraded = any(
         not item["running"] or item["stale"] or item["consecutive_failures"]

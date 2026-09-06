@@ -278,9 +278,11 @@ def _process_claimed(row_id: int, session_factory=SessionLocal) -> bool:
             return False
 
 
-def process_outbox(limit: int = 50, session_factory=SessionLocal) -> int:
+def process_outbox(limit: int = 50, session_factory=SessionLocal, heartbeat=None) -> int:
     processed = 0
     for _ in range(max(1, min(limit, 250))):
+        if heartbeat:
+            heartbeat()
         row_id = _claim_due(session_factory)
         if row_id is None:
             break

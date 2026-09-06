@@ -94,7 +94,7 @@ The administrator in-app test, immediate Push test, delayed 30–60 second test,
 
 ## Worker health and reconciliation failures
 
-The notification supervisor identifies the outbox, delivery, and reconciliation workers separately. A heartbeat records a completed loop; an idle worker remains healthy until its recorded `next_run_at` plus bounded scheduling grace. This prevents the five-minute reconciliation schedule from being mistaken for a stalled 120-second operation.
+The notification supervisor identifies the outbox, delivery, and reconciliation workers separately. An idle worker remains healthy while it sleeps until its recorded `next_run_at`; only an active operation can become stale. Active operations have a fenced identity and heartbeat, preventing the five-minute reconciliation schedule or a late callback from being mistaken for a stalled 120-second operation.
 
 Unexpected task exits use controlled restart backoff. Normal application shutdown cancellation is not reported as a worker failure. Failure alerts use one active-condition deduplication key and are resolved only after sustained successful processing.
 
