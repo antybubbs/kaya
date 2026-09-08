@@ -146,6 +146,19 @@ Complete the setup wizard to create your administrator account. Please note that
 
 After first sign-in, open **System Settings -> Site Administration -> Security** to harden the install. This page lets you restrict trusted hostnames, tune frame-embedding rules, enable HTTPS security headers and shorten browser RDP token lifetime without editing an environment file.
 
+For a public deployment, set `KAYA_VERSION` to the exact released image tag,
+configure the legitimate hostname under Security, enable trusted-host
+validation, and enable HSTS only after HTTPS is confirmed. For example,
+`kaya.app.strubens.uk` may be entered as an allowed host; this is an example,
+not a Kaya-wide hardcoded hostname. Do not enable HSTS `includeSubDomains` or
+preload until every inherited hostname is HTTPS-ready and the wildcard DNS
+policy has been reviewed.
+
+To publish `/.well-known/security.txt`, set the deployment-managed
+`SECURITY_CONTACT` environment variable to a real `mailto:` or HTTPS contact
+URI. Kaya returns 404 until this is configured; it never publishes a fabricated
+contact address.
+
 The Security tab includes a current-request check so you can confirm the host allow-list, inbound DNS, outbound public IP, frame policy, HSTS state and RDP token lifetime after saving.
 
 My suggestion, install Kaya and sort the settings out in your Site Administration. 

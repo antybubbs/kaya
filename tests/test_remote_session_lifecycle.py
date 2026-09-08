@@ -8,6 +8,8 @@ REMOTE_TEMPLATE = (ROOT / "app/templates/_remote_session_panel.html").read_text(
 PANEL_PAGE = (ROOT / "app/templates/remote_session.html").read_text(encoding="utf-8")
 DASHBOARD_TEMPLATE = (ROOT / "app/templates/dashboard.html").read_text(encoding="utf-8")
 SSH_SERVICE = (ROOT / "scripts/kaya-remote-manager.cjs").read_text(encoding="utf-8")
+MAIN = (ROOT / "app/main.py").read_text(encoding="utf-8")
+SITE_SETTINGS = (ROOT / "app/services/site_settings.py").read_text(encoding="utf-8")
 
 
 def test_ssh_login_requires_backend_session_readiness():
@@ -49,6 +51,12 @@ def test_dashboard_does_not_mount_remote_session_transport():
     assert "remote_workspace.js" not in DASHBOARD_TEMPLATE
     assert "data-ssh-session" not in DASHBOARD_TEMPLATE
     assert "remote_session.js" in PANEL_PAGE
+
+
+def test_remote_session_panel_retains_only_same_origin_framing_exception():
+    assert 'frame_ancestors = "\'self\'" if is_remote_panel else frame_ancestor_directive(security)' in MAIN
+    assert 'return "\'none\'"' in SITE_SETTINGS
+    assert 'response.headers["X-Frame-Options"] = "SAMEORIGIN" if is_remote_panel else "DENY"' in MAIN
 
 
 def test_remote_password_is_not_logged_or_written_to_audit_messages():

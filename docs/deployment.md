@@ -111,7 +111,9 @@ Historical phase-specific Compose files used by CI remain under
 
 ## Docker Service
 
-- Image: `ghcr.io/antybubbs/kaya:latest` by default
+- Image: `ghcr.io/antybubbs/kaya:${KAYA_VERSION}` by default, currently
+  `v0.28.0`. Set `KAYA_VERSION` to the exact released version before an
+  upgrade; `KAYA_IMAGE` remains available for CI and explicitly pinned images.
 - Container port: `8080`
 - Host port: `${KAYA_PORT:-8080}`
 - Docker health probe: `http://127.0.0.1:8080/healthz`, checked every 15 seconds with a 5-second timeout, five retries, and a 120-second startup grace period for database preparation. Dependent services remain gated on a successful probe.
@@ -158,6 +160,11 @@ Important environment/configuration values include:
 - `BASE_URL`
 - `ALLOWED_HOSTS`
 - `FORWARDED_ALLOW_IPS` (trusted reverse-proxy IPs or CIDR networks; defaults to `127.0.0.1`)
+- `KAYA_VERSION` (exact release tag used by the production Compose default)
+- `KAYA_IMAGE` (optional complete image override; an image digest may be used
+  when stronger provenance is required)
+- `SECURITY_CONTACT` (optional RFC 9116 `mailto:` or HTTPS contact URI; the
+  security.txt endpoint remains inactive when unset)
 - `SESSION_COOKIE_SECURE`
 - Guacamole-related settings
 - Upload and recording size settings

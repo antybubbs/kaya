@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -99,6 +100,7 @@ def test_cluster_reads_do_not_materialise_unbounded_event_history():
                 severity="info",
                 source="test",
                 message=f"Synthetic event {index}",
+                occurred_at=datetime(2024, 1, 1) + timedelta(seconds=index),
             )
             for index in range(250)
         ])
