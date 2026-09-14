@@ -20,6 +20,7 @@ from app.core.logging import install_sensitive_authentication_log_filter
 from app.core.paths import STATIC_DIR
 from app.core.performance import (
     begin_request_metrics,
+    capture_thread_pool_state,
     diagnostics_enabled,
     end_request_metrics,
     install_template_timing,
@@ -322,6 +323,7 @@ async def performance_diagnostics(request: Request, call_next):
     if not diagnostics_enabled() or request.url.path.startswith("/static/"):
         return await call_next(request)
     token, metrics = begin_request_metrics()
+    capture_thread_pool_state(metrics)
     started = perf_counter()
     try:
         response = await call_next(request)

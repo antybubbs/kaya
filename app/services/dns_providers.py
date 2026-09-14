@@ -133,7 +133,7 @@ class PiHoleProvider(DNSProvider):
         url = f"{self._base_url()}{path}"
         request = Request(url, data=body, method=method, headers=request_headers)
         try:
-            with external_call():
+            with external_call(f"pihole.{method.upper()}:{path[:80]}"):
                 with urlopen(
                     request,
                     timeout=max(

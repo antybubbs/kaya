@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
 from app.db.session import database_write_context, get_db
+from app.core.performance import performance_phase
 from app.schemas.high_availability import (
     HAAgentActionResult,
     HAAgentEvents,
@@ -78,11 +79,13 @@ def register(payload: HAAgentRegister, request: Request, db: Session = Depends(g
 def heartbeat(payload: HAAgentHeartbeat, db: Session = Depends(get_db), agent: AuthenticatedAgent = Depends(require_agent)):
     with database_write_context("ha_agent", "heartbeat"):
         node, accepted, reason = record_heartbeat(db, agent.node, payload, return_status=True)
+    with performance_phase("heartbeat.desired_state"):
+        desired = desired_state(node)
     return {
         "accepted": accepted,
         "reason": reason,
         "received_generation": node.observed_generation,
-        "desired": desired_state(node),
+        "desired": desired,
     }
 
 
@@ -101,11 +104,14 @@ def get_desired_state(agent: AuthenticatedAgent = Depends(require_agent)):
 @router.get("/lease-snapshot/{generation}")
 def lease_snapshot(generation: int, agent: AuthenticatedAgent = Depends(require_agent)):
     try:
-        payload = snapshot_for_agent(agent.node, generation)
+        with performance_phase("lease_snapshot.lookup_validate_decrypt_decode"):
+            payload = snapshot_for_agent(agent.node, generation)
     except HALeaseError as exc:
         raise HTTPException(404, str(exc))
+    with performance_phase("lease_snapshot.response_serialisation"):
+        content = __import__("json").dumps(payload, separators=(",", ":"))
     return Response(
-        content=__import__("json").dumps(payload, separators=(",", ":")),
+        content=content,
         media_type="application/json",
         headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
     )
