@@ -88,6 +88,25 @@
     <div><dt>Backup count</dt><dd>{{ about.postgres_diagnostics.backup_count }}</dd></div>
     <div><dt>Largest index</dt><dd>{% if about.postgres_diagnostics.largest_indexes %}{{ about.postgres_diagnostics.largest_indexes[0].name }} ({{ about.postgres_diagnostics.largest_indexes[0].bytes }} bytes){% else %}none{% endif %}</dd></div>
   </dl>
+  {% if about.postgres_diagnostics.blocking.available %}
+  <h3>Lock Contention</h3>
+  <dl class="about-list">
+    <div><dt>Active queries</dt><dd>{{ about.postgres_diagnostics.blocking.active_queries }}</dd></div>
+    <div><dt>Idle in transaction</dt><dd>{{ about.postgres_diagnostics.blocking.idle_in_transaction }}</dd></div>
+    <div><dt>Waiting on locks</dt><dd>{{ about.postgres_diagnostics.blocking.waiting_sessions }}</dd></div>
+    <div><dt>Longest idle-in-transaction</dt><dd>{{ about.postgres_diagnostics.blocking.longest_idle_in_transaction_seconds or 'none' }}{% if about.postgres_diagnostics.blocking.longest_idle_in_transaction_seconds %}s{% endif %}</dd></div>
+  </dl>
+  {% if about.postgres_diagnostics.blocking.blocked_sessions %}
+  <table data-table-key="about-blocked-sessions">
+    <thead><tr><th data-col="blocked_pid">Blocked PID</th><th data-col="blocking_pid">Blocking PID</th><th data-col="wait_event">Wait event</th><th data-col="state">State</th><th data-col="blocked_seconds">Blocked for</th></tr></thead>
+    <tbody>
+      {% for row in about.postgres_diagnostics.blocking.blocked_sessions %}
+      <tr><td>{{ row.blocked_pid }}</td><td>{{ row.blocking_pid }}</td><td>{{ row.wait_event_type }}/{{ row.wait_event }}</td><td>{{ row.state }}</td><td>{{ row.blocked_seconds }}s</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% endif %}
 </section>
 {% endif %}
 
