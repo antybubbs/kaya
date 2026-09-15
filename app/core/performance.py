@@ -19,6 +19,7 @@ from typing import Iterator
 # Uvicorn configures this logger consistently in both packaged and local runs.
 logger = logging.getLogger("uvicorn.error")
 _request_metrics: ContextVar[dict | None] = ContextVar("request_performance_metrics", default=None)
+_request_connection_count: ContextVar[int] = ContextVar("request_connection_count", default=0)
 _template_timing_installed = False
 MAX_SAMPLES = 300
 _samples = deque(maxlen=MAX_SAMPLES)
@@ -81,8 +82,45 @@ def begin_request_metrics():
         "external_duration_ms": 0.0,
         "external_call_count": 0,
         "dashboard_widgets": [],
+        "phases": [],
+        "db_pool": {
+            "checkout_wait_ms": None,
+            "connection_hold_ms": 0.0,
+            "checked_out": None,
+            "pool_size": None,
+            "overflow": None,
+            "timeout_count": 0,
+            "checkout_count": 0,
+            "checkin_count": 0,
+            "connection_held_during_external_io": False,
+        },
+        "thread_pool": {
+            "wait_ms": None,
+            "capacity": None,
+            "borrowed": None,
+            "wait_measured": False,
+        },
     }
     return _request_metrics.set(metrics), metrics
+
+
+def capture_thread_pool_state(metrics: dict) -> None:
+    """Capture the public AnyIO limiter state without touching dispatch internals.
+
+    AnyIO does not expose the queue wait incurred by Starlette's route wrapper.
+    Keep that field unavailable rather than claiming the handler duration is
+    token wait time.
+    """
+    try:
+        import anyio.to_thread
+
+        limiter = anyio.to_thread.current_default_thread_limiter()
+        metrics["thread_pool"].update({
+            "capacity": int(limiter.total_tokens),
+            "borrowed": int(limiter.borrowed_tokens),
+        })
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        pass
 
 
 def end_request_metrics(token) -> None:
@@ -108,8 +146,62 @@ def install_engine_timing(engine) -> None:
             metrics["database_query_count"] += 1
             metrics["database_duration_ms"] += (perf_counter() - started) * 1000
 
+    @event.listens_for(engine, "checkout")
+    def checkout(dbapi_connection, connection_record, connection_proxy):
+        metrics = _request_metrics.get()
+        if metrics is None:
+            return
+        pool = engine.pool
+        pool_metrics = metrics["db_pool"]
+        connection_record.info["kaya_checkout_started"] = perf_counter()
+        pool_metrics["checkout_count"] += 1
+        _request_connection_count.set(_request_connection_count.get() + 1)
+        pool_metrics["checked_out"] = _pool_value(pool, "checkedout")
+        pool_metrics["pool_size"] = _pool_value(pool, "size")
+        pool_metrics["overflow"] = _pool_value(pool, "overflow")
+
+    @event.listens_for(engine, "checkin")
+    def checkin(dbapi_connection, connection_record):
+        metrics = _request_metrics.get()
+        started = connection_record.info.pop("kaya_checkout_started", None)
+        if metrics is None:
+            return
+        pool_metrics = metrics["db_pool"]
+        if started is not None:
+            pool_metrics["connection_hold_ms"] += (perf_counter() - started) * 1000
+        _request_connection_count.set(max(0, _request_connection_count.get() - 1))
+        pool_metrics["checkin_count"] += 1
+        pool = engine.pool
+        pool_metrics["checked_out"] = _pool_value(pool, "checkedout")
+        pool_metrics["pool_size"] = _pool_value(pool, "size")
+        pool_metrics["overflow"] = _pool_value(pool, "overflow")
+
     engine._kaya_performance_timing = True
 
+
+def _pool_value(pool, method: str):
+    try:
+        value = getattr(pool, method)()
+        return int(value) if value is not None else None
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+@contextmanager
+def performance_phase(name: str) -> Iterator[None]:
+    metrics = _request_metrics.get()
+    if metrics is None:
+        yield
+        return
+    started = perf_counter()
+    try:
+        yield
+    finally:
+        metrics["phases"].append({
+            "phase_name": str(name)[:100],
+            "duration_ms": round((perf_counter() - started) * 1000, 2),
+            "executed": True,
+        })
 
 def install_template_timing() -> None:
     """Time all existing Jinja2Templates instances without changing route APIs."""
@@ -135,18 +227,30 @@ def install_template_timing() -> None:
 
 
 @contextmanager
-def external_call() -> Iterator[None]:
+def external_call(operation: str = "external") -> Iterator[None]:
     """Record bounded network work when it occurs inside an HTTP request."""
     metrics = _request_metrics.get()
     if metrics is None:
         yield
         return
     started = perf_counter()
+    pool_metrics = metrics.get("db_pool", {})
+    connection_held = _request_connection_count.get() > 0
+    if connection_held:
+        pool_metrics["connection_held_during_external_io"] = True
+    call = {"operation": str(operation)[:100], "db_connection_held": connection_held, "timeout": False}
+    metrics.setdefault("external_calls", []).append(call)
+    succeeded = False
     try:
         yield
+        succeeded = True
+    except BaseException as exc:
+        call["timeout"] = isinstance(exc, TimeoutError) or "timed out" in str(exc).lower()
+        raise
     finally:
         metrics["external_call_count"] += 1
         metrics["external_duration_ms"] += (perf_counter() - started) * 1000
+        call.update({"duration_ms": round((perf_counter() - started) * 1000, 2), "success": succeeded})
 
 
 def process_rss_bytes() -> int | None:
@@ -174,6 +278,10 @@ def log_request_metrics(*, request, response, metrics: dict, total_duration_ms: 
         "external_call_count": metrics["external_call_count"],
         "process_rss_bytes": process_rss_bytes(),
         "dashboard_widgets": metrics.get("dashboard_widgets", []),
+        "phases": metrics.get("phases", []),
+        "db_pool": metrics.get("db_pool", {}),
+        "thread_pool": metrics.get("thread_pool", {}),
+        "external_calls": metrics.get("external_calls", []),
     }
     logger.info(json.dumps(payload, separators=(",", ":")))
     if diagnostics_enabled() and not is_internal_diagnostics_path(request.url.path):

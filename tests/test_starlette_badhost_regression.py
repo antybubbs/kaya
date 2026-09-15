@@ -202,7 +202,7 @@ def test_dependency_pins_select_the_patched_compatible_stack():
     assert "fastapi==0.136.3" in requirements
     assert "starlette==1.3.1" in requirements
     assert "httpx==0.28.1" in requirements
-    assert "httpx2==2.9.1" in requirements
+    assert "httpx2==2.12.0" in requirements
     assert "uvicorn[standard]==0.34.0" in requirements
     assert "pydantic-settings==2.14.2" in requirements
     assert fastapi.__version__ == "0.136.3"

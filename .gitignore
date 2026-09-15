@@ -13,6 +13,9 @@ __pycache__/
 .ruff_cache/
 .ruff-cache-*/
 
+# Local inspection checkout; the production agent is materialized by CI under external/.
+.agent-inspect/
+
 # Local migration and integration outputs; source scripts and fixtures remain tracked.
 *.sqlite3
 *.sqlite3-*

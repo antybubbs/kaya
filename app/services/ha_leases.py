@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from app.core.security import decrypt_secret, encrypt_secret
 from app.models.models import HACluster, HALeaseReplicationState, HALeaseSnapshot, HANode
 from app.services.dns_providers import PiHoleProvider
-from app.services.ha_validation import connection_for_node
+from app.services.ha_validation import PiHoleConnectionAdapter, connection_for_node
 from app.services.ha_topology import lease_continuity_enabled
 
 
@@ -26,10 +26,30 @@ class HALeaseError(ValueError):
 
 
 @dataclass(frozen=True)
+class LeaseInspectionInputs:
+    """Plain, session-independent data needed to inspect Pi-hole leases.
+
+    Captured while `cluster` (and the `nodes`/`integration`/`ha_connection`
+    relationships `prepare_lease_inspection` reads) are still attached to a
+    live session. Holds no reference to any ORM object or session, so it is
+    safe to use after the caller has released its database connection --
+    letting the (potentially slow) Pi-hole network calls in
+    `inspect_lease_plan` run without a PostgreSQL connection checked out.
+    """
+
+    source_id: int
+    source_public_id: str
+    target_id: int
+    continuity_enabled: bool
+    connection: PiHoleConnectionAdapter | None
+
+
+@dataclass(frozen=True)
 class LeasePlan:
     applicable: bool
-    source: HANode
-    target: HANode
+    source_id: int
+    source_public_id: str
+    target_id: int
     leases: list[dict[str, Any]]
     reservations: set[str]
     range_start: ipaddress.IPv4Address | None
@@ -162,14 +182,38 @@ def normalise_leases(
     return sorted(normalised, key=lambda item: (int(ipaddress.IPv4Address(item["ip"])), item["hwaddr"]))
 
 
-def inspect_cluster_leases(cluster: HACluster, *, client_factory: Callable = PiHoleProvider) -> LeasePlan:
+def prepare_lease_inspection(cluster: HACluster) -> LeaseInspectionInputs:
+    """Load everything `inspect_lease_plan` needs from `cluster`'s session.
+
+    Must be called while `cluster.nodes` and the source node's
+    `integration`/`ha_connection` relationships are still reachable on a
+    live session. The returned value is plain data with no session ties,
+    so a caller can release its database connection before performing the
+    (potentially slow) Pi-hole network calls in `inspect_lease_plan`.
+    """
     source, target = _nodes(cluster)
-    if not lease_continuity_enabled(cluster):
-        return LeasePlan(False, source, target, [], set(), None, None)
-    connection = connection_for_node(source)
-    if connection is None:
+    continuity_enabled = lease_continuity_enabled(cluster)
+    connection = connection_for_node(source) if continuity_enabled else None
+    return LeaseInspectionInputs(
+        source_id=source.id,
+        source_public_id=source.public_id,
+        target_id=target.id,
+        continuity_enabled=continuity_enabled,
+        connection=connection,
+    )
+
+
+def inspect_lease_plan(inputs: LeaseInspectionInputs, *, client_factory: Callable = PiHoleProvider) -> LeasePlan:
+    """Perform the Pi-hole lease inspection using only plain, session-free data.
+
+    This function touches no database session or connection -- it is safe
+    to call after the session that produced `inputs` has been closed.
+    """
+    if not inputs.continuity_enabled:
+        return LeasePlan(False, inputs.source_id, inputs.source_public_id, inputs.target_id, [], set(), None, None)
+    if inputs.connection is None:
         raise HALeaseError("The main Pi-hole connection is unavailable.")
-    client = client_factory(connection)
+    client = client_factory(inputs.connection)
     configuration = client.get_ha_configuration()
     if not configuration.ok:
         raise HALeaseError(configuration.message)
@@ -177,22 +221,57 @@ def inspect_cluster_leases(cluster: HACluster, *, client_factory: Callable = PiH
     reservations = _reservation_ips(dhcp)
     range_start, range_end = _range(dhcp)
     if not _is_enabled(dhcp):
-        return LeasePlan(False, source, target, [], reservations, range_start, range_end)
+        return LeasePlan(False, inputs.source_id, inputs.source_public_id, inputs.target_id, [], reservations, range_start, range_end)
     if range_start is None or range_end is None:
         raise HALeaseError("Pi-hole DHCP is enabled, but Kaya could not validate its address range.")
     result = client.get_dhcp_leases()
     if not result.ok:
         raise HALeaseError(result.message)
     leases = normalise_leases(result.data, range_start=range_start, range_end=range_end, reservation_ips=reservations)
-    return LeasePlan(True, source, target, leases, reservations, range_start, range_end)
+    return LeasePlan(True, inputs.source_id, inputs.source_public_id, inputs.target_id, leases, reservations, range_start, range_end)
 
 
-def reconcile_cluster_leases(db: Session, cluster: HACluster, *, client_factory: Callable = PiHoleProvider) -> HALeaseReplicationState:
+def inspect_cluster_leases(cluster: HACluster, *, client_factory: Callable = PiHoleProvider) -> LeasePlan:
+    """Inspect Pi-hole leases for `cluster` using its current session.
+
+    Convenience wrapper combining `prepare_lease_inspection` and
+    `inspect_lease_plan` for callers that already hold `cluster` inside a
+    live, multi-purpose session -- e.g. failover/maintenance reconciliation
+    and the admin "reconcile now" action -- where the database connection
+    is already committed to being held for the duration of surrounding
+    work, so splitting the two phases would buy nothing.
+    """
+    inputs = prepare_lease_inspection(cluster)
+    return inspect_lease_plan(inputs, client_factory=client_factory)
+
+
+def reconcile_cluster_leases(
+    db: Session,
+    cluster: HACluster,
+    *,
+    client_factory: Callable = PiHoleProvider,
+    precomputed_inspection: LeasePlan | HALeaseError | None = None,
+) -> HALeaseReplicationState:
+    """Reconcile `cluster`'s lease-replication state against Pi-hole.
+
+    By default this inspects Pi-hole itself (via `inspect_cluster_leases`),
+    which holds `db`'s connection for the duration of that inspection.
+    Callers that can perform inspection separately -- releasing their
+    database connection first -- may pass the already-computed result (a
+    `LeasePlan`, or the `HALeaseError` inspection raised) as
+    `precomputed_inspection` to skip repeating the Pi-hole calls here and
+    avoid holding `db`'s connection across them.
+    """
     state = _state(db, cluster)
     now = datetime.utcnow()
     try:
-        plan = inspect_cluster_leases(cluster, client_factory=client_factory)
-        state.source_node_id, state.target_node_id = plan.source.id, plan.target.id
+        if precomputed_inspection is not None:
+            if isinstance(precomputed_inspection, HALeaseError):
+                raise precomputed_inspection
+            plan = precomputed_inspection
+        else:
+            plan = inspect_cluster_leases(cluster, client_factory=client_factory)
+        state.source_node_id, state.target_node_id = plan.source_id, plan.target_id
         state.last_full_reconciliation_at = now
         state.last_error_redacted = None
         if not plan.applicable:
@@ -203,7 +282,7 @@ def reconcile_cluster_leases(db: Session, cluster: HACluster, *, client_factory:
         # Only lease content belongs in the checksum. Snapshot timestamps live on
         # the database row; including one here would create false drift on every
         # periodic check even when no lease changed.
-        payload = {"version": 1, "cluster_id": cluster.public_id, "source_node_id": plan.source.public_id, "leases": plan.leases}
+        payload = {"version": 1, "cluster_id": cluster.public_id, "source_node_id": plan.source_public_id, "leases": plan.leases}
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         checksum = hashlib.sha256(encoded.encode()).hexdigest()
         latest = db.query(HALeaseSnapshot).filter(HALeaseSnapshot.cluster_id == cluster.id).order_by(HALeaseSnapshot.generation.desc()).first()
@@ -215,7 +294,7 @@ def reconcile_cluster_leases(db: Session, cluster: HACluster, *, client_factory:
             db.commit()
             return state
         generation = max(state.desired_generation, latest.generation if latest else 0) + 1
-        snapshot = HALeaseSnapshot(cluster_id=cluster.id, source_node_id=plan.source.id, target_node_id=plan.target.id, generation=generation, checksum=checksum, encrypted_payload=encrypt_secret(encoded), lease_count=len(plan.leases), status="PENDING", validation_summary_json=json.dumps({"range": f"{plan.range_start}-{plan.range_end}", "reservation_count": len(plan.reservations), "conflicts": 0}, sort_keys=True))
+        snapshot = HALeaseSnapshot(cluster_id=cluster.id, source_node_id=plan.source_id, target_node_id=plan.target_id, generation=generation, checksum=checksum, encrypted_payload=encrypt_secret(encoded), lease_count=len(plan.leases), status="PENDING", validation_summary_json=json.dumps({"range": f"{plan.range_start}-{plan.range_end}", "reservation_count": len(plan.reservations), "conflicts": 0}, sort_keys=True))
         db.add(snapshot)
         state.desired_generation = generation
         state.status = "PENDING"

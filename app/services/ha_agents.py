@@ -11,6 +11,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from fastapi import HTTPException, Request
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from app.core.performance import performance_phase
 
 from app.models.models import HAAgentActionResult as HAAgentActionResultRow, HAAgentCredential, HAAgentRequest, HACluster, HAEvent, HANode
 from app.schemas.high_availability import HAAgentActionResult, HAAgentEventItem, HAAgentHeartbeat, HAAgentRegister
@@ -147,6 +148,11 @@ class AuthenticatedAgent:
 
 
 async def authenticate_agent_request(request: Request, db: Session) -> AuthenticatedAgent:
+    with performance_phase("agent_authentication_replay_protection"):
+        return await _authenticate_agent_request(request, db)
+
+
+async def _authenticate_agent_request(request: Request, db: Session) -> AuthenticatedAgent:
     agent_id = request.headers.get("x-kaya-agent-id", "").strip()
     timestamp_text = request.headers.get("x-kaya-agent-timestamp", "").strip()
     request_id = request.headers.get("x-kaya-agent-request-id", "").strip()
@@ -386,24 +392,33 @@ def record_heartbeat(
         or node.cluster.status != "HEALTHY"
         or node.cluster.maintenance_mode
     )
-    db.commit()
-    db.refresh(node)
+    with performance_phase("heartbeat.telemetry_update_and_initial_commit"):
+        db.commit()
+    with performance_phase("heartbeat.refresh"):
+        db.refresh(node)
     if needs_reconciliation:
-        reconcile_vip_ownership(db, node.cluster, reporting_node=node)
-        advance_failover(db, node.cluster)
+        with performance_phase("heartbeat.reconcile_vip_ownership"):
+            reconcile_vip_ownership(db, node.cluster, reporting_node=node)
+        with performance_phase("heartbeat.advance_failover"):
+            advance_failover(db, node.cluster)
         from app.services.ha_recovery import evaluate_recovery
-        evaluate_recovery(db, node.cluster)
+        with performance_phase("heartbeat.evaluate_recovery"):
+            evaluate_recovery(db, node.cluster)
         maintenance = active_maintenance(node.cluster)
         if maintenance and maintenance.operation == "RECONCILE":
-            reconcile_cluster_state(db, maintenance)
+            with performance_phase("heartbeat.reconcile_cluster_state"):
+                reconcile_cluster_state(db, maintenance)
         elif maintenance and maintenance.operation == "REINITIALISE":
-            advance_reinitialisation(db, maintenance)
+            with performance_phase("heartbeat.advance_reinitialisation"):
+                advance_reinitialisation(db, maintenance)
         elif maintenance and maintenance.operation == "DHCP_SELF_HEAL":
             from app.services.ha_maintenance import advance_dhcp_self_heal
-            advance_dhcp_self_heal(db, maintenance)
+            with performance_phase("heartbeat.advance_dhcp_self_heal"):
+                advance_dhcp_self_heal(db, maintenance)
         else:
             from app.services.ha_maintenance import start_dhcp_self_heal
-            start_dhcp_self_heal(db, node.cluster)
+            with performance_phase("heartbeat.start_dhcp_self_heal"):
+                start_dhcp_self_heal(db, node.cluster)
     if peer_changed:
         write_audit(
             db,
@@ -670,6 +685,11 @@ def _adopt_verified_automatic_owner(db: Session, node: HANode, event: HAAgentEve
 
 
 def record_action_result(db: Session, node: HANode, result: HAAgentActionResult) -> HAAgentActionResultRow:
+    with performance_phase("action_result.validation_and_deduplication"):
+        return _record_action_result(db, node, result)
+
+
+def _record_action_result(db: Session, node: HANode, result: HAAgentActionResult) -> HAAgentActionResultRow:
     existing = db.query(HAAgentActionResultRow).filter(HAAgentActionResultRow.action_id == result.action_id).first()
     if existing:
         if existing.node_id != node.id:
@@ -718,25 +738,28 @@ def record_action_result(db: Session, node: HANode, result: HAAgentActionResult)
         node.resolver_repair_last_error = None if result.status == "APPLIED" else result.message
     elif result.action_type == "LEASE_SNAPSHOT_STAGE":
         try:
-            record_lease_stage_result(db, node, generation=result.generation, checksum=result.checksum, status=result.status, message=result.message)
+            with performance_phase("action_result.lease_result_handling"):
+                record_lease_stage_result(db, node, generation=result.generation, checksum=result.checksum, status=result.status, message=result.message)
         except HALeaseError as exc:
             raise HAAgentError(str(exc)) from exc
     elif result.action_type in {"DHCP_DEMOTE", "DHCP_PROMOTE"} and maintenance_action:
         try:
-            record_maintenance_action_result(
-                db,
-                node,
-                action_type=result.action_type,
-                generation=result.generation,
-                checksum=result.checksum,
-                status=result.status,
-                message=result.message,
-            )
+            with performance_phase("action_result.maintenance_result_handling"):
+                record_maintenance_action_result(
+                    db,
+                    node,
+                    action_type=result.action_type,
+                    generation=result.generation,
+                    checksum=result.checksum,
+                    status=result.status,
+                    message=result.message,
+                )
         except HAMaintenanceError as exc:
             raise HAAgentError(str(exc)) from exc
     elif result.action_type in {"DHCP_DEMOTE", "DHCP_PROMOTE"}:
         try:
-            record_failover_action_result(db, node, action_type=result.action_type, generation=result.generation, checksum=result.checksum, status=result.status, message=result.message)
+            with performance_phase("action_result.failover_result_handling"):
+                record_failover_action_result(db, node, action_type=result.action_type, generation=result.generation, checksum=result.checksum, status=result.status, message=result.message)
         except HAFailoverError as exc:
             raise HAAgentError(str(exc)) from exc
     else:
@@ -754,10 +777,14 @@ def record_action_result(db: Session, node: HANode, result: HAAgentActionResult)
             cluster.keepalived_status = "DEPLOYED"
             cluster.keepalived_deployed_at = datetime.utcnow()
             cluster.status = "READY_TO_DEPLOY"
-    db.commit()
-    db.refresh(row)
-    reconcile_vip_ownership(db, cluster)
-    advance_failover(db, cluster)
+    with performance_phase("action_result.commit"):
+        db.commit()
+    with performance_phase("action_result.refresh"):
+        db.refresh(row)
+    with performance_phase("action_result.reconcile_vip_ownership"):
+        reconcile_vip_ownership(db, cluster)
+    with performance_phase("action_result.advance_failover"):
+        advance_failover(db, cluster)
     return row
 
 
