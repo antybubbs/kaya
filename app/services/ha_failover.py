@@ -372,6 +372,25 @@ def _dhcp_released(node: HANode) -> bool:
     return dhcp_observation(node, datetime.utcnow(), freshness_seconds=120).released
 
 
+def _dhcp_activation_failure_detail(node: HANode) -> str:
+    """Return a safe, operator-facing reason for a failed promotion.
+
+    Keep this based only on the signed, bounded telemetry already used by the
+    topology verifier.  In particular, do not turn a stale or incomplete
+    observation into an ownership claim.
+    """
+    observation = dhcp_observation(node, datetime.utcnow(), freshness_seconds=120)
+    if observation.status != "FRESH":
+        return f"{node.display_name} DHCP observation is unavailable or stale"
+    if observation.configured is not True:
+        return f"{node.display_name} Pi-hole DHCP setting remains disabled"
+    if observation.service_active is not True:
+        return f"{node.display_name} Pi-hole FTL service is not active"
+    if observation.listening is not True:
+        return f"{node.display_name} is not listening on UDP port 67"
+    return f"{node.display_name} reported DHCP running state that did not converge"
+
+
 def _requested_topology_is_verified(run: HAFailoverRun, *, rolled_back: bool = False) -> bool:
     active = run.source_node if rolled_back else run.target_node
     topology = reconcile_topology(run.cluster, freshness_seconds=120)
@@ -671,7 +690,8 @@ def advance_failover(db: Session, cluster: HACluster) -> HAFailoverRun | None:
         elif datetime.utcnow() - _verification_started_at(run) > timedelta(seconds=30):
             if not _queue_safe_dhcp_repair(db, run, active=run.target_node, standby=run.source_node, rolled_back=False):
                 dhcp_owners = [node.display_name for node in cluster.nodes if _dhcp_active(node)]
-                _safe_failure(db, run, f"Final topology verification did not converge within 30 seconds. Expected {run.target_node.display_name} to exclusively own the VIP and DHCP with healthy DNS; current DHCP owners: {', '.join(dhcp_owners) if dhcp_owners else 'none confirmed'}.")
+                detail = _dhcp_activation_failure_detail(run.target_node)
+                _safe_failure(db, run, f"DHCP failed to start on {run.target_node.display_name}: {detail}. Final topology verification did not converge within 30 seconds; current DHCP owners: {', '.join(dhcp_owners) if dhcp_owners else 'none confirmed'}.")
     elif run.phase == "ROLLBACK_VERIFYING_SOURCE":
         if _requested_topology_is_verified(run, rolled_back=True):
             _complete(db, run, rolled_back=True)

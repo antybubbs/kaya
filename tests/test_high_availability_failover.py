@@ -416,6 +416,32 @@ def test_final_verification_never_accepts_two_udp_67_listeners(monkeypatch):
         assert "current DHCP owners: Primary, Standby" in run.error_redacted
 
 
+def test_failed_promotion_reports_disabled_target_dhcp_after_bounded_repair(monkeypatch):
+    with database() as db:
+        user, cluster, source, target = ready_pair(db)
+        monkeypatch.setattr("app.services.ha_failover.reconcile_cluster_leases", lambda db, cluster: cluster.lease_replication)
+        run = start_controlled_failover(db, cluster, target, user, confirmation="Test Pair", acknowledged=True)
+        source.vip_owned = False
+        source.dhcp_running = False
+        target.vip_owned = True
+        target.keepalived_status = source.keepalived_status = "DEPLOYED"
+        target.dhcp_configured = False
+        target.dhcp_running = False
+        target.dhcp_listener_active = False
+        target.dhcp_runtime_state = "STOPPED"
+        target.dhcp_observation_status = "FRESH"
+        target.dhcp_observed_at = target.last_heartbeat_at = datetime.utcnow()
+        run.phase = "VERIFYING_TARGET"
+        run.report_json = '{"verification_started_at":"2020-01-01T00:00:00","dhcp_self_heal_attempts":1}'
+        db.commit()
+
+        advance_failover(db, cluster)
+
+        assert run.status == "FAILED_SAFE"
+        assert "DHCP failed to start on Standby" in run.error_redacted
+        assert "Pi-hole DHCP setting remains disabled" in run.error_redacted
+
+
 def test_external_dhcp_failover_never_emits_dhcp_action():
     with database() as db:
         user, cluster, source, target = ready_pair(db, managed=False)
@@ -809,6 +835,44 @@ def test_dhcp_promotion_succeeds_only_with_enabled_running_postconditions(monkey
     monkeypatch.setattr(helper, "_dhcp_status", lambda: expected)
 
     assert helper._wait_for_dhcp(True) == expected
+
+
+def test_dhcp_activation_reports_successful_cli_but_disabled_config(monkeypatch):
+    from ha_agent import kaya_ha_failover_helper as helper
+
+    monkeypatch.setattr(helper, "_dhcp_status", lambda: {
+        "configured": False,
+        "service_active": True,
+        "listening": False,
+        "runtime_state": "STOPPED",
+        "observation_status": "FRESH",
+        "dhcp_running": False,
+    })
+    monkeypatch.setattr(helper, "_dhcp_active", lambda: False)
+    monkeypatch.setattr(helper, "_run", lambda command: type("Result", (), {
+        "returncode": 0,
+        "stdout": "",
+        "stderr": "",
+    })())
+
+    with pytest.raises(RuntimeError, match="returned success but dhcp.active remained false"):
+        helper._set_dhcp(True)
+
+
+def test_dhcp_activation_reports_cli_failure_without_raw_stderr(monkeypatch):
+    from ha_agent import kaya_ha_failover_helper as helper
+
+    monkeypatch.setattr(helper, "_dhcp_status", lambda: {"configured": False})
+    monkeypatch.setattr(helper, "_dhcp_active", lambda: False)
+    monkeypatch.setattr(helper, "_run", lambda command: type("Result", (), {
+        "returncode": 23,
+        "stdout": "",
+        "stderr": "synthetic secret-like output",
+    })())
+
+    with pytest.raises(RuntimeError, match="exit code 23") as error:
+        helper._set_dhcp(True)
+    assert "synthetic secret-like output" not in str(error.value)
 
 
 def test_dhcp_demotion_succeeds_only_when_configuration_and_udp_67_are_stopped(monkeypatch):
