@@ -6,6 +6,9 @@ const root = document.querySelector("[data-rdp-session]");
 if (root) {
   const protocol = root.dataset.protocol || "rdp";
   const protocolLabel = protocol.toUpperCase();
+  let inputMode = protocol === "vnc" && root.dataset.vncReadOnly === "1" ? "view-only" : "interactive";
+  let inputModeChanging = false;
+  let inputModeChangeFrom = "";
   const form = root.querySelector(".rdp-credential-form");
   const log = root.querySelector("[data-rdp-log]");
   const button = form ? form.querySelector("button") : null;
@@ -50,11 +53,26 @@ if (root) {
 
   const keysToggle = document.querySelector("[data-remote-keys-toggle]");
   const keysList = document.querySelector("[data-remote-keys-list]");
+  const inputToggle = document.querySelector("[data-remote-input-toggle]");
+  const inputList = document.querySelector("[data-remote-input-list]");
+  const inputEnabled = () => protocol !== "vnc" || inputMode === "interactive";
 
   const syncKeysMenu = () => {
-    const available = connected && displayReady;
+    const available = connected && displayReady && inputEnabled();
     if (keysToggle) keysToggle.disabled = !available;
     if (keysList) keysList.querySelectorAll("button").forEach((button) => { button.disabled = !available; });
+  };
+
+  const syncInputMenu = () => {
+    const available = protocol === "vnc" && connected && displayReady && !inputModeChanging;
+    if (inputToggle) {
+      inputToggle.disabled = !available;
+      inputToggle.textContent = inputMode === "view-only" ? "View only" : "Input";
+    }
+    if (inputList) inputList.querySelectorAll("button").forEach((button) => {
+      button.disabled = !available;
+      button.textContent = `${button.dataset.inputMode === inputMode ? "✓ " : ""}${button.dataset.inputMode === "view-only" ? "View only" : "Interactive"}`;
+    });
   };
 
   if (keysToggle && keysList) {
@@ -66,7 +84,7 @@ if (root) {
       keyButton.dataset.sequenceId = sequence.id;
       keyButton.setAttribute("role", "menuitem");
       keyButton.addEventListener("click", () => {
-        window.KayaRemoteKeys?.sendKeySequence({ client, connected, displayReady, displayElement, markActivity, id: sequence.id });
+        window.KayaRemoteKeys?.sendKeySequence({ client, connected, displayReady, displayElement, markActivity, inputEnabled: inputEnabled(), id: sequence.id });
         keysList.hidden = true;
         keysToggle.setAttribute("aria-expanded", "false");
       });
@@ -91,6 +109,42 @@ if (root) {
     });
   }
 
+  if (inputToggle && inputList) {
+    ["interactive", "view-only"].forEach((mode) => {
+      const modeButton = document.createElement("button");
+      modeButton.type = "button";
+      modeButton.className = "remote-input-item";
+      modeButton.dataset.inputMode = mode;
+      modeButton.setAttribute("role", "menuitemradio");
+      modeButton.addEventListener("click", () => {
+        window.parent?.postMessage({ type: "kaya:remote-input-mode", inputMode: mode }, window.location.origin);
+        if (window.parent === window && window.opener && !window.opener.closed) {
+          window.opener.postMessage({ type: "kaya:remote-input-mode", inputMode: mode }, window.location.origin);
+        }
+        inputList.hidden = true;
+        inputToggle.setAttribute("aria-expanded", "false");
+      });
+      inputList.appendChild(modeButton);
+    });
+    inputToggle.addEventListener("click", () => {
+      if (inputToggle.disabled) return;
+      const open = inputList.hidden;
+      inputList.hidden = !open;
+      inputToggle.setAttribute("aria-expanded", String(open));
+    });
+    document.addEventListener("click", (event) => {
+      if (!inputList.parentElement.contains(event.target)) {
+        inputList.hidden = true;
+        inputToggle.setAttribute("aria-expanded", "false");
+      }
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      inputList.hidden = true;
+      inputToggle.setAttribute("aria-expanded", "false");
+    });
+  }
+
   const setRecordingStatus = (message) => {
     if (recordingStatus) recordingStatus.textContent = message;
   };
@@ -106,8 +160,11 @@ if (root) {
       label: active ? "Stop" : "Record",
       status: recordingStatus ? recordingStatus.textContent : "Ready",
       graphicalConnected: connected && displayReady,
+      inputMode,
+      inputModeChanging,
     };
     syncKeysMenu();
+    syncInputMenu();
     if (window.parent && window.parent !== window) {
       window.parent.postMessage(payload, window.location.origin);
     }
@@ -387,6 +444,22 @@ if (root) {
     syncRecordingButton();
   };
 
+  const requestInputMode = (mode) => {
+    if (protocol !== "vnc" || !["interactive", "view-only"].includes(mode) || mode === inputMode || inputModeChanging || !connected) return;
+    inputModeChangeFrom = inputMode;
+    inputMode = mode;
+    inputModeChanging = true;
+    disconnectCurrentSession();
+    displayTarget.replaceChildren();
+    placeholder.hidden = false;
+    form.hidden = false;
+    button.disabled = false;
+    setOverlayVisible(true);
+    setStatus("VNC mode change", `Enter the VNC password to reconnect in ${mode === "view-only" ? "view-only" : "interactive"} mode.`);
+    writeLog(["VNC input mode changed locally. Password is required for the secure reconnect and is not stored."]);
+    syncInputMenu();
+  };
+
   const stopSession = () => {
     manuallyStopped = true;
     disconnectCurrentSession();
@@ -415,6 +488,7 @@ if (root) {
     const mouse = new Guacamole.Mouse(displayEl);
     mouse.onmousedown = mouse.onmouseup = mouse.onmousemove = (state) => {
       markActivity();
+      if (!inputEnabled()) return;
       displayEl.focus({ preventScroll: true });
       const adjustedState = new Guacamole.Mouse.State(
         Math.round(state.x / currentScale),
@@ -430,11 +504,13 @@ if (root) {
     keyboard = new Guacamole.Keyboard(displayEl);
     keyboard.onkeydown = (keysym) => {
       markActivity();
+      if (!inputEnabled()) return false;
       client.sendKeyEvent(1, keysym);
       return false;
     };
     keyboard.onkeyup = (keysym) => {
       markActivity();
+      if (!inputEnabled()) return false;
       client.sendKeyEvent(0, keysym);
       return false;
     };
@@ -446,6 +522,7 @@ if (root) {
     setOverlayVisible(false);
     if (displayElement) displayElement.focus({ preventScroll: true });
     syncRecordingButton();
+    syncInputMenu();
     if (recordingAuto) startRecording("auto");
   };
 
@@ -454,10 +531,11 @@ if (root) {
       window.requestAnimationFrame(() => window.requestAnimationFrame(resolve));
     });
 
-  const connectDisplay = async (token, handoff = false) => {
+  const connectDisplay = async (token, handoff = false, handoffInputMode = "") => {
     manuallyStopped = false;
     disconnectReason = "";
     activeToken = token;
+    if (protocol === "vnc" && ["interactive", "view-only"].includes(handoffInputMode)) inputMode = handoffInputMode;
     disconnectCurrentSession();
     window.clearTimeout(resizeTimer);
     displayTarget.replaceChildren();
@@ -555,8 +633,12 @@ if (root) {
         displayReady,
         displayElement,
         markActivity,
+        inputEnabled: inputEnabled(),
         id: event.data.sequenceId,
       });
+    }
+    if (event.data && event.data.type === "kaya:remote-input-mode") {
+      requestInputMode(event.data.inputMode);
     }
     if (event.data && event.data.type === "kaya:remote-recording-toggle") {
       if (recorder && recorder.state !== "inactive") {
@@ -580,6 +662,7 @@ if (root) {
         requestId: event.data.requestId,
         ok: connected && Boolean(activeToken),
         token: activeToken,
+        inputMode,
       }, event.origin);
     }
     if (event.data && event.data.type === "kaya:remote-popout-detached") {
@@ -599,7 +682,7 @@ if (root) {
       form.hidden = true;
       setOverlayVisible(true);
       writeLog([`Opening popped-out ${protocolLabel} session.`]);
-      connectDisplay(event.data.token, true);
+      connectDisplay(event.data.token, true, event.data.inputMode);
     }
   });
   document.addEventListener("visibilitychange", () => {
@@ -638,6 +721,8 @@ if (root) {
           height: size.height,
           dpi: size.dpi,
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "",
+          ...(protocol === "vnc" ? { read_only: inputMode === "view-only" } : {}),
+          ...(protocol === "vnc" && inputModeChangeFrom ? { mode_change_from: inputModeChangeFrom } : {}),
         }),
       });
       const data = await response.json();
@@ -651,6 +736,9 @@ if (root) {
         button.disabled = false;
         return;
       }
+      if (protocol === "vnc" && ["interactive", "view-only"].includes(data.input_mode)) inputMode = data.input_mode;
+      inputModeChanging = false;
+      inputModeChangeFrom = "";
       const passwordInput = form.querySelector("input[name='rdp_password']");
       if (passwordInput) passwordInput.value = "";
       form.hidden = true;

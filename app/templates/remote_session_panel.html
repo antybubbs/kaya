@@ -27,6 +27,12 @@
       <span class="remote-tab-icon">{% if remote.protocol == 'rdp' %}RDP{% elif remote.protocol == 'vnc' %}VNC{% else %}&gt;_{% endif %}</span>
       <span class="remote-tab-title">{{ remote_label }}</span>
       <span class="remote-tab-protocol">{{ remote.protocol|upper }}</span>
+      {% if remote.protocol == 'vnc' %}
+      <div class="remote-input-menu" data-remote-input-menu>
+        <button type="button" class="remote-tab-tool remote-input-toggle" data-remote-input-toggle disabled aria-haspopup="menu" aria-expanded="false" title="Choose VNC input mode">INPUT</button>
+        <div class="remote-input-list" data-remote-input-list hidden role="menu"></div>
+      </div>
+      {% endif %}
       {% if remote.protocol in ['rdp', 'vnc'] %}
       <div class="remote-keys-menu" data-remote-keys-menu>
         <button type="button" class="remote-tab-tool remote-keys-toggle" data-remote-keys-toggle disabled aria-haspopup="menu" aria-expanded="false" title="Send special keys">Keys</button>

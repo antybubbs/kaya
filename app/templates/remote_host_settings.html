@@ -148,7 +148,7 @@
   <section class="remote-settings-card">
     <header><span>VNC overrides</span></header>
     <div class="remote-settings-grid two">
-      {{ override_select('vnc_read_only', 'Read-only session', [('0','Interactive'),('1','Read-only')], remote_vnc_overrides) }}
+      {{ override_select('vnc_read_only', 'Default VNC mode', [('0','Interactive'),('1','View only')], remote_vnc_overrides) }}
       {{ override_select('vnc_clipboard', 'Clipboard', [('1','Enabled'),('0','Disabled')], remote_vnc_overrides) }}
       {{ override_select('vnc_cursor', 'Cursor', [('remote','Remote'),('local','Local'),('hidden','Hidden')], remote_vnc_overrides) }}
       {{ override_select('vnc_resize_method', 'Resize behaviour', [('display-update','Request remote resize'),('none','Scale only')], remote_vnc_overrides) }}

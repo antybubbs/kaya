@@ -1609,6 +1609,12 @@ async def vnc_start(request: Request, remote_id: int, db: Session = Depends(get_
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Remote entry is not configured for VNC")
     username = str(payload.get("username", "")).strip()
     password = str(payload.get("password", ""))
+    requested_read_only = payload.get("read_only")
+    mode_change_from = payload.get("mode_change_from")
+    if requested_read_only is not None and not isinstance(requested_read_only, bool):
+        return JSONResponse({"ok": False, "logs": ["VNC input mode is invalid."]}, status_code=400)
+    if mode_change_from is not None and mode_change_from not in {"interactive", "view-only"}:
+        return JSONResponse({"ok": False, "logs": ["VNC mode transition is invalid."]}, status_code=400)
     if len(username) > 120 or len(password) > 1024:
         return JSONResponse({"ok": False, "logs": ["VNC credentials are too long."]}, status_code=400)
     if not password:
@@ -1623,13 +1629,23 @@ async def vnc_start(request: Request, remote_id: int, db: Session = Depends(get_
     cleanup_rdp_tokens()
     width = clean_dimension(int_payload(payload, "width", 1280), 1280, 640, 7680)
     height = clean_dimension(int_payload(payload, "height", 720), 720, 480, 4320)
+    vnc_settings = effective_remote_settings(row, settings)["vnc"]
+    if requested_read_only is not None:
+        vnc_settings["vnc_read_only"] = "1" if requested_read_only else "0"
     try:
-        token = create_guacamole_token(row, "vnc", username, password, width, height, 96, "", effective_remote_settings(row, settings)["vnc"])
+        token = create_guacamole_token(row, "vnc", username, password, width, height, 96, "", vnc_settings)
     except ValueError:
         return JSONResponse({"ok": False, "logs": ["VNC connection settings are invalid."]}, status_code=400)
     guacamole_tokens[token] = GuacamoleSessionToken(remote_id=row.id, user_id=user.id, protocol="vnc", created_at=time.time())
-    write_audit(db, user, "start", "remote_vnc_session", entity_id=str(row.id), ip_address=request.client.host if request.client else None, detail=f"Prepared VNC session for {remote_label(row)} ({row.ip_address.address}:{row.port})")
-    return JSONResponse({"ok": True, "token": token, "logs": ["Session token created. Opening browser display tunnel."]})
+    input_mode = "view-only" if vnc_settings.get("vnc_read_only") == "1" else "interactive"
+    audit_action = "mode_changed" if mode_change_from and mode_change_from != input_mode else "start"
+    audit_detail = (
+        f"Changed VNC input mode for {remote_label(row)} from {mode_change_from} to {input_mode}"
+        if audit_action == "mode_changed"
+        else f"Prepared VNC session for {remote_label(row)} ({row.ip_address.address}:{row.port}) in {input_mode} mode"
+    )
+    write_audit(db, user, audit_action, "remote_vnc_session", entity_id=str(row.id), ip_address=request.client.host if request.client else None, detail=audit_detail)
+    return JSONResponse({"ok": True, "token": token, "input_mode": input_mode, "logs": ["Session token created. Opening browser display tunnel."]})
 
 
 @router.websocket("/{remote_id}/ssh/ws")

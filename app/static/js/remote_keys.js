@@ -24,9 +24,9 @@
 
   const sequenceById = new Map(sequences.map((sequence) => [sequence.id, sequence]));
 
-  const sendKeySequence = ({ client, connected, displayReady, displayElement, markActivity, id }) => {
+  const sendKeySequence = ({ client, connected, displayReady, displayElement, markActivity, inputEnabled = true, id }) => {
     const sequence = sequenceById.get(id);
-    if (!sequence || !client || !connected || !displayReady || !displayElement) return false;
+    if (!sequence || !inputEnabled || !client || !connected || !displayReady || !displayElement) return false;
 
     markActivity();
     const pressed = [];

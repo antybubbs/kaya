@@ -6,6 +6,7 @@ ROOT = Path(__file__).parents[1]
 KEYS_JS = (ROOT / "app/static/js/remote_keys.js").read_text(encoding="utf-8")
 WORKSPACE_JS = (ROOT / "app/static/js/remote_workspace.js").read_text(encoding="utf-8")
 RDP_JS = (ROOT / "app/static/js/remote_rdp.js").read_text(encoding="utf-8")
+REMOTE_CSS = (ROOT / "app/static/css/remote.css").read_text(encoding="utf-8")
 PANEL_TEMPLATE = (ROOT / "app/templates/remote_session_panel.html").read_text(encoding="utf-8")
 REMOTE_TEMPLATE = (ROOT / "app/templates/_remote_session_panel.html").read_text(encoding="utf-8")
 
@@ -77,3 +78,14 @@ def test_menu_supports_selection_escape_and_outside_close():
     assert 'keysList.hidden = true' in WORKSPACE_JS
     assert 'event.key === "Escape"' in WORKSPACE_JS
     assert 'menu.parentElement.contains(event.target)' in WORKSPACE_JS
+
+
+def test_keys_menu_uses_toolbar_overlay_layer_without_changing_display_containment():
+    assert ".remote-tabbar{" in REMOTE_CSS
+    assert "position:relative" in REMOTE_CSS[REMOTE_CSS.index(".remote-tabbar{"):REMOTE_CSS.index(".remote-tabbar{") + 260]
+    assert "z-index:2" in REMOTE_CSS[REMOTE_CSS.index(".remote-tabbar{"):REMOTE_CSS.index(".remote-tabbar{") + 260]
+    assert ".remote-tabbar .remote-keys-list{left:auto;position:fixed;right:auto;top:auto}" in REMOTE_CSS
+    assert ".remote-popout-tabbar{" in REMOTE_CSS
+    assert "position:relative" in REMOTE_CSS[REMOTE_CSS.index(".remote-popout-tabbar{"):REMOTE_CSS.index(".remote-popout-tabbar{") + 260]
+    assert ".remote-session-frame{background:#050706;border:0;border-radius:0;display:grid;height:100%;min-height:0;overflow:hidden;position:relative}" in REMOTE_CSS
+    assert ".rdp-display{align-items:center;display:flex;height:100%;justify-content:center;min-height:0;overflow:hidden;position:relative;width:100%}" in REMOTE_CSS
