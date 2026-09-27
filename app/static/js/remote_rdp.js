@@ -4,6 +4,8 @@ const RDP_RESIZE_SETTLE_MS = 600;
 
 const root = document.querySelector("[data-rdp-session]");
 if (root) {
+  const protocol = root.dataset.protocol || "rdp";
+  const protocolLabel = protocol.toUpperCase();
   const form = root.querySelector(".rdp-credential-form");
   const log = root.querySelector("[data-rdp-log]");
   const button = form ? form.querySelector("button") : null;
@@ -150,12 +152,12 @@ if (root) {
   const uploadRecording = async (blob, startedAt, endedAt, trigger) => {
     const formData = new FormData();
     formData.append("csrf_token", root.dataset.recordingCsrfToken || "");
-    formData.append("protocol", "rdp");
+    formData.append("protocol", protocol);
     formData.append("trigger", trigger);
     formData.append("started_at", startedAt.toISOString());
     formData.append("ended_at", endedAt.toISOString());
     formData.append("duration_seconds", String(Math.max(0, (endedAt - startedAt) / 1000)));
-    formData.append("file", blob, "rdp-session.webm");
+    formData.append("file", blob, `${protocol}-session.webm`);
     const response = await fetch(root.dataset.recordingUploadUrl, { method: "POST", body: formData });
     if (!response.ok) throw new Error(`Upload failed (${response.status})`);
   };
@@ -440,15 +442,15 @@ if (root) {
     attachInput();
     client.onerror = (error) => {
       setOverlayVisible(true);
-      writeLog([`RDP display error: ${error.message || "Unknown error"}`]);
-      setStatus("Connection error", error.message || "The RDP session could not be opened.");
+      writeLog([`${protocolLabel} display error: ${error.message || "Unknown error"}`]);
+      setStatus("Connection error", error.message || `The ${protocolLabel} session could not be opened.`);
       connected = false;
       form.hidden = false;
       button.disabled = false;
     };
     client.onstatechange = (state) => {
       if (state === Guacamole.Client.State.CONNECTED) {
-        setStatus("Connected", "RDP session is active.");
+        setStatus("Connected", `${protocolLabel} session is active.`);
         connected = true;
         markActivity();
         syncRecordingButton();
@@ -471,7 +473,7 @@ if (root) {
           : disconnectReason
             ? "Idle timeout"
             : "Disconnected";
-        setStatus(disconnectTitle, disconnectReason || "The RDP session has ended.");
+        setStatus(disconnectTitle, disconnectReason || `The ${protocolLabel} session has ended.`);
         form.hidden = false;
         button.disabled = false;
       }
@@ -541,7 +543,7 @@ if (root) {
       if (event.data.requestId !== hashParams.get("requestId") || !event.data.token) return;
       form.hidden = true;
       setOverlayVisible(true);
-      writeLog(["Opening popped-out RDP session."]);
+      writeLog([`Opening popped-out ${protocolLabel} session.`]);
       connectDisplay(event.data.token, true);
     }
   });
@@ -566,7 +568,7 @@ if (root) {
   button.addEventListener("click", async () => {
     button.disabled = true;
     setOverlayVisible(true);
-    writeLog(["Creating RDP session. Password is not stored."]);
+    writeLog([`Creating ${protocolLabel} session. Password is not stored.`]);
     const formData = new FormData(form);
     const size = displaySize();
     try {
@@ -609,7 +611,7 @@ if (root) {
   if (handoffRequestId && window.opener && !window.opener.closed) {
     form.hidden = true;
     setOverlayVisible(true);
-    writeLog(["Waiting for secure RDP handoff."]);
+    writeLog([`Waiting for secure ${protocolLabel} handoff.`]);
     window.opener.postMessage({ type: "kaya:remote-popout-ready", requestId: handoffRequestId }, window.location.origin);
   }
 }

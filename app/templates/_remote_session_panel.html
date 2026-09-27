@@ -45,7 +45,7 @@
     {% endif %}
   </div>
   {% else %}
-  <div class="rdp-session" data-rdp-session data-start-url="{{ request.scope.get('root_path', '') }}/remote-manager/{{ remote.id }}/rdp/start" data-tunnel-url="{{ request.scope.get('root_path', '') }}/remote-manager/{{ remote.id }}/rdp/ws" data-idle-timeout-minutes="{{ settings.get('session_idle_timeout_minutes', '0') if settings is defined else '0' }}" data-recording-enabled="{{ '1' if recording_enabled|default(false) else '0' }}" data-recording-auto="{{ '1' if recording_auto_enabled|default(false) else '0' }}" data-recording-upload-url="{{ request.scope.get('root_path', '') }}/remote-manager/{{ remote.id }}/recordings/upload" data-recording-csrf-token="{{ csrf_token }}" data-recording-protocol="rdp" data-recording-pause-idle-minutes="{{ settings.get('recording_pause_idle_minutes', '5') if settings is defined else '5' }}">
+  <div class="rdp-session" data-rdp-session data-protocol="{{ remote.protocol }}" data-start-url="{{ request.scope.get('root_path', '') }}/remote-manager/{{ remote.id }}/{{ remote.protocol }}/start" data-tunnel-url="{{ request.scope.get('root_path', '') }}/remote-manager/{{ remote.id }}/{{ remote.protocol }}/ws" data-idle-timeout-minutes="{{ settings.get('session_idle_timeout_minutes', '0') if settings is defined else '0' }}" data-recording-enabled="{{ '1' if recording_enabled|default(false) else '0' }}" data-recording-auto="{{ '1' if recording_auto_enabled|default(false) else '0' }}" data-recording-upload-url="{{ request.scope.get('root_path', '') }}/remote-manager/{{ remote.id }}/recordings/upload" data-recording-csrf-token="{{ csrf_token }}" data-recording-protocol="{{ remote.protocol }}" data-recording-pause-idle-minutes="{{ settings.get('recording_pause_idle_minutes', '5') if settings is defined else '5' }}">
     {% if remote.rdp_trust_invalidated_at %}
     <div class="alert warning remote-connection-blocked" role="alert">
       <strong>RDP certificate re-authorization required</strong>
@@ -59,21 +59,21 @@
     {% else %}
     <form class="remote-credential-form rdp-credential-form">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <label>Username
+      <label>Username{% if remote.protocol == 'vnc' %} (optional){% endif %}
         <input name="rdp_username" autocomplete="username" value="{{ remote.username or '' }}">
       </label>
       <label>Password
         <input name="rdp_password" type="password" autocomplete="current-password">
       </label>
-      <button type="button">Start session</button>
+      <button type="button">Start {{ remote.protocol|upper }} session</button>
     </form>
     {% endif %}
     <div class="rdp-display-shell" data-rdp-shell tabindex="0">
       <div class="rdp-session-placeholder" data-rdp-placeholder>
         <div>
-          <h2>RDP session</h2>
+          <h2>{{ remote.protocol|upper }} session</h2>
           {% if settings.guacamole_enabled == '1' and settings.guacd_host %}
-          <p class="muted">Guacamole is configured at {{ settings.guacd_host }}:{{ settings.guacd_port }}. Passwords are used for the browser session only and are not stored!!</p>
+          <p class="muted">Guacamole is configured at {{ settings.guacd_host }}:{{ settings.guacd_port }}. The password is used for this browser session only and is not stored.</p>
           {% else %}
           <p class="muted">Enable Guacamole in Remote Manager Settings before using browser RDP sessions.</p>
           {% endif %}
@@ -81,13 +81,13 @@
       </div>
       <div class="rdp-display" data-rdp-display aria-label="RDP display"></div>
       <div class="rdp-status" data-rdp-status>
-        <h2>RDP session</h2>
-        <p class="muted">Waiting for RDP session start.</p>
+        <h2>{{ remote.protocol|upper }} session</h2>
+        <p class="muted">Waiting for {{ remote.protocol|upper }} session start.</p>
       </div>
     </div>
     <section class="rdp-log-panel" data-rdp-log-panel aria-live="polite">
       <header>Connection log</header>
-      <pre data-rdp-log>Waiting for RDP session start.</pre>
+      <pre data-rdp-log>Waiting for {{ remote.protocol|upper }} session start.</pre>
     </section>
   </div>
   {% endif %}

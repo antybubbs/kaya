@@ -16,12 +16,13 @@
 </div>
 <form method="post" class="remote-settings-shell">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  {% if remote.protocol == 'vnc' %}
   <section class="remote-settings-card">
     <header><span>Connection</span></header>
     <div class="remote-settings-grid two">
       <label class="checkbox-label"><input name="remote_enabled" type="checkbox" value="1" {% if remote.is_enabled %}checked{% endif %}> Show in Remote Manager</label>
       <label>Display name<input name="remote_display_name" value="{{ remote.display_name or '' }}" placeholder="{{ remote.ip_address.name or remote.ip_address.address }}"></label>
-      <label>Protocol<select name="remote_protocol"><option value="ssh" {% if remote.protocol == 'ssh' %}selected{% endif %}>SSH</option><option value="rdp" {% if remote.protocol == 'rdp' %}selected{% endif %}>RDP</option></select></label>
+      <label>Protocol<select name="remote_protocol"><option value="ssh" {% if remote.protocol == 'ssh' %}selected{% endif %}>SSH</option><option value="rdp" {% if remote.protocol == 'rdp' %}selected{% endif %}>RDP</option><option value="vnc" {% if remote.protocol == 'vnc' %}selected{% endif %}>VNC</option></select></label>
       <label>Port<input name="remote_port" type="number" min="1" max="65535" value="{{ remote.port }}"></label>
       <label>Username<input name="remote_username" autocomplete="username" value="{{ remote.username or '' }}"></label>
       <label>IP/WAN record<input value="{{ remote.ip_address.address }} · {{ remote.ip_address.category or 'Uncategorised' }}" disabled></label>
@@ -128,6 +129,8 @@
     </div>
     {% endif %}
   </section>
+  {% endif %}
+  {% if remote.protocol == 'ssh' %}
   <section class="remote-settings-card">
     <header><span>Terminal overrides</span></header>
     <div class="remote-settings-grid two">
@@ -140,6 +143,19 @@
       {{ override_select('terminal_backspace_mode', 'Backspace mode', [('normal','Normal (DEL)'),('bs','Backspace (BS)')], remote_terminal_overrides) }}
     </div>
   </section>
+  {% endif %}
+  {% if remote.protocol == 'vnc' %}
+  <section class="remote-settings-card">
+    <header><span>VNC overrides</span></header>
+    <div class="remote-settings-grid two">
+      {{ override_select('vnc_read_only', 'Read-only session', [('0','Interactive'),('1','Read-only')], remote_vnc_overrides) }}
+      {{ override_select('vnc_clipboard', 'Clipboard', [('1','Enabled'),('0','Disabled')], remote_vnc_overrides) }}
+      {{ override_select('vnc_cursor', 'Cursor', [('remote','Remote'),('local','Local'),('hidden','Hidden')], remote_vnc_overrides) }}
+      {{ override_select('vnc_resize_method', 'Resize behaviour', [('display-update','Request remote resize'),('none','Scale only')], remote_vnc_overrides) }}
+    </div>
+  </section>
+  {% endif %}
+  {% if remote.protocol == 'rdp' %}
   <section class="remote-settings-card">
     <header><span>RDP overrides</span></header>
     <div class="remote-settings-grid two">
@@ -150,6 +166,7 @@
       {{ override_select('rdp_disable_audio', 'Audio', [('0','Enabled'),('1','Disabled')], remote_rdp_overrides) }}
     </div>
   </section>
+  {% endif %}
   <div class="remote-settings-actions">
     <a class="button secondary" href="/networking/vlan-ip-manager/{{ remote.ip_address.id }}">View IP/WAN record</a>
     <button type="submit">Save host remote settings</button>

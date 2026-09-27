@@ -24,7 +24,7 @@
   {% if is_popout %}
   <header class="remote-popout-tabbar">
     <div class="remote-popout-tab active">
-      <span class="remote-tab-icon">{% if remote.protocol == 'rdp' %}RDP{% else %}&gt;_{% endif %}</span>
+      <span class="remote-tab-icon">{% if remote.protocol == 'rdp' %}RDP{% elif remote.protocol == 'vnc' %}VNC{% else %}&gt;_{% endif %}</span>
       <span class="remote-tab-title">{{ remote_label }}</span>
       <span class="remote-tab-protocol">{{ remote.protocol|upper }}</span>
       {% if recording_enabled|default(false) %}

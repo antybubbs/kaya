@@ -252,7 +252,7 @@
     return panel;
   };
 
-  const iconFor = (protocol) => (protocol === "rdp" ? "RDP" : ">_");
+  const iconFor = (protocol) => (protocol === "rdp" ? "RDP" : protocol === "vnc" ? "VNC" : ">_");
 
   const setSplitEnabled = (enabled) => {
     if (!splitFeatureEnabled) {
@@ -347,7 +347,7 @@
       popout.textContent = "P";
       popout.addEventListener("click", (event) => {
         event.stopPropagation();
-        if (tab.protocol === "rdp" || tab.protocol === "ssh") {
+        if (tab.protocol === "rdp" || tab.protocol === "vnc" || tab.protocol === "ssh") {
           requestPopoutHandoff(tab);
           return;
         }
