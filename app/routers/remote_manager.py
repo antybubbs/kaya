@@ -211,10 +211,12 @@ def freerdp_rdp_cert_fingerprint(fingerprint: str) -> str:
 
 
 def rdp_certificate_settings(row: RemoteAccess) -> dict[str, object]:
+    settings: dict[str, object] = {"ignore-cert": False, "cert-tofu": False}
+    if row.protocol != "rdp":
+        return settings
     if getattr(row, "rdp_trust_invalidated_at", None) is not None:
         raise ValueError("RDP certificate trust must be re-authorized after the endpoint changed.")
     fingerprints = normalise_rdp_cert_fingerprints(row.rdp_cert_fingerprints)
-    settings: dict[str, object] = {"ignore-cert": False, "cert-tofu": False}
     if fingerprints:
         settings["cert-fingerprints"] = ",".join(
             freerdp_rdp_cert_fingerprint(fingerprint) for fingerprint in fingerprints
@@ -239,6 +241,8 @@ def rdp_identity_destination(row_id: int, view: str, *, trusted: bool = False) -
 
 
 def rdp_pin_count(row: RemoteAccess) -> int:
+    if row.protocol != "rdp":
+        return 0
     return len(normalise_rdp_cert_fingerprints(row.rdp_cert_fingerprints)) if row.rdp_cert_fingerprints else 0
 
 

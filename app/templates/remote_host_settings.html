@@ -16,7 +16,6 @@
 </div>
 <form method="post" class="remote-settings-shell">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  {% if remote.protocol == 'vnc' %}
   <section class="remote-settings-card">
     <header><span>Connection</span></header>
     <div class="remote-settings-grid two">
@@ -65,6 +64,7 @@
     </div>
     {% endif %}
   </section>
+  {% if remote.protocol == 'rdp' %}
   <section class="remote-settings-card remote-identity-settings" id="rdp-certificate-trust">
     <header>
       <span>RDP certificate trust</span>

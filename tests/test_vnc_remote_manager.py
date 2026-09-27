@@ -1,4 +1,7 @@
 import json
+from datetime import datetime
+
+import pytest
 
 from app.core.security import decrypt_secret
 from app.models.models import IPAddress, RemoteAccess
@@ -39,3 +42,44 @@ def test_graphical_recording_rules_include_vnc_without_changing_ssh():
     assert remote_manager.recording_extension("video/webm", "rdp") == ".webm"
     assert remote_manager.recording_extension("video/webm", "vnc") == ".webm"
     assert remote_manager.recording_extension("text/plain", "ssh") == ".txt"
+
+
+def test_rdp_certificate_trust_is_ignored_for_non_rdp_protocols():
+    remote = _vnc_remote()
+    remote.rdp_cert_fingerprints = f"sha256:{'a' * 64}"
+    remote.rdp_trust_invalidated_at = datetime.utcnow()
+
+    remote.protocol = "rdp"
+    with pytest.raises(ValueError, match="re-authorized"):
+        remote_manager.rdp_certificate_settings(remote)
+
+    remote.protocol = "vnc"
+    assert remote_manager.rdp_certificate_settings(remote) == {"ignore-cert": False, "cert-tofu": False}
+    assert remote_manager.rdp_pin_count(remote) == 0
+    vnc_token = remote_manager.create_guacamole_token(
+        remote, "vnc", "", "synthetic-vnc-password", 1280, 720, 96, "", {},
+    )
+    assert vnc_token
+
+    remote.protocol = "ssh"
+    assert remote_manager.rdp_certificate_settings(remote) == {"ignore-cert": False, "cert-tofu": False}
+    assert remote_manager.rdp_pin_count(remote) == 0
+
+
+def test_protocol_switch_back_to_rdp_restores_existing_trust_policy():
+    remote = _vnc_remote()
+    remote.rdp_cert_fingerprints = f"sha256:{'b' * 64}"
+    remote.rdp_trust_invalidated_at = datetime.utcnow()
+    remote.protocol = "vnc"
+    assert remote_manager.rdp_pin_count(remote) == 0
+    remote.protocol = "rdp"
+    with pytest.raises(ValueError, match="re-authorized"):
+        remote_manager.rdp_certificate_settings(remote)
+
+
+def test_certificate_warning_template_is_protocol_guarded():
+    panel = open("app/templates/_remote_session_panel.html", encoding="utf-8").read()
+    settings = open("app/templates/remote_host_settings.html", encoding="utf-8").read()
+    assert "remote.protocol == 'rdp' and remote.rdp_trust_invalidated_at" in panel
+    assert "{% if remote.protocol == 'rdp' %}" in settings
+    assert "rdp_trust_invalidated_at = None" not in open("app/routers/remote_manager.py", encoding="utf-8").read().split("def save_remote_host_settings", 1)[1].split("def _rdp_certificate_discover_response", 1)[0]
