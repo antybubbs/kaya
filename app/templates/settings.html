@@ -668,7 +668,18 @@
       <header><span>General</span></header>
       <div class="remote-settings-grid">
         {{ switch('split_screen_enabled', 'Enable split screen sessions', 'Allow users to place two live sessions side by side in Remote Manager') }}
-        {{ switch('guacamole_enabled', 'Enable Guacamole for RDP', 'Guacamole is installed alongside Kaya if you used the standard docker compose file. These settings are automatically populated with the local container name unless you use your own guacd server.') }}
+        {{ switch('ssh_enabled', 'Enable SSH', 'Allow new SSH sessions. Existing host records remain available when disabled.') }}
+        {{ switch('rdp_enabled', 'Enable RDP', 'Allow new RDP sessions and RDP certificate review. Existing host records remain available when disabled.') }}
+        {{ switch('vnc_enabled', 'Enable VNC', 'Allow new VNC sessions. Existing host records remain available when disabled.') }}
+        {{ switch('guacamole_enabled', 'Enable Guacamole bridge', 'Required infrastructure for RDP and VNC. SSH does not use Guacamole; the bridge remains available while either graphical protocol is enabled.') }}
+        <label>
+          <strong>VNC input enforcement</strong>
+          <small>Guacamole enforces view-only mode on reconnect; Live allows the browser to switch input without reconnecting.</small>
+          <select name="vnc_input_mode_enforcement">
+            <option value="guacamole" {% if settings.get('vnc_input_mode_enforcement', 'guacamole') == 'guacamole' %}selected{% endif %}>Guacamole enforced</option>
+            <option value="live" {% if settings.get('vnc_input_mode_enforcement', 'guacamole') == 'live' %}selected{% endif %}>Live control</option>
+          </select>
+        </label>
         <label>
           <strong>guacd host</strong>
           <small>Host name or IP address of the Guacamole daemon.</small>

@@ -37,6 +37,8 @@ from app.routers.remote_manager import (
     clean_global_setting,
     decode_settings_blob,
     encode_settings_blob,
+    protocol_enabled,
+    settings_map,
 )
 from app.routers.remote_manager import SETTINGS as REMOTE_MANAGER_DEFAULTS
 from app.services.audit import write_audit
@@ -264,6 +266,8 @@ def save_remote_settings(db: Session, record: IPAddress, enabled: bool, display_
             remote.is_enabled = False
         return
     protocol = clean_remote_protocol(protocol)
+    if not protocol_enabled(protocol, settings_map(db)):
+        raise HTTPException(status_code=403, detail=f"{protocol.upper()} is disabled by the Remote Manager administrator.")
     if not remote:
         remote = RemoteAccess(ip_address_id=record.id)
         db.add(remote)

@@ -125,3 +125,24 @@ def test_vnc_view_only_suppresses_input_and_keys_but_recording_state_remains_ava
     assert "if (!inputEnabled()) return false;" in client
     assert "inputEnabled: inputEnabled()" in keys or "inputEnabled = true" in keys
     assert "available = Boolean(window.MediaRecorder) && recordingEnabled && connected && displayReady" in client
+
+
+def test_protocol_availability_and_vnc_enforcement_are_allowlisted():
+    assert remote_manager.SETTINGS["ssh_enabled"] == "1"
+    assert remote_manager.SETTINGS["rdp_enabled"] == "1"
+    assert remote_manager.SETTINGS["vnc_enabled"] == "1"
+    assert remote_manager.protocol_enabled("ssh", {})
+    assert not remote_manager.protocol_enabled("rdp", {"rdp_enabled": "0"})
+    assert not remote_manager.protocol_enabled("vnc", {"vnc_enabled": "0"})
+    assert remote_manager.clean_global_setting("vnc_input_mode_enforcement", "live") == "live"
+    assert remote_manager.clean_global_setting("vnc_input_mode_enforcement", "unsafe") == "guacamole"
+
+
+def test_protocol_gates_cover_sessions_starts_and_guacamole_websocket():
+    router = open("app/routers/remote_manager.py", encoding="utf-8").read()
+    panel = open("app/templates/_remote_session_panel.html", encoding="utf-8").read()
+    client = open("app/static/js/remote_rdp.js", encoding="utf-8").read()
+    assert "require_enabled_protocol(row, settings)" in router
+    assert "if not protocol_enabled(protocol, settings)" in router
+    assert "data-vnc-input-enforcement" in panel
+    assert "inputModeEnforcement" in client

@@ -7,6 +7,7 @@ if (root) {
   const protocol = root.dataset.protocol || "rdp";
   const protocolLabel = protocol.toUpperCase();
   let inputMode = protocol === "vnc" && root.dataset.vncReadOnly === "1" ? "view-only" : "interactive";
+  const inputModeEnforcement = protocol === "vnc" ? (root.dataset.vncInputEnforcement || "guacamole") : "guacamole";
   let inputModeChanging = false;
   let inputModeChangeFrom = "";
   const form = root.querySelector(".rdp-credential-form");
@@ -446,6 +447,13 @@ if (root) {
 
   const requestInputMode = (mode) => {
     if (protocol !== "vnc" || !["interactive", "view-only"].includes(mode) || mode === inputMode || inputModeChanging || !connected) return;
+    if (inputModeEnforcement === "live") {
+      inputMode = mode;
+      syncKeysMenu();
+      syncInputMenu();
+      postRecordingState();
+      return;
+    }
     inputModeChangeFrom = inputMode;
     inputMode = mode;
     inputModeChanging = true;

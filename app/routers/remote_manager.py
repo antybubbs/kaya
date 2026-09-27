@@ -95,6 +95,9 @@ RDP_SHA256_FINGERPRINT = re.compile(r"^sha256:((?:[0-9a-fA-F]{2}:){31}[0-9a-fA-F
 MAX_RDP_CERT_FINGERPRINTS = 3
 SETTINGS = {
     "guacamole_enabled": "0",
+    "ssh_enabled": "1",
+    "rdp_enabled": "1",
+    "vnc_enabled": "1",
     "split_screen_enabled": "1",
     "guacd_host": "",
     "guacd_port": "4822",
@@ -135,6 +138,7 @@ SETTINGS = {
     "vnc_clipboard": "1",
     "vnc_cursor": "remote",
     "vnc_resize_method": "display-update",
+    "vnc_input_mode_enforcement": "guacamole",
 }
 TERMINAL_SETTING_KEYS = [key for key in SETTINGS if key.startswith("terminal_")]
 RDP_SETTING_KEYS = [key for key in SETTINGS if key.startswith("rdp_")]
@@ -171,6 +175,19 @@ def remote_label(row: RemoteAccess) -> str:
 def clean_protocol(value: str) -> str:
     value = value.lower().strip()
     return value if value in PROTOCOLS else "ssh"
+
+
+def protocol_enabled(protocol: str, settings: dict[str, str]) -> bool:
+    """Return the administrator-controlled availability of a remote protocol."""
+    return settings.get(f"{protocol}_enabled", "1") == "1"
+
+
+def require_enabled_protocol(row: RemoteAccess, settings: dict[str, str]) -> None:
+    if not protocol_enabled(row.protocol, settings):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"{row.protocol.upper()} is disabled by the Remote Manager administrator.",
+        )
 
 
 def default_port(protocol: str) -> int:
@@ -431,6 +448,9 @@ def clean_global_setting(key: str, value: str) -> str:
         "rdp_enable_drive",
         "vnc_read_only",
         "vnc_clipboard",
+        "ssh_enabled",
+        "rdp_enabled",
+        "vnc_enabled",
     }:
         return clean_bool_text(value)
     if key == "terminal_font_size":
@@ -453,6 +473,8 @@ def clean_global_setting(key: str, value: str) -> str:
         return clean_choice(value, {"remote", "local", "hidden"}, SETTINGS[key])
     if key == "vnc_resize_method":
         return clean_choice(value, {"display-update", "reconnect", "none"}, SETTINGS[key])
+    if key == "vnc_input_mode_enforcement":
+        return clean_choice(value, {"guacamole", "live"}, SETTINGS[key])
     if key == "terminal_line_height":
         return clean_float_text(value, 1, 0.8, 2)
     if key == "terminal_theme":
@@ -598,7 +620,7 @@ def settings_map(db: Session) -> dict[str, str]:
         values["guacd_host"] = env_guacd_host
     if env_guacd_port:
         values["guacd_port"] = str(env_guacd_port)
-    for key in ("split_screen_enabled", "recording_mode", "recording_categories", "recording_pause_idle_minutes", *TERMINAL_SETTING_KEYS, *RDP_SETTING_KEYS, *VNC_SETTING_KEYS):
+    for key in ("split_screen_enabled", "recording_mode", "recording_categories", "recording_pause_idle_minutes", "ssh_enabled", "rdp_enabled", "vnc_enabled", "vnc_input_mode_enforcement", *TERMINAL_SETTING_KEYS, *RDP_SETTING_KEYS, *VNC_SETTING_KEYS):
         values[key] = clean_global_setting(key, values.get(key, SETTINGS[key]))
     return values
 
@@ -887,7 +909,7 @@ async def tcp_check(host: str, port: int, timeout: float = 5) -> tuple[bool, str
 def remote_list(request: Request, db: Session = Depends(get_db), user=Depends(require_user)):
     rows = db.query(RemoteAccess).filter(RemoteAccess.is_enabled).options(selectinload(RemoteAccess.ip_address)).order_by(RemoteAccess.protocol.asc(), RemoteAccess.display_name.asc(), RemoteAccess.id.asc()).all()
     settings = settings_map(db)
-    return templates.TemplateResponse(request, "remote_manager.html", {"user": user, "rows": rows, "remote_label": remote_label, "split_screen_enabled": settings.get("split_screen_enabled", "1") == "1", **csrf_context(request)})
+    return templates.TemplateResponse(request, "remote_manager.html", {"user": user, "rows": rows, "settings": settings, "remote_label": remote_label, "split_screen_enabled": settings.get("split_screen_enabled", "1") == "1", **csrf_context(request)})
 
 
 @router.get("/settings")
@@ -899,7 +921,11 @@ def remote_settings(request: Request, db: Session = Depends(get_db), user=Depend
 async def save_remote_settings(request: Request, csrf_token: str = Form(...), guacamole_enabled: str = Form(""), guacd_host: str = Form("", max_length=255), guacd_port: int = Form(4822), db: Session = Depends(get_db), user=Depends(require_admin)):
     validate_csrf_token(request, csrf_token)
     form = await request.form()
-    set_setting(db, "guacamole_enabled", "1" if guacamole_enabled else "0")
+    for key in ("ssh_enabled", "rdp_enabled", "vnc_enabled"):
+        set_setting(db, key, "1" if form.get(key) else "0")
+    graphical_enabled = bool(form.get("rdp_enabled") or form.get("vnc_enabled"))
+    set_setting(db, "guacamole_enabled", "1" if graphical_enabled or guacamole_enabled else "0")
+    set_setting(db, "vnc_input_mode_enforcement", clean_global_setting("vnc_input_mode_enforcement", str(form.get("vnc_input_mode_enforcement", "guacamole"))))
     set_setting(db, "split_screen_enabled", "1" if form.get("split_screen_enabled") else "0")
     set_setting(db, "guacd_host", guacd_host.strip())
     set_setting(db, "guacd_port", str(clean_port(guacd_port, "rdp")))
@@ -907,7 +933,7 @@ async def save_remote_settings(request: Request, csrf_token: str = Form(...), gu
     set_setting(db, "recording_mode", clean_global_setting("recording_mode", str(form.get("recording_mode", "manual"))))
     set_setting(db, "recording_categories", clean_global_setting("recording_categories", str(form.get("recording_categories", ""))))
     set_setting(db, "recording_pause_idle_minutes", clean_global_setting("recording_pause_idle_minutes", str(form.get("recording_pause_idle_minutes", "5"))))
-    for key in TERMINAL_SETTING_KEYS + RDP_SETTING_KEYS:
+    for key in TERMINAL_SETTING_KEYS + RDP_SETTING_KEYS + VNC_SETTING_KEYS:
         set_setting(db, key, clean_global_setting(key, str(form.get(key, ""))))
     db.commit()
     restart_guacamole_bridge()
@@ -1062,6 +1088,7 @@ def remote_session(request: Request, remote_id: int, db: Session = Depends(get_d
     row = require_remote_session(db, remote_id)
     rows = db.query(RemoteAccess).filter(RemoteAccess.is_enabled).options(selectinload(RemoteAccess.ip_address)).order_by(RemoteAccess.protocol.asc(), RemoteAccess.display_name.asc(), RemoteAccess.id.asc()).all()
     settings = settings_map(db)
+    require_enabled_protocol(row, settings)
     remote_settings = effective_remote_settings(row, settings)
     title = remote_label(row)
     return templates.TemplateResponse(request, "remote_session.html", {"user": user, "remote": row, "rows": rows, "remote_label": title, "remote_label_fn": remote_label, "settings": settings, "remote_settings": remote_settings, "ssh_host_key_ready": trusted_ssh_host_key(row) is not None, "ssh_host_identity_view": "session", "rdp_cert_identity_view": "session", "recording_enabled": recording_controls_enabled(settings), "recording_auto_enabled": recording_auto_enabled(row, settings), "remote_category": remote_category(row), **csrf_context(request)})
@@ -1391,6 +1418,7 @@ def delete_remote_host(request: Request, remote_id: int, csrf_token: str = Form(
 def remote_session_panel(request: Request, remote_id: int, db: Session = Depends(get_db), user=Depends(require_user)):
     row = require_remote_session(db, remote_id)
     settings = settings_map(db)
+    require_enabled_protocol(row, settings)
     remote_settings = effective_remote_settings(row, settings)
     title = remote_label(row)
     return templates.TemplateResponse(request, "remote_session_panel.html", {"user": user, "remote": row, "remote_label": title, "settings": settings, "remote_settings": remote_settings, "ssh_host_key_ready": trusted_ssh_host_key(row) is not None, "ssh_host_identity_view": "panel", "rdp_cert_identity_view": "panel", "recording_enabled": recording_controls_enabled(settings), "recording_auto_enabled": recording_auto_enabled(row, settings), "remote_category": remote_category(row), **csrf_context(request)})
@@ -1479,6 +1507,7 @@ async def rdp_check(request: Request, remote_id: int, db: Session = Depends(get_
     if row.protocol != "rdp":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Remote entry is not configured for RDP")
     settings = settings_map(db)
+    require_enabled_protocol(row, settings)
     logs = []
     logs.append(f"Starting RDP pre-flight for {row.ip_address.address}:{row.port}.")
     if not payload.get("username"):
@@ -1517,6 +1546,8 @@ async def rdp_start(request: Request, remote_id: int, db: Session = Depends(get_
     row = require_remote_session(db, remote_id)
     if row.protocol != "rdp":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Remote entry is not configured for RDP")
+    settings = settings_map(db)
+    require_enabled_protocol(row, settings)
     username = str(payload.get("username", "")).strip()
     password = str(payload.get("password", ""))
     if not username or not password:
@@ -1607,6 +1638,8 @@ async def vnc_start(request: Request, remote_id: int, db: Session = Depends(get_
     row = require_remote_session(db, remote_id)
     if row.protocol != "vnc":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Remote entry is not configured for VNC")
+    settings = settings_map(db)
+    require_enabled_protocol(row, settings)
     username = str(payload.get("username", "")).strip()
     password = str(payload.get("password", ""))
     requested_read_only = payload.get("read_only")
@@ -1632,12 +1665,14 @@ async def vnc_start(request: Request, remote_id: int, db: Session = Depends(get_
     vnc_settings = effective_remote_settings(row, settings)["vnc"]
     if requested_read_only is not None:
         vnc_settings["vnc_read_only"] = "1" if requested_read_only else "0"
+    input_mode = "view-only" if vnc_settings.get("vnc_read_only") == "1" else "interactive"
+    if settings.get("vnc_input_mode_enforcement", "guacamole") == "live":
+        vnc_settings["vnc_read_only"] = "0"
     try:
         token = create_guacamole_token(row, "vnc", username, password, width, height, 96, "", vnc_settings)
     except ValueError:
         return JSONResponse({"ok": False, "logs": ["VNC connection settings are invalid."]}, status_code=400)
     guacamole_tokens[token] = GuacamoleSessionToken(remote_id=row.id, user_id=user.id, protocol="vnc", created_at=time.time())
-    input_mode = "view-only" if vnc_settings.get("vnc_read_only") == "1" else "interactive"
     audit_action = "mode_changed" if mode_change_from and mode_change_from != input_mode else "start"
     audit_detail = (
         f"Changed VNC input mode for {remote_label(row)} from {mode_change_from} to {input_mode}"
@@ -1661,6 +1696,9 @@ async def ssh_websocket(websocket: WebSocket, remote_id: int):
             return
         remote = db.get(RemoteAccess, remote_id)
         if not remote or not remote.is_enabled or remote.protocol != "ssh" or not remote.username:
+            await websocket.close(code=1008)
+            return
+        if not protocol_enabled("ssh", settings_map(db)):
             await websocket.close(code=1008)
             return
         trusted_host_key = trusted_ssh_host_key(remote)
@@ -1774,6 +1812,10 @@ async def _guacamole_websocket(websocket: WebSocket, remote_id: int, protocol: s
             return
         remote = db.get(RemoteAccess, remote_id)
         if not remote or not remote.is_enabled or remote.protocol != protocol:
+            await websocket.close(code=1008)
+            return
+        settings = settings_map(db)
+        if not protocol_enabled(protocol, settings):
             await websocket.close(code=1008)
             return
         remote_label_text = remote_label(remote)
