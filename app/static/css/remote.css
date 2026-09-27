@@ -101,6 +101,12 @@ body.remote-resizing{cursor:col-resize;user-select:none}
 .remote-tab-tool:disabled{cursor:not-allowed;opacity:.48}
 .remote-tab-tool.active{background:#ffb357;border-color:#ffd08a;color:#050706}
 .remote-tab-record{font-size:10px;width:34px}
+.remote-keys-menu{position:relative}
+.remote-keys-toggle{font-size:10px;width:38px}
+.remote-keys-list{background:#111827;border:1px solid #ffb357;border-radius:5px;box-shadow:0 8px 20px rgba(0,0,0,.35);display:grid;gap:2px;padding:4px;position:absolute;right:0;top:26px;z-index:20}
+.remote-keys-list[hidden]{display:none}
+.remote-keys-item{background:#ff8a00;border:1px solid #ffb357;border-radius:3px;color:#050706;font-size:11px;font-weight:850;padding:5px 8px;text-align:left;white-space:nowrap}
+.remote-keys-item:hover:not(:disabled){background:#ffb357}
 .remote-layout-tools{align-items:center;display:flex;gap:6px;margin-left:auto;padding:0 8px 6px}
 .remote-layout-button{background:#ff8a00;border:1px solid #ffb357;border-radius:7px;color:#050706;font-size:12px;font-weight:900;height:30px;min-height:30px;padding:0 12px}
 .remote-layout-button:hover:not(:disabled),.remote-layout-button.active{background:#ffb357;border-color:#ffd08a;color:#050706}

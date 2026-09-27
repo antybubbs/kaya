@@ -27,6 +27,12 @@
       <span class="remote-tab-icon">{% if remote.protocol == 'rdp' %}RDP{% elif remote.protocol == 'vnc' %}VNC{% else %}&gt;_{% endif %}</span>
       <span class="remote-tab-title">{{ remote_label }}</span>
       <span class="remote-tab-protocol">{{ remote.protocol|upper }}</span>
+      {% if remote.protocol in ['rdp', 'vnc'] %}
+      <div class="remote-keys-menu" data-remote-keys-menu>
+        <button type="button" class="remote-tab-tool remote-keys-toggle" data-remote-keys-toggle disabled aria-haspopup="menu" aria-expanded="false" title="Send special keys">Keys</button>
+        <div class="remote-keys-list" data-remote-keys-list hidden role="menu"></div>
+      </div>
+      {% endif %}
       {% if recording_enabled|default(false) %}
       <span class="remote-recording-tools remote-recording-tools-inline" data-recording-tools>
       <button type="button" data-recording-toggle disabled>Record</button>
@@ -42,6 +48,7 @@
   <script src="/static/vendor/xterm/addon-fit.js?v={{ asset_version }}"></script>
   <script src="/static/js/remote_session.js?v={{ asset_version }}&ssh=kaya-rewrite-3"></script>
   {% else %}
+  <script src="/static/js/remote_keys.js?v={{ asset_version }}&remote-ui=keys-1"></script>
   <script type="module" src="/static/js/remote_rdp.js?v={{ asset_version }}&rdp-ui=display-refresh-2"></script>
   {% endif %}
 </body>

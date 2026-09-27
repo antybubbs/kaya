@@ -155,6 +155,12 @@
     iframe.contentWindow.postMessage({ type: "kaya:remote-recording-toggle" }, window.location.origin);
   };
 
+  const sendKeySequence = (id, sequenceId) => {
+    const iframe = iframeForTab(id);
+    if (!iframe || !iframe.contentWindow || !sequenceId) return;
+    iframe.contentWindow.postMessage({ type: "kaya:remote-key-sequence", sequenceId }, window.location.origin);
+  };
+
   const tabIdForSource = (source) => {
     const panel = Array.from(panels.querySelectorAll("[data-remote-panel]")).find((candidate) => {
       const iframe = candidate.querySelector("iframe");
@@ -173,13 +179,17 @@
       label: state.label || (state.active ? "Stop" : "Record"),
       status: state.status || "Ready",
     };
+    const graphicalConnected = Boolean(state.graphicalConnected);
     const current = tab.recording || {};
+    const graphicalChanged = tab.graphicalConnected !== graphicalConnected;
+    tab.graphicalConnected = graphicalConnected;
     if (
       current.enabled === nextRecording.enabled
       && current.available === nextRecording.available
       && current.active === nextRecording.active
       && current.label === nextRecording.label
       && current.status === nextRecording.status
+      && !graphicalChanged
     ) {
       return;
     }
@@ -329,6 +339,48 @@
         event.stopPropagation();
         toggleRecording(tab.id);
       });
+
+      if (tab.protocol === "rdp" || tab.protocol === "vnc") {
+        const keysMenu = document.createElement("div");
+        keysMenu.className = "remote-keys-menu";
+        const keysToggle = document.createElement("button");
+        keysToggle.type = "button";
+        keysToggle.className = "remote-tab-tool remote-keys-toggle";
+        keysToggle.textContent = "Keys";
+        keysToggle.title = "Send special keys";
+        keysToggle.disabled = !tab.graphicalConnected;
+        keysToggle.setAttribute("aria-haspopup", "menu");
+        keysToggle.setAttribute("aria-expanded", "false");
+        const keysList = document.createElement("div");
+        keysList.className = "remote-keys-list";
+        keysList.hidden = true;
+        keysList.setAttribute("role", "menu");
+        (window.KayaRemoteKeys?.sequences || []).forEach((sequence) => {
+          const keyButton = document.createElement("button");
+          keyButton.type = "button";
+          keyButton.className = "remote-keys-item";
+          keyButton.textContent = sequence.label;
+          keyButton.dataset.sequenceId = sequence.id;
+          keyButton.disabled = !tab.graphicalConnected;
+          keyButton.setAttribute("role", "menuitem");
+          keyButton.addEventListener("click", (event) => {
+            event.stopPropagation();
+            sendKeySequence(tab.id, sequence.id);
+            keysList.hidden = true;
+            keysToggle.setAttribute("aria-expanded", "false");
+          });
+          keysList.appendChild(keyButton);
+        });
+        keysToggle.addEventListener("click", (event) => {
+          event.stopPropagation();
+          if (keysToggle.disabled) return;
+          const open = keysList.hidden;
+          keysList.hidden = !open;
+          keysToggle.setAttribute("aria-expanded", String(open));
+        });
+        keysMenu.append(keysToggle, keysList);
+        tools.appendChild(keysMenu);
+      }
 
       const refresh = document.createElement("button");
       refresh.type = "button";
@@ -549,10 +601,22 @@
 
   document.addEventListener("click", (event) => {
     if (!root.contains(event.target)) closeMenus();
+    root.querySelectorAll(".remote-keys-list:not([hidden])").forEach((menu) => {
+      if (!menu.parentElement.contains(event.target)) {
+        menu.hidden = true;
+        menu.parentElement.querySelector("[aria-expanded]")?.setAttribute("aria-expanded", "false");
+      }
+    });
   });
 
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") closeMenus();
+    if (event.key === "Escape") {
+      root.querySelectorAll(".remote-keys-list:not([hidden])").forEach((menu) => {
+        menu.hidden = true;
+        menu.parentElement.querySelector("[aria-expanded]")?.setAttribute("aria-expanded", "false");
+      });
+    }
   });
 
   window.addEventListener("message", (event) => {

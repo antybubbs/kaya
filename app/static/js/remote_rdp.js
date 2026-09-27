@@ -48,6 +48,49 @@ if (root) {
   recordingSampleCanvas.height = 36;
   const recordingSampleContext = recordingSampleCanvas.getContext("2d", { willReadFrequently: true });
 
+  const keysToggle = document.querySelector("[data-remote-keys-toggle]");
+  const keysList = document.querySelector("[data-remote-keys-list]");
+
+  const syncKeysMenu = () => {
+    const available = connected && displayReady;
+    if (keysToggle) keysToggle.disabled = !available;
+    if (keysList) keysList.querySelectorAll("button").forEach((button) => { button.disabled = !available; });
+  };
+
+  if (keysToggle && keysList) {
+    (window.KayaRemoteKeys?.sequences || []).forEach((sequence) => {
+      const keyButton = document.createElement("button");
+      keyButton.type = "button";
+      keyButton.className = "remote-keys-item";
+      keyButton.textContent = sequence.label;
+      keyButton.dataset.sequenceId = sequence.id;
+      keyButton.setAttribute("role", "menuitem");
+      keyButton.addEventListener("click", () => {
+        window.KayaRemoteKeys?.sendKeySequence({ client, connected, displayReady, displayElement, markActivity, id: sequence.id });
+        keysList.hidden = true;
+        keysToggle.setAttribute("aria-expanded", "false");
+      });
+      keysList.appendChild(keyButton);
+    });
+    keysToggle.addEventListener("click", () => {
+      if (keysToggle.disabled) return;
+      const open = keysList.hidden;
+      keysList.hidden = !open;
+      keysToggle.setAttribute("aria-expanded", String(open));
+    });
+    document.addEventListener("click", (event) => {
+      if (!keysList.parentElement.contains(event.target)) {
+        keysList.hidden = true;
+        keysToggle.setAttribute("aria-expanded", "false");
+      }
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      keysList.hidden = true;
+      keysToggle.setAttribute("aria-expanded", "false");
+    });
+  }
+
   const setRecordingStatus = (message) => {
     if (recordingStatus) recordingStatus.textContent = message;
   };
@@ -62,7 +105,9 @@ if (root) {
       active,
       label: active ? "Stop" : "Record",
       status: recordingStatus ? recordingStatus.textContent : "Ready",
+      graphicalConnected: connected && displayReady,
     };
+    syncKeysMenu();
     if (window.parent && window.parent !== window) {
       window.parent.postMessage(payload, window.location.origin);
     }
@@ -502,6 +547,16 @@ if (root) {
     if (event.data && event.data.type === "kaya:remote-display-refresh") {
       lastRequestedSize = "";
       scheduleResize();
+    }
+    if (event.data && event.data.type === "kaya:remote-key-sequence") {
+      window.KayaRemoteKeys?.sendKeySequence({
+        client,
+        connected,
+        displayReady,
+        displayElement,
+        markActivity,
+        id: event.data.sequenceId,
+      });
     }
     if (event.data && event.data.type === "kaya:remote-recording-toggle") {
       if (recorder && recorder.state !== "inactive") {
