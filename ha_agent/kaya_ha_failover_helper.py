@@ -136,10 +136,33 @@ def _wait_for_dhcp(enabled):
 
 
 def _set_dhcp(enabled):
+    before = _dhcp_status()
     result = _run([FTL, "--config", "dhcp.active", "true" if enabled else "false"])
+    immediate = _dhcp_active()
+    requested = "true" if enabled else "false"
+    observed = (
+        "true" if immediate is True else "false" if immediate is False else "unknown"
+    )
     if result.returncode:
-        raise RuntimeError("Pi-hole did not confirm the requested DHCP state.")
-    return _wait_for_dhcp(enabled)
+        raise RuntimeError(
+            f"Pi-hole DHCP activation command failed with exit code {result.returncode}; "
+            f"requested dhcp.active={requested}, immediately observed dhcp.active={observed}, "
+            f"stderr_present={bool(result.stderr.strip())}."
+        )
+    if immediate is not enabled:
+        raise RuntimeError(
+            f"Pi-hole DHCP command returned success but dhcp.active remained {observed}; "
+            f"requested dhcp.active={requested}, stderr_present={bool(result.stderr.strip())}."
+        )
+    settled = _wait_for_dhcp(enabled)
+    settled["activation_command"] = {
+        "return_code": result.returncode,
+        "before_configured": before.get("configured"),
+        "immediate_configured": immediate,
+        "settled_configured": settled.get("configured"),
+        "stderr_present": bool(result.stderr.strip()),
+    }
+    return settled
 
 
 def _owns_vip():

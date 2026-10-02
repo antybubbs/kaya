@@ -4,6 +4,12 @@ const RDP_RESIZE_SETTLE_MS = 600;
 
 const root = document.querySelector("[data-rdp-session]");
 if (root) {
+  const protocol = root.dataset.protocol || "rdp";
+  const protocolLabel = protocol.toUpperCase();
+  let inputMode = protocol === "vnc" && root.dataset.vncReadOnly === "1" ? "view-only" : "interactive";
+  const inputModeEnforcement = protocol === "vnc" ? (root.dataset.vncInputEnforcement || "guacamole") : "guacamole";
+  let inputModeChanging = false;
+  let inputModeChangeFrom = "";
   const form = root.querySelector(".rdp-credential-form");
   const log = root.querySelector("[data-rdp-log]");
   const button = form ? form.querySelector("button") : null;
@@ -46,6 +52,100 @@ if (root) {
   recordingSampleCanvas.height = 36;
   const recordingSampleContext = recordingSampleCanvas.getContext("2d", { willReadFrequently: true });
 
+  const keysToggle = document.querySelector("[data-remote-keys-toggle]");
+  const keysList = document.querySelector("[data-remote-keys-list]");
+  const inputToggle = document.querySelector("[data-remote-input-toggle]");
+  const inputList = document.querySelector("[data-remote-input-list]");
+  const inputEnabled = () => protocol !== "vnc" || inputMode === "interactive";
+
+  const syncKeysMenu = () => {
+    const available = connected && displayReady && inputEnabled();
+    if (keysToggle) keysToggle.disabled = !available;
+    if (keysList) keysList.querySelectorAll("button").forEach((button) => { button.disabled = !available; });
+  };
+
+  const syncInputMenu = () => {
+    const available = protocol === "vnc" && connected && displayReady && !inputModeChanging;
+    if (inputToggle) {
+      inputToggle.disabled = !available;
+      inputToggle.textContent = inputMode === "view-only" ? "View only" : "Input";
+    }
+    if (inputList) inputList.querySelectorAll("button").forEach((button) => {
+      button.disabled = !available;
+      button.textContent = `${button.dataset.inputMode === inputMode ? "✓ " : ""}${button.dataset.inputMode === "view-only" ? "View only" : "Interactive"}`;
+    });
+  };
+
+  if (keysToggle && keysList) {
+    (window.KayaRemoteKeys?.sequences || []).forEach((sequence) => {
+      const keyButton = document.createElement("button");
+      keyButton.type = "button";
+      keyButton.className = "remote-keys-item";
+      keyButton.textContent = sequence.label;
+      keyButton.dataset.sequenceId = sequence.id;
+      keyButton.setAttribute("role", "menuitem");
+      keyButton.addEventListener("click", () => {
+        window.KayaRemoteKeys?.sendKeySequence({ client, connected, displayReady, displayElement, markActivity, inputEnabled: inputEnabled(), id: sequence.id });
+        keysList.hidden = true;
+        keysToggle.setAttribute("aria-expanded", "false");
+      });
+      keysList.appendChild(keyButton);
+    });
+    keysToggle.addEventListener("click", () => {
+      if (keysToggle.disabled) return;
+      const open = keysList.hidden;
+      keysList.hidden = !open;
+      keysToggle.setAttribute("aria-expanded", String(open));
+    });
+    document.addEventListener("click", (event) => {
+      if (!keysList.parentElement.contains(event.target)) {
+        keysList.hidden = true;
+        keysToggle.setAttribute("aria-expanded", "false");
+      }
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      keysList.hidden = true;
+      keysToggle.setAttribute("aria-expanded", "false");
+    });
+  }
+
+  if (inputToggle && inputList) {
+    ["interactive", "view-only"].forEach((mode) => {
+      const modeButton = document.createElement("button");
+      modeButton.type = "button";
+      modeButton.className = "remote-input-item";
+      modeButton.dataset.inputMode = mode;
+      modeButton.setAttribute("role", "menuitemradio");
+      modeButton.addEventListener("click", () => {
+        window.parent?.postMessage({ type: "kaya:remote-input-mode", inputMode: mode }, window.location.origin);
+        if (window.parent === window && window.opener && !window.opener.closed) {
+          window.opener.postMessage({ type: "kaya:remote-input-mode", inputMode: mode }, window.location.origin);
+        }
+        inputList.hidden = true;
+        inputToggle.setAttribute("aria-expanded", "false");
+      });
+      inputList.appendChild(modeButton);
+    });
+    inputToggle.addEventListener("click", () => {
+      if (inputToggle.disabled) return;
+      const open = inputList.hidden;
+      inputList.hidden = !open;
+      inputToggle.setAttribute("aria-expanded", String(open));
+    });
+    document.addEventListener("click", (event) => {
+      if (!inputList.parentElement.contains(event.target)) {
+        inputList.hidden = true;
+        inputToggle.setAttribute("aria-expanded", "false");
+      }
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      inputList.hidden = true;
+      inputToggle.setAttribute("aria-expanded", "false");
+    });
+  }
+
   const setRecordingStatus = (message) => {
     if (recordingStatus) recordingStatus.textContent = message;
   };
@@ -60,7 +160,12 @@ if (root) {
       active,
       label: active ? "Stop" : "Record",
       status: recordingStatus ? recordingStatus.textContent : "Ready",
+      graphicalConnected: connected && displayReady,
+      inputMode,
+      inputModeChanging,
     };
+    syncKeysMenu();
+    syncInputMenu();
     if (window.parent && window.parent !== window) {
       window.parent.postMessage(payload, window.location.origin);
     }
@@ -150,12 +255,12 @@ if (root) {
   const uploadRecording = async (blob, startedAt, endedAt, trigger) => {
     const formData = new FormData();
     formData.append("csrf_token", root.dataset.recordingCsrfToken || "");
-    formData.append("protocol", "rdp");
+    formData.append("protocol", protocol);
     formData.append("trigger", trigger);
     formData.append("started_at", startedAt.toISOString());
     formData.append("ended_at", endedAt.toISOString());
     formData.append("duration_seconds", String(Math.max(0, (endedAt - startedAt) / 1000)));
-    formData.append("file", blob, "rdp-session.webm");
+    formData.append("file", blob, `${protocol}-session.webm`);
     const response = await fetch(root.dataset.recordingUploadUrl, { method: "POST", body: formData });
     if (!response.ok) throw new Error(`Upload failed (${response.status})`);
   };
@@ -340,6 +445,29 @@ if (root) {
     syncRecordingButton();
   };
 
+  const requestInputMode = (mode) => {
+    if (protocol !== "vnc" || !["interactive", "view-only"].includes(mode) || mode === inputMode || inputModeChanging || !connected) return;
+    if (inputModeEnforcement === "live") {
+      inputMode = mode;
+      syncKeysMenu();
+      syncInputMenu();
+      postRecordingState();
+      return;
+    }
+    inputModeChangeFrom = inputMode;
+    inputMode = mode;
+    inputModeChanging = true;
+    disconnectCurrentSession();
+    displayTarget.replaceChildren();
+    placeholder.hidden = false;
+    form.hidden = false;
+    button.disabled = false;
+    setOverlayVisible(true);
+    setStatus("VNC mode change", `Enter the VNC password to reconnect in ${mode === "view-only" ? "view-only" : "interactive"} mode.`);
+    writeLog(["VNC input mode changed locally. Password is required for the secure reconnect and is not stored."]);
+    syncInputMenu();
+  };
+
   const stopSession = () => {
     manuallyStopped = true;
     disconnectCurrentSession();
@@ -368,6 +496,7 @@ if (root) {
     const mouse = new Guacamole.Mouse(displayEl);
     mouse.onmousedown = mouse.onmouseup = mouse.onmousemove = (state) => {
       markActivity();
+      if (!inputEnabled()) return;
       displayEl.focus({ preventScroll: true });
       const adjustedState = new Guacamole.Mouse.State(
         Math.round(state.x / currentScale),
@@ -383,11 +512,13 @@ if (root) {
     keyboard = new Guacamole.Keyboard(displayEl);
     keyboard.onkeydown = (keysym) => {
       markActivity();
+      if (!inputEnabled()) return false;
       client.sendKeyEvent(1, keysym);
       return false;
     };
     keyboard.onkeyup = (keysym) => {
       markActivity();
+      if (!inputEnabled()) return false;
       client.sendKeyEvent(0, keysym);
       return false;
     };
@@ -399,6 +530,7 @@ if (root) {
     setOverlayVisible(false);
     if (displayElement) displayElement.focus({ preventScroll: true });
     syncRecordingButton();
+    syncInputMenu();
     if (recordingAuto) startRecording("auto");
   };
 
@@ -407,10 +539,11 @@ if (root) {
       window.requestAnimationFrame(() => window.requestAnimationFrame(resolve));
     });
 
-  const connectDisplay = async (token, handoff = false) => {
+  const connectDisplay = async (token, handoff = false, handoffInputMode = "") => {
     manuallyStopped = false;
     disconnectReason = "";
     activeToken = token;
+    if (protocol === "vnc" && ["interactive", "view-only"].includes(handoffInputMode)) inputMode = handoffInputMode;
     disconnectCurrentSession();
     window.clearTimeout(resizeTimer);
     displayTarget.replaceChildren();
@@ -440,15 +573,15 @@ if (root) {
     attachInput();
     client.onerror = (error) => {
       setOverlayVisible(true);
-      writeLog([`RDP display error: ${error.message || "Unknown error"}`]);
-      setStatus("Connection error", error.message || "The RDP session could not be opened.");
+      writeLog([`${protocolLabel} display error: ${error.message || "Unknown error"}`]);
+      setStatus("Connection error", error.message || `The ${protocolLabel} session could not be opened.`);
       connected = false;
       form.hidden = false;
       button.disabled = false;
     };
     client.onstatechange = (state) => {
       if (state === Guacamole.Client.State.CONNECTED) {
-        setStatus("Connected", "RDP session is active.");
+        setStatus("Connected", `${protocolLabel} session is active.`);
         connected = true;
         markActivity();
         syncRecordingButton();
@@ -471,7 +604,7 @@ if (root) {
           : disconnectReason
             ? "Idle timeout"
             : "Disconnected";
-        setStatus(disconnectTitle, disconnectReason || "The RDP session has ended.");
+        setStatus(disconnectTitle, disconnectReason || `The ${protocolLabel} session has ended.`);
         form.hidden = false;
         button.disabled = false;
       }
@@ -501,6 +634,20 @@ if (root) {
       lastRequestedSize = "";
       scheduleResize();
     }
+    if (event.data && event.data.type === "kaya:remote-key-sequence") {
+      window.KayaRemoteKeys?.sendKeySequence({
+        client,
+        connected,
+        displayReady,
+        displayElement,
+        markActivity,
+        inputEnabled: inputEnabled(),
+        id: event.data.sequenceId,
+      });
+    }
+    if (event.data && event.data.type === "kaya:remote-input-mode") {
+      requestInputMode(event.data.inputMode);
+    }
     if (event.data && event.data.type === "kaya:remote-recording-toggle") {
       if (recorder && recorder.state !== "inactive") {
         stopRecording();
@@ -523,6 +670,7 @@ if (root) {
         requestId: event.data.requestId,
         ok: connected && Boolean(activeToken),
         token: activeToken,
+        inputMode,
       }, event.origin);
     }
     if (event.data && event.data.type === "kaya:remote-popout-detached") {
@@ -541,8 +689,8 @@ if (root) {
       if (event.data.requestId !== hashParams.get("requestId") || !event.data.token) return;
       form.hidden = true;
       setOverlayVisible(true);
-      writeLog(["Opening popped-out RDP session."]);
-      connectDisplay(event.data.token, true);
+      writeLog([`Opening popped-out ${protocolLabel} session.`]);
+      connectDisplay(event.data.token, true, event.data.inputMode);
     }
   });
   document.addEventListener("visibilitychange", () => {
@@ -566,7 +714,7 @@ if (root) {
   button.addEventListener("click", async () => {
     button.disabled = true;
     setOverlayVisible(true);
-    writeLog(["Creating RDP session. Password is not stored."]);
+    writeLog([`Creating ${protocolLabel} session. Password is not stored.`]);
     const formData = new FormData(form);
     const size = displaySize();
     try {
@@ -581,6 +729,8 @@ if (root) {
           height: size.height,
           dpi: size.dpi,
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "",
+          ...(protocol === "vnc" ? { read_only: inputMode === "view-only" } : {}),
+          ...(protocol === "vnc" && inputModeChangeFrom ? { mode_change_from: inputModeChangeFrom } : {}),
         }),
       });
       const data = await response.json();
@@ -594,6 +744,9 @@ if (root) {
         button.disabled = false;
         return;
       }
+      if (protocol === "vnc" && ["interactive", "view-only"].includes(data.input_mode)) inputMode = data.input_mode;
+      inputModeChanging = false;
+      inputModeChangeFrom = "";
       const passwordInput = form.querySelector("input[name='rdp_password']");
       if (passwordInput) passwordInput.value = "";
       form.hidden = true;
@@ -609,7 +762,7 @@ if (root) {
   if (handoffRequestId && window.opener && !window.opener.closed) {
     form.hidden = true;
     setOverlayVisible(true);
-    writeLog(["Waiting for secure RDP handoff."]);
+    writeLog([`Waiting for secure ${protocolLabel} handoff.`]);
     window.opener.postMessage({ type: "kaya:remote-popout-ready", requestId: handoffRequestId }, window.location.origin);
   }
 }

@@ -46,7 +46,7 @@
         {% set selected_protocol = remote.protocol if remote else 'ssh' %}
         {% for option in remote_protocols %}<option value="{{ option }}" {% if selected_protocol == option %}selected{% endif %}>{{ option|upper }}</option>{% endfor %}
       </select></label>
-      <label>Port<input name="remote_port" type="number" min="1" max="65535" value="{{ remote.port if remote else 22 }}"></label>
+      <label>Port<input name="remote_port" type="number" min="1" max="65535" value="{{ remote.port if remote else (5900 if selected_protocol == 'vnc' else 3389 if selected_protocol == 'rdp' else 22) }}"></label>
       <label>Username<input name="remote_username" autocomplete="username" value="{{ remote.username if remote and remote.username else '' }}"></label>
     </div>
     <details class="remote-overrides">

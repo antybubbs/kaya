@@ -5,7 +5,7 @@
 
 ## Purpose
 
-Remote Manager provides browser-based SSH and RDP access to configured hosts, plus session recording.
+Remote Manager provides browser-based SSH, RDP and VNC access to configured hosts, plus session recording.
 
 ## Routes
 
@@ -17,7 +17,9 @@ Remote Manager provides browser-based SSH and RDP access to configured hosts, pl
 - `/remote-manager/{remote_id}/settings`
 - SSH websocket routes
 - RDP websocket routes
+- VNC websocket routes
 - RDP check/start endpoints
+- VNC start endpoint
 - Recording upload/media/download/delete endpoints
 
 ## Models Used
@@ -32,9 +34,10 @@ Remote Manager provides browser-based SSH and RDP access to configured hosts, pl
 
 - List configured remotes.
 - Configure global remote settings.
-- Configure per-host remote display/protocol/terminal/RDP settings.
+- Configure per-host remote display/protocol/terminal/RDP/VNC settings.
 - Start SSH sessions through the local Node websocket service.
 - Start RDP sessions through Guacamole bridge and guacd.
+- Start VNC sessions through the same Guacamole bridge and guacd; the browser never connects directly to port 5900.
 - Upload and manage session recordings.
 - Download recordings, including MP4 conversion path for WebM recordings.
 
@@ -47,7 +50,17 @@ Remote Manager provides browser-based SSH and RDP access to configured hosts, pl
 
 ## Settings
 
-Settings include Guacamole enablement, guacd host/port, split screen mode, idle timeout, recording controls, terminal preferences, and RDP display/performance options.
+Settings include Guacamole enablement, guacd host/port, split screen mode, idle timeout, recording controls, terminal preferences, RDP display/performance options, and VNC read-only, clipboard, cursor, and resize options.
+
+## VNC
+
+VNC uses the existing internal `guacd` service and the server-generated, short-lived Guacamole bootstrap used by RDP. Kaya supports the usual VNC password-only flow and optional username/password authentication where the installed libvncclient supports the server's negotiated authentication scheme. The VNC default port is `5900`; custom ports from 1 through 65535 are accepted.
+
+VNC credentials are supplied for the session only and are carried inside Kaya's encrypted server-side bootstrap. They are not persisted, returned by normal APIs, logged, or placed in URLs. Read-only mode is enforced in the Guacamole VNC connection settings. Clipboard access can be disabled in both directions. Browser scaling always remains available; remote resize is requested only when enabled and a VNC server may refuse or ignore it without that ending the session.
+
+VNC security is implementation-dependent. The VNC standard defines password authentication, while non-standard authentication schemes depend on the libvncclient build used by guacd. Kaya does not claim RDP/NLA-equivalent protection or invent certificate pinning for VNC. Use VNC on a private/VPN network and do not expose a plain VNC server directly to the internet. The current Kaya Compose configuration keeps guacd internal and does not publish VNC or guacd ports. Reverse VNC is not supported.
+
+The deployed Compose file pins `guacamole/guacd:1.6.0`, which includes Guacamole's VNC client when the image's libvncclient dependency is present. The image must still be verified in the deployment environment; this development host did not have the image available for inspection. Guacamole 1.6.0 documents `read-only`, `disable-copy`, `disable-paste`, `cursor`, and `disable-display-resize` for VNC. Its documented `security` setting is an RDP setting, not a VNC setting, so Kaya does not set `security: any` for VNC.
 
 ## RDP certificate trust
 

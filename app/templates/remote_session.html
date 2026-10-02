@@ -20,6 +20,7 @@
 <script src="/static/vendor/xterm/addon-fit.js?v={{ asset_version }}" defer></script>
 <script src="/static/js/remote_session.js?v={{ asset_version }}&ssh=kaya-rewrite-3" defer></script>
 {% else %}
+  <script src="/static/js/remote_keys.js?v={{ asset_version }}&remote-ui=keys-1"></script>
 <script type="module" src="/static/js/remote_rdp.js?v={{ asset_version }}&rdp-ui=display-refresh-2"></script>
 {% endif %}
 {% endblock %}

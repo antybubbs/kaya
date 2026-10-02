@@ -45,7 +45,7 @@ def seed(db: Session):
         ("dns_automatic_update", {"address": "192.0.2.43"}, ("192.0.2.43", "rdp", 3389)),
     ],
 )
-def test_every_supported_endpoint_change_invalidates_pin_and_fails_closed(reason, changes, expected):
+def test_every_supported_endpoint_change_invalidates_rdp_trust_and_only_rdp_fails_closed(reason, changes, expected):
     with Session(database()) as db:
         actor, address, remote = seed(db)
         assert update_remote_endpoint(
@@ -55,8 +55,11 @@ def test_every_supported_endpoint_change_invalidates_pin_and_fails_closed(reason
         assert (address.address, remote.protocol, remote.port) == expected
         assert remote.rdp_cert_fingerprints is None
         assert remote.rdp_trust_invalidated_at is not None
-        with pytest.raises(ValueError, match="re-authorized"):
-            remote_manager.rdp_certificate_settings(remote)
+        if expected[1] == "rdp":
+            with pytest.raises(ValueError, match="re-authorized"):
+                remote_manager.rdp_certificate_settings(remote)
+        else:
+            assert remote_manager.rdp_certificate_settings(remote) == {"ignore-cert": False, "cert-tofu": False}
         audit = db.query(AuditLog).filter_by(action="rdp_certificate_trust_invalidated").one()
         assert audit.user_id == actor.id
         assert audit.ip_address == "198.51.100.2"

@@ -155,6 +155,38 @@
     iframe.contentWindow.postMessage({ type: "kaya:remote-recording-toggle" }, window.location.origin);
   };
 
+  const sendKeySequence = (id, sequenceId) => {
+    const iframe = iframeForTab(id);
+    if (!iframe || !iframe.contentWindow || !sequenceId) return;
+    iframe.contentWindow.postMessage({ type: "kaya:remote-key-sequence", sequenceId }, window.location.origin);
+  };
+
+  const sendInputMode = (id, inputMode) => {
+    const iframe = iframeForTab(id);
+    if (!iframe || !iframe.contentWindow || !inputMode) return;
+    iframe.contentWindow.postMessage({ type: "kaya:remote-input-mode", inputMode }, window.location.origin);
+  };
+
+  const positionKeyMenu = (menu) => {
+    const toggle = menu?.parentElement?.querySelector("[aria-expanded]");
+    if (!menu || !toggle || menu.hidden) return;
+    const toggleRect = toggle.getBoundingClientRect();
+    const menuWidth = menu.offsetWidth;
+    const menuHeight = menu.offsetHeight;
+    const margin = 8;
+    const left = Math.max(margin, Math.min(toggleRect.right - menuWidth, window.innerWidth - menuWidth - margin));
+    const below = toggleRect.bottom + 4;
+    const top = below + menuHeight <= window.innerHeight - margin
+      ? below
+      : Math.max(margin, toggleRect.top - menuHeight - 4);
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+  };
+
+  const positionOpenKeyMenus = () => {
+    root.querySelectorAll(".remote-keys-list:not([hidden]), .remote-input-list:not([hidden])").forEach(positionKeyMenu);
+  };
+
   const tabIdForSource = (source) => {
     const panel = Array.from(panels.querySelectorAll("[data-remote-panel]")).find((candidate) => {
       const iframe = candidate.querySelector("iframe");
@@ -173,13 +205,23 @@
       label: state.label || (state.active ? "Stop" : "Record"),
       status: state.status || "Ready",
     };
+    const graphicalConnected = Boolean(state.graphicalConnected);
+    const inputMode = state.inputMode === "view-only" ? "view-only" : "interactive";
+    const inputModeChanging = Boolean(state.inputModeChanging);
     const current = tab.recording || {};
+    const graphicalChanged = tab.graphicalConnected !== graphicalConnected;
+    const inputModeChanged = tab.inputMode !== inputMode || tab.inputModeChanging !== inputModeChanging;
+    tab.graphicalConnected = graphicalConnected;
+    tab.inputMode = inputMode;
+    tab.inputModeChanging = inputModeChanging;
     if (
       current.enabled === nextRecording.enabled
       && current.available === nextRecording.available
       && current.active === nextRecording.active
       && current.label === nextRecording.label
       && current.status === nextRecording.status
+      && !graphicalChanged
+      && !inputModeChanged
     ) {
       return;
     }
@@ -252,7 +294,7 @@
     return panel;
   };
 
-  const iconFor = (protocol) => (protocol === "rdp" ? "RDP" : ">_");
+  const iconFor = (protocol) => (protocol === "rdp" ? "RDP" : protocol === "vnc" ? "VNC" : ">_");
 
   const setSplitEnabled = (enabled) => {
     if (!splitFeatureEnabled) {
@@ -330,6 +372,91 @@
         toggleRecording(tab.id);
       });
 
+      if (tab.protocol === "vnc") {
+        const inputMenu = document.createElement("div");
+        inputMenu.className = "remote-input-menu";
+        const inputToggle = document.createElement("button");
+        inputToggle.type = "button";
+        inputToggle.className = "remote-tab-tool remote-input-toggle";
+        inputToggle.textContent = tab.inputMode === "view-only" ? "View only" : "Input";
+        inputToggle.title = "Choose VNC input mode";
+        inputToggle.disabled = !tab.graphicalConnected || tab.inputModeChanging;
+        inputToggle.setAttribute("aria-haspopup", "menu");
+        inputToggle.setAttribute("aria-expanded", "false");
+        const inputList = document.createElement("div");
+        inputList.className = "remote-input-list";
+        inputList.hidden = true;
+        inputList.setAttribute("role", "menu");
+        ["interactive", "view-only"].forEach((mode) => {
+          const modeButton = document.createElement("button");
+          modeButton.type = "button";
+          modeButton.className = "remote-input-item";
+          modeButton.dataset.inputMode = mode;
+          modeButton.textContent = `${tab.inputMode === mode ? "✓ " : ""}${mode === "view-only" ? "View only" : "Interactive"}`;
+          modeButton.disabled = !tab.graphicalConnected || tab.inputModeChanging;
+          modeButton.setAttribute("role", "menuitemradio");
+          modeButton.addEventListener("click", (event) => {
+            event.stopPropagation();
+            sendInputMode(tab.id, mode);
+            inputList.hidden = true;
+            inputToggle.setAttribute("aria-expanded", "false");
+          });
+          inputList.appendChild(modeButton);
+        });
+        inputToggle.addEventListener("click", (event) => {
+          event.stopPropagation();
+          if (inputToggle.disabled) return;
+          const open = inputList.hidden;
+          inputList.hidden = !open;
+          inputToggle.setAttribute("aria-expanded", String(open));
+        });
+        inputMenu.append(inputToggle, inputList);
+        tools.appendChild(inputMenu);
+      }
+
+      if (tab.protocol === "rdp" || tab.protocol === "vnc") {
+        const keysMenu = document.createElement("div");
+        keysMenu.className = "remote-keys-menu";
+        const keysToggle = document.createElement("button");
+        keysToggle.type = "button";
+        keysToggle.className = "remote-tab-tool remote-keys-toggle";
+        keysToggle.textContent = "Keys";
+        keysToggle.title = "Send special keys";
+        keysToggle.disabled = !tab.graphicalConnected;
+        keysToggle.setAttribute("aria-haspopup", "menu");
+        keysToggle.setAttribute("aria-expanded", "false");
+        const keysList = document.createElement("div");
+        keysList.className = "remote-keys-list";
+        keysList.hidden = true;
+        keysList.setAttribute("role", "menu");
+        (window.KayaRemoteKeys?.sequences || []).forEach((sequence) => {
+          const keyButton = document.createElement("button");
+          keyButton.type = "button";
+          keyButton.className = "remote-keys-item";
+          keyButton.textContent = sequence.label;
+          keyButton.dataset.sequenceId = sequence.id;
+          keyButton.disabled = !tab.graphicalConnected;
+          keyButton.setAttribute("role", "menuitem");
+          keyButton.addEventListener("click", (event) => {
+            event.stopPropagation();
+            sendKeySequence(tab.id, sequence.id);
+            keysList.hidden = true;
+            keysToggle.setAttribute("aria-expanded", "false");
+          });
+          keysList.appendChild(keyButton);
+        });
+        keysToggle.addEventListener("click", (event) => {
+          event.stopPropagation();
+          if (keysToggle.disabled) return;
+          const open = keysList.hidden;
+          keysList.hidden = !open;
+          keysToggle.setAttribute("aria-expanded", String(open));
+          if (open) positionKeyMenu(keysList);
+        });
+        keysMenu.append(keysToggle, keysList);
+        tools.appendChild(keysMenu);
+      }
+
       const refresh = document.createElement("button");
       refresh.type = "button";
       refresh.className = "remote-tab-tool";
@@ -347,7 +474,7 @@
       popout.textContent = "P";
       popout.addEventListener("click", (event) => {
         event.stopPropagation();
-        if (tab.protocol === "rdp" || tab.protocol === "ssh") {
+        if (tab.protocol === "rdp" || tab.protocol === "vnc" || tab.protocol === "ssh") {
           requestPopoutHandoff(tab);
           return;
         }
@@ -549,11 +676,26 @@
 
   document.addEventListener("click", (event) => {
     if (!root.contains(event.target)) closeMenus();
+    root.querySelectorAll(".remote-keys-list:not([hidden]), .remote-input-list:not([hidden])").forEach((menu) => {
+      if (!menu.parentElement.contains(event.target)) {
+        menu.hidden = true;
+        menu.parentElement.querySelector("[aria-expanded]")?.setAttribute("aria-expanded", "false");
+      }
+    });
   });
 
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") closeMenus();
+    if (event.key === "Escape") {
+      root.querySelectorAll(".remote-keys-list:not([hidden]), .remote-input-list:not([hidden])").forEach((menu) => {
+        menu.hidden = true;
+        menu.parentElement.querySelector("[aria-expanded]")?.setAttribute("aria-expanded", "false");
+      });
+    }
   });
+
+  window.addEventListener("resize", positionOpenKeyMenus);
+  tabbar.addEventListener("scroll", positionOpenKeyMenus, { passive: true });
 
   window.addEventListener("message", (event) => {
     if (event.origin !== window.location.origin) return;
@@ -584,6 +726,7 @@
         pending.timeout = window.setTimeout(() => pendingPopouts.delete(data.requestId), 30000);
         pending.token = data.token || "";
         pending.password = data.password || "";
+        pending.inputMode = data.inputMode === "view-only" ? "view-only" : "interactive";
         openPopoutForHandoff(tab, data.requestId);
       } else {
         pendingPopouts.delete(data.requestId);
@@ -598,6 +741,7 @@
         requestId: data.requestId,
         token: pending.token,
         password: pending.password,
+        inputMode: pending.inputMode,
       }, event.origin);
     }
     if (data.type === "kaya:remote-popout-connected") {

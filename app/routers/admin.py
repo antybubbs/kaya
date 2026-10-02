@@ -73,6 +73,7 @@ from app.routers.auth import require_admin
 from app.routers.remote_manager import (
     RDP_SETTING_KEYS,
     TERMINAL_SETTING_KEYS,
+    VNC_SETTING_KEYS,
     clean_global_setting,
 )
 from app.routers.remote_manager import (
@@ -655,7 +656,12 @@ def save_remote_manager_settings(db: Session, form) -> bool:
         key: get_site_setting(db, key)
         for key in ("guacamole_enabled", "guacd_host", "guacd_port")
     }
-    guacamole_enabled = "1" if form.get("guacamole_enabled") else "0"
+    rdp_enabled = "1" if form.get("rdp_enabled") else "0"
+    vnc_enabled = "1" if form.get("vnc_enabled") else "0"
+    # Guacamole is infrastructure for graphical protocols, not a third
+    # availability switch. Keep it enabled whenever RDP or VNC is enabled so
+    # the administrator cannot save a contradictory configuration.
+    guacamole_enabled = "1" if rdp_enabled == "1" or vnc_enabled == "1" or form.get("guacamole_enabled") else "0"
     guacd_host = str(form.get("guacd_host", "")).strip()
     try:
         guacd_port = max(
@@ -665,6 +671,9 @@ def save_remote_manager_settings(db: Session, form) -> bool:
         guacd_port = 4822
 
     save_site_setting(db, "guacamole_enabled", guacamole_enabled)
+    save_site_setting(db, "ssh_enabled", "1" if form.get("ssh_enabled") else "0")
+    save_site_setting(db, "rdp_enabled", rdp_enabled)
+    save_site_setting(db, "vnc_enabled", vnc_enabled)
     save_site_setting(
         db, "split_screen_enabled", "1" if form.get("split_screen_enabled") else "0"
     )
@@ -677,6 +686,11 @@ def save_remote_manager_settings(db: Session, form) -> bool:
         "recording_pause_idle_minutes",
         *TERMINAL_SETTING_KEYS,
         *RDP_SETTING_KEYS,
+        *VNC_SETTING_KEYS,
+        "ssh_enabled",
+        "rdp_enabled",
+        "vnc_enabled",
+        "vnc_input_mode_enforcement",
     ):
         save_site_setting(db, key, clean_global_setting(key, str(form.get(key, ""))))
     return previous_bridge_settings != {

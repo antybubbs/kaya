@@ -32,10 +32,13 @@ from app.routers.auth import require_editor, require_module_access, require_user
 from app.routers.compute_manager import uptime_label, workload_addresses
 from app.routers.remote_manager import (
     RDP_SETTING_KEYS,
+    VNC_SETTING_KEYS,
     TERMINAL_SETTING_KEYS,
     clean_global_setting,
     decode_settings_blob,
     encode_settings_blob,
+    protocol_enabled,
+    settings_map,
 )
 from app.routers.remote_manager import SETTINGS as REMOTE_MANAGER_DEFAULTS
 from app.services.audit import write_audit
@@ -75,7 +78,7 @@ from app.services.table_export import (
 router = APIRouter(prefix="/networking/vlan-ip-manager", dependencies=[Depends(require_module_access("vlan_ip_manager"))])
 
 ASSIGNMENT_TYPES = {"Static", "Dynamic"}
-REMOTE_PROTOCOLS = {"ssh", "rdp"}
+REMOTE_PROTOCOLS = {"ssh", "rdp", "vnc"}
 
 
 def clean_ip(value: str) -> str:
@@ -243,7 +246,7 @@ def clean_remote_protocol(value: str) -> str:
 def clean_remote_port(value: int, protocol: str) -> int:
     if 1 <= value <= 65535:
         return value
-    return 3389 if protocol == "rdp" else 22
+    return {"ssh": 22, "rdp": 3389, "vnc": 5900}.get(protocol, 22)
 
 
 def remote_override_settings(form, keys: list[str]) -> dict[str, str]:
@@ -263,6 +266,8 @@ def save_remote_settings(db: Session, record: IPAddress, enabled: bool, display_
             remote.is_enabled = False
         return
     protocol = clean_remote_protocol(protocol)
+    if not protocol_enabled(protocol, settings_map(db)):
+        raise HTTPException(status_code=403, detail=f"{protocol.upper()} is disabled by the Remote Manager administrator.")
     if not remote:
         remote = RemoteAccess(ip_address_id=record.id)
         db.add(remote)
@@ -574,7 +579,7 @@ async def create_ip_address(request: Request, address: str = Form(..., max_lengt
         add_event(db, dns_client, "linked_to_ip_record", "Created and linked VLAN/IP record", new=str(row.id))
     db.commit()
     monitor_changes = save_monitor_settings(db, row, bool(monitor_enabled), monitor_display_name, monitor_interval_seconds, monitor_timeout_ms, str(form.get("monitor_maintenance_mode") or "") == "1", use_default_thresholds, monitor_thresholds)
-    save_remote_settings(db, row, bool(remote_enabled), remote_display_name, remote_protocol, remote_port, remote_username, remote_override_settings(form, TERMINAL_SETTING_KEYS), remote_override_settings(form, RDP_SETTING_KEYS))
+    save_remote_settings(db, row, bool(remote_enabled), remote_display_name, remote_protocol, remote_port, remote_username, remote_override_settings(form, TERMINAL_SETTING_KEYS), {**remote_override_settings(form, RDP_SETTING_KEYS), **remote_override_settings(form, VNC_SETTING_KEYS)})
     save_custom_values(db, fields, form, ENTITY_TYPE, row.id)
     db.commit()
     write_audit(db, user, "create", "ip_address", str(row.id), request.client.host if request.client else None, detail=clean_address, metadata={"dns_client_id": dns_client.id if dns_client else None, "monitor_settings": monitor_changes})
@@ -736,7 +741,7 @@ async def update_ip_address(request: Request, record_id: int, address: str = For
     monitor_changes = save_monitor_settings(db, row, bool(monitor_enabled), monitor_display_name, monitor_interval_seconds, monitor_timeout_ms, str(form.get("monitor_maintenance_mode") or "") == "1", use_default_thresholds, monitor_thresholds)
     save_remote_settings(
         db, row, bool(remote_enabled), remote_display_name, remote_protocol, remote_port, remote_username,
-        remote_override_settings(form, TERMINAL_SETTING_KEYS), remote_override_settings(form, RDP_SETTING_KEYS),
+        remote_override_settings(form, TERMINAL_SETTING_KEYS), {**remote_override_settings(form, RDP_SETTING_KEYS), **remote_override_settings(form, VNC_SETTING_KEYS)},
         actor=user, audit_ip=request.client.host if request.client else None,
     )
     save_custom_values(db, fields, form, ENTITY_TYPE, row.id)

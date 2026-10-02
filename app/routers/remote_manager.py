@@ -82,7 +82,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/remote-manager", dependencies=[Depends(require_module_access("remote_manager"))])
 
-PROTOCOLS = {"ssh", "rdp"}
+PROTOCOLS = {"ssh", "rdp", "vnc"}
 SSH_HOST_KEY_ALGORITHMS = {
     "ssh-ed25519",
     "ecdsa-sha2-nistp256",
@@ -95,6 +95,9 @@ RDP_SHA256_FINGERPRINT = re.compile(r"^sha256:((?:[0-9a-fA-F]{2}:){31}[0-9a-fA-F
 MAX_RDP_CERT_FINGERPRINTS = 3
 SETTINGS = {
     "guacamole_enabled": "0",
+    "ssh_enabled": "1",
+    "rdp_enabled": "1",
+    "vnc_enabled": "1",
     "split_screen_enabled": "1",
     "guacd_host": "",
     "guacd_port": "4822",
@@ -131,9 +134,15 @@ SETTINGS = {
     "rdp_resize_method": "display-update",
     "rdp_enable_printing": "0",
     "rdp_enable_drive": "0",
+    "vnc_read_only": "0",
+    "vnc_clipboard": "1",
+    "vnc_cursor": "remote",
+    "vnc_resize_method": "display-update",
+    "vnc_input_mode_enforcement": "guacamole",
 }
 TERMINAL_SETTING_KEYS = [key for key in SETTINGS if key.startswith("terminal_")]
 RDP_SETTING_KEYS = [key for key in SETTINGS if key.startswith("rdp_")]
+VNC_SETTING_KEYS = [key for key in SETTINGS if key.startswith("vnc_")]
 SETTING_KEYS = set(SETTINGS)
 DEFAULT_RDP_TOKEN_TTL_MINUTES = 10
 GUACAMOLE_LITE_URL = "ws://127.0.0.1:30008"
@@ -141,13 +150,16 @@ RECORDING_ROOT = Path(get_settings().recording_dir)
 
 
 @dataclass
-class RDPSessionToken:
+class GuacamoleSessionToken:
     remote_id: int
     user_id: int
+    protocol: str
     created_at: float
 
 
-rdp_tokens: dict[str, RDPSessionToken] = {}
+guacamole_tokens: dict[str, GuacamoleSessionToken] = {}
+# Kept as an internal compatibility alias for existing RDP tests/integrations.
+rdp_tokens = guacamole_tokens
 
 
 
@@ -165,8 +177,21 @@ def clean_protocol(value: str) -> str:
     return value if value in PROTOCOLS else "ssh"
 
 
+def protocol_enabled(protocol: str, settings: dict[str, str]) -> bool:
+    """Return the administrator-controlled availability of a remote protocol."""
+    return settings.get(f"{protocol}_enabled", "1") == "1"
+
+
+def require_enabled_protocol(row: RemoteAccess, settings: dict[str, str]) -> None:
+    if not protocol_enabled(row.protocol, settings):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"{row.protocol.upper()} is disabled by the Remote Manager administrator.",
+        )
+
+
 def default_port(protocol: str) -> int:
-    return 3389 if protocol == "rdp" else 22
+    return {"ssh": 22, "rdp": 3389, "vnc": 5900}.get(protocol, 22)
 
 
 def clean_port(value: int, protocol: str) -> int:
@@ -203,10 +228,12 @@ def freerdp_rdp_cert_fingerprint(fingerprint: str) -> str:
 
 
 def rdp_certificate_settings(row: RemoteAccess) -> dict[str, object]:
+    settings: dict[str, object] = {"ignore-cert": False, "cert-tofu": False}
+    if row.protocol != "rdp":
+        return settings
     if getattr(row, "rdp_trust_invalidated_at", None) is not None:
         raise ValueError("RDP certificate trust must be re-authorized after the endpoint changed.")
     fingerprints = normalise_rdp_cert_fingerprints(row.rdp_cert_fingerprints)
-    settings: dict[str, object] = {"ignore-cert": False, "cert-tofu": False}
     if fingerprints:
         settings["cert-fingerprints"] = ",".join(
             freerdp_rdp_cert_fingerprint(fingerprint) for fingerprint in fingerprints
@@ -231,6 +258,8 @@ def rdp_identity_destination(row_id: int, view: str, *, trusted: bool = False) -
 
 
 def rdp_pin_count(row: RemoteAccess) -> int:
+    if row.protocol != "rdp":
+        return 0
     return len(normalise_rdp_cert_fingerprints(row.rdp_cert_fingerprints)) if row.rdp_cert_fingerprints else 0
 
 
@@ -307,7 +336,7 @@ def recording_controls_enabled(settings: dict[str, str]) -> bool:
 
 
 def recording_extension(content_type: str, protocol: str) -> str:
-    if content_type.startswith("video/webm") or protocol == "rdp":
+    if content_type.startswith("video/webm") or protocol in {"rdp", "vnc"}:
         return ".webm"
     return ".txt"
 
@@ -417,6 +446,11 @@ def clean_global_setting(key: str, value: str) -> str:
         "rdp_enable_gfx",
         "rdp_enable_printing",
         "rdp_enable_drive",
+        "vnc_read_only",
+        "vnc_clipboard",
+        "ssh_enabled",
+        "rdp_enabled",
+        "vnc_enabled",
     }:
         return clean_bool_text(value)
     if key == "terminal_font_size":
@@ -435,6 +469,12 @@ def clean_global_setting(key: str, value: str) -> str:
         return clean_int_text(value, 10000, 1000, 100000)
     if key == "rdp_resize_method":
         return clean_choice(value, {"display-update", "reconnect"}, SETTINGS[key])
+    if key == "vnc_cursor":
+        return clean_choice(value, {"remote", "local", "hidden"}, SETTINGS[key])
+    if key == "vnc_resize_method":
+        return clean_choice(value, {"display-update", "reconnect", "none"}, SETTINGS[key])
+    if key == "vnc_input_mode_enforcement":
+        return clean_choice(value, {"guacamole", "live"}, SETTINGS[key])
     if key == "terminal_line_height":
         return clean_float_text(value, 1, 0.8, 2)
     if key == "terminal_theme":
@@ -483,9 +523,11 @@ def encode_settings_blob(values: dict[str, str]) -> str | None:
 def effective_remote_settings(row: RemoteAccess, global_settings: dict[str, str]) -> dict[str, dict[str, str]]:
     terminal = {key: global_settings.get(key, SETTINGS[key]) for key in TERMINAL_SETTING_KEYS}
     rdp = {key: global_settings.get(key, SETTINGS[key]) for key in RDP_SETTING_KEYS}
+    vnc = {key: global_settings.get(key, SETTINGS[key]) for key in VNC_SETTING_KEYS}
     terminal.update({key: clean_global_setting(key, value) for key, value in decode_settings_blob(row.terminal_settings).items() if key in terminal})
     rdp.update({key: clean_global_setting(key, value) for key, value in decode_settings_blob(row.rdp_settings).items() if key in rdp})
-    return {"terminal": terminal, "rdp": rdp}
+    vnc.update({key: clean_global_setting(key, value) for key, value in decode_settings_blob(row.rdp_settings).items() if key in vnc})
+    return {"terminal": terminal, "rdp": rdp, "vnc": vnc}
 
 
 def remote_override_settings(form, keys: list[str]) -> dict[str, str]:
@@ -513,6 +555,11 @@ def remote_host_settings_context(row: RemoteAccess, db: Session) -> dict:
             key: clean_global_setting(key, value)
             for key, value in rdp_overrides.items()
             if key in RDP_SETTING_KEYS
+        },
+        "remote_vnc_overrides": {
+            key: clean_global_setting(key, value)
+            for key, value in rdp_overrides.items()
+            if key in VNC_SETTING_KEYS
         },
     }
 
@@ -573,7 +620,7 @@ def settings_map(db: Session) -> dict[str, str]:
         values["guacd_host"] = env_guacd_host
     if env_guacd_port:
         values["guacd_port"] = str(env_guacd_port)
-    for key in ("split_screen_enabled", "recording_mode", "recording_categories", "recording_pause_idle_minutes", *TERMINAL_SETTING_KEYS, *RDP_SETTING_KEYS):
+    for key in ("split_screen_enabled", "recording_mode", "recording_categories", "recording_pause_idle_minutes", "ssh_enabled", "rdp_enabled", "vnc_enabled", "vnc_input_mode_enforcement", *TERMINAL_SETTING_KEYS, *RDP_SETTING_KEYS, *VNC_SETTING_KEYS):
         values[key] = clean_global_setting(key, values.get(key, SETTINGS[key]))
     return values
 
@@ -588,9 +635,9 @@ def set_setting(db: Session, key: str, value: str) -> None:
 
 def cleanup_rdp_tokens() -> None:
     now = time.time()
-    expired = [token for token, session in rdp_tokens.items() if now - session.created_at > rdp_token_ttl_seconds()]
+    expired = [token for token, session in guacamole_tokens.items() if now - session.created_at > rdp_token_ttl_seconds()]
     for token in expired:
-        rdp_tokens.pop(token, None)
+        guacamole_tokens.pop(token, None)
 
 
 def rdp_token_ttl_seconds() -> int:
@@ -676,9 +723,38 @@ def encrypt_guacamole_token(token_object: dict[str, object]) -> str:
     return encrypt_secret(plaintext.decode("utf-8"))
 
 
-def create_rdp_guacamole_token(row: RemoteAccess, username: str, password: str, width: int, height: int, dpi: int, timezone: str, rdp_settings: dict[str, str]) -> str:
+def create_guacamole_token(
+    row: RemoteAccess,
+    protocol: str,
+    username: str,
+    password: str,
+    width: int,
+    height: int,
+    dpi: int,
+    timezone: str,
+    protocol_settings: dict[str, str],
+) -> str:
+    if protocol not in {"rdp", "vnc"}:
+        raise ValueError("Unsupported graphical protocol")
+
+    if protocol == "vnc":
+        settings = {
+            "hostname": row.ip_address.address,
+            "port": row.port,
+            "username": username,
+            "password": password,
+            "width": width,
+            "height": height,
+            "read-only": protocol_settings.get("vnc_read_only", SETTINGS["vnc_read_only"]) == "1",
+            "cursor": protocol_settings.get("vnc_cursor", SETTINGS["vnc_cursor"]),
+            "disable-display-resize": protocol_settings.get("vnc_resize_method", SETTINGS["vnc_resize_method"]) == "none",
+            "disable-copy": protocol_settings.get("vnc_clipboard", SETTINGS["vnc_clipboard"]) != "1",
+            "disable-paste": protocol_settings.get("vnc_clipboard", SETTINGS["vnc_clipboard"]) != "1",
+        }
+        return encrypt_guacamole_token({"connection": {"type": "vnc", "settings": settings}})
+
     def enabled(key: str) -> bool:
-        return rdp_settings.get(key, SETTINGS[key]) == "1"
+        return protocol_settings.get(key, SETTINGS[key]) == "1"
 
     certificate_settings = rdp_certificate_settings(row)
     return encrypt_guacamole_token(
@@ -710,11 +786,16 @@ def create_rdp_guacamole_token(row: RemoteAccess, username: str, password: str, 
                     "enable-gfx": enabled("rdp_enable_gfx"),
                     "enable-printing": enabled("rdp_enable_printing"),
                     "enable-drive": enabled("rdp_enable_drive"),
-                    "resize-method": rdp_settings.get("rdp_resize_method", SETTINGS["rdp_resize_method"]),
+                    "resize-method": protocol_settings.get("rdp_resize_method", SETTINGS["rdp_resize_method"]),
                 },
             }
         }
     )
+
+
+def create_rdp_guacamole_token(row: RemoteAccess, username: str, password: str, width: int, height: int, dpi: int, timezone: str, rdp_settings: dict[str, str]) -> str:
+    """Backward-compatible RDP wrapper retaining the existing public helper."""
+    return create_guacamole_token(row, "rdp", username, password, width, height, dpi, timezone, rdp_settings)
 
 
 def require_remote_session(db: Session, remote_id: int) -> RemoteAccess:
@@ -828,7 +909,7 @@ async def tcp_check(host: str, port: int, timeout: float = 5) -> tuple[bool, str
 def remote_list(request: Request, db: Session = Depends(get_db), user=Depends(require_user)):
     rows = db.query(RemoteAccess).filter(RemoteAccess.is_enabled).options(selectinload(RemoteAccess.ip_address)).order_by(RemoteAccess.protocol.asc(), RemoteAccess.display_name.asc(), RemoteAccess.id.asc()).all()
     settings = settings_map(db)
-    return templates.TemplateResponse(request, "remote_manager.html", {"user": user, "rows": rows, "remote_label": remote_label, "split_screen_enabled": settings.get("split_screen_enabled", "1") == "1", **csrf_context(request)})
+    return templates.TemplateResponse(request, "remote_manager.html", {"user": user, "rows": rows, "settings": settings, "remote_label": remote_label, "split_screen_enabled": settings.get("split_screen_enabled", "1") == "1", **csrf_context(request)})
 
 
 @router.get("/settings")
@@ -840,7 +921,11 @@ def remote_settings(request: Request, db: Session = Depends(get_db), user=Depend
 async def save_remote_settings(request: Request, csrf_token: str = Form(...), guacamole_enabled: str = Form(""), guacd_host: str = Form("", max_length=255), guacd_port: int = Form(4822), db: Session = Depends(get_db), user=Depends(require_admin)):
     validate_csrf_token(request, csrf_token)
     form = await request.form()
-    set_setting(db, "guacamole_enabled", "1" if guacamole_enabled else "0")
+    for key in ("ssh_enabled", "rdp_enabled", "vnc_enabled"):
+        set_setting(db, key, "1" if form.get(key) else "0")
+    graphical_enabled = bool(form.get("rdp_enabled") or form.get("vnc_enabled"))
+    set_setting(db, "guacamole_enabled", "1" if graphical_enabled or guacamole_enabled else "0")
+    set_setting(db, "vnc_input_mode_enforcement", clean_global_setting("vnc_input_mode_enforcement", str(form.get("vnc_input_mode_enforcement", "guacamole"))))
     set_setting(db, "split_screen_enabled", "1" if form.get("split_screen_enabled") else "0")
     set_setting(db, "guacd_host", guacd_host.strip())
     set_setting(db, "guacd_port", str(clean_port(guacd_port, "rdp")))
@@ -848,7 +933,7 @@ async def save_remote_settings(request: Request, csrf_token: str = Form(...), gu
     set_setting(db, "recording_mode", clean_global_setting("recording_mode", str(form.get("recording_mode", "manual"))))
     set_setting(db, "recording_categories", clean_global_setting("recording_categories", str(form.get("recording_categories", ""))))
     set_setting(db, "recording_pause_idle_minutes", clean_global_setting("recording_pause_idle_minutes", str(form.get("recording_pause_idle_minutes", "5"))))
-    for key in TERMINAL_SETTING_KEYS + RDP_SETTING_KEYS:
+    for key in TERMINAL_SETTING_KEYS + RDP_SETTING_KEYS + VNC_SETTING_KEYS:
         set_setting(db, key, clean_global_setting(key, str(form.get(key, ""))))
     db.commit()
     restart_guacamole_bridge()
@@ -1003,6 +1088,7 @@ def remote_session(request: Request, remote_id: int, db: Session = Depends(get_d
     row = require_remote_session(db, remote_id)
     rows = db.query(RemoteAccess).filter(RemoteAccess.is_enabled).options(selectinload(RemoteAccess.ip_address)).order_by(RemoteAccess.protocol.asc(), RemoteAccess.display_name.asc(), RemoteAccess.id.asc()).all()
     settings = settings_map(db)
+    require_enabled_protocol(row, settings)
     remote_settings = effective_remote_settings(row, settings)
     title = remote_label(row)
     return templates.TemplateResponse(request, "remote_session.html", {"user": user, "remote": row, "rows": rows, "remote_label": title, "remote_label_fn": remote_label, "settings": settings, "remote_settings": remote_settings, "ssh_host_key_ready": trusted_ssh_host_key(row) is not None, "ssh_host_identity_view": "session", "rdp_cert_identity_view": "session", "recording_enabled": recording_controls_enabled(settings), "recording_auto_enabled": recording_auto_enabled(row, settings), "remote_category": remote_category(row), **csrf_context(request)})
@@ -1062,7 +1148,7 @@ async def save_remote_host_settings(request: Request, remote_id: int, csrf_token
         row.host_key_fingerprint = None
     row.username = remote_username.strip() or None
     row.terminal_settings = encode_settings_blob(remote_override_settings(form, TERMINAL_SETTING_KEYS))
-    row.rdp_settings = encode_settings_blob(remote_override_settings(form, RDP_SETTING_KEYS))
+    row.rdp_settings = encode_settings_blob(remote_override_settings(form, [*RDP_SETTING_KEYS, *VNC_SETTING_KEYS]))
     db.commit()
     write_audit(db, user, "update", "remote_access", entity_id=str(row.id), ip_address=request.client.host if request.client else None, detail=f"Updated Remote Manager settings for {remote_label(row)}")
     return RedirectResponse("/remote-manager", status_code=303)
@@ -1332,6 +1418,7 @@ def delete_remote_host(request: Request, remote_id: int, csrf_token: str = Form(
 def remote_session_panel(request: Request, remote_id: int, db: Session = Depends(get_db), user=Depends(require_user)):
     row = require_remote_session(db, remote_id)
     settings = settings_map(db)
+    require_enabled_protocol(row, settings)
     remote_settings = effective_remote_settings(row, settings)
     title = remote_label(row)
     return templates.TemplateResponse(request, "remote_session_panel.html", {"user": user, "remote": row, "remote_label": title, "settings": settings, "remote_settings": remote_settings, "ssh_host_key_ready": trusted_ssh_host_key(row) is not None, "ssh_host_identity_view": "panel", "rdp_cert_identity_view": "panel", "recording_enabled": recording_controls_enabled(settings), "recording_auto_enabled": recording_auto_enabled(row, settings), "remote_category": remote_category(row), **csrf_context(request)})
@@ -1365,8 +1452,8 @@ async def upload_recording(
     content_type = (file.content_type or "application/octet-stream").split(";", 1)[0].strip().lower()
     if content_type not in {"video/webm", "text/plain", "application/json", "application/octet-stream"}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported recording type")
-    if row.protocol == "rdp" and content_type not in {"video/webm", "application/octet-stream"}:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="RDP recordings must be WebM video")
+    if row.protocol in {"rdp", "vnc"} and content_type not in {"video/webm", "application/octet-stream"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Graphical recordings must be WebM video")
     if row.protocol == "ssh" and content_type not in {"text/plain", "application/json", "application/octet-stream"}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="SSH recordings must be text")
 
@@ -1390,7 +1477,7 @@ async def upload_recording(
         status="complete",
         stored_filename=stored_name,
         original_filename=(file.filename or "")[:255] or None,
-        content_type="video/webm" if row.protocol == "rdp" else "text/plain",
+        content_type="video/webm" if row.protocol in {"rdp", "vnc"} else "text/plain",
         size_bytes=size_bytes,
         duration_seconds=max(0, float(duration_seconds or 0)),
         started_at=parse_client_datetime(started_at),
@@ -1420,6 +1507,7 @@ async def rdp_check(request: Request, remote_id: int, db: Session = Depends(get_
     if row.protocol != "rdp":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Remote entry is not configured for RDP")
     settings = settings_map(db)
+    require_enabled_protocol(row, settings)
     logs = []
     logs.append(f"Starting RDP pre-flight for {row.ip_address.address}:{row.port}.")
     if not payload.get("username"):
@@ -1458,6 +1546,8 @@ async def rdp_start(request: Request, remote_id: int, db: Session = Depends(get_
     row = require_remote_session(db, remote_id)
     if row.protocol != "rdp":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Remote entry is not configured for RDP")
+    settings = settings_map(db)
+    require_enabled_protocol(row, settings)
     username = str(payload.get("username", "")).strip()
     password = str(payload.get("password", ""))
     if not username or not password:
@@ -1522,9 +1612,10 @@ async def rdp_start(request: Request, remote_id: int, db: Session = Depends(get_
         )
         return JSONResponse({"ok": False, "logs": ["RDP certificate trust is invalid. Ask an administrator to review this host."]}, status_code=400)
     now = time.time()
-    rdp_tokens[token] = RDPSessionToken(
+    guacamole_tokens[token] = GuacamoleSessionToken(
         remote_id=row.id,
         user_id=user.id,
+        protocol="rdp",
         created_at=now,
     )
     write_audit(
@@ -1540,6 +1631,58 @@ async def rdp_start(request: Request, remote_id: int, db: Session = Depends(get_
     return JSONResponse({"ok": True, "token": token, "logs": logs})
 
 
+@router.post("/{remote_id}/vnc/start")
+async def vnc_start(request: Request, remote_id: int, db: Session = Depends(get_db), user=Depends(require_user)):
+    payload = await request.json()
+    validate_csrf_token(request, str(payload.get("csrf_token", "")))
+    row = require_remote_session(db, remote_id)
+    if row.protocol != "vnc":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Remote entry is not configured for VNC")
+    settings = settings_map(db)
+    require_enabled_protocol(row, settings)
+    username = str(payload.get("username", "")).strip()
+    password = str(payload.get("password", ""))
+    requested_read_only = payload.get("read_only")
+    mode_change_from = payload.get("mode_change_from")
+    if requested_read_only is not None and not isinstance(requested_read_only, bool):
+        return JSONResponse({"ok": False, "logs": ["VNC input mode is invalid."]}, status_code=400)
+    if mode_change_from is not None and mode_change_from not in {"interactive", "view-only"}:
+        return JSONResponse({"ok": False, "logs": ["VNC mode transition is invalid."]}, status_code=400)
+    if len(username) > 120 or len(password) > 1024:
+        return JSONResponse({"ok": False, "logs": ["VNC credentials are too long."]}, status_code=400)
+    if not password:
+        return JSONResponse({"ok": False, "logs": ["A VNC password is required for this session."]}, status_code=400)
+    settings = settings_map(db)
+    if settings.get("guacamole_enabled") != "1" or not settings.get("guacd_host", "").strip():
+        return JSONResponse({"ok": False, "logs": ["Guacamole is not enabled or guacd is not configured."]}, status_code=400)
+    try:
+        await run_in_threadpool(start_guacamole_bridge)
+    except GuacamoleBridgeError:
+        return JSONResponse({"ok": False, "logs": ["Kaya's Guacamole bridge is not ready. The VNC session was not started."]}, status_code=503)
+    cleanup_rdp_tokens()
+    width = clean_dimension(int_payload(payload, "width", 1280), 1280, 640, 7680)
+    height = clean_dimension(int_payload(payload, "height", 720), 720, 480, 4320)
+    vnc_settings = effective_remote_settings(row, settings)["vnc"]
+    if requested_read_only is not None:
+        vnc_settings["vnc_read_only"] = "1" if requested_read_only else "0"
+    input_mode = "view-only" if vnc_settings.get("vnc_read_only") == "1" else "interactive"
+    if settings.get("vnc_input_mode_enforcement", "guacamole") == "live":
+        vnc_settings["vnc_read_only"] = "0"
+    try:
+        token = create_guacamole_token(row, "vnc", username, password, width, height, 96, "", vnc_settings)
+    except ValueError:
+        return JSONResponse({"ok": False, "logs": ["VNC connection settings are invalid."]}, status_code=400)
+    guacamole_tokens[token] = GuacamoleSessionToken(remote_id=row.id, user_id=user.id, protocol="vnc", created_at=time.time())
+    audit_action = "mode_changed" if mode_change_from and mode_change_from != input_mode else "start"
+    audit_detail = (
+        f"Changed VNC input mode for {remote_label(row)} from {mode_change_from} to {input_mode}"
+        if audit_action == "mode_changed"
+        else f"Prepared VNC session for {remote_label(row)} ({row.ip_address.address}:{row.port}) in {input_mode} mode"
+    )
+    write_audit(db, user, audit_action, "remote_vnc_session", entity_id=str(row.id), ip_address=request.client.host if request.client else None, detail=audit_detail)
+    return JSONResponse({"ok": True, "token": token, "input_mode": input_mode, "logs": ["Session token created. Opening browser display tunnel."]})
+
+
 @router.websocket("/{remote_id}/ssh/ws")
 async def ssh_websocket(websocket: WebSocket, remote_id: int):
     db = SessionLocal()
@@ -1553,6 +1696,9 @@ async def ssh_websocket(websocket: WebSocket, remote_id: int):
             return
         remote = db.get(RemoteAccess, remote_id)
         if not remote or not remote.is_enabled or remote.protocol != "ssh" or not remote.username:
+            await websocket.close(code=1008)
+            return
+        if not protocol_enabled("ssh", settings_map(db)):
             await websocket.close(code=1008)
             return
         trusted_host_key = trusted_ssh_host_key(remote)
@@ -1645,13 +1791,12 @@ async def ssh_websocket(websocket: WebSocket, remote_id: int):
                 logger.debug("SSH upstream cleanup failed", exc_info=True)
 
 
-@router.websocket("/{remote_id}/rdp/ws")
-async def rdp_websocket(websocket: WebSocket, remote_id: int):
+async def _guacamole_websocket(websocket: WebSocket, remote_id: int, protocol: str):
     token = websocket.query_params.get("token", "")
     db = SessionLocal()
     remote_label_text = "Remote host"
     remote_address = ""
-    remote_port = 3389
+    remote_port = 3389 if protocol == "rdp" else 5900
     try:
         if not websocket_origin_allowed(websocket, db):
             await websocket.close(code=1008)
@@ -1662,11 +1807,15 @@ async def rdp_websocket(websocket: WebSocket, remote_id: int):
             return
         cleanup_rdp_tokens()
         session = rdp_tokens.get(token)
-        if not session or session.user_id != user.id or session.remote_id != remote_id:
+        if not session or session.user_id != user.id or session.remote_id != remote_id or session.protocol != protocol:
             await websocket.close(code=1008)
             return
         remote = db.get(RemoteAccess, remote_id)
-        if not remote or not remote.is_enabled or remote.protocol != "rdp":
+        if not remote or not remote.is_enabled or remote.protocol != protocol:
+            await websocket.close(code=1008)
+            return
+        settings = settings_map(db)
+        if not protocol_enabled(protocol, settings):
             await websocket.close(code=1008)
             return
         remote_label_text = remote_label(remote)
@@ -1704,18 +1853,24 @@ async def rdp_websocket(websocket: WebSocket, remote_id: int):
             audit_db = SessionLocal()
             try:
                 audit_user = audit_db.get(User, user.id)
-                write_audit(
-                    audit_db,
-                    audit_user,
-                    "error",
-                    "remote_rdp_session",
-                    entity_id=str(remote_id),
-                    ip_address=websocket.client.host if websocket.client else None,
-                    detail=f"RDP connection failed for {remote_label_text} ({remote_address}:{remote_port}); Kaya's Guacamole bridge rejected the tunnel",
-                )
+                if protocol == "rdp":
+                    write_audit(
+                        audit_db, audit_user, "error", "remote_rdp_session", entity_id=str(remote_id),
+                        ip_address=websocket.client.host if websocket.client else None,
+                        detail=f"RDP connection failed for {remote_label_text} ({remote_address}:{remote_port}); Kaya's Guacamole bridge rejected the tunnel",
+                    )
+                else:
+                    write_audit(
+                        audit_db, audit_user, "error", "remote_vnc_session", entity_id=str(remote_id),
+                        ip_address=websocket.client.host if websocket.client else None,
+                        detail=f"VNC connection failed for {remote_label_text} ({remote_address}:{remote_port}); Kaya's Guacamole bridge rejected the tunnel",
+                    )
             finally:
                 audit_db.close()
-            await websocket.send_text(guac_instruction("error", "Kaya's Guacamole bridge could not open the RDP tunnel.", 512))
+            if protocol == "rdp":
+                await websocket.send_text(guac_instruction("error", "Kaya's Guacamole bridge could not open the RDP tunnel.", 512))
+            else:
+                await websocket.send_text(guac_instruction("error", "Kaya's Guacamole bridge could not open the VNC tunnel.", 512))
             await websocket.close(code=1011)
             return
         audit_db = SessionLocal()
@@ -1725,10 +1880,10 @@ async def rdp_websocket(websocket: WebSocket, remote_id: int):
                 audit_db,
                 audit_user,
                 "connect",
-                "remote_rdp_session",
+                f"remote_{protocol}_session",
                 entity_id=str(remote_id),
                 ip_address=websocket.client.host if websocket.client else None,
-                detail=f"RDP session connected for {remote_label_text} ({remote_address}:{remote_port})",
+                detail=f"{protocol.upper()} session connected for {remote_label_text} ({remote_address}:{remote_port})",
             )
         finally:
             audit_db.close()
@@ -1778,10 +1933,20 @@ async def rdp_websocket(websocket: WebSocket, remote_id: int):
                     audit_db,
                     audit_user,
                     "disconnect",
-                    "remote_rdp_session",
+                    f"remote_{protocol}_session",
                     entity_id=str(remote_id),
                     ip_address=websocket.client.host if websocket.client else None,
-                    detail=f"RDP session disconnected for {remote_label_text} ({remote_address}:{remote_port})",
+                    detail=f"{protocol.upper()} session disconnected for {remote_label_text} ({remote_address}:{remote_port})",
                 )
             finally:
                 audit_db.close()
+
+
+@router.websocket("/{remote_id}/rdp/ws")
+async def rdp_websocket(websocket: WebSocket, remote_id: int):
+    await _guacamole_websocket(websocket, remote_id, "rdp")
+
+
+@router.websocket("/{remote_id}/vnc/ws")
+async def vnc_websocket(websocket: WebSocket, remote_id: int):
+    await _guacamole_websocket(websocket, remote_id, "vnc")
