@@ -66,6 +66,9 @@
         <input name="rdp_password" type="password" autocomplete="current-password">
       </label>
       <button type="button">Start {{ remote.protocol|upper }} session</button>
+      {% if remote.protocol == 'vnc' %}
+      <p class="muted" data-vnc-username-help>Username is optional for many VNC servers. macOS Screen Sharing requires the Mac account short username and password.</p>
+      {% endif %}
     </form>
     {% endif %}
     <div class="rdp-display-shell" data-rdp-shell tabindex="0">
