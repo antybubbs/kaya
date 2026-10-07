@@ -718,6 +718,57 @@ async def read_guac_instruction(reader: asyncio.StreamReader) -> tuple[str, list
             return instructions[0]
 
 
+VNC_AUTH_STALL_MESSAGE = (
+    "The VNC server stopped responding during authentication. "
+    "If this is a Mac using Screen Sharing, enter the Mac account username and password."
+)
+# Guacamole protocol status UPSTREAM_TIMEOUT (0x0202).
+GUACAMOLE_STATUS_UPSTREAM_TIMEOUT = 514
+# guacamole-lite closes its WebSocket with 1011 for every error close, including
+# "guacd was inactive for too long"; the original error is logged by the bridge.
+GUACAMOLE_LITE_ERROR_CLOSE_CODE = 1011
+
+
+class GuacamoleTunnelProgress:
+    """Track whether a proxied Guacamole stream reached a rendered display frame.
+
+    Only opcodes are inspected; instruction arguments (which may carry
+    clipboard or display data) are never retained or logged.
+    """
+
+    def __init__(self) -> None:
+        self.display_ready = False
+        self.error_forwarded = False
+        self._parser: GuacParser | None = GuacParser()
+
+    def observe(self, message: str | bytes) -> None:
+        if self.display_ready or self._parser is None:
+            return
+        text = message.decode("utf-8", errors="replace") if isinstance(message, bytes) else message
+        try:
+            instructions = self._parser.receive(text)
+        except ValueError:
+            # Stop inspecting a stream we cannot parse; the browser still receives it unchanged.
+            self._parser = None
+            return
+        for opcode, _args in instructions:
+            if opcode == "error":
+                self.error_forwarded = True
+            elif opcode == "sync":
+                self.display_ready = True
+                self._parser = None
+                return
+
+
+def vnc_stall_error_instruction(protocol: str, progress: GuacamoleTunnelProgress, upstream_close_code: int | None) -> str | None:
+    """Map a VNC tunnel that failed before its first display frame to actionable guidance."""
+    if protocol != "vnc" or progress.display_ready or progress.error_forwarded:
+        return None
+    if upstream_close_code != GUACAMOLE_LITE_ERROR_CLOSE_CODE:
+        return None
+    return guac_instruction("error", VNC_AUTH_STALL_MESSAGE, GUACAMOLE_STATUS_UPSTREAM_TIMEOUT)
+
+
 def encrypt_guacamole_token(token_object: dict[str, object]) -> str:
     plaintext = json.dumps(token_object, separators=(",", ":")).encode("utf-8")
     return encrypt_secret(plaintext.decode("utf-8"))
@@ -1888,16 +1939,30 @@ async def _guacamole_websocket(websocket: WebSocket, remote_id: int, protocol: s
         finally:
             audit_db.close()
         connected = True
+        progress = GuacamoleTunnelProgress()
 
         async def upstream_to_browser():
             try:
                 async for message in upstream:
+                    progress.observe(message)
                     if isinstance(message, bytes):
                         await websocket.send_bytes(message)
                     else:
                         await websocket.send_text(message)
             except Exception:
                 logger.debug("RDP upstream read loop ended", exc_info=True)
+            stall_error = vnc_stall_error_instruction(protocol, progress, upstream.close_code)
+            if stall_error:
+                logger.warning(
+                    "VNC tunnel for remote %s closed before the first display frame (bridge close code %s); "
+                    "see the Guacamole bridge log for the original guacd error",
+                    remote_id,
+                    upstream.close_code,
+                )
+                try:
+                    await websocket.send_text(stall_error)
+                except Exception:
+                    logger.debug("VNC stall error could not be delivered to the browser", exc_info=True)
 
         async def browser_to_upstream():
             try:
