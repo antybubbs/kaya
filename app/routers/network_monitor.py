@@ -5,6 +5,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Body, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session, selectinload
 from starlette import status
@@ -20,6 +21,12 @@ from app.models.models import (
     NetworkMonitorStatistic,
     NetworkMonitorTransition,
     NetworkMonitorWallboardSession,
+    TrafficAggregate,
+    TrafficInterface,
+    TrafficLocalNetwork,
+    TrafficMonitoringConfiguration,
+    TrafficCounterObservation,
+    TrafficSource,
     NotificationDeliveryAttempt,
     NotificationEvent,
     NotificationOutbox,
@@ -71,9 +78,63 @@ from app.services.network_monitor_wallboard import (
     wallboard_for_token,
     wallboard_permissions,
 )
+from app.services.network_traffic import (
+    apply_source_secrets,
+    source_public_dict,
+    validate_local_network,
+    validate_source_input,
+)
+from app.services.network_traffic_poller import (
+    discover_source_interfaces,
+    persist_discovered_interfaces,
+    polling_diagnostics,
+)
+from app.services.network_traffic_snmp import SNMPProviderError, SNMPv3Provider
 
 router = APIRouter(prefix="/networking/ip-wan-monitor", dependencies=[Depends(require_module_access("network_monitor"))])
 wallboard_router = APIRouter(prefix="/monitoring/ip-wan-monitor/wallboard")
+
+
+class TrafficSourcePayload(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    provider_key: str = Field(..., max_length=60)
+    source_category: str | None = Field(None, max_length=30)
+    is_enabled: bool = False
+    destination_ip: str | None = Field(None, max_length=45)
+    destination_port: int = Field(161, ge=1, le=65535)
+    security_name: str | None = Field(None, max_length=128)
+    snmp_auth_protocol: str | None = Field(None, max_length=20)
+    snmp_privacy_protocol: str | None = Field(None, max_length=20)
+    snmp_authentication: str | None = Field(None, max_length=512)
+    snmp_privacy: str | None = Field(None, max_length=512)
+    exporter_allowlist: list[str] = Field(default_factory=list, max_length=128)
+    collector_port: int | None = Field(None, ge=1024, le=65535)
+    polling_interval_seconds: int = Field(60, ge=5, le=86400)
+
+
+class TrafficInterfacePayload(BaseModel):
+    interface_key: str = Field(..., min_length=1, max_length=120)
+    interface_index: int | None = Field(None, ge=0, le=2147483647)
+    display_name: str = Field(..., min_length=1, max_length=255)
+    is_enabled: bool = True
+    is_wan: bool = False
+    inbound_direction: str = Field("download", pattern=r"^(download|upload|unknown)$")
+    outbound_direction: str = Field("upload", pattern=r"^(download|upload|unknown)$")
+    speed_bps: int | None = Field(None, ge=0, le=9223372036854775807)
+
+
+class TrafficLocalNetworkPayload(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    network_cidr: str = Field(..., min_length=3, max_length=80)
+    is_enabled: bool = True
+
+
+class TrafficConfigurationPayload(BaseModel):
+    is_enabled: bool
+    high_resolution_retention_hours: int = Field(24, ge=1, le=168)
+    five_minute_retention_days: int = Field(7, ge=1, le=3650)
+    hourly_retention_days: int = Field(90, ge=1, le=3650)
+    daily_retention_days: int = Field(365, ge=1, le=3650)
 
 RANGES = {
     "1h": timedelta(hours=1), "6h": timedelta(hours=6), "24h": timedelta(hours=24),
@@ -485,6 +546,35 @@ def network_monitor_cards(request: Request, db: Session = Depends(get_db), user=
     })
 
 
+def _traffic_page(request: Request, page: str, user):
+    return templates.TemplateResponse(request, "network_traffic.html", {
+        "user": user,
+        "traffic_page": page,
+        "can_manage_traffic": user.role == "admin",
+        **csrf_context(request),
+    })
+
+
+@router.get("/traffic", name="network_traffic_overview")
+def network_traffic_overview_page(request: Request, user=Depends(require_user)):
+    return _traffic_page(request, "overview", user)
+
+
+@router.get("/traffic/sources/manage", name="network_traffic_sources")
+def network_traffic_sources_page(request: Request, user=Depends(require_user)):
+    return _traffic_page(request, "sources", user)
+
+
+@router.get("/traffic/settings", name="network_traffic_settings")
+def network_traffic_settings_page(request: Request, user=Depends(require_user)):
+    return _traffic_page(request, "settings", user)
+
+
+@router.get("/traffic/diagnostics/view", name="network_traffic_diagnostics")
+def network_traffic_diagnostics_page(request: Request, user=Depends(require_admin)):
+    return _traffic_page(request, "diagnostics", user)
+
+
 @router.get("/live")
 def live_dashboard_observations(after: int = Query(0, ge=0), db: Session = Depends(get_db), user=Depends(require_user)):
     return JSONResponse(live_dashboard_payload(db, after))
@@ -848,6 +938,314 @@ def scheduler_diagnostics(user=Depends(require_admin)):
         monitor_scheduler_diagnostics(),
         headers={"Cache-Control": "no-store"},
     )
+
+
+def _traffic_config(db: Session) -> TrafficMonitoringConfiguration:
+    row = db.get(TrafficMonitoringConfiguration, 1)
+    if row is None:
+        row = TrafficMonitoringConfiguration(id=1, is_enabled=False)
+        db.add(row)
+        db.flush()
+    return row
+
+
+@router.get("/traffic/config")
+def traffic_configuration(db: Session = Depends(get_db), user=Depends(require_user)):
+    row = _traffic_config(db)
+    return {
+        "is_enabled": row.is_enabled,
+        "high_resolution_retention_hours": row.high_resolution_retention_hours,
+        "five_minute_retention_days": row.five_minute_retention_days,
+        "hourly_retention_days": row.hourly_retention_days,
+        "daily_retention_days": row.daily_retention_days,
+    }
+
+
+@router.put("/traffic/config")
+def update_traffic_configuration(
+    request: Request,
+    payload: TrafficConfigurationPayload,
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    validate_csrf_token(request, request.headers.get("x-csrf-token"))
+    if payload.five_minute_retention_days > payload.hourly_retention_days or payload.hourly_retention_days > payload.daily_retention_days:
+        raise HTTPException(status_code=400, detail="Retention tiers must increase from five-minute to hourly to daily history.")
+    row = _traffic_config(db)
+    before = {key: getattr(row, key) for key in payload.model_fields}
+    for key, value in payload.model_dump().items():
+        setattr(row, key, value)
+    db.commit()
+    write_audit(
+        db, user, "update", "traffic_monitoring_configuration", "1",
+        trusted_client_ip(request), detail="Updated Network Traffic feature and retention configuration",
+        metadata={"before": before, "after": payload.model_dump()},
+    )
+    return traffic_configuration(db, user)
+
+
+@router.get("/traffic/sources")
+def traffic_sources(db: Session = Depends(get_db), user=Depends(require_user)):
+    rows = db.query(TrafficSource).filter(TrafficSource.is_deleted.is_(False)).order_by(TrafficSource.name.asc()).all()
+    return {"sources": [source_public_dict(row) for row in rows]}
+
+
+@router.get("/traffic/overview")
+def traffic_overview(db: Session = Depends(get_db), user=Depends(require_user)):
+    """Return bounded, aggregate-only dashboard data; never returns counters or credentials."""
+    config = _traffic_config(db)
+    sources = db.query(TrafficSource).filter(TrafficSource.is_deleted.is_(False)).order_by(TrafficSource.name.asc()).all()
+    now = datetime.utcnow()
+    today = datetime(now.year, now.month, now.day)
+    interfaces = [item for source in sources for item in source.interfaces if item.is_enabled and item.is_wan]
+    aggregate_rows = db.query(TrafficAggregate).filter(
+        TrafficAggregate.bucket_seconds == 300,
+        TrafficAggregate.bucket_start >= today,
+    ).order_by(TrafficAggregate.bucket_start.asc()).limit(10000).all()
+    totals = {"download": 0, "upload": 0}
+    estimated = False
+    history: dict[datetime, dict[str, int | bool]] = {}
+    allowed_interfaces = {item.id for item in interfaces}
+    for row in aggregate_rows:
+        if row.interface_id not in allowed_interfaces or row.direction not in totals:
+            continue
+        totals[row.direction] += row.bytes_total or 0
+        estimated = estimated or bool(row.is_approximate)
+        point = history.setdefault(row.bucket_start, {"download": 0, "upload": 0, "estimated": False})
+        point[row.direction] += row.bytes_total or 0
+        point["estimated"] = bool(point["estimated"]) or bool(row.is_approximate)
+    last_observation = max((source.last_counter_observation_at for source in sources if source.last_counter_observation_at), default=None)
+    return {
+        "module_enabled": bool(config.is_enabled),
+        "sources": [source_public_dict(source) for source in sources],
+        "summary": {
+            "download_bps": sum((source.last_rate_in_bps or 0) for source in sources if source.is_enabled),
+            "upload_bps": sum((source.last_rate_out_bps or 0) for source in sources if source.is_enabled),
+            "download_bytes_today": totals["download"],
+            "upload_bytes_today": totals["upload"],
+            "estimated": estimated,
+            "wan_interfaces": len(interfaces),
+            "last_observation_at": last_observation.isoformat() + "Z" if last_observation else None,
+        },
+        "history": [
+            {"at": at.isoformat() + "Z", "download_bytes": value["download"], "upload_bytes": value["upload"], "estimated": value["estimated"]}
+            for at, value in history.items()
+        ],
+    }
+
+
+@router.post("/traffic/sources", status_code=201)
+def create_traffic_source(
+    request: Request,
+    payload: TrafficSourcePayload,
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    validate_csrf_token(request, request.headers.get("x-csrf-token"))
+    try:
+        values = validate_source_input(payload.model_dump())
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if db.query(TrafficSource).filter(TrafficSource.name == values["name"], TrafficSource.is_deleted.is_(False)).first():
+        raise HTTPException(status_code=409, detail="A traffic source with this name already exists.")
+    row = TrafficSource(**values, health_state="unconfigured")
+    apply_source_secrets(row, payload.model_dump(), creating=True)
+    if row.is_enabled and row.provider_key == "snmpv3" and (not row.encrypted_snmp_authentication or not row.encrypted_snmp_privacy or not row.snmp_auth_protocol or not row.snmp_privacy_protocol):
+        raise HTTPException(status_code=400, detail="Enabled SNMPv3 sources require authentication, privacy and protocol configuration.")
+    db.add(row)
+    db.commit()
+    write_audit(db, user, "create", "traffic_source", str(row.id), trusted_client_ip(request), detail="Created traffic source", metadata={"provider_key": row.provider_key, "source_category": row.source_category})
+    return source_public_dict(row)
+
+
+@router.put("/traffic/sources/{source_id}")
+def update_traffic_source(
+    source_id: int,
+    request: Request,
+    payload: TrafficSourcePayload,
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    validate_csrf_token(request, request.headers.get("x-csrf-token"))
+    row = db.query(TrafficSource).filter(TrafficSource.id == source_id, TrafficSource.is_deleted.is_(False)).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Traffic source not found")
+    try:
+        values = validate_source_input(payload.model_dump(), existing=row)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    duplicate = db.query(TrafficSource).filter(TrafficSource.name == values["name"], TrafficSource.id != row.id, TrafficSource.is_deleted.is_(False)).first()
+    if duplicate:
+        raise HTTPException(status_code=409, detail="A traffic source with this name already exists.")
+    before = source_public_dict(row)
+    for key, value in values.items():
+        setattr(row, key, value)
+    apply_source_secrets(row, payload.model_dump())
+    if row.is_enabled and row.provider_key == "snmpv3" and (not row.encrypted_snmp_authentication or not row.encrypted_snmp_privacy or not row.snmp_auth_protocol or not row.snmp_privacy_protocol):
+        raise HTTPException(status_code=400, detail="Enabled SNMPv3 sources require authentication, privacy and protocol configuration.")
+    db.commit()
+    write_audit(db, user, "update", "traffic_source", str(row.id), trusted_client_ip(request), detail="Updated traffic source", metadata={"before": {"name": before["name"], "provider_key": before["provider_key"], "is_enabled": before["is_enabled"]}, "after": {"name": row.name, "provider_key": row.provider_key, "is_enabled": row.is_enabled}})
+    return source_public_dict(row)
+
+
+@router.delete("/traffic/sources/{source_id}")
+def delete_traffic_source(source_id: int, request: Request, db: Session = Depends(get_db), user=Depends(require_admin)):
+    validate_csrf_token(request, request.headers.get("x-csrf-token"))
+    row = db.query(TrafficSource).filter(TrafficSource.id == source_id, TrafficSource.is_deleted.is_(False)).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Traffic source not found")
+    row.is_deleted = True
+    row.is_enabled = False
+    row.configuration_state = "disabled"
+    row.deleted_at = datetime.utcnow()
+    db.commit()
+    write_audit(db, user, "delete", "traffic_source", str(row.id), trusted_client_ip(request), detail="Retired traffic source configuration; historical data remains retained")
+    return {"ok": True}
+
+
+@router.get("/traffic/sources/{source_id}/interfaces")
+def traffic_interfaces(source_id: int, db: Session = Depends(get_db), user=Depends(require_user)):
+    source = db.query(TrafficSource).filter(TrafficSource.id == source_id, TrafficSource.is_deleted.is_(False)).first()
+    if not source:
+        raise HTTPException(status_code=404, detail="Traffic source not found")
+    return {"interfaces": [{"id": row.id, "interface_key": row.interface_key, "interface_index": row.interface_index, "display_name": row.display_name, "description": row.description, "admin_status": row.admin_status, "oper_status": row.oper_status, "is_enabled": row.is_enabled, "is_wan": row.is_wan, "inbound_direction": row.inbound_direction, "outbound_direction": row.outbound_direction, "speed_bps": row.speed_bps, "last_discovered_at": row.last_discovered_at.isoformat() + "Z" if row.last_discovered_at else None} for row in db.query(TrafficInterface).filter(TrafficInterface.source_id == source.id).order_by(TrafficInterface.display_name.asc()).all()]}
+
+
+@router.post("/traffic/sources/{source_id}/interfaces/discover")
+async def discover_traffic_interfaces(source_id: int, request: Request, db: Session = Depends(get_db), user=Depends(require_admin)):
+    validate_csrf_token(request, request.headers.get("x-csrf-token"))
+    source = db.query(TrafficSource).filter(TrafficSource.id == source_id, TrafficSource.is_deleted.is_(False)).first()
+    if not source:
+        raise HTTPException(status_code=404, detail="Traffic source not found")
+    try:
+        snapshots = await discover_source_interfaces(db, source)
+    except SNMPProviderError as exc:
+        source.health_state = "error" if exc.category in {"authentication_failure", "configuration_error"} else "degraded"
+        source.last_error_category = exc.category
+        source.last_failed_at = datetime.utcnow()
+        db.commit()
+        write_audit(db, user, "discover_failed", "traffic_source", str(source.id), trusted_client_ip(request), detail="SNMP interface discovery failed", metadata={"error_category": exc.category})
+        raise HTTPException(status_code=502, detail="SNMP interface discovery failed") from None
+    db.commit()
+    write_audit(db, user, "discover", "traffic_source", str(source.id), trusted_client_ip(request), detail="Discovered SNMP interfaces", metadata={"interface_count": len(snapshots)})
+    return {"interfaces": [{"interface_index": row.interface_index, "interface_key": row.interface_key, "display_name": row.display_name, "oper_status": row.oper_status, "admin_status": row.admin_status, "speed_bps": row.speed_bps, "counter_bits": row.counter_bits} for row in snapshots]}
+
+
+@router.post("/traffic/sources/{source_id}/test")
+async def test_traffic_source(source_id: int, request: Request, db: Session = Depends(get_db), user=Depends(require_admin)):
+    validate_csrf_token(request, request.headers.get("x-csrf-token"))
+    source = db.query(TrafficSource).filter(TrafficSource.id == source_id, TrafficSource.is_deleted.is_(False)).first()
+    if not source:
+        raise HTTPException(status_code=404, detail="Traffic source not found")
+    try:
+        snapshots = await SNMPv3Provider(timeout_seconds=min(30, max(1, source.polling_interval_seconds // 2))).test_connection(source)
+    except SNMPProviderError as exc:
+        write_audit(db, user, "connection_test_failed", "traffic_source", str(source.id), trusted_client_ip(request), detail="SNMP connection test failed", metadata={"error_category": exc.category})
+        raise HTTPException(status_code=502, detail="SNMP connection test failed") from None
+    write_audit(db, user, "connection_test", "traffic_source", str(source.id), trusted_client_ip(request), detail="SNMP connection test succeeded", metadata={"interface_count": len(snapshots)})
+    return {"ok": True, "interface_count": len(snapshots)}
+
+
+def _traffic_source_or_404(db: Session, source_id: int) -> TrafficSource:
+    source = db.query(TrafficSource).filter(TrafficSource.id == source_id, TrafficSource.is_deleted.is_(False)).first()
+    if not source:
+        raise HTTPException(status_code=404, detail="Traffic source not found")
+    return source
+
+
+@router.get("/traffic/sources/{source_id}/bandwidth")
+def traffic_bandwidth(source_id: int, db: Session = Depends(get_db), user=Depends(require_user)):
+    source = _traffic_source_or_404(db, source_id)
+    interfaces = []
+    for interface in source.interfaces:
+        if not interface.is_enabled:
+            continue
+        observation = db.query(TrafficCounterObservation).filter_by(interface_id=interface.id).order_by(TrafficCounterObservation.observed_at.desc()).first()
+        inbound = observation.inbound_bps if observation else None
+        outbound = observation.outbound_bps if observation else None
+        interfaces.append({"id": interface.id, "name": interface.display_name, "is_wan": interface.is_wan, "speed_bps": interface.speed_bps, "inbound_bps": inbound, "outbound_bps": outbound, "download_bps": inbound if interface.inbound_direction == "download" else outbound if interface.outbound_direction == "download" else None, "upload_bps": inbound if interface.inbound_direction == "upload" else outbound if interface.outbound_direction == "upload" else None, "inbound_direction": interface.inbound_direction, "outbound_direction": interface.outbound_direction, "observed_at": observation.observed_at.isoformat() + "Z" if observation else None})
+    return {"source_id": source.id, "health_state": source.health_state, "last_observation_at": source.last_counter_observation_at.isoformat() + "Z" if source.last_counter_observation_at else None, "interfaces": interfaces}
+
+
+@router.get("/traffic/sources/{source_id}/interfaces/{interface_id}/history")
+def traffic_interface_history(source_id: int, interface_id: int, hours: int = Query(24, ge=1, le=24 * 30), db: Session = Depends(get_db), user=Depends(require_user)):
+    source = _traffic_source_or_404(db, source_id)
+    interface = db.query(TrafficInterface).filter_by(id=interface_id, source_id=source.id).first()
+    if not interface:
+        raise HTTPException(status_code=404, detail="Traffic interface not found")
+    start = datetime.utcnow() - timedelta(hours=hours)
+    rows = db.query(TrafficAggregate).filter(TrafficAggregate.source_id == source.id, TrafficAggregate.interface_id == interface.id, TrafficAggregate.bucket_seconds == 300, TrafficAggregate.bucket_start >= start).order_by(TrafficAggregate.bucket_start.asc()).limit(2000).all()
+    return {"source_id": source.id, "interface_id": interface.id, "hours": hours, "rows": [{"at": row.bucket_start.isoformat() + "Z", "bucket_seconds": row.bucket_seconds, "direction": row.direction, "traffic_class": row.traffic_class, "bytes_total": row.bytes_total, "sample_count": row.sample_count, "is_approximate": bool(row.is_approximate)} for row in rows]}
+
+
+@router.get("/traffic/diagnostics")
+def traffic_diagnostics_endpoint(db: Session = Depends(get_db), user=Depends(require_admin)):
+    rows = db.query(TrafficSource).filter(TrafficSource.is_deleted.is_(False)).order_by(TrafficSource.name.asc()).all()
+    now = datetime.utcnow()
+    scheduler = polling_diagnostics()
+    return {"scheduler": scheduler, "sources": [{"id": row.id, "name": row.name, "is_enabled": row.is_enabled, "configuration_state": row.configuration_state, "health_state": row.health_state, "health_reason": row.health_reason, "last_success_at": row.last_success_at.isoformat() + "Z" if row.last_success_at else None, "last_failed_at": row.last_failed_at.isoformat() + "Z" if row.last_failed_at else None, "last_error_category": row.last_error_category, "last_poll_duration_ms": row.last_poll_duration_ms, "consecutive_failures": row.consecutive_failures, "backoff_until": row.backoff_until.isoformat() + "Z" if row.backoff_until else None, "last_counter_observation_at": row.last_counter_observation_at.isoformat() + "Z" if row.last_counter_observation_at else None, "data_fresh": bool(row.last_success_at and now - row.last_success_at <= timedelta(seconds=row.polling_interval_seconds * 3)), "collection_state": "poller_stopped" if scheduler.get("state") == "stopped" and row.is_enabled else "not_scheduled" if scheduler.get("state") in {"disabled", "standby"} and row.is_enabled else row.health_state} for row in rows]}
+
+
+@router.post("/traffic/sources/{source_id}/interfaces", status_code=201)
+def create_traffic_interface(source_id: int, request: Request, payload: TrafficInterfacePayload, db: Session = Depends(get_db), user=Depends(require_admin)):
+    validate_csrf_token(request, request.headers.get("x-csrf-token"))
+    source = db.query(TrafficSource).filter(TrafficSource.id == source_id, TrafficSource.is_deleted.is_(False)).first()
+    if not source:
+        raise HTTPException(status_code=404, detail="Traffic source not found")
+    if db.query(TrafficInterface).filter_by(source_id=source.id, interface_key=payload.interface_key).first():
+        raise HTTPException(status_code=409, detail="Interface key already exists for this source.")
+    if not payload.interface_key.strip() or not payload.display_name.strip():
+        raise HTTPException(status_code=400, detail="Interface key and display name must not be blank.")
+    if payload.inbound_direction == payload.outbound_direction and payload.inbound_direction != "unknown":
+        raise HTTPException(status_code=400, detail="Inbound and outbound direction mappings must be distinct or unknown.")
+    row = TrafficInterface(source_id=source.id, **payload.model_dump())
+    db.add(row); db.commit()
+    write_audit(db, user, "create", "traffic_interface", str(row.id), trusted_client_ip(request), detail="Created traffic interface", metadata={"source_id": source.id, "is_wan": row.is_wan})
+    return {"id": row.id, **payload.model_dump()}
+
+
+@router.put("/traffic/sources/{source_id}/interfaces/{interface_id}")
+def update_traffic_interface(source_id: int, interface_id: int, request: Request, payload: TrafficInterfacePayload, db: Session = Depends(get_db), user=Depends(require_admin)):
+    validate_csrf_token(request, request.headers.get("x-csrf-token"))
+    source = _traffic_source_or_404(db, source_id)
+    row = db.query(TrafficInterface).filter_by(id=interface_id, source_id=source.id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Traffic interface not found")
+    if not payload.interface_key.strip() or not payload.display_name.strip():
+        raise HTTPException(status_code=400, detail="Interface key and display name must not be blank.")
+    if payload.inbound_direction == payload.outbound_direction and payload.inbound_direction != "unknown":
+        raise HTTPException(status_code=400, detail="Inbound and outbound direction mappings must be distinct or unknown.")
+    duplicate = db.query(TrafficInterface).filter(TrafficInterface.source_id == source.id, TrafficInterface.interface_key == payload.interface_key, TrafficInterface.id != row.id).first()
+    if duplicate:
+        raise HTTPException(status_code=409, detail="Interface key already exists for this source.")
+    for key, value in payload.model_dump().items():
+        setattr(row, key, value)
+    db.commit()
+    write_audit(db, user, "update", "traffic_interface", str(row.id), trusted_client_ip(request), detail="Updated traffic interface selection and direction mapping", metadata={"source_id": source.id, "is_wan": row.is_wan, "inbound_direction": row.inbound_direction, "outbound_direction": row.outbound_direction})
+    return {"id": row.id, **payload.model_dump()}
+
+
+@router.get("/traffic/local-networks")
+def traffic_local_networks(db: Session = Depends(get_db), user=Depends(require_user)):
+    rows = db.query(TrafficLocalNetwork).order_by(TrafficLocalNetwork.network_cidr.asc()).all()
+    return {"local_networks": [{"id": row.id, "name": row.name, "network_cidr": row.network_cidr, "is_enabled": row.is_enabled} for row in rows]}
+
+
+@router.post("/traffic/local-networks", status_code=201)
+def create_traffic_local_network(request: Request, payload: TrafficLocalNetworkPayload, db: Session = Depends(get_db), user=Depends(require_admin)):
+    validate_csrf_token(request, request.headers.get("x-csrf-token"))
+    try:
+        cidr = validate_local_network(payload.network_cidr)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not payload.name.strip():
+        raise HTTPException(status_code=400, detail="Local network name must not be blank.")
+    if db.query(TrafficLocalNetwork).filter_by(network_cidr=cidr).first():
+        raise HTTPException(status_code=409, detail="Local network already exists.")
+    row = TrafficLocalNetwork(name=payload.name.strip(), network_cidr=cidr, is_enabled=payload.is_enabled)
+    db.add(row); db.commit()
+    write_audit(db, user, "create", "traffic_local_network", str(row.id), trusted_client_ip(request), detail="Created traffic local network", metadata={"network_cidr": cidr})
+    return {"id": row.id, "name": row.name, "network_cidr": row.network_cidr, "is_enabled": row.is_enabled}
 
 
 @router.post("/{monitor_id}/refresh")

@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block extra_head %}<link rel="stylesheet" href="/static/css/network_traffic.css?v={{ asset_version }}">{% endblock %}
+{% block content %}
+<section class="module-header network-traffic-header">
+  <div class="module-title-row">
+    <div class="module-heading">
+      <h1>Network Traffic</h1>
+      <p class="muted module-description">SNMPv3 interface traffic from configured WAN sources. No flow or per-device data is collected.</p>
+    </div>
+    <div class="module-actions"><span class="module-stat" data-traffic-module-state>Loading status</span></div>
+  </div>
+</section>
+{% set traffic_navigation = [
+  {'label': 'Overview', 'url': '/networking/ip-wan-monitor/traffic', 'active': traffic_page == 'overview'},
+  {'label': 'Sources', 'url': '/networking/ip-wan-monitor/traffic/sources/manage', 'active': traffic_page == 'sources'},
+  {'label': 'Settings', 'url': '/networking/ip-wan-monitor/traffic/settings', 'active': traffic_page == 'settings'}
+] %}
+{% if user.role == 'admin' %}{% set _ = traffic_navigation.append({'label': 'Diagnostics', 'url': '/networking/ip-wan-monitor/traffic/diagnostics/view', 'active': traffic_page == 'diagnostics'}) %}{% endif %}
+{{ module_navigation('Network Traffic navigation', traffic_navigation) }}
+<main class="traffic-page" data-traffic-app data-page="{{ traffic_page }}" data-csrf="{{ csrf_token }}" data-can-manage="{{ 'true' if can_manage_traffic else 'false' }}">
+  <div class="traffic-notice" data-traffic-message role="status" aria-live="polite" hidden></div>
+
+  <section data-traffic-panel="overview"{% if traffic_page != 'overview' %} hidden{% endif %}>
+    <div class="traffic-summary-grid">
+      <article class="card traffic-summary-card"><span class="muted">Current download</span><strong data-summary="download_bps">No data</strong><small data-summary-quality="download_bps"></small></article>
+      <article class="card traffic-summary-card"><span class="muted">Current upload</span><strong data-summary="upload_bps">No data</strong><small data-summary-quality="upload_bps"></small></article>
+      <article class="card traffic-summary-card"><span class="muted">Downloaded today</span><strong data-summary="download_bytes_today">No data</strong><small data-summary-quality="download_bytes_today"></small></article>
+      <article class="card traffic-summary-card"><span class="muted">Uploaded today</span><strong data-summary="upload_bytes_today">No data</strong><small data-summary-quality="upload_bytes_today"></small></article>
+    </div>
+    <div class="traffic-two-column">
+      <section class="card"><header class="traffic-card-header"><div><h2>Bandwidth history</h2><p class="muted">Five-minute aggregate data for enabled WAN interfaces.</p></div><span class="muted" data-summary="last_observation_at">No observations</span></header><div class="traffic-chart" data-traffic-chart role="img" aria-label="Network traffic history"></div><p class="traffic-empty" data-traffic-overview-empty hidden>No measurements are available yet. An authorised administrator can configure a source.</p></section>
+      <section class="card"><header class="traffic-card-header"><div><h2>Source health</h2><p class="muted">Collection state is separate from configuration state.</p></div><a class="button secondary compact" href="/networking/ip-wan-monitor/traffic/sources/manage">Manage sources</a></header><div data-traffic-source-health><p class="muted">Loading source health...</p></div></section>
+    </div>
+  </section>
+
+  <section data-traffic-panel="sources"{% if traffic_page != 'sources' %} hidden{% endif %}>
+    <div class="traffic-two-column traffic-sources-layout">
+      <section class="card"><header class="traffic-card-header"><div><h2>Monitoring sources</h2><p class="muted">New sources are disabled until you explicitly enable them.</p></div>{% if can_manage_traffic %}<button class="button" type="button" data-source-new>Add source</button>{% endif %}</header><div data-source-list><p class="muted">Loading sources...</p></div></section>
+      <section class="card" data-source-editor hidden>
+        <header class="traffic-card-header"><div><h2 data-source-editor-title>Add SNMPv3 source</h2><p class="muted">Credentials are write-only and are never returned to this page.</p></div><button class="icon-button" type="button" data-source-close aria-label="Close source editor">&times;</button></header>
+        <form data-source-form novalidate>
+          <input type="hidden" name="id">
+          <label>Source name<input name="name" maxlength="120" required></label>
+          <label>Device IP address<input name="destination_ip" inputmode="decimal" maxlength="45" required></label>
+          <div class="traffic-form-grid"><label>UDP port<input name="destination_port" type="number" min="1" max="65535" value="161" required></label><label>Polling interval (seconds)<input name="polling_interval_seconds" type="number" min="5" max="86400" value="60" required></label></div>
+          <label>Security username<input name="security_name" maxlength="128" autocomplete="off" required></label>
+          <div class="traffic-form-grid"><label>Authentication<select name="snmp_auth_protocol"><option value="SHA">SHA</option><option value="SHA-256">SHA-256</option><option value="SHA-384">SHA-384</option><option value="SHA-512">SHA-512</option></select></label><label>Privacy<select name="snmp_privacy_protocol"><option value="AES128">AES128</option><option value="AES192">AES192</option><option value="AES256">AES256</option></select></label></div>
+          <div class="traffic-form-grid"><label>Authentication password<input name="snmp_authentication" type="password" minlength="8" maxlength="32" autocomplete="new-password"><small class="muted" data-secret-help>Required for a new enabled source.</small></label><label>Privacy password<input name="snmp_privacy" type="password" minlength="8" maxlength="32" autocomplete="new-password"><small class="muted">Leave blank when retaining the existing secret.</small></label></div>
+          <label class="checkbox-row"><input name="is_enabled" type="checkbox"> Enable polling after saving</label>
+          <div class="traffic-form-actions"><button class="button" type="submit">Save source</button><button class="button secondary" type="button" data-source-test disabled>Test connection</button><button class="button secondary" type="button" data-source-discover disabled>Discover interfaces</button></div>
+          <p class="muted" data-source-form-status role="status" aria-live="polite"></p>
+        </form>
+        <div class="traffic-interface-editor" data-interface-editor hidden><h3>Interfaces</h3><p class="muted">Select interfaces individually. WAN direction mappings must remain distinct to avoid double counting.</p><div data-interface-list></div></div>
+      </section>
+    </div>
+  </section>
+
+  <section data-traffic-panel="settings"{% if traffic_page != 'settings' %} hidden{% endif %}>
+    <section class="card traffic-settings-card"><header><h2>Network Traffic settings</h2><p class="muted">Disabling monitoring preserves historical observations and stops new collection and traffic alert evaluation.</p></header><form data-traffic-settings-form><label class="checkbox-row"><input name="is_enabled" type="checkbox"> Enable Network Traffic monitoring</label><div class="traffic-form-grid"><label>High-resolution retention (hours)<input name="high_resolution_retention_hours" type="number" min="1" max="8760"></label><label>Five-minute retention (days)<input name="five_minute_retention_days" type="number" min="1" max="3650"></label><label>Hourly retention (days)<input name="hourly_retention_days" type="number" min="1" max="3650"></label><label>Daily retention (days)<input name="daily_retention_days" type="number" min="1" max="3650"></label></div><div class="traffic-form-actions"><button class="button" type="submit">Save settings</button></div><p class="muted" data-settings-status role="status" aria-live="polite"></p></form></section>
+  </section>
+
+  <section data-traffic-panel="diagnostics"{% if traffic_page != 'diagnostics' %} hidden{% endif %}>
+    <section class="card"><header class="traffic-card-header"><div><h2>Polling diagnostics</h2><p class="muted">Operational state only; credentials and stack traces are intentionally excluded.</p></div><button class="button secondary compact" type="button" data-diagnostics-refresh>Refresh</button></header><div data-traffic-diagnostics><p class="muted">Loading diagnostics...</p></div></section>
+  </section>
+</main>
+<script src="/static/js/network_traffic.js?v={{ asset_version }}" defer></script>
+{% endblock %}

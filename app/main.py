@@ -81,6 +81,7 @@ from app.services.kaya_remote_service import (
 )
 from app.services.modules import enabled_modules
 from app.services.network_monitor import start_monitor_scheduler, stop_monitor_scheduler
+from app.services.network_traffic_poller import start_traffic_polling, stop_traffic_polling
 from app.services.notification_runtime import (
     start_notification_runtime,
     stop_notification_runtime,
@@ -403,7 +404,9 @@ async def on_startup():
     start_kaya_remote_service()
     global domain_poll_task, compute_monitor_task, dns_collector_task, secure_send_cleanup_task, ha_lease_reconciliation_task, ha_sync_monitor_task, ha_watchdog_task, notification_runtime_task, notification_retention_task
     start_monitor_scheduler()
+    start_traffic_polling()
     database_engine = engine.dialect.name
+    worker_started("traffic_monitor", database_engine)
     worker_started("domain_poll", database_engine)
     domain_poll_task = asyncio.create_task(domain_poll_loop())
     worker_started("compute_monitor", database_engine)
@@ -445,6 +448,7 @@ async def on_shutdown():
     if version_check_task:
         version_check_task.cancel()
     await stop_monitor_scheduler()
+    await stop_traffic_polling()
     if domain_poll_task:
         domain_poll_task.cancel()
     if compute_monitor_task:

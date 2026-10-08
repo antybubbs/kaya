@@ -1,0 +1,49 @@
+.traffic-page { display: grid; gap: 1rem; }
+.traffic-summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1rem; }
+.traffic-summary-card { display: grid; gap: .35rem; min-height: 7rem; align-content: center; }
+.traffic-summary-card strong { font-size: clamp(1.35rem, 2.8vw, 2rem); letter-spacing: -.02em; }
+.traffic-summary-card small { min-height: 1.1rem; color: var(--muted); }
+.traffic-two-column { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(18rem, 1fr); gap: 1rem; }
+.traffic-two-column > .card, .traffic-settings-card { min-width: 0; }
+.traffic-card-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+.traffic-card-header h2, .traffic-settings-card h2 { margin: 0; }
+.traffic-chart { min-height: 15rem; margin-top: 1rem; }
+.traffic-chart svg { width: 100%; height: 15rem; overflow: visible; }
+.traffic-chart-axis { stroke: var(--border, #344052); stroke-width: 1; }
+.traffic-line { fill: none; stroke-width: 3; stroke-linejoin: round; stroke-linecap: round; }
+.traffic-line.traffic-download { stroke: #38bdf8; }
+.traffic-line.traffic-upload { stroke: #a78bfa; }
+.traffic-chart-legend { display: flex; flex-wrap: wrap; gap: 1rem; font-size: .82rem; }
+.traffic-dot { display: inline-block; width: .65rem; height: .65rem; margin-right: .35rem; border-radius: 50%; }
+.traffic-dot.traffic-download { background: #38bdf8; }
+.traffic-dot.traffic-upload { background: #a78bfa; }
+.traffic-health-row, .traffic-source-row, .traffic-interface-row, .traffic-diagnostic-row { display: flex; align-items: center; justify-content: space-between; gap: .75rem; padding: .8rem 0; border-bottom: 1px solid var(--border, #344052); }
+.traffic-health-row:last-child, .traffic-source-row:last-child, .traffic-interface-row:last-child, .traffic-diagnostic-row:last-child { border-bottom: 0; }
+.traffic-health-row strong, .traffic-source-row strong, .traffic-interface-row strong, .traffic-diagnostic-row strong { display: block; }
+.traffic-health-row small, .traffic-source-row small, .traffic-interface-row small, .traffic-diagnostic-row small { display: block; margin-top: .18rem; }
+.traffic-status { display: inline-flex; align-items: center; border-radius: 999px; padding: .22rem .55rem; font-size: .75rem; text-transform: capitalize; background: color-mix(in srgb, var(--muted) 16%, transparent); }
+.traffic-status-healthy { color: #34d399; background: rgba(52, 211, 153, .12); }
+.traffic-status-degraded, .traffic-status-stale { color: #fbbf24; background: rgba(251, 191, 36, .12); }
+.traffic-status-error { color: #f87171; background: rgba(248, 113, 113, .12); }
+.traffic-status-unconfigured, .traffic-status-disabled { color: var(--muted); }
+.traffic-source-actions, .traffic-form-actions { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; }
+.traffic-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+.traffic-page form { display: grid; gap: .85rem; }
+.traffic-page label:not(.checkbox-row) { display: grid; gap: .3rem; font-weight: 600; }
+.traffic-page input, .traffic-page select { width: 100%; }
+.traffic-page label small { font-weight: 400; }
+.traffic-interface-editor { margin-top: 1.2rem; padding-top: 1rem; border-top: 1px solid var(--border, #344052); }
+.traffic-interface-row { align-items: end; flex-wrap: wrap; }
+.traffic-interface-row > div:first-child { flex: 1 1 13rem; }
+.traffic-interface-row > label { min-width: 6.5rem; font-size: .82rem; }
+.traffic-interface-row > label select { margin-top: .25rem; }
+.traffic-notice { padding: .75rem 1rem; border: 1px solid var(--border, #344052); border-radius: .5rem; background: rgba(56, 189, 248, .08); }
+.traffic-notice.is-error { color: #fecaca; border-color: rgba(248, 113, 113, .5); background: rgba(248, 113, 113, .08); }
+.traffic-empty { padding: 1.25rem 0; color: var(--muted); }
+.traffic-diagnostic-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; margin-bottom: 1rem; }
+.traffic-diagnostic-grid div { display: grid; gap: .25rem; padding: .75rem; border: 1px solid var(--border, #344052); border-radius: .45rem; }
+.traffic-diagnostic-list { border-top: 1px solid var(--border, #344052); }
+.traffic-diagnostic-row > div:last-child { display: flex; flex-wrap: wrap; gap: .65rem 1rem; justify-content: flex-end; color: var(--muted); font-size: .82rem; }
+.compact { padding: .4rem .65rem; font-size: .82rem; }
+@media (max-width: 900px) { .traffic-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .traffic-two-column { grid-template-columns: 1fr; } }
+@media (max-width: 560px) { .traffic-summary-grid, .traffic-form-grid, .traffic-diagnostic-grid { grid-template-columns: 1fr; } .traffic-card-header, .traffic-source-row, .traffic-health-row { align-items: flex-start; flex-direction: column; } .traffic-source-actions { width: 100%; justify-content: space-between; } }

@@ -365,6 +365,158 @@ class NetworkMonitorStatistic(Base):
     monitor = relationship("NetworkMonitor")
 
 
+class TrafficMonitoringConfiguration(Base):
+    """Singleton feature and retention policy for the separate traffic domain."""
+
+    __tablename__ = "traffic_monitoring_configurations"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    high_resolution_retention_hours: Mapped[int] = mapped_column(Integer, default=24)
+    five_minute_retention_days: Mapped[int] = mapped_column(Integer, default=7)
+    hourly_retention_days: Mapped[int] = mapped_column(Integer, default=90)
+    daily_retention_days: Mapped[int] = mapped_column(Integer, default=365)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class TrafficSource(Base):
+    """Vendor-neutral traffic source configuration and observed health."""
+
+    __tablename__ = "traffic_sources"
+    __table_args__ = (
+        UniqueConstraint("name", name="uq_traffic_sources_name"),
+        Index("ix_traffic_sources_active_state", "is_deleted", "is_enabled", "configuration_state"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(120))
+    provider_key: Mapped[str] = mapped_column(String(60), index=True)
+    source_category: Mapped[str] = mapped_column(String(30), index=True)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    configuration_state: Mapped[str] = mapped_column(String(30), default="unconfigured", index=True)
+    health_state: Mapped[str] = mapped_column(String(30), default="unconfigured", index=True)
+    health_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    destination_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    destination_port: Mapped[int] = mapped_column(Integer, default=161)
+    security_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    snmp_auth_protocol: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    snmp_privacy_protocol: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    encrypted_snmp_authentication: Mapped[str | None] = mapped_column(Text, nullable=True)
+    encrypted_snmp_privacy: Mapped[str | None] = mapped_column(Text, nullable=True)
+    exporter_allowlist_json: Mapped[str] = mapped_column(Text, default="[]")
+    collector_port: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    polling_interval_seconds: Mapped[int] = mapped_column(Integer, default=60)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    last_received_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    last_failed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    last_error_category: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    last_poll_duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
+    backoff_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    last_counter_observation_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_rate_in_bps: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
+    last_rate_out_bps: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    interfaces = relationship("TrafficInterface", cascade="all, delete-orphan", back_populates="source")
+
+
+class TrafficInterface(Base):
+    __tablename__ = "traffic_interfaces"
+    __table_args__ = (
+        UniqueConstraint("source_id", "interface_key", name="uq_traffic_interfaces_source_key"),
+        Index("ix_traffic_interfaces_source_wan", "source_id", "is_wan", "is_enabled"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_id: Mapped[int] = mapped_column(ForeignKey("traffic_sources.id", ondelete="CASCADE"), index=True)
+    interface_key: Mapped[str] = mapped_column(String(120))
+    interface_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    display_name: Mapped[str] = mapped_column(String(255))
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    is_wan: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    inbound_direction: Mapped[str] = mapped_column(String(20), default="download")
+    outbound_direction: Mapped[str] = mapped_column(String(20), default="upload")
+    description: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    admin_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    oper_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_discovered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    speed_bps: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    source = relationship("TrafficSource", back_populates="interfaces")
+
+
+class TrafficLocalNetwork(Base):
+    __tablename__ = "traffic_local_networks"
+    __table_args__ = (UniqueConstraint("network_cidr", name="uq_traffic_local_networks_cidr"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(120))
+    network_cidr: Mapped[str] = mapped_column(String(80), index=True)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class TrafficCounterObservation(Base):
+    """Bounded future interface-counter observations; never stores packet payloads or flows."""
+
+    __tablename__ = "traffic_counter_observations"
+    __table_args__ = (
+        UniqueConstraint("observation_key", name="uq_traffic_counter_observations_key"),
+        Index("ix_traffic_counter_observations_interface_time", "interface_id", "observed_at"),
+        Index("ix_traffic_counter_observations_source_time", "source_id", "observed_at"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_id: Mapped[int] = mapped_column(ForeignKey("traffic_sources.id", ondelete="CASCADE"), index=True)
+    interface_id: Mapped[int] = mapped_column(ForeignKey("traffic_interfaces.id", ondelete="CASCADE"), index=True)
+    observation_key: Mapped[str] = mapped_column(String(180))
+    observed_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    inbound_counter: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
+    outbound_counter: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
+    counter_bits: Mapped[int] = mapped_column(Integer, default=64)
+    reset_detected: Mapped[bool] = mapped_column(Boolean, default=False)
+    exporter_epoch: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    discontinuity_ticks: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
+    inbound_bps: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
+    outbound_bps: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
+
+
+class TrafficAggregate(Base):
+    """Future dashboard aggregate; source totals remain separate from flow totals."""
+
+    __tablename__ = "traffic_aggregates"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_id", "interface_id", "bucket_start", "bucket_seconds", "direction", "traffic_class",
+            name="uq_traffic_aggregates_bucket",
+        ),
+        Index("ix_traffic_aggregates_source_time", "source_id", "bucket_start"),
+        Index("ix_traffic_aggregates_interface_time", "interface_id", "bucket_start"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_id: Mapped[int] = mapped_column(ForeignKey("traffic_sources.id", ondelete="CASCADE"), index=True)
+    interface_id: Mapped[int] = mapped_column(ForeignKey("traffic_interfaces.id", ondelete="CASCADE"), index=True)
+    bucket_start: Mapped[datetime] = mapped_column(DateTime, index=True)
+    bucket_seconds: Mapped[int] = mapped_column(Integer)
+    direction: Mapped[str] = mapped_column(String(20))
+    traffic_class: Mapped[str] = mapped_column(String(30))
+    bytes_total: Mapped[int] = mapped_column(BYTE_COUNT, default=0)
+    sample_count: Mapped[int] = mapped_column(Integer, default=0)
+    is_approximate: Mapped[bool] = mapped_column(Boolean, default=False)
+    first_observed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_observed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class TrafficPollingLease(Base):
+    """Single expiring ownership lease preventing duplicate in-process schedulers."""
+
+    __tablename__ = "traffic_polling_leases"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    owner_token: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class NetworkMonitorWallboard(Base):
     __tablename__ = "network_monitor_wallboards"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
