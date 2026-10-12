@@ -347,6 +347,7 @@ class FlowCollector:
         self._rate_window = 0
         self._rate_count = 0
         self._write_lock = threading.Lock()
+        self._decode_lock = threading.Lock()
 
     def _refresh_sources(self) -> None:
         if time.monotonic() - self._source_cache_at < STATE_REFRESH_SECONDS:
@@ -423,7 +424,11 @@ class FlowCollector:
                 with SessionLocal() as config_db:
                     if not _flow_ingestion_enabled(config_db):
                         continue
-                result = self.decoder.decode(packet, exporter)
+                # Template and sequence state is exporter/source scoped. Keep
+                # decoder mutation atomic across workers; packet payloads are
+                # never retained in diagnostics.
+                with self._decode_lock:
+                    result = self.decoder.decode(packet, exporter)
                 now = _now()
                 with self._write_lock, SessionLocal() as db:
                     state = _state(db, source_id)
@@ -431,6 +436,13 @@ class FlowCollector:
                     state.last_datagram_at = now
                     state.unknown_templates += result.unknown_templates
                     state.template_cache_size = len(self.decoder.templates)
+                    if result.unknown_template_details:
+                        detail = result.unknown_template_details[-1]
+                        state.last_unknown_template_id = int(detail["template_id"])
+                        state.last_unknown_template_exporter = str(detail["exporter_identity"])
+                        state.last_unknown_template_source_id = int(detail["source_id"])
+                        state.last_template_error_category = str(detail["category"])
+                        state.last_unknown_template_at = now
                     if result.sequence_gap or result.exporter_restart:
                         state.last_error_category = "sequence_discontinuity" if result.sequence_gap else "exporter_restart"
                         state.sequence_gaps += 1 if result.sequence_gap else 0

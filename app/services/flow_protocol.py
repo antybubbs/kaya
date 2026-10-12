@@ -103,6 +103,7 @@ class DecodeResult:
     unknown_templates: int = 0
     sequence_gap: bool = False
     exporter_restart: bool = False
+    unknown_template_details: list[dict[str, int | str]] = field(default_factory=list)
 
 
 def _u(data: bytes, offset: int, length: int) -> int:
@@ -178,8 +179,16 @@ class NetFlowV9Decoder:
                 result.template_count += self._decode_templates(body, exporter_identity, source_id)
             elif flowset_id >= 256:
                 template = self.templates.get((exporter_identity, source_id, flowset_id))
-                if template is None or time.monotonic() - template.refreshed_at > self.template_ttl_seconds:
+                expired = template is not None and time.monotonic() - template.refreshed_at > self.template_ttl_seconds
+                if template is None or expired:
                     result.unknown_templates += 1
+                    if len(result.unknown_template_details) < 8:
+                        result.unknown_template_details.append({
+                            "template_id": flowset_id,
+                            "exporter_identity": exporter_identity,
+                            "source_id": source_id,
+                            "category": "expired_template" if expired else "unknown_template",
+                        })
                 else:
                     for raw in self._records(body, template):
                         if record_index >= MAX_RECORDS_PER_PACKET:

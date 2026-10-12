@@ -1,5 +1,6 @@
 import json
 import math
+import os
 from datetime import datetime, timedelta
 from urllib.parse import quote
 
@@ -1092,6 +1093,19 @@ def traffic_reporting_report(
     return payload
 
 
+def _reset_non_snmp_polling_state(source: TrafficSource) -> None:
+    """Remove stale SNMP scheduler state when a source is flow-only."""
+    source.health_state = "unconfigured"
+    source.health_reason = None
+    source.last_success_at = None
+    source.last_received_at = None
+    source.last_failed_at = None
+    source.last_error_category = None
+    source.last_poll_duration_ms = None
+    source.consecutive_failures = 0
+    source.backoff_until = None
+
+
 @router.post("/traffic/sources", status_code=201)
 def create_traffic_source(
     request: Request,
@@ -1108,6 +1122,8 @@ def create_traffic_source(
         raise HTTPException(status_code=409, detail="A traffic source with this name already exists.")
     row = TrafficSource(**values, health_state="unconfigured")
     apply_source_secrets(row, payload.model_dump(), creating=True)
+    if row.provider_key != "snmpv3":
+        _reset_non_snmp_polling_state(row)
     if row.is_enabled and row.provider_key == "snmpv3" and (not row.encrypted_snmp_authentication or not row.encrypted_snmp_privacy or not row.snmp_auth_protocol or not row.snmp_privacy_protocol):
         raise HTTPException(status_code=400, detail="Enabled SNMPv3 sources require authentication, privacy and protocol configuration.")
     db.add(row)
@@ -1139,6 +1155,8 @@ def update_traffic_source(
     for key, value in values.items():
         setattr(row, key, value)
     apply_source_secrets(row, payload.model_dump())
+    if row.provider_key != "snmpv3":
+        _reset_non_snmp_polling_state(row)
     if row.is_enabled and row.provider_key == "snmpv3" and (not row.encrypted_snmp_authentication or not row.encrypted_snmp_privacy or not row.snmp_auth_protocol or not row.snmp_privacy_protocol):
         raise HTTPException(status_code=400, detail="Enabled SNMPv3 sources require authentication, privacy and protocol configuration.")
     db.commit()
@@ -1245,6 +1263,10 @@ def traffic_diagnostics_endpoint(db: Session = Depends(get_db), user=Depends(req
     flow_states = {state.source_id: state for state in db.query(TrafficFlowCollectorState).all()}
     flow_sources = [row for row in rows if row.provider_key in {"netflow_v9", "cisco_nsel"}]
     flow_config = collector_settings()
+    if "KAYA_FLOW_COLLECTOR_BIND_ADDRESS" not in os.environ:
+        # The application process cannot prove the bind address of a separate
+        # collector container when deployment configuration is not shared.
+        flow_config = {**flow_config, "bind_address": None}
     flow_source_details = []
     for source in flow_sources:
         try:
@@ -1253,12 +1275,13 @@ def traffic_diagnostics_endpoint(db: Session = Depends(get_db), user=Depends(req
             exporter_count = 0
         detail = {"id": source.id, "name": source.name, "provider_key": source.provider_key, "collector_port": source.collector_port, "exporter_count": exporter_count}
         if source.id in flow_states:
-            for key in ("listener_state", "last_datagram_at", "last_valid_flow_at", "packets_accepted", "packets_rejected", "unknown_exporter_packets", "malformed_packets", "decode_failures", "sequence_gaps", "exporter_restarts", "unknown_templates", "template_cache_size", "queue_depth", "queue_drops", "duplicate_events", "out_of_order_events", "persistence_failures", "last_aggregate_write_at", "last_error_category"):
+            for key in ("listener_state", "last_datagram_at", "last_valid_flow_at", "packets_accepted", "packets_rejected", "unknown_exporter_packets", "malformed_packets", "decode_failures", "sequence_gaps", "exporter_restarts", "unknown_templates", "last_unknown_template_id", "last_unknown_template_exporter", "last_unknown_template_source_id", "last_template_error_category", "last_unknown_template_at", "template_cache_size", "queue_depth", "queue_drops", "duplicate_events", "out_of_order_events", "persistence_failures", "last_aggregate_write_at", "last_error_category"):
                 value = getattr(flow_states[source.id], key)
                 detail[key] = value.isoformat() + "Z" if isinstance(value, datetime) else value
         flow_source_details.append(detail)
     accounting = db.query(TrafficFlowAccountingAggregate).filter(TrafficFlowAccountingAggregate.bucket_start >= now - timedelta(days=1)).all()
-    return {"scheduler": scheduler, "sources": [{"id": row.id, "name": row.name, "is_enabled": row.is_enabled, "configuration_state": row.configuration_state, "health_state": row.health_state, "health_reason": row.health_reason, "last_success_at": row.last_success_at.isoformat() + "Z" if row.last_success_at else None, "last_failed_at": row.last_failed_at.isoformat() + "Z" if row.last_failed_at else None, "last_error_category": row.last_error_category, "last_poll_duration_ms": row.last_poll_duration_ms, "consecutive_failures": row.consecutive_failures, "backoff_until": row.backoff_until.isoformat() + "Z" if row.backoff_until else None, "last_counter_observation_at": row.last_counter_observation_at.isoformat() + "Z" if row.last_counter_observation_at else None, "data_fresh": bool(row.last_success_at and now - row.last_success_at <= timedelta(seconds=row.polling_interval_seconds * 3)), "collection_state": "poller_stopped" if scheduler.get("state") == "stopped" and row.is_enabled else "not_scheduled" if scheduler.get("state") in {"disabled", "standby"} and row.is_enabled else row.health_state} for row in rows], "flow_collector": {"configured": bool(flow_sources), "enabled": bool(flow_config["enabled"]), "bind_address": flow_config["bind_address"], "port": flow_config["port"], "listener_state": global_state.listener_state if global_state else "never_started", "last_datagram_at": global_state.last_datagram_at.isoformat() + "Z" if global_state and global_state.last_datagram_at else None, "packets_received": global_state.packets_received if global_state else 0, "unknown_exporter_packets": global_state.unknown_exporter_packets if global_state else 0, "rate_limited_packets": global_state.rate_limited_packets if global_state else 0, "oversized_packets": global_state.oversized_packets if global_state else 0, "sources": flow_source_details}, "accounting": {"rows_24h": len(accounting), "unresolved_rows": sum(1 for row in accounting if row.attribution_state != "resolved"), "unclassified_bytes": sum(row.bytes_total or 0 for row in accounting if row.traffic_class == "unknown"), "incomplete_rows": sum(1 for row in accounting if row.data_quality != "complete")}}
+    snmp_rows = [row for row in rows if row.provider_key == "snmpv3"]
+    return {"scheduler": scheduler, "sources": [{"id": row.id, "name": row.name, "is_enabled": row.is_enabled, "configuration_state": row.configuration_state, "health_state": row.health_state, "health_reason": row.health_reason, "last_success_at": row.last_success_at.isoformat() + "Z" if row.last_success_at else None, "last_failed_at": row.last_failed_at.isoformat() + "Z" if row.last_failed_at else None, "last_error_category": row.last_error_category, "last_poll_duration_ms": row.last_poll_duration_ms, "consecutive_failures": row.consecutive_failures, "backoff_until": row.backoff_until.isoformat() + "Z" if row.backoff_until else None, "last_counter_observation_at": row.last_counter_observation_at.isoformat() + "Z" if row.last_counter_observation_at else None, "data_fresh": bool(row.last_success_at and now - row.last_success_at <= timedelta(seconds=row.polling_interval_seconds * 3)), "collection_state": "poller_stopped" if scheduler.get("state") == "stopped" and row.is_enabled else "not_scheduled" if scheduler.get("state") in {"disabled", "standby"} and row.is_enabled else row.health_state} for row in snmp_rows], "flow_collector": {"configured": bool(flow_sources), "enabled": bool(flow_config["enabled"]), "bind_address": flow_config["bind_address"], "internal_bind_address": flow_config["bind_address"], "published_host_address": None, "binding_guidance": "The collector bind is process-local telemetry. Verify Docker's published host binding with `docker port <collector-container>`." , "port": flow_config["port"], "listener_state": global_state.listener_state if global_state else "never_started", "last_datagram_at": global_state.last_datagram_at.isoformat() + "Z" if global_state and global_state.last_datagram_at else None, "packets_received": global_state.packets_received if global_state else 0, "unknown_exporter_packets": global_state.unknown_exporter_packets if global_state else 0, "rate_limited_packets": global_state.rate_limited_packets if global_state else 0, "oversized_packets": global_state.oversized_packets if global_state else 0, "sources": flow_source_details}, "accounting": {"rows_24h": len(accounting), "unresolved_rows": sum(1 for row in accounting if row.attribution_state != "resolved"), "unclassified_bytes": sum(row.bytes_total or 0 for row in accounting if row.traffic_class == "unknown"), "incomplete_rows": sum(1 for row in accounting if row.data_quality != "complete")}}
 
 
 @router.get("/traffic/accounting")

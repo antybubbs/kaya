@@ -66,6 +66,12 @@ def test_unknown_template_is_counted_without_persisting_packet_bytes():
     result = NetFlowV9Decoder().decode(header + unknown_set, "192.0.2.1")
     assert result.unknown_templates == 1
     assert result.records == []
+    assert result.unknown_template_details == [{
+        "template_id": 300,
+        "exporter_identity": "192.0.2.1",
+        "source_id": 7,
+        "category": "unknown_template",
+    }]
 
 
 def test_cumulative_nsel_updates_are_delta_accounted_and_idempotent():

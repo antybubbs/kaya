@@ -300,6 +300,42 @@ def test_disabled_feature_prevents_polling_and_lease_is_exclusive(db):
     assert second is False
 
 
+def test_flow_sources_are_never_authorized_for_snmp_polling(db):
+    db.add(TrafficMonitoringConfiguration(id=1, is_enabled=True))
+    values = validate_source_input({
+        "name": "Synthetic NSEL polling guard",
+        "provider_key": "cisco_nsel",
+        "source_category": "flow_export",
+        "is_enabled": True,
+        "collector_port": 2055,
+        "exporter_allowlist": ["192.0.2.1"],
+    })
+    source = TrafficSource(**values)
+    db.add(source)
+    db.commit()
+    assert asyncio.run(poll_source_once(lambda: db, source.id, provider=FakeSNMPProvider([]))) is False
+    assert source.last_error_category is None
+    assert source.consecutive_failures == 0
+
+
+def test_flow_sources_are_never_authorized_for_snmp_polling(db):
+    db.add(TrafficMonitoringConfiguration(id=1, is_enabled=True))
+    values = validate_source_input({
+        "name": "Synthetic NSEL polling guard",
+        "provider_key": "cisco_nsel",
+        "source_category": "flow_export",
+        "is_enabled": True,
+        "collector_port": 2055,
+        "exporter_allowlist": ["192.0.2.1"],
+    })
+    source = TrafficSource(**values)
+    db.add(source)
+    db.commit()
+    assert asyncio.run(poll_source_once(lambda: db, source.id, provider=FakeSNMPProvider([]))) is False
+    assert source.last_error_category is None
+    assert source.consecutive_failures == 0
+
+
 @pytest.mark.parametrize("change", ["lease", "source", "module"])
 def test_lost_lease_or_disabled_state_rejects_late_poll_persistence(db, change):
     source_id = _poll_source(db, enabled=True)

@@ -225,7 +225,7 @@ def _poll_is_authorized(db: Session, source_id: int, lease_token: str | None, no
         config_query = config_query.with_for_update()
     source = source_query.first()
     config = config_query.first()
-    if not source or not source.is_enabled or not config or not config.is_enabled or not _lease_is_owned(db, lease_token, now, lock=fence):
+    if not source or source.provider_key != "snmpv3" or not source.is_enabled or not config or not config.is_enabled or not _lease_is_owned(db, lease_token, now, lock=fence):
         return None
     return source
 
@@ -367,7 +367,11 @@ async def traffic_polling_loop() -> None:
                     await asyncio.sleep(5)
                     continue
                 _diagnostics["state"] = "running"
-                sources = db.query(TrafficSource).filter(TrafficSource.is_deleted.is_(False), TrafficSource.is_enabled.is_(True)).all()
+                sources = db.query(TrafficSource).filter(
+                    TrafficSource.is_deleted.is_(False),
+                    TrafficSource.is_enabled.is_(True),
+                    TrafficSource.provider_key == "snmpv3",
+                ).all()
                 now_mono = time.monotonic()
                 jobs = [source.id for source in sources if now_mono >= due.get(source.id, 0)]
                 for source in sources:
