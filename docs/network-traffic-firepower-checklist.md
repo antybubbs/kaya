@@ -24,7 +24,7 @@ an untested FTD release.
 
 ## Kaya validation
 
-1. Open IP/WAN Monitor → Network Traffic → Sources.
+1. Open Monitoring → Network Traffic → Sources.
 2. Add the FTD management IP, UDP/161, SNMPv3 username, authentication and
    privacy algorithms, and credentials. Leave the source disabled while
    checking the configuration.

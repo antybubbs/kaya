@@ -17,7 +17,7 @@
   <label>Description<textarea name="description">{{ record.description if record and record.description else 'Created from DNS observation' if dns_client else '' }}</textarea></label>
   <label>Static/Dynamic<select name="assignment_type">{% for option in assignment_types %}<option value="{{ option }}" {% if (record and record.assignment_type == option) or (not record and selected_assignment_type|default('Static') == option) %}selected{% endif %}>{{ option }}</option>{% endfor %}</select></label>
   <div class="wide monitor-settings">
-    <div class="monitor-threshold-heading"><label class="checkbox-label"><input name="monitor_enabled" type="checkbox" value="1" {% if monitor and monitor.is_enabled %}checked{% endif %}> Show in IP/WAN Monitor</label><label class="checkbox-label"><input name="monitor_maintenance_mode" type="checkbox" value="1" {% if monitor and monitor.is_in_maintenance %}checked{% endif %}> Maintenance mode</label></div>
+    <div class="monitor-threshold-heading"><label class="checkbox-label"><input name="monitor_enabled" type="checkbox" value="1" {% if monitor and monitor.is_enabled %}checked{% endif %}> Show in Uptime</label><label class="checkbox-label"><input name="monitor_maintenance_mode" type="checkbox" value="1" {% if monitor and monitor.is_in_maintenance %}checked{% endif %}> Maintenance mode</label></div>
     <div class="form-grid">
       <label>Monitor display name<input name="monitor_display_name" placeholder="Uses name or IP address if blank" value="{{ monitor.display_name if monitor and monitor.display_name else '' }}"></label>
       <label>Check interval<select name="monitor_interval_seconds">

@@ -1,7 +1,7 @@
 # Network Traffic Monitoring foundations
 
 Stage 1 adds the disabled-by-default persistence and provider contracts for
-Network Traffic under the existing IP/WAN Monitor module. It does not poll
+Network Traffic under the existing Uptime module. It does not poll
 SNMP, listen for UDP flow exports, decode flows, attribute devices, render
 traffic charts or evaluate traffic alerts.
 
@@ -63,7 +63,7 @@ Configuration and observed health are independent:
 - health: `healthy`, `degraded`, `stale`, `error`, `unconfigured`.
 
 Retiring a source sets it disabled and deleted while retaining its row and any
-future historical foreign-key data. Existing IP/WAN monitoring has its own
+future historical foreign-key data. Existing Uptime monitoring has its own
 scheduler and tables and is unaffected. The traffic feature defaults to
 disabled and currently has no flow collector to start; Stage 2 only adds
 bounded SNMP polling when explicitly enabled.
@@ -80,6 +80,24 @@ Fernet helper and are represented in responses only by presence flags.
 Source and configuration mutations require an authenticated administrator,
 Network Monitor module access and a validated CSRF token. Reads require an
 authenticated user with module access. Mutations create redacted audit events.
+
+## Approved future requirements
+
+The following are approved future requirements, not implemented capabilities:
+
+1. Network Traffic will become the central reporting dashboard for overall ISP/WAN bandwidth and individual device consumption.
+2. Individual device traffic monitoring will be enabled or disabled from existing VLAN/IP Manager records.
+3. Each device will have its own Network Traffic status and reporting section.
+4. Monitoring will be opt-in and disabled by default per device.
+5. Global WAN monitoring will remain independent of individual device monitoring.
+6. The Network Traffic reporting dashboard will include device tables, rankings, graphs, history and filtering.
+7. Existing VLAN/IP Manager device identities must be reused, not duplicated.
+8. Device and dashboard views must link to one another.
+9. Unknown or ambiguous client traffic must not be incorrectly attributed.
+10. SNMP WAN totals and flow-derived device totals must remain separate and clearly labelled.
+11. Per-device reporting depends on the future NetFlow/NSEL collection and attribution stages.
+
+Stages 3 and 4 are not implemented by this rename or the current Network Traffic foundations.
 
 ## Stage 2 SNMP polling
 

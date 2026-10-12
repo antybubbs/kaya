@@ -29,7 +29,7 @@ MODULES = (
     Module("domain_manager", "Domain Manager", ("/networking/domain-manager",)),
     Module("high_availability", "High Availability", ("/high-availability",), "high_availability_enabled", False),
     Module("licence_manager", "License Keys", ("/security/license-keys",)),
-    Module("network_monitor", "IP/WAN Monitor", ("/networking/ip-wan-monitor",)),
+    Module("network_monitor", "Uptime", ("/networking/ip-wan-monitor",)),
     Module("rack_manager", "Rack Manager", ("/infrastructure/rack-manager",)),
     Module("remote_manager", "Remote Manager", ("/remote-manager",)),
     Module("runbooks", "Runbook Manager", ("/documentation/runbook-manager",)),

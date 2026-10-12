@@ -910,12 +910,12 @@ def _reap_finished_monitor_tasks(in_flight: dict[int, asyncio.Task]) -> dict[int
         if not task.done():
             continue
         if task.cancelled():
-            logger.warning("IP/WAN monitor task cancelled monitor_id=%s", monitor_id)
+            logger.warning("Uptime task cancelled monitor_id=%s", monitor_id)
             continue
         try:
             task.result()
         except Exception:
-            logger.exception("IP/WAN monitor task failed monitor_id=%s", monitor_id)
+            logger.exception("Uptime task failed monitor_id=%s", monitor_id)
     return {monitor_id: task for monitor_id, task in in_flight.items() if not task.done()}
 
 
@@ -939,7 +939,7 @@ async def _run_monitor_loop() -> None:
                     with _scheduler_state_guard:
                         global _last_monitor_execution
                         _last_monitor_execution = datetime.utcnow()
-                logger.info("IP/WAN monitor completed monitor_id=%s executed=%s", monitor_id, completed)
+                logger.info("Uptime check completed monitor_id=%s executed=%s", monitor_id, completed)
         finally:
             with _scheduler_state_guard:
                 _pending_monitor_ids.discard(monitor_id)
@@ -979,7 +979,7 @@ async def _run_monitor_loop() -> None:
             for monitor_id in monitor_ids:
                 with _scheduler_state_guard:
                     _pending_monitor_ids.add(monitor_id)
-                logger.info("IP/WAN monitor queued monitor_id=%s", monitor_id)
+                logger.info("Uptime check queued monitor_id=%s", monitor_id)
                 in_flight[monitor_id] = asyncio.create_task(checked_monitor(monitor_id))
             logger.info("IP/WAN scheduler iteration finished iteration=%s queued=%s pending=%s", iteration, len(monitor_ids), len(in_flight))
             next_tick += CHECK_INTERVAL_SECONDS

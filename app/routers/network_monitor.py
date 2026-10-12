@@ -525,7 +525,7 @@ def network_monitor(request: Request, db: Session = Depends(get_db), user=Depend
     row_map = {row["monitor"].id: row for row in context["rows"]}
     context["rows"] = [row_map[item] for item in preferences["monitor_order"] if item in row_map]
     return templates.TemplateResponse(request, "network_monitor.html", {
-        "user": user,
+        "user": user, "title": "Uptime",
         "wallboard_preferences": preferences,
         **context,
         **csrf_context(request),
@@ -548,7 +548,7 @@ def network_monitor_cards(request: Request, db: Session = Depends(get_db), user=
 
 def _traffic_page(request: Request, page: str, user):
     return templates.TemplateResponse(request, "network_traffic.html", {
-        "user": user,
+        "user": user, "title": "Network Traffic",
         "traffic_page": page,
         "can_manage_traffic": user.role == "admin",
         **csrf_context(request),
@@ -651,7 +651,7 @@ def authenticated_wallboard(
     site_defaults = wallboard_display(config)
     preferences = user_preferences(db, user, monitor_ids, site_defaults)
     return templates.TemplateResponse(request, "network_monitor_wallboard.html", {
-        "user": user, "shared": False, "wallboard_name": config.name if config else "IP/WAN Monitor Wallboard",
+        "user": user, "shared": False, "wallboard_name": config.name if config else "Uptime Wallboard",
         "permissions": {"allow_detail_links": True, "allow_check_now": user.role in {"admin", "editor"}, "allow_pause": user.role in {"admin", "editor"}, "allow_reorder": True, "allow_display_changes": True},
         "live_endpoint": "/networking/ip-wan-monitor/live", "preferences_endpoint": "/monitoring/ip-wan-monitor/wallboard/preferences",
         "reset_endpoint": "/monitoring/ip-wan-monitor/wallboard/preferences/reset", "lock_endpoint": None,
@@ -1280,7 +1280,7 @@ def monitor_detail(
     accessible_modules = getattr(user, "_accessible_module_keys", frozenset())
     remote_access = db.query(RemoteAccess).filter(RemoteAccess.ip_address_id == monitor.ip_address_id, RemoteAccess.is_enabled == True).first()  # noqa: E712
     return templates.TemplateResponse(request, "network_monitor_detail.html", {
-        "user": user, "remote_access": remote_access,
+        "user": user, "title": "Uptime - " + (monitor.display_name or monitor.ip_address.name or monitor.ip_address.address), "remote_access": remote_access,
         "can_remote": "remote_manager" in accessible_modules,
         "can_dns": "dns_manager" in accessible_modules,
         "can_ip_manager": "vlan_ip_manager" in accessible_modules,

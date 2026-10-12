@@ -12,7 +12,7 @@
 </head>
 <body class="network-wallboard" data-wallboard-columns="{{ wallboard_preferences.columns }}" data-wallboard-density="{{ wallboard_preferences.density }}"{% for key in ['show_graphs','show_summary','show_actions','show_ip_addresses','show_last_result','show_rolling_average','show_availability','show_header'] %} data-{{ key|replace('_','-') }}="{{ 'true' if wallboard_preferences[key] else 'false' }}"{% endfor %}>
   <header class="wallboard-header" data-wallboard-header>
-    <div class="wallboard-brand"><img src="{{ brand.logo }}" alt=""><div><strong>{{ wallboard_name }}</strong><span>{{ brand.name }} IP/WAN Monitor</span></div></div>
+    <div class="wallboard-brand"><img src="{{ brand.logo }}" alt=""><div><strong>{{ wallboard_name }}</strong><span>{{ brand.name }} Uptime</span></div></div>
     <div class="wallboard-counts" aria-label="Monitor counts">
       <span>Healthy <strong data-monitor-summary="up_count">{{ up_count }}</strong></span>
       <span>Warning <strong data-monitor-summary="warning_count">{{ warning_count }}</strong></span>

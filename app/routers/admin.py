@@ -3419,7 +3419,7 @@ async def save_network_monitor_defaults(
         "network_monitor_defaults",
         None,
         trusted_client_ip(request),
-        detail="Updated inherited IP/WAN Monitor health thresholds",
+        detail="Updated inherited Uptime health thresholds",
         metadata={"old": old_values, "new": values},
     )
     return RedirectResponse(
