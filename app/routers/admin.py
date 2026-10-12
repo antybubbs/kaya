@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import re
 import smtplib
 import socket
@@ -3019,6 +3020,11 @@ def _network_traffic_admin_status(db: Session) -> dict:
     }
     try:
         runtime = collector_settings()
+        # The application cannot observe Docker's host-side published address.
+        # Do not present the collector's default bind as a verified runtime bind
+        # unless the deployment explicitly supplied it.
+        if "KAYA_FLOW_COLLECTOR_BIND_ADDRESS" not in os.environ:
+            runtime = {**runtime, "bind_address": None}
         runtime_error = None
     except RuntimeError as exc:
         runtime = {}

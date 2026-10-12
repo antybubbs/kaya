@@ -20,6 +20,8 @@ def test_admin_status_distinguishes_not_detected_from_healthy_and_stale(monkeypa
         db.commit()
         monkeypatch.setenv("KAYA_FLOW_COLLECTOR_ENABLED", "true")
         monkeypatch.setenv("KAYA_FLOW_COLLECTOR_PORT", "2055")
+        monkeypatch.delenv("KAYA_FLOW_COLLECTOR_BIND_ADDRESS", raising=False)
+        assert _network_traffic_admin_status(db)["runtime"]["bind_address"] is None
         assert _network_traffic_admin_status(db)["status"] == "not_detected"
 
         now = datetime.utcnow()
