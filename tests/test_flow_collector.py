@@ -7,8 +7,8 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.db.session import Base
-from app.models.models import TrafficFlowAggregate, TrafficFlowCollectorState, TrafficSource
-from app.services.flow_collector import process_records
+from app.models.models import TrafficFlowAggregate, TrafficFlowCollectorState, TrafficMonitoringConfiguration, TrafficSource
+from app.services.flow_collector import _allowlisted_sources, process_records
 from app.services.flow_protocol import FlowDecodeError, NetFlowV9Decoder
 
 
@@ -86,3 +86,18 @@ def test_cumulative_nsel_updates_are_delta_accounted_and_idempotent():
         aggregate = db.query(TrafficFlowAggregate).one()
         assert aggregate.bytes_total == 1600
         assert aggregate.sample_count == 2
+
+
+def test_global_network_traffic_disable_prevents_flow_source_resolution():
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    with sessionmaker(bind=engine)() as db:
+        db.add_all([
+            TrafficMonitoringConfiguration(id=1, is_enabled=False),
+            TrafficSource(id=1, name="Disabled flow", provider_key="cisco_nsel", source_category="flow_export", is_enabled=True, exporter_allowlist_json='["192.0.2.1"]', collector_port=2055),
+        ])
+        db.commit()
+        assert _allowlisted_sources(db, 2055) == {}
+        db.get(TrafficMonitoringConfiguration, 1).is_enabled = True
+        db.commit()
+        assert list(_allowlisted_sources(db, 2055)) == ["192.0.2.1"]

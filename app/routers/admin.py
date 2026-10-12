@@ -65,6 +65,10 @@ from app.models.models import (
     ManagedListItem,
     NetworkMonitor,
     NetworkMonitorWallboardMembership,
+    TrafficFlowCollectorGlobalState,
+    TrafficFlowCollectorState,
+    TrafficMonitoringConfiguration,
+    TrafficSource,
     RemoteManagerSetting,
     User,
     VaultSession,
@@ -112,6 +116,7 @@ from app.services.modules import (
     replace_module_access,
 )
 from app.services.network_monitor import monitor_label, validate_threshold_values
+from app.services.flow_collector import collector_settings
 from app.services.table_export import export_row_matches, table_export_response, validate_export_columns, validate_export_filters, validate_export_format
 from app.services.network_monitor_wallboard import (
     DISPLAY_DEFAULTS,
@@ -2990,6 +2995,152 @@ def settings_page(
             **csrf_context(request),
         },
     )
+
+
+FLOW_HEARTBEAT_STALE_SECONDS = 15
+
+
+def _network_traffic_admin_status(db: Session) -> dict:
+    """Return redacted, database-backed collector health for administrators."""
+    now = datetime.utcnow()
+    config = db.get(TrafficMonitoringConfiguration, 1)
+    flow_sources = db.query(TrafficSource).filter(
+        TrafficSource.is_deleted.is_(False),
+        TrafficSource.provider_key.in_(["netflow_v9", "cisco_nsel"]),
+    ).order_by(TrafficSource.name.asc()).all()
+    global_state = db.get(TrafficFlowCollectorGlobalState, 1)
+    states = {
+        row.source_id: row
+        for row in db.query(TrafficFlowCollectorState).filter(
+            TrafficFlowCollectorState.source_id.in_([source.id for source in flow_sources] or [-1])
+        ).all()
+    }
+    try:
+        runtime = collector_settings()
+        runtime_error = None
+    except RuntimeError as exc:
+        runtime = {}
+        runtime_error = str(exc)
+
+    heartbeat = global_state.updated_at if global_state else None
+    heartbeat_age = (now - heartbeat).total_seconds() if heartbeat else None
+    if runtime_error:
+        status = "unknown"
+        status_label = "Unknown"
+        status_reason = "Collector runtime configuration could not be validated."
+    elif not runtime.get("enabled"):
+        status = "not_running"
+        status_label = "Not running"
+        status_reason = "The optional flow-collector deployment setting is disabled."
+    elif global_state is None:
+        status = "not_detected"
+        status_label = "Not detected"
+        status_reason = "No collector heartbeat has been recorded. Start the optional flow-collector service."
+    elif global_state.listener_state != "running":
+        status = "not_running"
+        status_label = "Not running"
+        status_reason = f"The last recorded collector state is {global_state.listener_state}."
+    elif heartbeat_age is None or heartbeat_age > FLOW_HEARTBEAT_STALE_SECONDS:
+        status = "unhealthy"
+        status_label = "Heartbeat stale"
+        status_reason = "The collector heartbeat is older than the accepted freshness window."
+    else:
+        status = "healthy"
+        status_label = "Running / Healthy"
+        status_reason = "The collector is running and its database heartbeat is current."
+
+    counters = {
+        "packets_received": global_state.packets_received if global_state else 0,
+        "unknown_exporters": global_state.unknown_exporter_packets if global_state else 0,
+        "rate_limited": global_state.rate_limited_packets if global_state else 0,
+        "oversized": global_state.oversized_packets if global_state else 0,
+        "packets_processed": sum(row.packets_accepted or 0 for row in states.values()),
+        "packets_rejected": sum(row.packets_rejected or 0 for row in states.values()),
+        "malformed": sum(row.malformed_packets or 0 for row in states.values()),
+        "decode_failures": sum(row.decode_failures or 0 for row in states.values()),
+        "queue_drops": sum(row.queue_drops or 0 for row in states.values()),
+        "worker_errors": sum(row.persistence_failures or 0 for row in states.values()),
+    }
+    def authorised_exporter_count(source: TrafficSource) -> int:
+        try:
+            values = json.loads(source.exporter_allowlist_json or "[]")
+        except (TypeError, ValueError):
+            return 0
+        return len(values) if isinstance(values, list) else 0
+
+    warnings: list[str] = []
+    if config and not config.is_enabled:
+        warnings.append("Global Network Traffic ingestion is disabled.")
+    if not flow_sources:
+        warnings.append("No NetFlow v9 or Cisco NSEL sources are configured.")
+    elif not any(source.is_enabled for source in flow_sources):
+        warnings.append("Flow sources exist, but none are enabled.")
+    if flow_sources and runtime:
+        if not any(source.is_enabled and source.collector_port == runtime["port"] for source in flow_sources):
+            warnings.append("No enabled flow source matches the collector UDP port.")
+        if any(source.is_enabled and authorised_exporter_count(source) == 0 for source in flow_sources):
+            warnings.append("An enabled flow source has no authorised exporters.")
+    if status == "healthy" and counters["packets_received"] == 0:
+        warnings.append("Collector heartbeat is healthy, but no packets have been received.")
+    last_error = next((row.last_error_category for row in states.values() if row.last_error_category), None)
+    if last_error:
+        warnings.append(f"Last collector error category: {last_error}.")
+    source_rows = []
+    for source in flow_sources:
+        source_rows.append({
+            "name": source.name,
+            "provider": source.provider_key,
+            "enabled": bool(source.is_enabled),
+            "port": source.collector_port,
+            "exporter_count": authorised_exporter_count(source),
+            "listener_state": states[source.id].listener_state if source.id in states else "not detected",
+        })
+
+    return {
+        "status": status,
+        "status_label": status_label,
+        "status_reason": status_reason,
+        "global_enabled": bool(config and config.is_enabled),
+        "heartbeat_at": heartbeat.isoformat() + "Z" if heartbeat else None,
+        "heartbeat_age_seconds": round(heartbeat_age, 1) if heartbeat_age is not None else None,
+        "listener_state": global_state.listener_state if global_state else "unknown",
+        "last_packet_at": global_state.last_datagram_at.isoformat() + "Z" if global_state and global_state.last_datagram_at else None,
+        "runtime": runtime,
+        "runtime_error": runtime_error,
+        "sources": {
+            "configured": len(flow_sources),
+            "enabled": sum(1 for source in flow_sources if source.is_enabled),
+            "matching_port": sum(1 for source in flow_sources if source.is_enabled and runtime and source.collector_port == runtime["port"]),
+            "rows": source_rows,
+        },
+        "counters": counters,
+        "warnings": warnings,
+        "deployment_guidance": "Enable the existing flow-collector Compose profile and confirm its UDP bind/firewall mapping; this page does not modify Docker deployment settings.",
+    }
+
+
+@router.get("/system/site-administration/network-traffic")
+def network_traffic_admin_page(
+    request: Request,
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    require_module_settings_access(request, db, user, "network_monitor")
+    return templates.TemplateResponse(
+        request,
+        "network_traffic_admin.html",
+        {"user": user, "status": _network_traffic_admin_status(db), **csrf_context(request)},
+    )
+
+
+@router.get("/system/site-administration/network-traffic/status")
+def network_traffic_admin_status(
+    request: Request,
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    require_module_settings_access(request, db, user, "network_monitor")
+    return JSONResponse(_network_traffic_admin_status(db), headers={"Cache-Control": "no-store"})
 
 
 @router.post("/system/site-administration/experimental-features/high-availability")

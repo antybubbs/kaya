@@ -1,0 +1,42 @@
+import { chromium } from 'playwright';
+
+const base = process.env.BASE_URL || 'http://127.0.0.1:18081';
+const browser = await chromium.launch({ headless: true });
+const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+const errors = [];
+page.on('pageerror', error => errors.push(String(error)));
+await page.goto(`${base}/setup`, { waitUntil: 'networkidle' });
+if (await page.locator('form[action="/setup"]').count()) {
+  await page.getByLabel('First name').fill('Admin');
+  await page.getByLabel('Last name').fill('Acceptance');
+  await page.getByLabel('Email').fill('network-admin@example.invalid');
+  await page.getByLabel('Setup token').fill('admin-setup-token');
+  await page.getByLabel('Password', { exact: true }).fill('Admin-password-012345');
+  await page.getByLabel('Confirm password').fill('Admin-password-012345');
+  await page.getByRole('button', { name: 'Create administrator' }).click();
+  await page.waitForLoadState('networkidle');
+}
+await page.getByLabel('Email').fill('network-admin@example.invalid');
+await page.getByLabel('Password', { exact: true }).fill('Admin-password-012345');
+await page.getByRole('button', { name: 'Sign in' }).click();
+await page.waitForLoadState('networkidle');
+await page.goto(`${base}/system/site-administration/network-traffic`, { waitUntil: 'networkidle' });
+const desktopText = await page.locator('[data-network-traffic-admin]').innerText();
+const navCount = await page.locator('a[href="/system/site-administration/network-traffic"]').count();
+await page.screenshot({ path: '/artifacts/network-traffic-admin-desktop.png', fullPage: true });
+const statusBefore = await page.locator('[data-admin-status-label]').innerText();
+const toggle = page.locator('[data-admin-enabled]');
+const initialEnabled = await toggle.isChecked();
+await toggle.check();
+await page.waitForTimeout(300);
+const enabledAfter = await toggle.isChecked();
+const controlMessage = await page.locator('[data-admin-control-status]').innerText();
+const csrfLength = (await page.locator('[data-network-traffic-admin]').getAttribute('data-csrf') || '').length;
+await toggle.uncheck();
+await page.waitForTimeout(300);
+const disabledAfter = await toggle.isChecked();
+await page.setViewportSize({ width: 390, height: 844 });
+await page.reload({ waitUntil: 'networkidle' });
+await page.screenshot({ path: '/artifacts/network-traffic-admin-mobile.png', fullPage: true });
+console.log(JSON.stringify({ statusBefore, desktopHasCollector: desktopText.includes('Collector status'), navCount, initialEnabled, enabledAfter, disabledAfter, controlMessage, csrfLength, mobileHorizontalOverflow: await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth), errors }));
+await browser.close();

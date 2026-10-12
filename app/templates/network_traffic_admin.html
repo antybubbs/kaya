@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Network Traffic Administration · {{ brand.name }}{% endblock %}
+{% block content %}
+<section class="module-header network-traffic-admin-hero">
+  <div><p class="eyebrow">Site Administration</p><h1>Network Traffic</h1><p>Central collector configuration and operational health. Source management and reporting remain under Monitoring.</p></div>
+  <a class="button secondary" href="/networking/ip-wan-monitor/traffic">Open Monitoring Network Traffic</a>
+</section>
+
+<section class="network-traffic-admin-grid" data-network-traffic-admin data-csrf="{{ csrf_token }}">
+  <article class="card network-traffic-admin-status-card">
+    <header><div><span class="eyebrow">Collector status</span><h2 data-admin-status-label>{{ status.status_label }}</h2><p data-admin-status-reason>{{ status.status_reason }}</p></div><span class="traffic-status traffic-status-{{ status.status }}" data-admin-status>{{ status.status_label }}</span></header>
+    <dl class="admin-facts"><div><dt>Last heartbeat</dt><dd data-admin-heartbeat>{{ status.heartbeat_at or 'No heartbeat recorded' }}</dd></div><div><dt>Last packet</dt><dd data-admin-last-packet>{{ status.last_packet_at or 'No packet recorded' }}</dd></div><div><dt>Listener</dt><dd data-admin-listener>{{ status.listener_state }}</dd></div></dl>
+  </article>
+
+  <article class="card">
+    <header><div><span class="eyebrow">Collection controls</span><h2>Global ingestion</h2><p>Uses the existing Network Traffic feature flag. Changes are audited and take effect for collector workers during their normal refresh cycle.</p></div></header>
+    <label class="checkbox-row admin-traffic-toggle"><input type="checkbox" data-admin-enabled {% if status.global_enabled %}checked{% endif %}><span><strong>Enable flow ingestion</strong><small>Applies to NetFlow v9 and Cisco NSEL ingestion. Existing history is retained.</small></span></label>
+    <p class="muted" data-admin-control-status></p>
+  </article>
+
+  <article class="card">
+    <header><div><span class="eyebrow">Runtime configuration</span><h2>Effective collector settings</h2><p>Deployment-managed values are read-only here. Change them through the existing Compose environment and restart procedure.</p></div></header>
+    <dl class="admin-facts admin-facts-grid"><div><dt>Bind address</dt><dd data-admin-runtime="bind_address">{{ status.runtime.bind_address or 'Unknown' }}</dd></div><div><dt>UDP port</dt><dd data-admin-runtime="port">{{ status.runtime.port or 'Unknown' }}</dd></div><div><dt>Workers</dt><dd data-admin-runtime="workers">{{ status.runtime.workers or 'Unknown' }}</dd></div><div><dt>Queue size</dt><dd data-admin-runtime="queue_size">{{ status.runtime.queue_size or 'Unknown' }}</dd></div><div><dt>Packet limit</dt><dd data-admin-runtime="max_packets_per_second">{{ status.runtime.max_packets_per_second or 'Unknown' }}/s</dd></div></dl>
+  </article>
+
+  <article class="card">
+    <header><div><span class="eyebrow">Traffic statistics</span><h2>Observed collector counters</h2><p>Values come from the collector's redacted database state; they are not estimated by this page.</p></div></header>
+    <dl class="admin-stat-grid">{% for key, label in [('packets_received','Received'),('packets_processed','Processed'),('packets_rejected','Rejected'),('unknown_exporters','Unknown exporters'),('malformed','Malformed'),('decode_failures','Decode failures'),('rate_limited','Rate limited'),('oversized','Oversized'),('queue_drops','Queue drops'),('worker_errors','Worker errors')] %}<div><dt>{{ label }}</dt><dd data-admin-counter="{{ key }}">{{ status.counters[key] }}</dd></div>{% endfor %}</dl>
+  </article>
+
+  <article class="card network-traffic-admin-diagnostics">
+    <header><div><span class="eyebrow">Deployment diagnostics</span><h2>Readiness guidance</h2><p data-admin-source-summary>{{ status.sources.configured }} configured flow source(s), {{ status.sources.enabled }} enabled.</p></div><button class="button secondary compact" type="button" data-admin-refresh>Refresh status</button></header>
+    <ul data-admin-warnings>{% if status.warnings %}{% for warning in status.warnings %}<li>{{ warning }}</li>{% endfor %}{% else %}<li class="success">No known deployment warnings.</li>{% endif %}</ul>
+    <div class="admin-source-table-wrap"><table><thead><tr><th>Source</th><th>Provider</th><th>State</th><th>UDP port</th><th>Exporters</th></tr></thead><tbody data-admin-sources>{% for source in status.sources.rows %}<tr><th scope="row">{{ source.name }}</th><td>{{ source.provider }}</td><td>{{ 'Enabled' if source.enabled else 'Disabled' }} · {{ source.listener_state }}</td><td>{{ source.port or '—' }}</td><td>{{ source.exporter_count }}</td></tr>{% else %}<tr><td colspan="5" class="muted">No flow sources configured.</td></tr>{% endfor %}</tbody></table></div>
+    <p class="muted">{{ status.deployment_guidance }}</p>
+  </article>
+</section>
+{% endblock %}
+{% block extra_head %}<link rel="stylesheet" href="/static/css/network_traffic_admin.css?v={{ asset_version }}">{% endblock %}
+{% block extra_scripts %}<script src="/static/js/network_traffic_admin.js?v={{ asset_version }}" defer></script>{% endblock %}

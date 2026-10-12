@@ -25,6 +25,7 @@ from app.models.models import (
     TrafficFlowCollectorGlobalState,
     TrafficFlowCounterState,
     TrafficFlowDeduplication,
+    TrafficMonitoringConfiguration,
     TrafficSource,
     TrafficLocalNetwork,
 )
@@ -96,6 +97,9 @@ def _global_state(db) -> TrafficFlowCollectorGlobalState:
 
 
 def _allowlisted_sources(db, port: int) -> dict[str, list[TrafficSource]]:
+    configuration = db.get(TrafficMonitoringConfiguration, 1)
+    if configuration is not None and not configuration.is_enabled:
+        return {}
     result: dict[str, list[TrafficSource]] = {}
     rows = db.query(TrafficSource).filter(
         TrafficSource.is_deleted.is_(False), TrafficSource.is_enabled.is_(True),
@@ -109,6 +113,11 @@ def _allowlisted_sources(db, port: int) -> dict[str, list[TrafficSource]]:
         for exporter in allowlist[:128]:
             result.setdefault(str(exporter), []).append(source)
     return result
+
+
+def _flow_ingestion_enabled(db) -> bool:
+    configuration = db.get(TrafficMonitoringConfiguration, 1)
+    return configuration is None or bool(configuration.is_enabled)
 
 
 def _event_key(record: NormalizedFlowRecord, source_id: int | None = None) -> str:
@@ -411,6 +420,9 @@ class FlowCollector:
             except queue.Empty:
                 continue
             try:
+                with SessionLocal() as config_db:
+                    if not _flow_ingestion_enabled(config_db):
+                        continue
                 result = self.decoder.decode(packet, exporter)
                 now = _now()
                 with self._write_lock, SessionLocal() as db:
