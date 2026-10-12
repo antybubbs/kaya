@@ -175,6 +175,7 @@ MODULE_SETTINGS_TABS = {
     "module-dashboard": "dashboard",
     "module-dns-manager": "dns_manager",
     "module-network-monitor": "network_monitor",
+    "module-network-traffic": "network_monitor",
     "module-vlan-ip-manager": "vlan_ip_manager",
     "module-remote-manager": "remote_manager",
     "module-asset-manager": "asset_manager",
@@ -2975,6 +2976,7 @@ def settings_page(
         {
             "user": user,
             "module_access": granted_module_keys(db, user),
+            "network_traffic_status": _network_traffic_admin_status(db),
             "settings": load_site_settings(db),
             "asset_tag_preview": next_asset_tag_preview(db),
             **wallboard_admin_context(request, db),
@@ -3028,14 +3030,15 @@ def _network_traffic_admin_status(db: Session) -> dict:
         status = "unknown"
         status_label = "Unknown"
         status_reason = "Collector runtime configuration could not be validated."
-    elif not runtime.get("enabled"):
-        status = "not_running"
-        status_label = "Not running"
-        status_reason = "The optional flow-collector deployment setting is disabled."
     elif global_state is None:
-        status = "not_detected"
-        status_label = "Not detected"
-        status_reason = "No collector heartbeat has been recorded. Start the optional flow-collector service."
+        if not runtime.get("enabled"):
+            status = "not_running"
+            status_label = "Not running"
+            status_reason = "The optional flow-collector deployment setting is disabled and no collector heartbeat is recorded."
+        else:
+            status = "not_detected"
+            status_label = "Not detected"
+            status_reason = "No collector heartbeat has been recorded. Start the optional flow-collector service."
     elif global_state.listener_state != "running":
         status = "not_running"
         status_label = "Not running"
@@ -3048,6 +3051,8 @@ def _network_traffic_admin_status(db: Session) -> dict:
         status = "healthy"
         status_label = "Running / Healthy"
         status_reason = "The collector is running and its database heartbeat is current."
+        if not runtime.get("enabled"):
+            status_reason += " Runtime telemetry is authoritative; the main Kaya container's optional deployment flag is disabled."
 
     counters = {
         "packets_received": global_state.packets_received if global_state else 0,
@@ -3126,11 +3131,7 @@ def network_traffic_admin_page(
     user=Depends(require_admin),
 ):
     require_module_settings_access(request, db, user, "network_monitor")
-    return templates.TemplateResponse(
-        request,
-        "network_traffic_admin.html",
-        {"user": user, "status": _network_traffic_admin_status(db), **csrf_context(request)},
-    )
+    return RedirectResponse("/system/site-administration?tab=module-network-traffic", status_code=303)
 
 
 @router.get("/system/site-administration/network-traffic/status")

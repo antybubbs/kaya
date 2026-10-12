@@ -30,6 +30,11 @@ def test_admin_status_distinguishes_not_detected_from_healthy_and_stale(monkeypa
         assert status["status"] == "healthy"
         assert status["counters"]["packets_processed"] == 2
 
+        monkeypatch.setenv("KAYA_FLOW_COLLECTOR_ENABLED", "false")
+        status = _network_traffic_admin_status(db)
+        assert status["status"] == "healthy"
+        assert "telemetry is authoritative" in status["status_reason"]
+
         db.get(TrafficFlowCollectorGlobalState, 1).updated_at = now - timedelta(seconds=60)
         db.commit()
         assert _network_traffic_admin_status(db)["status"] == "unhealthy"
