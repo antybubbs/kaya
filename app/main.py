@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import re
+from datetime import datetime
 from pathlib import Path
 from time import perf_counter
 from uuid import uuid4
@@ -36,7 +37,7 @@ from app.db.session import (
     engine,
     verify_database_engine,
 )
-from app.models.models import AuditLog, User
+from app.models.models import AuditLog, TrafficMonitoringConfiguration, User
 from app.routers import (
     admin,
     auth,
@@ -87,6 +88,7 @@ from app.services.notification_runtime import (
     stop_notification_runtime,
 )
 from app.services.notifications import cleanup_retention
+from app.services.flow_reconciliation import cleanup_flow_accounting
 from app.services.secure_send import cleanup_loop as secure_send_cleanup_loop
 from app.services.site_settings import (
     cached_security_context,
@@ -439,6 +441,22 @@ async def on_startup():
                 except Exception:
                     notification_db.rollback()
                     logger.exception("audit.retention.failed")
+                try:
+                    traffic_config = notification_db.get(TrafficMonitoringConfiguration, 1)
+                    if traffic_config:
+                        deleted = cleanup_flow_accounting(
+                            notification_db,
+                            now=datetime.utcnow(),
+                            short_days=traffic_config.five_minute_retention_days,
+                            hourly_days=traffic_config.hourly_retention_days,
+                            daily_days=traffic_config.daily_retention_days,
+                        )
+                        notification_db.commit()
+                        if deleted:
+                            logger.info("network_traffic.retention.completed deleted=%s", deleted)
+                except Exception:
+                    notification_db.rollback()
+                    logger.exception("network_traffic.retention.failed")
     worker_started("notification_retention", database_engine)
     notification_retention_task = asyncio.create_task(notification_retention_loop())
 

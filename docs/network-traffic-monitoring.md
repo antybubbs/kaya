@@ -1,9 +1,11 @@
 # Network Traffic Monitoring foundations
 
-Stage 1 adds the disabled-by-default persistence and provider contracts for
-Network Traffic under the existing Uptime module. It does not poll
-SNMP, listen for UDP flow exports, decode flows, attribute devices, render
-traffic charts or evaluate traffic alerts.
+Network Traffic uses the existing Uptime module boundary for its separate,
+disabled-by-default traffic domain. SNMP interface polling and the optional
+Stage 3A UDP flow collector write separate datasets. Stage 4A adds opt-in
+device attribution and bounded usage aggregates without creating a second
+inventory or storing raw flow records. Stage 4B adds the central reporting
+dashboard and compact VLAN/IP Manager usage card.
 
 ## Persistence contract
 
@@ -36,7 +38,7 @@ independent traffic.
   configuration and does not mean a replacement source inherits its history.
 - Interface identity is scoped to its source by `interface_key`; numeric
   interface indexes are metadata, not global identity.
-- Device attribution is intentionally absent in Stage 1. A later attribution
+- Device attribution is intentionally absent. A later attribution
   record must include a confidence state and an explicit time boundary so an IP
   reuse cannot silently merge two devices.
 - All persisted timestamps are naive UTC values following Kaya’s existing
@@ -65,8 +67,8 @@ Configuration and observed health are independent:
 Retiring a source sets it disabled and deleted while retaining its row and any
 future historical foreign-key data. Existing Uptime monitoring has its own
 scheduler and tables and is unaffected. The traffic feature defaults to
-disabled and currently has no flow collector to start; Stage 2 only adds
-bounded SNMP polling when explicitly enabled.
+disabled. Stage 2 adds bounded SNMP polling when explicitly enabled; Stage 3A
+adds a separate optional NetFlow v9/Cisco NSEL collector process.
 
 ## Security boundary
 
@@ -127,3 +129,59 @@ split proportionally using a constant-rate approximation and marked
 Counter observations are idempotent by a SHA-256 observation key and retain no
 packet contents. WAN interface direction is explicit per interface; SNMP
 inbound/outbound values are not silently treated as internet-only totals.
+## Stage 3B accounting foundations
+
+Flow observations retain the original Stage 3A source-level totals separately
+from the Stage 3B accounting aggregates. The accounting layer produces bounded
+five-minute, hourly and daily rollups with explicit classes: WAN inbound and
+outbound, internet download and upload, internal LAN, VPN/tunnel, or unknown.
+Classification uses configured interface and local-network topology. RFC1918
+or public addressing alone is never treated as proof of a traffic class.
+
+Attribution is conservative and uses existing VLAN/IP Manager records, DHCP
+lease intervals and linked DNS IP history; it does not create a second
+inventory. Reused or ambiguous addresses return an unresolved reason.
+
+The authenticated `/networking/ip-wan-monitor/traffic/accounting` endpoint
+exposes bounded aggregate classes and completeness/confidence fields. The
+`/traffic/reconciliation` endpoint records comparisons as unavailable unless
+SNMP and flow data have a genuinely comparable interface and time mapping;
+SNMP and flow totals are never added together. Administrator diagnostics report
+unclassified bytes, unresolved attribution rows and incomplete accounting.
+
+Retention is bounded by the Network Traffic short, hourly and daily settings.
+Raw flow payloads are not stored. Cisco Firepower FTD export compatibility
+remains unverified and requires the live validation procedure documented in the
+Firepower checklist.
+
+## Stage 4A device opt-in
+
+Device monitoring is controlled from the existing VLAN/IP Manager `IPAddress`
+record. It is disabled by default and administrator-only. Enabling creates an
+activation period at the current UTC time; disabling closes that period.
+Re-enabling creates a new period, so separate activations never merge and no
+history is backfilled. Only confidently attributable observations are stored;
+ambiguous or unlinked traffic remains outside device aggregates.
+
+Device buckets retain direction, source, interface, quality and attribution
+confidence at five-minute, hourly and daily resolutions, with bounded
+retention. Protected status, state-change and usage endpoints live under
+`/networking/vlan-ip-manager/{record_id}/network-traffic`. Reads require
+authentication plus VLAN/IP Manager and Network Monitor module access; state
+changes additionally require administrator role and CSRF. Stage 4B graphs and
+dashboard reporting are not part of Stage 4A.
+
+## Stage 4B reporting
+
+The Network Traffic overview uses the authenticated
+`GET /networking/ip-wan-monitor/traffic/report` endpoint. Its `range` parameter
+is allowlisted to `1h`, `6h`, `24h`, `7d`, `30d`, `90d`, and `1y`; query windows
+are bounded and the server chooses exactly one persisted resolution: 5-minute
+for up to 24 hours, hourly for up to 7 days, and daily thereafter. The response
+never adds multiple resolutions, combines SNMP and flow totals, or fabricates
+missing buckets. WAN rates are derived from persisted counter observations and
+WAN history is labelled observed or approximate. Device rows are restricted to
+currently opted-in managed IP records and are returned in one bounded query,
+with VLAN, status, freshness, quality, and confidence fields. The dashboard
+uses the vendored ECharts library and the existing responsive page shell; the
+compact IP detail card remains linked to the Network Traffic dashboard.

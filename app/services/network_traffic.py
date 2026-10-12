@@ -147,6 +147,7 @@ def validate_source_input(data: dict, *, existing: TrafficSource | None = None) 
 
 
 def source_public_dict(source: TrafficSource) -> dict:
+    provider = PROVIDERS.get(source.provider_key)
     return {
         "id": source.id, "name": source.name, "provider_key": source.provider_key,
         "source_category": source.source_category, "is_enabled": source.is_enabled,
@@ -159,6 +160,12 @@ def source_public_dict(source: TrafficSource) -> dict:
         "has_snmp_privacy": bool(source.encrypted_snmp_privacy),
         "exporter_allowlist": json.loads(source.exporter_allowlist_json or "[]"),
         "collector_port": source.collector_port, "polling_interval_seconds": source.polling_interval_seconds,
+        "capabilities": sorted(provider.capabilities) if provider else [],
+        "configuration_guidance": (
+            "Export NetFlow v9 or ASA NSEL to the configured collector address and allowlisted UDP port."
+            if source.provider_key in {"netflow_v9", "cisco_nsel"}
+            else "Use SNMPv3 interface counters for WAN interface usage; flow totals remain separate."
+        ),
         "last_success_at": source.last_success_at.isoformat() + "Z" if source.last_success_at else None,
         "last_received_at": source.last_received_at.isoformat() + "Z" if source.last_received_at else None,
     }

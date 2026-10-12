@@ -27,13 +27,19 @@ from app.models.models import (
     TrafficMonitoringConfiguration,
     TrafficCounterObservation,
     TrafficSource,
+    TrafficFlowCollectorGlobalState,
+    TrafficFlowCollectorState,
+    TrafficFlowAggregate,
+    TrafficFlowAccountingAggregate,
+    TrafficFlowReconciliation,
+    TrafficDeviceMonitoring,
     NotificationDeliveryAttempt,
     NotificationEvent,
     NotificationOutbox,
     RemoteAccess,
     UserNotification,
 )
-from app.routers.auth import require_admin, require_editor, require_module_access, require_user
+from app.routers.auth import has_module_access, require_admin, require_editor, require_module_access, require_user
 from app.services.audit import write_audit
 from app.services.client_ip import client_ip as trusted_client_ip
 from app.services.network_monitor import (
@@ -84,11 +90,14 @@ from app.services.network_traffic import (
     validate_local_network,
     validate_source_input,
 )
+from app.services.network_traffic_reporting import device_history, device_report, report_window, wan_report
 from app.services.network_traffic_poller import (
     discover_source_interfaces,
     persist_discovered_interfaces,
     polling_diagnostics,
 )
+from app.services.flow_collector import collector_settings
+from app.services.flow_reconciliation import reconcile_window
 from app.services.network_traffic_snmp import SNMPProviderError, SNMPv3Provider
 
 router = APIRouter(prefix="/networking/ip-wan-monitor", dependencies=[Depends(require_module_access("network_monitor"))])
@@ -1014,6 +1023,20 @@ def traffic_overview(db: Session = Depends(get_db), user=Depends(require_user)):
         point = history.setdefault(row.bucket_start, {"download": 0, "upload": 0, "estimated": False})
         point[row.direction] += row.bytes_total or 0
         point["estimated"] = bool(point["estimated"]) or bool(row.is_approximate)
+    flow_rows = db.query(TrafficFlowAggregate).filter(
+        TrafficFlowAggregate.bucket_seconds == 300,
+        TrafficFlowAggregate.bucket_start >= today,
+    ).order_by(TrafficFlowAggregate.bucket_start.asc()).limit(10000).all()
+    flow_totals = {"bytes": 0, "packets": 0}
+    flow_history: dict[datetime, dict[str, int | str]] = {}
+    for row in flow_rows:
+        flow_totals["bytes"] += row.bytes_total or 0
+        flow_totals["packets"] += row.packets_total or 0
+        point = flow_history.setdefault(row.bucket_start, {"bytes": 0, "packets": 0, "data_quality": "complete"})
+        point["bytes"] += row.bytes_total or 0
+        point["packets"] += row.packets_total or 0
+        if row.data_quality == "partial":
+            point["data_quality"] = "partial"
     last_observation = max((source.last_counter_observation_at for source in sources if source.last_counter_observation_at), default=None)
     return {
         "module_enabled": bool(config.is_enabled),
@@ -1027,11 +1050,46 @@ def traffic_overview(db: Session = Depends(get_db), user=Depends(require_user)):
             "wan_interfaces": len(interfaces),
             "last_observation_at": last_observation.isoformat() + "Z" if last_observation else None,
         },
+        "flow_summary": {"bytes_today": flow_totals["bytes"], "packets_today": flow_totals["packets"], "last_observation_at": max((row.last_observed_at for row in flow_rows if row.last_observed_at), default=None).isoformat() + "Z" if any(row.last_observed_at for row in flow_rows) else None},
+        "flow_history": [{"at": at.isoformat() + "Z", **value} for at, value in flow_history.items()],
         "history": [
             {"at": at.isoformat() + "Z", "download_bytes": value["download"], "upload_bytes": value["upload"], "estimated": value["estimated"]}
             for at, value in history.items()
         ],
     }
+
+
+@router.get("/traffic/report")
+def traffic_reporting_report(
+    report_range: str = Query("24h", alias="range", max_length=4),
+    source_id: int | None = Query(None, ge=1),
+    device_id: int | None = Query(None, ge=1),
+    db: Session = Depends(get_db),
+    user=Depends(require_user),
+):
+    """Return the bounded reporting payload used by the central dashboard."""
+    try:
+        report_window(report_range)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if source_id is not None and not db.query(TrafficSource.id).filter(
+        TrafficSource.id == source_id, TrafficSource.is_deleted.is_(False)
+    ).first():
+        raise HTTPException(status_code=404, detail="Traffic source not found")
+    device_reporting_available = has_module_access(db, user, "vlan_ip_manager")
+    if device_id is not None and not device_reporting_available:
+        raise HTTPException(status_code=403, detail="VLAN/IP Manager access required for device reporting")
+    if device_id is not None and not db.query(TrafficDeviceMonitoring.ip_address_id).filter(
+        TrafficDeviceMonitoring.ip_address_id == device_id,
+        TrafficDeviceMonitoring.is_enabled.is_(True),
+    ).first():
+        raise HTTPException(status_code=404, detail="Opted-in device not found")
+    payload = {"wan": wan_report(db, report_range=report_range, source_id=source_id), "devices": {"available": False, "range": report_range, "bucket_seconds": None, "devices": []}}
+    if device_reporting_available:
+        payload["devices"] = {"available": True, **device_report(db, report_range=report_range, now=None)}
+    if device_id is not None:
+        payload["device"] = device_history(db, device_id, report_range=report_range)
+    return payload
 
 
 @router.post("/traffic/sources", status_code=201)
@@ -1183,7 +1241,41 @@ def traffic_diagnostics_endpoint(db: Session = Depends(get_db), user=Depends(req
     rows = db.query(TrafficSource).filter(TrafficSource.is_deleted.is_(False)).order_by(TrafficSource.name.asc()).all()
     now = datetime.utcnow()
     scheduler = polling_diagnostics()
-    return {"scheduler": scheduler, "sources": [{"id": row.id, "name": row.name, "is_enabled": row.is_enabled, "configuration_state": row.configuration_state, "health_state": row.health_state, "health_reason": row.health_reason, "last_success_at": row.last_success_at.isoformat() + "Z" if row.last_success_at else None, "last_failed_at": row.last_failed_at.isoformat() + "Z" if row.last_failed_at else None, "last_error_category": row.last_error_category, "last_poll_duration_ms": row.last_poll_duration_ms, "consecutive_failures": row.consecutive_failures, "backoff_until": row.backoff_until.isoformat() + "Z" if row.backoff_until else None, "last_counter_observation_at": row.last_counter_observation_at.isoformat() + "Z" if row.last_counter_observation_at else None, "data_fresh": bool(row.last_success_at and now - row.last_success_at <= timedelta(seconds=row.polling_interval_seconds * 3)), "collection_state": "poller_stopped" if scheduler.get("state") == "stopped" and row.is_enabled else "not_scheduled" if scheduler.get("state") in {"disabled", "standby"} and row.is_enabled else row.health_state} for row in rows]}
+    global_state = db.get(TrafficFlowCollectorGlobalState, 1)
+    flow_states = {state.source_id: state for state in db.query(TrafficFlowCollectorState).all()}
+    flow_sources = [row for row in rows if row.provider_key in {"netflow_v9", "cisco_nsel"}]
+    flow_config = collector_settings()
+    flow_source_details = []
+    for source in flow_sources:
+        try:
+            exporter_count = len(json.loads(source.exporter_allowlist_json or "[]"))
+        except (TypeError, ValueError):
+            exporter_count = 0
+        detail = {"id": source.id, "name": source.name, "provider_key": source.provider_key, "collector_port": source.collector_port, "exporter_count": exporter_count}
+        if source.id in flow_states:
+            for key in ("listener_state", "last_datagram_at", "last_valid_flow_at", "packets_accepted", "packets_rejected", "unknown_exporter_packets", "malformed_packets", "decode_failures", "sequence_gaps", "exporter_restarts", "unknown_templates", "template_cache_size", "queue_depth", "queue_drops", "duplicate_events", "out_of_order_events", "persistence_failures", "last_aggregate_write_at", "last_error_category"):
+                value = getattr(flow_states[source.id], key)
+                detail[key] = value.isoformat() + "Z" if isinstance(value, datetime) else value
+        flow_source_details.append(detail)
+    accounting = db.query(TrafficFlowAccountingAggregate).filter(TrafficFlowAccountingAggregate.bucket_start >= now - timedelta(days=1)).all()
+    return {"scheduler": scheduler, "sources": [{"id": row.id, "name": row.name, "is_enabled": row.is_enabled, "configuration_state": row.configuration_state, "health_state": row.health_state, "health_reason": row.health_reason, "last_success_at": row.last_success_at.isoformat() + "Z" if row.last_success_at else None, "last_failed_at": row.last_failed_at.isoformat() + "Z" if row.last_failed_at else None, "last_error_category": row.last_error_category, "last_poll_duration_ms": row.last_poll_duration_ms, "consecutive_failures": row.consecutive_failures, "backoff_until": row.backoff_until.isoformat() + "Z" if row.backoff_until else None, "last_counter_observation_at": row.last_counter_observation_at.isoformat() + "Z" if row.last_counter_observation_at else None, "data_fresh": bool(row.last_success_at and now - row.last_success_at <= timedelta(seconds=row.polling_interval_seconds * 3)), "collection_state": "poller_stopped" if scheduler.get("state") == "stopped" and row.is_enabled else "not_scheduled" if scheduler.get("state") in {"disabled", "standby"} and row.is_enabled else row.health_state} for row in rows], "flow_collector": {"configured": bool(flow_sources), "enabled": bool(flow_config["enabled"]), "bind_address": flow_config["bind_address"], "port": flow_config["port"], "listener_state": global_state.listener_state if global_state else "never_started", "last_datagram_at": global_state.last_datagram_at.isoformat() + "Z" if global_state and global_state.last_datagram_at else None, "packets_received": global_state.packets_received if global_state else 0, "unknown_exporter_packets": global_state.unknown_exporter_packets if global_state else 0, "rate_limited_packets": global_state.rate_limited_packets if global_state else 0, "oversized_packets": global_state.oversized_packets if global_state else 0, "sources": flow_source_details}, "accounting": {"rows_24h": len(accounting), "unresolved_rows": sum(1 for row in accounting if row.attribution_state != "resolved"), "unclassified_bytes": sum(row.bytes_total or 0 for row in accounting if row.traffic_class == "unknown"), "incomplete_rows": sum(1 for row in accounting if row.data_quality != "complete")}}
+
+
+@router.get("/traffic/accounting")
+def traffic_accounting(hours: int = Query(24, ge=1, le=24 * 30), db: Session = Depends(get_db), user=Depends(require_user)):
+    start = datetime.utcnow() - timedelta(hours=hours)
+    rows = db.query(TrafficFlowAccountingAggregate).filter(TrafficFlowAccountingAggregate.bucket_seconds == 300, TrafficFlowAccountingAggregate.bucket_start >= start).order_by(TrafficFlowAccountingAggregate.bucket_start.asc()).limit(10000).all()
+    return {"hours": hours, "rows": [{"source_id": row.source_id, "at": row.bucket_start.isoformat() + "Z", "bucket_seconds": row.bucket_seconds, "traffic_class": row.traffic_class, "bytes_total": row.bytes_total, "packets_total": row.packets_total, "data_quality": row.data_quality, "classification_confidence": row.classification_confidence, "attribution_state": row.attribution_state, "unresolved_reason": row.unresolved_reason} for row in rows]}
+
+
+@router.get("/traffic/reconciliation")
+def traffic_reconciliation(source_id: int, hours: int = Query(24, ge=1, le=24 * 30), interface_id: int | None = Query(None, ge=1), db: Session = Depends(get_db), user=Depends(require_user)):
+    source = _traffic_source_or_404(db, source_id)
+    if interface_id is not None and not db.query(TrafficInterface).filter_by(id=interface_id, source_id=source.id).first():
+        raise HTTPException(status_code=404, detail="Traffic interface not found")
+    start = datetime.utcnow() - timedelta(hours=hours)
+    row = reconcile_window(db, source_id=source.id, window_start=start, window_end=datetime.utcnow(), interface_id=interface_id, persist=False)
+    return {"source_id": row.source_id, "interface_id": row.interface_id, "window_start": row.window_start.isoformat() + "Z", "window_end": row.window_end.isoformat() + "Z", "snmp_bytes": row.snmp_bytes, "flow_bytes": row.flow_bytes, "unattributed_bytes": row.unattributed_bytes, "unclassified_bytes": row.unclassified_bytes, "comparable": row.comparable, "coverage_percent": row.coverage_percent, "status": row.status, "reason": row.reason}
 
 
 @router.post("/traffic/sources/{source_id}/interfaces", status_code=201)

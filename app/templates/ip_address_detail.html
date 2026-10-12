@@ -13,6 +13,7 @@
       {% if record.category %}<span class="table-chip">Category: {{ record.category }}</span>{% endif %}
       <span class="table-chip muted-chip">Uptime {% if monitor and monitor.is_enabled %}On{% else %}Off{% endif %}</span>
       <span class="table-chip muted-chip">Remote Manager {% if remote and remote.is_enabled %}On{% else %}Off{% endif %}</span>
+      <span class="table-chip muted-chip">Network Traffic {{ traffic_status.status|title }}</span>
     </div>
   </div>
   {% if user.role in ['admin','editor'] %}
@@ -44,6 +45,8 @@
         <span data-view class="service-pill {% if monitor and monitor.is_enabled %}on{% endif %}">{% if monitor and monitor.is_enabled %}Enabled{% else %}Disabled{% endif %}</span>
         <label data-edit class="inline-toggle"><input name="monitor_enabled" type="checkbox" value="1" {% if monitor and monitor.is_enabled %}checked{% endif %}> Enabled</label><label data-edit class="inline-toggle"><input name="monitor_maintenance_mode" type="checkbox" value="1" {% if monitor and monitor.is_in_maintenance %}checked{% endif %}> Maintenance</label>
       </div>
+      <div class="service-card"><div><strong>Network Traffic</strong><span>Administrator-controlled opt-in for bounded usage aggregates attributed to this managed IP record.</span></div><strong>{{ traffic_status.status|title }}</strong><span class="muted">{{ traffic_status.reason }}</span>{% if traffic_status.last_attributed_at %}<span class="muted">Last attributed: {{ traffic_status.last_attributed_at }}</span>{% endif %}</div>
+      <div class="service-card compact device-traffic-report-card" data-device-traffic-card data-record-id="{{ record.id }}"><div><strong>Usage report</strong><span data-device-traffic-message>{% if traffic_status.enabled %}Loading recent persisted usage...{% else %}Disabled — enable Network Traffic for this record to collect usage.{% endif %}</span></div>{% if traffic_status.enabled %}<div class="device-traffic-report-facts"><span>Today: <strong data-device-total>—</strong></span><span>Last update: <strong data-device-last>—</strong></span></div><div class="device-traffic-spark" data-device-spark aria-label="Recent device traffic history"></div>{% endif %}<a class="button secondary compact" href="/networking/ip-wan-monitor/traffic">Open Network Traffic reports</a></div>
       <div data-edit class="record-edit-grid">
         <label>Monitor display name<input name="monitor_display_name" value="{{ monitor.display_name if monitor and monitor.display_name else '' }}"></label>
         <label>Check interval<select name="monitor_interval_seconds">{% set interval = monitor.interval_seconds if monitor else 300 %}<option value="5" {% if interval == 5 %}selected{% endif %}>Live · 5 seconds</option><option value="60" {% if interval == 60 %}selected{% endif %}>1 minute</option><option value="300" {% if interval == 300 %}selected{% endif %}>5 minutes</option><option value="900" {% if interval == 900 %}selected{% endif %}>15 minutes</option><option value="3600" {% if interval == 3600 %}selected{% endif %}>1 hour</option></select></label>

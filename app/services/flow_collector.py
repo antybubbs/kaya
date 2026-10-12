@@ -1,0 +1,502 @@
+"""Standalone, bounded UDP flow collector for NetFlow v9 and Cisco NSEL."""
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import os
+import queue
+import signal
+import socket
+import threading
+import time
+from datetime import datetime, timedelta
+from ipaddress import ip_address
+
+from sqlalchemy import case, or_
+from sqlalchemy.dialects.postgresql import insert as postgres_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+from app.db.session import SessionLocal
+from app.models.models import (
+    TrafficFlowAggregate,
+    TrafficFlowAccountingAggregate,
+    TrafficFlowCollectorState,
+    TrafficFlowCollectorGlobalState,
+    TrafficFlowCounterState,
+    TrafficFlowDeduplication,
+    TrafficSource,
+    TrafficLocalNetwork,
+)
+from app.services.flow_protocol import FlowDecodeError, MAX_DATAGRAM_SIZE, NetFlowV9Decoder, NormalizedFlowRecord
+from app.services.flow_accounting import classify_flow, resolve_flow_attribution
+from app.services.device_traffic import persist_device_traffic
+
+logger = logging.getLogger("kaya.flow_collector")
+MAX_QUEUE_SIZE = 10000
+MAX_WORKERS = 16
+MAX_PACKET_RATE = 10000
+STATE_REFRESH_SECONDS = 5
+DEDUP_RETENTION = timedelta(hours=48)
+COUNTER_RETENTION = timedelta(days=2)
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    return os.environ.get(name, "1" if default else "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        return max(minimum, min(int(os.environ.get(name, default)), maximum))
+    except (TypeError, ValueError):
+        return default
+
+
+def collector_settings() -> dict:
+    bind = os.environ.get("KAYA_FLOW_COLLECTOR_BIND_ADDRESS", "127.0.0.1").strip()
+    try:
+        ip_address(bind)
+    except ValueError as exc:
+        raise RuntimeError("KAYA_FLOW_COLLECTOR_BIND_ADDRESS must be a literal IP address") from exc
+    return {
+        "enabled": _env_bool("KAYA_FLOW_COLLECTOR_ENABLED"),
+        "bind_address": bind,
+        "port": _env_int("KAYA_FLOW_COLLECTOR_PORT", 2055, 1024, 65535),
+        "queue_size": _env_int("KAYA_FLOW_COLLECTOR_QUEUE_SIZE", 2048, 1, MAX_QUEUE_SIZE),
+        "workers": _env_int("KAYA_FLOW_COLLECTOR_WORKERS", 2, 1, MAX_WORKERS),
+        "max_packets_per_second": _env_int("KAYA_FLOW_COLLECTOR_MAX_PACKETS_PER_SECOND", 1000, 1, MAX_PACKET_RATE),
+    }
+
+
+def _now() -> datetime:
+    return datetime.utcnow()
+
+
+def _bucket(value: datetime, seconds: int = 300) -> datetime:
+    epoch = int(value.timestamp())
+    return datetime.utcfromtimestamp(epoch - epoch % seconds)
+
+
+def _state(db, source_id: int) -> TrafficFlowCollectorState:
+    row = db.query(TrafficFlowCollectorState).filter_by(source_id=source_id).first()
+    if row is None:
+        row = TrafficFlowCollectorState(source_id=source_id)
+        db.add(row)
+        db.flush()
+    return row
+
+
+def _global_state(db) -> TrafficFlowCollectorGlobalState:
+    row = db.get(TrafficFlowCollectorGlobalState, 1)
+    if row is None:
+        row = TrafficFlowCollectorGlobalState(id=1)
+        db.add(row)
+        db.flush()
+    return row
+
+
+def _allowlisted_sources(db, port: int) -> dict[str, list[TrafficSource]]:
+    result: dict[str, list[TrafficSource]] = {}
+    rows = db.query(TrafficSource).filter(
+        TrafficSource.is_deleted.is_(False), TrafficSource.is_enabled.is_(True),
+        TrafficSource.provider_key.in_(["netflow_v9", "cisco_nsel"]), TrafficSource.collector_port == port,
+    ).all()
+    for source in rows:
+        try:
+            allowlist = json.loads(source.exporter_allowlist_json or "[]")
+        except (TypeError, ValueError):
+            allowlist = []
+        for exporter in allowlist[:128]:
+            result.setdefault(str(exporter), []).append(source)
+    return result
+
+
+def _event_key(record: NormalizedFlowRecord, source_id: int | None = None) -> str:
+    raw = "|".join(str(value) for value in (
+        source_id if source_id is not None else record.source_id, record.exporter_identity, record.sequence, record.record_index,
+        record.connection_id, record.event_type, record.observed_at.isoformat(), record.bytes_total, record.packets_total,
+    ))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _conflict_insert(db, table):
+    if db.bind.dialect.name == "postgresql":
+        return postgres_insert(table)
+    if db.bind.dialect.name == "sqlite":
+        return sqlite_insert(table)
+    return None
+
+
+def _aggregate(db, record: NormalizedFlowRecord, byte_count: int, packet_count: int, quality: str, source_id: int) -> None:
+    if byte_count <= 0 and packet_count <= 0:
+        return
+    bucket_start = _bucket(record.observed_at)
+    values = {
+        "source_id": source_id, "exporter_identity": record.exporter_identity,
+        "bucket_start": bucket_start, "bucket_seconds": 300,
+        "direction": record.direction, "traffic_class": "flow_total",
+        "bytes_total": byte_count, "packets_total": packet_count, "sample_count": 1,
+        "data_quality": quality, "first_observed_at": record.observed_at,
+        "last_observed_at": record.observed_at,
+    }
+    statement = _conflict_insert(db, TrafficFlowAggregate.__table__)
+    if statement is not None:
+        excluded = statement.excluded
+        table = TrafficFlowAggregate.__table__
+        statement = statement.values(**values).on_conflict_do_update(
+            index_elements=["source_id", "exporter_identity", "bucket_start", "bucket_seconds", "direction", "traffic_class"],
+            set_={
+                "bytes_total": table.c.bytes_total + excluded.bytes_total,
+                "packets_total": table.c.packets_total + excluded.packets_total,
+                "sample_count": table.c.sample_count + excluded.sample_count,
+                "data_quality": case(
+                    (or_(table.c.data_quality == "partial", excluded.data_quality == "partial"), "partial"),
+                    else_="complete",
+                ),
+                "first_observed_at": case(
+                    (table.c.first_observed_at > excluded.first_observed_at, excluded.first_observed_at),
+                    else_=table.c.first_observed_at,
+                ),
+                "last_observed_at": case(
+                    (table.c.last_observed_at < excluded.last_observed_at, excluded.last_observed_at),
+                    else_=table.c.last_observed_at,
+                ),
+            },
+        )
+        db.execute(statement)
+        return
+    row = db.query(TrafficFlowAggregate).filter_by(**{
+        "source_id": source_id, "exporter_identity": record.exporter_identity,
+        "bucket_start": bucket_start, "bucket_seconds": 300,
+        "direction": record.direction, "traffic_class": "flow_total",
+    }).first()
+    if row is None:
+        db.add(TrafficFlowAggregate(**values))
+        return
+    row.bytes_total = (row.bytes_total or 0) + byte_count
+    row.packets_total = (row.packets_total or 0) + packet_count
+    row.sample_count = (row.sample_count or 0) + 1
+    row.data_quality = "partial" if "partial" in {row.data_quality, quality} else "complete"
+    row.first_observed_at = min(row.first_observed_at or record.observed_at, record.observed_at)
+    row.last_observed_at = max(row.last_observed_at or record.observed_at, record.observed_at)
+
+
+def _accounting_aggregate(db, record: NormalizedFlowRecord, byte_count: int, packet_count: int, quality: str, source_id: int) -> None:
+    """Write classified short/hourly/daily rollups without changing legacy totals."""
+    source = db.get(TrafficSource, source_id)
+    if source is None:
+        return
+    interfaces = source.interfaces
+    networks = [row.network_cidr for row in db.query(TrafficLocalNetwork).filter(TrafficLocalNetwork.is_enabled.is_(True)).limit(256).all()]
+    classification = classify_flow(record, interfaces=interfaces, local_networks=networks)
+    attribution = resolve_flow_attribution(db, record)
+    for bucket_seconds in (300, 3600, 86400):
+        bucket_start = _bucket(record.observed_at, bucket_seconds)
+        values = {
+            "source_id": source_id, "exporter_identity": record.exporter_identity,
+            "bucket_start": bucket_start, "bucket_seconds": bucket_seconds,
+            "traffic_class": classification.traffic_class,
+            "bytes_total": byte_count, "packets_total": packet_count, "sample_count": 1,
+            "data_quality": quality, "classification_confidence": classification.confidence,
+            "attribution_state": attribution.state, "unresolved_reason": attribution.unresolved_reason,
+            "first_observed_at": record.observed_at, "last_observed_at": record.observed_at,
+        }
+        statement = _conflict_insert(db, TrafficFlowAccountingAggregate.__table__)
+        if statement is not None:
+            excluded = statement.excluded
+            table = TrafficFlowAccountingAggregate.__table__
+            statement = statement.values(**values).on_conflict_do_update(
+                index_elements=["source_id", "exporter_identity", "bucket_start", "bucket_seconds", "traffic_class"],
+                set_={
+                    "bytes_total": table.c.bytes_total + excluded.bytes_total,
+                    "packets_total": table.c.packets_total + excluded.packets_total,
+                    "sample_count": table.c.sample_count + excluded.sample_count,
+                    "data_quality": case((or_(table.c.data_quality == "partial", excluded.data_quality == "partial"), "partial"), else_=table.c.data_quality),
+                    "classification_confidence": case(
+                        (table.c.classification_confidence == excluded.classification_confidence, table.c.classification_confidence),
+                        (table.c.classification_confidence == "unknown", excluded.classification_confidence),
+                        else_="mixed",
+                    ),
+                    "attribution_state": case(
+                        (table.c.attribution_state == excluded.attribution_state, table.c.attribution_state),
+                        (table.c.attribution_state == "unknown", excluded.attribution_state),
+                        else_="mixed",
+                    ),
+                    "unresolved_reason": case(
+                        (table.c.unresolved_reason.is_(None), excluded.unresolved_reason),
+                        (table.c.unresolved_reason == excluded.unresolved_reason, table.c.unresolved_reason),
+                        else_="mixed",
+                    ),
+                    "first_observed_at": case((table.c.first_observed_at > excluded.first_observed_at, excluded.first_observed_at), else_=table.c.first_observed_at),
+                    "last_observed_at": case((table.c.last_observed_at < excluded.last_observed_at, excluded.last_observed_at), else_=table.c.last_observed_at),
+                },
+            )
+            db.execute(statement)
+        else:
+            row = db.query(TrafficFlowAccountingAggregate).filter_by(**{
+                "source_id": source_id, "exporter_identity": record.exporter_identity,
+                "bucket_start": bucket_start, "bucket_seconds": bucket_seconds,
+                "traffic_class": classification.traffic_class,
+            }).first()
+            if row is None:
+                db.add(TrafficFlowAccountingAggregate(**values))
+            else:
+                row.bytes_total += byte_count; row.packets_total += packet_count; row.sample_count += 1
+                row.data_quality = "partial" if "partial" in {row.data_quality, quality} else row.data_quality
+
+
+def _claim_event(db, source_id: int, event_key: str, now: datetime) -> bool:
+    statement = _conflict_insert(db, TrafficFlowDeduplication.__table__)
+    values = {"source_id": source_id, "event_key": event_key, "processed_at": now, "expires_at": now + DEDUP_RETENTION}
+    if statement is not None:
+        statement = statement.values(**values).on_conflict_do_nothing(
+            index_elements=["event_key"]
+        ).returning(TrafficFlowDeduplication.event_key)
+        # RETURNING is unambiguous across PostgreSQL drivers: a newly
+        # inserted key returns one row, while ON CONFLICT returns none.
+        return db.execute(statement).first() is not None
+    if db.query(TrafficFlowDeduplication.id).filter_by(event_key=event_key).first():
+        return False
+    db.add(TrafficFlowDeduplication(**values))
+    return True
+
+
+def process_records(db, records: list[NormalizedFlowRecord], *, source_id: int | None = None, packet_count: int = 1) -> dict:
+    """Persist one bounded packet batch idempotently and without raw payloads."""
+    counters = {"accepted": 0, "duplicates": 0, "out_of_order": 0, "aggregates": 0}
+    now = _now()
+    for record in records:
+        effective_source_id = source_id if source_id is not None else record.source_id
+        state = _state(db, effective_source_id)
+        key = _event_key(record, effective_source_id)
+        if not _claim_event(db, effective_source_id, key, now):
+            state.duplicate_events += 1
+            counters["duplicates"] += 1
+            continue
+        byte_count = int(record.bytes_total or 0)
+        packet_count_value = int(record.packets_total or 0)
+        quality = record.data_quality
+        if record.cumulative_counters and record.connection_id and record.bytes_total is not None:
+            counter = db.query(TrafficFlowCounterState).filter_by(
+                source_id=effective_source_id, exporter_identity=record.exporter_identity,
+                connection_id=record.connection_id,
+            ).with_for_update().first()
+            if counter and counter.last_event_at and record.observed_at < counter.last_event_at:
+                state.out_of_order_events += 1
+                counters["out_of_order"] += 1
+                continue
+            if counter and counter.last_bytes is not None:
+                if byte_count >= counter.last_bytes:
+                    byte_count -= counter.last_bytes
+                else:
+                    byte_count = byte_count
+                    quality = "partial"
+            if counter and counter.last_packets is not None and record.packets_total is not None:
+                if int(record.packets_total) >= int(counter.last_packets):
+                    packet_count_value = int(record.packets_total) - int(counter.last_packets)
+                else:
+                    quality = "partial"
+            else:
+                quality = "partial" if record.event_type not in {"create", None} else quality
+            if counter is None:
+                counter = TrafficFlowCounterState(
+                    source_id=effective_source_id, exporter_identity=record.exporter_identity,
+                    connection_id=record.connection_id, expires_at=now + COUNTER_RETENTION,
+                )
+                db.add(counter)
+            counter.last_event_at = record.observed_at
+            counter.last_bytes = int(record.bytes_total)
+            counter.last_packets = record.packets_total
+            counter.last_event_type = record.event_type
+            counter.expires_at = now + COUNTER_RETENTION
+        _aggregate(db, record, max(0, byte_count), max(0, packet_count_value), quality, effective_source_id)
+        _accounting_aggregate(db, record, max(0, byte_count), max(0, packet_count_value), quality, effective_source_id)
+        persist_device_traffic(db, record, max(0, byte_count), max(0, packet_count_value), effective_source_id)
+        state.last_valid_flow_at = record.observed_at
+        state.last_aggregate_write_at = now
+        state.packets_accepted += 1
+        counters["accepted"] += 1
+        counters["aggregates"] += 1
+    db.query(TrafficFlowDeduplication).filter(TrafficFlowDeduplication.expires_at < now).delete(synchronize_session=False)
+    db.query(TrafficFlowCounterState).filter(TrafficFlowCounterState.expires_at < now).delete(synchronize_session=False)
+    return counters
+
+
+class FlowCollector:
+    def __init__(self, settings: dict | None = None):
+        self.settings = settings or collector_settings()
+        self.queue: queue.Queue[tuple[int, str, bytes]] = queue.Queue(maxsize=self.settings["queue_size"])
+        self.stop_event = threading.Event()
+        self.socket: socket.socket | None = None
+        self.receiver: threading.Thread | None = None
+        self.workers: list[threading.Thread] = []
+        self.decoder = NetFlowV9Decoder()
+        self._source_cache: dict[str, list[TrafficSource]] = {}
+        self._source_cache_at = 0.0
+        self._last_heartbeat = 0.0
+        self._rate_lock = threading.Lock()
+        self._rate_window = 0
+        self._rate_count = 0
+        self._write_lock = threading.Lock()
+
+    def _refresh_sources(self) -> None:
+        if time.monotonic() - self._source_cache_at < STATE_REFRESH_SECONDS:
+            return
+        with SessionLocal() as db:
+            self._source_cache = _allowlisted_sources(db, self.settings["port"])
+        self._source_cache_at = time.monotonic()
+
+    def _rate_allowed(self) -> bool:
+        with self._rate_lock:
+            now = int(time.monotonic())
+            if now != self._rate_window:
+                self._rate_window, self._rate_count = now, 0
+            if self._rate_count >= self.settings["max_packets_per_second"]:
+                return False
+            self._rate_count += 1
+            return True
+
+    def _record_packet_state(self, source_id: int, *, increments: dict[str, int] | None = None, **values) -> None:
+        with SessionLocal() as db:
+            state = _state(db, source_id)
+            for key, value in values.items():
+                setattr(state, key, value)
+            for key, value in (increments or {}).items():
+                setattr(state, key, int(getattr(state, key) or 0) + int(value))
+            db.commit()
+
+    def _record_global(self, *, increments: dict[str, int] | None = None, **values) -> None:
+        with SessionLocal() as db:
+            state = _global_state(db)
+            for key, value in values.items():
+                setattr(state, key, value)
+            for key, value in (increments or {}).items():
+                setattr(state, key, int(getattr(state, key) or 0) + int(value))
+            db.commit()
+
+    def _receive_loop(self) -> None:
+        assert self.socket is not None
+        while not self.stop_event.is_set():
+            try:
+                packet, address = self.socket.recvfrom(MAX_DATAGRAM_SIZE + 1)
+            except socket.timeout:
+                continue
+            except OSError:
+                if not self.stop_event.is_set():
+                    logger.exception("flow_collector.receive_failed")
+                return
+            exporter = address[0]
+            self._record_global(increments={"packets_received": 1}, last_datagram_at=_now())
+            self._refresh_sources()
+            sources = self._source_cache.get(exporter, [])
+            if not sources:
+                logger.warning("flow_collector.unknown_exporter exporter=%s", exporter)
+                self._record_global(increments={"unknown_exporter_packets": 1})
+                continue
+            if len(packet) > MAX_DATAGRAM_SIZE or not self._rate_allowed():
+                self._record_global(increments={"oversized_packets" if len(packet) > MAX_DATAGRAM_SIZE else "rate_limited_packets": 1})
+                for source in sources:
+                    self._record_packet_state(source.id, increments={"packets_rejected": 1}, last_error_category="rate_or_size_limit")
+                continue
+            for source in sources:
+                try:
+                    self.queue.put_nowait((source.id, exporter, packet))
+                except queue.Full:
+                    self._record_packet_state(source.id, increments={"queue_drops": 1}, last_error_category="queue_full")
+
+    def _worker_loop(self) -> None:
+        while not self.stop_event.is_set() or not self.queue.empty():
+            try:
+                source_id, exporter, packet = self.queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            try:
+                result = self.decoder.decode(packet, exporter)
+                now = _now()
+                with self._write_lock, SessionLocal() as db:
+                    state = _state(db, source_id)
+                    state.listener_state = "running"
+                    state.last_datagram_at = now
+                    state.unknown_templates += result.unknown_templates
+                    state.template_cache_size = len(self.decoder.templates)
+                    if result.sequence_gap or result.exporter_restart:
+                        state.last_error_category = "sequence_discontinuity" if result.sequence_gap else "exporter_restart"
+                        state.sequence_gaps += 1 if result.sequence_gap else 0
+                        state.exporter_restarts += 1 if result.exporter_restart else 0
+                    process_records(db, result.records, source_id=source_id)
+                    state.queue_depth = self.queue.qsize()
+                    db.commit()
+            except FlowDecodeError as exc:
+                self._record_packet_state(source_id, increments={"packets_rejected": 1, "malformed_packets": 1, "decode_failures": 1}, last_error_category=exc.category)
+            except Exception:
+                logger.exception("flow_collector.persistence_failed source_id=%s", source_id)
+                self._record_packet_state(source_id, increments={"persistence_failures": 1}, last_error_category="persistence_failure")
+            finally:
+                self.queue.task_done()
+
+    def run(self) -> None:
+        if not self.settings["enabled"]:
+            logger.info("flow_collector.disabled")
+            return
+        self.socket = socket.socket(socket.AF_INET6 if ":" in self.settings["bind_address"] else socket.AF_INET, socket.SOCK_DGRAM)
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
+        self.socket.settimeout(0.5)
+        self.socket.bind((self.settings["bind_address"], self.settings["port"]))
+        self._refresh_sources()
+        self.receiver = threading.Thread(target=self._receive_loop, name="flow-receiver", daemon=True)
+        self.receiver.start()
+        self.workers = [threading.Thread(target=self._worker_loop, name=f"flow-worker-{index}", daemon=True) for index in range(self.settings["workers"])]
+        for worker in self.workers:
+            worker.start()
+        self._set_listener_state("running")
+        logger.info("flow_collector.started bind_address=%s port=%s workers=%s queue_size=%s", self.settings["bind_address"], self.settings["port"], self.settings["workers"], self.settings["queue_size"])
+        try:
+            while not self.stop_event.wait(1):
+                self._refresh_sources()
+                if time.monotonic() - self._last_heartbeat >= STATE_REFRESH_SECONDS:
+                    self._set_listener_state("running")
+                    self._last_heartbeat = time.monotonic()
+        finally:
+            self.stop()
+
+    def _set_listener_state(self, value: str) -> None:
+        with SessionLocal() as db:
+            heartbeat = _now()
+            global_state = _global_state(db)
+            global_state.listener_state = value
+            global_state.updated_at = heartbeat
+            rows = db.query(TrafficSource).filter(TrafficSource.provider_key.in_(["netflow_v9", "cisco_nsel"]), TrafficSource.collector_port == self.settings["port"], TrafficSource.is_deleted.is_(False)).all()
+            for source in rows:
+                state = _state(db, source.id)
+                state.listener_state = value
+                state.updated_at = heartbeat
+            db.commit()
+
+    def stop(self) -> None:
+        if self.stop_event.is_set() and self.socket is None:
+            return
+        self.stop_event.set()
+        if self.socket:
+            try:
+                self.socket.close()
+            except OSError:
+                pass
+        if self.receiver:
+            self.receiver.join(timeout=2)
+        for worker in self.workers:
+            worker.join(timeout=2)
+        try:
+            self._set_listener_state("stopped")
+        except Exception:
+            logger.exception("flow_collector.stop_state_failed")
+
+
+def main() -> None:
+    collector = FlowCollector()
+    signal.signal(signal.SIGTERM, lambda *_: collector.stop())
+    signal.signal(signal.SIGINT, lambda *_: collector.stop())
+    collector.run()
+
+
+if __name__ == "__main__":
+    main()

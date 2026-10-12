@@ -96,6 +96,14 @@
     });
   }
 
+  function setupDeviceTrafficReport() {
+    const card = document.querySelector("[data-device-traffic-card]");
+    if (!card || !card.querySelector("[data-device-spark]")) return;
+    const esc = (value) => { const node = document.createElement("span"); node.textContent = value == null ? "" : String(value); return node.innerHTML; };
+    const bytes = (value) => { let n = Number(value) || 0; const units = ["B", "KB", "MB", "GB", "TB"]; let i = 0; while (n >= 1024 && i < units.length - 1) { n /= 1024; i += 1; } return `${n.toFixed(n >= 100 || i === 0 ? 0 : 1)} ${units[i]}`; };
+    fetch(`/networking/vlan-ip-manager/${encodeURIComponent(card.dataset.recordId)}/network-traffic/usage?hours=24`, { credentials: "same-origin", headers: { Accept: "application/json" } }).then(async (response) => { const payload = await response.json(); if (!response.ok) throw new Error(payload.detail || "Usage unavailable."); const rows = (payload.items || []).filter((item) => item.bucket_seconds === 300); const total = rows.reduce((sum, row) => sum + (Number(row.bytes) || 0), 0); card.querySelector("[data-device-total]").textContent = bytes(total); const latest = rows.reduce((value, row) => row.bucket_start > value ? row.bucket_start : value, ""); card.querySelector("[data-device-last]").textContent = latest ? new Date(latest).toLocaleString() : "No data"; const max = Math.max(1, ...rows.map((row) => Number(row.bytes) || 0)); const points = rows.slice(-48).map((row, index, values) => `${(index / Math.max(1, values.length - 1)) * 296 + 2},${78 - ((Number(row.bytes) || 0) / max) * 68}`).join(" "); card.querySelector("[data-device-spark]").innerHTML = points ? `<svg viewBox="0 0 300 80" role="img" aria-label="Recent device traffic bytes"><polyline points="${esc(points)}" fill="none" stroke="currentColor" stroke-width="2"></polyline></svg><small class="muted">5-minute persisted buckets · ${esc(rows.some((row) => row.data_quality !== "complete") ? "partial data" : "observed data")}</small>` : `<small class="muted">No persisted usage in the last 24 hours.</small>`; }).catch((error) => { card.querySelector("[data-device-traffic-message]").textContent = error.message; });
+  }
+
   function setupMonitorThresholds() {
     document.querySelectorAll("[data-monitor-threshold-settings]").forEach((fieldset) => {
       const useDefaults = fieldset.querySelector("[data-monitor-threshold-defaults]");
@@ -164,5 +172,6 @@
 
   setupBulkEdit();
   setupQuickPing();
+  setupDeviceTrafficReport();
   setupMonitorThresholds();
 })();

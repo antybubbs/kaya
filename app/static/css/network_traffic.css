@@ -3,6 +3,15 @@
 .traffic-summary-card { display: grid; gap: .35rem; min-height: 7rem; align-content: center; }
 .traffic-summary-card strong { font-size: clamp(1.35rem, 2.8vw, 2rem); letter-spacing: -.02em; }
 .traffic-summary-card small { min-height: 1.1rem; color: var(--muted); }
+.traffic-toolbar { display: flex; align-items: end; justify-content: space-between; gap: 1rem; }
+.traffic-toolbar label { display: grid; gap: .3rem; font-weight: 600; }
+.traffic-toolbar select { min-width: 12rem; }
+.traffic-device-search { max-width: 18rem; }
+.traffic-device-table-wrap { overflow-x: auto; margin-top: 1rem; }
+.traffic-device-table-wrap table { width: 100%; min-width: 760px; }
+.traffic-device-table-wrap th, .traffic-device-table-wrap td { padding: .7rem .55rem; text-align: left; vertical-align: top; }
+.traffic-device-table-wrap tbody tr { border-top: 1px solid var(--border, #344052); }
+.traffic-device-table-wrap tbody th small { display: block; margin-top: .2rem; }
 .traffic-two-column { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(18rem, 1fr); gap: 1rem; }
 .traffic-two-column > .card, .traffic-settings-card { min-width: 0; }
 .traffic-card-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
@@ -47,3 +56,4 @@
 .compact { padding: .4rem .65rem; font-size: .82rem; }
 @media (max-width: 900px) { .traffic-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .traffic-two-column { grid-template-columns: 1fr; } }
 @media (max-width: 560px) { .traffic-summary-grid, .traffic-form-grid, .traffic-diagnostic-grid { grid-template-columns: 1fr; } .traffic-card-header, .traffic-source-row, .traffic-health-row { align-items: flex-start; flex-direction: column; } .traffic-source-actions { width: 100%; justify-content: space-between; } }
+@media (max-width: 560px) { .traffic-toolbar { align-items: stretch; flex-direction: column; } .traffic-toolbar select, .traffic-device-search { max-width: none; width: 100%; } }

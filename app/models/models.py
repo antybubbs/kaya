@@ -229,6 +229,7 @@ class IPAddress(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     vlan = relationship("VLAN")
+    traffic_monitoring = relationship("TrafficDeviceMonitoring", uselist=False, cascade="all, delete-orphan", back_populates="ip_address")
 
 
 class VLAN(Base):
@@ -515,6 +516,217 @@ class TrafficPollingLease(Base):
     owner_token: Mapped[str | None] = mapped_column(String(80), nullable=True)
     lease_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class TrafficFlowCollectorState(Base):
+    """Redacted, bounded operational state for the optional flow collector."""
+
+    __tablename__ = "traffic_flow_collector_states"
+    __table_args__ = (UniqueConstraint("source_id", name="uq_traffic_flow_collector_states_source"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_id: Mapped[int] = mapped_column(ForeignKey("traffic_sources.id", ondelete="CASCADE"), index=True)
+    listener_state: Mapped[str] = mapped_column(String(30), default="stopped", index=True)
+    last_datagram_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    last_valid_flow_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    packets_accepted: Mapped[int] = mapped_column(Integer, default=0)
+    packets_rejected: Mapped[int] = mapped_column(Integer, default=0)
+    unknown_exporter_packets: Mapped[int] = mapped_column(Integer, default=0)
+    malformed_packets: Mapped[int] = mapped_column(Integer, default=0)
+    unknown_templates: Mapped[int] = mapped_column(Integer, default=0)
+    template_cache_size: Mapped[int] = mapped_column(Integer, default=0)
+    queue_depth: Mapped[int] = mapped_column(Integer, default=0)
+    queue_drops: Mapped[int] = mapped_column(Integer, default=0)
+    duplicate_events: Mapped[int] = mapped_column(Integer, default=0)
+    out_of_order_events: Mapped[int] = mapped_column(Integer, default=0)
+    persistence_failures: Mapped[int] = mapped_column(Integer, default=0)
+    decode_failures: Mapped[int] = mapped_column(Integer, default=0)
+    sequence_gaps: Mapped[int] = mapped_column(Integer, default=0)
+    exporter_restarts: Mapped[int] = mapped_column(Integer, default=0)
+    last_aggregate_write_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_error_category: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class TrafficFlowCollectorGlobalState(Base):
+    """Collector-wide state for packets that cannot be bound to a source."""
+
+    __tablename__ = "traffic_flow_collector_global_states"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    listener_state: Mapped[str] = mapped_column(String(30), default="stopped", index=True)
+    last_datagram_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    packets_received: Mapped[int] = mapped_column(Integer, default=0)
+    unknown_exporter_packets: Mapped[int] = mapped_column(Integer, default=0)
+    rate_limited_packets: Mapped[int] = mapped_column(Integer, default=0)
+    oversized_packets: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class TrafficFlowDeduplication(Base):
+    """Short-lived event keys preventing duplicate UDP exports from double counting."""
+
+    __tablename__ = "traffic_flow_deduplication"
+    __table_args__ = (
+        UniqueConstraint("event_key", name="uq_traffic_flow_deduplication_key"),
+        Index("ix_traffic_flow_deduplication_expiry", "expires_at"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_id: Mapped[int] = mapped_column(ForeignKey("traffic_sources.id", ondelete="CASCADE"), index=True)
+    event_key: Mapped[str] = mapped_column(String(64))
+    processed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class TrafficFlowCounterState(Base):
+    """Durable cumulative-counter state scoped to an exporter and connection."""
+
+    __tablename__ = "traffic_flow_counter_states"
+    __table_args__ = (
+        UniqueConstraint("source_id", "exporter_identity", "connection_id", name="uq_traffic_flow_counter_state_identity"),
+        Index("ix_traffic_flow_counter_state_expiry", "expires_at"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_id: Mapped[int] = mapped_column(ForeignKey("traffic_sources.id", ondelete="CASCADE"), index=True)
+    exporter_identity: Mapped[str] = mapped_column(String(45))
+    connection_id: Mapped[str] = mapped_column(String(80))
+    last_event_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_bytes: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
+    last_packets: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
+    last_event_type: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class TrafficFlowAggregate(Base):
+    """Bounded flow totals kept separate from SNMP interface aggregates."""
+
+    __tablename__ = "traffic_flow_aggregates"
+    __table_args__ = (
+        UniqueConstraint("source_id", "exporter_identity", "bucket_start", "bucket_seconds", "direction", "traffic_class", name="uq_traffic_flow_aggregates_bucket"),
+        Index("ix_traffic_flow_aggregates_source_time", "source_id", "bucket_start"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_id: Mapped[int] = mapped_column(ForeignKey("traffic_sources.id", ondelete="CASCADE"), index=True)
+    exporter_identity: Mapped[str] = mapped_column(String(45))
+    bucket_start: Mapped[datetime] = mapped_column(DateTime, index=True)
+    bucket_seconds: Mapped[int] = mapped_column(Integer)
+    direction: Mapped[str] = mapped_column(String(20))
+    traffic_class: Mapped[str] = mapped_column(String(30), default="flow_total")
+    bytes_total: Mapped[int] = mapped_column(BYTE_COUNT, default=0)
+    packets_total: Mapped[int] = mapped_column(BYTE_COUNT, default=0)
+    sample_count: Mapped[int] = mapped_column(Integer, default=0)
+    data_quality: Mapped[str] = mapped_column(String(20), default="complete")
+    first_observed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_observed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class TrafficFlowAccountingAggregate(Base):
+    """Topology-aware flow accounting kept separate from legacy flow totals."""
+
+    __tablename__ = "traffic_flow_accounting_aggregates"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_id", "exporter_identity", "bucket_start", "bucket_seconds", "traffic_class",
+            name="uq_traffic_flow_accounting_bucket",
+        ),
+        Index("ix_traffic_flow_accounting_source_time", "source_id", "bucket_start"),
+        Index("ix_traffic_flow_accounting_class_time", "traffic_class", "bucket_start"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_id: Mapped[int] = mapped_column(ForeignKey("traffic_sources.id", ondelete="CASCADE"), index=True)
+    exporter_identity: Mapped[str] = mapped_column(String(45), nullable=False)
+    bucket_start: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    bucket_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    traffic_class: Mapped[str] = mapped_column(String(30), nullable=False)
+    bytes_total: Mapped[int] = mapped_column(BYTE_COUNT, default=0)
+    packets_total: Mapped[int] = mapped_column(BYTE_COUNT, default=0)
+    sample_count: Mapped[int] = mapped_column(Integer, default=0)
+    data_quality: Mapped[str] = mapped_column(String(20), default="complete")
+    classification_confidence: Mapped[str] = mapped_column(String(20), default="unknown")
+    attribution_state: Mapped[str] = mapped_column(String(20), default="unknown")
+    unresolved_reason: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    first_observed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_observed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class TrafficFlowReconciliation(Base):
+    """Comparable-window metadata; SNMP and flow totals are never combined."""
+
+    __tablename__ = "traffic_flow_reconciliations"
+    __table_args__ = (
+        UniqueConstraint("source_id", "interface_id", "window_start", "window_end", name="uq_traffic_flow_reconciliation_window"),
+        Index("ix_traffic_flow_reconciliations_source_window", "source_id", "window_start"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_id: Mapped[int] = mapped_column(ForeignKey("traffic_sources.id", ondelete="CASCADE"), index=True)
+    interface_id: Mapped[int | None] = mapped_column(ForeignKey("traffic_interfaces.id", ondelete="SET NULL"), nullable=True, index=True)
+    window_start: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    window_end: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    snmp_bytes: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
+    flow_bytes: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
+    unattributed_bytes: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
+    unclassified_bytes: Mapped[int | None] = mapped_column(BYTE_COUNT, nullable=True)
+    comparable: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    coverage_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default="unavailable", index=True)
+    reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class TrafficDeviceMonitoring(Base):
+    """Administrator-controlled opt-in state for one authoritative IP record."""
+
+    __tablename__ = "traffic_device_monitoring"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ip_address_id: Mapped[int] = mapped_column(ForeignKey("ip_addresses.id", ondelete="CASCADE"), unique=True, index=True)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    enabled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    disabled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_attributed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    last_source_id: Mapped[int | None] = mapped_column(ForeignKey("traffic_sources.id", ondelete="SET NULL"), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(30), default="disabled", index=True)
+    status_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    ip_address = relationship("IPAddress", back_populates="traffic_monitoring")
+
+
+class TrafficDeviceMonitoringPeriod(Base):
+    """A closed activation interval; aggregates cannot exist outside an interval."""
+
+    __tablename__ = "traffic_device_monitoring_periods"
+    __table_args__ = (Index("ix_traffic_device_monitoring_periods_ip_started", "ip_address_id", "started_at"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    monitoring_id: Mapped[int] = mapped_column(ForeignKey("traffic_device_monitoring.id", ondelete="CASCADE"), index=True)
+    ip_address_id: Mapped[int] = mapped_column(ForeignKey("ip_addresses.id", ondelete="CASCADE"), index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    monitoring = relationship("TrafficDeviceMonitoring")
+    ip_address = relationship("IPAddress")
+
+
+class TrafficDeviceAggregate(Base):
+    """Bounded usage for an opted-in activation period, never raw flow records."""
+
+    __tablename__ = "traffic_device_aggregates"
+    __table_args__ = (
+        UniqueConstraint("period_id", "source_id", "interface_id", "bucket_start", "bucket_seconds", "direction", name="uq_traffic_device_aggregate_bucket"),
+        Index("ix_traffic_device_aggregates_ip_time", "ip_address_id", "bucket_start"),
+        Index("ix_traffic_device_aggregates_period_time", "period_id", "bucket_start"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    period_id: Mapped[int] = mapped_column(ForeignKey("traffic_device_monitoring_periods.id", ondelete="CASCADE"), index=True)
+    ip_address_id: Mapped[int] = mapped_column(ForeignKey("ip_addresses.id", ondelete="CASCADE"), index=True)
+    source_id: Mapped[int] = mapped_column(ForeignKey("traffic_sources.id", ondelete="CASCADE"), index=True)
+    interface_id: Mapped[int | None] = mapped_column(ForeignKey("traffic_interfaces.id", ondelete="SET NULL"), nullable=True, index=True)
+    bucket_start: Mapped[datetime] = mapped_column(DateTime, index=True)
+    bucket_seconds: Mapped[int] = mapped_column(Integer)
+    direction: Mapped[str] = mapped_column(String(20), index=True)
+    bytes_total: Mapped[int] = mapped_column(BYTE_COUNT, default=0)
+    packets_total: Mapped[int] = mapped_column(BYTE_COUNT, default=0)
+    sample_count: Mapped[int] = mapped_column(Integer, default=0)
+    data_quality: Mapped[str] = mapped_column(String(20), default="complete")
+    attribution_confidence: Mapped[str] = mapped_column(String(20), default="unknown")
+    first_observed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_observed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class NetworkMonitorWallboard(Base):
