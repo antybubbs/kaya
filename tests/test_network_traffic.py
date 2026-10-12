@@ -1,6 +1,7 @@
 import json
 import asyncio
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
@@ -63,6 +64,82 @@ def test_source_configuration_is_validated_and_credentials_are_encrypted(db):
     assert "fake-authentication-secret" not in json.dumps(public)
     assert "encrypted_snmp_authentication" not in public
     assert public["has_snmp_authentication"] is True
+
+
+@pytest.mark.parametrize("provider", ["netflow_v9", "cisco_nsel"])
+def test_flow_sources_do_not_require_or_store_snmp_credentials(db, provider):
+    values = validate_source_input({
+        "name": f"{provider} fixture",
+        "provider_key": provider,
+        "source_category": "flow_export",
+        "collector_port": 2055,
+        "exporter_allowlist": ["192.168.1.1"],
+    })
+    row = TrafficSource(**values)
+    apply_source_secrets(row, {"snmp_authentication": "ignored-secret", "snmp_privacy": "ignored-secret"}, creating=True)
+    db.add(row)
+    db.commit()
+
+    assert row.is_enabled is False
+    assert row.destination_ip is None
+    assert row.collector_port == 2055
+    assert row.exporter_allowlist_json == '["192.168.1.1"]'
+    assert row.security_name is None
+    assert row.encrypted_snmp_authentication is None
+    assert row.encrypted_snmp_privacy is None
+
+
+def test_snmp_sources_still_require_credentials_when_enabled():
+    with pytest.raises(ValueError, match="private destination and security name"):
+        validate_source_input(source_data(security_name=None))
+
+
+@pytest.mark.parametrize("field,value", [("exporter_allowlist", ["not-an-ip"]), ("collector_port", 1023), ("collector_port", 65536)])
+def test_flow_source_rejects_invalid_exporter_or_collector_port(field, value):
+    values = {
+        "name": "Invalid flow fixture",
+        "provider_key": "cisco_nsel",
+        "source_category": "flow_export",
+        "collector_port": 2055,
+        "exporter_allowlist": ["192.168.1.1"],
+    }
+    values[field] = value
+    with pytest.raises(ValueError):
+        validate_source_input(values)
+
+
+def test_editing_flow_source_does_not_retain_incompatible_snmp_secrets(db):
+    row = TrafficSource(**validate_source_input(source_data()))
+    apply_source_secrets(row, source_data(), creating=True)
+    db.add(row)
+    db.commit()
+
+    values = validate_source_input({
+        "name": row.name,
+        "provider_key": "cisco_nsel",
+        "source_category": "flow_export",
+        "collector_port": 2055,
+        "exporter_allowlist": ["192.168.1.1"],
+    }, existing=row)
+    for key, value in values.items():
+        setattr(row, key, value)
+    apply_source_secrets(row, values)
+    db.commit()
+
+    assert row.provider_key == "cisco_nsel"
+    assert row.encrypted_snmp_authentication is None
+    assert row.encrypted_snmp_privacy is None
+    assert row.security_name is None
+
+
+def test_source_form_has_provider_specific_labels_and_actions():
+    template = Path("app/templates/network_traffic.html").read_text(encoding="utf-8")
+    script = Path("app/static/js/network_traffic.js").read_text(encoding="utf-8")
+    assert 'data-source-enable-label' in template
+    assert "Enable flow collection after saving" in script
+    assert "Enable polling after saving" in script
+    assert "button.hidden = flow" in script
+    assert "if (provider === \"snmpv3\")" in script
 
 
 @pytest.mark.parametrize("value", ["localhost", "127.0.0.1", "8.8.8.8", "not-an-ip"])

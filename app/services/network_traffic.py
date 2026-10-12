@@ -107,32 +107,54 @@ def validate_source_input(data: dict, *, existing: TrafficSource | None = None) 
     supplied_category = data.get("source_category") or (existing.source_category if existing else category)
     if supplied_category != category:
         raise ValueError("Provider and source category do not match.")
-    destination = validate_destination(data.get("destination_ip", existing.destination_ip if existing else None))
-    port = int(data.get("destination_port", existing.destination_port if existing else 161))
-    if not 1 <= port <= 65535:
-        raise ValueError("Destination port must be between 1 and 65535.")
-    interval = int(data.get("polling_interval_seconds", existing.polling_interval_seconds if existing else 60))
-    if not 5 <= interval <= 86400:
-        raise ValueError("Polling interval must be between 5 and 86400 seconds.")
-    collector_port = data.get("collector_port", existing.collector_port if existing else None)
-    if collector_port is not None:
+    is_snmp = provider_key == "snmpv3"
+    is_flow = provider_key in {"netflow_v9", "cisco_nsel"}
+    if is_snmp:
+        destination = validate_destination(data.get("destination_ip", existing.destination_ip if existing else None))
+        port = int(data.get("destination_port", existing.destination_port if existing else 161))
+        if not 1 <= port <= 65535:
+            raise ValueError("Destination port must be between 1 and 65535.")
+        interval = int(data.get("polling_interval_seconds", existing.polling_interval_seconds if existing else 60))
+        if not 5 <= interval <= 86400:
+            raise ValueError("Polling interval must be between 5 and 86400 seconds.")
+        collector_port = None
+        exporters = []
+        security_name = data.get("security_name", existing.security_name if existing else None)
+        if security_name is not None:
+            security_name = str(security_name).strip()
+            if not 1 <= len(security_name) <= 128:
+                raise ValueError("SNMP security name must be between 1 and 128 characters.")
+        auth_protocol = data.get("snmp_auth_protocol", existing.snmp_auth_protocol if existing else None)
+        privacy_protocol = data.get("snmp_privacy_protocol", existing.snmp_privacy_protocol if existing else None)
+        if auth_protocol and auth_protocol not in VALID_AUTH_PROTOCOLS:
+            raise ValueError("Unsupported SNMP authentication protocol.")
+        if privacy_protocol and privacy_protocol not in VALID_PRIVACY_PROTOCOLS:
+            raise ValueError("Unsupported SNMP privacy protocol.")
+    elif is_flow:
+        destination = None
+        port = 161
+        interval = 60
+        collector_port = data.get("collector_port", existing.collector_port if existing else None)
+        if collector_port is None:
+            raise ValueError("Flow providers require a collector UDP port.")
         collector_port = int(collector_port)
         if not 1024 <= collector_port <= 65535:
             raise ValueError("Collector port must be between 1024 and 65535.")
-    exporters = validate_exporters(data.get("exporter_allowlist", None))
-    if provider_key in {"netflow_v9", "cisco_nsel"} and not exporters:
-        raise ValueError("Flow providers require at least one authorised exporter IP.")
-    security_name = data.get("security_name", existing.security_name if existing else None)
-    if security_name is not None:
-        security_name = str(security_name).strip()
-        if not 1 <= len(security_name) <= 128:
-            raise ValueError("SNMP security name must be between 1 and 128 characters.")
-    auth_protocol = data.get("snmp_auth_protocol", existing.snmp_auth_protocol if existing else None)
-    privacy_protocol = data.get("snmp_privacy_protocol", existing.snmp_privacy_protocol if existing else None)
-    if auth_protocol and auth_protocol not in VALID_AUTH_PROTOCOLS:
-        raise ValueError("Unsupported SNMP authentication protocol.")
-    if privacy_protocol and privacy_protocol not in VALID_PRIVACY_PROTOCOLS:
-        raise ValueError("Unsupported SNMP privacy protocol.")
+        exporters = validate_exporters(data.get("exporter_allowlist", None))
+        if not exporters:
+            raise ValueError("Flow providers require at least one authorised exporter IP.")
+        security_name = None
+        auth_protocol = None
+        privacy_protocol = None
+    else:
+        destination = validate_destination(data.get("destination_ip", existing.destination_ip if existing else None))
+        port = int(data.get("destination_port", existing.destination_port if existing else 161))
+        interval = int(data.get("polling_interval_seconds", existing.polling_interval_seconds if existing else 60))
+        collector_port = None
+        exporters = []
+        security_name = None
+        auth_protocol = None
+        privacy_protocol = None
     is_enabled = bool(data.get("is_enabled", existing.is_enabled if existing else False))
     if provider_key == "snmpv3" and is_enabled and (not destination or not security_name):
         raise ValueError("Enabled SNMPv3 sources require a private destination and security name.")
@@ -172,6 +194,13 @@ def source_public_dict(source: TrafficSource) -> dict:
 
 
 def apply_source_secrets(source: TrafficSource, data: dict, *, creating: bool = False) -> None:
+    if source.provider_key != "snmpv3":
+        source.security_name = None
+        source.snmp_auth_protocol = None
+        source.snmp_privacy_protocol = None
+        source.encrypted_snmp_authentication = None
+        source.encrypted_snmp_privacy = None
+        return
     for field, attribute in (("snmp_authentication", "encrypted_snmp_authentication"), ("snmp_privacy", "encrypted_snmp_privacy")):
         if field in data and data[field] is not None:
             value = str(data[field])

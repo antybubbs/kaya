@@ -53,7 +53,7 @@
             <div class="traffic-form-grid"><label>Authentication<select name="snmp_auth_protocol"><option value="SHA">SHA</option><option value="SHA-256">SHA-256</option><option value="SHA-384">SHA-384</option><option value="SHA-512">SHA-512</option></select></label><label>Privacy<select name="snmp_privacy_protocol"><option value="AES128">AES128</option><option value="AES192">AES192</option><option value="AES256">AES256</option></select></label></div>
             <div class="traffic-form-grid"><label>Authentication password<input name="snmp_authentication" type="password" minlength="8" maxlength="32" autocomplete="new-password"><small class="muted" data-secret-help>Required for a new enabled source.</small></label><label>Privacy password<input name="snmp_privacy" type="password" minlength="8" maxlength="32" autocomplete="new-password"><small class="muted">Leave blank when retaining the existing secret.</small></label></div>
           </div>
-          <label class="checkbox-row"><input name="is_enabled" type="checkbox"> Enable polling after saving</label>
+          <label class="checkbox-row"><input name="is_enabled" type="checkbox"><span data-source-enable-label>Enable polling after saving</span></label>
           <div class="traffic-form-actions"><button class="button" type="submit">Save source</button><button class="button secondary" type="button" data-source-test disabled>Test connection</button><button class="button secondary" type="button" data-source-discover disabled>Discover interfaces</button></div>
           <p class="muted" data-source-form-status role="status" aria-live="polite"></p>
         </form>
