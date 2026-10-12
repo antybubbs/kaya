@@ -1283,6 +1283,11 @@ def traffic_diagnostics_endpoint(db: Session = Depends(get_db), user=Depends(req
             except (TypeError, ValueError):
                 lifecycle = []
             detail["template_lifecycle"] = lifecycle[-32:] if isinstance(lifecycle, list) else []
+            try:
+                summary = json.loads(flow_states[source.id].template_lifecycle_summary_json or "{}")
+            except (TypeError, ValueError):
+                summary = {}
+            detail["template_lifecycle_summary"] = list(summary.values())[:64] if isinstance(summary, dict) else []
         flow_source_details.append(detail)
     accounting = db.query(TrafficFlowAccountingAggregate).filter(TrafficFlowAccountingAggregate.bucket_start >= now - timedelta(days=1)).all()
     snmp_rows = [row for row in rows if row.provider_key == "snmpv3"]

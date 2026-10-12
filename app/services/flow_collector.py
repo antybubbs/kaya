@@ -112,6 +112,48 @@ def _append_template_lifecycle(state: TrafficFlowCollectorState, events: list[di
     state.template_lifecycle_json = json.dumps(history[-32:], separators=(",", ":"))
 
 
+def _update_template_lifecycle_summary(state: TrafficFlowCollectorState, events: list[dict], now: datetime) -> None:
+    """Aggregate recent lifecycle events by bounded exporter/source/template/category keys."""
+    try:
+        summaries = json.loads(state.template_lifecycle_summary_json or "{}")
+    except (TypeError, ValueError):
+        summaries = {}
+    if not isinstance(summaries, dict):
+        summaries = {}
+    observed_at = now.isoformat() + "Z"
+    for event in events:
+        exporter = str(event.get("exporter_identity", ""))[:45]
+        source_id = int(event.get("source_id", 0))
+        template_id = int(event.get("template_id", 0))
+        category = str(event.get("status", "unknown"))[:24]
+        reason = str(event.get("reason", "unknown"))[:32]
+        key = f"{exporter}|{source_id}|{template_id}|{category}|{reason}"
+        item = summaries.get(key)
+        if not isinstance(item, dict):
+            item = {
+                "exporter_identity": exporter,
+                "source_id": source_id,
+                "template_id": template_id,
+                "category": category,
+                "reason": reason,
+                "event_count": 0,
+                "first_observed_at": observed_at,
+            }
+        item["event_count"] = min(int(item.get("event_count", 0)) + 1, 2_147_483_647)
+        item["last_observed_at"] = observed_at
+        item["current_cache_presence"] = bool(event.get("cache_present", False))
+        if category == "accepted":
+            item["last_accepted_at"] = observed_at
+        if category == "rejected":
+            item["last_rejected_at"] = observed_at
+            item["last_rejection_reason"] = reason
+        summaries[key] = item
+    if len(summaries) > 64:
+        ordered = sorted(summaries.items(), key=lambda pair: str(pair[1].get("last_observed_at", "")), reverse=True)[:64]
+        summaries = dict(ordered)
+    state.template_lifecycle_summary_json = json.dumps(summaries, separators=(",", ":"))
+
+
 def _allowlisted_sources(db, port: int) -> dict[str, list[TrafficSource]]:
     configuration = db.get(TrafficMonitoringConfiguration, 1)
     if configuration is not None and not configuration.is_enabled:
@@ -454,6 +496,7 @@ class FlowCollector:
                     state.template_cache_size = len(self.decoder.templates)
                     if result.template_events:
                         _append_template_lifecycle(state, result.template_events, now)
+                        _update_template_lifecycle_summary(state, result.template_events, now)
                     if result.unknown_template_details:
                         detail = result.unknown_template_details[-1]
                         state.last_unknown_template_id = int(detail["template_id"])
@@ -478,6 +521,7 @@ class FlowCollector:
                     if exc.details:
                         event = {**exc.details, "status": "rejected", "reason": exc.category, "cache_present": False}
                         _append_template_lifecycle(state, [event], _now())
+                        _update_template_lifecycle_summary(state, [event], _now())
                     db.commit()
             except Exception:
                 logger.exception("flow_collector.persistence_failed source_id=%s", source_id)

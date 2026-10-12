@@ -142,6 +142,7 @@ def test_source_form_has_provider_specific_labels_and_actions():
     assert "button.hidden = flow" in script
     assert "if (provider === \"snmpv3\")" in script
     assert "template_lifecycle" in diagnostics_enhancer
+    assert "template_lifecycle_summary" in diagnostics_enhancer
     assert "Template lifecycle" in diagnostics_enhancer
 
 

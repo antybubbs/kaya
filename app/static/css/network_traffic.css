@@ -54,6 +54,8 @@
 .traffic-diagnostic-list { border-top: 1px solid var(--border, #344052); }
 .traffic-diagnostic-row > div:last-child { display: flex; flex-wrap: wrap; gap: .65rem 1rem; justify-content: flex-end; color: var(--muted); font-size: .82rem; }
 .traffic-template-lifecycle { flex-basis: 100%; margin-top: .75rem; }
+.traffic-template-lifecycle-summary { flex-basis: 100%; margin-top: .75rem; }
+.traffic-template-lifecycle-summary summary { color: var(--text); cursor: pointer; font-size: .82rem; font-weight: 700; }
 .traffic-template-lifecycle summary { color: var(--text); cursor: pointer; font-size: .82rem; font-weight: 700; }
 .traffic-template-lifecycle-table { margin-top: .55rem; overflow-x: auto; }
 .traffic-template-lifecycle table { border-collapse: collapse; font-size: .76rem; min-width: 720px; width: 100%; }

@@ -32,6 +32,48 @@
     row.appendChild(cell);
   };
 
+  const renderSummary = (article, source) => {
+    if (article.dataset.templateLifecycleSummary) return;
+    article.dataset.templateLifecycleSummary = "true";
+    const summaries = Array.isArray(source.template_lifecycle_summary) ? source.template_lifecycle_summary.slice(-64) : [];
+    const section = document.createElement("details");
+    section.className = "traffic-template-lifecycle-summary";
+    section.open = true;
+    const heading = document.createElement("summary");
+    heading.textContent = `Template lifecycle summary (${summaries.length} keys)`;
+    section.appendChild(heading);
+    if (!summaries.length) {
+      const empty = document.createElement("p");
+      empty.className = "muted";
+      empty.textContent = "No lifecycle summary has been persisted since the collector update.";
+      section.appendChild(empty);
+    } else {
+      const wrapper = document.createElement("div");
+      wrapper.className = "traffic-template-lifecycle-table";
+      const table = document.createElement("table");
+      const header = document.createElement("tr");
+      ["Template", "Exporter", "Source", "Event", "Reason", "Count", "First", "Last", "Last accepted", "Cache"].forEach((label) => addCell(header, label));
+      table.appendChild(header);
+      summaries.slice().sort((left, right) => String(right.last_observed_at || "").localeCompare(String(left.last_observed_at || ""))).forEach((event) => {
+        const row = document.createElement("tr");
+        addCell(row, event.template_id);
+        addCell(row, event.exporter_identity);
+        addCell(row, event.source_id);
+        addCell(row, event.category);
+        addCell(row, event.reason);
+        addCell(row, event.event_count);
+        addCell(row, event.first_observed_at);
+        addCell(row, event.last_observed_at);
+        addCell(row, event.last_accepted_at);
+        addCell(row, event.current_cache_presence == null ? "unknown" : event.current_cache_presence ? "present" : "absent");
+        table.appendChild(row);
+      });
+      wrapper.appendChild(table);
+      section.appendChild(wrapper);
+    }
+    article.appendChild(section);
+  };
+
   const renderLifecycle = (article, source) => {
     if (article.dataset.templateLifecycle) return;
     article.dataset.templateLifecycle = "true";
@@ -81,6 +123,7 @@
         article.querySelector("div:last-child")?.appendChild(detail);
         article.dataset.templateDetails = "true";
       }
+      renderSummary(article, source);
       renderLifecycle(article, source);
     });
   };

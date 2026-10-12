@@ -9,7 +9,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.db.session import Base
 from app.models.models import TrafficFlowAggregate, TrafficFlowCollectorState, TrafficMonitoringConfiguration, TrafficSource
-from app.services.flow_collector import _allowlisted_sources, process_records
+from app.services.flow_collector import _allowlisted_sources, _update_template_lifecycle_summary, process_records
 from app.services.flow_protocol import FlowDecodeError, NetFlowV9Decoder
 
 
@@ -112,6 +112,20 @@ def test_rejected_template_identifies_bounded_template_context():
         NetFlowV9Decoder().decode(header + template_set, "192.0.2.1")
     assert caught.value.category == "truncated_template"
     assert caught.value.details == {"exporter_identity": "192.0.2.1", "source_id": 0, "template_id": 263}
+
+
+def test_template_summary_preserves_accepted_evidence_when_missing_lookups_repeat():
+    import json
+    from datetime import datetime
+
+    state = TrafficFlowCollectorState(source_id=1)
+    missing = {"exporter_identity": "192.0.2.1", "source_id": 0, "template_id": 263, "status": "lookup_failed", "reason": "missing", "cache_present": False}
+    accepted = {"exporter_identity": "192.0.2.1", "source_id": 0, "template_id": 263, "status": "accepted", "reason": "received", "cache_present": True}
+    _update_template_lifecycle_summary(state, [missing] * 40 + [accepted], datetime(2026, 10, 12, 21, 0, 0))
+    summary = json.loads(state.template_lifecycle_summary_json)
+    assert len(summary) == 2
+    assert summary["192.0.2.1|0|263|lookup_failed|missing"]["event_count"] == 40
+    assert summary["192.0.2.1|0|263|accepted|received"]["last_accepted_at"] == "2026-10-12T21:00:00Z"
 
 
 def test_cumulative_nsel_updates_are_delta_accounted_and_idempotent():
