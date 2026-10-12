@@ -53,6 +53,12 @@
 .traffic-diagnostic-grid div { display: grid; gap: .25rem; padding: .75rem; border: 1px solid var(--border, #344052); border-radius: .45rem; }
 .traffic-diagnostic-list { border-top: 1px solid var(--border, #344052); }
 .traffic-diagnostic-row > div:last-child { display: flex; flex-wrap: wrap; gap: .65rem 1rem; justify-content: flex-end; color: var(--muted); font-size: .82rem; }
+.traffic-template-lifecycle { flex-basis: 100%; margin-top: .75rem; }
+.traffic-template-lifecycle summary { color: var(--text); cursor: pointer; font-size: .82rem; font-weight: 700; }
+.traffic-template-lifecycle-table { margin-top: .55rem; overflow-x: auto; }
+.traffic-template-lifecycle table { border-collapse: collapse; font-size: .76rem; min-width: 720px; width: 100%; }
+.traffic-template-lifecycle th, .traffic-template-lifecycle td { border-bottom: 1px solid var(--border, #344052); padding: .4rem .5rem; text-align: left; white-space: nowrap; }
+.traffic-template-lifecycle th { color: var(--muted); font-weight: 700; }
 .compact { padding: .4rem .65rem; font-size: .82rem; }
 @media (max-width: 900px) { .traffic-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .traffic-two-column { grid-template-columns: 1fr; } }
 @media (max-width: 560px) { .traffic-summary-grid, .traffic-form-grid, .traffic-diagnostic-grid { grid-template-columns: 1fr; } .traffic-card-header, .traffic-source-row, .traffic-health-row { align-items: flex-start; flex-direction: column; } .traffic-source-actions { width: 100%; justify-content: space-between; } }

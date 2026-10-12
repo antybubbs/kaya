@@ -135,11 +135,14 @@ def test_editing_flow_source_does_not_retain_incompatible_snmp_secrets(db):
 def test_source_form_has_provider_specific_labels_and_actions():
     template = Path("app/templates/network_traffic.html").read_text(encoding="utf-8")
     script = Path("app/static/js/network_traffic.js").read_text(encoding="utf-8")
+    diagnostics_enhancer = Path("app/static/js/network_traffic_diagnostics_enhancer.js").read_text(encoding="utf-8")
     assert 'data-source-enable-label' in template
     assert "Enable flow collection after saving" in script
     assert "Enable polling after saving" in script
     assert "button.hidden = flow" in script
     assert "if (provider === \"snmpv3\")" in script
+    assert "template_lifecycle" in diagnostics_enhancer
+    assert "Template lifecycle" in diagnostics_enhancer
 
 
 @pytest.mark.parametrize("value", ["localhost", "127.0.0.1", "8.8.8.8", "not-an-ip"])
