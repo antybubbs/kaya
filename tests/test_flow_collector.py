@@ -1,4 +1,5 @@
 import struct
+import time
 from datetime import datetime
 
 import pytest
@@ -38,6 +39,14 @@ def test_netflow_v9_template_and_nsel_fields_are_decoded():
     assert result.records[0].connection_id == "42"
     assert result.records[0].event_type == "create"
     assert result.records[0].vendor == "cisco_nsel"
+    assert result.template_events[0] == {
+        "template_id": 300,
+        "exporter_identity": "192.0.2.1",
+        "source_id": 7,
+        "status": "accepted",
+        "reason": "received",
+        "cache_present": True,
+    }
 
 
 def test_template_ids_are_scoped_to_exporter_and_source():
@@ -72,6 +81,37 @@ def test_unknown_template_is_counted_without_persisting_packet_bytes():
         "source_id": 7,
         "category": "unknown_template",
     }]
+    assert result.template_events == [{
+        "template_id": 300,
+        "exporter_identity": "192.0.2.1",
+        "source_id": 7,
+        "status": "lookup_failed",
+        "reason": "missing",
+        "cache_present": False,
+    }]
+
+
+def test_template_refresh_and_expiry_are_distinguished():
+    decoder = NetFlowV9Decoder()
+    first = decoder.decode(packet(exporter_sequence=1), "192.0.2.1")
+    assert first.template_events[0]["reason"] == "received"
+    second = decoder.decode(packet(exporter_sequence=2), "192.0.2.1")
+    assert second.template_events[0]["reason"] == "refresh"
+    decoder.templates[("192.0.2.1", 7, 300)].refreshed_at = time.monotonic() - decoder.template_ttl_seconds - 1
+    third = decoder.decode(struct.pack("!HHIIII", 9, 1, 1000, 1767225600, 3, 7) + struct.pack("!HHI", 300, 8, 123), "192.0.2.1")
+    assert third.unknown_template_details[0]["category"] == "expired_template"
+    assert third.template_events[0]["reason"] == "expired"
+    assert third.template_events[-1]["status"] == "evicted"
+
+
+def test_rejected_template_identifies_bounded_template_context():
+    header = struct.pack("!HHIIII", 9, 1, 1000, 1767225600, 1, 0)
+    # Template 263 declares one field but does not contain its field descriptor.
+    template_set = struct.pack("!HHHH", 0, 10, 263, 1) + b"\x00\x01"
+    with pytest.raises(FlowDecodeError) as caught:
+        NetFlowV9Decoder().decode(header + template_set, "192.0.2.1")
+    assert caught.value.category == "truncated_template"
+    assert caught.value.details == {"exporter_identity": "192.0.2.1", "source_id": 0, "template_id": 263}
 
 
 def test_cumulative_nsel_updates_are_delta_accounted_and_idempotent():

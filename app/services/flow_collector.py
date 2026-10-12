@@ -96,6 +96,22 @@ def _global_state(db) -> TrafficFlowCollectorGlobalState:
     return row
 
 
+def _append_template_lifecycle(state: TrafficFlowCollectorState, events: list[dict], now: datetime) -> None:
+    """Keep only a small, redacted recent template lifecycle window."""
+    try:
+        history = json.loads(state.template_lifecycle_json or "[]")
+    except (TypeError, ValueError):
+        history = []
+    if not isinstance(history, list):
+        history = []
+    for event in events:
+        # Decoder events contain only bounded identifiers and state labels.
+        item = {key: event[key] for key in ("exporter_identity", "source_id", "template_id", "status", "reason", "cache_present") if key in event}
+        item["at"] = now.isoformat() + "Z"
+        history.append(item)
+    state.template_lifecycle_json = json.dumps(history[-32:], separators=(",", ":"))
+
+
 def _allowlisted_sources(db, port: int) -> dict[str, list[TrafficSource]]:
     configuration = db.get(TrafficMonitoringConfiguration, 1)
     if configuration is not None and not configuration.is_enabled:
@@ -436,6 +452,8 @@ class FlowCollector:
                     state.last_datagram_at = now
                     state.unknown_templates += result.unknown_templates
                     state.template_cache_size = len(self.decoder.templates)
+                    if result.template_events:
+                        _append_template_lifecycle(state, result.template_events, now)
                     if result.unknown_template_details:
                         detail = result.unknown_template_details[-1]
                         state.last_unknown_template_id = int(detail["template_id"])
@@ -451,7 +469,16 @@ class FlowCollector:
                     state.queue_depth = self.queue.qsize()
                     db.commit()
             except FlowDecodeError as exc:
-                self._record_packet_state(source_id, increments={"packets_rejected": 1, "malformed_packets": 1, "decode_failures": 1}, last_error_category=exc.category)
+                with self._write_lock, SessionLocal() as db:
+                    state = _state(db, source_id)
+                    state.packets_rejected = int(state.packets_rejected or 0) + 1
+                    state.malformed_packets = int(state.malformed_packets or 0) + 1
+                    state.decode_failures = int(state.decode_failures or 0) + 1
+                    state.last_error_category = exc.category
+                    if exc.details:
+                        event = {**exc.details, "status": "rejected", "reason": exc.category, "cache_present": False}
+                        _append_template_lifecycle(state, [event], _now())
+                    db.commit()
             except Exception:
                 logger.exception("flow_collector.persistence_failed source_id=%s", source_id)
                 self._record_packet_state(source_id, increments={"persistence_failures": 1}, last_error_category="persistence_failure")

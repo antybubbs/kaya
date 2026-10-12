@@ -46,9 +46,10 @@ EVENT_TYPES = {1: "create", 2: "teardown", 3: "denied", 4: "alert", 5: "update"}
 
 
 class FlowDecodeError(ValueError):
-    def __init__(self, category: str, message: str = "Malformed flow datagram"):
+    def __init__(self, category: str, message: str = "Malformed flow datagram", details: dict | None = None):
         super().__init__(message)
         self.category = category
+        self.details = details or {}
 
 
 @dataclass(frozen=True)
@@ -104,6 +105,7 @@ class DecodeResult:
     sequence_gap: bool = False
     exporter_restart: bool = False
     unknown_template_details: list[dict[str, int | str]] = field(default_factory=list)
+    template_events: list[dict[str, int | str | bool]] = field(default_factory=list)
 
 
 def _u(data: bytes, offset: int, length: int) -> int:
@@ -134,15 +136,21 @@ class NetFlowV9Decoder:
         self._last_sequence: dict[tuple[str, int], int] = {}
         self._last_uptime: dict[tuple[str, int], int] = {}
 
-    def _prune(self) -> None:
+    def _prune(self) -> list[dict[str, int | str | bool]]:
         now = time.monotonic()
         expired = [key for key, template in self.templates.items() if now - template.refreshed_at > self.template_ttl_seconds]
+        evicted: list[dict[str, int | str | bool]] = []
         for key in expired:
+            exporter, source_id, template_id = key
             self.templates.pop(key, None)
+            evicted.append({"exporter_identity": exporter, "source_id": source_id, "template_id": template_id, "status": "evicted", "reason": "expired"})
         if len(self.templates) > self.max_templates:
             victims = sorted(self.templates.items(), key=lambda item: item[1].refreshed_at)[: len(self.templates) - self.max_templates]
             for key, _ in victims:
+                exporter, source_id, template_id = key
                 self.templates.pop(key, None)
+                evicted.append({"exporter_identity": exporter, "source_id": source_id, "template_id": template_id, "status": "evicted", "reason": "capacity"})
+        return evicted
 
     def decode(self, datagram: bytes, exporter_identity: str) -> DecodeResult:
         if not isinstance(datagram, bytes) or len(datagram) > MAX_DATAGRAM_SIZE:
@@ -176,7 +184,7 @@ class NetFlowV9Decoder:
                 raise FlowDecodeError("invalid_flowset_length")
             body = datagram[offset + 4 : offset + flowset_length]
             if flowset_id == 0:
-                result.template_count += self._decode_templates(body, exporter_identity, source_id)
+                result.template_count += self._decode_templates(body, exporter_identity, source_id, result.template_events)
             elif flowset_id >= 256:
                 template = self.templates.get((exporter_identity, source_id, flowset_id))
                 expired = template is not None and time.monotonic() - template.refreshed_at > self.template_ttl_seconds
@@ -189,6 +197,15 @@ class NetFlowV9Decoder:
                             "source_id": source_id,
                             "category": "expired_template" if expired else "unknown_template",
                         })
+                    if len(result.template_events) < 32:
+                        result.template_events.append({
+                            "template_id": flowset_id,
+                            "exporter_identity": exporter_identity,
+                            "source_id": source_id,
+                            "status": "lookup_failed",
+                            "reason": "expired" if expired else "missing",
+                            "cache_present": not expired and template is not None,
+                        })
                 else:
                     for raw in self._records(body, template):
                         if record_index >= MAX_RECORDS_PER_PACKET:
@@ -196,34 +213,50 @@ class NetFlowV9Decoder:
                         result.records.append(self._normalise(raw, exporter_identity, source_id, sequence, record_index, sys_uptime, unix_secs))
                         record_index += 1
             offset += flowset_length
-        self._prune()
+        result.template_events.extend(self._prune()[: max(0, 32 - len(result.template_events))])
         return result
 
-    def _decode_templates(self, body: bytes, exporter: str, source_id: int) -> int:
+    def _decode_templates(self, body: bytes, exporter: str, source_id: int, events: list[dict[str, int | str | bool]]) -> int:
+        def reject(category: str, template_id: int | None = None) -> None:
+            details = {"exporter_identity": exporter, "source_id": source_id}
+            if template_id is not None:
+                details["template_id"] = template_id
+            raise FlowDecodeError(category, details=details)
+
         offset = 0
         created = 0
         while offset + 4 <= len(body):
             template_id, field_count = struct.unpack_from("!HH", body, offset)
             offset += 4
             if template_id < 256 or not 1 <= field_count <= MAX_TEMPLATE_FIELDS:
-                raise FlowDecodeError("invalid_template")
+                reject("invalid_template", template_id)
             fields: list[TemplateField] = []
             for _ in range(field_count):
                 if offset + 4 > len(body):
-                    raise FlowDecodeError("truncated_template")
+                    reject("truncated_template", template_id)
                 raw_id, length = struct.unpack_from("!HH", body, offset)
                 offset += 4
                 enterprise = None
                 if raw_id & 0x8000:
                     raw_id &= 0x7FFF
                     if offset + 4 > len(body):
-                        raise FlowDecodeError("truncated_enterprise_field")
+                        reject("truncated_enterprise_field", template_id)
                     enterprise = _u(body, offset, 4)
                     offset += 4
                 if length == 0 or length > 2048:
-                    raise FlowDecodeError("invalid_field_length")
+                    reject("invalid_field_length", template_id)
                 fields.append(TemplateField(raw_id, length, enterprise))
-            self.templates[(exporter, source_id, template_id)] = FlowTemplate(template_id, tuple(fields))
+            key = (exporter, source_id, template_id)
+            if len(events) < 32:
+                events.append({
+                    "template_id": template_id,
+                    "exporter_identity": exporter,
+                    "source_id": source_id,
+                    "status": "accepted",
+                    "reason": "refresh" if key in self.templates else "received",
+                    "cache_present": True,
+                })
+            self.templates[key] = FlowTemplate(template_id, tuple(fields))
             created += 1
         return created
 

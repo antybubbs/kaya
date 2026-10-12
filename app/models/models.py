@@ -538,6 +538,7 @@ class TrafficFlowCollectorState(Base):
     last_unknown_template_source_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_template_error_category: Mapped[str | None] = mapped_column(String(40), nullable=True)
     last_unknown_template_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    template_lifecycle_json: Mapped[str] = mapped_column(Text, default="[]")
     template_cache_size: Mapped[int] = mapped_column(Integer, default=0)
     queue_depth: Mapped[int] = mapped_column(Integer, default=0)
     queue_drops: Mapped[int] = mapped_column(Integer, default=0)

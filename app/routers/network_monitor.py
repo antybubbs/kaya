@@ -1278,6 +1278,11 @@ def traffic_diagnostics_endpoint(db: Session = Depends(get_db), user=Depends(req
             for key in ("listener_state", "last_datagram_at", "last_valid_flow_at", "packets_accepted", "packets_rejected", "unknown_exporter_packets", "malformed_packets", "decode_failures", "sequence_gaps", "exporter_restarts", "unknown_templates", "last_unknown_template_id", "last_unknown_template_exporter", "last_unknown_template_source_id", "last_template_error_category", "last_unknown_template_at", "template_cache_size", "queue_depth", "queue_drops", "duplicate_events", "out_of_order_events", "persistence_failures", "last_aggregate_write_at", "last_error_category"):
                 value = getattr(flow_states[source.id], key)
                 detail[key] = value.isoformat() + "Z" if isinstance(value, datetime) else value
+            try:
+                lifecycle = json.loads(flow_states[source.id].template_lifecycle_json or "[]")
+            except (TypeError, ValueError):
+                lifecycle = []
+            detail["template_lifecycle"] = lifecycle[-32:] if isinstance(lifecycle, list) else []
         flow_source_details.append(detail)
     accounting = db.query(TrafficFlowAccountingAggregate).filter(TrafficFlowAccountingAggregate.bucket_start >= now - timedelta(days=1)).all()
     snmp_rows = [row for row in rows if row.provider_key == "snmpv3"]
