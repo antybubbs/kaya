@@ -34,6 +34,11 @@ FIELD_LAST_SWITCHED = 21
 FIELD_SRC_IPV6 = 27
 FIELD_DST_IPV6 = 28
 FIELD_CONN_ID = 148
+FIELD_FLOW_CREATE_TIME_MSEC = 152
+FIELD_FWD_DELTA_BYTES = 231
+FIELD_REV_DELTA_BYTES = 232
+FIELD_FWD_DELTA_PACKETS = 298
+FIELD_REV_DELTA_PACKETS = 299
 FIELD_XLATE_SRC_IPV4 = 225
 FIELD_XLATE_DST_IPV4 = 226
 FIELD_XLATE_SRC_PORT = 227
@@ -63,6 +68,7 @@ class TemplateField:
 class FlowTemplate:
     template_id: int
     fields: tuple[TemplateField, ...]
+    is_options: bool = False
     refreshed_at: float = field(default_factory=time.monotonic)
 
 
@@ -95,6 +101,10 @@ class NormalizedFlowRecord:
     data_quality: str
     vendor: str | None = None
     extended_event: int | None = None
+    forward_bytes: int | None = None
+    reverse_bytes: int | None = None
+    forward_packets: int | None = None
+    reverse_packets: int | None = None
 
 
 @dataclass
@@ -171,6 +181,9 @@ class NetFlowV9Decoder:
         sequence_gap = previous_sequence is not None and ((sequence - previous_sequence) & 0xFFFFFFFF) > max(count, 1)
         previous_uptime = self._last_uptime.get(key)
         exporter_restart = previous_uptime is not None and sys_uptime + 5000 < previous_uptime
+        if exporter_restart:
+            for template_key in [item for item in self.templates if item[:2] == key]:
+                self.templates.pop(template_key, None)
         self._last_sequence[key] = sequence
         self._last_uptime[key] = sys_uptime
         result = DecodeResult(sequence_gap=sequence_gap, exporter_restart=exporter_restart)
@@ -184,7 +197,9 @@ class NetFlowV9Decoder:
                 raise FlowDecodeError("invalid_flowset_length")
             body = datagram[offset + 4 : offset + flowset_length]
             if flowset_id == 0:
-                result.template_count += self._decode_templates(body, exporter_identity, source_id, result.template_events)
+                result.template_count += self._decode_templates(body, exporter_identity, source_id, result.template_events, is_options=False)
+            elif flowset_id == 1:
+                result.template_count += self._decode_templates(body, exporter_identity, source_id, result.template_events, is_options=True)
             elif flowset_id >= 256:
                 template = self.templates.get((exporter_identity, source_id, flowset_id))
                 expired = template is not None and time.monotonic() - template.refreshed_at > self.template_ttl_seconds
@@ -207,16 +222,17 @@ class NetFlowV9Decoder:
                             "cache_present": not expired and template is not None,
                         })
                 else:
-                    for raw in self._records(body, template):
-                        if record_index >= MAX_RECORDS_PER_PACKET:
-                            raise FlowDecodeError("record_limit")
-                        result.records.append(self._normalise(raw, exporter_identity, source_id, sequence, record_index, sys_uptime, unix_secs))
-                        record_index += 1
+                    if not template.is_options:
+                        for raw in self._records(body, template):
+                            if record_index >= MAX_RECORDS_PER_PACKET:
+                                raise FlowDecodeError("record_limit")
+                            result.records.append(self._normalise(raw, exporter_identity, source_id, sequence, record_index, sys_uptime, unix_secs))
+                            record_index += 1
             offset += flowset_length
         result.template_events.extend(self._prune()[: max(0, 32 - len(result.template_events))])
         return result
 
-    def _decode_templates(self, body: bytes, exporter: str, source_id: int, events: list[dict[str, int | str | bool]]) -> int:
+    def _decode_templates(self, body: bytes, exporter: str, source_id: int, events: list[dict[str, int | str | bool]], *, is_options: bool) -> int:
         def reject(category: str, template_id: int | None = None) -> None:
             details = {"exporter_identity": exporter, "source_id": source_id}
             if template_id is not None:
@@ -224,11 +240,27 @@ class NetFlowV9Decoder:
             raise FlowDecodeError(category, details=details)
 
         offset = 0
-        created = 0
-        while offset + 4 <= len(body):
+        parsed: list[tuple[int, tuple[TemplateField, ...]]] = []
+        while offset < len(body):
+            if len(body) - offset < 4:
+                if any(body[offset:]):
+                    reject("truncated_template")
+                break
             template_id, field_count = struct.unpack_from("!HH", body, offset)
             offset += 4
-            if template_id < 256 or not 1 <= field_count <= MAX_TEMPLATE_FIELDS:
+            if template_id < 256:
+                reject("invalid_template", template_id)
+            if is_options:
+                if offset + 2 > len(body):
+                    reject("truncated_options_template", template_id)
+                scope_length, option_length = field_count, struct.unpack_from("!H", body, offset)[0]
+                offset += 2
+                if scope_length == 0 or scope_length % 4 or option_length % 4:
+                    reject("invalid_options_lengths", template_id)
+                if (scope_length + option_length) // 4 > MAX_TEMPLATE_FIELDS or offset + scope_length + option_length > len(body):
+                    reject("truncated_options_template", template_id)
+                field_count = (scope_length + option_length) // 4
+            elif not 1 <= field_count <= MAX_TEMPLATE_FIELDS:
                 reject("invalid_template", template_id)
             fields: list[TemplateField] = []
             for _ in range(field_count):
@@ -246,6 +278,11 @@ class NetFlowV9Decoder:
                 if length == 0 or length > 2048:
                     reject("invalid_field_length", template_id)
                 fields.append(TemplateField(raw_id, length, enterprise))
+            parsed.append((template_id, tuple(fields)))
+        if any(body[offset:]):
+            reject("nonzero_template_padding")
+        created = 0
+        for template_id, fields in parsed:
             key = (exporter, source_id, template_id)
             if len(events) < 32:
                 events.append({
@@ -256,7 +293,7 @@ class NetFlowV9Decoder:
                     "reason": "refresh" if key in self.templates else "received",
                     "cache_present": True,
                 })
-            self.templates[key] = FlowTemplate(template_id, tuple(fields))
+            self.templates[key] = FlowTemplate(template_id, fields, is_options=is_options)
             created += 1
         return created
 
@@ -266,7 +303,10 @@ class NetFlowV9Decoder:
         if width <= 0:
             raise FlowDecodeError("invalid_template_width")
         offset = 0
-        while offset + width <= len(body):
+        remainder = len(body) % width
+        if remainder and (remainder > 3 or any(body[-remainder:])):
+            raise FlowDecodeError("invalid_data_padding")
+        while offset + width <= len(body) - remainder:
             raw: dict[tuple[int, int | None], bytes] = {}
             for item in template.fields:
                 raw[(item.field_id, item.enterprise)] = body[offset : offset + item.length]
@@ -293,6 +333,11 @@ class NetFlowV9Decoder:
             return datetime.utcfromtimestamp(boot_seconds + milliseconds / 1000)
 
         event = value(FIELD_FW_EVENT)
+        forward_bytes = value(FIELD_FWD_DELTA_BYTES)
+        reverse_bytes = value(FIELD_REV_DELTA_BYTES)
+        forward_packets = value(FIELD_FWD_DELTA_PACKETS)
+        reverse_packets = value(FIELD_REV_DELTA_PACKETS)
+        is_nsel = any(item is not None for item in (forward_bytes, reverse_bytes, forward_packets, reverse_packets))
         observed = _timestamp_from_msec(value(FIELD_EVENT_TIME_MSEC)) or datetime.utcfromtimestamp(unix_secs)
         conn = value(FIELD_CONN_ID)
         direction = "unknown"
@@ -300,16 +345,20 @@ class NetFlowV9Decoder:
             direction = "bidirectional"
         return NormalizedFlowRecord(
             exporter_identity=exporter, source_id=source_id, sequence=sequence, record_index=record_index,
-            observed_at=observed, flow_start=timestamp(FIELD_FIRST_SWITCHED), flow_end=timestamp(FIELD_LAST_SWITCHED),
+            observed_at=observed, flow_start=_timestamp_from_msec(value(FIELD_FLOW_CREATE_TIME_MSEC)) or timestamp(FIELD_FIRST_SWITCHED), flow_end=timestamp(FIELD_LAST_SWITCHED),
             source_ip=address(FIELD_SRC_IPV4) or address(FIELD_SRC_IPV6), destination_ip=address(FIELD_DST_IPV4) or address(FIELD_DST_IPV6),
             source_port=value(FIELD_SRC_PORT), destination_port=value(FIELD_DST_PORT), protocol=value(FIELD_PROTOCOL),
             input_interface=value(FIELD_INPUT), output_interface=value(FIELD_OUTPUT),
             translated_source_ip=address(FIELD_XLATE_SRC_IPV4), translated_destination_ip=address(FIELD_XLATE_DST_IPV4),
             translated_source_port=value(FIELD_XLATE_SRC_PORT), translated_destination_port=value(FIELD_XLATE_DST_PORT),
-            bytes_total=value(FIELD_BYTES), packets_total=value(FIELD_PACKETS), direction=direction,
+            bytes_total=((forward_bytes or 0) + (reverse_bytes or 0)) if is_nsel else value(FIELD_BYTES),
+            packets_total=((forward_packets or 0) + (reverse_packets or 0)) if is_nsel else value(FIELD_PACKETS),
+            forward_bytes=forward_bytes, reverse_bytes=reverse_bytes,
+            forward_packets=forward_packets, reverse_packets=reverse_packets,
+            direction=direction,
             event_type=EVENT_TYPES.get(event), connection_id=str(conn) if conn is not None else None,
-            cumulative_counters=event in {2, 3, 4, 5} or event is not None,
-            data_quality="complete" if value(FIELD_BYTES) is not None else "partial",
+            cumulative_counters=not is_nsel and (event in {2, 3, 4, 5} or event is not None),
+            data_quality="complete" if (is_nsel and (forward_bytes is not None or reverse_bytes is not None)) or (not is_nsel and value(FIELD_BYTES) is not None) else "partial",
             vendor="cisco_nsel" if event is not None or value(FIELD_CONN_ID) is not None else None,
             extended_event=value(FIELD_FW_EXT_EVENT),
         )

@@ -392,7 +392,7 @@ def process_records(db, records: list[NormalizedFlowRecord], *, source_id: int |
 class FlowCollector:
     def __init__(self, settings: dict | None = None):
         self.settings = settings or collector_settings()
-        self.queue: queue.Queue[tuple[int, str, bytes]] = queue.Queue(maxsize=self.settings["queue_size"])
+        self.queue: queue.Queue[tuple[int, int, str, bytes]] = queue.Queue(maxsize=self.settings["queue_size"])
         self.stop_event = threading.Event()
         self.socket: socket.socket | None = None
         self.receiver: threading.Thread | None = None
@@ -405,7 +405,9 @@ class FlowCollector:
         self._rate_window = 0
         self._rate_count = 0
         self._write_lock = threading.Lock()
-        self._decode_lock = threading.Lock()
+        self._decode_condition = threading.Condition()
+        self._next_packet_ordinal = 0
+        self._next_decode_ordinal = 0
 
     def _refresh_sources(self) -> None:
         if time.monotonic() - self._source_cache_at < STATE_REFRESH_SECONDS:
@@ -468,25 +470,37 @@ class FlowCollector:
                 continue
             for source in sources:
                 try:
-                    self.queue.put_nowait((source.id, exporter, packet))
+                    with self._decode_condition:
+                        ordinal = self._next_packet_ordinal
+                        self.queue.put_nowait((ordinal, source.id, exporter, packet))
+                        self._next_packet_ordinal += 1
                 except queue.Full:
                     self._record_packet_state(source.id, increments={"queue_drops": 1}, last_error_category="queue_full")
 
     def _worker_loop(self) -> None:
         while not self.stop_event.is_set() or not self.queue.empty():
             try:
-                source_id, exporter, packet = self.queue.get(timeout=0.2)
+                ordinal, source_id, exporter, packet = self.queue.get(timeout=0.2)
             except queue.Empty:
                 continue
             try:
                 with SessionLocal() as config_db:
                     if not _flow_ingestion_enabled(config_db):
                         continue
-                # Template and sequence state is exporter/source scoped. Keep
-                # decoder mutation atomic across workers; packet payloads are
-                # never retained in diagnostics.
-                with self._decode_lock:
-                    result = self.decoder.decode(packet, exporter)
+                # Queue insertion assigns a monotonic ordinal only after the
+                # bounded queue accepts the item. Workers therefore decode in
+                # receiver order without gaps when queue backpressure drops a
+                # packet.
+                with self._decode_condition:
+                    while ordinal != self._next_decode_ordinal and not self.stop_event.is_set():
+                        self._decode_condition.wait(timeout=0.2)
+                    if self.stop_event.is_set() and ordinal != self._next_decode_ordinal:
+                        continue
+                    try:
+                        result = self.decoder.decode(packet, exporter)
+                    finally:
+                        self._next_decode_ordinal += 1
+                        self._decode_condition.notify_all()
                 now = _now()
                 with self._write_lock, SessionLocal() as db:
                     state = _state(db, source_id)

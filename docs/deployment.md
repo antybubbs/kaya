@@ -49,6 +49,11 @@ NetFlow v9 or Cisco NSEL source with an exact exporter IP allowlist:
 docker compose --profile flow-collector up -d flow-collector
 ```
 
+When the NetFlow v9/Cisco NSEL protocol implementation changes, refresh the
+main Kaya image and the optional `flow-collector` image from the same release
+tag before restarting either service. Both services use the shared application
+code and must not be run at different protocol revisions.
+
 The collector binds loopback on the host by default. Set
 `KAYA_FLOW_COLLECTOR_HOST_BIND` deliberately when an exporter must reach a
 remote host, and keep the application container's bind address on the private

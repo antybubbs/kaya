@@ -97,8 +97,30 @@ def persist_device_traffic(db: Session, record: NormalizedFlowRecord, byte_count
         return 0
     networks = [n.network_cidr for n in db.query(TrafficLocalNetwork).filter(TrafficLocalNetwork.is_enabled.is_(True)).limit(256).all()]
     attributed = []
-    for direction, address, interface_index in (("upload", record.source_ip, record.input_interface), ("download", record.destination_ip, record.output_interface)):
-        attribution = resolve_flow_attribution(db, record, address=address, local_networks=networks)
+    directional_nsel = record.forward_bytes is not None or record.reverse_bytes is not None or record.forward_packets is not None or record.reverse_packets is not None
+    if directional_nsel:
+        source_attribution = resolve_flow_attribution(db, record, address=record.source_ip, local_networks=networks)
+        destination_attribution = resolve_flow_attribution(db, record, address=record.destination_ip, local_networks=networks)
+        if source_attribution.state == "resolved":
+            direction_specs = (("upload", record.source_ip, record.input_interface, source_attribution, record.forward_bytes, record.forward_packets), ("download", record.source_ip, record.output_interface, source_attribution, record.reverse_bytes, record.reverse_packets))
+        elif destination_attribution.state == "resolved":
+            direction_specs = (("upload", record.destination_ip, record.output_interface, destination_attribution, record.reverse_bytes, record.reverse_packets), ("download", record.destination_ip, record.input_interface, destination_attribution, record.forward_bytes, record.forward_packets))
+        else:
+            direction_specs = ()
+    else:
+        direction_specs = (("upload", record.source_ip, record.input_interface, None, None, None), ("download", record.destination_ip, record.output_interface, None, None, None))
+    for direction, address, interface_index, supplied_attribution, supplied_bytes, supplied_packets in direction_specs:
+        direction_bytes = byte_count
+        direction_packets = packet_count
+        if directional_nsel:
+            direction_bytes = supplied_bytes
+            direction_bytes = int(direction_bytes or 0)
+        if directional_nsel:
+            direction_packets = supplied_packets
+            direction_packets = int(direction_packets or 0)
+        if direction_bytes <= 0 and direction_packets <= 0:
+            continue
+        attribution = supplied_attribution or resolve_flow_attribution(db, record, address=address, local_networks=networks)
         if attribution.state != "resolved" or not attribution.ip_record_id:
             continue
         monitor = traffic_monitoring_for(db, attribution.ip_record_id)
@@ -113,14 +135,34 @@ def persist_device_traffic(db: Session, record: NormalizedFlowRecord, byte_count
             continue
         interface = next((i for i in source.interfaces if i.interface_index == interface_index), None)
         for bucket_seconds in (300, 3600, 86400):
-            values = {"period_id": period.id, "ip_address_id": attribution.ip_record_id, "source_id": source_id, "interface_id": interface.id if interface else None, "bucket_start": datetime.utcfromtimestamp(int(record.observed_at.timestamp()) - int(record.observed_at.timestamp()) % bucket_seconds), "bucket_seconds": bucket_seconds, "direction": direction, "bytes_total": byte_count, "packets_total": packet_count, "sample_count": 1, "data_quality": record.data_quality, "attribution_confidence": attribution.confidence, "first_observed_at": record.observed_at, "last_observed_at": record.observed_at}
+            values = {"period_id": period.id, "ip_address_id": attribution.ip_record_id, "source_id": source_id, "interface_id": interface.id if interface else None, "bucket_start": datetime.utcfromtimestamp(int(record.observed_at.timestamp()) - int(record.observed_at.timestamp()) % bucket_seconds), "bucket_seconds": bucket_seconds, "direction": direction, "bytes_total": direction_bytes, "packets_total": direction_packets, "sample_count": 1, "data_quality": record.data_quality, "attribution_confidence": attribution.confidence, "first_observed_at": record.observed_at, "last_observed_at": record.observed_at}
+            # PostgreSQL UNIQUE constraints treat NULL interface IDs as
+            # distinct values, so the database upsert cannot merge flows when
+            # the exporter omits interface fields. Lock and merge that row
+            # explicitly while preserving the existing upsert for known IDs.
+            if interface is None:
+                match = db.query(TrafficDeviceAggregate).filter(
+                    TrafficDeviceAggregate.period_id == period.id,
+                    TrafficDeviceAggregate.source_id == source_id,
+                    TrafficDeviceAggregate.interface_id.is_(None),
+                    TrafficDeviceAggregate.bucket_start == values["bucket_start"],
+                    TrafficDeviceAggregate.bucket_seconds == bucket_seconds,
+                    TrafficDeviceAggregate.direction == direction,
+                ).with_for_update().first()
+                if match:
+                    match.bytes_total += direction_bytes
+                    match.packets_total += direction_packets
+                    match.sample_count += 1
+                    continue
+                db.add(TrafficDeviceAggregate(**values))
+                continue
             statement = _insert(db, values)
             if statement is not None:
                 db.execute(statement)
             else:
                 match = db.query(TrafficDeviceAggregate).filter_by(**{k: values[k] for k in ("period_id", "source_id", "interface_id", "bucket_start", "bucket_seconds", "direction")}).first()
                 if match:
-                    match.bytes_total += byte_count; match.packets_total += packet_count; match.sample_count += 1
+                    match.bytes_total += direction_bytes; match.packets_total += direction_packets; match.sample_count += 1
                 else:
                     db.add(TrafficDeviceAggregate(**values))
         monitor.last_attributed_at = record.observed_at

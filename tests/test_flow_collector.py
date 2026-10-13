@@ -58,6 +58,49 @@ def test_template_ids_are_scoped_to_exporter_and_source():
     assert len(decoder.templates) == 2
 
 
+def test_nsel_directional_delta_fields_are_not_treated_as_cumulative():
+    fields = [(8, 4), (12, 4), (152, 8), (231, 4), (232, 4), (298, 4), (299, 4), (148, 4), (233, 1)]
+    template = struct.pack("!HH", 301, len(fields)) + b"".join(struct.pack("!HH", field, length) for field, length in fields)
+    record = b"".join([
+        bytes([192, 0, 2, 20]), bytes([198, 51, 100, 30]), struct.pack("!Q", 1767225599000),
+        struct.pack("!I", 700), struct.pack("!I", 300), struct.pack("!I", 7), struct.pack("!I", 3),
+        struct.pack("!I", 99), bytes([5]),
+    ])
+    datagram = struct.pack("!HHIIII", 9, 1, 1000, 1767225600, 1, 7)
+    datagram += struct.pack("!HH", 0, 4 + len(template)) + template
+    datagram += struct.pack("!HH", 301, 4 + len(record)) + record
+    decoded = NetFlowV9Decoder().decode(datagram, "192.0.2.1").records[0]
+    assert (decoded.forward_bytes, decoded.reverse_bytes) == (700, 300)
+    assert (decoded.forward_packets, decoded.reverse_packets) == (7, 3)
+    assert decoded.bytes_total == 1000
+    assert decoded.packets_total == 10
+    assert decoded.cumulative_counters is False
+    assert decoded.flow_start is not None
+
+
+def test_options_templates_are_cached_but_options_data_is_not_usage():
+    options = struct.pack("!HHHHHHH", 400, 4, 4, 1, 4, 2, 4)  # scope: system/4 bytes; one option/4 bytes
+    template_set = struct.pack("!HH", 1, 4 + len(options)) + options
+    data_set = struct.pack("!HHI", 400, 8, 123)
+    datagram = struct.pack("!HHIIII", 9, 1, 1000, 1767225600, 1, 7) + template_set + data_set
+    result = NetFlowV9Decoder().decode(datagram, "192.0.2.1")
+    assert result.template_count == 1
+    assert result.unknown_templates == 0
+    assert result.records == []
+    assert result.template_events[0]["template_id"] == 400
+
+
+def test_rejected_template_flowset_does_not_partially_mutate_cache():
+    valid = struct.pack("!HHHH", 302, 1, 8, 4)
+    invalid = struct.pack("!HHH", 303, 1, 8)
+    body = valid + invalid
+    datagram = struct.pack("!HHIIII", 9, 2, 1000, 1767225600, 1, 7) + struct.pack("!HH", 0, 4 + len(body)) + body
+    decoder = NetFlowV9Decoder()
+    with pytest.raises(FlowDecodeError):
+        decoder.decode(datagram, "192.0.2.1")
+    assert decoder.templates == {}
+
+
 @pytest.mark.parametrize("value", [b"", b"\x00" * 19], ids=["empty", "truncated"])
 def test_malformed_and_oversized_datagrams_are_rejected(value):
     with pytest.raises(FlowDecodeError):

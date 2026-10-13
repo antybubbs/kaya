@@ -56,3 +56,21 @@ def test_collector_keeps_device_opt_in_separate_from_source_totals():
         db.commit()
         assert result["accepted"] == 1
         assert db.query(TrafficDeviceAggregate).count() == 0
+
+
+def test_nsel_directional_deltas_are_attributed_to_the_matching_device_direction():
+    factory = setup()
+    with factory() as db:
+        vlan = VLAN(name="Test")
+        db.add(vlan); db.flush()
+        ip = IPAddress(vlan_id=vlan.id, address="192.0.2.20", assignment_type="Static")
+        db.add_all([ip, TrafficMonitoringConfiguration(id=1, is_enabled=True), TrafficSource(id=1, name="Fixture", provider_key="cisco_nsel", source_category="flow", is_enabled=True, is_deleted=False)])
+        db.commit()
+        set_device_monitoring(db, ip, True, now=datetime(2026, 1, 1, 12)); db.commit()
+        persist_device_traffic(db, rec(forward_bytes=70, reverse_bytes=30, forward_packets=7, reverse_packets=3), 100, 10, 1)
+        db.commit()
+        assert db.query(TrafficDeviceAggregate).count() == 6
+        aggregate = db.query(TrafficDeviceAggregate).filter_by(direction="upload", bucket_seconds=300).one()
+        assert aggregate.direction == "upload"
+        assert aggregate.bytes_total == 70
+        assert aggregate.packets_total == 7
