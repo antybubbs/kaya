@@ -153,6 +153,32 @@ RANGES = {
     "1y": timedelta(days=365),
 }
 
+FLOW_HEALTH_ERROR_WINDOW = timedelta(minutes=15)
+
+
+def _recent_flow_error(state: TrafficFlowCollectorState, now: datetime) -> bool:
+    """Use the bounded recent lifecycle buffer, not lifetime error counters."""
+    try:
+        lifecycle = json.loads(state.template_lifecycle_json or "[]")
+    except (TypeError, ValueError):
+        lifecycle = []
+    if not isinstance(lifecycle, list):
+        return False
+    cutoff = now - FLOW_HEALTH_ERROR_WINDOW
+    for event in lifecycle:
+        if not isinstance(event, dict) or event.get("status") not in {"lookup_failed", "rejected", "error"}:
+            continue
+        observed = event.get("at")
+        if not observed:
+            continue
+        try:
+            observed_at = datetime.fromisoformat(str(observed).replace("Z", "+00:00")).replace(tzinfo=None)
+        except ValueError:
+            continue
+        if observed_at >= cutoff:
+            return True
+    return False
+
 
 def _flow_health(source: TrafficSource, state: TrafficFlowCollectorState | None, global_state: TrafficFlowCollectorGlobalState | None, now: datetime) -> tuple[str, str]:
     if not source.is_enabled or source.configuration_state == "disabled":
@@ -165,8 +191,8 @@ def _flow_health(source: TrafficSource, state: TrafficFlowCollectorState | None,
         return "collector_healthy_awaiting_traffic", "Collector is listening; awaiting exporter traffic."
     if not state.last_datagram_at:
         return "collector_healthy_awaiting_traffic", "Collector is listening; awaiting exporter traffic."
-    if state.packets_rejected or state.decode_failures or state.persistence_failures:
-        return "degraded", "Collector received traffic with parsing or processing errors."
+    if _recent_flow_error(state, now):
+        return "degraded", "Collector has recent parsing or processing errors."
     if not state.last_valid_flow_at:
         if state.unknown_templates or state.template_cache_size == 0:
             return "receiving_awaiting_template", "Packets are arriving; awaiting a usable template."

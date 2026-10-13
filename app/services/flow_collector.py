@@ -433,6 +433,18 @@ class FlowCollector:
                 setattr(state, key, value)
             for key, value in (increments or {}).items():
                 setattr(state, key, int(getattr(state, key) or 0) + int(value))
+            error_category = values.get("last_error_category")
+            if error_category:
+                event = {
+                    "source_id": source_id,
+                    "template_id": 0,
+                    "status": "error",
+                    "reason": str(error_category),
+                    "cache_present": False,
+                }
+                now = _now()
+                _append_template_lifecycle(state, [event], now)
+                _update_template_lifecycle_summary(state, [event], now)
             db.commit()
 
     def _record_global(self, *, increments: dict[str, int] | None = None, **values) -> None:
@@ -524,6 +536,15 @@ class FlowCollector:
                         state.last_error_category = "sequence_discontinuity" if result.sequence_gap else "exporter_restart"
                         state.sequence_gaps += 1 if result.sequence_gap else 0
                         state.exporter_restarts += 1 if result.exporter_restart else 0
+                        event = {
+                            "source_id": source_id,
+                            "template_id": 0,
+                            "status": "error",
+                            "reason": state.last_error_category,
+                            "cache_present": True,
+                        }
+                        _append_template_lifecycle(state, [event], now)
+                        _update_template_lifecycle_summary(state, [event], now)
                     process_records(db, result.records, source_id=source_id)
                     state.queue_depth = self.queue.qsize()
                     db.commit()

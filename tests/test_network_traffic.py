@@ -1,6 +1,7 @@
 import json
 import asyncio
 from datetime import datetime, timedelta
+import json
 from pathlib import Path
 
 import pytest
@@ -262,6 +263,74 @@ def test_flow_source_health_is_provider_aware_and_does_not_use_snmp_success(db):
     assert network_monitor_router._traffic_source_public(
         source, flow_states={source.id: state}, global_state=global_state, now=datetime.utcnow()
     )["health_state"] == "receiving_decoding"
+
+
+def test_flow_source_recovers_after_historical_errors(db):
+    source = TrafficSource(**validate_source_input({
+        "name": "Recovered NSEL health",
+        "provider_key": "cisco_nsel",
+        "source_category": "flow_export",
+        "is_enabled": True,
+        "collector_port": 2055,
+        "exporter_allowlist": ["192.0.2.1"],
+    }))
+    db.add(source)
+    db.flush()
+    now = datetime.utcnow()
+    state = TrafficFlowCollectorState(
+        source_id=source.id,
+        listener_state="running",
+        last_datagram_at=now,
+        last_valid_flow_at=now,
+        packets_rejected=1342,
+        decode_failures=1342,
+        unknown_templates=267836,
+        template_lifecycle_json=json.dumps([{
+            "status": "lookup_failed",
+            "at": (now - timedelta(hours=2)).isoformat() + "Z",
+        }]),
+    )
+    global_state = TrafficFlowCollectorGlobalState(id=1, listener_state="running")
+    db.add_all([state, global_state])
+    db.flush()
+    public = network_monitor_router._traffic_source_public(
+        source, flow_states={source.id: state}, global_state=global_state, now=now
+    )
+    assert public["health_state"] == "receiving_decoding"
+    assert public["last_decoded_at"].startswith(now.isoformat())
+
+
+def test_flow_source_is_degraded_for_recent_processing_error(db):
+    source = TrafficSource(**validate_source_input({
+        "name": "Currently degraded NSEL health",
+        "provider_key": "cisco_nsel",
+        "source_category": "flow_export",
+        "is_enabled": True,
+        "collector_port": 2055,
+        "exporter_allowlist": ["192.0.2.1"],
+    }))
+    db.add(source)
+    db.flush()
+    now = datetime.utcnow()
+    state = TrafficFlowCollectorState(
+        source_id=source.id,
+        listener_state="running",
+        last_datagram_at=now,
+        last_valid_flow_at=now,
+        packets_rejected=1,
+        template_lifecycle_json=json.dumps([{
+            "status": "rejected",
+            "reason": "malformed_packet",
+            "at": (now - timedelta(minutes=2)).isoformat() + "Z",
+        }]),
+    )
+    global_state = TrafficFlowCollectorGlobalState(id=1, listener_state="running")
+    db.add_all([state, global_state])
+    db.flush()
+    public = network_monitor_router._traffic_source_public(
+        source, flow_states={source.id: state}, global_state=global_state, now=now
+    )
+    assert public["health_state"] == "degraded"
 
 
 def test_counter_rates_use_elapsed_time_and_establish_a_baseline():
