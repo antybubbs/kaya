@@ -201,8 +201,14 @@ def persist_discovered_interfaces(db: Session, source: TrafficSource, snapshots:
 
 
 async def discover_source_interfaces(db: Session, source: TrafficSource, *, provider: SNMPv3Provider | None = None) -> list[InterfaceSnapshot]:
-    provider = provider or SNMPv3Provider(timeout_seconds=min(30, max(1, source.polling_interval_seconds // 2)))
-    snapshots = await asyncio.wait_for(provider.discover_interfaces(source), timeout=min(30, max(2, source.polling_interval_seconds // 2)))
+    polling_interval = int(source.polling_interval_seconds or 60)
+    provider = provider or SNMPv3Provider(timeout_seconds=min(30, max(1, polling_interval // 2)))
+    try:
+        snapshots = await asyncio.wait_for(provider.discover_interfaces(source), timeout=min(30, max(2, polling_interval // 2)))
+    except asyncio.CancelledError:
+        raise
+    except asyncio.TimeoutError:
+        raise SNMPProviderError("timeout") from None
     persist_discovered_interfaces(db, source, snapshots)
     return snapshots
 
@@ -241,13 +247,14 @@ async def poll_source_once(db_factory=SessionLocal, source_id: int | None = None
             return False
         if source.backoff_until and source.backoff_until > now:
             return False
-        provider = provider or SNMPv3Provider(timeout_seconds=min(30, max(1, source.polling_interval_seconds // 2)))
+        polling_interval = int(source.polling_interval_seconds or 60)
+        provider = provider or SNMPv3Provider(timeout_seconds=min(30, max(1, polling_interval // 2)))
         lock = _source_lock(source.id)
         if lock.locked():
             return False
         async with lock:
             try:
-                snapshots = await asyncio.wait_for(provider.discover_interfaces(source), timeout=min(30, max(2, source.polling_interval_seconds // 2)))
+                snapshots = await asyncio.wait_for(provider.discover_interfaces(source), timeout=min(30, max(2, polling_interval // 2)))
             except SNMPProviderError as exc:
                 if not _poll_is_authorized(db, source.id, lease_token, _now(), fence=True):
                     db.rollback()
@@ -256,7 +263,18 @@ async def poll_source_once(db_factory=SessionLocal, source_id: int | None = None
                 source.last_poll_duration_ms = int((time.monotonic() - started) * 1000)
                 db.commit()
                 return False
-            elapsed_default = max(1.0, source.polling_interval_seconds)
+            except asyncio.CancelledError:
+                raise
+            except asyncio.TimeoutError:
+                exc = SNMPProviderError("timeout")
+                if not _poll_is_authorized(db, source.id, lease_token, _now(), fence=True):
+                    db.rollback()
+                    return False
+                _record_failure(db, source, exc, now)
+                source.last_poll_duration_ms = int((time.monotonic() - started) * 1000)
+                db.commit()
+                return False
+            elapsed_default = max(1.0, polling_interval)
             for snapshot in snapshots:
                 interface = next((row for row in source.interfaces if row.interface_key == snapshot.interface_key), None)
                 if interface is None:

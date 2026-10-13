@@ -1271,7 +1271,7 @@ async def discover_traffic_interfaces(source_id: int, request: Request, db: Sess
         source.last_failed_at = datetime.utcnow()
         db.commit()
         write_audit(db, user, "discover_failed", "traffic_source", str(source.id), trusted_client_ip(request), detail="SNMP interface discovery failed", metadata={"error_category": exc.category})
-        raise HTTPException(status_code=502, detail="SNMP interface discovery failed") from None
+        raise HTTPException(status_code=502, detail=f"SNMP interface discovery failed: {exc}") from None
     db.commit()
     write_audit(db, user, "discover", "traffic_source", str(source.id), trusted_client_ip(request), detail="Discovered SNMP interfaces", metadata={"interface_count": len(snapshots)})
     return {"interfaces": [{"interface_index": row.interface_index, "interface_key": row.interface_key, "display_name": row.display_name, "oper_status": row.oper_status, "admin_status": row.admin_status, "speed_bps": row.speed_bps, "counter_bits": row.counter_bits} for row in snapshots]}
@@ -1284,12 +1284,13 @@ async def test_traffic_source(source_id: int, request: Request, db: Session = De
     if not source:
         raise HTTPException(status_code=404, detail="Traffic source not found")
     try:
-        snapshots = await SNMPv3Provider(timeout_seconds=min(30, max(1, source.polling_interval_seconds // 2))).test_connection(source)
+        polling_interval = int(source.polling_interval_seconds or 60)
+        await SNMPv3Provider(timeout_seconds=min(10, max(1, polling_interval // 2)), retries=0).test_connection(source)
     except SNMPProviderError as exc:
         write_audit(db, user, "connection_test_failed", "traffic_source", str(source.id), trusted_client_ip(request), detail="SNMP connection test failed", metadata={"error_category": exc.category})
-        raise HTTPException(status_code=502, detail="SNMP connection test failed") from None
-    write_audit(db, user, "connection_test", "traffic_source", str(source.id), trusted_client_ip(request), detail="SNMP connection test succeeded", metadata={"interface_count": len(snapshots)})
-    return {"ok": True, "interface_count": len(snapshots)}
+        raise HTTPException(status_code=502, detail=f"SNMP connection test failed: {exc}") from None
+    write_audit(db, user, "connection_test", "traffic_source", str(source.id), trusted_client_ip(request), detail="SNMP connection test succeeded", metadata={"probe": "sysUpTime.0"})
+    return {"ok": True, "probe": "sysUpTime.0"}
 
 
 def _traffic_source_or_404(db: Session, source_id: int) -> TrafficSource:

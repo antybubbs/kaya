@@ -24,11 +24,22 @@ IF_HC_IN_OCTETS = "1.3.6.1.2.1.31.1.1.1.6"
 IF_HC_OUT_OCTETS = "1.3.6.1.2.1.31.1.1.1.10"
 IF_COUNTER_DISCONTINUITY = "1.3.6.1.2.1.31.1.1.1.19"
 SYS_UPTIME = "1.3.6.1.2.1.1.3.0"
+GETBULK_MAX_REPETITIONS = 10
+MAX_WALK_REQUESTS = 256
+MAX_WALK_ROWS = 4096
 
 
 class SNMPProviderError(RuntimeError):
     def __init__(self, category: str, message: str = "SNMP polling failed"):
-        super().__init__(message)
+        safe_messages = {
+            "authentication_failure": "SNMPv3 authentication or privacy validation failed",
+            "configuration_error": "SNMP source configuration is incomplete or invalid",
+            "malformed_response": "The SNMP device returned an invalid response",
+            "timeout": "The SNMP device did not respond before the timeout",
+            "unsupported": "The SNMP device does not support the requested object",
+            "device_unavailable": "The SNMP device could not be reached",
+        }
+        super().__init__(message if message != "SNMP polling failed" else safe_messages.get(category, message))
         self.category = category
 
 
@@ -193,17 +204,18 @@ class SNMPv3Provider:
         engine = SnmpEngine()
         try:
             target = await UdpTransportTarget.create((source.destination_ip, source.destination_port), timeout=self.timeout_seconds, retries=self.retries)
+            credentials = self._credentials(source)
             result: dict[int, Any] = {}
             cursor = root
             requests = 0
             while True:
                 requests += 1
-                if requests > 2048:
+                if requests > MAX_WALK_REQUESTS:
                     raise SNMPProviderError("device_unavailable", "SNMP table walk exceeded its safety limit")
-                error_indication, error_status, error_index, rows = await bulk_cmd(engine, self._credentials(source), target, ContextData(), 0, 25, ObjectType(ObjectIdentity(cursor)))
+                error_indication, error_status, error_index, rows = await bulk_cmd(engine, credentials, target, ContextData(), 0, GETBULK_MAX_REPETITIONS, ObjectType(ObjectIdentity(cursor)))
                 if error_indication:
                     text = str(error_indication).lower()
-                    category = "authentication_failure" if "authoriz" in text or "authentication" in text else "timeout" if "timeout" in text else "device_unavailable"
+                    category = "authentication_failure" if any(item in text for item in ("authoriz", "authentication", "usm", "unknown user", "wrong digest", "decryption", "not in time window")) else "timeout" if "timeout" in text else "device_unavailable"
                     raise SNMPProviderError(category)
                 if error_status:
                     status_text = str(error_status).lower()
@@ -219,6 +231,8 @@ class SNMPv3Provider:
                         reached_end = True
                         continue
                     result[index] = value
+                    if len(result) > MAX_WALK_ROWS:
+                        raise SNMPProviderError("device_unavailable", "SNMP table walk exceeded its row safety limit")
                     last_oid = _oid_tuple(oid)
                     reached_end = False
                 if reached_end or last_oid is None:
@@ -230,10 +244,14 @@ class SNMPv3Provider:
             return result
         except SNMPProviderError:
             raise
+        except asyncio.CancelledError:
+            raise
         except (asyncio.TimeoutError, TimeoutError):
             raise SNMPProviderError("timeout") from None
         except OSError:
             raise SNMPProviderError("device_unavailable") from None
+        except (TypeError, ValueError, IndexError):
+            raise SNMPProviderError("malformed_response") from None
         finally:
             try:
                 engine.close_dispatcher()
@@ -248,7 +266,7 @@ class SNMPv3Provider:
             try:
                 return await self.walk_column(source, root)
             except SNMPProviderError as exc:
-                if root in optional and exc.category == "unsupported":
+                if root in optional and exc.category in {"unsupported", "timeout", "device_unavailable"}:
                     return {}
                 raise
 
@@ -282,22 +300,30 @@ class SNMPv3Provider:
             target = await UdpTransportTarget.create((source.destination_ip, source.destination_port), timeout=self.timeout_seconds, retries=self.retries)
             indication, status, index, var_binds = await get_cmd(engine, self._credentials(source), target, ContextData(), ObjectType(ObjectIdentity(oid)))
             if indication:
-                raise SNMPProviderError("timeout" if "timeout" in str(indication).lower() else "device_unavailable")
+                indication_text = str(indication).lower()
+                category = "authentication_failure" if any(item in indication_text for item in ("authoriz", "authentication", "usm", "unknown user", "wrong digest", "decryption", "not in time window")) else "timeout" if "timeout" in indication_text else "device_unavailable"
+                raise SNMPProviderError(category)
             if status:
                 status_text = str(status).lower()
                 raise SNMPProviderError("unsupported" if any(item in status_text for item in ("nosuch", "no such")) else "device_unavailable")
             return _value_int(var_binds[0][1]) if var_binds else None
         except SNMPProviderError:
             raise
+        except asyncio.CancelledError:
+            raise
         except (asyncio.TimeoutError, TimeoutError):
             raise SNMPProviderError("timeout") from None
         except OSError:
             raise SNMPProviderError("device_unavailable") from None
+        except (TypeError, ValueError, IndexError):
+            raise SNMPProviderError("malformed_response") from None
         finally:
             try:
                 engine.close_dispatcher()
             except Exception:
                 pass
 
-    async def test_connection(self, source: TrafficSource) -> list[InterfaceSnapshot]:
-        return await self.discover_interfaces(source)
+    async def test_connection(self, source: TrafficSource) -> None:
+        """Perform only the bounded scalar probe used by the connection test."""
+        if await self.get_scalar(source, SYS_UPTIME) is None:
+            raise SNMPProviderError("unsupported")

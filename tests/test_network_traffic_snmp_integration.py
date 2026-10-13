@@ -14,7 +14,8 @@ import pytest
 from app.core.security import encrypt_secret
 from app.models.models import TrafficSource
 from app.services import network_traffic_snmp as provider_module
-from app.services.network_traffic_snmp import SNMPv3Provider
+from app.services.network_traffic_snmp import IF_DESCR, SNMPProviderError, SNMPv3Provider, _value_int
+from app.services.network_traffic_poller import discover_source_interfaces
 
 
 def _start_agent(port: int):
@@ -100,8 +101,65 @@ def test_real_pysnmp_v3_auth_priv_discovery(monkeypatch):
         assert snapshots[0].outbound_octets == 20_000
         assert snapshots[0].counter_bits == 64
         assert snapshots[0].speed_bps == 1_000_000_000
+        probe = SNMPv3Provider(timeout_seconds=2, retries=0)
+        probe_calls = []
+
+        async def scalar_probe(probe_source, oid):
+            probe_calls.append(oid)
+            return 123
+
+        probe.get_scalar = scalar_probe
+        probe.discover_interfaces = lambda _source: (_ for _ in ()).throw(AssertionError("connection test must not walk interfaces"))
+        assert asyncio.run(probe.test_connection(source)) is None
+        assert probe_calls == [provider_module.SYS_UPTIME]
     finally:
         agent.close_dispatcher()
         thread.join(timeout=2)
         agent_loop.close()
         asyncio.set_event_loop(None)
+
+
+def test_connection_test_does_not_start_interface_discovery():
+    provider = SNMPv3Provider(timeout_seconds=1, retries=0)
+    calls = []
+
+    async def scalar_probe(source, oid):
+        calls.append((source, oid))
+        return 1
+
+    provider.get_scalar = scalar_probe
+    provider.discover_interfaces = lambda _source: (_ for _ in ()).throw(AssertionError("unexpected interface walk"))
+    source = TrafficSource(destination_ip="192.0.2.1", destination_port=161, security_name="fake")
+    assert asyncio.run(provider.test_connection(source)) is None
+    assert calls[0][1] == provider_module.SYS_UPTIME
+
+
+def test_discovery_timeout_is_converted_to_controlled_provider_error():
+    class SlowProvider:
+        async def discover_interfaces(self, source):
+            await asyncio.sleep(2.1)
+            return []
+
+    with pytest.raises(SNMPProviderError, match="did not respond"):
+        asyncio.run(discover_source_interfaces(None, TrafficSource(id=1, polling_interval_seconds=5), provider=SlowProvider()))
+
+
+def test_discovery_cancellation_is_not_converted_to_success():
+    class CancelledProvider:
+        async def discover_interfaces(self, source):
+            raise asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(discover_source_interfaces(None, TrafficSource(id=1, polling_interval_seconds=5), provider=CancelledProvider()))
+
+
+def test_required_column_failure_is_preserved_and_malformed_values_are_safe():
+    class FailingProvider(SNMPv3Provider):
+        async def walk_column(self, source, root):
+            if root == IF_DESCR:
+                raise SNMPProviderError("malformed_response")
+            return {}
+
+    with pytest.raises(SNMPProviderError, match="invalid response"):
+        asyncio.run(FailingProvider().discover_interfaces(TrafficSource(id=1)))
+    assert _value_int(object()) is None
