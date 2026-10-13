@@ -1,4 +1,5 @@
-.traffic-page { display: grid; gap: 1rem; }
+.traffic-page { display: grid; gap: 1rem; min-width: 0; width: 100%; }
+.traffic-page > section { min-width: 0; }
 .traffic-summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1rem; }
 .traffic-summary-card { display: grid; gap: .35rem; min-height: 7rem; align-content: center; }
 .traffic-summary-card strong { font-size: clamp(1.35rem, 2.8vw, 2rem); letter-spacing: -.02em; }
@@ -9,7 +10,8 @@
 .traffic-flow-summary { display: grid; gap: .65rem; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); margin-top: 1rem; }
 .traffic-flow-source { border-left: 3px solid var(--accent, #38bdf8); display: grid; gap: .2rem; padding: .25rem .75rem; }
 .traffic-flow-source span { color: var(--text); font-size: .9rem; }
-.traffic-toolbar { display: flex; align-items: end; justify-content: space-between; gap: 1rem; }
+.traffic-toolbar { display: flex; align-items: end; justify-content: space-between; gap: 1rem; min-width: 0; max-width: 100%; overflow: hidden; }
+.traffic-toolbar > div, .traffic-toolbar > span { min-width: 0; max-width: 100%; }
 .traffic-toolbar label { display: grid; gap: .3rem; font-weight: 600; }
 .traffic-toolbar select { min-width: 12rem; }
 .traffic-device-search { max-width: 18rem; }
