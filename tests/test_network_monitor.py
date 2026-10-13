@@ -800,6 +800,10 @@ def test_per_host_and_global_threshold_controls_are_present():
     assert "Use Kaya default thresholds" in fields
     assert "module-network-monitor" in settings
     assert "_network_monitor_threshold_fields.html" in ip_detail
+    assert 'data-device-traffic-toggle-input' in ip_detail
+    assert 'class="remote-switch"' in ip_detail
+    assert 'Open device Network Traffic report' in ip_detail
+    assert 'role == \'admin\'' in ip_detail
 
 
 @pytest.mark.parametrize("selected,expected", [

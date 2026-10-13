@@ -96,6 +96,40 @@
     });
   }
 
+  function setupDeviceTrafficToggle() {
+    const input = document.querySelector("[data-device-traffic-toggle-input]");
+    if (!input) return;
+    const state = document.querySelector("[data-device-traffic-state]");
+    const reason = document.querySelector("[data-device-traffic-reason]");
+    const chip = document.querySelector("[data-device-traffic-chip]");
+    const message = document.querySelector("[data-device-traffic-message]");
+    const titleCase = (value) => String(value || "disabled").replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+    input.addEventListener("change", async () => {
+      const enabled = input.checked;
+      input.disabled = true;
+      try {
+        const response = await fetch(`/networking/vlan-ip-manager/${encodeURIComponent(input.dataset.recordId)}/network-traffic`, {
+          method: "PUT",
+          credentials: "same-origin",
+          headers: { "Accept": "application/json", "Content-Type": "application/json", "X-CSRF-Token": input.dataset.csrfToken || "" },
+          body: JSON.stringify({ enabled }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.detail || "Network Traffic setting could not be saved.");
+        const label = titleCase(payload.status);
+        if (state) state.textContent = label;
+        if (reason) reason.textContent = payload.reason || "";
+        if (chip) chip.textContent = `Network Traffic ${label}`;
+        if (message) message.textContent = payload.enabled ? "Loading recent persisted usage..." : "Disabled — enable Network Traffic for this record to collect usage.";
+        window.location.reload();
+      } catch (error) {
+        input.checked = !enabled;
+        input.disabled = false;
+        if (reason) reason.textContent = error.message || "Network Traffic setting could not be saved.";
+      }
+    });
+  }
+
   function setupDeviceTrafficReport() {
     const card = document.querySelector("[data-device-traffic-card]");
     if (!card || !card.querySelector("[data-device-spark]")) return;
@@ -172,6 +206,7 @@
 
   setupBulkEdit();
   setupQuickPing();
+  setupDeviceTrafficToggle();
   setupDeviceTrafficReport();
   setupMonitorThresholds();
 })();
