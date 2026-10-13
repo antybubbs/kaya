@@ -484,23 +484,25 @@ class FlowCollector:
             except queue.Empty:
                 continue
             try:
-                with SessionLocal() as config_db:
-                    if not _flow_ingestion_enabled(config_db):
-                        continue
                 # Queue insertion assigns a monotonic ordinal only after the
                 # bounded queue accepts the item. Workers therefore decode in
                 # receiver order without gaps when queue backpressure drops a
                 # packet.
+                result = None
                 with self._decode_condition:
                     while ordinal != self._next_decode_ordinal and not self.stop_event.is_set():
                         self._decode_condition.wait(timeout=0.2)
                     if self.stop_event.is_set() and ordinal != self._next_decode_ordinal:
                         continue
                     try:
-                        result = self.decoder.decode(packet, exporter)
+                        with SessionLocal() as config_db:
+                            if _flow_ingestion_enabled(config_db):
+                                result = self.decoder.decode(packet, exporter)
                     finally:
                         self._next_decode_ordinal += 1
                         self._decode_condition.notify_all()
+                if result is None:
+                    continue
                 now = _now()
                 with self._write_lock, SessionLocal() as db:
                     state = _state(db, source_id)

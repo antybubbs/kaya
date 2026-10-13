@@ -268,13 +268,10 @@ class NetFlowV9Decoder:
                     reject("truncated_template", template_id)
                 raw_id, length = struct.unpack_from("!HH", body, offset)
                 offset += 4
+                # NetFlow v9 uses the complete 16-bit field type value. The
+                # IPFIX enterprise bit is not part of this wire format;
+                # Cisco NSEL field 33002 is a valid v9 field ID.
                 enterprise = None
-                if raw_id & 0x8000:
-                    raw_id &= 0x7FFF
-                    if offset + 4 > len(body):
-                        reject("truncated_enterprise_field", template_id)
-                    enterprise = _u(body, offset, 4)
-                    offset += 4
                 if length == 0 or length > 2048:
                     reject("invalid_field_length", template_id)
                 fields.append(TemplateField(raw_id, length, enterprise))

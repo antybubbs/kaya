@@ -78,6 +78,40 @@ def test_nsel_directional_delta_fields_are_not_treated_as_cumulative():
     assert decoded.flow_start is not None
 
 
+def test_cisco_nsel_template_ids_256_and_263_accept_full_16_bit_field_ids():
+    # This is a deterministic protocol fixture using Cisco's documented
+    # extended IPv4 teardown field IDs and widths. In particular, 33002 must
+    # remain a NetFlow v9 field type; it is not an IPFIX enterprise marker.
+    fields = [(148, 4), (8, 4), (7, 2), (10, 4), (12, 4), (11, 2), (14, 4), (4, 1), (225, 4), (226, 4), (227, 2), (228, 2), (233, 1), (33002, 2), (323, 8), (231, 4), (232, 4), (152, 8)]
+    template_body = b"".join(
+        struct.pack("!HH", template_id, len(fields))
+        + b"".join(struct.pack("!HH", field_id, length) for field_id, length in fields)
+        for template_id in (256, 256, 256, 263, 263, 263)
+    )
+    values = {
+        148: (99).to_bytes(4, "big"), 8: bytes([192, 0, 2, 20]), 7: (51515).to_bytes(2, "big"),
+        10: (2).to_bytes(4, "big"), 12: bytes([198, 51, 100, 30]), 11: (443).to_bytes(2, "big"),
+        14: (10).to_bytes(4, "big"), 4: b"\x06", 225: bytes([203, 0, 113, 20]), 226: bytes([198, 51, 100, 30]),
+        227: (51515).to_bytes(2, "big"), 228: (443).to_bytes(2, "big"), 233: b"\x02", 33002: (2001).to_bytes(2, "big"),
+        323: (1767225600000).to_bytes(8, "big"), 231: (700).to_bytes(4, "big"), 232: (300).to_bytes(4, "big"),
+        152: (1767225599000).to_bytes(8, "big"),
+    }
+    record = b"".join(values[field_id] for field_id, _ in fields)
+    datagram = struct.pack("!HHIIII", 9, 8, 1000, 1767225600, 1, 7)
+    datagram += struct.pack("!HH", 0, 4 + len(template_body)) + template_body
+    datagram += struct.pack("!HH", 256, 4 + len(record)) + record
+    datagram += struct.pack("!HH", 263, 4 + len(record)) + record
+    decoder = NetFlowV9Decoder()
+    result = decoder.decode(datagram, "192.0.2.1")
+    assert result.template_count == 6
+    assert result.unknown_templates == 0
+    assert set(decoder_key[2] for decoder_key in decoder.templates) == {256, 263}
+    assert len(decoder.templates) == 2
+    assert result.records[0].extended_event == 2001
+    assert result.records[0].forward_bytes == 700
+    assert result.records[0].reverse_bytes == 300
+
+
 def test_options_templates_are_cached_but_options_data_is_not_usage():
     options = struct.pack("!HHHHHHH", 400, 4, 4, 1, 4, 2, 4)  # scope: system/4 bytes; one option/4 bytes
     template_set = struct.pack("!HH", 1, 4 + len(options)) + options
