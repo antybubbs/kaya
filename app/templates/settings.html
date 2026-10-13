@@ -139,7 +139,7 @@
       {{ switch('dashboard_attention_required', 'Require Attention Required', 'Keep the full-width attention widget enabled for every authorised user.') }}
       <div class="remote-settings-grid two">
         <label><strong>Recent activity entries</strong><small>Between 1 and 20.</small><input name="dashboard_recent_activity_limit" type="number" min="1" max="20" value="{{ settings.get('dashboard_recent_activity_limit','10') }}"></label>
-        <label><strong>Globally disabled widget keys</strong><small>Comma-separated registry keys. Existing user preferences are preserved.</small><input name="dashboard_globally_disabled_widgets" value="{{ settings.get('dashboard_globally_disabled_widgets','') }}" placeholder="team_users,recent_activity"></label>
+        <label><strong>Globally disabled widget keys</strong><small>Comma-separated registry keys. Existing user preferences are preserved.</small><input name="dashboard_globally_disabled_widgets" value="{{ settings.get('dashboard_globally_disabled_widgets','') }}" placeholder="recent_activity,backup_health"></label>
       </div>
     </div>
   </section>{% endif %}

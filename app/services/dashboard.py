@@ -8,7 +8,6 @@ import json
 import logging
 from time import perf_counter
 
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.models import (

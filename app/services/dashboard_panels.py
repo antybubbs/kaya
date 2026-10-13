@@ -231,7 +231,7 @@ def _daily_history(db: Session, start: datetime, end: datetime) -> dict[int, dic
 
 
 def _cached_daily_history(db: Session, start: datetime, end: datetime, now: datetime) -> dict:
-    key = f"{db.bind.url}|{start.isoformat()}"
+    key = f"{db.bind.url.render_as_string(hide_password=True)}|{start.isoformat()}"
     with _uptime_cache_guard:
         cached = _uptime_cache.get(key)
         if cached and cached[0] > now - timedelta(seconds=UPTIME_CACHE_SECONDS):
