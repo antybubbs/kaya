@@ -1,27 +1,84 @@
-{% extends "base.html" %}{% block content %}
-<main class="dashboard-shell" data-dashboard data-config='{{ dashboard_config|tojson }}' data-csrf-token="{{ csrf_token }}">
-  <section class="dashboard-hero">
-    <div><span class="eyebrow">{{ brand.name }} overview</span><h1>Operational dashboard</h1><p class="muted">Environment health and items needing attention.</p></div>
-    <div class="dashboard-actions">
-      <span class="live-indicator" data-live-state="live"><i></i><strong data-live-label>Live</strong></span>
-      {% if dashboard_config.customisation_enabled %}<button class="button secondary" type="button" data-edit-dashboard aria-pressed="false">Edit dashboard</button><button class="button secondary" type="button" data-manage-widgets>Manage widgets</button>{% endif %}
-      {% if dashboard_config.monitor_mode_enabled %}<button class="button secondary" type="button" data-monitor-mode>Monitor mode</button>{% endif %}
+{% extends "base.html" %}
+{% block extra_head %}<link rel="stylesheet" href="/static/css/dashboard.css?v={{ asset_version }}">{% endblock %}
+{% block content %}
+{% macro edit_bar(definition, item) %}
+<div class="cc-edit-bar" data-edit-bar>
+  <button type="button" class="cc-drag-handle" data-drag-handle aria-label="Move {{ definition.name }}" title="Drag to move">&#x2630;</button>
+  <span class="cc-edit-name">{{ definition.name }}</span>
+  <span class="cc-edit-move"><button type="button" data-widget-move="up" aria-label="Move {{ definition.name }} up">&#8593;</button><button type="button" data-widget-move="down" aria-label="Move {{ definition.name }} down">&#8595;</button></span>
+  <label class="cc-size">Size <select data-widget-size aria-label="Size for {{ definition.name }}">{% for size in ['small','medium','large','full'] %}<option value="{{ size }}" {% if size == item.width %}selected{% endif %}>{{ size|title }}</option>{% endfor %}</select></label>
+</div>
+{% endmacro %}
+{% macro panel(definition, item) %}
+{% set key = item.key %}
+{% if key == 'module_overview' %}
+<section class="cc-widget cc-modules-widget cc-w-{{ item.width }}" data-widget-key="{{ key }}" data-width="{{ item.width }}" aria-label="Modules" draggable="false">
+  {{ edit_bar(definition, item) }}
+  <div class="cc-modules" data-widget-body><p class="cc-loading">Loading modules…</p></div>
+</section>
+{% else %}
+<section class="cc-widget cc-panel cc-panel-{{ key|replace('_','-') }} cc-w-{{ item.width }}" data-widget-key="{{ key }}" data-width="{{ item.width }}" aria-labelledby="cc-heading-{{ key }}" draggable="false">
+  {{ edit_bar(definition, item) }}
+  {% if key == 'network_traffic' %}
+  <div class="cc-panel-head">
+    <div><h2 id="cc-heading-{{ key }}" class="cc-h2">Network traffic</h2><p class="cc-sub" data-source-age>Gateway throughput · <span data-traffic-range-label>last 24 hours</span></p></div>
+    <div class="cc-segmented" role="group" aria-label="Time range">{% for value in dashboard_config.traffic_ranges %}<button type="button" data-traffic-range="{{ value }}" aria-pressed="{{ 'true' if value == dashboard_config.default_traffic_range else 'false' }}">{{ value }}</button>{% endfor %}</div>
+  </div>
+  {% elif key == 'uptime' %}
+  <div class="cc-panel-head">
+    <div><h2 id="cc-heading-{{ key }}" class="cc-h2"><a href="{{ definition.target_url }}">Uptime</a></h2><p class="cc-sub" data-source-age>Uptime module · checks every <span data-uptime-interval>…</span> · last 30 days</p></div>
+    <div class="cc-head-actions">
+      <button type="button" class="cc-btn cc-btn-icon" data-uptime-picker-toggle aria-expanded="false" aria-controls="cc-host-picker"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16"></path><path d="M7 12h10"></path><path d="M10 18h4"></path></svg>Choose hosts · <span data-uptime-shown>–</span> of <span data-uptime-total>–</span></button>
+      <a class="cc-btn cc-btn-link" href="{{ definition.target_url }}">Open Uptime module<svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"></path><path d="M13 6l6 6-6 6"></path></svg></a>
     </div>
-  </section>
+  </div>
+  <div id="cc-host-picker" class="cc-picker" data-uptime-picker hidden>
+    <div class="cc-picker-head">
+      <span class="cc-picker-title" id="cc-picker-title">Show on dashboard</span>
+      <div class="cc-picker-actions"><button type="button" class="cc-text-btn" data-uptime-select="all">Select all</button><button type="button" class="cc-text-btn" data-uptime-select="none">Clear</button><button type="button" class="cc-solid-btn" data-uptime-picker-toggle>Done</button></div>
+    </div>
+    <div class="cc-picker-grid" role="group" aria-labelledby="cc-picker-title" data-uptime-options><p class="cc-loading">Loading hosts…</p></div>
+    <p class="cc-picker-note">Your choice is saved for you on this dashboard. Add or remove checks in the Uptime module.</p>
+    <p class="cc-picker-status" data-uptime-save-state role="status" aria-live="polite"></p>
+  </div>
+  {% elif key == 'attention_required' %}
+  <div class="cc-panel-head cc-panel-head-row"><h2 id="cc-heading-{{ key }}" class="cc-h2 cc-h2-rail">Attention required</h2></div>
+  {% elif key == 'infrastructure_summary' %}
+  <div class="cc-panel-head cc-panel-head-row"><h2 id="cc-heading-{{ key }}" class="cc-h2 cc-h2-rail" data-source-age>Infrastructure</h2><a class="cc-link" href="{{ definition.target_url }}">Open</a></div>
+  {% else %}
+  <div class="cc-panel-head cc-panel-head-row"><div><h2 id="cc-heading-{{ key }}" class="cc-h2 cc-h2-rail" data-source-age>{{ definition.name }}</h2><p class="cc-sub">{{ definition.module }}</p></div><a class="cc-link" href="{{ definition.target_url }}">Open</a></div>
+  {% endif %}
+  <div class="cc-body" data-widget-body><p class="cc-loading">Loading current data…</p></div>
+</section>
+{% endif %}
+{% endmacro %}
+{% set definitions = {} %}{% for definition in dashboard_config.widgets %}{% set _ = definitions.update({definition.key: definition}) %}{% endfor %}
+<div class="cc-dashboard" data-dashboard data-config='{{ dashboard_config|tojson }}' data-csrf-token="{{ csrf_token }}">
+  <header class="cc-topbar">
+    <div class="cc-identity">
+      <span class="cc-mark" aria-hidden="true">{{ brand.name[:1]|upper }}</span>
+      <div><h1 class="cc-title">Operational dashboard</h1><p class="cc-tagline">{{ brand.name }} · environment health and items needing attention</p></div>
+    </div>
+    <div class="cc-actions">
+      <span class="cc-live" data-live-state="live"><i aria-hidden="true"></i><span data-live-label>Live</span><span class="sr-only" data-live-announce role="status" aria-live="polite"></span></span>
+      {% if dashboard_config.customisation_enabled %}<button class="cc-btn" type="button" data-edit-dashboard aria-pressed="false">Edit dashboard</button><button class="cc-btn" type="button" data-manage-widgets>Manage widgets</button>{% endif %}
+      {% if dashboard_config.monitor_mode_enabled %}<button class="cc-btn cc-btn-accent" type="button" data-monitor-mode aria-pressed="false">Monitor mode</button>{% endif %}
+    </div>
+  </header>
   {{ module_navigation('Dashboard navigation', [
     {'label': 'Overview', 'url': '/dashboard', 'active': true}
   ], '/system/site-administration?tab=module-dashboard') }}
   <div class="dashboard-save-state" data-save-state role="status" aria-live="polite"></div>
-  <section class="dashboard-grid" data-dashboard-grid aria-label="Dashboard widgets">
   {# Compatibility markers for the preserved dashboard sections: compute-resource-grid, dashboard-dns-summary, VM / Docker Manager. #}
-  {% for item in dashboard_config.layout.widgets if item.enabled %}{% set definition = dashboard_config.widgets|selectattr('key','equalto',item.key)|first %}{% if definition %}
-    <article class="panel dashboard-widget width-{{ item.width }}" data-widget-key="{{ item.key }}" data-width="{{ item.width }}" draggable="false">
-      <header><button type="button" class="widget-drag-handle" data-drag-handle aria-label="Move {{ definition.name }}" title="Drag to move">&#x2630;</button><div><h2>{{ definition.name }}</h2><small>{{ definition.module }}</small></div><div class="widget-mobile-move" aria-label="Reorder {{ definition.name }}"><button type="button" data-widget-move="up" aria-label="Move {{ definition.name }} up">&#8593;</button><button type="button" data-widget-move="down" aria-label="Move {{ definition.name }} down">&#8595;</button></div><a href="{{ definition.target_url }}">Open</a></header>
-      <div class="widget-body" data-widget-body><div class="widget-loading">Loading current data...</div></div>
-      <footer><span data-widget-state>Loading</span><span data-source-age></span><label class="widget-size-control">Size <select data-widget-size aria-label="Size for {{ definition.name }}">{% for size in ['small','medium','large','full'] %}<option value="{{ size }}" {% if size == item.width %}selected{% endif %}>{{ size|title }}</option>{% endfor %}</select></label></footer>
-    </article>{% endif %}{% endfor %}
-  </section>
+  <div class="cc-container" data-dashboard-grid>
+    <div class="cc-main" data-zone="main">
+    {% for item in dashboard_config.layout.widgets if item.enabled and item.zone == 'main' and item.key in definitions %}{{ panel(definitions[item.key], item) }}{% endfor %}
+    </div>
+    <aside class="cc-rail" data-zone="rail" aria-label="Status and alerts">
+    {% for item in dashboard_config.layout.widgets if item.enabled and item.zone == 'rail' and item.key in definitions %}{{ panel(definitions[item.key], item) }}{% endfor %}
+    </aside>
+  </div>
   <dialog class="widget-manager" data-widget-manager aria-labelledby="widget-manager-title"><form method="dialog"><header><div><span class="eyebrow">Dashboard layout</span><h2 id="widget-manager-title">Manage widgets</h2><p>Choose what appears on your dashboard. Changes save automatically.</p></div><button type="submit" class="icon-button widget-manager-close" aria-label="Close widget manager" title="Close">&times;</button></header><div class="widget-manager-toolbar"><span data-widget-enabled-count></span><span class="widget-manager-saved" data-widget-manager-saved role="status" aria-live="polite"></span></div><div class="widget-options" data-widget-options></div><footer><button type="button" class="button secondary danger" data-reset-dashboard>Reset to defaults</button><button class="button" type="submit">Done</button></footer></form></dialog>
-</main>
+</div>
 <script src="/static/js/dashboard.js?v={{ asset_version }}" defer></script>
 {% endblock %}

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.orm import Session
 
 from app.core.csrf import csrf_context, validate_csrf_token
@@ -29,10 +29,16 @@ def dashboard_config(db: Session = Depends(get_db), user=Depends(require_user)):
 
 @router.get("/api/dashboard/snapshot")
 def dashboard_snapshot(
-    response: Response, db: Session = Depends(get_db), user=Depends(require_user)
+    response: Response,
+    traffic_range: str = Query("24h", alias="range", max_length=4),
+    db: Session = Depends(get_db),
+    user=Depends(require_user),
 ):
     response.headers["Cache-Control"] = "no-store"
-    return snapshot(db, user)
+    try:
+        return snapshot(db, user, traffic_range=traffic_range)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Unsupported traffic range") from exc
 
 
 def _validate_request_csrf(request: Request):
