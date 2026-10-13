@@ -12,7 +12,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.core.security import decrypt_secret
 from app.db.session import Base
-from app.models.models import TrafficAggregate, TrafficCounterObservation, TrafficInterface, TrafficLocalNetwork, TrafficMonitoringConfiguration, TrafficPollingLease, TrafficSource
+from app.models.models import TrafficAggregate, TrafficCounterObservation, TrafficFlowCollectorGlobalState, TrafficFlowCollectorState, TrafficInterface, TrafficLocalNetwork, TrafficMonitoringConfiguration, TrafficPollingLease, TrafficSource
 from app.services.network_traffic import (
     apply_source_secrets,
     source_public_dict,
@@ -232,6 +232,36 @@ def test_stage_25_pages_stay_within_network_monitor_module_and_overview_is_minim
     assert overview["module_enabled"] is False
     assert overview["summary"]["wan_interfaces"] == 1
     assert "encrypted_snmp_authentication" not in str(overview)
+
+
+def test_flow_source_health_is_provider_aware_and_does_not_use_snmp_success(db):
+    source = TrafficSource(**validate_source_input({
+        "name": "Synthetic NSEL health",
+        "provider_key": "cisco_nsel",
+        "source_category": "flow_export",
+        "is_enabled": True,
+        "collector_port": 2055,
+        "exporter_allowlist": ["192.0.2.1"],
+    }))
+    db.add(source)
+    db.flush()
+    global_state = TrafficFlowCollectorGlobalState(id=1, listener_state="running")
+    state = TrafficFlowCollectorState(source_id=source.id, listener_state="running", template_cache_size=2)
+    db.add_all([global_state, state])
+    db.commit()
+    public = network_monitor_router._traffic_source_public(
+        source,
+        flow_states={source.id: state},
+        global_state=global_state,
+        now=datetime.utcnow(),
+    )
+    assert public["health_state"] == "collector_healthy_awaiting_traffic"
+    assert public["last_success_at"] is None
+    state.last_datagram_at = datetime.utcnow()
+    state.last_valid_flow_at = datetime.utcnow()
+    assert network_monitor_router._traffic_source_public(
+        source, flow_states={source.id: state}, global_state=global_state, now=datetime.utcnow()
+    )["health_state"] == "receiving_decoding"
 
 
 def test_counter_rates_use_elapsed_time_and_establish_a_baseline():

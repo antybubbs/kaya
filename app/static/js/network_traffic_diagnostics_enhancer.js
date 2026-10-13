@@ -38,7 +38,7 @@
     const summaries = Array.isArray(source.template_lifecycle_summary) ? source.template_lifecycle_summary.slice(-64) : [];
     const section = document.createElement("details");
     section.className = "traffic-template-lifecycle-summary";
-    section.open = true;
+    section.open = false;
     const heading = document.createElement("summary");
     heading.textContent = `Template lifecycle summary (${summaries.length} keys)`;
     section.appendChild(heading);

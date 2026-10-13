@@ -3,6 +3,12 @@
 .traffic-summary-card { display: grid; gap: .35rem; min-height: 7rem; align-content: center; }
 .traffic-summary-card strong { font-size: clamp(1.35rem, 2.8vw, 2rem); letter-spacing: -.02em; }
 .traffic-summary-card small { min-height: 1.1rem; color: var(--muted); }
+.traffic-capability-card, .traffic-flow-card { align-items: center; display: flex; gap: 1rem; justify-content: space-between; }
+.traffic-capability-card h2, .traffic-flow-card h2 { margin: 0 0 .25rem; }
+.traffic-capability-card p, .traffic-flow-card p { margin: 0; }
+.traffic-flow-summary { display: grid; gap: .65rem; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); margin-top: 1rem; }
+.traffic-flow-source { border-left: 3px solid var(--accent, #38bdf8); display: grid; gap: .2rem; padding: .25rem .75rem; }
+.traffic-flow-source span { color: var(--text); font-size: .9rem; }
 .traffic-toolbar { display: flex; align-items: end; justify-content: space-between; gap: 1rem; }
 .traffic-toolbar label { display: grid; gap: .3rem; font-weight: 600; }
 .traffic-toolbar select { min-width: 12rem; }
@@ -52,6 +58,8 @@
 .traffic-diagnostic-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; margin-bottom: 1rem; }
 .traffic-diagnostic-grid div { display: grid; gap: .25rem; padding: .75rem; border: 1px solid var(--border, #344052); border-radius: .45rem; }
 .traffic-diagnostic-list { border-top: 1px solid var(--border, #344052); }
+.traffic-diagnostic-row { align-items: flex-start; flex-wrap: wrap; }
+.traffic-diagnostic-row > div:first-child { flex: 1 1 18rem; min-width: 0; }
 .traffic-diagnostic-row > div:last-child { display: flex; flex-wrap: wrap; gap: .65rem 1rem; justify-content: flex-end; color: var(--muted); font-size: .82rem; }
 .traffic-template-lifecycle { flex-basis: 100%; margin-top: .75rem; }
 .traffic-template-lifecycle-summary { flex-basis: 100%; margin-top: .75rem; }
@@ -64,4 +72,5 @@
 .compact { padding: .4rem .65rem; font-size: .82rem; }
 @media (max-width: 900px) { .traffic-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .traffic-two-column { grid-template-columns: 1fr; } }
 @media (max-width: 560px) { .traffic-summary-grid, .traffic-form-grid, .traffic-diagnostic-grid { grid-template-columns: 1fr; } .traffic-card-header, .traffic-source-row, .traffic-health-row { align-items: flex-start; flex-direction: column; } .traffic-source-actions { width: 100%; justify-content: space-between; } }
+@media (max-width: 560px) { .traffic-capability-card, .traffic-flow-card { align-items: flex-start; flex-direction: column; } .traffic-capability-card .button { width: 100%; } }
 @media (max-width: 560px) { .traffic-toolbar { align-items: stretch; flex-direction: column; } .traffic-toolbar select, .traffic-device-search { max-width: none; width: 100%; } }

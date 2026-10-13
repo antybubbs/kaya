@@ -52,19 +52,27 @@
   const renderHealth = (sources) => {
     const target = app.querySelector("[data-traffic-source-health]"); if (!target) return;
     if (!sources.length) { target.innerHTML = `<p class="traffic-empty">No sources configured. ${canManage ? "Add a source to begin monitoring." : "Ask an administrator to configure a source."}</p>`; return; }
-    target.innerHTML = sources.map((source) => `<div class="traffic-health-row"><div><strong>${escape(source.name)}</strong><small class="muted">${escape(source.provider_key)} · ${source.is_enabled ? "enabled" : "disabled"}</small></div><span class="traffic-status traffic-status-${stateClass(source.health_state)}">${escape(source.health_state || "unconfigured")}</span></div>`).join("");
+    const labels = { collector_offline: "Collector offline", collector_healthy_awaiting_traffic: "Awaiting traffic", receiving_awaiting_template: "Awaiting template", receiving_awaiting_record: "Awaiting record", receiving_decoding: "Receiving and decoding", degraded: "Degraded", stale: "Stale", healthy: "Polling successfully", error: "Polling failed", unconfigured: "Configured / awaiting poll", disabled: "Disabled" };
+    target.innerHTML = sources.map((source) => `<div class="traffic-health-row"><div><strong>${escape(source.name)}</strong><small class="muted">${escape(source.provider_key)} · ${source.is_enabled ? "enabled" : "disabled"}</small><small class="muted">${escape(source.health_reason || (source.provider_key === "snmpv3" ? `Last poll: ${dateLabel(source.last_success_at)}` : `Last packet: ${dateLabel(source.last_received_at)} · Last decoded: ${dateLabel(source.last_decoded_at)}`))}</small></div><span class="traffic-status traffic-status-${stateClass(source.health_state)}">${escape(labels[source.health_state] || source.health_state || "Unknown")}</span></div>`).join("");
+  };
+  const renderFlowSummary = (legacy) => {
+    const target = app.querySelector("[data-flow-summary]"); const badge = app.querySelector("[data-flow-summary-state]"); if (!target) return;
+    const flowSources = (legacy.sources || []).filter((source) => ["cisco_nsel", "netflow_v9"].includes(source.provider_key));
+    if (!flowSources.length) { if (badge) badge.textContent = "Not configured"; target.innerHTML = `<p class="traffic-empty">No flow source is configured. Add Cisco NSEL or NetFlow v9 to collect device usage.</p>`; return; }
+    if (badge) badge.textContent = flowSources.map((source) => source.health_state || "unknown").join(", ");
+    target.innerHTML = flowSources.map((source) => `<div class="traffic-flow-source"><strong>${escape(source.name)}</strong><span>${escape(source.health_reason || source.health_state || "Unknown")}</span><small class="muted">Last packet: ${escape(dateLabel(source.last_received_at))} · Last decoded: ${escape(dateLabel(source.last_decoded_at))}</small></div>`).join("");
   };
   const loadOverview = async () => {
     const selectedRange = app.querySelector("[data-traffic-range]")?.value || "24h";
     const legacy = await request("/networking/ip-wan-monitor/traffic/overview");
     const sourceSelect = app.querySelector("[data-traffic-source]"); const selectedSource = sourceSelect?.value || "";
-    if (sourceSelect) { const prior = selectedSource; sourceSelect.innerHTML = `<option value="">All enabled WAN interfaces</option>${(legacy.sources || []).map((source) => `<option value="${escape(source.id)}">${escape(source.name)}</option>`).join("")}`; sourceSelect.value = prior; }
+    if (sourceSelect) { const prior = selectedSource; sourceSelect.innerHTML = `<option value="">All enabled WAN interfaces</option>${(legacy.sources || []).filter((source) => source.provider_key === "snmpv3" && source.is_enabled).map((source) => `<option value="${escape(source.id)}">${escape(source.name)}</option>`).join("")}`; sourceSelect.value = prior; }
     const sourceQuery = selectedSource ? `&source_id=${encodeURIComponent(selectedSource)}` : ""; const selectedDevice = new URLSearchParams(window.location.search).get("device_id"); const deviceQuery = selectedDevice ? `&device_id=${encodeURIComponent(selectedDevice)}` : "";
     const payload = await request(`/networking/ip-wan-monitor/traffic/report?range=${encodeURIComponent(selectedRange)}${sourceQuery}${deviceQuery}`);
-    const summary = payload.wan.summary; stateLabel && (stateLabel.textContent = legacy.module_enabled ? "Monitoring enabled" : "Monitoring disabled");
+    const summary = payload.wan.summary; stateLabel && (stateLabel.textContent = legacy.module_enabled ? (summary.interface_count ? "WAN monitoring active" : "WAN monitoring not configured") : "Monitoring disabled");
     setSummary("download_bps", summary.current_download_bps, summary.quality === "approximate"); setSummary("upload_bps", summary.current_upload_bps, summary.quality === "approximate"); setSummary("download_bytes_today", summary.download_bytes_today, summary.quality === "approximate"); setSummary("upload_bytes_today", summary.upload_bytes_today, summary.quality === "approximate"); setSummary("last_observation_at", summary.last_observation_at);
     const quality = app.querySelector("[data-report-quality]"); if (quality) quality.textContent = `${payload.wan.bucket_seconds}s persisted resolution · ${summary.quality} · no synthetic gaps`;
-    window.__trafficDevices = payload.devices.devices || []; renderChart(payload.wan.history || []); renderDevices(window.__trafficDevices); renderDeviceDetail(payload.device); renderHealth(legacy.sources || []);
+    window.__trafficDevices = payload.devices.devices || []; renderChart(payload.wan.history || []); renderDevices(window.__trafficDevices); renderDeviceDetail(payload.device); renderHealth(legacy.sources || []); renderFlowSummary(legacy);
   };
   app.querySelector("[data-traffic-range]")?.addEventListener("change", () => loadOverview().catch((error) => setMessage(error.message, true)));
   app.querySelector("[data-traffic-source]")?.addEventListener("change", () => loadOverview().catch((error) => setMessage(error.message, true)));

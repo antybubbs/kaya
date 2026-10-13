@@ -31,6 +31,7 @@ from app.models.models import (
     TrafficFlowCollectorGlobalState,
     TrafficFlowCollectorState,
     TrafficFlowAggregate,
+    TrafficDeviceAggregate,
     TrafficFlowAccountingAggregate,
     TrafficFlowReconciliation,
     TrafficDeviceMonitoring,
@@ -151,6 +152,41 @@ RANGES = {
     "7d": timedelta(days=7), "30d": timedelta(days=30), "90d": timedelta(days=90),
     "1y": timedelta(days=365),
 }
+
+
+def _flow_health(source: TrafficSource, state: TrafficFlowCollectorState | None, global_state: TrafficFlowCollectorGlobalState | None, now: datetime) -> tuple[str, str]:
+    if not source.is_enabled or source.configuration_state == "disabled":
+        return "disabled", "Flow collection is disabled for this source."
+    if not global_state:
+        return "configured_awaiting_collector", "Source is configured; awaiting the collector."
+    if global_state.listener_state != "running":
+        return "collector_offline", "The flow collector is not running."
+    if not state:
+        return "collector_healthy_awaiting_traffic", "Collector is listening; awaiting exporter traffic."
+    if not state.last_datagram_at:
+        return "collector_healthy_awaiting_traffic", "Collector is listening; awaiting exporter traffic."
+    if state.packets_rejected or state.decode_failures or state.persistence_failures:
+        return "degraded", "Collector received traffic with parsing or processing errors."
+    if not state.last_valid_flow_at:
+        if state.unknown_templates or state.template_cache_size == 0:
+            return "receiving_awaiting_template", "Packets are arriving; awaiting a usable template."
+        return "receiving_awaiting_record", "Templates are cached; awaiting a decoded flow record."
+    if now - state.last_valid_flow_at > timedelta(minutes=15):
+        return "stale", "No decoded flow record has arrived recently."
+    return "receiving_decoding", "Receiving and decoding flow records."
+
+
+def _traffic_source_public(source: TrafficSource, *, flow_states: dict[int, TrafficFlowCollectorState] | None = None, global_state: TrafficFlowCollectorGlobalState | None = None, now: datetime | None = None) -> dict:
+    public = source_public_dict(source)
+    if source.provider_key in {"netflow_v9", "cisco_nsel"}:
+        flow_state = (flow_states or {}).get(source.id)
+        state, health_reason = _flow_health(source, flow_state, global_state, now or datetime.utcnow())
+        public["health_state"] = state
+        public["health_reason"] = health_reason
+        public["last_received_at"] = flow_state.last_datagram_at.isoformat() + "Z" if flow_state and flow_state.last_datagram_at else None
+        public["last_decoded_at"] = flow_state.last_valid_flow_at.isoformat() + "Z" if flow_state and flow_state.last_valid_flow_at else None
+        public["collector_status"] = state
+    return public
 
 
 def monitor_state(monitor: NetworkMonitor) -> str:
@@ -997,7 +1033,9 @@ def update_traffic_configuration(
 @router.get("/traffic/sources")
 def traffic_sources(db: Session = Depends(get_db), user=Depends(require_user)):
     rows = db.query(TrafficSource).filter(TrafficSource.is_deleted.is_(False)).order_by(TrafficSource.name.asc()).all()
-    return {"sources": [source_public_dict(row) for row in rows]}
+    flow_states = {state.source_id: state for state in db.query(TrafficFlowCollectorState).all()}
+    global_state = db.get(TrafficFlowCollectorGlobalState, 1)
+    return {"sources": [_traffic_source_public(row, flow_states=flow_states, global_state=global_state) for row in rows]}
 
 
 @router.get("/traffic/overview")
@@ -1005,6 +1043,8 @@ def traffic_overview(db: Session = Depends(get_db), user=Depends(require_user)):
     """Return bounded, aggregate-only dashboard data; never returns counters or credentials."""
     config = _traffic_config(db)
     sources = db.query(TrafficSource).filter(TrafficSource.is_deleted.is_(False)).order_by(TrafficSource.name.asc()).all()
+    flow_states = {state.source_id: state for state in db.query(TrafficFlowCollectorState).all()}
+    global_state = db.get(TrafficFlowCollectorGlobalState, 1)
     now = datetime.utcnow()
     today = datetime(now.year, now.month, now.day)
     interfaces = [item for source in sources for item in source.interfaces if item.is_enabled and item.is_wan]
@@ -1041,7 +1081,7 @@ def traffic_overview(db: Session = Depends(get_db), user=Depends(require_user)):
     last_observation = max((source.last_counter_observation_at for source in sources if source.last_counter_observation_at), default=None)
     return {
         "module_enabled": bool(config.is_enabled),
-        "sources": [source_public_dict(source) for source in sources],
+        "sources": [_traffic_source_public(source, flow_states=flow_states, global_state=global_state, now=now) for source in sources],
         "summary": {
             "download_bps": sum((source.last_rate_in_bps or 0) for source in sources if source.is_enabled),
             "upload_bps": sum((source.last_rate_out_bps or 0) for source in sources if source.is_enabled),
@@ -1052,6 +1092,10 @@ def traffic_overview(db: Session = Depends(get_db), user=Depends(require_user)):
             "last_observation_at": last_observation.isoformat() + "Z" if last_observation else None,
         },
         "flow_summary": {"bytes_today": flow_totals["bytes"], "packets_today": flow_totals["packets"], "last_observation_at": max((row.last_observed_at for row in flow_rows if row.last_observed_at), default=None).isoformat() + "Z" if any(row.last_observed_at for row in flow_rows) else None},
+        "device_summary": {
+            "opted_in_count": db.query(func.count(TrafficDeviceMonitoring.ip_address_id)).filter(TrafficDeviceMonitoring.is_enabled.is_(True)).scalar() or 0,
+            "attributable_bytes_today": sum(max(0, int(row.bytes_total or 0)) for row in db.query(TrafficDeviceAggregate).filter(TrafficDeviceAggregate.bucket_seconds == 300, TrafficDeviceAggregate.bucket_start >= today).all()),
+        },
         "flow_history": [{"at": at.isoformat() + "Z", **value} for at, value in flow_history.items()],
         "history": [
             {"at": at.isoformat() + "Z", "download_bytes": value["download"], "upload_bytes": value["upload"], "estimated": value["estimated"]}
