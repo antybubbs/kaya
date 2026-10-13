@@ -14,8 +14,11 @@
   --cc-attention-border:#3d3115;--cc-warn-bg:#1f180b;--cc-warn-border:#5a4318;--cc-info-bg:#0d1826;--cc-info-border:#1f3a5a;
   --cc-sans:"IBM Plex Sans",Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Arial,sans-serif;
   --cc-mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  background:var(--cc-bg);border-radius:14px;box-sizing:border-box;color:var(--cc-text);font-family:var(--cc-sans);font-size:14px;line-height:1.4;min-width:0;width:100%
+  box-sizing:border-box;color:var(--cc-text);font-family:var(--cc-sans);font-size:14px;line-height:1.4;min-width:0;width:100%
 }
+/* The page background spans the whole content area; .content supplies the 24px side gutters. */
+.content:has(> .cc-dashboard){background:#090b0f}
+html[data-kaya-theme=light-ops] .content:has(> .cc-dashboard),html[data-theme=light] .content:has(> .cc-dashboard){background:#f3f5f8}
 html[data-kaya-theme=light-ops] .cc-dashboard,html[data-theme=light] .cc-dashboard{
   --cc-bg:#f3f5f8;--cc-panel:#fff;--cc-border:#d8dee8;--cc-inset:#f6f8fb;
   --cc-text:#1f2937;--cc-strong:#111827;--cc-muted:#4b5563;--cc-faint:#8a94a3;--cc-faint-text:#5f6b7a;
@@ -48,7 +51,7 @@ html[data-kaya-theme=light-ops] .cc-dashboard,html[data-theme=light] .cc-dashboa
 .cc-dashboard :is(a,button,input,select):focus-visible{outline:2px solid var(--cc-amber);outline-offset:2px}
 
 /* Top bar */
-.cc-topbar{align-items:center;border-bottom:1px solid var(--cc-divider);display:flex;flex-wrap:wrap;gap:12px;justify-content:space-between;padding:14px 24px}
+.cc-topbar{align-items:center;border-bottom:1px solid var(--cc-divider);display:flex;flex-wrap:wrap;gap:12px;justify-content:space-between;padding:14px 0}
 .cc-identity{align-items:center;display:flex;flex-wrap:wrap;gap:14px;min-width:0}
 .cc-mark{align-items:center;background:var(--cc-amber);border-radius:9px;color:var(--cc-amber-ink);display:flex;flex:none;font-size:17px;font-weight:700;height:34px;justify-content:center;width:34px}
 .cc-dashboard .cc-title{color:var(--cc-text);font-size:16px;font-weight:600;letter-spacing:0;line-height:1.3}
@@ -60,13 +63,13 @@ html[data-kaya-theme=light-ops] .cc-dashboard,html[data-theme=light] .cc-dashboa
 .cc-live[data-live-state=delayed] i,.cc-live[data-live-state=stale] i{background:var(--cc-amber);box-shadow:0 0 0 4px var(--cc-warn-bg)}
 .cc-live[data-live-state=lost]{color:var(--cc-outage)}
 .cc-live[data-live-state=lost] i{background:var(--cc-outage);box-shadow:none}
-.cc-dashboard .module-tabs,.cc-dashboard .module-navigation{margin:12px 24px 0}
-.cc-dashboard .dashboard-save-state{color:var(--cc-muted);font-size:12px;margin:0 24px;min-height:0}
+.cc-dashboard .module-tabs,.cc-dashboard .module-navigation{margin:12px 0 0}
+.cc-dashboard .dashboard-save-state{color:var(--cc-muted);font-size:12px;margin:0;min-height:0}
 
 /* Layout */
-.cc-container{align-items:flex-start;display:flex;flex-wrap:wrap;gap:20px;margin:0 auto;max-width:1440px;padding:24px}
+.cc-container{align-items:flex-start;display:flex;flex-wrap:wrap;gap:20px;padding:24px 0;width:100%}
 .cc-main{align-content:flex-start;display:grid;flex:999 1 640px;gap:20px;grid-template-columns:repeat(12,minmax(0,1fr));min-width:0}
-.cc-rail{display:flex;flex:1 1 320px;flex-direction:column;gap:20px;min-width:0}
+.cc-rail{display:flex;flex:1 1 360px;flex-direction:column;gap:20px;min-width:0}
 .cc-main>.cc-w-full{grid-column:span 12}.cc-main>.cc-w-large{grid-column:span 8}.cc-main>.cc-w-medium{grid-column:span 6}.cc-main>.cc-w-small{grid-column:span 4}
 .cc-main:empty,.cc-rail:empty{min-height:0}
 .is-editing .cc-main:empty,.is-editing .cc-rail:empty{border:1px dashed var(--cc-control);border-radius:14px;min-height:120px}
@@ -214,13 +217,10 @@ html[data-kaya-theme=light-ops] .cc-gauge-row>span:first-child,html[data-theme=l
 .cc-metrics>*{border-top:1px solid var(--cc-divider);color:var(--cc-text);display:flex;font-size:12.5px;justify-content:space-between;padding-top:6px}
 .cc-metrics>*>span{color:var(--cc-muted)}
 
-.is-monitor-mode .cc-container{max-width:none}
 
 @media (max-width:720px){
-  .cc-topbar{padding:14px 16px}
-  .cc-container{padding:16px}
+  .cc-container{padding:16px 0}
   .cc-main>.cc-widget{grid-column:span 12}
-  .cc-dashboard .module-tabs,.cc-dashboard .module-navigation{margin:12px 16px 0}
   .cc-kpis{gap:20px}
   .cc-kpi-value{font-size:26px}
   .cc-panel{padding:16px}

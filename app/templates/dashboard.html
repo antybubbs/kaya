@@ -3,9 +3,9 @@
 {% block content %}
 {% macro edit_bar(definition, item) %}
 <div class="cc-edit-bar" data-edit-bar>
-  <button type="button" class="cc-drag-handle" data-drag-handle aria-label="Move {{ definition.name }}" title="Drag to move">&#x2630;</button>
+  <button type="button" class="cc-control cc-drag-handle" data-drag-handle aria-label="Move {{ definition.name }}" title="Drag to move">&#x2630;</button>
   <span class="cc-edit-name">{{ definition.name }}</span>
-  <span class="cc-edit-move"><button type="button" data-widget-move="up" aria-label="Move {{ definition.name }} up">&#8593;</button><button type="button" data-widget-move="down" aria-label="Move {{ definition.name }} down">&#8595;</button></span>
+  <span class="cc-edit-move"><button type="button" class="cc-control" data-widget-move="up" aria-label="Move {{ definition.name }} up">&#8593;</button><button type="button" class="cc-control" data-widget-move="down" aria-label="Move {{ definition.name }} down">&#8595;</button></span>
   <label class="cc-size">Size <select data-widget-size aria-label="Size for {{ definition.name }}">{% for size in ['small','medium','large','full'] %}<option value="{{ size }}" {% if size == item.width %}selected{% endif %}>{{ size|title }}</option>{% endfor %}</select></label>
 </div>
 {% endmacro %}
@@ -22,20 +22,20 @@
   {% if key == 'network_traffic' %}
   <div class="cc-panel-head">
     <div><h2 id="cc-heading-{{ key }}" class="cc-h2">Network traffic</h2><p class="cc-sub" data-source-age>Gateway throughput · <span data-traffic-range-label>last 24 hours</span></p></div>
-    <div class="cc-segmented" role="group" aria-label="Time range">{% for value in dashboard_config.traffic_ranges %}<button type="button" data-traffic-range="{{ value }}" aria-pressed="{{ 'true' if value == dashboard_config.default_traffic_range else 'false' }}">{{ value }}</button>{% endfor %}</div>
+    <div class="cc-segmented" role="group" aria-label="Time range">{% for value in dashboard_config.traffic_ranges %}<button type="button" class="cc-control" data-traffic-range="{{ value }}" aria-pressed="{{ 'true' if value == dashboard_config.default_traffic_range else 'false' }}">{{ value }}</button>{% endfor %}</div>
   </div>
   {% elif key == 'uptime' %}
   <div class="cc-panel-head">
     <div><h2 id="cc-heading-{{ key }}" class="cc-h2"><a href="{{ definition.target_url }}">Uptime</a></h2><p class="cc-sub" data-source-age>Uptime module · checks every <span data-uptime-interval>…</span> · last 30 days</p></div>
     <div class="cc-head-actions">
-      <button type="button" class="cc-btn cc-btn-icon" data-uptime-picker-toggle aria-expanded="false" aria-controls="cc-host-picker"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16"></path><path d="M7 12h10"></path><path d="M10 18h4"></path></svg>Choose hosts · <span data-uptime-shown>–</span> of <span data-uptime-total>–</span></button>
+      <button type="button" class="cc-control cc-btn cc-btn-icon" data-uptime-picker-toggle aria-expanded="false" aria-controls="cc-host-picker"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16"></path><path d="M7 12h10"></path><path d="M10 18h4"></path></svg>Choose hosts · <span data-uptime-shown>–</span> of <span data-uptime-total>–</span></button>
       <a class="cc-btn cc-btn-link" href="{{ definition.target_url }}">Open Uptime module<svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"></path><path d="M13 6l6 6-6 6"></path></svg></a>
     </div>
   </div>
   <div id="cc-host-picker" class="cc-picker" data-uptime-picker hidden>
     <div class="cc-picker-head">
       <span class="cc-picker-title" id="cc-picker-title">Show on dashboard</span>
-      <div class="cc-picker-actions"><button type="button" class="cc-text-btn" data-uptime-select="all">Select all</button><button type="button" class="cc-text-btn" data-uptime-select="none">Clear</button><button type="button" class="cc-solid-btn" data-uptime-picker-toggle>Done</button></div>
+      <div class="cc-picker-actions"><button type="button" class="cc-control cc-text-btn" data-uptime-select="all">Select all</button><button type="button" class="cc-control cc-text-btn" data-uptime-select="none">Clear</button><button type="button" class="cc-control cc-solid-btn" data-uptime-picker-toggle>Done</button></div>
     </div>
     <div class="cc-picker-grid" role="group" aria-labelledby="cc-picker-title" data-uptime-options><p class="cc-loading">Loading hosts…</p></div>
     <p class="cc-picker-note">Your choice is saved for you on this dashboard. Add or remove checks in the Uptime module.</p>
@@ -61,8 +61,8 @@
     </div>
     <div class="cc-actions">
       <span class="cc-live" data-live-state="live"><i aria-hidden="true"></i><span data-live-label>Live</span><span class="sr-only" data-live-announce role="status" aria-live="polite"></span></span>
-      {% if dashboard_config.customisation_enabled %}<button class="cc-btn" type="button" data-edit-dashboard aria-pressed="false">Edit dashboard</button><button class="cc-btn" type="button" data-manage-widgets>Manage widgets</button>{% endif %}
-      {% if dashboard_config.monitor_mode_enabled %}<button class="cc-btn cc-btn-accent" type="button" data-monitor-mode aria-pressed="false">Monitor mode</button>{% endif %}
+      {% if dashboard_config.customisation_enabled %}<button class="cc-control cc-btn" type="button" data-edit-dashboard aria-pressed="false">Edit dashboard</button><button class="cc-control cc-btn" type="button" data-manage-widgets>Manage widgets</button>{% endif %}
+      {% if dashboard_config.monitor_mode_enabled %}<button class="cc-control cc-btn cc-btn-accent" type="button" data-monitor-mode aria-pressed="false">Monitor mode</button>{% endif %}
     </div>
   </header>
   {{ module_navigation('Dashboard navigation', [
