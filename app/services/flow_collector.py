@@ -30,6 +30,7 @@ from app.models.models import (
     TrafficLocalNetwork,
 )
 from app.services.flow_protocol import FlowDecodeError, MAX_DATAGRAM_SIZE, NetFlowV9Decoder, NormalizedFlowRecord
+from app.services.network_discovery import DiscoveryRuntime, MAX_RECORD_BATCH
 from app.services.flow_accounting import classify_flow, resolve_flow_attribution
 from app.services.device_traffic import persist_device_traffic
 
@@ -328,7 +329,14 @@ def _claim_event(db, source_id: int, event_key: str, now: datetime) -> bool:
     return True
 
 
-def process_records(db, records: list[NormalizedFlowRecord], *, source_id: int | None = None, packet_count: int = 1) -> dict:
+def process_records(
+    db,
+    records: list[NormalizedFlowRecord],
+    *,
+    source_id: int | None = None,
+    packet_count: int = 1,
+    accepted_records: list[NormalizedFlowRecord] | None = None,
+) -> dict:
     """Persist one bounded packet batch idempotently and without raw payloads."""
     counters = {"accepted": 0, "duplicates": 0, "out_of_order": 0, "aggregates": 0}
     now = _now()
@@ -384,6 +392,8 @@ def process_records(db, records: list[NormalizedFlowRecord], *, source_id: int |
         state.packets_accepted += 1
         counters["accepted"] += 1
         counters["aggregates"] += 1
+        if accepted_records is not None and len(accepted_records) < MAX_RECORD_BATCH:
+            accepted_records.append(record)
     db.query(TrafficFlowDeduplication).filter(TrafficFlowDeduplication.expires_at < now).delete(synchronize_session=False)
     db.query(TrafficFlowCounterState).filter(TrafficFlowCounterState.expires_at < now).delete(synchronize_session=False)
     return counters
@@ -408,6 +418,7 @@ class FlowCollector:
         self._decode_condition = threading.Condition()
         self._next_packet_ordinal = 0
         self._next_decode_ordinal = 0
+        self.discovery = DiscoveryRuntime(SessionLocal)
 
     def _refresh_sources(self) -> None:
         if time.monotonic() - self._source_cache_at < STATE_REFRESH_SECONDS:
@@ -517,6 +528,7 @@ class FlowCollector:
                     continue
                 now = _now()
                 with self._write_lock, SessionLocal() as db:
+                    accepted_records = [] if self.discovery.enabled() else None
                     state = _state(db, source_id)
                     state.listener_state = "running"
                     state.last_datagram_at = now
@@ -545,9 +557,11 @@ class FlowCollector:
                         }
                         _append_template_lifecycle(state, [event], now)
                         _update_template_lifecycle_summary(state, [event], now)
-                    process_records(db, result.records, source_id=source_id)
+                    process_records(db, result.records, source_id=source_id, accepted_records=accepted_records)
                     state.queue_depth = self.queue.qsize()
                     db.commit()
+                if accepted_records:
+                    self.discovery.enqueue(source_id, accepted_records)
             except FlowDecodeError as exc:
                 with self._write_lock, SessionLocal() as db:
                     state = _state(db, source_id)
@@ -574,6 +588,7 @@ class FlowCollector:
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
         self.socket.settimeout(0.5)
         self.socket.bind((self.settings["bind_address"], self.settings["port"]))
+        self.discovery.start()
         self._refresh_sources()
         self.receiver = threading.Thread(target=self._receive_loop, name="flow-receiver", daemon=True)
         self.receiver.start()
@@ -621,6 +636,8 @@ class FlowCollector:
             self._set_listener_state("stopped")
         except Exception:
             logger.exception("flow_collector.stop_state_failed")
+        finally:
+            self.discovery.stop()
 
 
 def main() -> None:

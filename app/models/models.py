@@ -458,6 +458,77 @@ class TrafficLocalNetwork(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class TrafficDiscoveryConfiguration(Base):
+    """Independent, disabled-by-default configuration for flow IP discovery."""
+
+    __tablename__ = "traffic_discovery_configurations"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    detailed_retention_hours: Mapped[int] = mapped_column(Integer, default=72)
+    summary_retention_days: Mapped[int] = mapped_column(Integer, default=30)
+    max_detail_rows: Mapped[int] = mapped_column(Integer, default=100000)
+    max_summary_rows: Mapped[int] = mapped_column(Integer, default=100000)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class TrafficDiscoveryObservation(Base):
+    """Bounded endpoint observations; never stores raw flows or counters."""
+
+    __tablename__ = "traffic_discovery_observations"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_id", "exporter_identity", "endpoint_ip", "endpoint_role", "bucket_start",
+            name="uq_traffic_discovery_observation_bucket",
+        ),
+        Index("ix_traffic_discovery_observations_source_time", "source_id", "bucket_start"),
+        Index("ix_traffic_discovery_observations_endpoint_time", "endpoint_ip", "bucket_start"),
+        Index("ix_traffic_discovery_observations_last_seen", "last_seen_at"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_id: Mapped[int] = mapped_column(ForeignKey("traffic_sources.id", ondelete="CASCADE"), index=True)
+    exporter_identity: Mapped[str] = mapped_column(String(45))
+    endpoint_ip: Mapped[str] = mapped_column(String(45), index=True)
+    address_family: Mapped[int] = mapped_column(Integer)
+    endpoint_role: Mapped[str] = mapped_column(String(32))
+    bucket_start: Mapped[datetime] = mapped_column(DateTime, index=True)
+    bucket_seconds: Mapped[int] = mapped_column(Integer, default=300)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime)
+    observation_count: Mapped[int] = mapped_column(Integer, default=0)
+    classification: Mapped[str] = mapped_column(String(20), default="internal")
+    confidence: Mapped[str] = mapped_column(String(20), default="unknown")
+    ambiguity_reason: Mapped[str | None] = mapped_column(String(120), nullable=True)
+
+
+class TrafficDiscoverySummary(Base):
+    """Compact hourly discovery history retained independently from traffic usage."""
+
+    __tablename__ = "traffic_discovery_summaries"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_id", "exporter_identity", "endpoint_ip", "endpoint_role", "bucket_start",
+            name="uq_traffic_discovery_summary_bucket",
+        ),
+        Index("ix_traffic_discovery_summaries_source_time", "source_id", "bucket_start"),
+        Index("ix_traffic_discovery_summaries_endpoint_time", "endpoint_ip", "bucket_start"),
+        Index("ix_traffic_discovery_summaries_last_seen", "last_seen_at"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_id: Mapped[int] = mapped_column(ForeignKey("traffic_sources.id", ondelete="CASCADE"), index=True)
+    exporter_identity: Mapped[str] = mapped_column(String(45))
+    endpoint_ip: Mapped[str] = mapped_column(String(45), index=True)
+    address_family: Mapped[int] = mapped_column(Integer)
+    endpoint_role: Mapped[str] = mapped_column(String(32))
+    bucket_start: Mapped[datetime] = mapped_column(DateTime, index=True)
+    bucket_seconds: Mapped[int] = mapped_column(Integer, default=3600)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime)
+    observation_count: Mapped[int] = mapped_column(Integer, default=0)
+    classification: Mapped[str] = mapped_column(String(20), default="internal")
+    confidence: Mapped[str] = mapped_column(String(20), default="unknown")
+    ambiguity_reason: Mapped[str | None] = mapped_column(String(120), nullable=True)
+
+
 class TrafficCounterObservation(Base):
     """Bounded future interface-counter observations; never stores packet payloads or flows."""
 
