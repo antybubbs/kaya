@@ -12,8 +12,9 @@ from app.models.models import (
     TrafficDiscoveryConfiguration,
     TrafficDiscoveryObservation,
     TrafficDiscoverySummary,
-    TrafficLocalNetwork,
+    TrafficDiscoveryNetworkMapping,
     TrafficSource,
+    VLAN,
 )
 from app.services.flow_protocol import NormalizedFlowRecord
 from app.services.network_discovery import persist_discovery_batch
@@ -72,7 +73,8 @@ def source(provider_key="netflow_v9", source_id=1):
 def enabled_setup(session, *, provider_key="netflow_v9", max_detail_rows=100000, max_summary_rows=100000):
     session.add_all([
         TrafficDiscoveryConfiguration(id=1, is_enabled=True, max_detail_rows=max_detail_rows, max_summary_rows=max_summary_rows),
-        TrafficLocalNetwork(id=1, name="LAN", network_cidr="10.0.0.0/24", is_enabled=True),
+        VLAN(id=1, name="LAN", subnet_cidr="10.0.0.0/24"),
+        TrafficDiscoveryNetworkMapping(id=1, source_id=1, exporter_identity="192.0.2.1", vlan_id=1, is_enabled=True),
         source(provider_key),
     ])
     session.commit()
@@ -110,9 +112,12 @@ def test_ipv6_and_overlapping_networks_are_classified_conservatively():
     session = db()
     session.add_all([
         TrafficDiscoveryConfiguration(id=1, is_enabled=True),
-        TrafficLocalNetwork(id=1, name="LAN A", network_cidr="10.0.0.0/8", is_enabled=True),
-        TrafficLocalNetwork(id=2, name="LAN B", network_cidr="10.1.0.0/16", is_enabled=True),
-        TrafficLocalNetwork(id=3, name="IPv6", network_cidr="2001:db8:1234::/48", is_enabled=True),
+        VLAN(id=1, name="LAN A", subnet_cidr="10.0.0.0/8"),
+        VLAN(id=2, name="LAN B", subnet_cidr="10.1.0.0/16"),
+        VLAN(id=3, name="IPv6", subnet_cidr="2001:db8:1234::/48"),
+        TrafficDiscoveryNetworkMapping(id=1, source_id=1, exporter_identity="192.0.2.1", vlan_id=1, is_enabled=True),
+        TrafficDiscoveryNetworkMapping(id=2, source_id=1, exporter_identity="192.0.2.1", vlan_id=2, is_enabled=True),
+        TrafficDiscoveryNetworkMapping(id=3, source_id=1, exporter_identity="192.0.2.1", vlan_id=3, is_enabled=True),
         source(),
     ])
     session.commit()
@@ -131,7 +136,9 @@ def test_sources_and_exporters_are_isolated_and_snmp_is_excluded():
     session = db()
     session.add_all([
         TrafficDiscoveryConfiguration(id=1, is_enabled=True),
-        TrafficLocalNetwork(id=1, name="LAN", network_cidr="10.0.0.0/24", is_enabled=True),
+        VLAN(id=1, name="LAN", subnet_cidr="10.0.0.0/24"),
+        TrafficDiscoveryNetworkMapping(id=1, source_id=1, exporter_identity="192.0.2.1", vlan_id=1, is_enabled=True),
+        TrafficDiscoveryNetworkMapping(id=2, source_id=1, exporter_identity="192.0.2.2", vlan_id=1, is_enabled=True),
         source(source_id=1),
         source(provider_key="snmpv3", source_id=2),
     ])

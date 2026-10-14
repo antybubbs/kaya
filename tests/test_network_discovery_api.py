@@ -1,4 +1,5 @@
 from datetime import datetime
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -12,13 +13,21 @@ from app.models.models import (
     TrafficDiscoveryConfiguration,
     TrafficDiscoveryObservation,
     TrafficDiscoveryLink,
-    TrafficLocalNetwork,
+    TrafficDiscoveryNetworkMapping,
     TrafficSource,
     VLAN,
 )
 from app.services.network_discovery_matching import match_endpoint
 from app.services.audit import write_audit
-from app.routers.network_discovery import DiscoveryDecision, _decision
+from app.routers.network_discovery import (
+    DiscoveryDecision,
+    DiscoveryNetworkMappingPayload,
+    _decision,
+    create_network_mapping,
+    delete_network_mapping,
+    update_network_mapping,
+    _row_payload,
+)
 
 
 def db():
@@ -31,8 +40,8 @@ def setup(session):
     session.add_all([
         TrafficDiscoveryConfiguration(id=1, is_enabled=True),
         TrafficSource(id=1, name="Flow", provider_key="netflow_v9", source_category="flow_export", is_enabled=True),
-        TrafficLocalNetwork(id=1, name="LAN", network_cidr="10.0.0.0/24", is_enabled=True),
         VLAN(id=1, name="LAN", subnet_cidr="10.0.0.0/24"),
+        TrafficDiscoveryNetworkMapping(id=1, source_id=1, exporter_identity="192.0.2.1", vlan_id=1, is_enabled=True),
         IPAddress(id=1, vlan_id=1, address="10.0.0.20", name="Managed host"),
         TrafficDiscoveryObservation(
             source_id=1, exporter_identity="192.0.2.1", endpoint_ip="10.0.0.20", address_family=4,
@@ -48,7 +57,7 @@ def test_exact_matching_is_read_only_and_does_not_enable_device_monitoring():
     session = db()
     setup(session)
 
-    result = match_endpoint(session, 1, "10.0.0.20", classification="internal")
+    result = match_endpoint(session, 1, "192.0.2.1", "10.0.0.20", classification="internal")
 
     assert result.status == "unlinked"
     assert result.confidence == "high"
@@ -58,27 +67,33 @@ def test_exact_matching_is_read_only_and_does_not_enable_device_monitoring():
 
 def test_ipv6_and_dhcp_reuse_are_conservative():
     session = db()
-    session.add(TrafficLocalNetwork(id=2, name="IPv6", network_cidr="2001:db8:1::/64", is_enabled=True))
+    setup(session)
+    session.add(VLAN(id=2, name="IPv6", subnet_cidr="2001:db8:1::/64"))
+    session.add(TrafficDiscoveryNetworkMapping(id=2, source_id=1, exporter_identity="192.0.2.1", vlan_id=2, is_enabled=True))
     session.commit()
 
-    result = match_endpoint(session, 1, "2001:db8:1::20", classification="internal")
-    reused = match_endpoint(session, 1, "10.0.0.21", classification="internal")
+    result = match_endpoint(session, 1, "192.0.2.1", "2001:db8:1::20", classification="internal")
+    reused = match_endpoint(session, 1, "192.0.2.1", "10.0.0.21", classification="internal")
 
     assert result.status == "unlinked"
     assert result.reason == "no_exact_managed_record"
-    assert reused.status == "unmatched"
+    assert reused.status == "unlinked"
+    assert reused.reason == "no_exact_managed_record"
     assert reused.managed_ip_address_id is None
 
 
 def test_overlapping_network_context_is_ambiguous():
     session = db()
+    setup(session)
     session.add_all([
-        TrafficLocalNetwork(id=2, name="LAN wide", network_cidr="10.0.0.0/8", is_enabled=True),
-        TrafficLocalNetwork(id=3, name="Overlap", network_cidr="10.0.0.0/25", is_enabled=True),
+        VLAN(id=2, name="LAN wide", subnet_cidr="10.0.0.0/8"),
+        VLAN(id=3, name="Overlap", subnet_cidr="10.0.0.0/25"),
+        TrafficDiscoveryNetworkMapping(id=2, source_id=1, exporter_identity="192.0.2.1", vlan_id=2, is_enabled=True),
+        TrafficDiscoveryNetworkMapping(id=3, source_id=1, exporter_identity="192.0.2.1", vlan_id=3, is_enabled=True),
     ])
     session.commit()
 
-    result = match_endpoint(session, 1, "10.0.0.20", classification="internal")
+    result = match_endpoint(session, 1, "192.0.2.1", "10.0.0.20", classification="internal")
 
     assert result.status == "ambiguous"
     assert result.reason == "overlapping_local_networks"
@@ -99,6 +114,78 @@ def test_discovery_link_identity_includes_endpoint_role():
     ])
     session.commit()
     assert session.query(TrafficDiscoveryLink).count() == 2
+
+
+def _observation_row():
+    return SimpleNamespace(
+        source_id=1,
+        exporter_identity="192.0.2.1",
+        endpoint_ip="10.0.0.20",
+        endpoint_role="original_source",
+        first_seen_at=datetime(2026, 1, 1),
+        last_seen_at=datetime(2026, 1, 1),
+        observation_count=1,
+    )
+
+
+def _stored_link(session):
+    link = TrafficDiscoveryLink(
+        source_id=1, exporter_identity="192.0.2.1", endpoint_ip="10.0.0.20",
+        endpoint_role="original_source", managed_ip_address_id=1, state="linked",
+        mapping_vlan_id=1, mapping_network_cidr="10.0.0.0/24",
+    )
+    session.add(link)
+    session.commit()
+    return link
+
+
+def test_historical_link_is_valid_only_for_unchanged_mapping_context():
+    session = db()
+    setup(session)
+    _stored_link(session)
+
+    assert _row_payload(session, _observation_row())["status"] == "linked"
+    assert _row_payload(session, _observation_row())["link_validity"] == "valid"
+
+    session.query(TrafficDiscoveryNetworkMapping).one().is_enabled = False
+    session.commit()
+    disabled = _row_payload(session, _observation_row())
+    assert disabled["status"] == "stale"
+    assert disabled["link_validity"] == "stale"
+    assert disabled["historical_managed_ip_address_id"] == 1
+
+
+def test_subnet_change_is_stale_even_when_endpoint_is_in_new_network():
+    session = db()
+    setup(session)
+    _stored_link(session)
+    session.query(VLAN).one().subnet_cidr = "10.0.0.0/25"
+    session.commit()
+
+    result = _row_payload(session, _observation_row())
+    assert result["status"] == "stale"
+    assert result["status_reason"] == "mapping_network_changed"
+
+
+def test_missing_target_and_overlapping_context_are_not_valid_links():
+    session = db()
+    setup(session)
+    _stored_link(session)
+    session.delete(session.get(IPAddress, 1))
+    session.commit()
+    missing = _row_payload(session, _observation_row())
+    assert missing["status"] == "unresolved"
+    assert missing["status_reason"] == "managed_ip_record_missing"
+
+    session = db()
+    setup(session)
+    _stored_link(session)
+    session.add(VLAN(id=2, name="Overlap", subnet_cidr="10.0.0.0/25"))
+    session.add(TrafficDiscoveryNetworkMapping(id=2, source_id=1, exporter_identity="192.0.2.1", vlan_id=2, is_enabled=True))
+    session.commit()
+    ambiguous = _row_payload(session, _observation_row())
+    assert ambiguous["status"] == "ambiguous"
+    assert ambiguous["status_reason"] == "overlapping_local_networks"
 
 
 def test_audit_can_share_the_decision_transaction():
@@ -133,3 +220,27 @@ def test_translated_endpoint_cannot_be_linked_and_identity_is_bounded():
             DiscoveryDecision(confirmation=True, managed_ip_address_id=1), action="link",
         )
     assert oversized.value.status_code == 400
+
+
+def test_exporter_vlan_mapping_crud_is_admin_audited_and_does_not_touch_local_networks(monkeypatch):
+    session = db()
+    session.add_all([
+        TrafficSource(id=2, name="Second flow", provider_key="cisco_nsel", source_category="flow_export", is_enabled=True),
+        VLAN(id=2, name="Second LAN", subnet_cidr="10.2.0.0/16"),
+    ])
+    session.commit()
+    monkeypatch.setattr("app.routers.network_discovery.validate_csrf_token", lambda *_args: None)
+    monkeypatch.setattr("app.routers.network_discovery.write_audit", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr("app.routers.network_discovery.trusted_client_ip", lambda _request: "192.0.2.10")
+    request = type("Request", (), {"headers": {"x-csrf-token": "synthetic"}, "client": type("Client", (), {"host": "192.0.2.10"})()})()
+    user = type("User", (), {"id": 7})()
+    payload = DiscoveryNetworkMappingPayload(source_id=2, exporter_identity="192.0.2.9", vlan_id=2)
+    created = create_network_mapping(request, payload, session, user)
+    assert created["vlan_id"] == 2
+    updated = update_network_mapping(request, created["id"], payload.model_copy(update={"is_enabled": False}), session, user)
+    assert updated["is_enabled"] is False
+    with pytest.raises(HTTPException) as duplicate:
+        create_network_mapping(request, payload, session, user)
+    assert duplicate.value.status_code == 409
+    delete_network_mapping(request, created["id"], DiscoveryDecision(confirmation=True), session, user)
+    assert session.query(TrafficDiscoveryNetworkMapping).count() == 0

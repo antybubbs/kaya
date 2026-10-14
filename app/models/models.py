@@ -471,6 +471,25 @@ class TrafficDiscoveryConfiguration(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class TrafficDiscoveryNetworkMapping(Base):
+    """Explicit exporter-to-VLAN trust scope for discovery only."""
+
+    __tablename__ = "traffic_discovery_network_mappings"
+    __table_args__ = (
+        UniqueConstraint("source_id", "exporter_identity", "vlan_id", name="uq_traffic_discovery_mapping_identity"),
+        Index("ix_traffic_discovery_mappings_source_exporter", "source_id", "exporter_identity", "is_enabled"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_id: Mapped[int] = mapped_column(ForeignKey("traffic_sources.id", ondelete="CASCADE"), index=True)
+    exporter_identity: Mapped[str] = mapped_column(String(45), index=True)
+    vlan_id: Mapped[int] = mapped_column(ForeignKey("vlans.id", ondelete="RESTRICT"), index=True)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    updated_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class TrafficDiscoveryObservation(Base):
     """Bounded endpoint observations; never stores raw flows or counters."""
 
@@ -547,6 +566,8 @@ class TrafficDiscoveryLink(Base):
     managed_ip_address_id: Mapped[int | None] = mapped_column(ForeignKey("ip_addresses.id", ondelete="SET NULL"), nullable=True)
     state: Mapped[str] = mapped_column(String(20), default="linked", index=True)
     reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    mapping_vlan_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    mapping_network_cidr: Mapped[str | None] = mapped_column(String(80), nullable=True)
     created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     updated_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

@@ -66,7 +66,13 @@ def _verify_connected_target(engine, database_url: str) -> None:
                 text("SELECT current_database(), inet_server_addr()::text")
             ).one()
             server_address = (row[1] or "").split("/", 1)[0]
-            if row[0] != url.database or server_address not in {"", "127.0.0.1", "::1"}:
+            allowed_addresses = {"", "127.0.0.1", "::1"}
+            if os.environ.get("KAYA_TEST_POSTGRES_CONTAINER") == "1":
+                expected_container_address = os.environ.get("KAYA_TEST_POSTGRES_SERVER_ADDR")
+                if not expected_container_address:
+                    raise RuntimeError("Container PostgreSQL validation requires an expected server address.")
+                allowed_addresses.add(expected_container_address)
+            if row[0] != url.database or server_address not in allowed_addresses:
                 raise RuntimeError("Connected PostgreSQL database does not match the requested target.")
 
 

@@ -7,6 +7,7 @@ version and real-world recovery evidence are documented.
 
 import logging
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 from sqlalchemy import MetaData
@@ -322,8 +323,8 @@ def create_missing_baseline_objects(
     instead of a clean retry.
     """
     with (
-        sqlite3.connect(baseline_path) as baseline,
-        sqlite3.connect(database_path, autocommit=False) as target,
+        closing(sqlite3.connect(baseline_path)) as baseline,
+        closing(sqlite3.connect(database_path, autocommit=False)) as target,
     ):
         try:
             target_tables = {

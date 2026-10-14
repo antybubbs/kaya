@@ -17,10 +17,10 @@ from app.models.models import (
     TrafficDiscoveryConfiguration,
     TrafficDiscoveryObservation,
     TrafficDiscoverySummary,
-    TrafficLocalNetwork,
     TrafficSource,
 )
 from app.services.flow_protocol import NormalizedFlowRecord
+from app.services.network_discovery_mapping import mapped_networks
 
 
 logger = logging.getLogger("kaya.network_discovery")
@@ -204,16 +204,6 @@ def _bucket(value: datetime, seconds: int) -> datetime:
     return datetime.utcfromtimestamp(epoch - epoch % seconds)
 
 
-def _networks(db: Session) -> list[ipaddress._BaseNetwork]:
-    result: list[ipaddress._BaseNetwork] = []
-    for row in db.query(TrafficLocalNetwork).filter(TrafficLocalNetwork.is_enabled.is_(True)).limit(256):
-        try:
-            result.append(ipaddress.ip_network(row.network_cidr, strict=False))
-        except ValueError:
-            continue
-    return result
-
-
 def _classify(address: str, networks: list[ipaddress._BaseNetwork], *, translated: bool) -> tuple[int, str, str, str | None] | None:
     try:
         parsed = ipaddress.ip_address(address)
@@ -341,10 +331,14 @@ def persist_discovery_batch(db: Session, source_id: int, records: list[Normalize
         return 0
     if not all(provider_supports_discovery(source.provider_key, record) for record in records[:MAX_RECORD_BATCH]):
         return 0
-    networks = _networks(db)
-    if not networks:
-        return 0
-    observations = observations_for_records(records, networks)
+    observations = []
+    records_by_exporter: dict[str, list[NormalizedFlowRecord]] = {}
+    for record in records[:MAX_RECORD_BATCH]:
+        records_by_exporter.setdefault(record.exporter_identity, []).append(record)
+    for exporter_identity, exporter_records in records_by_exporter.items():
+        networks = mapped_networks(db, source_id, exporter_identity)
+        if networks:
+            observations.extend(observations_for_records(exporter_records, networks))
     if not observations:
         return 0
     detail_values = _merge_observations(observations, DETAIL_BUCKET_SECONDS)

@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.models.models import IPAddress, TrafficDiscoveryLink, TrafficDiscoveryObservation, TrafficLocalNetwork
+from app.models.models import IPAddress, TrafficDiscoveryLink, TrafficDiscoveryObservation
+from app.services.network_discovery_mapping import mapped_networks
 
 
 @dataclass(frozen=True)
@@ -25,16 +26,6 @@ def _parse(value: str | None):
         return None
 
 
-def _local_networks(db: Session) -> list[ipaddress._BaseNetwork]:
-    networks = []
-    for row in db.query(TrafficLocalNetwork).filter(TrafficLocalNetwork.is_enabled.is_(True)).limit(256):
-        try:
-            networks.append(ipaddress.ip_network(row.network_cidr, strict=False))
-        except ValueError:
-            continue
-    return networks
-
-
 def _managed_candidates(db: Session, endpoint: ipaddress._BaseAddress) -> list[IPAddress]:
     candidates = []
     for row in db.query(IPAddress).filter(IPAddress.address == str(endpoint)).limit(64):
@@ -49,12 +40,12 @@ def _managed_candidates(db: Session, endpoint: ipaddress._BaseAddress) -> list[I
     return candidates
 
 
-def match_endpoint(db: Session, source_id: int, endpoint_ip: str, *, classification: str | None = None) -> DiscoveryMatch:
+def match_endpoint(db: Session, source_id: int, exporter_identity: str, endpoint_ip: str, *, classification: str | None = None) -> DiscoveryMatch:
     """Return a non-mutating match; exact address and network context are required."""
     endpoint = _parse(endpoint_ip)
     if endpoint is None:
         return DiscoveryMatch("unmatched", "unknown", reason="invalid_endpoint")
-    networks = [network for network in _local_networks(db) if endpoint.version == network.version and endpoint in network]
+    networks = [network for network in mapped_networks(db, source_id, exporter_identity) if endpoint.version == network.version and endpoint in network]
     if classification == "ambiguous" or len(networks) > 1:
         return DiscoveryMatch("ambiguous", "unknown", reason="overlapping_local_networks")
     if not networks:
