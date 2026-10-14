@@ -6,12 +6,14 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.db.session import Base
-from app.models.models import AssetIdentityEvidence, AssetNetworkAssignment, HardwareAsset, User
+from app.models.models import AssetIdentityEvidence, AssetNetworkAssignment, HardwareAsset, User, VLAN
 from app.services.asset_identity import (
     _assignment_lock_key,
     asset_identity_summary,
     assign_network_identity,
     close_network_assignment,
+    confirm_existing_identity_evidence,
+    confirm_existing_network_assignment,
     confirm_identity_evidence,
     revoke_identity_evidence,
 )
@@ -42,6 +44,20 @@ def test_identity_confirmation_and_revocation_preserve_history():
     assert len(asset_identity_summary(db, 1)["identities"]) == 1
 
 
+def test_existing_identity_suggestion_can_be_confirmed_without_replacing_history():
+    db, admin, *_ = setup()
+    row = AssetIdentityEvidence(
+        asset_id=1, evidence_type="mac", normalised_value="00:11:22:33:44:55",
+        source="dhcp", status="pending",
+    )
+    db.add(row)
+    db.commit()
+    confirmed = confirm_existing_identity_evidence(db, admin, row.id)
+    assert confirmed.id == row.id
+    assert confirmed.status == "confirmed"
+    assert db.query(AssetIdentityEvidence).count() == 1
+
+
 def test_same_hostname_and_mac_evidence_can_be_scoped_without_merging_assets():
     db, admin, *_ = setup()
     first = confirm_identity_evidence(db, admin, asset_id=1, evidence_type="hostname", value="shared", source="dns", source_scope="provider-a")
@@ -61,6 +77,22 @@ def test_assignments_are_time_bounded_and_conflicts_are_rejected():
         assign_network_identity(db, admin, asset_id=2, address="192.0.2.10", started_at=start + timedelta(hours=1), provenance="dhcp")
     close_network_assignment(db, admin, row.id, start + timedelta(hours=12))
     assert db.get(AssetNetworkAssignment, row.id).ended_at == start + timedelta(hours=12)
+
+
+def test_pending_network_assignment_can_be_approved_with_current_vlan_context():
+    db, admin, *_ = setup()
+    vlan = VLAN(id=9, name="Synthetic VLAN", subnet_cidr="192.0.2.0/24")
+    db.add(vlan)
+    db.flush()
+    row = AssetNetworkAssignment(
+        asset_id=1, address="192.0.2.10", address_family=4, vlan_id=9,
+        started_at=datetime(2026, 1, 1), provenance="dhcp", status="pending",
+    )
+    db.add(row)
+    db.commit()
+    confirmed = confirm_existing_network_assignment(db, admin, row.id)
+    assert confirmed.status == "confirmed"
+    assert confirmed.network_cidr == "192.0.2.0/24"
 
 
 def test_ipv4_and_ipv6_assignments_and_multiple_active_addresses():

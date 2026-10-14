@@ -158,6 +158,25 @@ def revoke_identity_evidence(db: Session, user: User, evidence_id: int, *, revok
     return row
 
 
+def confirm_existing_identity_evidence(db: Session, user: User, evidence_id: int, *, confirmed_at: datetime | None = None) -> AssetIdentityEvidence:
+    """Confirm an existing suggestion after reloading it inside the mutation transaction."""
+    if not user or user.role != "admin":
+        raise PermissionError("Administrator access is required.")
+    row = db.get(AssetIdentityEvidence, evidence_id)
+    if not row or row.asset_id is None:
+        raise ValueError("Identity evidence not found.")
+    return confirm_identity_evidence(
+        db,
+        user,
+        asset_id=row.asset_id,
+        evidence_type=row.evidence_type,
+        value=row.normalised_value,
+        source=row.source,
+        source_scope=row.source_scope,
+        observed_at=confirmed_at or row.last_observed_at or datetime.utcnow(),
+    )
+
+
 def assign_network_identity(
     db: Session,
     user: User,
@@ -241,6 +260,31 @@ def close_network_assignment(db: Session, user: User, assignment_id: int, ended_
     row.ended_at = ended_at
     db.flush()
     _audit_commit(db, user, "close", "asset_network_assignment", row.id, "Closed asset network assignment")
+    return row
+
+
+def confirm_existing_network_assignment(db: Session, user: User, assignment_id: int, *, confirmed_at: datetime | None = None) -> AssetNetworkAssignment:
+    """Approve a pending assignment without creating or relinking any records."""
+    if not user or user.role != "admin":
+        raise PermissionError("Administrator access is required.")
+    row = db.get(AssetNetworkAssignment, assignment_id)
+    if not row or row.asset_id is None:
+        raise ValueError("Network assignment not found.")
+    if row.status == "confirmed":
+        return row
+    if row.status in {"revoked", "conflict", "unresolved"}:
+        raise ValueError("This network assignment is not eligible for confirmation.")
+    if row.vlan_id is not None:
+        vlan = db.get(VLAN, row.vlan_id)
+        if not vlan or not vlan.subnet_cidr:
+            raise ValueError("The VLAN network context is no longer valid.")
+        row.network_cidr = vlan.subnet_cidr.strip()
+    row.status = "confirmed"
+    row.confirmed_by = user.id
+    row.confirmed_at = confirmed_at or datetime.utcnow()
+    row.conflict_reason = None
+    db.flush()
+    _audit_commit(db, user, "confirm", "asset_network_assignment", row.id, "Confirmed existing asset network assignment")
     return row
 
 

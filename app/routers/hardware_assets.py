@@ -26,16 +26,28 @@ from app.core.csrf import csrf_context, validate_csrf_token
 from app.core.templating import templates
 from app.db.session import get_db
 from app.models.models import (
+    AssetIdentityEvidence,
+    AssetNetworkAssignment,
     CustomFieldValue,
+    DHCPLeaseHistory,
     DNSRecognisedDevice,
     HardwareAsset,
     HardwareAssetAttachment,
     HardwareAssetPhoto,
+    IPAddress,
     RackItem,
+    TrafficDiscoveryLink,
 )
-from app.routers.auth import require_editor, require_module_access, require_user
+from app.routers.auth import require_admin, require_editor, require_module_access, require_user
 from app.services.audit import write_audit
 from app.services.asset_tags import allocate_asset_tag, asset_tag_settings, next_asset_tag_preview
+from app.services.asset_identity import (
+    close_network_assignment,
+    confirm_existing_identity_evidence,
+    confirm_existing_network_assignment,
+    revoke_identity_evidence,
+)
+from app.services.asset_identity_resolution import evidence_for_asset
 from app.services.custom_fields import (
     active_fields,
     field_values,
@@ -45,6 +57,7 @@ from app.services.custom_fields import (
 )
 from app.services.client_ip import client_ip as trusted_client_ip
 from app.services.managed_lists import list_values
+from app.services.modules import has_module_access
 from app.services.table_export import (
     export_row_matches,
     table_export_response,
@@ -222,6 +235,75 @@ def clean_managed_value(value: str, allowed: list[str], current: str | None = No
     return None
 
 
+def asset_profile_context(db: Session, user, asset: HardwareAsset) -> dict:
+    """Build a permission-aware, bounded profile without calling providers."""
+    can_dns = has_module_access(db, user, "dns_manager")
+    can_network = has_module_access(db, user, "network_monitor")
+    can_vlan = has_module_access(db, user, "vlan_ip_manager")
+    identity_rows = db.query(AssetIdentityEvidence).filter(
+        AssetIdentityEvidence.asset_id == asset.id,
+    ).order_by(AssetIdentityEvidence.id.desc()).limit(100).all()
+    assignment_rows = db.query(AssetNetworkAssignment).filter(
+        AssetNetworkAssignment.asset_id == asset.id,
+    ).order_by(AssetNetworkAssignment.started_at.desc()).limit(100).all()
+    validity = evidence_for_asset(db, asset.id, limit=100)
+    valid_assignment_keys = {
+        (item.normalised_reference, item.vlan_id, item.exporter_identity)
+        for item in validity["current"]
+        if item.evidence_type == "network_assignment"
+    }
+    for row in assignment_rows:
+        row.profile_validity = "valid" if (
+            row.address,
+            row.vlan_id,
+            row.exporter_identity,
+        ) in valid_assignment_keys else "stale"
+
+    dns_clients = []
+    dhcp_leases = []
+    managed_ips = []
+    discovery_links = []
+    if can_dns:
+        dns_clients = db.query(DNSRecognisedDevice).filter(
+            DNSRecognisedDevice.hardware_asset_id == asset.id,
+        ).order_by(DNSRecognisedDevice.last_seen_at.desc()).limit(100).all()
+        client_ids = [row.id for row in dns_clients]
+        lease_query = db.query(DHCPLeaseHistory).filter(
+            DHCPLeaseHistory.dns_client_id.in_(client_ids),
+        ) if client_ids else None
+        if lease_query is not None:
+            dhcp_leases = lease_query.order_by(DHCPLeaseHistory.last_seen_at.desc()).limit(100).all()
+    if can_vlan:
+        ip_ids = {row.ip_address_id for row in assignment_rows if row.ip_address_id is not None}
+        ip_ids.update(row.linked_ip_record_id for row in dns_clients if row.linked_ip_record_id is not None)
+        if ip_ids:
+            managed_ips = db.query(IPAddress).filter(IPAddress.id.in_(ip_ids)).order_by(IPAddress.address).limit(100).all()
+    if can_network and managed_ips:
+        managed_ip_ids = [row.id for row in managed_ips]
+        discovery_links = db.query(TrafficDiscoveryLink).filter(
+            TrafficDiscoveryLink.managed_ip_address_id.in_(managed_ip_ids),
+        ).order_by(TrafficDiscoveryLink.updated_at.desc()).limit(100).all()
+    if can_dns:
+        lease_ids = {row.dhcp_lease_id for row in assignment_rows if row.dhcp_lease_id is not None}
+        if lease_ids:
+            existing_ids = {row.id for row in dhcp_leases}
+            extra_leases = db.query(DHCPLeaseHistory).filter(
+                DHCPLeaseHistory.id.in_(lease_ids - existing_ids),
+            ).order_by(DHCPLeaseHistory.last_seen_at.desc()).limit(100).all()
+            dhcp_leases.extend(extra_leases)
+    return {
+        "identity_rows": identity_rows,
+        "assignment_rows": assignment_rows,
+        "dns_clients": dns_clients if can_dns else None,
+        "dhcp_leases": dhcp_leases if can_dns else None,
+        "managed_ips": managed_ips if can_vlan else None,
+        "discovery_links": discovery_links if can_network else None,
+        "can_dns": can_dns,
+        "can_network": can_network,
+        "can_vlan": can_vlan,
+    }
+
+
 @router.get("")
 def list_assets(request: Request, q: str = Query("", max_length=200), category: str = Query("", max_length=120), db: Session = Depends(get_db), user=Depends(require_user)):
     query = db.query(HardwareAsset)
@@ -340,7 +422,163 @@ def detail_asset(request: Request, asset_id: int, db: Session = Depends(get_db),
     fields = active_fields(db, MODULE)
     values = field_values(db, MODULE, ENTITY_TYPE, row.id)
     lists = list_values(db, MODULE)
-    return templates.TemplateResponse(request, "hardware_asset_detail.html", {"user": user, "record": row, "attachments": attachments, "photos": photos, "categories": lists.get("category", []), "locations": lists.get("location", []), "statuses": lists.get("status", []), "custom_fields": fields, "custom_values": values, "option_list": option_list, **csrf_context(request)})
+    return templates.TemplateResponse(request, "hardware_asset_detail.html", {"user": user, "record": row, "attachments": attachments, "photos": photos, "categories": lists.get("category", []), "locations": lists.get("location", []), "statuses": lists.get("status", []), "custom_fields": fields, "custom_values": values, "option_list": option_list, "asset_profile": asset_profile_context(db, user, row), "now_date": datetime.utcnow().strftime("%Y-%m-%d"), **csrf_context(request)})
+
+
+@router.get("/{asset_id}/profile")
+def asset_profile_api(asset_id: int, db: Session = Depends(get_db), user=Depends(require_user)):
+    """Return the minimum permission-aware profile data for future detail clients."""
+    asset = _asset_or_404(db, asset_id)
+    profile = asset_profile_context(db, user, asset)
+    return {
+        "asset": {
+            "id": asset.id,
+            "asset_tag": asset.asset_tag,
+            "name": asset.name,
+            "status": asset.status,
+        },
+        "identity_evidence": [
+            {
+                "id": row.id,
+                "type": row.evidence_type,
+                "value": row.normalised_value,
+                "source": row.source,
+                "source_scope": row.source_scope,
+                "status": row.status,
+                "first_observed_at": row.first_observed_at,
+                "last_observed_at": row.last_observed_at,
+            }
+            for row in profile["identity_rows"]
+        ],
+        "network_assignments": [
+            {
+                "id": row.id,
+                "address": row.address,
+                "address_family": row.address_family,
+                "started_at": row.started_at,
+                "ended_at": row.ended_at,
+                "provenance": row.provenance,
+                "status": row.status,
+                "validity": row.profile_validity,
+                "vlan_id": row.vlan_id if profile["can_vlan"] else None,
+                "ip_address_id": row.ip_address_id if profile["can_vlan"] else None,
+            }
+            for row in profile["assignment_rows"]
+        ],
+        "dhcp": None if profile["dhcp_leases"] is None else [
+            {
+                "id": row.id,
+                "ip_address": row.ip_address,
+                "hostname": row.hostname,
+                "mac_address": row.mac_address,
+                "provider_lease_id": row.provider_lease_id,
+                "lease_started_at": row.lease_started_at,
+                "last_seen_at": row.last_seen_at,
+                "expires_at": row.expires_at,
+                "ended_at": row.ended_at,
+                "is_active": row.is_active,
+            }
+            for row in profile["dhcp_leases"]
+        ],
+        "dns": None if profile["dns_clients"] is None else [
+            {
+                "id": row.id,
+                "friendly_name": row.friendly_name,
+                "hostname": row.hostname,
+                "current_ip": row.current_ip,
+                "previous_ip": row.previous_ip,
+                "logical_provider_key": row.logical_provider_key,
+                "last_seen_at": row.last_seen_at,
+            }
+            for row in profile["dns_clients"]
+        ],
+        "managed_ips": None if profile["managed_ips"] is None else [
+            {"id": row.id, "address": row.address, "name": row.name, "category": row.category}
+            for row in profile["managed_ips"]
+        ],
+        "network_discovery": None if profile["discovery_links"] is None else [
+            {
+                "id": row.id,
+                "endpoint_ip": row.endpoint_ip,
+                "endpoint_role": row.endpoint_role,
+                "exporter_identity": row.exporter_identity,
+                "state": row.state,
+                "reason": row.reason,
+                "managed_ip_address_id": row.managed_ip_address_id if profile["can_vlan"] else None,
+            }
+            for row in profile["discovery_links"]
+        ],
+        "permissions": {
+            "asset_manager": True,
+            "dns_manager": profile["can_dns"],
+            "vlan_ip_manager": profile["can_vlan"],
+            "network_monitor": profile["can_network"],
+        },
+    }
+
+
+def _asset_or_404(db: Session, asset_id: int) -> HardwareAsset:
+    row = db.get(HardwareAsset, asset_id)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Hardware asset not found")
+    return row
+
+
+@router.post("/{asset_id}/identity-evidence/{evidence_id}/confirm")
+def confirm_asset_identity_evidence(request: Request, asset_id: int, evidence_id: int, csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_admin)):
+    validate_csrf_token(request, csrf_token)
+    _asset_or_404(db, asset_id)
+    row = db.get(AssetIdentityEvidence, evidence_id)
+    if not row or row.asset_id != asset_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Identity evidence not found")
+    try:
+        confirm_existing_identity_evidence(db, user, evidence_id)
+    except (ValueError, PermissionError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return RedirectResponse(f"/infrastructure/asset-manager/{asset_id}", status_code=303)
+
+
+@router.post("/{asset_id}/identity-evidence/{evidence_id}/revoke")
+def revoke_asset_identity_evidence(request: Request, asset_id: int, evidence_id: int, csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_admin)):
+    validate_csrf_token(request, csrf_token)
+    _asset_or_404(db, asset_id)
+    row = db.get(AssetIdentityEvidence, evidence_id)
+    if not row or row.asset_id != asset_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Identity evidence not found")
+    try:
+        revoke_identity_evidence(db, user, evidence_id)
+    except (ValueError, PermissionError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return RedirectResponse(f"/infrastructure/asset-manager/{asset_id}", status_code=303)
+
+
+@router.post("/{asset_id}/network-assignment/{assignment_id}/confirm")
+def confirm_asset_network_assignment(request: Request, asset_id: int, assignment_id: int, csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_admin)):
+    validate_csrf_token(request, csrf_token)
+    _asset_or_404(db, asset_id)
+    row = db.get(AssetNetworkAssignment, assignment_id)
+    if not row or row.asset_id != asset_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Network assignment not found")
+    try:
+        confirm_existing_network_assignment(db, user, assignment_id)
+    except (ValueError, PermissionError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return RedirectResponse(f"/infrastructure/asset-manager/{asset_id}", status_code=303)
+
+
+@router.post("/{asset_id}/network-assignment/{assignment_id}/close")
+def close_asset_network_assignment(request: Request, asset_id: int, assignment_id: int, ended_at: str = Form(..., max_length=20), csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_admin)):
+    validate_csrf_token(request, csrf_token)
+    _asset_or_404(db, asset_id)
+    row = db.get(AssetNetworkAssignment, assignment_id)
+    if not row or row.asset_id != asset_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Network assignment not found")
+    try:
+        end = datetime.strptime(ended_at.strip(), "%Y-%m-%d")
+        close_network_assignment(db, user, assignment_id, end)
+    except (ValueError, PermissionError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return RedirectResponse(f"/infrastructure/asset-manager/{asset_id}", status_code=303)
 
 
 @router.get("/{asset_id}/edit")

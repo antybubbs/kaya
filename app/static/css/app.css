@@ -1666,3 +1666,4 @@ html[data-kaya-theme=light-ops] .performance-custom-range,html[data-kaya-theme=l
   outline: 2px solid var(--accent);
   outline-offset: 3px;
 }
+ .asset-profile-grid{display:grid;gap:14px;grid-template-columns:repeat(2,minmax(0,1fr));margin-top:14px}.asset-profile-grid .record-panel{min-width:0}.asset-profile-grid h3{font-size:16px;margin:0 0 12px}.asset-profile-list{display:grid;gap:10px}.asset-profile-item{align-items:flex-start;background:rgba(11,18,32,.28);border:1px solid rgba(148,163,184,.14);border-radius:10px;display:flex;flex-wrap:wrap;gap:10px;justify-content:space-between;padding:11px 12px}.asset-profile-item>div:first-child{display:grid;gap:3px;min-width:0}.asset-profile-item .muted{overflow-wrap:anywhere}.asset-profile-item .inline-actions{margin-left:auto}@media(max-width:900px){.asset-profile-grid{grid-template-columns:1fr}}html[data-kaya-theme=light-ops] .asset-profile-item{background:#f8fafc}

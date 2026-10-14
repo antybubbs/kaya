@@ -76,6 +76,76 @@
   </section>
 </section>
 </form>
+<section class="panel section-gap asset-identity-profile" aria-labelledby="device-identity-heading">
+  <div class="topbar compact">
+    <div><h2 id="device-identity-heading">Device Identity &amp; Connected Services</h2><p class="muted">Reviewed identity evidence and current, time-bounded associations. Nothing here changes collection or monitoring automatically.</p></div>
+  </div>
+  <div class="asset-profile-grid">
+    <section class="record-panel" aria-labelledby="identity-overview-heading">
+      <h3 id="identity-overview-heading">Identity overview</h3>
+      {% if asset_profile.identity_rows %}
+      <div class="asset-profile-list">
+      {% for evidence in asset_profile.identity_rows %}
+        <article class="asset-profile-item">
+          <div><strong>{{ evidence.evidence_type|replace('_', ' ')|title }}</strong><span class="muted mono">{{ evidence.normalised_value }}</span><span class="muted">{{ evidence.source }}{% if evidence.source_scope %} · {{ evidence.source_scope }}{% endif %}</span></div>
+          <span class="service-pill{% if evidence.status == 'confirmed' %} on{% endif %}">{{ 'Suggested' if evidence.status == 'pending' else evidence.status|title }}</span>
+          {% if user.role == 'admin' %}<div class="inline-actions">
+            {% if evidence.status != 'confirmed' %}<form method="post" action="/infrastructure/asset-manager/{{ record.id }}/identity-evidence/{{ evidence.id }}/confirm" data-confirm-action="Confirm this identity evidence for this asset?"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button small" type="submit">Confirm</button></form>{% endif %}
+            {% if evidence.status == 'confirmed' %}<form method="post" action="/infrastructure/asset-manager/{{ record.id }}/identity-evidence/{{ evidence.id }}/revoke" data-confirm-action="Revoke this confirmed identity evidence? Existing history will be retained."><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button danger small" type="submit">Revoke</button></form>{% endif %}
+          </div>{% endif %}
+        </article>
+      {% endfor %}
+      </div>
+      {% else %}<p class="muted">No identity evidence has been reviewed for this asset.</p>{% endif %}
+    </section>
+    <section class="record-panel" aria-labelledby="network-assignment-heading">
+      <h3 id="network-assignment-heading">Current and historical network assignments</h3>
+      {% if asset_profile.assignment_rows %}
+      <div class="asset-profile-list">
+      {% for assignment in asset_profile.assignment_rows %}
+        <article class="asset-profile-item">
+          <div><strong class="mono">{{ assignment.address }}</strong><span class="muted">IPv{{ assignment.address_family }} · {{ assignment.provenance }}</span>{% if asset_profile.can_vlan and assignment.vlan %}<span class="muted">{{ assignment.vlan.name }}{% if assignment.vlan.subnet_cidr %} · {{ assignment.vlan.subnet_cidr }}{% endif %}</span>{% endif %}<span class="muted">{{ assignment.started_at }}{% if assignment.ended_at %} → {{ assignment.ended_at }}{% endif %}</span></div>
+          <span class="service-pill{% if assignment.profile_validity == 'valid' %} on{% endif %}">{{ assignment.profile_validity|title }}</span>
+          {% if user.role == 'admin' %}<div class="inline-actions">
+            {% if assignment.status != 'confirmed' %}<form method="post" action="/infrastructure/asset-manager/{{ record.id }}/network-assignment/{{ assignment.id }}/confirm" data-confirm-action="Confirm this network assignment for this asset?"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button small" type="submit">Confirm</button></form>{% endif %}
+            {% if assignment.status == 'confirmed' and not assignment.ended_at %}<form method="post" action="/infrastructure/asset-manager/{{ record.id }}/network-assignment/{{ assignment.id }}/close" data-confirm-action="Close this network assignment at today’s date? The historical record will be retained."><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="ended_at" value="{{ now_date }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary small" type="submit">Close assignment</button></form>{% endif %}
+          </div>{% endif %}
+        </article>
+      {% endfor %}
+      </div>
+      {% else %}<p class="muted">No network assignments are recorded.</p>{% endif %}
+      {% if not asset_profile.can_vlan %}<p class="muted">VLAN/IP Manager details are unavailable because that module is not enabled for this account.</p>{% endif %}
+    </section>
+  </div>
+  <div class="asset-profile-grid">
+    <section class="record-panel" aria-labelledby="dhcp-heading">
+      <h3 id="dhcp-heading">DHCP evidence</h3>
+      {% if asset_profile.dhcp_leases is none %}<p class="muted">DHCP evidence is unavailable because DNS Manager access is not granted.</p>
+      {% elif asset_profile.dhcp_leases %}<table><thead><tr><th>Address</th><th>Client</th><th>Observed</th><th>Status</th></tr></thead><tbody>{% for lease in asset_profile.dhcp_leases %}<tr><td class="mono">{{ lease.ip_address }}</td><td>{{ lease.hostname or lease.mac_address or lease.provider_lease_id or '-' }}</td><td>{{ lease.lease_started_at }}{% if lease.ended_at %} → {{ lease.ended_at }}{% endif %}</td><td>{{ 'Active' if lease.is_active else 'Historical' }}</td></tr>{% endfor %}</tbody></table>
+      {% else %}<p class="muted">No related DHCP lease history is available.</p>{% endif %}
+    </section>
+    <section class="record-panel" aria-labelledby="dns-heading">
+      <h3 id="dns-heading">DNS associations</h3>
+      {% if asset_profile.dns_clients is none %}<p class="muted">DNS associations are unavailable because DNS Manager access is not granted.</p>
+      {% elif asset_profile.dns_clients %}<table><thead><tr><th>Client</th><th>Current IP</th><th>Previous IP</th><th>Provider</th><th></th></tr></thead><tbody>{% for client in asset_profile.dns_clients %}<tr><td>{{ client.friendly_name or client.hostname or client.normalised_hostname or '-' }}</td><td class="mono">{{ client.current_ip or '-' }}</td><td class="mono">{{ client.previous_ip or '-' }}</td><td>{{ client.logical_provider_key }}</td><td><a class="button secondary small" href="/networking/dns-manager/clients/{{ client.id }}">Open DNS client</a></td></tr>{% endfor %}</tbody></table>
+      {% else %}<p class="muted">No DNS-recognised clients are linked to this asset.</p>{% endif %}
+    </section>
+  </div>
+  <div class="asset-profile-grid">
+    <section class="record-panel" aria-labelledby="traffic-evidence-heading">
+      <h3 id="traffic-evidence-heading">Network Traffic discovery evidence</h3>
+      {% if asset_profile.discovery_links is none %}<p class="muted">Network Traffic evidence is unavailable because Network Traffic access is not granted.</p>
+      {% elif asset_profile.discovery_links %}<table><thead><tr><th>Endpoint</th><th>Role</th><th>Exporter</th><th>State</th><th></th></tr></thead><tbody>{% for link in asset_profile.discovery_links %}<tr><td class="mono">{{ link.endpoint_ip }}</td><td>{{ link.endpoint_role }}</td><td class="mono">{{ link.exporter_identity }}</td><td>{{ link.state|title }}{% if link.reason %}<span class="muted">{{ link.reason }}</span>{% endif %}</td><td>{% if asset_profile.can_vlan %}<a class="button secondary small" href="/networking/vlan-ip-manager/{{ link.managed_ip_address_id }}">Open managed IP</a>{% endif %}</td></tr>{% endfor %}</tbody></table>
+      {% else %}<p class="muted">No linked discovery evidence is available for this asset’s managed IP records.</p>{% endif %}
+    </section>
+    <section class="record-panel" aria-labelledby="managed-ip-heading">
+      <h3 id="managed-ip-heading">Managed IP records</h3>
+      {% if asset_profile.managed_ips is none %}<p class="muted">Managed IP details are unavailable because VLAN/IP Manager access is not granted.</p>
+      {% elif asset_profile.managed_ips %}<div class="asset-profile-list">{% for ip in asset_profile.managed_ips %}<article class="asset-profile-item"><div><strong class="mono">{{ ip.address }}</strong><span class="muted">{{ ip.name or ip.category or 'Managed IP' }}</span></div><a class="button secondary small" href="/networking/vlan-ip-manager/{{ ip.id }}">Open managed IP</a></article>{% endfor %}</div>
+      {% else %}<p class="muted">No associated managed IP records are available.</p>{% endif %}
+    </section>
+  </div>
+</section>
 <section class="panel section-gap">
   <div class="topbar compact"><h2>Attachments</h2></div>
   {% if attachments %}
