@@ -13,6 +13,7 @@
 {% set traffic_navigation = [
   {'label': 'Overview', 'url': '/networking/ip-wan-monitor/traffic', 'active': traffic_page == 'overview'},
   {'label': 'Sources', 'url': '/networking/ip-wan-monitor/traffic/sources/manage', 'active': traffic_page == 'sources'},
+  {'label': 'Discovery', 'url': '/networking/ip-wan-monitor/traffic/discovery', 'active': traffic_page == 'discovery'},
   {'label': 'Settings', 'url': '/networking/ip-wan-monitor/traffic/settings', 'active': traffic_page == 'settings'}
 ] %}
 {% if user.role == 'admin' %}{% set _ = traffic_navigation.append({'label': 'Diagnostics', 'url': '/networking/ip-wan-monitor/traffic/diagnostics/view', 'active': traffic_page == 'diagnostics'}) %}{% endif %}
@@ -109,6 +110,22 @@
     <section class="card traffic-settings-card"><header><h2>Network Traffic settings</h2><p class="muted">Disabling monitoring preserves historical observations and stops new collection and traffic alert evaluation.</p></header><form data-traffic-settings-form><label class="checkbox-row"><input name="is_enabled" type="checkbox"> Enable Network Traffic monitoring</label><div class="traffic-form-grid"><label>High-resolution retention (hours)<input name="high_resolution_retention_hours" type="number" min="1" max="8760"></label><label>Five-minute retention (days)<input name="five_minute_retention_days" type="number" min="1" max="3650"></label><label>Hourly retention (days)<input name="hourly_retention_days" type="number" min="1" max="3650"></label><label>Daily retention (days)<input name="daily_retention_days" type="number" min="1" max="3650"></label></div><div class="traffic-form-actions"><button class="button" type="submit">Save settings</button></div><p class="muted" data-settings-status role="status" aria-live="polite"></p></form></section>
   </section>
 
+  <section data-traffic-panel="discovery"{% if traffic_page != 'discovery' %} hidden{% endif %}>
+    <section class="card discovery-intro">
+      <header class="traffic-card-header"><div><h2>Flow discovery</h2><p class="muted">Review endpoint observations from supported NetFlow v9 and Cisco NSEL sources. Discovery never creates IP Manager records or enables device usage monitoring automatically.</p></div><span class="traffic-status traffic-status-unknown" data-discovery-state>Loading</span></header>
+    </section>
+    <section class="traffic-summary-grid discovery-summary" aria-label="Discovery summary">
+      {% for key, label in [('total','Observed endpoints'),('linked','Linked'),('unlinked','Unlinked'),('ambiguous','Ambiguous'),('ignored','Ignored'),('stale','Stale')] %}<article class="traffic-kpi"><span class="traffic-kpi-label">{{ label }}</span><strong data-discovery-count="{{ key }}">No data</strong></article>{% endfor %}
+    </section>
+    <section class="card discovery-observations-card">
+      <header class="traffic-card-header"><div><h2>Observed endpoints</h2><p class="muted">Endpoint identity includes the source, exporter and endpoint role. Translated endpoints are review-only.</p></div><button class="button secondary compact" type="button" data-discovery-refresh>Refresh</button></header>
+      <form class="discovery-filters" data-discovery-filters role="search"><label>Source<select data-discovery-source><option value="">All sources</option></select></label><label>Status<select data-discovery-status><option value="">All statuses</option><option value="linked">Linked</option><option value="unlinked">Unlinked</option><option value="ignored">Ignored</option><option value="stale">Stale</option><option value="ambiguous">Ambiguous</option><option value="unmatched">Unmatched</option></select></label><label class="discovery-search-label">Search current results<input type="search" data-discovery-search maxlength="120" placeholder="IP or exporter identity"></label><button class="button compact" type="submit">Apply filters</button></form>
+      <div class="discovery-table-wrap"><table class="discovery-table"><thead><tr><th scope="col">Endpoint</th><th scope="col">Source / exporter</th><th scope="col">Role</th><th scope="col">Classification</th><th scope="col">Observed</th><th scope="col">Decision</th><th scope="col">Action</th></tr></thead><tbody data-discovery-rows><tr><td colspan="7" class="muted">Loading observations…</td></tr></tbody></table></div>
+      <div class="discovery-pagination"><span class="muted" data-discovery-page-label>Page 1</span><span><button class="button secondary compact" type="button" data-discovery-prev disabled>Previous</button><button class="button secondary compact" type="button" data-discovery-next disabled>Next</button></span></div>
+      <p class="traffic-empty" data-discovery-empty hidden>No discovery observations match the selected filters.</p><p class="muted" data-discovery-status-message role="status" aria-live="polite"></p>
+    </section>
+  </section>
+
   <section data-traffic-panel="diagnostics"{% if traffic_page != 'diagnostics' %} hidden{% endif %}>
     <section class="card"><header class="traffic-card-header"><div><h2>Polling diagnostics</h2><p class="muted">Operational state only; credentials and stack traces are intentionally excluded.</p></div><button class="button secondary compact" type="button" data-diagnostics-refresh>Refresh</button></header><div data-traffic-diagnostics><p class="muted">Loading diagnostics...</p></div></section>
     <section class="card"><header class="traffic-card-header"><div><h2>Flow collector diagnostics</h2><p class="muted">NetFlow and Cisco NSEL listener health; packet contents and credentials are never displayed.</p></div></header><div data-flow-collector-diagnostics><p class="muted">Loading diagnostics...</p></div></section>
@@ -116,5 +133,6 @@
 </main>
 <script src="/static/vendor/echarts/echarts.min.js?v={{ asset_version }}" defer></script>
 <script src="/static/js/network_traffic.js?v={{ asset_version }}" defer></script>
+<script src="/static/js/network_traffic_discovery.js?v={{ asset_version }}" defer></script>
 <script src="/static/js/network_traffic_diagnostics_enhancer.js?v={{ asset_version }}" defer></script>
 {% endblock %}

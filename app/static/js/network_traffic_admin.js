@@ -39,5 +39,16 @@
     } catch (error) { checkbox.checked = !checkbox.checked; if (status) status.textContent = error.message; }
     checkbox.disabled = false;
   });
+  const discoveryRoot = document.querySelector("[data-discovery-admin]");
+  if (discoveryRoot) {
+    const form = discoveryRoot.querySelector("[data-discovery-config-form]");
+    const status = discoveryRoot.querySelector("[data-discovery-config-status]");
+    const loadDiscoveryConfig = async () => {
+      const response = await request("/api/network-discovery/configuration");
+      Object.entries(response).forEach(([key, value]) => { const field = form?.elements.namedItem(key); if (field) field.type === "checkbox" ? field.checked = !!value : field.value = value; });
+    };
+    loadDiscoveryConfig().catch(error => { if (status) status.textContent = error.message; });
+    form?.addEventListener("submit", async event => { event.preventDefault(); const button = form.querySelector("button[type=submit]"); if (button) button.disabled = true; if (status) status.textContent = "Saving…"; try { const body = Object.fromEntries(new FormData(form).entries()); body.is_enabled = form.elements.is_enabled.checked; ["detailed_retention_hours", "summary_retention_days", "max_detail_rows", "max_summary_rows"].forEach(key => { body[key] = Number(body[key]); }); await request("/api/network-discovery/configuration", { method: "PUT", body: JSON.stringify(body) }); if (status) status.textContent = "Discovery settings saved."; } catch (error) { if (status) status.textContent = error.message; } finally { if (button) button.disabled = false; } });
+  }
   window.setInterval(refresh, 15000);
 })();

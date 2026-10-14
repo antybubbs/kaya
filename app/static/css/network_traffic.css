@@ -182,3 +182,20 @@ html[data-theme=light] .traffic-notice.is-error, html[data-kaya-theme=light-ops]
 .traffic-flow-card h2 .traffic-status { margin-left: 0; }
 /* Row headers are data cells visually; Kaya styles every th as a column header with !important. */
 .traffic-page .traffic-device-table tbody th { background-color: transparent !important; font-weight: 400; letter-spacing: 0; text-transform: none; }
+.discovery-summary { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.discovery-intro, .discovery-observations-card { min-width: 0; }
+.discovery-filters { align-items: end; display: flex; flex-wrap: wrap; gap: 10px; margin: 16px 0; }
+.discovery-filters label { color: var(--muted); display: grid; font-size: 11px; font-weight: 750; gap: 5px; text-transform: uppercase; }
+.discovery-filters select, .discovery-filters input { min-width: 11rem; text-transform: none; }
+.discovery-search-label { flex: 1 1 14rem; }
+.discovery-table-wrap { overflow-x: auto; }
+.discovery-table { border-collapse: collapse; min-width: 900px; width: 100%; }
+.discovery-table th, .discovery-table td { border-bottom: 1px solid var(--traffic-line-soft); padding: 10px 8px; text-align: left; vertical-align: top; }
+.discovery-table thead th { color: var(--muted); font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
+.discovery-table tbody th { font-weight: 700; }
+.discovery-table tbody th small, .discovery-table td small { display: block; margin-top: 3px; }
+.discovery-actions { align-items: flex-start; display: flex; flex-wrap: wrap; gap: 6px; min-width: 12rem; }
+.discovery-pagination { align-items: center; display: flex; justify-content: space-between; margin-top: 14px; }
+.discovery-pagination span:last-child { display: flex; gap: 6px; }
+@media (max-width: 900px) { .discovery-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 560px) { .discovery-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } .discovery-filters { align-items: stretch; display: grid; } .discovery-filters label, .discovery-filters select, .discovery-filters input, .discovery-filters button { min-width: 0; width: 100%; } .discovery-pagination { align-items: stretch; flex-direction: column; gap: 8px; } .discovery-pagination span:last-child { justify-content: space-between; } }

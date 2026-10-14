@@ -642,6 +642,11 @@ def network_traffic_settings_page(request: Request, user=Depends(require_user)):
     return _traffic_page(request, "settings", user)
 
 
+@router.get("/traffic/discovery", name="network_traffic_discovery")
+def network_traffic_discovery_page(request: Request, user=Depends(require_user)):
+    return _traffic_page(request, "discovery", user)
+
+
 @router.get("/traffic/diagnostics/view", name="network_traffic_diagnostics")
 def network_traffic_diagnostics_page(request: Request, user=Depends(require_admin)):
     return _traffic_page(request, "diagnostics", user)
