@@ -26,6 +26,7 @@ from app.routers.network_discovery import (
     create_network_mapping,
     delete_network_mapping,
     update_network_mapping,
+    list_network_mappings,
     _row_payload,
 )
 
@@ -244,3 +245,16 @@ def test_exporter_vlan_mapping_crud_is_admin_audited_and_does_not_touch_local_ne
     assert duplicate.value.status_code == 409
     delete_network_mapping(request, created["id"], DiscoveryDecision(confirmation=True), session, user)
     assert session.query(TrafficDiscoveryNetworkMapping).count() == 0
+
+
+def test_mapping_listing_exposes_safe_options_and_current_validity():
+    session = db()
+    session.add(TrafficSource(id=2, name="Cisco", provider_key="cisco_nsel", source_category="flow_export", is_enabled=True, exporter_allowlist_json='["192.0.2.9"]'))
+    session.add(VLAN(id=2, name="Office", subnet_cidr="10.2.0.0/16"))
+    session.add(TrafficDiscoveryNetworkMapping(id=2, source_id=2, exporter_identity="192.0.2.9", vlan_id=2, is_enabled=True))
+    session.commit()
+    result = list_network_mappings(session, object())
+    assert result["sources"] == [{"id": 2, "name": "Cisco", "provider_key": "cisco_nsel", "is_enabled": True, "exporters": ["192.0.2.9"]}]
+    assert result["vlans"] == [{"id": 2, "name": "Office", "subnet_cidr": "10.2.0.0/16"}]
+    assert result["mappings"][-1]["validity"] == "valid"
+    assert result["mappings"][-1]["network_cidr"] == "10.2.0.0/16"

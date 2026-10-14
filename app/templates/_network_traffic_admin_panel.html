@@ -23,6 +23,24 @@
     <div class="ip-wan-card-body"><div data-discovery-config-form role="group" aria-label="Flow discovery settings"><label class="remote-setting-row compact-toggle-row"><span><strong>Enable flow discovery</strong><small>Stores bounded endpoint observations only. It does not create IP Manager records or enable device monitoring.</small></span><input class="remote-switch" type="checkbox" name="is_enabled" data-discovery-enabled></label><div class="settings-grid two"><label><strong>Detailed retention (hours)</strong><input type="number" name="detailed_retention_hours" min="1" max="720" required></label><label><strong>Summary retention (days)</strong><input type="number" name="summary_retention_days" min="1" max="3650" required></label><label><strong>Maximum detail rows</strong><input type="number" name="max_detail_rows" min="1" max="1000000" required></label><label><strong>Maximum summary rows</strong><input type="number" name="max_summary_rows" min="1" max="1000000" required></label></div><div class="traffic-form-actions"><button class="button" type="button" data-discovery-config-submit>Save discovery settings</button></div><p class="muted" data-discovery-config-status role="status" aria-live="polite"></p></div></div>
   </article>
 
+  <article class="remote-settings-card" data-network-mappings-admin>
+    <header class="settings-card-heading"><span>Network mapping</span><small>Explicitly map an authorised flow exporter to an existing VLAN/IP Manager subnet. This is discovery-only and never creates or changes IP records.</small></header>
+    <div class="ip-wan-card-body">
+      <div class="settings-callout network-mapping-guidance"><strong>Use VLAN/IP Manager as the source of truth.</strong><span>Only configured NetFlow v9 and Cisco NSEL sources and their authorised exporter identities can be mapped. SNMP sources and typed CIDRs are not accepted.</span><a class="button secondary" href="/system/site-administration?tab=module-vlan-ip-manager">Open VLAN/IP Manager</a></div>
+      <div class="network-mapping-form" data-network-mapping-form role="group" aria-label="Network mapping editor" hidden>
+        <input type="hidden" name="id">
+        <label><strong>Flow source</strong><select name="source_id" required data-network-mapping-source><option value="">Select a supported flow source</option></select></label>
+        <label><strong>Authorised exporter</strong><select name="exporter_identity" required data-network-mapping-exporter><option value="">Select an exporter</option></select></label>
+        <label><strong>VLAN/IP Manager network</strong><select name="vlan_id" required data-network-mapping-vlan><option value="">Select a VLAN with a valid subnet</option></select></label>
+        <label class="compact-toggle-row"><span><strong>Enabled</strong><small>Disabled mappings stop future discovery classification.</small></span><input class="remote-switch" name="is_enabled" type="checkbox" checked></label>
+        <div class="traffic-form-actions"><button class="button" type="button" data-network-mapping-save>Save mapping</button><button class="button secondary" type="button" data-network-mapping-cancel>Cancel</button></div>
+      </div>
+      <p class="muted" data-network-mapping-status role="status" aria-live="polite"></p>
+      <div class="admin-source-table-wrap network-mapping-table-wrap"><table><caption class="sr-only">Configured exporter-to-VLAN discovery mappings</caption><thead><tr><th>Source</th><th>Exporter</th><th>VLAN / subnet</th><th>State</th><th>Validity</th><th>Actions</th></tr></thead><tbody data-network-mappings><tr><td colspan="6" class="muted">Loading mappings...</td></tr></tbody></table></div>
+      <div class="network-mapping-empty" data-network-mapping-empty hidden><strong>No exporter mappings configured.</strong><span>Discovery will not classify flow endpoints until an administrator maps an authorised exporter to a VLAN/IP Manager network.</span></div>
+    </div>
+  </article>
+
   <article class="remote-settings-card">
     <header class="settings-card-heading"><span>Effective deployment settings</span><small>Read-only values supplied by the collector deployment.</small></header>
     <div class="ip-wan-card-body"><dl class="admin-facts admin-facts-grid"><div><dt>Bind address</dt><dd data-admin-runtime="bind_address">{{ network_traffic_status.runtime.bind_address or 'Unknown' }}</dd></div><div><dt>UDP port</dt><dd data-admin-runtime="port">{{ network_traffic_status.runtime.port or 'Unknown' }}</dd></div><div><dt>Workers</dt><dd data-admin-runtime="workers">{{ network_traffic_status.runtime.workers or 'Unknown' }}</dd></div><div><dt>Queue size</dt><dd data-admin-runtime="queue_size">{{ network_traffic_status.runtime.queue_size or 'Unknown' }}</dd></div><div><dt>Packet limit</dt><dd data-admin-runtime="max_packets_per_second">{{ network_traffic_status.runtime.max_packets_per_second or 'Unknown' }}/s</dd></div></dl></div>

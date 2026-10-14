@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
@@ -199,7 +200,61 @@ def get_discovery_configuration(db: Session = Depends(get_db), _user=Depends(req
 @router.get("/network-mappings")
 def list_network_mappings(db: Session = Depends(get_db), _user=Depends(require_user)):
     rows = db.query(TrafficDiscoveryNetworkMapping).order_by(TrafficDiscoveryNetworkMapping.source_id, TrafficDiscoveryNetworkMapping.exporter_identity, TrafficDiscoveryNetworkMapping.vlan_id).all()
-    return {"mappings": [{"id": row.id, "source_id": row.source_id, "exporter_identity": row.exporter_identity, "vlan_id": row.vlan_id, "is_enabled": row.is_enabled} for row in rows]}
+    sources = db.query(TrafficSource).filter(TrafficSource.is_deleted.is_(False), TrafficSource.provider_key.in_(DISCOVERY_FLOW_PROVIDERS)).order_by(TrafficSource.name.asc()).all()
+    vlans = db.query(VLAN).order_by(VLAN.name.asc()).all()
+    source_by_id = {source.id: source for source in sources}
+    vlan_by_id = {vlan.id: vlan for vlan in vlans}
+    options = []
+    for source in sources:
+        try:
+            exporters = json.loads(source.exporter_allowlist_json or "[]")
+        except (TypeError, ValueError):
+            exporters = []
+        options.append({
+            "id": source.id,
+            "name": source.name,
+            "provider_key": source.provider_key,
+            "is_enabled": bool(source.is_enabled),
+            "exporters": [str(value) for value in exporters if isinstance(value, str)],
+        })
+    items = []
+    for row in rows:
+        source = source_by_id.get(row.source_id) or db.get(TrafficSource, row.source_id)
+        vlan = vlan_by_id.get(row.vlan_id) or db.get(VLAN, row.vlan_id)
+        network = None
+        if vlan and vlan.subnet_cidr:
+            try:
+                network = str(ipaddress.ip_network(vlan.subnet_cidr, strict=False))
+            except ValueError:
+                pass
+        validity = "valid" if source and not source.is_deleted and source.provider_key in DISCOVERY_FLOW_PROVIDERS and network else "stale"
+        validity_reason = None if validity == "valid" else ("source_no_longer_eligible" if not source or source.is_deleted or source.provider_key not in DISCOVERY_FLOW_PROVIDERS else "vlan_subnet_missing_or_invalid")
+        linked_review_count = db.query(TrafficDiscoveryLink).filter(
+            TrafficDiscoveryLink.source_id == row.source_id,
+            TrafficDiscoveryLink.exporter_identity == row.exporter_identity,
+            TrafficDiscoveryLink.mapping_vlan_id == row.vlan_id,
+            TrafficDiscoveryLink.state == "linked",
+        ).count()
+        if linked_review_count and (not row.is_enabled or validity != "valid"):
+            validity = "review_required"
+            validity_reason = "historical_link_requires_review"
+        items.append({
+            "id": row.id, "source_id": row.source_id, "source_name": source.name if source else "Unknown source",
+            "provider_key": source.provider_key if source else None, "source_enabled": bool(source and source.is_enabled),
+            "exporter_identity": row.exporter_identity, "vlan_id": row.vlan_id,
+            "vlan_name": vlan.name if vlan else "Unknown VLAN", "network_cidr": network,
+            "is_enabled": bool(row.is_enabled), "validity": validity, "validity_reason": validity_reason,
+            "linked_review_count": linked_review_count,
+        })
+    return {"mappings": items, "sources": options, "vlans": [{"id": vlan.id, "name": vlan.name, "subnet_cidr": str(ipaddress.ip_network(vlan.subnet_cidr, strict=False))} for vlan in vlans if vlan.subnet_cidr and _valid_network(vlan.subnet_cidr)]}
+
+
+def _valid_network(value: str) -> bool:
+    try:
+        ipaddress.ip_network(value, strict=False)
+    except ValueError:
+        return False
+    return True
 
 
 @router.post("/network-mappings", status_code=201)
