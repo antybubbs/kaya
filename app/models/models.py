@@ -1746,6 +1746,67 @@ class HardwareAssetAttachment(Base):
     uploaded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     asset = relationship("HardwareAsset")
 
+
+class AssetIdentityEvidence(Base):
+    """Administrator-reviewed identity evidence for a hardware asset."""
+
+    __tablename__ = "asset_identity_evidence"
+    __table_args__ = (
+        Index("ix_asset_identity_evidence_asset_status", "asset_id", "status"),
+        Index("ix_asset_identity_evidence_type_value", "evidence_type", "normalised_value"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    asset_id: Mapped[int | None] = mapped_column(ForeignKey("hardware_assets.id", ondelete="SET NULL"), nullable=True, index=True)
+    evidence_type: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    normalised_value: Mapped[str] = mapped_column(String(255), nullable=False)
+    source: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_scope: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    first_observed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_observed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    confirmed_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    conflict_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    asset = relationship("HardwareAsset")
+    confirmer = relationship("User", foreign_keys=[confirmed_by])
+
+
+class AssetNetworkAssignment(Base):
+    """A time-bounded, reviewed relationship between an asset and an address."""
+
+    __tablename__ = "asset_network_assignments"
+    __table_args__ = (
+        Index("ix_asset_network_assignments_asset_interval", "asset_id", "started_at", "ended_at"),
+        Index("ix_asset_network_assignments_address_context", "address", "address_family", "vlan_id", "source_id", "exporter_identity"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    asset_id: Mapped[int | None] = mapped_column(ForeignKey("hardware_assets.id", ondelete="SET NULL"), nullable=True, index=True)
+    address: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    address_family: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    vlan_id: Mapped[int | None] = mapped_column(ForeignKey("vlans.id", ondelete="SET NULL"), nullable=True, index=True)
+    ip_address_id: Mapped[int | None] = mapped_column(ForeignKey("ip_addresses.id", ondelete="SET NULL"), nullable=True, index=True)
+    dhcp_lease_id: Mapped[int | None] = mapped_column(ForeignKey("dhcp_lease_history.id", ondelete="SET NULL"), nullable=True, index=True)
+    source_id: Mapped[int | None] = mapped_column(ForeignKey("traffic_sources.id", ondelete="SET NULL"), nullable=True, index=True)
+    exporter_identity: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    provenance: Mapped[str] = mapped_column(String(80), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    confirmed_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    conflict_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    asset = relationship("HardwareAsset")
+    vlan = relationship("VLAN")
+    ip_address = relationship("IPAddress")
+    dhcp_lease = relationship("DHCPLeaseHistory")
+    source = relationship("TrafficSource")
+    confirmer = relationship("User", foreign_keys=[confirmed_by])
+
 class Rack(Base):
     __tablename__ = "racks"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
