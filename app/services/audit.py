@@ -132,6 +132,7 @@ def write_audit(
     metadata: dict | None = None,
     capture_tier: str | None = None,
     force: bool = False,
+    commit: bool = True,
 ):
     context = _request_context.get() or {}
     resolved_status = status_code if status_code is not None else context.get("status_code")
@@ -165,7 +166,8 @@ def write_audit(
     )
     try:
         db.add(row)
-        db.commit()
+        if commit:
+            db.commit()
     except SQLAlchemyError:
         db.rollback()
         return None

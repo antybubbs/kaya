@@ -117,6 +117,47 @@ and releases are not renamed, recreated or rewritten.
 
 To run without Docker, install Python dependencies and Node dependencies, then run Uvicorn against `app.main:app`. Local filesystem paths may need adjustment because defaults assume `/app/data` and `/app/uploads`.
 
+### Reproducible Python test environment
+
+The supported Windows test runner uses Python 3.12.15, `uv`, and the pinned
+`requirements.txt`. This avoids unsupported local interpreter differences such
+as pandas or native `smbprotocol` import failures on newer Python releases.
+
+Install the official `uv` distribution in user space, then run:
+
+```powershell
+# Download the official installer to a disposable path and install for the current user.
+$installer = Join-Path $env:TEMP "install-uv.ps1"
+Invoke-WebRequest https://astral.sh/uv/install.ps1 -OutFile $installer
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer -NoModifyPath
+.\scripts\test-python312.ps1
+```
+
+The helper creates a disposable environment and SQLite database outside the
+repository, installs the pinned dependencies (including `smbprotocol`,
+`pysnmp`, and `pandas`), generates process-scoped synthetic `SECRET_KEY` and
+Fernet `ENCRYPTION_KEY` values, runs the Network Traffic regression tests, and
+removes the temporary resources. It never reads production `.env` files or
+credentials. Use `-KeepEnvironment` only for local troubleshooting; the
+temporary path is printed without secrets.
+
+For manual Alembic checks, never invoke `python -m alembic` with the repository
+configuration: `alembic.ini` contains the container default. Use the disposable
+target guard instead and provide an explicit test-only URL:
+
+```powershell
+$db = Join-Path $env:TEMP "kaya-test-migrations.db"
+python scripts/kaya_test_migrations.py upgrade head --url ("sqlite:///" + $db)
+python scripts/kaya_test_migrations.py downgrade 20261013_01 --url ("sqlite:///" + $db)
+python scripts/kaya_test_migrations.py upgrade head --url ("sqlite:///" + $db)
+```
+
+The guard accepts only SQLite files inside the system temporary directory with
+a test-only filename, or PostgreSQL databases whose server is local and whose
+database name is test-only. It verifies the connected target before Alembic
+loads application models, preventing accidental use of `/app/data` or an
+unrelated local database.
+
 ## Adding A New Module
 
 1. Add SQLAlchemy models in `app/models/models.py`.

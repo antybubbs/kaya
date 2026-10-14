@@ -53,6 +53,7 @@ from app.routers import (
     ip_addresses,
     licences,
     network_monitor,
+    network_discovery,
     notifications,
     oidc,
     rack_manager,
@@ -495,6 +496,7 @@ app.include_router(licences.router)
 app.include_router(ip_addresses.router)
 app.include_router(hardware_assets.router)
 app.include_router(network_monitor.router)
+app.include_router(network_discovery.router)
 app.include_router(network_monitor.wallboard_router)
 app.include_router(remote_manager.router)
 app.include_router(runbooks.router)

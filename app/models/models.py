@@ -529,6 +529,30 @@ class TrafficDiscoverySummary(Base):
     ambiguity_reason: Mapped[str | None] = mapped_column(String(120), nullable=True)
 
 
+class TrafficDiscoveryLink(Base):
+    """Current administrator decision for one discovered endpoint identity."""
+
+    __tablename__ = "traffic_discovery_links"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_id", "exporter_identity", "endpoint_ip", "endpoint_role",
+            name="uq_traffic_discovery_link_identity_role",
+        ),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_id: Mapped[int] = mapped_column(ForeignKey("traffic_sources.id", ondelete="CASCADE"), index=True)
+    exporter_identity: Mapped[str] = mapped_column(String(45))
+    endpoint_ip: Mapped[str] = mapped_column(String(45), index=True)
+    endpoint_role: Mapped[str] = mapped_column(String(32), index=True)
+    managed_ip_address_id: Mapped[int | None] = mapped_column(ForeignKey("ip_addresses.id", ondelete="SET NULL"), nullable=True)
+    state: Mapped[str] = mapped_column(String(20), default="linked", index=True)
+    reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    updated_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class TrafficCounterObservation(Base):
     """Bounded future interface-counter observations; never stores packet payloads or flows."""
 
