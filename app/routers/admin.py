@@ -2971,36 +2971,46 @@ def settings_page(
     user=Depends(require_admin),
 ):
     require_module_settings_tab(request, db, user)
-    return templates.TemplateResponse(
-        request,
-        "settings.html",
-        {
-            "user": user,
-            "module_access": granted_module_keys(db, user),
-            "network_traffic_status": _network_traffic_admin_status(db),
-            "settings": load_site_settings(db),
-            "asset_tag_preview": next_asset_tag_preview(db),
-            **wallboard_admin_context(request, db),
-            "ha_active_cluster_count": db.query(HACluster)
-            .filter(HACluster.deleted_at.is_(None))
-            .count(),
-            "backup_preserved_item_count": db.query(BackupRecord).count()
-            + db.query(BackupJob).count(),
-            "backup_inflight_job_count": db.query(BackupJob)
-            .filter(BackupJob.status.in_(["queued", "dispatched", "running"]))
-            .count(),
-            "dns_providers": dns_providers_for_admin(db),
-            "ha_dns_clusters": ha_dns_clusters_for_admin(db),
-            **vlan_ip_admin_context(db),
-            "security_check": security_check_context(request, db),
-            "message": None,
-            "error": None,
-            **csrf_context(request),
-        },
-    )
+    return templates.TemplateResponse(request, "settings.html", _settings_page_context(
+        request, db, user, settings=load_site_settings(db), message=None, error=None,
+    ))
 
 
 FLOW_HEARTBEAT_STALE_SECONDS = 15
+
+
+def _settings_page_context(
+    request: Request,
+    db: Session,
+    user,
+    *,
+    settings: dict | None = None,
+    module_access: set[str] | None = None,
+    message: str | None = None,
+    error: str | None = None,
+    **extra,
+) -> dict:
+    """Build the complete context required by every settings.html render path."""
+    context = {
+        "user": user,
+        "module_access": module_access if module_access is not None else granted_module_keys(db, user),
+        "network_traffic_status": _network_traffic_admin_status(db),
+        "settings": settings if settings is not None else load_site_settings(db),
+        "asset_tag_preview": next_asset_tag_preview(db),
+        **wallboard_admin_context(request, db),
+        "ha_active_cluster_count": db.query(HACluster).filter(HACluster.deleted_at.is_(None)).count(),
+        "backup_preserved_item_count": db.query(BackupRecord).count() + db.query(BackupJob).count(),
+        "backup_inflight_job_count": db.query(BackupJob).filter(BackupJob.status.in_(["queued", "dispatched", "running"])).count(),
+        "dns_providers": dns_providers_for_admin(db),
+        "ha_dns_clusters": ha_dns_clusters_for_admin(db),
+        **vlan_ip_admin_context(db),
+        "security_check": security_check_context(request, db),
+        "message": message,
+        "error": error,
+        **csrf_context(request),
+    }
+    context.update(extra)
+    return context
 
 
 def _network_traffic_admin_status(db: Session) -> dict:
@@ -4030,19 +4040,13 @@ async def save_settings(
         return templates.TemplateResponse(
             request,
             "settings.html",
-            {
-                "user": user,
-                "module_access": module_settings_access,
-                "settings": submitted_settings,
-                "dns_providers": dns_providers_for_admin(db),
-                "ha_dns_clusters": ha_dns_clusters_for_admin(db),
-                **vlan_ip_admin_context(db),
-                "security_check": security_check_context(request, db),
-                "allowed_host_errors": allowed_host_errors,
-                "message": None,
-                "error": "Review the highlighted allowed-host entries before saving.",
-                **csrf_context(request),
-            },
+            _settings_page_context(
+                request, db, user, module_access=module_settings_access,
+                settings=submitted_settings,
+                allowed_host_errors=allowed_host_errors,
+                message=None,
+                error="Review the highlighted allowed-host entries before saving.",
+            ),
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         )
 
@@ -4239,18 +4243,10 @@ async def save_settings(
             return templates.TemplateResponse(
                 request,
                 "settings.html",
-                {
-                    "user": user,
-                    "module_access": module_settings_access,
-                    "settings": submitted_settings,
-                    "dns_providers": dns_providers_for_admin(db),
-                    "ha_dns_clusters": ha_dns_clusters_for_admin(db),
-                    **vlan_ip_admin_context(db),
-                    "security_check": security_check_context(request, db),
-                    "message": None,
-                    "error": asset_tag_error,
-                    **csrf_context(request),
-                },
+                _settings_page_context(
+                    request, db, user, module_access=module_settings_access,
+                    settings=submitted_settings, message=None, error=asset_tag_error,
+                ),
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             )
         for key, value in asset_tag_values.items():
@@ -4311,18 +4307,10 @@ async def save_settings(
             return templates.TemplateResponse(
                 request,
                 "settings.html",
-                {
-                    "user": user,
-                    "module_access": module_settings_access,
-                    "settings": load_site_settings(db),
-                    "dns_providers": dns_providers_for_admin(db),
-                    "ha_dns_clusters": ha_dns_clusters_for_admin(db),
-                    **vlan_ip_admin_context(db),
-                    "security_check": security_check_context(request, db),
-                    "message": None,
-                    "error": str(exc),
-                    **csrf_context(request),
-                },
+                _settings_page_context(
+                    request, db, user, module_access=module_settings_access,
+                    message=None, error=str(exc),
+                ),
                 status_code=422,
             )
     guacamole_bridge_changed = (
@@ -4348,19 +4336,10 @@ async def save_settings(
     return templates.TemplateResponse(
         request,
         "settings.html",
-        {
-            "user": user,
-            "module_access": module_settings_access,
-            "settings": load_site_settings(db),
-            **wallboard_admin_context(request, db),
-            "dns_providers": dns_providers_for_admin(db),
-            "ha_dns_clusters": ha_dns_clusters_for_admin(db),
-            **vlan_ip_admin_context(db),
-            "security_check": security_check_context(request, db),
-            "message": "Settings saved successfully.",
-            "error": None,
-            **csrf_context(request),
-        },
+        _settings_page_context(
+            request, db, user, module_access=module_settings_access,
+            message="Settings saved successfully.", error=None,
+        ),
     )
 
 
