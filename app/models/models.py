@@ -1787,6 +1787,7 @@ class AssetNetworkAssignment(Base):
     address: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
     address_family: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     vlan_id: Mapped[int | None] = mapped_column(ForeignKey("vlans.id", ondelete="SET NULL"), nullable=True, index=True)
+    network_cidr: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
     ip_address_id: Mapped[int | None] = mapped_column(ForeignKey("ip_addresses.id", ondelete="SET NULL"), nullable=True, index=True)
     dhcp_lease_id: Mapped[int | None] = mapped_column(ForeignKey("dhcp_lease_history.id", ondelete="SET NULL"), nullable=True, index=True)
     source_id: Mapped[int | None] = mapped_column(ForeignKey("traffic_sources.id", ondelete="SET NULL"), nullable=True, index=True)

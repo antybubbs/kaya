@@ -216,6 +216,7 @@ def assign_network_identity(
             raise ValueError("A conflicting confirmed assignment already exists.")
     row = AssetNetworkAssignment(
         asset_id=asset_id, address=normalised, address_family=family, vlan_id=vlan_id,
+        network_cidr=(vlan.subnet_cidr.strip() if vlan and vlan.subnet_cidr else None),
         ip_address_id=ip_address_id, dhcp_lease_id=dhcp_lease_id, source_id=source_id,
         exporter_identity=scoped_exporter,
         started_at=started_at, ended_at=ended_at, provenance=str(provenance).strip(),
