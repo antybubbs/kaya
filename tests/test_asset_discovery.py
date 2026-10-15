@@ -11,6 +11,7 @@ from app.models.models import (
     DHCPLeaseHistory,
     DNSRecognisedDevice,
     HardwareAsset,
+    HardwareAssetTagSequence,
     IPAddress,
     RemoteManagerSetting,
     TrafficDiscoveryObservation,
@@ -71,7 +72,15 @@ def test_admin_adoption_creates_one_asset_and_reviewed_evidence_atomically():
         mac_address="00:11:22:33:44:55", normalised_mac="00:11:22:33:44:55",
         first_seen_at=datetime(2026, 1, 1), last_seen_at=datetime(2026, 1, 2),
     )
-    db.add_all([admin, vlan, ip, client])
+    db.add_all([
+        admin, vlan, ip, client,
+        RemoteManagerSetting(key="asset_tags_auto_generate", value="1"),
+        RemoteManagerSetting(key="asset_tags_prefix", value="HAL"),
+        RemoteManagerSetting(key="asset_tags_separator", value="-"),
+        RemoteManagerSetting(key="asset_tags_padding", value="4"),
+        RemoteManagerSetting(key="asset_tags_start_number", value="1"),
+        HardwareAssetTagSequence(id=1, next_number=1),
+    ])
     db.commit()
     candidate = next(row for row in compose_discovered_devices(db)["rows"] if row["kind"] == "dns")
 
@@ -82,6 +91,7 @@ def test_admin_adoption_creates_one_asset_and_reviewed_evidence_atomically():
     assert client.hardware_asset_id == asset.id
     assert db.query(HardwareAsset).count() == 1
     assert db.query(HardwareAsset).one().name == "Adopted laptop"
+    assert asset.asset_tag == "HAL-0001"
 
 
 def test_adoption_audit_is_required_even_when_capture_level_is_essential():

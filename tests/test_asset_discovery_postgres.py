@@ -13,10 +13,13 @@ from app.models.models import (
     DNSProviderConfig,
     DNSRecognisedDevice,
     HardwareAsset,
+    HardwareAssetTagSequence,
     User,
+    RemoteManagerSetting,
 )
 from app.services import asset_discovery
 from app.services.asset_discovery import adopt_discovered_device
+from app.services.asset_tags import allocate_asset_tag
 
 
 @pytest.fixture
@@ -36,7 +39,15 @@ def _case(factory, *, second_provider=False):
         first = HardwareAsset(name=f"Phase55 PostgreSQL asset one {token}", status="In use")
         second = HardwareAsset(name=f"Phase55 PostgreSQL asset two {token}", status="In use")
         provider = DNSProviderConfig(name=f"Phase55 DNS one {token}", base_url="http://198.51.100.20")
-        db.add_all([actor, first, second, provider])
+        db.add_all([
+            actor, first, second, provider,
+            RemoteManagerSetting(key="asset_tags_auto_generate", value="1"),
+            RemoteManagerSetting(key="asset_tags_prefix", value=f"P55{token[:4]}"),
+            RemoteManagerSetting(key="asset_tags_separator", value="-"),
+            RemoteManagerSetting(key="asset_tags_padding", value="4"),
+            RemoteManagerSetting(key="asset_tags_start_number", value="1"),
+            HardwareAssetTagSequence(id=1, next_number=1),
+        ])
         if second_provider:
             other_provider = DNSProviderConfig(name=f"Phase55 DNS two {token}", base_url="http://198.51.100.21")
             db.add(other_provider)
@@ -97,11 +108,21 @@ def _candidate(db, client_id):
 
 def _cleanup(factory, case):
     with factory.begin() as db:
+        cleanup_assets = db.query(HardwareAsset.id).filter(
+            (HardwareAsset.id.in_(case["asset_ids"])) |
+            (HardwareAsset.name.in_(["Concurrent synthetic asset", "Manual concurrent asset"]))
+        ).all()
+        cleanup_asset_ids = [row[0] for row in cleanup_assets]
         db.query(AuditLog).filter(AuditLog.user_id == case["actor_id"]).delete(synchronize_session=False)
-        db.query(AssetIdentityEvidence).filter(AssetIdentityEvidence.asset_id.in_(case["asset_ids"])).delete(synchronize_session=False)
+        db.query(AssetIdentityEvidence).filter(AssetIdentityEvidence.asset_id.in_(cleanup_asset_ids or [-1])).delete(synchronize_session=False)
         db.query(DNSRecognisedDevice).filter(DNSRecognisedDevice.id.in_(case["client_ids"])).delete(synchronize_session=False)
         db.query(DNSProviderConfig).filter(DNSProviderConfig.id.in_(case["provider_ids"])).delete(synchronize_session=False)
-        db.query(HardwareAsset).filter(HardwareAsset.id.in_(case["asset_ids"])).delete(synchronize_session=False)
+        db.query(HardwareAsset).filter(
+            (HardwareAsset.id.in_(case["asset_ids"])) |
+            (HardwareAsset.name.in_(["Concurrent synthetic asset", "Manual concurrent asset"]))
+        ).delete(synchronize_session=False)
+        db.query(RemoteManagerSetting).filter(RemoteManagerSetting.key.like("asset_tags_%")).delete(synchronize_session=False)
+        db.query(HardwareAssetTagSequence).filter(HardwareAssetTagSequence.id == 1).delete(synchronize_session=False)
         db.query(User).filter(User.id == case["actor_id"]).delete(synchronize_session=False)
 
 
@@ -194,5 +215,39 @@ def test_postgres_competing_source_records_cannot_confirm_same_mac(postgres_fact
         assert sorted(result[0] for result in results) == ["ValueError", "ok"]
         with postgres_factory() as db:
             assert db.query(AssetIdentityEvidence).filter_by(evidence_type="mac", normalised_value=candidates[0]["mac_addresses"][0]).count() == 1
+    finally:
+        _cleanup(postgres_factory, case)
+
+
+def test_postgres_manual_creation_and_discovery_adoption_allocate_distinct_tags(postgres_factory):
+    case = _case(postgres_factory)
+    try:
+        with postgres_factory() as db:
+            candidate = _candidate(db, case["client_ids"][0])
+        barrier = __import__("threading").Barrier(2)
+
+        def manual_worker():
+            with postgres_factory() as db:
+                barrier.wait()
+                tag = allocate_asset_tag(db, None)
+                db.add(HardwareAsset(asset_tag=tag, name="Manual concurrent asset", status="In use"))
+                db.commit()
+                return tag
+
+        def adoption_worker():
+            with postgres_factory() as db:
+                actor = db.get(User, case["actor_id"])
+                barrier.wait()
+                row = adopt_discovered_device(db, actor, candidate, new_name="Concurrent synthetic asset")
+                return row.asset_tag
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            manual_future = pool.submit(manual_worker)
+            adoption_future = pool.submit(adoption_worker)
+            tags = {manual_future.result(), adoption_future.result()}
+
+        assert len(tags) == 2
+        with postgres_factory() as db:
+            assert db.query(HardwareAsset).filter(HardwareAsset.name.in_(["Manual concurrent asset", "Concurrent synthetic asset"])).count() == 2
     finally:
         _cleanup(postgres_factory, case)

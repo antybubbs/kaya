@@ -19,6 +19,7 @@ from app.models.models import (
 )
 from app.services.audit import write_audit
 from app.services.asset_identity import _assignment_lock_key, _normalise_evidence
+from app.services.asset_tags import allocate_asset_tag
 
 MAX_CANDIDATES = 5000
 MAX_SOURCE_ROWS = 5000
@@ -228,7 +229,12 @@ def adopt_discovered_device(db: Session, user, candidate: dict, *, asset_id: int
     _lock_adoption_keys(db, lock_keys)
     _revalidate_source_candidate(db, candidate)
     now = datetime.utcnow()
-    asset = db.get(HardwareAsset, asset_id) if asset_id else HardwareAsset(name=(new_name or candidate["name"]).strip()[:255], category=(category or "").strip()[:120] or None, status="In use")
+    asset = db.get(HardwareAsset, asset_id) if asset_id else HardwareAsset(
+        asset_tag=allocate_asset_tag(db, None),
+        name=(new_name or candidate["name"]).strip()[:255],
+        category=(category or "").strip()[:120] or None,
+        status="In use",
+    )
     if asset_id and not asset:
         raise ValueError("Hardware asset not found.")
     if not asset_id:
