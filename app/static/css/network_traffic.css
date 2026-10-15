@@ -117,6 +117,14 @@ html[data-theme=light] .traffic-page, html[data-kaya-theme=light-ops] .traffic-p
 .traffic-share .traffic-upload { background: var(--traffic-upload); }
 .traffic-muted-cell { color: var(--muted); white-space: nowrap; }
 .traffic-device-table td:last-child { text-align: right; }
+.device-usage-toolbar { margin-bottom: 14px; }
+.device-usage-search { color: var(--muted); display: grid; font-size: 11px; font-weight: 750; gap: 5px; letter-spacing: .06em; text-transform: uppercase; }
+.device-usage-search input { font-size: 13px; letter-spacing: 0; text-transform: none; }
+.device-usage-summary { margin-top: 14px; }
+.device-usage-table { min-width: 980px; }
+.device-usage-table tbody th { min-width: 11rem; }
+.device-usage-table .traffic-status { max-width: 15rem; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 560px) { .device-usage-toolbar { align-items: stretch; } .device-usage-search { width: 100%; } }
 
 /* Shared */
 .traffic-notice { background: color-mix(in srgb, var(--traffic-download) 8%, transparent); border: 1px solid var(--traffic-line); border-radius: var(--kaya-radius, 8px); padding: 10px 14px; }

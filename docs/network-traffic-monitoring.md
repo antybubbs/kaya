@@ -185,3 +185,19 @@ currently opted-in managed IP records and are returned in one bounded query,
 with VLAN, status, freshness, quality, and confidence fields. The dashboard
 uses the vendored ECharts library and the existing responsive page shell; the
 compact IP detail card remains linked to the Network Traffic dashboard.
+
+## Device Usage
+
+The authenticated **Monitoring → Network Traffic → Device Usage** tab reports only
+persisted usage for IP Manager records whose Network Traffic monitoring was explicitly
+enabled by an administrator. It supports 24-hour, 7-day, 30-day, 90-day and bounded
+custom ranges, server-side search, sorting and pagination. SNMP WAN counters are not
+included in these totals.
+
+Rows retain source context and show confirmed, suggested or unidentified status. An IP
+address or hostname alone never confirms an asset. Confirmed asset names and profile
+links are returned only when the user has Asset Manager access; authorised Network
+Traffic users without that module still see traffic rows without asset metadata.
+Discovery never enables monitoring or creates assets. Coverage is an observed-bucket
+indication and may be partial when collection or monitoring was not active for the
+complete selected period.

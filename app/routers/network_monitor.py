@@ -92,7 +92,7 @@ from app.services.network_traffic import (
     validate_local_network,
     validate_source_input,
 )
-from app.services.network_traffic_reporting import device_history, device_report, report_window, wan_report
+from app.services.network_traffic_reporting import device_history, device_report, device_usage_report, report_window, wan_report
 from app.services.network_traffic_poller import (
     discover_source_interfaces,
     persist_discovered_interfaces,
@@ -647,6 +647,11 @@ def network_traffic_discovery_page(request: Request, user=Depends(require_user))
     return _traffic_page(request, "discovery", user)
 
 
+@router.get("/traffic/devices", name="network_traffic_devices")
+def network_traffic_devices_page(request: Request, user=Depends(require_user)):
+    return _traffic_page(request, "devices", user)
+
+
 @router.get("/traffic/diagnostics/view", name="network_traffic_diagnostics")
 def network_traffic_diagnostics_page(request: Request, user=Depends(require_admin)):
     return _traffic_page(request, "diagnostics", user)
@@ -1166,6 +1171,25 @@ def traffic_reporting_report(
     if device_id is not None:
         payload["device"] = device_history(db, device_id, report_range=report_range)
     return payload
+
+
+@router.get("/traffic/device-usage")
+def traffic_device_usage_report(
+    report_range: str = Query("24h", alias="range", max_length=6),
+    q: str = Query("", max_length=120),
+    start: str | None = Query(None, max_length=40),
+    end: str | None = Query(None, max_length=40),
+    page: int = Query(1, ge=1, le=100000),
+    sort: str = Query("total", max_length=20),
+    db: Session = Depends(get_db),
+    user=Depends(require_user),
+):
+    try:
+        if report_range != "custom":
+            report_window(report_range)
+        return device_usage_report(db, user, report_range=report_range, start_text=start, end_text=end, query=q, page=page, sort=sort)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _reset_non_snmp_polling_state(source: TrafficSource) -> None:
