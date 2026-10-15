@@ -78,6 +78,13 @@ try {
   });
   await run('dns-confirmed-and-unlinked-navigation', async () => {
     const page = admin;
+    await assertPage(page, '/networking/dns-manager?tab=dhcp', [/DHCP/i, /Review \/ Adopt/i], 'DHCP list');
+    const dhcpReviewLink = page.locator('a[href*="candidate_id=dhcp:"]').first();
+    if (await dhcpReviewLink.count() !== 1) throw new Error('active DHCP lease has no Review / Adopt action');
+    await dhcpReviewLink.click();
+    await page.waitForLoadState('networkidle');
+    const dhcpReviewBody = await page.locator('body').innerText();
+    if (!dhcpReviewBody.match(/Observed identity/i) || !dhcpReviewBody.match(/DHCP identifiers/i)) throw new Error('DHCP evidence missing from shared review');
     await assertPage(page, '/networking/dns-manager?tab=clients', [/Clients/i, /Stage2B DNS/], 'DNS clients');
     const confirmedId = fixture.dns_client_ids[0];
     await page.goto(`${base}/networking/dns-manager/clients/${confirmedId}`, { waitUntil: 'networkidle' });
@@ -88,6 +95,18 @@ try {
     if (!page.url().endsWith('/infrastructure/asset-manager/9401')) throw new Error(`DNS navigation ended at ${page.url()}`);
     const unlinkedId = fixture.dns_client_ids.at(-1);
     await assertPage(page, `/networking/dns-manager/clients/${unlinkedId}`, [/DNS traffic history/i], 'DNS detail');
+    const reviewLink = page.locator('a[href*="candidate_id=dns:"]');
+    if (await reviewLink.count() !== 1) throw new Error('unlinked DNS client has no Review / Adopt action');
+    await reviewLink.click();
+    await page.waitForLoadState('networkidle');
+    const reviewBody = await page.locator('body').innerText();
+    if (!reviewBody.match(/Observed identity/i) || !reviewBody.match(/DHCP identifiers/i)) throw new Error('DNS candidate evidence missing from shared review');
+    page.once('dialog', dialog => dialog.accept());
+    await page.getByRole('button', { name: /Adopt discovery/i }).click();
+    await page.waitForLoadState('networkidle');
+    if (!page.url().match(/\/infrastructure\/asset-manager\/\d+$/)) throw new Error(`DNS adoption ended at ${page.url()}`);
+    await page.goto(`${base}/networking/dns-manager/clients/${unlinkedId}`, { waitUntil: 'networkidle' });
+    if (await page.getByRole('link', { name: /Open unified Asset Profile/i }).count() !== 1) throw new Error('adopted DNS client has no Asset Profile link');
   });
   await run('vlan-detail-and-asset-navigation', async () => {
     await assertPage(admin, '/networking/vlan-ip-manager/9251', [/Network Traffic/i], 'VLAN/IP detail');

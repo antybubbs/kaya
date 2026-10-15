@@ -52,6 +52,7 @@ def _candidate(store: dict[str, dict], key: str, *, kind: str, name: str | None,
         "mac_addresses": [], "dhcp_client_ids": [], "sources": [], "vlan_context": [],
         "first_seen_at": _iso(first), "last_seen_at": _iso(last), "review_state": "review",
         "asset_id": None, "asset_name": None, "evidence": [], "traffic": [], "dns_client_id": None,
+        "provider_name": None,
         "dhcp_lease_ids": [], "traffic_observation": None,
     })
     if name and row["name"] in {"Unidentified device", ip}:
@@ -77,13 +78,15 @@ def compose_discovered_devices(db: Session, *, query: str = "", source: str = ""
         item = _candidate(candidates, key, kind="dns", name=row.friendly_name or row.hostname, ip=row.current_ip, first=row.first_seen_at, last=row.last_seen_at)
         item["dns_client_id"] = row.id
         item["sources"] = sorted(set(item["sources"]) | {"DNS Manager"})
+        item["provider_name"] = row.provider.name if row.provider else row.provider_type
         item["evidence"] = [value for value in (row.hostname, row.mac_address, row.provider_client_id) if value]
         item["asset_id"] = row.hardware_asset_id
         if row.hardware_asset_id:
             asset = db.get(HardwareAsset, row.hardware_asset_id)
             item["asset_name"] = asset.name if asset else None
-        if row.normalised_mac:
-            item["mac_addresses"] = [row.normalised_mac]
+        mac_address = row.normalised_mac or row.mac_address
+        if mac_address:
+            item["mac_addresses"] = [mac_address]
         if row.provider_client_id:
             item["dhcp_client_ids"] = [row.provider_client_id]
         if row.is_ignored:
@@ -151,6 +154,42 @@ def compose_discovered_devices(db: Session, *, query: str = "", source: str = ""
 
 
 def get_discovered_device(db: Session, candidate_id: str) -> dict | None:
+    """Resolve a candidate through its explicit source namespace."""
+    clean_id = candidate_id.strip()
+    if clean_id.startswith("dhcp:"):
+        raw_id = clean_id[5:]
+        if not raw_id.isdigit() or int(raw_id) <= 0:
+            return None
+        lease = db.get(DHCPLeaseHistory, int(raw_id))
+        if not lease:
+            return None
+        item = _candidate(
+            {}, clean_id, kind="dhcp", name=lease.hostname, ip=lease.ip_address,
+            first=lease.first_seen_at, last=lease.last_seen_at,
+        )
+        item["sources"] = ["DHCP"]
+        item["provider_name"] = lease.provider.name if lease.provider else None
+        item["mac_addresses"] = [lease.mac_address] if lease.mac_address else []
+        item["dhcp_client_ids"] = [lease.provider_lease_id] if lease.provider_lease_id else []
+        item["dhcp_lease_ids"] = [lease.id]
+        item["dns_client_id"] = lease.dns_client_id
+        if lease.dhcp_range and lease.dhcp_range.vlan:
+            item["vlan_context"] = [lease.dhcp_range.vlan.name]
+        if lease.dns_client_id:
+            dns_client = db.get(DNSRecognisedDevice, lease.dns_client_id)
+            if dns_client:
+                item["evidence"] = [value for value in (dns_client.hostname, dns_client.normalised_mac, dns_client.provider_client_id) if value]
+                item["asset_id"] = dns_client.hardware_asset_id
+        assignment = db.query(AssetNetworkAssignment).filter(
+            AssetNetworkAssignment.dhcp_lease_id == lease.id,
+            AssetNetworkAssignment.status == "confirmed",
+        ).order_by(AssetNetworkAssignment.started_at.desc()).first()
+        if assignment:
+            item["asset_id"] = assignment.asset_id
+            item["asset_name"] = assignment.asset.name if assignment.asset else None
+        if not lease.is_active or (lease.expires_at and lease.expires_at < datetime.utcnow()):
+            item["review_state"] = "stale"
+        return item
     result = compose_discovered_devices(db, page=1, page_size=MAX_CANDIDATES)
     return next((row for row in result["rows"] if row["id"] == candidate_id), None)
 
@@ -198,8 +237,8 @@ def _revalidate_source_candidate(db: Session, candidate: dict) -> None:
         row = db.get(DHCPLeaseHistory, source_id)
         if not row:
             raise ValueError("The discovery source record no longer exists.")
-        if row.dns_client_id:
-            raise ValueError("The discovery changed source identity and must be reviewed again.")
+        if not row.is_active or (row.expires_at and row.expires_at < datetime.utcnow()):
+            raise ValueError("This DHCP lease is no longer active and cannot be adopted.")
     elif kind == "traffic":
         observation = candidate.get("traffic_observation") or {}
         row = db.query(TrafficDiscoveryObservation).filter(

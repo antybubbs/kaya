@@ -53,6 +53,7 @@ from app.services.dns_clients import (
     list_dhcp_leases,
     normalise_mac,
 )
+from app.services.asset_discovery import get_discovered_device
 from app.services.dns_insights import (
     CATEGORY_LABELS,
     SEVERITY_LABELS,
@@ -963,6 +964,8 @@ def dns_client_detail(
     logger.log(logging.WARNING if total_duration_ms >= 1000 else logging.DEBUG, "dns client detail timing", extra=log_extra)
     asset_parent = None
     asset_parent = _confirmed_asset_parent(db, user, client)
+    can_asset_manager = bool(getattr(user, "is_active", False)) and has_module_access(db, user, "asset_manager")
+    discovery_candidate = get_discovered_device(db, f"dns:{client.id}") if can_asset_manager and not asset_parent else None
     return templates.TemplateResponse(request, "dns_client_detail.html", {
         "user": user, "client": client, "display_name": client_display_name(client), "status": client_status(client, stale_days),
         "ip_history": ip_history,
@@ -973,7 +976,8 @@ def dns_client_detail(
         "client_history_days": client_history_days, "traffic_history_days": traffic_history_days,
         "top_requested": top_requested, "top_blocked": top_blocked,
         "flagged_traffic_domains": open_investigation_domains(db, client.provider), "domain_root": domain_root, "domain_kind": domain_kind,
-        "ip_records": records, "preferred_ip_record_id": preferred_ip_record_id, "priority_ip_record_ids": priority_record_ids, "asset_parent": asset_parent, "q": q.strip(), **csrf_context(request),
+        "ip_records": records, "preferred_ip_record_id": preferred_ip_record_id, "priority_ip_record_ids": priority_record_ids, "asset_parent": asset_parent,
+        "can_asset_manager": can_asset_manager, "discovery_candidate": discovery_candidate, "q": q.strip(), **csrf_context(request),
     })
 
 

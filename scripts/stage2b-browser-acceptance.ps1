@@ -66,7 +66,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Stage 2B fixture seeding failed (exit $LASTEXITCODE). Application startup was skipped." }
     $env:GUACD_HOST = ""
     $env:GUACD_PORT = ""
-    $env:KAYA_REMOTE_WS_PORT = "30188"
+    if (-not $env:KAYA_REMOTE_WS_PORT) { $env:KAYA_REMOTE_WS_PORT = "30188" }
     $env:BASE_URL = $BaseUrl
     $env:ARTIFACT_DIR = $ArtifactDir
     $env:FIXTURE_FILE = $fixtureFile

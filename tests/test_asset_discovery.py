@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -20,7 +20,7 @@ from app.models.models import (
     User,
     VLAN,
 )
-from app.services.asset_discovery import adopt_discovered_device, compose_discovered_devices
+from app.services.asset_discovery import adopt_discovered_device, compose_discovered_devices, get_discovered_device
 
 
 def database():
@@ -60,6 +60,55 @@ def test_composition_groups_dhcp_with_its_dns_client_but_keeps_traffic_context_s
     assert dns_row["sources"] == ["DHCP", "DNS Manager"]
     traffic_row = next(row for row in result["rows"] if row["kind"] == "traffic")
     assert traffic_row["traffic"][0]["exporter_identity"] == "edge-a"
+
+
+def test_dns_candidate_falls_back_to_provider_mac_when_normalised_mac_is_missing():
+    db = database()
+    db.add(DNSRecognisedDevice(
+        id=7, provider_id=1, logical_provider_key="synthetic", identity_type="mac",
+        identity_value="00:11:22:33:44:77", hostname="fallback.example",
+        current_ip="192.0.2.77", mac_address="00:11:22:33:44:77",
+        first_seen_at=datetime(2026, 1, 1), last_seen_at=datetime(2026, 1, 2),
+    ))
+    db.commit()
+
+    candidate = get_discovered_device(db, "dns:7")
+
+    assert candidate["mac_addresses"] == ["00:11:22:33:44:77"]
+
+
+def test_explicit_dhcp_candidate_namespace_resolves_grouped_active_lease():
+    db = database()
+    now = datetime(2026, 1, 2)
+    db.add(DHCPLeaseHistory(
+        id=3009, provider_id=1, ip_address="192.0.2.19", mac_address="00:11:22:33:44:55",
+        hostname="phone.example", provider_lease_id="client-3009", lease_started_at=now,
+        first_seen_at=now, last_seen_at=now, is_active=True,
+    ))
+    db.commit()
+
+    candidate = get_discovered_device(db, "dhcp:3009")
+
+    assert candidate["kind"] == "dhcp"
+    assert candidate["ip_addresses"] == ["192.0.2.19"]
+    assert candidate["mac_addresses"] == ["00:11:22:33:44:55"]
+    assert candidate["dhcp_client_ids"] == ["client-3009"]
+    assert get_discovered_device(db, "dhcp:not-an-id") is None
+
+
+def test_explicit_dhcp_candidate_marks_expired_lease_stale():
+    db = database()
+    now = datetime(2026, 1, 2)
+    db.add(DHCPLeaseHistory(
+        id=3010, provider_id=1, ip_address="192.0.2.20", lease_started_at=now - timedelta(days=2),
+        first_seen_at=now - timedelta(days=2), last_seen_at=now - timedelta(days=1),
+        expires_at=now - timedelta(days=1), is_active=False,
+    ))
+    db.commit()
+
+    candidate = get_discovered_device(db, "dhcp:3010")
+
+    assert candidate["review_state"] == "stale"
 
 
 def test_admin_adoption_creates_one_asset_and_reviewed_evidence_atomically():
