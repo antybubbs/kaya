@@ -12,6 +12,6 @@ def test_stage2b_fixture_is_complete_and_deterministic():
     with sessionmaker(bind=engine)() as db:
         counts = seed_stage2b_acceptance(db)
         assert counts["sources"] == 2
-        assert counts["observations"] == 60
-        assert counts["assets"] == 13
+        assert counts["observations"] == 65
+        assert counts["assets"] == 14
         assert counts["device_aggregates"] == 2

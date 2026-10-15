@@ -45,8 +45,20 @@ def _assignment_for_record(db: Session, record: NormalizedFlowRecord, address: s
         or_(AssetNetworkAssignment.source_id.is_(None), AssetNetworkAssignment.source_id == record.source_id),
         or_(AssetNetworkAssignment.exporter_identity.is_(None), AssetNetworkAssignment.exporter_identity == record.exporter_identity),
         or_(AssetNetworkAssignment.vlan_id.is_(None), AssetNetworkAssignment.network_cidr == VLAN.subnet_cidr),
-    ).limit(2).all()
-    return rows[0] if len(rows) == 1 else None
+    ).limit(10).all()
+    if len(rows) == 1:
+        return rows[0]
+    # A single asset commonly holds both a source-less assignment and the
+    # administrator-confirmed source-scoped context for the same address. Only
+    # then is the fully scoped row selected; claims spanning assets, or several
+    # equally specific rows, remain ambiguous and fail closed.
+    if not rows or len({row.asset_id for row in rows}) != 1 or None in {row.asset_id for row in rows}:
+        return None
+    scoped = [
+        row for row in rows
+        if row.source_id == record.source_id and row.exporter_identity == record.exporter_identity
+    ]
+    return scoped[0] if len(scoped) == 1 else None
 
 
 def _asset_monitoring_period(db: Session, monitoring_id: int, assignment_id: int, observed_at: datetime) -> TrafficDeviceMonitoringPeriod | None:
@@ -157,6 +169,52 @@ def asset_monitoring_status(db: Session, asset_id: int, *, now: datetime | None 
     return {"enabled": True, "status": row.status, "reason": row.status_reason, "enabled_at": row.enabled_at, "disabled_at": row.disabled_at, "last_attributed_at": row.last_attributed_at, "assignment_id": row.assignment_id, "source_id": row.last_source_id}
 
 
+def endpoint_monitoring_states(db: Session, endpoints, *, now: datetime | None = None) -> dict[tuple, dict]:
+    """Return the existing monitoring status for observed endpoints that have one.
+
+    ``endpoints`` are ``(source_id, exporter_identity, address)`` keys. Asset
+    monitors match only their confirmed assignment's address and source context;
+    managed-IP monitors match their managed address. Status comes from
+    ``asset_monitoring_status``/``device_monitoring_status`` so every view shares
+    one lifecycle. Endpoints without an enabled monitor are omitted.
+    """
+    now = now or datetime.utcnow()
+    keys = list(endpoints)
+    addresses = {address for _, _, address in keys if address}
+    if not addresses:
+        return {}
+    states: dict[tuple, dict] = {}
+    asset_monitors = db.query(TrafficDeviceMonitoring, AssetNetworkAssignment).join(
+        AssetNetworkAssignment, AssetNetworkAssignment.id == TrafficDeviceMonitoring.assignment_id
+    ).filter(
+        TrafficDeviceMonitoring.is_enabled.is_(True),
+        TrafficDeviceMonitoring.asset_id.is_not(None),
+        AssetNetworkAssignment.address.in_(addresses),
+    ).limit(500).all()
+    asset_status: dict[int, dict] = {}
+    for monitor, assignment in asset_monitors:
+        status = asset_status.setdefault(monitor.asset_id, asset_monitoring_status(db, monitor.asset_id, now=now))
+        for key in keys:
+            source_id, exporter_identity, address = key
+            if address != assignment.address or assignment.source_id != source_id:
+                continue
+            if assignment.exporter_identity is not None and assignment.exporter_identity != exporter_identity:
+                continue
+            states[key] = {**status, "assignment_id": assignment.id, "asset_id": monitor.asset_id}
+    legacy_monitors = db.query(TrafficDeviceMonitoring, IPAddress).join(
+        IPAddress, IPAddress.id == TrafficDeviceMonitoring.ip_address_id
+    ).filter(
+        TrafficDeviceMonitoring.is_enabled.is_(True),
+        IPAddress.address.in_(addresses),
+    ).limit(500).all()
+    for monitor, ip_record in legacy_monitors:
+        status = device_monitoring_status(db, ip_record.id, now=now)
+        for key in keys:
+            if key[2] == ip_record.address and key not in states:
+                states[key] = {**status, "ip_address_id": ip_record.id}
+    return states
+
+
 def set_device_monitoring(db: Session, ip_address: IPAddress, enabled: bool, *, now: datetime | None = None) -> dict:
     now = now or datetime.utcnow()
     row = traffic_monitoring_for(db, ip_address.id)
@@ -250,10 +308,15 @@ def persist_device_traffic(db: Session, record: NormalizedFlowRecord, byte_count
             direction_specs = (("upload", record.destination_ip, record.output_interface, destination_attribution, record.reverse_bytes, record.reverse_packets), ("download", record.destination_ip, record.input_interface, destination_attribution, record.forward_bytes, record.forward_packets))
         else:
             # A confirmed asset assignment is source-scoped and may exist without
-            # a managed IP record. Keep both endpoint candidates so the assignment
-            # path can select the eligible internal endpoint without changing the
-            # legacy accounting classifier.
-            direction_specs = (("upload", record.source_ip, record.input_interface, None, record.forward_bytes, record.forward_packets), ("download", record.destination_ip, record.output_interface, None, record.reverse_bytes, record.reverse_packets))
+            # a managed IP record. Select the endpoint that holds the assignment
+            # and apply the same initiator/responder byte mapping as above, so
+            # both halves of the conversation are attributed to that endpoint.
+            if _assignment_for_record(db, record, record.source_ip):
+                direction_specs = (("upload", record.source_ip, record.input_interface, None, record.forward_bytes, record.forward_packets), ("download", record.source_ip, record.output_interface, None, record.reverse_bytes, record.reverse_packets))
+            elif _assignment_for_record(db, record, record.destination_ip):
+                direction_specs = (("upload", record.destination_ip, record.output_interface, None, record.reverse_bytes, record.reverse_packets), ("download", record.destination_ip, record.input_interface, None, record.forward_bytes, record.forward_packets))
+            else:
+                direction_specs = (("upload", record.source_ip, record.input_interface, None, record.forward_bytes, record.forward_packets), ("download", record.destination_ip, record.output_interface, None, record.reverse_bytes, record.reverse_packets))
     else:
         direction_specs = (("upload", record.source_ip, record.input_interface, None, None, None), ("download", record.destination_ip, record.output_interface, None, None, None))
     for direction, address, interface_index, supplied_attribution, supplied_bytes, supplied_packets in direction_specs:

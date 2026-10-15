@@ -73,6 +73,7 @@ try {
     $env:SQL_COUNT_FILE = $sqlCountFile
     $env:KAYA_STAGE2B_SQL_COUNT_FILE = $sqlCountFile
     $env:KAYA_STAGE2B_PORT = [string]$port
+    $env:KAYA_STAGE2B_PYTHON = $python
     $env:ACCEPTANCE_ADMIN_EMAIL = "stage2b-admin@example.invalid"
     $env:ACCEPTANCE_VIEWER_EMAIL = "stage2b-viewer@example.invalid"
     $env:ACCEPTANCE_PASSWORD = "Stage2B-fixture-password-012345"
@@ -91,7 +92,7 @@ try {
     Stop-StartedApp
     Remove-Item Env:UV_CACHE_DIR -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath $environmentRoot) { Remove-Item -LiteralPath $environmentRoot -Recurse -Force -ErrorAction SilentlyContinue }
-    foreach ($name in @("DATABASE_URL", "SECRET_KEY", "ENCRYPTION_KEY", "GUACD_HOST", "GUACD_PORT", "KAYA_REMOTE_WS_PORT", "BASE_URL", "ARTIFACT_DIR", "FIXTURE_FILE", "SQL_COUNT_FILE", "KAYA_STAGE2B_SQL_COUNT_FILE", "KAYA_STAGE2B_PORT", "ACCEPTANCE_ADMIN_EMAIL", "ACCEPTANCE_VIEWER_EMAIL", "ACCEPTANCE_PASSWORD", "KAYA_STAGE2B_TEST_MARKER", "KAYA_TEST_POSTGRES_CONTAINER", "KAYA_TEST_POSTGRES_SERVER_ADDR", "PYTHONPATH", "APP_ENV")) {
+    foreach ($name in @("DATABASE_URL", "SECRET_KEY", "ENCRYPTION_KEY", "GUACD_HOST", "GUACD_PORT", "KAYA_REMOTE_WS_PORT", "BASE_URL", "ARTIFACT_DIR", "FIXTURE_FILE", "SQL_COUNT_FILE", "KAYA_STAGE2B_SQL_COUNT_FILE", "KAYA_STAGE2B_PORT", "KAYA_STAGE2B_PYTHON", "ACCEPTANCE_ADMIN_EMAIL", "ACCEPTANCE_VIEWER_EMAIL", "ACCEPTANCE_PASSWORD", "KAYA_STAGE2B_TEST_MARKER", "KAYA_TEST_POSTGRES_CONTAINER", "KAYA_TEST_POSTGRES_SERVER_ADDR", "PYTHONPATH", "APP_ENV")) {
         Remove-Item "Env:$name" -ErrorAction SilentlyContinue
     }
 }

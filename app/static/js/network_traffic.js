@@ -100,10 +100,12 @@
     app.querySelector("[data-device-usage-empty]")?.toggleAttribute("hidden", rows.length > 0);
     target.innerHTML = rows.length ? rows.map((item) => {
       const identity = item.identity_status === "confirmed" && item.asset_url ? `<a href="${escape(item.asset_url)}">${escape(item.asset_name || "Confirmed asset")}</a>` : `${escape(item.identity_status || "unidentified")}<small><a href="/infrastructure/asset-manager/discovered">Review in Asset Manager</a></small>`;
-      const usage = item.monitoring_status === "not_monitored" ? "Not monitored" : formatUsage(item.download_bytes);
-      const upload = item.monitoring_status === "not_monitored" ? "Not monitored" : formatUsage(item.upload_bytes);
-      const total = item.monitoring_status === "not_monitored" ? "Not monitored" : formatUsage(item.total_bytes);
-      return `<tr><th scope="row">${escape(item.name)}<small class="mono">${escape(item.address)}</small></th><td><span class="traffic-status traffic-status-${stateClass(item.identity_status)}">${identity}</span><small class="muted">${escape((item.monitoring_status || "unknown").replaceAll("_", " "))}</small></td><td>${escape(item.address)}<small class="muted">${escape(item.vlan || "No VLAN")}</small></td><td class="traffic-muted-cell">${escape((item.source_context || []).join(", ") || "Unknown source")}</td><td class="num">${usage}</td><td class="num">${upload}</td><td class="num"><strong>${total}</strong></td><td class="traffic-muted-cell">${escape(dateLabel(item.last_observed_at))}</td><td>${escape(String(item.coverage_percent || 0))}%</td></tr>`;
+      const noUsage = { not_monitored: "Not monitored", awaiting_data: "Awaiting data", review_required: "Review required" }[item.monitoring_status];
+      const usage = noUsage || formatUsage(item.download_bytes);
+      const upload = noUsage || formatUsage(item.upload_bytes);
+      const total = noUsage || formatUsage(item.total_bytes);
+      const monitoringLabel = { monitored: "Monitored", awaiting_data: "Enabled — awaiting data", review_required: "Enabled — review required", not_monitored: "Not monitored" }[item.monitoring_status] || "Unknown";
+      return `<tr><th scope="row">${escape(item.name)}<small class="mono">${escape(item.address)}</small></th><td><span class="traffic-status traffic-status-${stateClass(item.identity_status)}">${identity}</span><small class="muted"${item.monitoring_reason ? ` title="${escape(item.monitoring_reason)}"` : ""}>${escape(monitoringLabel)}</small></td><td>${escape(item.address)}<small class="muted">${escape(item.vlan || "No VLAN")}</small></td><td class="traffic-muted-cell">${escape((item.source_context || []).join(", ") || "Unknown source")}</td><td class="num">${usage}</td><td class="num">${upload}</td><td class="num"><strong>${total}</strong></td><td class="traffic-muted-cell">${escape(dateLabel(item.last_observed_at))}</td><td>${escape(String(item.coverage_percent || 0))}%</td></tr>`;
     }).join("") : `<tr><td colspan="9" class="muted">No matching opted-in devices.</td></tr>`;
     app.querySelector("[data-device-usage-page-label]").textContent = `Page ${payload.page} of ${payload.page_count} · ${payload.total} monitored device${payload.total === 1 ? "" : "s"}`;
     app.querySelector("[data-device-usage-prev]").disabled = payload.page <= 1;

@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import { chromium } from 'playwright';
 
 const base = process.env.BASE_URL || 'http://127.0.0.1:18080';
@@ -12,7 +13,7 @@ if (!artifacts || !fixtureFile || !adminEmail || !viewerEmail || !password) {
   throw new Error('ARTIFACT_DIR, FIXTURE_FILE, ACCEPTANCE_ADMIN_EMAIL, ACCEPTANCE_VIEWER_EMAIL and ACCEPTANCE_PASSWORD are required');
 }
 const fixture = JSON.parse(await fs.readFile(fixtureFile, 'utf8'));
-const expected = { sources: 2, vlans: 2, mappings: 2, assets: 13, observations: 60, dns_clients: 4, dhcp_leases: 3, device_aggregates: 2 };
+const expected = { sources: 2, vlans: 2, mappings: 2, assets: 14, observations: 65, dns_clients: 4, dhcp_leases: 4, device_aggregates: 2 };
 for (const [key, value] of Object.entries(expected)) if (fixture[key] !== value) throw new Error(`Fixture mismatch for ${key}: ${fixture[key]}`);
 await fs.mkdir(artifacts, { recursive: true });
 
@@ -133,6 +134,81 @@ try {
     await disable.getByRole('button', { name: /Disable monitoring/i }).click();
     await page.waitForLoadState('networkidle');
     if (!(await page.locator('body').innerText()).match(/Disabled/i)) throw new Error('disabled state missing');
+  });
+  await run('doorbell-monitoring-consistency', async () => {
+    // Ring-doorbell-style device: DHCP identity, source-less adoption assignment
+    // and an administrator-confirmed Cisco context for the same address.
+    const page = admin;
+    const address = '192.0.2.115';
+    const doorbellUrl = '/infrastructure/asset-manager/9460';
+    const helper = mode => JSON.parse(execFileSync(process.env.KAYA_STAGE2B_PYTHON, ['scripts/stage2b_seed_doorbell_flows.py', ...(mode ? [mode] : [])], { encoding: 'utf8' }).trim().split('\n').at(-1));
+    // The fixture's site timezone is UTC, so the custom range is entered in UTC.
+    const utcNow = () => new Date().toISOString().slice(0, 16);
+    const usageRow = async () => {
+      await page.goto(`${base}/networking/ip-wan-monitor/traffic/devices`, { waitUntil: 'networkidle' });
+      await page.locator('[data-device-usage-range]').selectOption('custom');
+      await page.locator('[data-device-usage-search]').fill(address);
+      // Set both bounds before one change event; each field otherwise requests on its own.
+      await page.evaluate(([start, end]) => { document.querySelector('[data-device-usage-start]').value = start; document.querySelector('[data-device-usage-end]').value = end; }, ['2026-01-14T00:00', utcNow()]);
+      await Promise.all([
+        page.waitForResponse(response => response.url().includes('/traffic/device-usage') && response.url().includes('range=custom') && response.url().includes(encodeURIComponent(address))),
+        page.locator('[data-device-usage-end]').dispatchEvent('change'),
+      ]);
+      await page.waitForLoadState('networkidle');
+      const rows = page.locator('.device-usage-table tbody tr').filter({ hasText: address });
+      if (await rows.count() !== 1) throw new Error(`expected one Device Usage row for ${address}, found ${await rows.count()}`);
+      const cells = (await rows.first().locator('th, td').allInnerTexts()).map(text => text.replace(/\s+/g, ' ').trim());
+      return { row: rows.first(), cells, identity: cells[1], download: cells[4], upload: cells[5], observed: cells[8] };
+    };
+    const profileBody = async () => { await page.goto(`${base}${doorbellUrl}`, { waitUntil: 'networkidle' }); return (await page.locator('#asset-traffic').innerText()).replace(/\s+/g, ' '); };
+    const api = async () => page.evaluate(async query => (await fetch(`/networking/ip-wan-monitor/traffic/device-usage?${query}`)).json(), `range=24h&q=${address}`);
+
+    // 1-3: recognised, linked to its asset, and not yet monitored.
+    let usage = await usageRow();
+    if (!usage.identity.includes('Stage2B Doorbell')) throw new Error(`identity cell: ${usage.identity}`);
+    if (!usage.identity.includes('Not monitored') || usage.download !== 'Not monitored') throw new Error(`initial state: ${JSON.stringify(usage.cells)}`);
+    if (!/^\d+%$/.test(usage.observed)) throw new Error(`observed share cell: ${usage.observed}`);
+    // 4: the identity link opens the permanent asset record.
+    await Promise.all([page.waitForURL(`**${doorbellUrl}`), usage.row.getByRole('link', { name: 'Stage2B Doorbell' }).click()]);
+    // 5: confirmed source-scoped assignment and monitoring disabled.
+    const assetBody = await page.locator('body').innerText();
+    if (!assetBody.includes(address)) throw new Error('assignment address missing from Asset Profile');
+    if (!/Monitoring\s+Disabled/i.test(assetBody)) throw new Error('doorbell monitoring was not disabled before the journey');
+    // 6: enable explicitly.
+    const enabled = await Promise.all([
+      page.waitForResponse(response => response.url().endsWith('/9460/network-traffic')),
+      page.locator('form[action$="/network-traffic"]').getByRole('button', { name: /Enable monitoring/i }).click(),
+    ]);
+    if (enabled[0].status() !== 303) throw new Error(`enable status ${enabled[0].status()}`);
+    // 7: both screens agree that monitoring is enabled and awaiting data.
+    if (!/Monitoring Awaiting Data/i.test(await profileBody())) throw new Error('Asset Profile is not awaiting data after enabling');
+    usage = await usageRow();
+    if (!usage.identity.includes('Enabled — awaiting data') || usage.download !== 'Awaiting data') throw new Error(`Device Usage after enabling: ${JSON.stringify(usage.cells)}`);
+    // 8: synthetic NSEL flows through the real attribution path.
+    const seeded = helper();
+    if (JSON.stringify(seeded.attributed) !== JSON.stringify([1, 1, 0])) throw new Error(`attribution ${JSON.stringify(seeded)}`);
+    // 9-10: measured usage appears in both reporting paths and reconciles.
+    usage = await usageRow();
+    if (!usage.identity.includes('Monitored') || usage.download === 'Awaiting data') throw new Error(`Device Usage after flows: ${JSON.stringify(usage.cells)}`);
+    const measured = (await api()).devices.filter(row => row.address === address);
+    if (measured.length !== 1 || measured[0].download_bytes !== seeded.expected_download || measured[0].upload_bytes !== seeded.expected_upload) throw new Error(`Device Usage totals ${JSON.stringify(measured)}`);
+    const profile = await profileBody();
+    if (!/Monitoring Active/i.test(profile)) throw new Error(`Asset Profile status after flows: ${profile.slice(0, 200)}`);
+    if (!profile.includes(`Download ${seeded.expected_download} bytes`) || !profile.includes(`Upload ${seeded.expected_upload} bytes`)) throw new Error(`Asset Profile totals: ${profile}`);
+    await screenshot(page, 'doorbell-asset-profile-measured');
+    // 11-12: disable; both screens agree.
+    await page.locator('form[action$="/network-traffic"]').getByRole('button', { name: /Disable monitoring/i }).click();
+    await page.waitForLoadState('networkidle');
+    if (!/Monitoring Disabled/i.test(await profileBody())) throw new Error('Asset Profile not disabled');
+    usage = await usageRow();
+    if (!usage.identity.includes('Not monitored') || usage.download !== 'Not monitored') throw new Error(`Device Usage after disabling: ${JSON.stringify(usage.cells)}`);
+    // 13: the closed monitoring period and its aggregates are preserved.
+    const inspected = helper('--inspect');
+    if (inspected.periods.length !== 1 || !inspected.periods[0].closed || inspected.aggregates_300s < 2 || JSON.stringify(inspected.aggregate_source_ids) !== '[9101]') throw new Error(`history ${JSON.stringify(inspected)}`);
+    // Existing monitored devices keep reporting their own totals.
+    const legacy = await page.evaluate(async () => (await fetch('/networking/ip-wan-monitor/traffic/device-usage?range=custom&start=2026-01-15T00:00:00&end=2026-01-15T23:59:00')).json());
+    if (legacy.summary.download_bytes !== 1000 || legacy.summary.upload_bytes !== 300) throw new Error(`existing monitored totals changed ${JSON.stringify(legacy.summary)}`);
+    evidence.doorbell = { seeded, inspected, finalRow: usage.cells };
   });
   await run('mobile-layout-focus-and-browser-quality', async () => {
     const mobile = await session(adminEmail, true);

@@ -34,6 +34,7 @@ from app.models.models import (
 
 FIXTURE_PASSWORD = "Stage2B-fixture-password-012345"
 FIXTURE_NOW = datetime(2026, 1, 15, 12, 0, 0)
+DOORBELL_ADDRESS = "192.0.2.115"
 
 
 def seed_stage2b_acceptance(db) -> dict[str, int | str]:
@@ -95,6 +96,14 @@ def seed_stage2b_acceptance(db) -> dict[str, int | str]:
     static_asset = HardwareAsset(id=9450, asset_tag="STAGE2B-STATIC", name="Stage2B Static Asset", status="In use")
     assets.append(static_asset)
     assignments.append(AssetNetworkAssignment(asset_id=static_asset.id, address="192.0.2.50", address_family=4, vlan_id=vlan_a.id, network_cidr=vlan_a.subnet_cidr, started_at=FIXTURE_NOW - timedelta(days=1), provenance="stage2b static source-less fixture", status="confirmed", confirmed_by=admin.id, confirmed_at=FIXTURE_NOW - timedelta(days=1)))
+    # Doorbell-style device mirroring the DEV defect: a DHCP-identified asset
+    # holding a source-less adoption assignment and an administrator-confirmed
+    # Cisco source context for the same address. Monitoring is left disabled
+    # so the browser journey enables it explicitly.
+    doorbell = HardwareAsset(id=9460, asset_tag="STAGE2B-DOORBELL", name="Stage2B Doorbell", status="In use")
+    assets.append(doorbell)
+    assignments.append(AssetNetworkAssignment(asset_id=doorbell.id, address=DOORBELL_ADDRESS, address_family=4, vlan_id=vlan_a.id, network_cidr=vlan_a.subnet_cidr, started_at=FIXTURE_NOW - timedelta(days=3), provenance="discovered_device_adoption", status="confirmed", confirmed_by=admin.id, confirmed_at=FIXTURE_NOW - timedelta(days=3)))
+    assignments.append(AssetNetworkAssignment(asset_id=doorbell.id, address=DOORBELL_ADDRESS, address_family=4, vlan_id=vlan_a.id, network_cidr=vlan_a.subnet_cidr, source_id=source_a.id, exporter_identity="192.0.2.1", started_at=FIXTURE_NOW - timedelta(days=2), provenance="administrator traffic context", status="confirmed", confirmed_by=admin.id, confirmed_at=FIXTURE_NOW - timedelta(days=2)))
     db.add_all(assets + assignments)
     db.flush()
     db.add(AssetIdentityEvidence(asset_id=assets[0].id, evidence_type="mac", normalised_value="02:00:00:00:00:01", source="dns", status="confirmed", confirmed_by=admin.id, confirmed_at=FIXTURE_NOW))
@@ -121,6 +130,9 @@ def seed_stage2b_acceptance(db) -> dict[str, int | str]:
         source = source_a if index % 2 == 0 else source_b
         exporter = "192.0.2.1" if index % 2 == 0 else "192.0.2.2"
         db.add(TrafficDiscoveryObservation(source_id=source.id, exporter_identity=exporter, endpoint_ip=address, address_family=4, endpoint_role="original_source", bucket_start=FIXTURE_NOW - timedelta(minutes=index), first_seen_at=FIXTURE_NOW - timedelta(minutes=index), last_seen_at=FIXTURE_NOW, observation_count=index + 1, classification="internal", confidence="confirmed" if index < 12 else "unknown"))
+    for index in range(5):
+        observed = FIXTURE_NOW - timedelta(minutes=5 * index)
+        db.add(TrafficDiscoveryObservation(source_id=source_a.id, exporter_identity="192.0.2.1", endpoint_ip=DOORBELL_ADDRESS, address_family=4, endpoint_role="original_source", bucket_start=observed, first_seen_at=observed, last_seen_at=observed, observation_count=1, classification="internal", confidence="confirmed"))
     for index, asset in enumerate(assets[:3]):
         address = assignments[index].address
         client = DNSRecognisedDevice(provider_id=provider.id, logical_provider_key="stage2b-pihole", identity_key=f"stage2b-client-{index}", identity_type="mac", identity_value=f"02:00:00:00:10:{index:02x}", hostname=f"stage2b-host-{index}.invalid", current_ip=address, mac_address=f"02:00:00:00:10:{index:02x}", provider_type="pihole", friendly_name=f"Stage2B DNS {index}", is_known=True, hardware_asset_id=asset.id, linked_ip_record_id=managed_ips[index].id, last_seen_at=FIXTURE_NOW)
@@ -129,6 +141,7 @@ def seed_stage2b_acceptance(db) -> dict[str, int | str]:
     db.flush()
     for index, client in enumerate(db.query(DNSRecognisedDevice).filter(DNSRecognisedDevice.provider_id == provider.id).all()[:3]):
         db.add(DHCPLeaseHistory(provider_id=provider.id, dns_client_id=client.id, ip_address=client.current_ip, mac_address=client.mac_address, hostname=client.hostname, provider_lease_id=f"stage2b-lease-{index}", lease_started_at=FIXTURE_NOW - timedelta(hours=2), first_seen_at=FIXTURE_NOW - timedelta(hours=2), last_seen_at=FIXTURE_NOW, is_active=True, source="stage2b fixture"))
+    db.add(DHCPLeaseHistory(provider_id=provider.id, ip_address=DOORBELL_ADDRESS, mac_address="02:00:00:00:01:15", hostname="stage2b-doorbell.invalid", provider_lease_id="stage2b-lease-doorbell", lease_started_at=FIXTURE_NOW - timedelta(days=3), first_seen_at=FIXTURE_NOW - timedelta(days=3), last_seen_at=FIXTURE_NOW, is_active=True, source="stage2b fixture"))
     db.commit()
 
     counts = {
@@ -141,7 +154,7 @@ def seed_stage2b_acceptance(db) -> dict[str, int | str]:
         "dhcp_leases": db.query(DHCPLeaseHistory).filter(DHCPLeaseHistory.provider_id == provider.id).count(),
         "device_aggregates": db.query(TrafficDeviceAggregate).count(),
     }
-    expected = {"sources": 2, "vlans": 2, "mappings": 2, "assets": 13, "observations": 60, "dns_clients": 4, "dhcp_leases": 3, "device_aggregates": 2}
+    expected = {"sources": 2, "vlans": 2, "mappings": 2, "assets": 14, "observations": 65, "dns_clients": 4, "dhcp_leases": 4, "device_aggregates": 2}
     if counts != expected:
         raise AssertionError(f"Stage2B fixture incomplete: expected {expected}, got {counts}")
     return counts | {"admin_email": admin.email, "viewer_email": viewer.email, "password": FIXTURE_PASSWORD}

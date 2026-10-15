@@ -19,6 +19,7 @@ from app.models.models import (
     AssetNetworkAssignment,
     HardwareAsset,
 )
+from app.services.device_traffic import endpoint_monitoring_states
 from app.services.modules import has_module_access
 from app.services.network_monitor_history import resolve_range
 
@@ -143,6 +144,7 @@ def _device_rows(
     bucket_seconds: int,
     ip_address_id: int | None = None,
     include_context: bool = False,
+    end: datetime | None = None,
 ) -> list[dict]:
     query = db.query(TrafficDeviceAggregate, IPAddress, VLAN).join(
         IPAddress, IPAddress.id == TrafficDeviceAggregate.ip_address_id
@@ -150,9 +152,14 @@ def _device_rows(
         TrafficDeviceMonitoring, TrafficDeviceMonitoring.ip_address_id == IPAddress.id
     ).filter(
         TrafficDeviceMonitoring.is_enabled.is_(True),
+        # Assignment-backed aggregates may also carry a managed IP; they are
+        # reported once, by the assignment branch below.
+        TrafficDeviceAggregate.assignment_id.is_(None),
         TrafficDeviceAggregate.bucket_seconds == bucket_seconds,
         TrafficDeviceAggregate.bucket_start >= start,
     )
+    if end is not None:
+        query = query.filter(TrafficDeviceAggregate.bucket_start < end)
     if ip_address_id is not None:
         query = query.filter(IPAddress.id == ip_address_id)
     rows = query.order_by(TrafficDeviceAggregate.bucket_start.asc()).limit(MAX_REPORT_ROWS).all()
@@ -188,6 +195,8 @@ def _device_rows(
         TrafficDeviceAggregate.bucket_start >= start,
         AssetNetworkAssignment.status == "confirmed",
     )
+    if end is not None:
+        assignment_rows = assignment_rows.filter(TrafficDeviceAggregate.bucket_start < end)
     if ip_address_id is not None:
         assignment_rows = assignment_rows.filter(AssetNetworkAssignment.ip_address_id == ip_address_id)
     for aggregate, assignment, asset, vlan in assignment_rows.order_by(TrafficDeviceAggregate.bucket_start.asc()).limit(MAX_REPORT_ROWS).all():
@@ -235,6 +244,7 @@ def device_history(db: Session, ip_address_id: int, *, report_range: str = "24h"
     selected, start, bucket_seconds = report_window(report_range, now=now)
     rows = db.query(TrafficDeviceAggregate).join(TrafficDeviceMonitoring, TrafficDeviceMonitoring.ip_address_id == TrafficDeviceAggregate.ip_address_id).filter(
         TrafficDeviceAggregate.ip_address_id == ip_address_id,
+        TrafficDeviceAggregate.assignment_id.is_(None),
         TrafficDeviceMonitoring.is_enabled.is_(True),
         TrafficDeviceAggregate.bucket_seconds == bucket_seconds,
         TrafficDeviceAggregate.bucket_start >= start,
@@ -271,30 +281,52 @@ def device_usage_report(
     """
     if report_range == "custom":
         window = resolve_range(db, "custom", start_text, end_text, now=now)
-        selected, start, bucket_seconds = window["key"], window["start"], window["bucket_seconds"]
+        selected, start, end = window["key"], window["start"], window["end"]
+        # Device aggregates are persisted only at 5-minute, hourly and daily
+        # resolution; use the same selection rule as the preset ranges.
+        duration = end - start
+        bucket_seconds = 300 if duration <= timedelta(hours=24) else 3600 if duration <= timedelta(days=7) else 86400
     else:
         selected, start, bucket_seconds = report_window(report_range, now=now)
+        end = now or datetime.utcnow()
     page = max(1, min(int(page), 100000))
     query = (query or "").strip()[:120].lower()
     sort = sort if sort in {"total", "download", "upload", "name", "last"} else "total"
-    all_rows = _device_rows(db, start=start, bucket_seconds=bucket_seconds, include_context=True)
+    all_rows = _device_rows(db, start=start, bucket_seconds=bucket_seconds, include_context=True, end=end)
     observed_rows = db.query(TrafficDiscoveryObservation).filter(
         TrafficDiscoveryObservation.bucket_start >= start,
+        TrafficDiscoveryObservation.bucket_start < end,
         TrafficDiscoveryObservation.endpoint_role.like("original%"),
         TrafficDiscoveryObservation.classification == "internal",
     ).order_by(TrafficDiscoveryObservation.last_seen_at.desc()).limit(MAX_REPORT_ROWS).all()
+    # Endpoints that already have eligible usage for a source are not listed a
+    # second time from discovery observations of that same source.
+    measured = {(row["address"], source_id) for row in all_rows for source_id in row.get("source_ids", ())}
     observed_grouped = {}
     for observation in observed_rows:
+        if (observation.endpoint_ip, observation.source_id) in measured:
+            continue
         key = (observation.source_id, observation.exporter_identity, observation.endpoint_ip, observation.endpoint_role)
         item = observed_grouped.setdefault(key, {
             "id": None, "assignment_id": None, "name": observation.endpoint_ip, "address": observation.endpoint_ip,
             "vlan": None, "download_bytes": None, "upload_bytes": None, "total_bytes": None,
             "last_observed_at": observation.last_seen_at, "quality": "unavailable", "confidence": observation.confidence or "unknown",
-            "source_ids": {observation.source_id}, "observed_bucket_count": {observation.bucket_start},
+            "source_ids": {observation.source_id}, "observed_bucket_count": set(),
             "monitoring_status": "not_monitored", "usage_available": False,
         })
         item["last_observed_at"] = max(item["last_observed_at"], observation.last_seen_at)
-        item["observed_bucket_count"].add(observation.bucket_start)
+        # Count presence at the report's resolution so the share cannot exceed
+        # the number of buckets in the selected period.
+        epoch = int((observation.bucket_start - datetime(1970, 1, 1)).total_seconds())
+        item["observed_bucket_count"].add(epoch - epoch % bucket_seconds)
+    states = endpoint_monitoring_states(db, {(key[0], key[1], key[2]) for key in observed_grouped}, now=end)
+    for key, item in observed_grouped.items():
+        state = states.get((key[0], key[1], key[2]))
+        if state:
+            # An enabled monitor without eligible usage in this period is never
+            # reported as "not monitored".
+            item["monitoring_status"] = "review_required" if state.get("status") == "review_required" else "awaiting_data"
+            item["monitoring_reason"] = state.get("reason")
     all_rows.extend(observed_grouped.values())
     rows = list(all_rows)
     if query:
@@ -372,7 +404,7 @@ def device_usage_report(
         bucket_count = row.get("observed_bucket_count", 0)
         if isinstance(bucket_count, (set, list, tuple)):
             bucket_count = len(bucket_count)
-        row["coverage_percent"] = min(100, round((int(bucket_count or 0) / max(1, int((datetime.utcnow() - start).total_seconds() / bucket_seconds))) * 100))
+        row["coverage_percent"] = min(100, round((int(bucket_count or 0) / max(1, int((end - start).total_seconds() / bucket_seconds))) * 100))
         row.pop("source_ids", None)
         row.pop("observed_bucket_count", None)
     return {
