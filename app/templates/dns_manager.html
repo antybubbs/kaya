@@ -530,7 +530,7 @@
       {% for row in rows %}
       {% set status_label = client_status(row) %}
       <tr>
-        <td><a href="/networking/dns-manager/clients/{{ row.id }}"><strong>{{ client_display_name(row) }}</strong></a>{% if row.hostname and row.hostname != client_display_name(row) %}<br><span class="muted">{{ row.hostname }}</span>{% endif %}</td>
+        <td>{% if row.asset_parent %}<a href="/infrastructure/asset-manager/{{ row.asset_parent.id }}"><strong>{{ client_display_name(row) }}</strong></a><br><span class="muted">Confirmed asset: {{ row.asset_parent.name }}</span>{% else %}<a href="/networking/dns-manager/clients/{{ row.id }}"><strong>{{ client_display_name(row) }}</strong></a>{% endif %}{% if row.hostname and row.hostname != client_display_name(row) %}<br><span class="muted">{{ row.hostname }}</span>{% endif %}</td>
         <td class="mono">{{ row.current_ip or '-' }}{% if row.previous_ip and row.previous_ip != row.current_ip %}<br><span class="muted">Previous: {{ row.previous_ip }}</span>{% endif %}</td>
         <td class="mono">{{ row.normalised_mac or '-' }}</td>
         <td>{{ row.provider.name if row.provider else row.provider_type }}</td>
@@ -539,7 +539,7 @@
         <td>{{ display_number(row.observation_count) }}</td>
         <td>{% if row.linked_ip_record %}<a href="/networking/vlan-ip-manager/{{ row.linked_ip_record.id }}">{{ row.linked_ip_record.name or row.linked_ip_record.address }}</a>{% elif row.match_confidence %}Suggested match<br><span class="muted">{{ row.match_method|replace('_', ' ') }} · {{ row.match_confidence }}%</span>{% else %}Not managed{% endif %}</td>
         <td><span class="table-chip {% if status_label == 'Conflict' %}danger-chip{% elif status_label in ['Linked','Known'] %}good{% elif status_label in ['Ignored','Stale'] %}muted-chip{% endif %}">{{ status_label }}</span></td>
-        <td class="action-col"><a class="button secondary small" href="/networking/dns-manager/clients/{{ row.id }}">View client</a></td>
+        <td class="action-col">{% if row.asset_parent %}<a class="button secondary small" href="/infrastructure/asset-manager/{{ row.asset_parent.id }}">Open asset</a><a class="button secondary small" href="/networking/dns-manager/clients/{{ row.id }}">DNS detail</a>{% else %}<a class="button secondary small" href="/networking/dns-manager/clients/{{ row.id }}">View client</a>{% endif %}</td>
       </tr>
       {% else %}
       <tr><td colspan="10">No retained clients match these filters. The background collector will populate this list after its next successful provider sync.</td></tr>

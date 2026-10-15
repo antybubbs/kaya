@@ -49,6 +49,7 @@ from app.services.asset_identity import (
 )
 from app.services.asset_identity_resolution import evidence_for_asset
 from app.services.asset_profile_reporting import asset_reporting_context
+from app.services.asset_discovery import compose_discovered_devices, get_discovered_device, adopt_discovered_device
 from app.services.custom_fields import (
     active_fields,
     field_values,
@@ -319,6 +320,58 @@ def list_assets(request: Request, q: str = Query("", max_length=200), category: 
     rows = query.order_by(HardwareAsset.name.asc()).limit(500).all()
     total = db.query(HardwareAsset).count()
     return templates.TemplateResponse(request, "hardware_assets.html", {"user": user, "rows": rows, "total": total, "q": clean_q, "categories": categories, "active_category": active_category, **csrf_context(request)})
+
+
+@router.get("/discovered")
+def list_discovered_devices(request: Request, q: str = Query("", max_length=120), source: str = Query("", max_length=120), state: str = Query("", max_length=20), page: int = Query(1, ge=1, le=10000), db: Session = Depends(get_db), user=Depends(require_user)):
+    result = compose_discovered_devices(db, query=q, source=source, state=state, page=page, page_size=50)
+    return templates.TemplateResponse(request, "hardware_discovered_devices.html", {"user": user, "result": result, "q": q.strip(), "source": source.strip(), "state": state.strip(), **csrf_context(request)})
+
+
+@router.get("/discovered/review")
+def review_discovered_device(request: Request, candidate_id: str = Query(..., min_length=3, max_length=255), db: Session = Depends(get_db), user=Depends(require_user)):
+    candidate = get_discovered_device(db, candidate_id.strip())
+    if not candidate:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Discovered device not found")
+    assets = db.query(HardwareAsset).order_by(HardwareAsset.name.asc()).limit(500).all()
+    return templates.TemplateResponse(request, "hardware_discovered_device_review.html", {"user": user, "candidate": candidate, "assets": assets, **csrf_context(request)})
+
+
+@router.post("/discovered/adopt")
+def adopt_discovered_device_route(request: Request, candidate_id: str = Form(..., max_length=255), asset_id: int | None = Form(None), new_name: str = Form("", max_length=255), category: str = Form("", max_length=120), csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_admin)):
+    validate_csrf_token(request, csrf_token)
+    candidate = get_discovered_device(db, candidate_id.strip())
+    if not candidate:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Discovered device not found")
+    category = category.strip()
+    if category and category not in list_values(db, MODULE).get("category", []):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Choose a valid managed asset category.")
+    try:
+        asset = adopt_discovered_device(db, user, candidate, asset_id=asset_id, new_name=new_name, category=category)
+    except (ValueError, PermissionError) as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return RedirectResponse(f"/infrastructure/asset-manager/{asset.id}", status_code=303)
+
+
+@router.post("/discovered/dismiss")
+def dismiss_discovered_device(request: Request, candidate_id: str = Form(..., max_length=255), csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_admin)):
+    validate_csrf_token(request, csrf_token)
+    candidate = get_discovered_device(db, candidate_id.strip())
+    if not candidate:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Discovered device not found")
+    if candidate["kind"] != "dns" or not candidate.get("dns_client_id"):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This source does not provide a persistent dismissal state.")
+    row = db.get(DNSRecognisedDevice, candidate["dns_client_id"])
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Discovery source record not found")
+    row.is_ignored = True
+    audit = write_audit(db, user, "dismiss", "discovered_device", candidate["id"], request.client.host if request.client else None, detail="Dismissed a DNS discovery from Asset Manager", commit=False)
+    if audit is None:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="The dismissal could not be audited.")
+    db.commit()
+    return RedirectResponse("/infrastructure/asset-manager/discovered", status_code=303)
 
 
 @router.get("/export")

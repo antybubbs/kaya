@@ -27,6 +27,7 @@ from app.models.models import (
     DNSClientTrafficEvent,
     DNSInsight,
     DNSInvestigation,
+    AssetIdentityEvidence,
     DNSProviderConfig,
     DNSRecognisedDevice,
     DNSStatisticsSnapshot,
@@ -828,6 +829,18 @@ def _dns_client(db: Session, client_id: int) -> DNSRecognisedDevice:
     return row
 
 
+def _confirmed_asset_parent(db: Session, user, client: DNSRecognisedDevice) -> HardwareAsset | None:
+    if not client.hardware_asset_id or not has_module_access(db, user, "asset_manager"):
+        return None
+    asset = db.get(HardwareAsset, client.hardware_asset_id)
+    confirmed = db.query(AssetIdentityEvidence).filter(
+        AssetIdentityEvidence.asset_id == client.hardware_asset_id,
+        AssetIdentityEvidence.status == "confirmed",
+        AssetIdentityEvidence.source.in_(("dns", "discovery")),
+    ).first()
+    return asset if asset and confirmed else None
+
+
 def _client_audit(request: Request, db: Session, user, client: DNSRecognisedDevice, action: str, detail: str, **metadata) -> None:
     write_audit(db, user, action, "dns_client", str(client.id), request.client.host if request.client else None, detail=detail, metadata={"provider_id": client.provider_id, "linked_ip_record_id": client.linked_ip_record_id, **metadata})
 
@@ -948,8 +961,7 @@ def dns_client_detail(
     }
     logger.log(logging.WARNING if total_duration_ms >= 1000 else logging.DEBUG, "dns client detail timing", extra=log_extra)
     asset_parent = None
-    if client.hardware_asset_id and has_module_access(db, user, "asset_manager"):
-        asset_parent = db.get(HardwareAsset, client.hardware_asset_id)
+    asset_parent = _confirmed_asset_parent(db, user, client)
     return templates.TemplateResponse(request, "dns_client_detail.html", {
         "user": user, "client": client, "display_name": client_display_name(client), "status": client_status(client, stale_days),
         "ip_history": ip_history,
@@ -1320,6 +1332,8 @@ def dns_manager(
             db, provider_id=provider.id if provider else None, search=client_q,
             status=client_status_filter, offset=(client_page - 1) * 50, limit=50,
         )
+        for row in retained_client_rows:
+            row.asset_parent = _confirmed_asset_parent(db, user, row)
     if active_tab == "dhcp":
         clean_dhcp_status = dhcp_status if dhcp_status in {"current", "active", "recent", "history", "all"} else "current"
         retained_dhcp_rows, retained_dhcp_total = list_dhcp_leases(
