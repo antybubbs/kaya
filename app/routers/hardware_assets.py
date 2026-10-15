@@ -36,6 +36,9 @@ from app.models.models import (
     HardwareAssetPhoto,
     IPAddress,
     RackItem,
+    TrafficDiscoveryNetworkMapping,
+    TrafficSource,
+    VLAN,
     TrafficDiscoveryLink,
 )
 from app.routers.auth import require_admin, require_editor, require_module_access, require_user
@@ -45,11 +48,14 @@ from app.services.asset_identity import (
     close_network_assignment,
     confirm_existing_identity_evidence,
     confirm_existing_network_assignment,
+    assign_network_identity,
+    eligible_traffic_contexts,
     revoke_identity_evidence,
 )
 from app.services.asset_identity_resolution import evidence_for_asset
 from app.services.asset_profile_reporting import asset_reporting_context
 from app.services.asset_discovery import compose_discovered_devices, get_discovered_device, adopt_discovered_device
+from app.services.device_traffic import asset_monitoring_status, set_asset_monitoring
 from app.services.custom_fields import (
     active_fields,
     field_values,
@@ -293,6 +299,17 @@ def asset_profile_context(db: Session, user, asset: HardwareAsset) -> dict:
                 DHCPLeaseHistory.id.in_(lease_ids - existing_ids),
             ).order_by(DHCPLeaseHistory.last_seen_at.desc()).limit(100).all()
             dhcp_leases.extend(extra_leases)
+    traffic_monitoring = asset_monitoring_status(db, asset.id) if can_network else None
+    traffic_context_options = []
+    if can_network and can_vlan and user.role == "admin":
+        seen_contexts = set()
+        for assignment in assignment_rows:
+            if assignment.status == "confirmed" and assignment.ended_at is None:
+                for option in eligible_traffic_contexts(db, assignment.address):
+                    key = (option["mapping_id"], option["address"])
+                    if key not in seen_contexts:
+                        seen_contexts.add(key)
+                        traffic_context_options.append(option)
     return {
         "identity_rows": identity_rows,
         "assignment_rows": assignment_rows,
@@ -303,6 +320,8 @@ def asset_profile_context(db: Session, user, asset: HardwareAsset) -> dict:
         "can_dns": can_dns,
         "can_network": can_network,
         "can_vlan": can_vlan,
+        "traffic_monitoring": traffic_monitoring,
+        "traffic_context_options": traffic_context_options,
     }
 
 
@@ -496,6 +515,34 @@ def detail_asset(
     return templates.TemplateResponse(request, "hardware_asset_detail.html", {"user": user, "record": row, "attachments": attachments, "photos": photos, "categories": lists.get("category", []), "locations": lists.get("location", []), "statuses": lists.get("status", []), "custom_fields": fields, "custom_values": values, "option_list": option_list, "asset_profile": asset_profile_context(db, user, row), "asset_reporting": reporting, "now_date": datetime.utcnow().strftime("%Y-%m-%d"), **csrf_context(request)})
 
 
+@router.post("/{asset_id}/network-traffic")
+def update_asset_network_monitoring(
+    request: Request,
+    asset_id: int,
+    enabled: str = Form("0", max_length=8),
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    if not has_module_access(db, user, "network_monitor"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Network Traffic access is required.")
+    validate_csrf_token(request, csrf_token)
+    asset = db.get(HardwareAsset, asset_id)
+    if not asset:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Hardware asset not found")
+    requested = enabled.strip().lower() in {"1", "true", "yes", "on"}
+    try:
+        set_asset_monitoring(db, user, asset, requested)
+        db.commit()
+    except (ValueError, PermissionError) as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="The monitoring change could not be audited. Please retry.") from exc
+    return RedirectResponse(f"/infrastructure/asset-manager/{asset_id}#asset-traffic", status_code=303)
+
+
 @router.get("/{asset_id}/profile")
 def asset_profile_api(asset_id: int, db: Session = Depends(get_db), user=Depends(require_user)):
     """Return the minimum permission-aware profile data for future detail clients."""
@@ -579,6 +626,7 @@ def asset_profile_api(asset_id: int, db: Session = Depends(get_db), user=Depends
             }
             for row in profile["discovery_links"]
         ],
+        "traffic_monitoring": profile["traffic_monitoring"],
         "permissions": {
             "asset_manager": True,
             "dns_manager": profile["can_dns"],
@@ -650,6 +698,72 @@ def close_asset_network_assignment(request: Request, asset_id: int, assignment_i
     except (ValueError, PermissionError) as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return RedirectResponse(f"/infrastructure/asset-manager/{asset_id}", status_code=303)
+
+
+@router.post("/{asset_id}/network-assignment/source-context")
+def confirm_asset_traffic_context(
+    request: Request,
+    asset_id: int,
+    mapping_id: int = Form(...),
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    """Confirm one explicitly selected flow source context for a static asset."""
+    validate_csrf_token(request, csrf_token)
+    asset = _asset_or_404(db, asset_id)
+    if not has_module_access(db, user, "network_monitor") or not has_module_access(db, user, "vlan_ip_manager"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Required monitoring permissions are not enabled.")
+    mapping = db.get(TrafficDiscoveryNetworkMapping, mapping_id)
+    if not mapping or not mapping.is_enabled:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="The selected traffic context is no longer available.")
+    source = db.get(TrafficSource, mapping.source_id)
+    vlan = db.get(VLAN, mapping.vlan_id)
+    if not source or source.is_deleted or not source.is_enabled or source.provider_key not in {"netflow_v9", "cisco_nsel"} or not vlan or not vlan.subnet_cidr:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="The selected traffic context is no longer valid.")
+    assignments = db.query(AssetNetworkAssignment).filter(
+        AssetNetworkAssignment.asset_id == asset.id,
+        AssetNetworkAssignment.status == "confirmed",
+        AssetNetworkAssignment.ended_at.is_(None),
+    ).all()
+    selected = None
+    for assignment in assignments:
+        option = next((item for item in eligible_traffic_contexts(db, assignment.address) if item["mapping_id"] == mapping.id), None)
+        if option:
+            if selected is not None:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="The selected traffic context is ambiguous for this asset.")
+            selected = (assignment, option)
+    if selected is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="The selected traffic context is invalid or ambiguous for this asset.")
+    assignment, _option = selected
+    duplicate = db.query(AssetNetworkAssignment).filter(
+        AssetNetworkAssignment.asset_id == asset.id,
+        AssetNetworkAssignment.address == assignment.address,
+        AssetNetworkAssignment.vlan_id == vlan.id,
+        AssetNetworkAssignment.source_id == source.id,
+        AssetNetworkAssignment.exporter_identity == mapping.exporter_identity,
+        AssetNetworkAssignment.status == "confirmed",
+        AssetNetworkAssignment.ended_at.is_(None),
+    ).first()
+    if duplicate:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This traffic context is already confirmed for the asset.")
+    try:
+        assign_network_identity(
+            db,
+            user,
+            asset_id=asset.id,
+            address=assignment.address,
+            started_at=datetime.utcnow(),
+            vlan_id=vlan.id,
+            ip_address_id=assignment.ip_address_id,
+            source_id=source.id,
+            exporter_identity=mapping.exporter_identity,
+            provenance="administrator traffic context",
+        )
+    except (ValueError, PermissionError) as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return RedirectResponse(f"/infrastructure/asset-manager/{asset_id}#network-assignment-heading", status_code=303)
 
 
 @router.get("/{asset_id}/edit")

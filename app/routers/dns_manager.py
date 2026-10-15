@@ -28,6 +28,7 @@ from app.models.models import (
     DNSInsight,
     DNSInvestigation,
     AssetIdentityEvidence,
+    AssetNetworkAssignment,
     DNSProviderConfig,
     DNSRecognisedDevice,
     DNSStatisticsSnapshot,
@@ -1340,6 +1341,14 @@ def dns_manager(
             db, provider_id=provider.id if provider else None, status=clean_dhcp_status,
             offset=(dhcp_page - 1) * 50, limit=50,
         )
+        if has_module_access(db, user, "asset_manager"):
+            for row in retained_dhcp_rows:
+                row.asset_parent = db.query(HardwareAsset).join(
+                    AssetNetworkAssignment, AssetNetworkAssignment.asset_id == HardwareAsset.id
+                ).filter(
+                    AssetNetworkAssignment.dhcp_lease_id == row.id,
+                    AssetNetworkAssignment.status == "confirmed",
+                ).order_by(AssetNetworkAssignment.started_at.desc()).first()
     else:
         clean_dhcp_status = "current"
     insight_rows: list[DNSInsight] = []
@@ -1439,6 +1448,7 @@ def dns_manager(
             "retained_dhcp_rows": retained_dhcp_rows,
             "retained_dhcp_total": retained_dhcp_total,
             "dhcp_filters": {"status": clean_dhcp_status, "page": dhcp_page},
+            "can_asset_manager": has_module_access(db, user, "asset_manager"),
             "client_display_name": client_display_name,
             "client_status": client_status,
             "flagged_domains": flagged_domains,

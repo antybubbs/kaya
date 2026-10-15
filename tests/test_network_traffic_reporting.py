@@ -8,6 +8,7 @@ from app.db.session import Base
 from app.models.models import (
     AssetNetworkAssignment, HardwareAsset, IPAddress, TrafficAggregate, TrafficDeviceAggregate,
     TrafficDeviceMonitoring, TrafficDeviceMonitoringPeriod, TrafficInterface, TrafficSource, User, VLAN,
+    TrafficDiscoveryObservation,
 )
 from app.services.network_traffic_reporting import device_report, device_usage_report, report_window, wan_report
 
@@ -102,3 +103,27 @@ def test_device_usage_report_is_bounded_and_permission_aware(monkeypatch):
         assert restricted["devices"][0]["identity_status"] == "suggested"
         assert restricted["devices"][0]["asset_name"] is None
         assert restricted["devices"][0]["asset_url"] is None
+
+
+def test_device_usage_includes_unmonitored_observations_without_fabricating_usage(monkeypatch):
+    factory = session_factory()
+    with factory() as db:
+        now = datetime(2026, 1, 2, 12)
+        user = User(id=1, email="observed@example.invalid", role="user", is_active=True)
+        source = TrafficSource(id=1, name="Synthetic exporter", provider_key="cisco_nsel", source_category="flow", is_enabled=True)
+        db.add_all([user, source, TrafficDiscoveryObservation(
+            source_id=1, exporter_identity="192.0.2.1", endpoint_ip="192.0.2.55", address_family=4,
+            endpoint_role="original_source", bucket_start=now - timedelta(minutes=5),
+            first_seen_at=now - timedelta(minutes=5), last_seen_at=now - timedelta(minutes=1),
+            observation_count=2, classification="internal", confidence="high",
+        )])
+        db.commit()
+        monkeypatch.setattr("app.services.network_traffic_reporting.has_module_access", lambda *_args: False)
+
+        result = device_usage_report(db, user, report_range="24h", now=now)
+
+        assert result["total"] == 1
+        assert result["summary"]["monitored_devices"] == 0
+        assert result["devices"][0]["monitoring_status"] == "not_monitored"
+        assert result["devices"][0]["download_bytes"] is None
+        assert result["devices"][0]["upload_bytes"] is None

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
 
 from app.models.models import (
@@ -11,10 +12,12 @@ from app.models.models import (
     TrafficCounterObservation,
     TrafficDeviceAggregate,
     TrafficDeviceMonitoring,
+    TrafficDiscoveryObservation,
     TrafficInterface,
     TrafficSource,
     VLAN,
     AssetNetworkAssignment,
+    HardwareAsset,
 )
 from app.services.modules import has_module_access
 from app.services.network_monitor_history import resolve_range
@@ -173,6 +176,41 @@ def _device_rows(
             item["quality"] = aggregate.data_quality or "partial"
         if aggregate.attribution_confidence == "low":
             item["confidence"] = "low"
+        item["monitoring_status"] = "monitored"
+    assignment_rows = db.query(TrafficDeviceAggregate, AssetNetworkAssignment, HardwareAsset, VLAN).join(
+        AssetNetworkAssignment, AssetNetworkAssignment.id == TrafficDeviceAggregate.assignment_id
+    ).outerjoin(HardwareAsset, HardwareAsset.id == AssetNetworkAssignment.asset_id).outerjoin(
+        VLAN, VLAN.id == AssetNetworkAssignment.vlan_id
+    ).join(TrafficDeviceMonitoring, TrafficDeviceMonitoring.assignment_id == TrafficDeviceAggregate.assignment_id).filter(
+        TrafficDeviceMonitoring.is_enabled.is_(True),
+        TrafficDeviceAggregate.assignment_id.is_not(None),
+        TrafficDeviceAggregate.bucket_seconds == bucket_seconds,
+        TrafficDeviceAggregate.bucket_start >= start,
+        AssetNetworkAssignment.status == "confirmed",
+    )
+    if ip_address_id is not None:
+        assignment_rows = assignment_rows.filter(AssetNetworkAssignment.ip_address_id == ip_address_id)
+    for aggregate, assignment, asset, vlan in assignment_rows.order_by(TrafficDeviceAggregate.bucket_start.asc()).limit(MAX_REPORT_ROWS).all():
+        if assignment.started_at > aggregate.bucket_start or (assignment.ended_at and aggregate.bucket_start >= assignment.ended_at):
+            continue
+        key = f"assignment:{assignment.id}"
+        item = grouped.setdefault(key, {
+            "id": None, "assignment_id": assignment.id,
+            "name": asset.name if asset else assignment.address, "address": assignment.address,
+            "vlan": vlan.name if vlan else None, "download_bytes": 0, "upload_bytes": 0, "total_bytes": 0,
+            "last_observed_at": None, "quality": "observed", "confidence": aggregate.attribution_confidence or "unknown",
+            "source_ids": set(), "observed_bucket_count": set(), "monitoring_status": "monitored",
+        })
+        item["source_ids"].add(aggregate.source_id)
+        item["observed_bucket_count"].add(aggregate.bucket_start)
+        amount = max(0, int(aggregate.bytes_total or 0))
+        if aggregate.direction in {"download", "upload"}:
+            item[f"{aggregate.direction}_bytes"] += amount
+            item["total_bytes"] += amount
+        observed_at = aggregate.last_observed_at or aggregate.bucket_start
+        item["last_observed_at"] = max((item["last_observed_at"], observed_at), key=lambda value: value or datetime.min)
+        if aggregate.data_quality != "complete":
+            item["quality"] = aggregate.data_quality or "partial"
     now = datetime.utcnow()
     for item in grouped.values():
         last_observed = item["last_observed_at"]
@@ -240,6 +278,24 @@ def device_usage_report(
     query = (query or "").strip()[:120].lower()
     sort = sort if sort in {"total", "download", "upload", "name", "last"} else "total"
     all_rows = _device_rows(db, start=start, bucket_seconds=bucket_seconds, include_context=True)
+    observed_rows = db.query(TrafficDiscoveryObservation).filter(
+        TrafficDiscoveryObservation.bucket_start >= start,
+        TrafficDiscoveryObservation.endpoint_role.like("original%"),
+        TrafficDiscoveryObservation.classification == "internal",
+    ).order_by(TrafficDiscoveryObservation.last_seen_at.desc()).limit(MAX_REPORT_ROWS).all()
+    observed_grouped = {}
+    for observation in observed_rows:
+        key = (observation.source_id, observation.exporter_identity, observation.endpoint_ip, observation.endpoint_role)
+        item = observed_grouped.setdefault(key, {
+            "id": None, "assignment_id": None, "name": observation.endpoint_ip, "address": observation.endpoint_ip,
+            "vlan": None, "download_bytes": None, "upload_bytes": None, "total_bytes": None,
+            "last_observed_at": observation.last_seen_at, "quality": "unavailable", "confidence": observation.confidence or "unknown",
+            "source_ids": {observation.source_id}, "observed_bucket_count": {observation.bucket_start},
+            "monitoring_status": "not_monitored", "usage_available": False,
+        })
+        item["last_observed_at"] = max(item["last_observed_at"], observation.last_seen_at)
+        item["observed_bucket_count"].add(observation.bucket_start)
+    all_rows.extend(observed_grouped.values())
     rows = list(all_rows)
     if query:
         rows = [row for row in rows if query in f"{row['name']} {row['address']} {row.get('vlan') or ''}".lower()]
@@ -254,7 +310,9 @@ def device_usage_report(
     page_count = max(1, (total + MAX_DEVICE_USAGE_PAGE - 1) // MAX_DEVICE_USAGE_PAGE)
     page = min(page, page_count)
     selected_rows = rows[(page - 1) * MAX_DEVICE_USAGE_PAGE : page * MAX_DEVICE_USAGE_PAGE]
-    ip_ids = [int(row["id"]) for row in selected_rows]
+    ip_ids = [int(row["id"]) for row in selected_rows if row.get("id") is not None]
+    assignment_ids = [int(row["assignment_id"]) for row in selected_rows if row.get("assignment_id") is not None]
+    addresses = [row["address"] for row in selected_rows if row.get("address")]
     source_ids = set()
     for row in selected_rows:
         source_ids.update(int(value) for value in row.get("source_ids", []))
@@ -265,24 +323,31 @@ def device_usage_report(
     assignments = db.query(AssetNetworkAssignment).options(
         joinedload(AssetNetworkAssignment.asset), joinedload(AssetNetworkAssignment.vlan)
     ).filter(
-        AssetNetworkAssignment.ip_address_id.in_(ip_ids or [-1]),
+        or_(AssetNetworkAssignment.ip_address_id.in_(ip_ids or [-1]), AssetNetworkAssignment.id.in_(assignment_ids or [-1]), AssetNetworkAssignment.address.in_(addresses or ["0.0.0.0"])),
         AssetNetworkAssignment.status.in_(("confirmed", "pending")),
     ).order_by(AssetNetworkAssignment.started_at.desc()).limit(500).all()
     can_assets = has_module_access(db, user, "asset_manager")
     by_ip: dict[int, list[AssetNetworkAssignment]] = {}
+    by_assignment: dict[int, AssetNetworkAssignment] = {}
     for assignment in assignments:
-        by_ip.setdefault(assignment.ip_address_id, []).append(assignment)
+        if assignment.ip_address_id is not None:
+            by_ip.setdefault(assignment.ip_address_id, []).append(assignment)
+        by_assignment[assignment.id] = assignment
     for row in selected_rows:
-        observed = datetime.fromisoformat(row["last_observed_at"].rstrip("Z")) if row.get("last_observed_at") else None
+        last_value = row.get("last_observed_at")
+        observed = last_value if isinstance(last_value, datetime) else datetime.fromisoformat(last_value.rstrip("Z")) if last_value else None
         candidates = []
         reviewable = []
-        for assignment in by_ip.get(row["id"], []):
+        source_candidates = [by_assignment[row["assignment_id"]]] if row.get("assignment_id") in by_assignment else by_ip.get(row.get("id"), [])
+        if not source_candidates and row.get("address"):
+            source_candidates = [item for item in assignments if item.address == row["address"]]
+        for assignment in source_candidates:
             if observed and assignment.started_at <= observed and (assignment.ended_at is None or observed < assignment.ended_at):
                 if assignment.source_id is not None and assignment.source_id not in row.get("source_ids", []):
                     continue
                 # Device aggregates retain source context but not exporter identity;
                 # exporter-scoped assignments therefore remain reviewable suggestions.
-                if assignment.exporter_identity:
+                if assignment.exporter_identity and assignment.id != row.get("assignment_id"):
                     reviewable.append(assignment)
                     continue
                 if assignment.vlan_id is not None and assignment.vlan and assignment.network_cidr != assignment.vlan.subnet_cidr:
@@ -302,7 +367,12 @@ def device_usage_report(
         else:
             row.update({"identity_status": "unidentified", "asset_id": None, "asset_name": None, "asset_url": None})
         row["source_context"] = [sources[source_id] for source_id in row.get("source_ids", []) if source_id in sources]
-        row["coverage_percent"] = min(100, round((row.get("observed_bucket_count", 0) / max(1, int((datetime.utcnow() - start).total_seconds() / bucket_seconds))) * 100))
+        if isinstance(last_value, datetime):
+            row["last_observed_at"] = _iso(last_value)
+        bucket_count = row.get("observed_bucket_count", 0)
+        if isinstance(bucket_count, (set, list, tuple)):
+            bucket_count = len(bucket_count)
+        row["coverage_percent"] = min(100, round((int(bucket_count or 0) / max(1, int((datetime.utcnow() - start).total_seconds() / bucket_seconds))) * 100))
         row.pop("source_ids", None)
         row.pop("observed_bucket_count", None)
     return {
@@ -310,10 +380,10 @@ def device_usage_report(
         "page_size": MAX_DEVICE_USAGE_PAGE, "total": total, "page_count": page_count,
         "devices": selected_rows,
         "summary": {
-            "monitored_devices": len(all_rows),
+            "monitored_devices": sum(1 for row in all_rows if row.get("monitoring_status") == "monitored"),
             "download_bytes": sum(int(row.get("download_bytes", 0) or 0) for row in all_rows),
             "upload_bytes": sum(int(row.get("upload_bytes", 0) or 0) for row in all_rows),
             "total_bytes": sum(int(row.get("total_bytes", 0) or 0) for row in all_rows),
-            "coverage_percent": round(sum(int(row.get("coverage_percent", 0) or 0) for row in all_rows) / max(1, len(all_rows))),
+            "coverage_percent": round(sum(int(row.get("coverage_percent", 0) or 0) for row in all_rows if row.get("monitoring_status") == "monitored") / max(1, sum(1 for row in all_rows if row.get("monitoring_status") == "monitored"))),
         },
     }

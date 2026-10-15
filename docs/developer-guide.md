@@ -152,6 +152,28 @@ python scripts/kaya_test_migrations.py downgrade 20261013_01 --url ("sqlite:///"
 python scripts/kaya_test_migrations.py upgrade head --url ("sqlite:///" + $db)
 ```
 
+The Stage 2B browser acceptance runner requires a local disposable PostgreSQL
+database and an explicit marker. Start the database with the existing
+`ci/compose/docker-compose.postgres-test.yml`, set `KAYA_TEST_POSTGRES_URL`,
+then run the single entry command below from a normal interactive terminal:
+
+```powershell
+$env:KAYA_STAGE2B_TEST_MARKER = "I_UNDERSTAND_DISPOSABLE_STAGE2B"
+$env:KAYA_TEST_POSTGRES_URL = "postgresql+psycopg://kaya_test:kaya_test_only@127.0.0.1:55432/kaya_test"
+.\scripts\stage2b-browser-acceptance.ps1
+```
+
+The runner verifies the local test-only target, upgrades it through the current
+head, loads `tests/fixtures/stage2b_acceptance.py`, starts Kaya with empty
+Guacamole settings, runs Chromium using the existing Playwright dependency,
+writes JSON results and screenshots below a disposable temp artifact directory,
+and stops only the Kaya process it started. It never tears down a PostgreSQL
+container it did not create. Stop the disposable database separately with:
+
+```powershell
+docker compose -p kaya-stage2b-acceptance -f ci/compose/docker-compose.postgres-test.yml down --remove-orphans
+```
+
 The guard accepts only SQLite files inside the system temporary directory with
 a test-only filename, or PostgreSQL databases whose server is local and whose
 database name is test-only. It verifies the connected target before Alembic

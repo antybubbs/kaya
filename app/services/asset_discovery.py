@@ -176,12 +176,12 @@ def _add_evidence(db: Session, user, asset_id: int, evidence_type: str, value: s
 def _revalidate_source_candidate(db: Session, candidate: dict) -> None:
     """Reload source-owned state after locking and reject stale candidate payloads."""
     kind = candidate.get("kind")
-    raw_id = str(candidate.get("id") or "")
-    try:
-        source_id = int(raw_id.split(":", 1)[1])
-    except (IndexError, ValueError):
-        raise ValueError("The discovery source record is invalid.")
     if kind == "dns":
+        raw_id = str(candidate.get("id") or "")
+        try:
+            source_id = int(raw_id.split(":", 1)[1])
+        except (IndexError, ValueError):
+            raise ValueError("The discovery source record is invalid.")
         row = db.get(DNSRecognisedDevice, source_id)
         if not row:
             raise ValueError("The discovery source record no longer exists.")
@@ -190,11 +190,28 @@ def _revalidate_source_candidate(db: Session, candidate: dict) -> None:
         if row.hardware_asset_id:
             raise ValueError("This discovery is already associated with an asset.")
     elif kind == "dhcp":
+        raw_id = str(candidate.get("id") or "")
+        try:
+            source_id = int(raw_id.split(":", 1)[1])
+        except (IndexError, ValueError):
+            raise ValueError("The discovery source record is invalid.")
         row = db.get(DHCPLeaseHistory, source_id)
         if not row:
             raise ValueError("The discovery source record no longer exists.")
         if row.dns_client_id:
             raise ValueError("The discovery changed source identity and must be reviewed again.")
+    elif kind == "traffic":
+        observation = candidate.get("traffic_observation") or {}
+        row = db.query(TrafficDiscoveryObservation).filter(
+            TrafficDiscoveryObservation.source_id == observation.get("source_id"),
+            TrafficDiscoveryObservation.exporter_identity == observation.get("exporter_identity"),
+            TrafficDiscoveryObservation.endpoint_ip == observation.get("endpoint_ip"),
+            TrafficDiscoveryObservation.endpoint_role == observation.get("endpoint_role"),
+        ).order_by(TrafficDiscoveryObservation.last_seen_at.desc()).first()
+        if not row:
+            raise ValueError("The Network Traffic observation is no longer available for adoption; it remains review-only.")
+        if row.classification != "internal" or not str(row.endpoint_role).startswith("original"):
+            raise ValueError("This observation is ambiguous or translated and requires review.")
     else:
         raise ValueError("This discovery source cannot be adopted.")
 
@@ -206,9 +223,7 @@ def adopt_discovered_device(db: Session, user, candidate: dict, *, asset_id: int
         raise ValueError("This discovery is not available for adoption.")
     if candidate.get("asset_id"):
         raise ValueError("This discovery is already associated with an asset.")
-    if candidate.get("kind") == "traffic":
-        raise ValueError("Network Traffic observations remain review-only until a source-scoped identity can be confirmed.")
-    if not candidate.get("mac_addresses") and not candidate.get("dhcp_client_ids"):
+    if candidate.get("kind") != "traffic" and not candidate.get("mac_addresses") and not candidate.get("dhcp_client_ids"):
         raise ValueError("A stable MAC or DHCP client identifier is required before adoption.")
     lock_keys = [_discovery_lock_key(str(candidate.get("id") or ""))]
     evidence_values = []
@@ -216,7 +231,7 @@ def adopt_discovered_device(db: Session, user, candidate: dict, *, asset_id: int
         evidence_values.append(("mac", candidate["mac_addresses"][0], "discovery", "dns" if candidate["kind"] == "dns" else "dhcp"))
     if candidate.get("dhcp_client_ids"):
         evidence_values.append(("dhcp_client_id", candidate["dhcp_client_ids"][0], "dhcp", None))
-    if candidate.get("name") and candidate["name"] != "Unidentified device":
+    if candidate.get("kind") != "traffic" and candidate.get("name") and candidate["name"] != "Unidentified device":
         evidence_values.append(("hostname", candidate["name"], "dns" if candidate["kind"] == "dns" else "dhcp", None))
     for evidence_type, value, source, scope in evidence_values:
         normalised = _normalise_evidence(evidence_type, value)
@@ -226,6 +241,11 @@ def adopt_discovered_device(db: Session, user, candidate: dict, *, asset_id: int
         ip_row = db.query(IPAddress).filter(IPAddress.address == normalised).order_by(IPAddress.id.asc()).first()
         if ip_row:
             lock_keys.append(_assignment_lock_key(normalised, family, ip_row.vlan_id, None, None))
+    if candidate.get("kind") == "traffic" and candidate.get("traffic_observation"):
+        observation = candidate["traffic_observation"]
+        lock_keys.append(_discovery_lock_key(
+            f"traffic:{observation.get('source_id')}:{observation.get('exporter_identity')}:{observation.get('endpoint_ip')}:{observation.get('endpoint_role')}"
+        ))
     _lock_adoption_keys(db, lock_keys)
     _revalidate_source_candidate(db, candidate)
     now = datetime.utcnow()
@@ -247,7 +267,29 @@ def adopt_discovered_device(db: Session, user, candidate: dict, *, asset_id: int
             dns_row = db.get(DNSRecognisedDevice, candidate["dns_client_id"])
             if dns_row:
                 dns_row.hardware_asset_id = asset.id
-    for address in candidate["ip_addresses"][:1]:
+    traffic_observation = candidate.get("traffic_observation") if candidate.get("kind") == "traffic" else None
+    if traffic_observation:
+        normalised, family = _normalise_ip(traffic_observation["endpoint_ip"])
+        source_id = int(traffic_observation["source_id"])
+        exporter_identity = str(traffic_observation["exporter_identity"]).strip()[:255]
+        conflict = db.query(AssetNetworkAssignment).filter(
+            AssetNetworkAssignment.address == normalised,
+            AssetNetworkAssignment.address_family == family,
+            AssetNetworkAssignment.source_id == source_id,
+            AssetNetworkAssignment.exporter_identity == exporter_identity,
+            AssetNetworkAssignment.status == "confirmed",
+            AssetNetworkAssignment.ended_at.is_(None),
+            AssetNetworkAssignment.asset_id != asset.id,
+        ).first()
+        if conflict:
+            raise ValueError("The observed Network Traffic endpoint is already assigned to another asset.")
+        db.add(AssetNetworkAssignment(
+            asset_id=asset.id, address=normalised, address_family=family,
+            source_id=source_id, exporter_identity=exporter_identity,
+            started_at=now, provenance="network_traffic_adoption", status="confirmed",
+            confirmed_by=user.id, confirmed_at=now,
+        ))
+    for address in candidate["ip_addresses"][:1] if not traffic_observation else []:
         normalised, family = _normalise_ip(address)
         ip_row = db.query(IPAddress).filter(IPAddress.address == normalised).order_by(IPAddress.id.asc()).first()
         if not ip_row:

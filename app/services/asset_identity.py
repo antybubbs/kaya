@@ -5,14 +5,17 @@ import hashlib
 import ipaddress
 import re
 
-from sqlalchemy import text
+from sqlalchemy import or_, text
 from sqlalchemy.orm import Session
 
 from app.models.models import (
     AssetIdentityEvidence,
     AssetNetworkAssignment,
+    DHCPLeaseHistory,
     HardwareAsset,
     IPAddress,
+    TrafficDiscoveryNetworkMapping,
+    TrafficSource,
     User,
     VLAN,
 )
@@ -22,6 +25,53 @@ from app.services.audit import write_audit
 EVIDENCE_TYPES = {"mac", "dhcp_client_id", "provider_client_id", "hostname", "serial_number"}
 STATUSES = {"pending", "confirmed", "revoked", "conflict", "unresolved"}
 _MAC = re.compile(r"^[0-9a-f]{12}$")
+
+
+def eligible_traffic_contexts(db: Session, address: str) -> list[dict]:
+    """Return current, unambiguous source/exporter/VLAN contexts for an address."""
+    normalised, family = _normalise_ip(address)
+    parsed = ipaddress.ip_address(normalised)
+    rows = (
+        db.query(TrafficDiscoveryNetworkMapping, TrafficSource, VLAN)
+        .join(TrafficSource, TrafficSource.id == TrafficDiscoveryNetworkMapping.source_id)
+        .join(VLAN, VLAN.id == TrafficDiscoveryNetworkMapping.vlan_id)
+        .filter(
+            TrafficDiscoveryNetworkMapping.is_enabled.is_(True),
+            TrafficSource.is_enabled.is_(True),
+            TrafficSource.is_deleted.is_(False),
+            TrafficSource.provider_key.in_(("netflow_v9", "cisco_nsel")),
+            VLAN.subnet_cidr.isnot(None),
+        )
+        .limit(256)
+        .all()
+    )
+    candidates = []
+    for mapping, source, vlan in rows:
+        try:
+            network = ipaddress.ip_network(vlan.subnet_cidr, strict=False)
+        except ValueError:
+            continue
+        if network.version == family and parsed in network:
+            candidates.append((mapping, source, vlan, str(network)))
+    counts = {}
+    for mapping, source, _vlan, _cidr in candidates:
+        key = (source.id, mapping.exporter_identity)
+        counts[key] = counts.get(key, 0) + 1
+    return [
+        {
+            "mapping_id": mapping.id,
+            "source_id": source.id,
+            "source_name": source.name,
+            "provider_key": source.provider_key,
+            "exporter_identity": mapping.exporter_identity,
+            "vlan_id": vlan.id,
+            "vlan_name": vlan.name,
+            "network_cidr": cidr,
+            "address": normalised,
+        }
+        for mapping, source, vlan, cidr in candidates
+        if counts[(source.id, mapping.exporter_identity)] == 1
+    ]
 
 
 def _assignment_lock_key(address: str, family: int, vlan_id: int | None, source_id: int | None, exporter_identity: str | None) -> int:
@@ -295,3 +345,82 @@ def asset_identity_summary(db: Session, asset_id: int) -> dict[str, list]:
         "identities": db.query(AssetIdentityEvidence).filter(AssetIdentityEvidence.asset_id == asset_id).order_by(AssetIdentityEvidence.id).all(),
         "assignments": db.query(AssetNetworkAssignment).filter(AssetNetworkAssignment.asset_id == asset_id).order_by(AssetNetworkAssignment.started_at).all(),
     }
+
+
+def reconcile_dhcp_assignment(db: Session, lease: DHCPLeaseHistory, *, observed_at: datetime) -> str:
+    """Safely carry a confirmed asset assignment across a DHCP address change.
+
+    This is intentionally conservative: a current lease must share a confirmed
+    MAC or DHCP client identifier with exactly one prior assignment.  A hostname
+    or reused address is never sufficient.  The replacement assignment is
+    source-less until an administrator confirms the applicable traffic source.
+    """
+    if not lease or not isinstance(observed_at, datetime) or not (lease.mac_address or lease.dns_client_id):
+        return "review_required"
+    identity_filters = []
+    if lease.mac_address:
+        identity_filters.append(DHCPLeaseHistory.mac_address == lease.mac_address)
+    if lease.dns_client_id:
+        identity_filters.append(DHCPLeaseHistory.dns_client_id == lease.dns_client_id)
+    candidates = db.query(AssetNetworkAssignment).join(
+        DHCPLeaseHistory, DHCPLeaseHistory.id == AssetNetworkAssignment.dhcp_lease_id
+    ).filter(
+        AssetNetworkAssignment.status == "confirmed",
+        AssetNetworkAssignment.dhcp_lease_id != lease.id,
+        DHCPLeaseHistory.provider_id == lease.provider_id,
+    ).filter(or_(*identity_filters)).order_by(AssetNetworkAssignment.started_at.desc()).limit(20).all()
+    asset_ids = {row.asset_id for row in candidates if row.asset_id is not None}
+    if len(asset_ids) != 1:
+        return "review_required"
+    current = next((row for row in candidates if row.ended_at is None), None)
+    if current is None:
+        return "review_required"
+    try:
+        normalised, family = _normalise_ip(lease.ip_address)
+    except ValueError:
+        return "review_required"
+    if current.address == normalised and current.address_family == family:
+        return "renewed"
+    _lock_assignment_context(
+        db,
+        address=normalised,
+        family=family,
+        vlan_id=current.vlan_id,
+        source_id=None,
+        exporter_identity=None,
+    )
+    conflict = db.query(AssetNetworkAssignment).filter(
+        AssetNetworkAssignment.address == normalised,
+        AssetNetworkAssignment.address_family == family,
+        AssetNetworkAssignment.status == "confirmed",
+        AssetNetworkAssignment.ended_at.is_(None),
+        AssetNetworkAssignment.asset_id != current.asset_id,
+    ).first()
+    if conflict:
+        return "review_required"
+    current.ended_at = observed_at
+    vlan = current.vlan
+    replacement = AssetNetworkAssignment(
+        asset_id=current.asset_id,
+        address=normalised,
+        address_family=family,
+        vlan_id=current.vlan_id,
+        network_cidr=vlan.subnet_cidr.strip() if vlan and vlan.subnet_cidr else current.network_cidr,
+        dhcp_lease_id=lease.id,
+        started_at=observed_at,
+        provenance="dhcp_reconciliation",
+        status="confirmed",
+        confirmed_by=current.confirmed_by,
+        confirmed_at=observed_at,
+    )
+    db.add(replacement)
+    db.flush()
+    audit = write_audit(
+        db, None, "update", "asset_network_assignment", str(replacement.id),
+        detail="Reconciled confirmed DHCP network assignment",
+        metadata={"previous_assignment_id": current.id, "lease_id": lease.id, "address_family": family},
+        force=True, commit=False,
+    )
+    if audit is None:
+        raise RuntimeError("The DHCP assignment reconciliation could not be audited.")
+    return "reassigned"

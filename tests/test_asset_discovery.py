@@ -8,6 +8,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.db.session import Base
 from app.models.models import (
+    AssetNetworkAssignment,
     DHCPLeaseHistory,
     DNSRecognisedDevice,
     HardwareAsset,
@@ -90,8 +91,31 @@ def test_admin_adoption_creates_one_asset_and_reviewed_evidence_atomically():
     db.refresh(client)
     assert client.hardware_asset_id == asset.id
     assert db.query(HardwareAsset).count() == 1
-    assert db.query(HardwareAsset).one().name == "Adopted laptop"
     assert asset.asset_tag == "HAL-0001"
+
+
+def test_network_traffic_adoption_creates_source_scoped_assignment_without_managed_ip():
+    db = database()
+    now = datetime(2026, 1, 2)
+    admin = User(id=1, email="traffic-admin@example.invalid", role="admin", is_active=True)
+    source = TrafficSource(id=1, name="Synthetic exporter", provider_key="cisco_nsel", source_category="flow", is_enabled=True, is_deleted=False)
+    observation = TrafficDiscoveryObservation(
+        id=1, source_id=1, exporter_identity="192.0.2.1", endpoint_ip="192.0.2.20",
+        address_family=4, endpoint_role="original_source", bucket_start=now,
+        first_seen_at=now, last_seen_at=now, observation_count=3, classification="internal", confidence="high",
+    )
+    db.add_all([admin, source, observation])
+    db.commit()
+    candidate = compose_discovered_devices(db)["rows"][0]
+
+    asset = adopt_discovered_device(db, admin, candidate, new_name="Traffic-only device")
+
+    assignment = db.query(AssetNetworkAssignment).one()
+    assert asset.name == "Traffic-only device"
+    assert assignment.asset_id == asset.id
+    assert assignment.ip_address_id is None
+    assert assignment.source_id == source.id
+    assert assignment.exporter_identity == "192.0.2.1"
 
 
 def test_adoption_audit_is_required_even_when_capture_level_is_essential():

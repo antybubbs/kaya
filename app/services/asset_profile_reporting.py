@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime, timedelta
 
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from app.models.models import (
@@ -50,15 +51,19 @@ def _assignment_matches(row: AssetNetworkAssignment, at: datetime) -> bool:
 
 def _traffic(db: Session, asset_id: int, assignments: list[AssetNetworkAssignment], window: dict) -> dict:
     ip_ids = {row.ip_address_id for row in assignments if row.ip_address_id is not None}
-    if not ip_ids:
+    assignment_ids = {row.id for row in assignments}
+    if not ip_ids and not assignment_ids:
         return {"available": True, "history": [], "download_bytes": 0, "upload_bytes": 0, "excluded_buckets": 0}
     duration = window["end"] - window["start"]
     bucket_seconds = 300 if duration <= timedelta(hours=24) else 3600 if duration <= timedelta(days=7) else 86400
     rows = db.query(TrafficDeviceAggregate).join(
         TrafficDeviceMonitoring,
-        TrafficDeviceMonitoring.ip_address_id == TrafficDeviceAggregate.ip_address_id,
+        or_(
+            and_(TrafficDeviceAggregate.assignment_id.is_not(None), TrafficDeviceMonitoring.assignment_id == TrafficDeviceAggregate.assignment_id),
+            and_(TrafficDeviceAggregate.assignment_id.is_(None), TrafficDeviceMonitoring.ip_address_id == TrafficDeviceAggregate.ip_address_id),
+        ),
     ).filter(
-        TrafficDeviceAggregate.ip_address_id.in_(ip_ids),
+        or_(TrafficDeviceAggregate.ip_address_id.in_(ip_ids or [-1]), TrafficDeviceAggregate.assignment_id.in_(assignment_ids or [-1])),
         TrafficDeviceMonitoring.is_enabled.is_(True),
         TrafficDeviceAggregate.bucket_seconds == bucket_seconds,
         TrafficDeviceAggregate.bucket_start >= window["start"],
@@ -67,7 +72,12 @@ def _traffic(db: Session, asset_id: int, assignments: list[AssetNetworkAssignmen
     points: dict[datetime, dict] = {}
     excluded = 0
     for row in rows:
-        matches = [item for item in assignments if item.ip_address_id == row.ip_address_id and _assignment_matches(item, row.bucket_start)]
+        matches = [
+            item for item in assignments
+            if _assignment_matches(item, row.bucket_start) and (
+                row.assignment_id == item.id or (row.assignment_id is None and item.ip_address_id == row.ip_address_id)
+            )
+        ]
         if len(matches) != 1:
             excluded += 1
             continue

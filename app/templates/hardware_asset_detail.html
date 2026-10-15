@@ -114,6 +114,20 @@
       {% endfor %}
       </div>
       {% else %}<p class="muted">No network assignments are recorded.</p>{% endif %}
+      {% if user.role == 'admin' and asset_profile.can_network and asset_profile.can_vlan and asset_profile.traffic_context_options %}
+      <form method="post" action="/infrastructure/asset-manager/{{ record.id }}/network-assignment/source-context" class="inline-record" data-traffic-context-form>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label for="traffic-context-mapping">Confirm Network Traffic source context</label>
+        <select id="traffic-context-mapping" name="mapping_id" required>
+          <option value="">Choose a source, exporter and VLAN</option>
+          {% for option in asset_profile.traffic_context_options %}
+          <option value="{{ option.mapping_id }}">{{ option.source_name }} · {{ option.exporter_identity }} · {{ option.vlan_name }} ({{ option.network_cidr }})</option>
+          {% endfor %}
+        </select>
+        <button class="button secondary small" type="submit">Confirm source context</button>
+        <p class="muted">This records context only. Network Traffic monitoring remains disabled until enabled separately.</p>
+      </form>
+      {% endif %}
       {% if not asset_profile.can_vlan %}<p class="muted">VLAN/IP Manager details are unavailable because that module is not enabled for this account.</p>{% endif %}
     </section>
   </div>
@@ -163,6 +177,19 @@
   <div class="asset-report-grid">
     <section class="record-panel" id="asset-traffic" aria-labelledby="asset-traffic-heading">
       <h3 id="asset-traffic-heading">Network Traffic</h3>
+      {% if asset_profile.traffic_monitoring is not none %}
+      <div class="record-kv-list compact">
+        <div><dt>Monitoring</dt><dd>{{ asset_profile.traffic_monitoring.status|replace('_', ' ')|title }}</dd></div>
+        <div><dt>Status</dt><dd>{{ asset_profile.traffic_monitoring.reason }}</dd></div>
+      </div>
+      {% if user.role == 'admin' %}
+      <form method="post" action="/infrastructure/asset-manager/{{ record.id }}/network-traffic" class="inline-actions section-gap">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="enabled" value="{{ '0' if asset_profile.traffic_monitoring.enabled else '1' }}">
+        <button class="button {{ 'danger' if asset_profile.traffic_monitoring.enabled else '' }}" type="submit">{{ 'Disable monitoring' if asset_profile.traffic_monitoring.enabled else 'Enable monitoring' }}</button>
+      </form>
+      {% endif %}
+      {% endif %}
       {% if asset_reporting.traffic is none %}<p class="muted">Network Traffic history is unavailable because the module is not authorised for this account.</p>
       {% elif asset_reporting.traffic.history %}<dl class="record-kv-list compact"><div><dt>Download</dt><dd>{{ asset_reporting.traffic.download_bytes }} bytes</dd></div><div><dt>Upload</dt><dd>{{ asset_reporting.traffic.upload_bytes }} bytes</dd></div><div><dt>Excluded ambiguous buckets</dt><dd>{{ asset_reporting.traffic.excluded_buckets }}</dd></div></dl><div class="asset-history-bars" aria-label="Network Traffic history">{% for point in asset_reporting.traffic.history %}<div class="asset-history-bar"><span>{{ point.at }}</span><i style="--bar-value: {{ [1, (point.download_bytes + point.upload_bytes) / 1000000]|max }}px" title="{{ point.download_bytes + point.upload_bytes }} bytes"></i></div>{% endfor %}</div><a class="button secondary small" href="/networking/ip-wan-monitor/traffic">Open Network Traffic reporting</a>
       {% else %}<p class="muted">No authorised device usage was observed in this period. This does not mean usage was zero.</p>{% endif %}

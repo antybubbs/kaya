@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import ipaddress
 
-from sqlalchemy import case, or_
+from sqlalchemy import case, or_, text
 from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
@@ -11,13 +12,149 @@ from sqlalchemy.orm import Session
 from app.models.models import (
     IPAddress, TrafficDeviceAggregate, TrafficDeviceMonitoring,
     TrafficDeviceMonitoringPeriod, TrafficMonitoringConfiguration, TrafficSource, TrafficLocalNetwork,
+    AssetNetworkAssignment, HardwareAsset, VLAN,
 )
+from app.services.audit import write_audit
+from app.services.asset_identity import _lock_assignment_context
 from app.services.flow_accounting import resolve_flow_attribution
 from app.services.flow_protocol import NormalizedFlowRecord
 
 
 def traffic_monitoring_for(db: Session, ip_address_id: int) -> TrafficDeviceMonitoring | None:
     return db.query(TrafficDeviceMonitoring).filter_by(ip_address_id=ip_address_id).first()
+
+
+def asset_monitoring_for(db: Session, asset_id: int) -> TrafficDeviceMonitoring | None:
+    return db.query(TrafficDeviceMonitoring).filter_by(asset_id=asset_id).first()
+
+
+def _assignment_for_record(db: Session, record: NormalizedFlowRecord, address: str | None) -> AssetNetworkAssignment | None:
+    if not address:
+        return None
+    try:
+        normalised = ipaddress.ip_address(address).compressed
+        family = ipaddress.ip_address(address).version
+    except ValueError:
+        return None
+    rows = db.query(AssetNetworkAssignment).outerjoin(VLAN, VLAN.id == AssetNetworkAssignment.vlan_id).filter(
+        AssetNetworkAssignment.address == normalised,
+        AssetNetworkAssignment.address_family == family,
+        AssetNetworkAssignment.status == "confirmed",
+        AssetNetworkAssignment.started_at <= record.observed_at,
+        or_(AssetNetworkAssignment.ended_at.is_(None), AssetNetworkAssignment.ended_at > record.observed_at),
+        or_(AssetNetworkAssignment.source_id.is_(None), AssetNetworkAssignment.source_id == record.source_id),
+        or_(AssetNetworkAssignment.exporter_identity.is_(None), AssetNetworkAssignment.exporter_identity == record.exporter_identity),
+        or_(AssetNetworkAssignment.vlan_id.is_(None), AssetNetworkAssignment.network_cidr == VLAN.subnet_cidr),
+    ).limit(2).all()
+    return rows[0] if len(rows) == 1 else None
+
+
+def _asset_monitoring_period(db: Session, monitoring_id: int, assignment_id: int, observed_at: datetime) -> TrafficDeviceMonitoringPeriod | None:
+    return db.query(TrafficDeviceMonitoringPeriod).filter(
+        TrafficDeviceMonitoringPeriod.monitoring_id == monitoring_id,
+        TrafficDeviceMonitoringPeriod.assignment_id == assignment_id,
+        TrafficDeviceMonitoringPeriod.started_at <= observed_at,
+        or_(TrafficDeviceMonitoringPeriod.ended_at.is_(None), TrafficDeviceMonitoringPeriod.ended_at >= observed_at),
+    ).order_by(TrafficDeviceMonitoringPeriod.started_at.desc()).first()
+
+
+def set_asset_monitoring(db: Session, user, asset: HardwareAsset, enabled: bool, *, now: datetime | None = None) -> dict:
+    """Enable one explicitly selected, confirmed assignment for an asset.
+
+    The operation is intentionally source-scoped and requires a usable flow source;
+    it never creates a managed IP record or follows an address automatically.
+    """
+    if not user or user.role != "admin":
+        raise PermissionError("Administrator access is required.")
+    if not asset or not db.get(HardwareAsset, asset.id):
+        raise ValueError("Hardware asset not found.")
+    now = now or datetime.utcnow()
+    assignments = db.query(AssetNetworkAssignment).filter(
+        AssetNetworkAssignment.asset_id == asset.id,
+        AssetNetworkAssignment.status == "confirmed",
+        AssetNetworkAssignment.started_at <= now,
+        or_(AssetNetworkAssignment.ended_at.is_(None), AssetNetworkAssignment.ended_at > now),
+        AssetNetworkAssignment.source_id.is_not(None),
+    ).order_by(AssetNetworkAssignment.started_at.desc()).limit(10).all()
+    eligible = []
+    for assignment in assignments:
+        source = db.query(TrafficSource).filter(
+            TrafficSource.id == assignment.source_id,
+            TrafficSource.is_enabled.is_(True),
+            TrafficSource.is_deleted.is_(False),
+            TrafficSource.provider_key.in_(("netflow_v9", "cisco_nsel")),
+        ).first()
+        if source:
+            eligible.append(assignment)
+    if len(eligible) != 1:
+        raise ValueError("Exactly one current, source-scoped network assignment is required for monitoring.")
+    assignment = eligible[0]
+    _lock_assignment_context(
+        db,
+        address=assignment.address,
+        family=assignment.address_family,
+        vlan_id=assignment.vlan_id,
+        source_id=assignment.source_id,
+        exporter_identity=assignment.exporter_identity,
+    )
+    row = asset_monitoring_for(db, asset.id)
+    if enabled and assignment.ip_address_id is not None:
+        legacy = traffic_monitoring_for(db, assignment.ip_address_id)
+        if legacy and legacy.is_enabled and (not row or row.assignment_id != assignment.id):
+            raise ValueError("This endpoint is already monitored through its managed IP record.")
+    if row is None:
+        row = TrafficDeviceMonitoring(asset_id=asset.id, assignment_id=assignment.id, is_enabled=False, status="disabled")
+        db.add(row)
+        db.flush()
+    if row.assignment_id != assignment.id:
+        if row.is_enabled:
+            raise ValueError("Another asset assignment is already monitored for this asset.")
+        row.assignment_id = assignment.id
+    changed = bool(row.is_enabled) != bool(enabled)
+    period_id = None
+    if changed and enabled:
+        period = TrafficDeviceMonitoringPeriod(
+            monitoring_id=row.id, asset_id=asset.id, assignment_id=assignment.id,
+            endpoint_address=assignment.address, address_family=assignment.address_family,
+            exporter_identity=assignment.exporter_identity, started_at=now,
+        )
+        db.add(period)
+        db.flush()
+        period_id = period.id
+        row.is_enabled = True
+        row.enabled_at = now
+        row.disabled_at = None
+        row.status = "awaiting_data"
+        row.status_reason = "Waiting for an eligible flow observation"
+    elif changed and not enabled:
+        active = db.query(TrafficDeviceMonitoringPeriod).filter_by(monitoring_id=row.id, ended_at=None).first()
+        if active:
+            active.ended_at = now
+        row.is_enabled = False
+        row.disabled_at = now
+        row.status = "disabled"
+        row.status_reason = "Disabled by administrator"
+    if changed:
+        audit = write_audit(db, user, "update", "traffic_device_monitoring", str(row.id), detail="Changed asset network traffic monitoring", metadata={"asset_id": asset.id, "assignment_id": assignment.id, "enabled": bool(enabled)}, force=True, commit=False)
+        if audit is None:
+            db.rollback()
+            raise RuntimeError("The monitoring change could not be audited.")
+    return {"changed": changed, "enabled": bool(row.is_enabled), "period_id": period_id, "assignment_id": assignment.id, "status": row.status, "reason": row.status_reason}
+
+
+def asset_monitoring_status(db: Session, asset_id: int, *, now: datetime | None = None) -> dict:
+    now = now or datetime.utcnow()
+    row = asset_monitoring_for(db, asset_id)
+    if not row or not row.is_enabled:
+        return {"enabled": False, "status": "disabled", "reason": row.status_reason if row else "Not enabled", "assignment_id": row.assignment_id if row else None}
+    assignment = db.get(AssetNetworkAssignment, row.assignment_id) if row.assignment_id else None
+    if not assignment or assignment.status != "confirmed":
+        return {"enabled": True, "status": "review_required", "reason": "The confirmed network assignment is no longer available.", "assignment_id": row.assignment_id}
+    if assignment.started_at > now or (assignment.ended_at is not None and now >= assignment.ended_at):
+        return {"enabled": True, "status": "review_required", "reason": "The monitored network assignment is outside its valid time period.", "assignment_id": assignment.id, "source_id": assignment.source_id}
+    if assignment.vlan_id is not None and (not assignment.vlan or assignment.network_cidr != assignment.vlan.subnet_cidr):
+        return {"enabled": True, "status": "review_required", "reason": "The VLAN network context changed; review the assignment before monitoring continues.", "assignment_id": assignment.id, "source_id": assignment.source_id}
+    return {"enabled": True, "status": row.status, "reason": row.status_reason, "enabled_at": row.enabled_at, "disabled_at": row.disabled_at, "last_attributed_at": row.last_attributed_at, "assignment_id": row.assignment_id, "source_id": row.last_source_id}
 
 
 def set_device_monitoring(db: Session, ip_address: IPAddress, enabled: bool, *, now: datetime | None = None) -> dict:
@@ -75,8 +212,14 @@ def _insert(db: Session, values: dict):
     if statement is None:
         return None
     excluded = statement.excluded
+    assignment_target = values.get("assignment_id") is not None
     return statement.values(**values).on_conflict_do_update(
-        index_elements=["period_id", "source_id", "interface_id", "bucket_start", "bucket_seconds", "direction"],
+        index_elements=(
+            ["period_id", "assignment_id", "source_id", "interface_id", "bucket_start", "bucket_seconds", "direction"]
+            if values.get("assignment_id") is not None
+            else ["period_id", "source_id", "interface_id", "bucket_start", "bucket_seconds", "direction"]
+        ),
+        index_where=text("assignment_id IS NOT NULL" if assignment_target else "assignment_id IS NULL"),
         set_={
             "bytes_total": table.c.bytes_total + excluded.bytes_total,
             "packets_total": table.c.packets_total + excluded.packets_total,
@@ -106,7 +249,11 @@ def persist_device_traffic(db: Session, record: NormalizedFlowRecord, byte_count
         elif destination_attribution.state == "resolved":
             direction_specs = (("upload", record.destination_ip, record.output_interface, destination_attribution, record.reverse_bytes, record.reverse_packets), ("download", record.destination_ip, record.input_interface, destination_attribution, record.forward_bytes, record.forward_packets))
         else:
-            direction_specs = ()
+            # A confirmed asset assignment is source-scoped and may exist without
+            # a managed IP record. Keep both endpoint candidates so the assignment
+            # path can select the eligible internal endpoint without changing the
+            # legacy accounting classifier.
+            direction_specs = (("upload", record.source_ip, record.input_interface, None, record.forward_bytes, record.forward_packets), ("download", record.destination_ip, record.output_interface, None, record.reverse_bytes, record.reverse_packets))
     else:
         direction_specs = (("upload", record.source_ip, record.input_interface, None, None, None), ("download", record.destination_ip, record.output_interface, None, None, None))
     for direction, address, interface_index, supplied_attribution, supplied_bytes, supplied_packets in direction_specs:
@@ -121,21 +268,29 @@ def persist_device_traffic(db: Session, record: NormalizedFlowRecord, byte_count
         if direction_bytes <= 0 and direction_packets <= 0:
             continue
         attribution = supplied_attribution or resolve_flow_attribution(db, record, address=address, local_networks=networks)
-        if attribution.state != "resolved" or not attribution.ip_record_id:
+        assignment = None
+        monitor = traffic_monitoring_for(db, attribution.ip_record_id) if attribution.state == "resolved" and attribution.ip_record_id else None
+        if not monitor or not monitor.is_enabled:
+            assignment = _assignment_for_record(db, record, address)
+        if attribution.state != "resolved" and not assignment:
             continue
-        monitor = traffic_monitoring_for(db, attribution.ip_record_id)
+        if assignment:
+            monitor = db.query(TrafficDeviceMonitoring).filter_by(assignment_id=assignment.id, is_enabled=True).first()
         if not monitor or not monitor.is_enabled:
             continue
-        period = db.query(TrafficDeviceMonitoringPeriod).filter(
-            TrafficDeviceMonitoringPeriod.monitoring_id == monitor.id,
-            TrafficDeviceMonitoringPeriod.started_at <= record.observed_at,
-            or_(TrafficDeviceMonitoringPeriod.ended_at.is_(None), TrafficDeviceMonitoringPeriod.ended_at >= record.observed_at),
-        ).order_by(TrafficDeviceMonitoringPeriod.started_at.desc()).first()
+        period = (
+            _asset_monitoring_period(db, monitor.id, assignment.id, record.observed_at)
+            if assignment else db.query(TrafficDeviceMonitoringPeriod).filter(
+                TrafficDeviceMonitoringPeriod.monitoring_id == monitor.id,
+                TrafficDeviceMonitoringPeriod.started_at <= record.observed_at,
+                or_(TrafficDeviceMonitoringPeriod.ended_at.is_(None), TrafficDeviceMonitoringPeriod.ended_at >= record.observed_at),
+            ).order_by(TrafficDeviceMonitoringPeriod.started_at.desc()).first()
+        )
         if not period:
             continue
         interface = next((i for i in source.interfaces if i.interface_index == interface_index), None)
         for bucket_seconds in (300, 3600, 86400):
-            values = {"period_id": period.id, "ip_address_id": attribution.ip_record_id, "source_id": source_id, "interface_id": interface.id if interface else None, "bucket_start": datetime.utcfromtimestamp(int(record.observed_at.timestamp()) - int(record.observed_at.timestamp()) % bucket_seconds), "bucket_seconds": bucket_seconds, "direction": direction, "bytes_total": direction_bytes, "packets_total": direction_packets, "sample_count": 1, "data_quality": record.data_quality, "attribution_confidence": attribution.confidence, "first_observed_at": record.observed_at, "last_observed_at": record.observed_at}
+            values = {"period_id": period.id, "ip_address_id": attribution.ip_record_id if attribution.state == "resolved" else None, "asset_id": assignment.asset_id if assignment else None, "assignment_id": assignment.id if assignment else None, "endpoint_address": assignment.address if assignment else None, "address_family": assignment.address_family if assignment else None, "exporter_identity": record.exporter_identity if assignment else None, "source_id": source_id, "interface_id": interface.id if interface else None, "bucket_start": datetime.utcfromtimestamp(int(record.observed_at.timestamp()) - int(record.observed_at.timestamp()) % bucket_seconds), "bucket_seconds": bucket_seconds, "direction": direction, "bytes_total": direction_bytes, "packets_total": direction_packets, "sample_count": 1, "data_quality": record.data_quality, "attribution_confidence": attribution.confidence if attribution.state == "resolved" else "high", "first_observed_at": record.observed_at, "last_observed_at": record.observed_at}
             # PostgreSQL UNIQUE constraints treat NULL interface IDs as
             # distinct values, so the database upsert cannot merge flows when
             # the exporter omits interface fields. Lock and merge that row
@@ -143,6 +298,8 @@ def persist_device_traffic(db: Session, record: NormalizedFlowRecord, byte_count
             if interface is None:
                 match = db.query(TrafficDeviceAggregate).filter(
                     TrafficDeviceAggregate.period_id == period.id,
+                    TrafficDeviceAggregate.assignment_id == values["assignment_id"],
+                    TrafficDeviceAggregate.asset_id == values["asset_id"],
                     TrafficDeviceAggregate.source_id == source_id,
                     TrafficDeviceAggregate.interface_id.is_(None),
                     TrafficDeviceAggregate.bucket_start == values["bucket_start"],
@@ -162,12 +319,14 @@ def persist_device_traffic(db: Session, record: NormalizedFlowRecord, byte_count
             else:
                 match = db.query(TrafficDeviceAggregate).filter_by(**{k: values[k] for k in ("period_id", "source_id", "interface_id", "bucket_start", "bucket_seconds", "direction")}).first()
                 if match:
-                    match.bytes_total += direction_bytes; match.packets_total += direction_packets; match.sample_count += 1
+                    match.bytes_total += direction_bytes
+                    match.packets_total += direction_packets
+                    match.sample_count += 1
                 else:
                     db.add(TrafficDeviceAggregate(**values))
         monitor.last_attributed_at = record.observed_at
         monitor.last_source_id = source_id
         monitor.status = "active"
         monitor.status_reason = None
-        attributed.append(attribution.ip_record_id)
+        attributed.append(attribution.ip_record_id or -assignment.id)
     return len(set(attributed))

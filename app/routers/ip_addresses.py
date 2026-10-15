@@ -670,7 +670,7 @@ def detail_ip_address(request: Request, record_id: int, db: Session = Depends(ge
         ).order_by(AssetNetworkAssignment.started_at.desc()).first()
         if assignment:
             current = evidence_for_asset(db, assignment.asset_id, limit=100)["current"]
-            if any(item.kind == "network_assignment" and item.reference == row.address for item in current):
+            if any(item.evidence_type == "network_assignment" and item.normalised_reference == row.address for item in current):
                 asset_parent = db.get(HardwareAsset, assignment.asset_id)
     return templates.TemplateResponse(request, "ip_address_detail.html", {"user": user, "record": row, "asset_parent": asset_parent, "monitor": monitor, "traffic_monitoring": traffic_monitoring, "traffic_status": traffic_status, "monitor_observations": monitor_observations, "remote": remote_for(db, row.id), "compute_matches": compute_matches, "dns_clients": dns_clients, "dns_link_candidates": dns_link_candidates, "lease_history": lease_history, "ip_traffic_history": ip_traffic_history, "dns_client_status": client_status, "uptime_label": uptime_label, "categories": categories, "vlans": db.query(VLAN).order_by(VLAN.name.asc()).all(), "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": values, "option_list": option_list, **monitor_form_context(db, monitor), **remote_settings_context(remote_for(db, row.id)), **csrf_context(request)})
 

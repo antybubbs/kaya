@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from app.models.models import DHCPLeaseHistory, DHCPRange, DNSClientTrafficEvent, DNSInsight, DNSProviderConfig, DNSStatisticsSnapshot
 from app.services.dns_providers import DNSProvider, DNSProviderResult, provider_for, provider_snapshot_for_io
 from app.services.dns_clients import normalise_mac, observe_client
+from app.services.asset_identity import reconcile_dhcp_assignment
 from app.services.site_settings import get_site_settings
 
 
@@ -470,6 +471,7 @@ def _persist_dhcp_leases(
             active.dhcp_range_id = active.dhcp_range_id or (scope.id if scope else None)
             active.last_seen_at = generated_at
             active.expires_at = expires_at or active.expires_at
+        reconcile_dhcp_assignment(db, active, observed_at=generated_at)
         seen_ids.add(active.id)
     stale = db.query(DHCPLeaseHistory).filter_by(provider_id=provider.id, is_active=True)
     if seen_ids:
