@@ -1,4 +1,5 @@
 from datetime import datetime
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine
@@ -11,6 +12,7 @@ from app.models.models import (
     DNSRecognisedDevice,
     HardwareAsset,
     IPAddress,
+    RemoteManagerSetting,
     TrafficDiscoveryObservation,
     TrafficSource,
     User,
@@ -80,6 +82,68 @@ def test_admin_adoption_creates_one_asset_and_reviewed_evidence_atomically():
     assert client.hardware_asset_id == asset.id
     assert db.query(HardwareAsset).count() == 1
     assert db.query(HardwareAsset).one().name == "Adopted laptop"
+
+
+def test_adoption_audit_is_required_even_when_capture_level_is_essential():
+    db = database()
+    admin = User(id=1, email="admin@example.invalid", role="admin", is_active=True)
+    client = DNSRecognisedDevice(
+        id=1, provider_id=1, logical_provider_key="synthetic", identity_type="mac",
+        identity_value="00:11:22:33:44:77", hostname="essential-audit.example",
+        current_ip="192.0.2.77", mac_address="00:11:22:33:44:77",
+        normalised_mac="00:11:22:33:44:77", first_seen_at=datetime(2026, 1, 1),
+        last_seen_at=datetime(2026, 1, 2),
+    )
+    db.add_all([
+        admin,
+        client,
+        RemoteManagerSetting(key="audit_capture_level", value="essential"),
+    ])
+    db.commit()
+    candidate = next(row for row in compose_discovered_devices(db)["rows"] if row["kind"] == "dns")
+
+    asset = adopt_discovered_device(db, admin, candidate, new_name="Essential audit asset")
+
+    assert asset.id is not None
+    assert db.query(HardwareAsset).count() == 1
+
+
+def test_adoption_audit_failure_is_returned_as_controlled_service_error(monkeypatch):
+    from fastapi import HTTPException
+
+    import app.routers.hardware_assets as hardware_assets
+
+    db = database()
+    admin = User(id=1, email="admin@example.invalid", role="admin", is_active=True)
+    db.add(admin)
+    db.commit()
+    candidate = {"id": "dns:560", "kind": "dns", "review_state": "review"}
+    request = SimpleNamespace()
+
+    monkeypatch.setattr(hardware_assets, "validate_csrf_token", lambda *_args: None)
+    monkeypatch.setattr(hardware_assets, "get_discovered_device", lambda *_args: candidate)
+    monkeypatch.setattr(hardware_assets, "list_values", lambda *_args: {"category": []})
+    monkeypatch.setattr(
+        hardware_assets,
+        "adopt_discovered_device",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("internal audit detail")),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        hardware_assets.adopt_discovered_device_route(
+            request,
+            candidate_id="dns:560",
+            asset_id=None,
+            new_name="Synthetic",
+            category="",
+            csrf_token="synthetic-csrf",
+            db=db,
+            user=admin,
+        )
+
+    assert exc_info.value.status_code == 503
+    assert "audit record was not saved" in exc_info.value.detail
+    assert "internal audit detail" not in exc_info.value.detail
 
 
 def test_adoption_requires_administrator():

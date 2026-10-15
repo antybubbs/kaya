@@ -253,7 +253,16 @@ def adopt_discovered_device(db: Session, user, candidate: dict, *, asset_id: int
         if conflict:
             raise ValueError("The observed address is already assigned to another asset.")
         db.add(AssetNetworkAssignment(asset_id=asset.id, address=normalised, address_family=family, vlan_id=ip_row.vlan_id, network_cidr=ip_row.vlan.subnet_cidr if ip_row.vlan else None, ip_address_id=ip_row.id, started_at=now, provenance="discovered_device_adoption", status="confirmed", confirmed_by=user.id, confirmed_at=now))
-    audit = write_audit(db, user, "adopt", "discovered_device", candidate["id"], detail="Adopted a reviewed discovery into Asset Manager", commit=False)
+    audit = write_audit(
+        db,
+        user,
+        "adopt",
+        "discovered_device",
+        candidate["id"],
+        detail="Adopted a reviewed discovery into Asset Manager",
+        force=True,
+        commit=False,
+    )
     if audit is None:
         db.rollback()
         raise RuntimeError("The adoption could not be audited.")

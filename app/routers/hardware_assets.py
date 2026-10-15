@@ -351,6 +351,12 @@ def adopt_discovered_device_route(request: Request, candidate_id: str = Form(...
     except (ValueError, PermissionError) as exc:
         db.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Adoption could not be completed because the audit record was not saved. Please retry.",
+        ) from exc
     return RedirectResponse(f"/infrastructure/asset-manager/{asset.id}", status_code=303)
 
 
