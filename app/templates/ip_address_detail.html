@@ -15,6 +15,7 @@
       <span class="table-chip muted-chip">Remote Manager {% if remote and remote.is_enabled %}On{% else %}Off{% endif %}</span>
       <span class="table-chip muted-chip" data-device-traffic-chip>Network Traffic {{ traffic_status.status|title }}</span>
     </div>
+    {% if asset_parent %}<p class="section-gap"><a class="button secondary" href="/infrastructure/asset-manager/{{ asset_parent.id }}">Open unified Asset Profile · {{ asset_parent.name }}</a></p>{% endif %}
   </div>
   {% if user.role in ['admin','editor'] %}
   <div class="inline-actions">

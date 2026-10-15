@@ -28,3 +28,23 @@ an IP record, enables device monitoring, or changes collection attribution.
 Resolver results remain read-only and bounded. Suggested, ambiguous, stale and
 unresolved evidence is not treated as a confirmed identity, and future API
 callers must retain the same module and object-level permission checks.
+
+## Historical profile reporting
+
+The Asset Manager detail page includes read-only Overview, Network & DHCP, DNS,
+Network Traffic, Activity and Lifecycle sections. The period selector supports
+24 hours, 7 days, 30 days, 90 days and a validated custom range. The reporting
+service reads source-owned tables with bounded result limits; it does not copy
+records into Asset Manager, change traffic attribution, or merge SNMP WAN
+totals with device usage.
+
+Traffic history is included only when a confirmed network-assignment interval
+uniquely covers the persisted device-aggregate bucket. Ambiguous or missing
+interval evidence is excluded and reported as excluded coverage. DNS and Uptime
+sections are independently permission-gated. Missing observations are shown as
+unavailable rather than zero.
+
+When a confirmed, currently valid relationship exists, DNS client and VLAN/IP
+detail pages offer a link back to the Asset Manager parent. Existing specialist
+routes remain unchanged for deep links and for users without Asset Manager
+access.

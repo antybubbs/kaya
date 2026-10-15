@@ -12,6 +12,7 @@ from app.core.csrf import csrf_context, validate_csrf_token
 from app.core.templating import templates
 from app.db.session import get_db
 from app.models.models import (
+    AssetNetworkAssignment,
     VLAN,
     ComputeWorkload,
     CustomFieldValue,
@@ -20,6 +21,7 @@ from app.models.models import (
     DNSClientTrafficEvent,
     DNSRecognisedDevice,
     IPAddress,
+    HardwareAsset,
     NetworkMonitor,
     NetworkMonitorCheck,
     NetworkMonitorEvent,
@@ -68,6 +70,8 @@ from app.services.network_monitor import (
     validate_threshold_values,
 )
 from app.services.client_ip import client_ip as trusted_client_ip
+from app.services.modules import has_module_access
+from app.services.asset_identity_resolution import evidence_for_asset
 from app.services.site_settings import get_site_setting
 from app.services.table_export import (
     export_row_matches,
@@ -657,7 +661,18 @@ def detail_ip_address(request: Request, record_id: int, db: Session = Depends(ge
             "events": db.query(NetworkMonitorEvent).filter(NetworkMonitorEvent.monitor_id == monitor.id).order_by(NetworkMonitorEvent.occurred_at.desc()).limit(5).all(),
             "outages": db.query(NetworkMonitorOutage).filter(NetworkMonitorOutage.monitor_id == monitor.id, NetworkMonitorOutage.started_at >= since).count(),
         }
-    return templates.TemplateResponse(request, "ip_address_detail.html", {"user": user, "record": row, "monitor": monitor, "traffic_monitoring": traffic_monitoring, "traffic_status": traffic_status, "monitor_observations": monitor_observations, "remote": remote_for(db, row.id), "compute_matches": compute_matches, "dns_clients": dns_clients, "dns_link_candidates": dns_link_candidates, "lease_history": lease_history, "ip_traffic_history": ip_traffic_history, "dns_client_status": client_status, "uptime_label": uptime_label, "categories": categories, "vlans": db.query(VLAN).order_by(VLAN.name.asc()).all(), "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": values, "option_list": option_list, **monitor_form_context(db, monitor), **remote_settings_context(remote_for(db, row.id)), **csrf_context(request)})
+    asset_parent = None
+    if has_module_access(db, user, "asset_manager"):
+        assignment = db.query(AssetNetworkAssignment).filter(
+            AssetNetworkAssignment.ip_address_id == row.id,
+            AssetNetworkAssignment.status == "confirmed",
+            AssetNetworkAssignment.asset_id.is_not(None),
+        ).order_by(AssetNetworkAssignment.started_at.desc()).first()
+        if assignment:
+            current = evidence_for_asset(db, assignment.asset_id, limit=100)["current"]
+            if any(item.kind == "network_assignment" and item.reference == row.address for item in current):
+                asset_parent = db.get(HardwareAsset, assignment.asset_id)
+    return templates.TemplateResponse(request, "ip_address_detail.html", {"user": user, "record": row, "asset_parent": asset_parent, "monitor": monitor, "traffic_monitoring": traffic_monitoring, "traffic_status": traffic_status, "monitor_observations": monitor_observations, "remote": remote_for(db, row.id), "compute_matches": compute_matches, "dns_clients": dns_clients, "dns_link_candidates": dns_link_candidates, "lease_history": lease_history, "ip_traffic_history": ip_traffic_history, "dns_client_status": client_status, "uptime_label": uptime_label, "categories": categories, "vlans": db.query(VLAN).order_by(VLAN.name.asc()).all(), "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": values, "option_list": option_list, **monitor_form_context(db, monitor), **remote_settings_context(remote_for(db, row.id)), **csrf_context(request)})
 
 
 @router.get("/{record_id}/network-traffic")

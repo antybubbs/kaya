@@ -146,6 +146,44 @@
     </section>
   </div>
 </section>
+<section class="panel section-gap asset-reporting" aria-labelledby="asset-reporting-heading">
+  <div class="topbar compact">
+    <div><h2 id="asset-reporting-heading">Historical reporting</h2><p class="muted">Read-only views of source-owned history. Missing observations are left unavailable, not treated as zero.</p></div>
+  </div>
+  <nav class="record-tabs" aria-label="Asset profile sections">
+    <a href="#asset-overview">Overview</a><a href="#asset-network-dhcp">Network &amp; DHCP</a><a href="#asset-dns">DNS</a><a href="#asset-traffic">Network Traffic</a><a href="#asset-activity">Activity</a><a href="#asset-lifecycle">Lifecycle</a>
+  </nav>
+  <form method="get" class="asset-report-filter" aria-label="Historical reporting period">
+    <label>Reporting period<select name="report_period"><option value="24h" {% if asset_reporting.period == '24h' %}selected{% endif %}>24 hours</option><option value="7d" {% if asset_reporting.period == '7d' %}selected{% endif %}>7 days</option><option value="30d" {% if asset_reporting.period == '30d' %}selected{% endif %}>30 days</option><option value="90d" {% if asset_reporting.period == '90d' %}selected{% endif %}>90 days</option><option value="custom" {% if asset_reporting.period == 'custom' %}selected{% endif %}>Custom range</option></select></label>
+    <label>Start <input type="datetime-local" name="report_start" value="{{ request.query_params.get('report_start', '') }}"></label>
+    <label>End <input type="datetime-local" name="report_end" value="{{ request.query_params.get('report_end', '') }}"></label>
+    <button class="button" type="submit">Apply range</button>
+  </form>
+  <p class="muted">{{ asset_reporting.window.timezone }} · {{ asset_reporting.window.aggregation }} · {{ asset_reporting.window.start }} to {{ asset_reporting.window.end }}</p>
+  <div class="asset-report-grid">
+    <section class="record-panel" id="asset-traffic" aria-labelledby="asset-traffic-heading">
+      <h3 id="asset-traffic-heading">Network Traffic</h3>
+      {% if asset_reporting.traffic is none %}<p class="muted">Network Traffic history is unavailable because the module is not authorised for this account.</p>
+      {% elif asset_reporting.traffic.history %}<dl class="record-kv-list compact"><div><dt>Download</dt><dd>{{ asset_reporting.traffic.download_bytes }} bytes</dd></div><div><dt>Upload</dt><dd>{{ asset_reporting.traffic.upload_bytes }} bytes</dd></div><div><dt>Excluded ambiguous buckets</dt><dd>{{ asset_reporting.traffic.excluded_buckets }}</dd></div></dl><div class="asset-history-bars" aria-label="Network Traffic history">{% for point in asset_reporting.traffic.history %}<div class="asset-history-bar"><span>{{ point.at }}</span><i style="--bar-value: {{ [1, (point.download_bytes + point.upload_bytes) / 1000000]|max }}px" title="{{ point.download_bytes + point.upload_bytes }} bytes"></i></div>{% endfor %}</div><a class="button secondary small" href="/networking/ip-wan-monitor/traffic">Open Network Traffic reporting</a>
+      {% else %}<p class="muted">No authorised device usage was observed in this period. This does not mean usage was zero.</p>{% endif %}
+    </section>
+    <section class="record-panel" id="asset-dns" aria-labelledby="asset-dns-heading">
+      <h3 id="asset-dns-heading">DNS activity</h3>
+      {% if asset_reporting.dns is none %}<p class="muted">DNS history is unavailable because DNS Manager is not authorised for this account.</p>
+      {% elif asset_reporting.dns.query_count %}<dl class="record-kv-list compact"><div><dt>Queries</dt><dd>{{ asset_reporting.dns.query_count }}</dd></div><div><dt>Blocked</dt><dd>{{ asset_reporting.dns.blocked_count }}</dd></div></dl><div class="asset-history-bars" aria-label="DNS query activity">{% for point in asset_reporting.dns.history %}<div class="asset-history-bar"><span>{{ point.at }}</span><i style="--bar-value: {{ [1, point.queries]|max }}px" title="{{ point.queries }} queries, {{ point.blocked }} blocked"></i></div>{% endfor %}</div><ul class="asset-report-list">{% for item in asset_reporting.dns.top_domains %}<li><span>{{ item.domain }}</span><strong>{{ item.count }}</strong></li>{% endfor %}</ul><form method="get" class="asset-report-filter"><input type="hidden" name="report_period" value="{{ asset_reporting.period }}"><input type="search" name="report_dns_q" value="{{ request.query_params.get('report_dns_q', '') }}" maxlength="200" aria-label="Search retained DNS domains" placeholder="Search retained domains"><button class="button secondary small" type="submit">Search DNS history</button></form><table><thead><tr><th>Observed</th><th>Domain</th><th>Result</th></tr></thead><tbody>{% for item in asset_reporting.dns.rows %}<tr><td>{{ item.observed_at }}</td><td>{{ item.domain }}</td><td>{{ 'Blocked' if item.blocked else (item.status or 'Allowed') }}</td></tr>{% else %}<tr><td colspan="3">No retained DNS rows match this search.</td></tr>{% endfor %}</tbody></table>{% if asset_reporting.dns.pages > 1 %}<nav class="pagination" aria-label="DNS history pages"><span>Page {{ asset_reporting.dns.page }} of {{ asset_reporting.dns.pages }}</span>{% if asset_reporting.dns.page > 1 %}<a class="button secondary small" href="?report_period={{ asset_reporting.period }}&amp;report_dns_q={{ request.query_params.get('report_dns_q', '')|urlencode }}&amp;report_dns_page={{ asset_reporting.dns.page - 1 }}#asset-dns">Back</a>{% endif %}{% if asset_reporting.dns.page < asset_reporting.dns.pages %}<a class="button secondary small" href="?report_period={{ asset_reporting.period }}&amp;report_dns_q={{ request.query_params.get('report_dns_q', '')|urlencode }}&amp;report_dns_page={{ asset_reporting.dns.page + 1 }}#asset-dns">Next</a>{% endif %}</nav>{% endif %}<a class="button secondary small" href="/networking/dns-manager?tab=clients">Open DNS Manager</a>
+      {% else %}<p class="muted">No retained DNS activity is available for this period.</p>{% endif %}
+    </section>
+    <section class="record-panel" id="asset-network-dhcp" aria-labelledby="asset-uptime-heading">
+      <h3 id="asset-uptime-heading">Uptime and latency</h3>
+      {% if asset_reporting.uptime is none %}<p class="muted">Uptime history is unavailable because monitoring data is not authorised for this account.</p>
+      {% elif asset_reporting.uptime.history %}<div class="asset-report-list">{% for point in asset_reporting.uptime.history %}<div><span>{{ point.at }}</span><strong>{{ point.availability if point.availability is not none else 'Unavailable' }}{% if point.availability is not none %}%{% endif %}</strong><span class="muted">{{ point.latency_ms if point.latency_ms is not none else '—' }}{% if point.latency_ms is not none %} ms{% endif %}</span></div>{% endfor %}</div><a class="button secondary small" href="/networking/ip-wan-monitor">Open Uptime reporting</a>
+      {% else %}<p class="muted">No uptime observations are available in this period.</p>{% endif %}
+    </section>
+    <section class="record-panel" id="asset-activity" aria-labelledby="asset-activity-heading"><h3 id="asset-activity-heading">Activity</h3>{% if asset_reporting.activity %}<ol class="asset-report-list">{% for item in asset_reporting.activity %}<li><span>{{ item.at }}</span><strong>{{ item.label }}</strong><span class="muted">{{ item.state|title }}</span></li>{% endfor %}</ol>{% else %}<p class="muted">No identity or network activity was recorded in this period.</p>{% endif %}</section>
+    <section class="record-panel" id="asset-overview" aria-labelledby="asset-overview-heading"><h3 id="asset-overview-heading">Coverage</h3><p class="muted">The profile preserves the existing identity, lifecycle, photos, notes, attachments and reviewed network context above. Each module keeps its own retention and attribution boundaries.</p></section>
+    <section class="record-panel" id="asset-lifecycle" aria-labelledby="asset-lifecycle-heading"><h3 id="asset-lifecycle-heading">Lifecycle</h3><dl class="record-kv-list compact"><div><dt>Created</dt><dd>{{ record.created_at }}</dd></div><div><dt>Updated</dt><dd>{{ record.updated_at }}</dd></div><div><dt>Status</dt><dd>{{ record.status }}</dd></div></dl></section>
+  </div>
+</section>
 <section class="panel section-gap">
   <div class="topbar compact"><h2>Attachments</h2></div>
   {% if attachments %}

@@ -48,6 +48,7 @@ from app.services.asset_identity import (
     revoke_identity_evidence,
 )
 from app.services.asset_identity_resolution import evidence_for_asset
+from app.services.asset_profile_reporting import asset_reporting_context
 from app.services.custom_fields import (
     active_fields,
     field_values,
@@ -413,7 +414,17 @@ async def create_asset(request: Request, asset_tag: str = Form("", max_length=12
 
 
 @router.get("/{asset_id}")
-def detail_asset(request: Request, asset_id: int, db: Session = Depends(get_db), user=Depends(require_user)):
+def detail_asset(
+    request: Request,
+    asset_id: int,
+    report_period: str = Query("24h", max_length=10),
+    report_start: str | None = Query(None, max_length=40),
+    report_end: str | None = Query(None, max_length=40),
+    report_dns_q: str = Query("", max_length=200),
+    report_dns_page: int = Query(1, ge=1, le=10000),
+    db: Session = Depends(get_db),
+    user=Depends(require_user),
+):
     row = db.get(HardwareAsset, asset_id)
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Hardware asset not found")
@@ -422,7 +433,8 @@ def detail_asset(request: Request, asset_id: int, db: Session = Depends(get_db),
     fields = active_fields(db, MODULE)
     values = field_values(db, MODULE, ENTITY_TYPE, row.id)
     lists = list_values(db, MODULE)
-    return templates.TemplateResponse(request, "hardware_asset_detail.html", {"user": user, "record": row, "attachments": attachments, "photos": photos, "categories": lists.get("category", []), "locations": lists.get("location", []), "statuses": lists.get("status", []), "custom_fields": fields, "custom_values": values, "option_list": option_list, "asset_profile": asset_profile_context(db, user, row), "now_date": datetime.utcnow().strftime("%Y-%m-%d"), **csrf_context(request)})
+    reporting = asset_reporting_context(db, user, row.id, period=report_period, start=report_start, end=report_end, dns_search=report_dns_q, dns_page=report_dns_page)
+    return templates.TemplateResponse(request, "hardware_asset_detail.html", {"user": user, "record": row, "attachments": attachments, "photos": photos, "categories": lists.get("category", []), "locations": lists.get("location", []), "statuses": lists.get("status", []), "custom_fields": fields, "custom_values": values, "option_list": option_list, "asset_profile": asset_profile_context(db, user, row), "asset_reporting": reporting, "now_date": datetime.utcnow().strftime("%Y-%m-%d"), **csrf_context(request)})
 
 
 @router.get("/{asset_id}/profile")

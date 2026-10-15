@@ -30,6 +30,7 @@ from app.models.models import (
     DNSProviderConfig,
     DNSRecognisedDevice,
     DNSStatisticsSnapshot,
+    HardwareAsset,
     IPAddress,
     RemoteManagerSetting,
 )
@@ -61,6 +62,7 @@ from app.services.dns_insights import (
 )
 from app.services.dns_providers import DNSProvider, DNSProviderResult, provider_for
 from app.services.site_settings import get_site_setting
+from app.services.modules import has_module_access
 from app.services.table_export import export_row_matches, table_export_response, validate_export_columns, validate_export_filters, validate_export_format
 
 
@@ -945,6 +947,9 @@ def dns_client_detail(
         "traffic_rows": len(traffic_rows),
     }
     logger.log(logging.WARNING if total_duration_ms >= 1000 else logging.DEBUG, "dns client detail timing", extra=log_extra)
+    asset_parent = None
+    if client.hardware_asset_id and has_module_access(db, user, "asset_manager"):
+        asset_parent = db.get(HardwareAsset, client.hardware_asset_id)
     return templates.TemplateResponse(request, "dns_client_detail.html", {
         "user": user, "client": client, "display_name": client_display_name(client), "status": client_status(client, stale_days),
         "ip_history": ip_history,
@@ -955,7 +960,7 @@ def dns_client_detail(
         "client_history_days": client_history_days, "traffic_history_days": traffic_history_days,
         "top_requested": top_requested, "top_blocked": top_blocked,
         "flagged_traffic_domains": open_investigation_domains(db, client.provider), "domain_root": domain_root, "domain_kind": domain_kind,
-        "ip_records": records, "preferred_ip_record_id": preferred_ip_record_id, "priority_ip_record_ids": priority_record_ids, "q": q.strip(), **csrf_context(request),
+        "ip_records": records, "preferred_ip_record_id": preferred_ip_record_id, "priority_ip_record_ids": priority_record_ids, "asset_parent": asset_parent, "q": q.strip(), **csrf_context(request),
     })
 
 
