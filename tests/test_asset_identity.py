@@ -6,7 +6,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.db.session import Base
-from app.models.models import AssetIdentityEvidence, AssetNetworkAssignment, HardwareAsset, User, VLAN
+from app.models.models import AuditLog, AssetIdentityEvidence, AssetNetworkAssignment, HardwareAsset, RemoteManagerSetting, User, VLAN
 from app.services.asset_identity import (
     _assignment_lock_key,
     asset_identity_summary,
@@ -77,6 +77,31 @@ def test_assignments_are_time_bounded_and_conflicts_are_rejected():
         assign_network_identity(db, admin, asset_id=2, address="192.0.2.10", started_at=start + timedelta(hours=1), provenance="dhcp")
     close_network_assignment(db, admin, row.id, start + timedelta(hours=12))
     assert db.get(AssetNetworkAssignment, row.id).ended_at == start + timedelta(hours=12)
+
+
+def test_network_assignment_audit_is_mandatory_at_essential_capture_level():
+    db, admin, *_ = setup()
+    db.add(RemoteManagerSetting(key="audit_capture_level", value="essential"))
+    db.commit()
+
+    row = assign_network_identity(
+        db, admin, asset_id=1, address="192.0.2.30", started_at=datetime(2026, 1, 1), provenance="flow",
+    )
+
+    assert db.get(AssetNetworkAssignment, row.id) is not None
+    assert db.query(AuditLog).filter_by(entity="asset_network_assignment", entity_id=str(row.id)).count() == 1
+
+
+def test_network_assignment_rolls_back_when_audit_persistence_fails(monkeypatch):
+    db, admin, *_ = setup()
+    monkeypatch.setattr("app.services.asset_identity.write_audit", lambda *args, **kwargs: None)
+
+    with pytest.raises(RuntimeError, match="could not be audited"):
+        assign_network_identity(
+            db, admin, asset_id=1, address="192.0.2.31", started_at=datetime(2026, 1, 1), provenance="flow",
+        )
+
+    assert db.query(AssetNetworkAssignment).filter_by(address="192.0.2.31").count() == 0
 
 
 def test_pending_network_assignment_can_be_approved_with_current_vlan_context():

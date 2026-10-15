@@ -25,6 +25,7 @@ from app.models.models import (
     TrafficInterface,
     TrafficMonitoringConfiguration,
     TrafficSource,
+    RemoteManagerSetting,
     User,
     UserModulePermission,
     VLAN,
@@ -53,7 +54,10 @@ def seed_stage2b_acceptance(db) -> dict[str, int | str]:
     ):
         db.add_all(UserModulePermission(user_id=user.id, module_key=key, allowed=True) for key in allowed)
 
-    db.add(TrafficMonitoringConfiguration(id=1, is_enabled=True))
+    db.add_all([
+        TrafficMonitoringConfiguration(id=1, is_enabled=True),
+        RemoteManagerSetting(key="audit_capture_level", value="essential"),
+    ])
     source_a = TrafficSource(id=9101, name="Stage2B Cisco exporter", provider_key="cisco_nsel", source_category="flow_export", is_enabled=True, is_deleted=False, configuration_state="configured", health_state="healthy", exporter_allowlist_json='["192.0.2.1"]', collector_port=2055)
     source_b = TrafficSource(id=9102, name="Stage2B NetFlow exporter", provider_key="netflow_v9", source_category="flow_export", is_enabled=True, is_deleted=False, configuration_state="configured", health_state="healthy", exporter_allowlist_json='["192.0.2.2"]', collector_port=2056)
     db.add_all([source_a, source_b])

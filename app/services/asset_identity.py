@@ -123,7 +123,9 @@ def _normalise_ip(address: str) -> tuple[str, int]:
 
 
 def _audit_commit(db: Session, user: User, action: str, entity: str, entity_id: int, detail: str) -> None:
-    event = write_audit(db, user, action, entity, str(entity_id), detail=detail, commit=False)
+    # Identity mutations are security-relevant and must remain auditable even
+    # when the configured audit level is reduced to essential events.
+    event = write_audit(db, user, action, entity, str(entity_id), detail=detail, force=True, commit=False)
     if event is None:
         db.rollback()
         raise RuntimeError("The identity change could not be audited.")
