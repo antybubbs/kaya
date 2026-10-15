@@ -799,7 +799,9 @@ class TrafficDeviceMonitoring(Base):
 
     __tablename__ = "traffic_device_monitoring"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    ip_address_id: Mapped[int] = mapped_column(ForeignKey("ip_addresses.id", ondelete="CASCADE"), unique=True, index=True)
+    ip_address_id: Mapped[int | None] = mapped_column(ForeignKey("ip_addresses.id", ondelete="CASCADE"), nullable=True, index=True)
+    asset_id: Mapped[int | None] = mapped_column(ForeignKey("hardware_assets.id", ondelete="CASCADE"), nullable=True, index=True)
+    assignment_id: Mapped[int | None] = mapped_column(ForeignKey("asset_network_assignments.id", ondelete="CASCADE"), nullable=True, index=True)
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     enabled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     disabled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -809,6 +811,8 @@ class TrafficDeviceMonitoring(Base):
     status_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     ip_address = relationship("IPAddress", back_populates="traffic_monitoring")
+    asset = relationship("HardwareAsset")
+    assignment = relationship("AssetNetworkAssignment")
 
 
 class TrafficDeviceMonitoringPeriod(Base):
@@ -818,12 +822,19 @@ class TrafficDeviceMonitoringPeriod(Base):
     __table_args__ = (Index("ix_traffic_device_monitoring_periods_ip_started", "ip_address_id", "started_at"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     monitoring_id: Mapped[int] = mapped_column(ForeignKey("traffic_device_monitoring.id", ondelete="CASCADE"), index=True)
-    ip_address_id: Mapped[int] = mapped_column(ForeignKey("ip_addresses.id", ondelete="CASCADE"), index=True)
+    ip_address_id: Mapped[int | None] = mapped_column(ForeignKey("ip_addresses.id", ondelete="CASCADE"), nullable=True, index=True)
+    asset_id: Mapped[int | None] = mapped_column(ForeignKey("hardware_assets.id", ondelete="CASCADE"), nullable=True, index=True)
+    assignment_id: Mapped[int | None] = mapped_column(ForeignKey("asset_network_assignments.id", ondelete="CASCADE"), nullable=True, index=True)
+    endpoint_address: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    address_family: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    exporter_identity: Mapped[str | None] = mapped_column(String(45), nullable=True, index=True)
     started_at: Mapped[datetime] = mapped_column(DateTime, index=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     monitoring = relationship("TrafficDeviceMonitoring")
     ip_address = relationship("IPAddress")
+    asset = relationship("HardwareAsset")
+    assignment = relationship("AssetNetworkAssignment")
 
 
 class TrafficDeviceAggregate(Base):
@@ -831,13 +842,19 @@ class TrafficDeviceAggregate(Base):
 
     __tablename__ = "traffic_device_aggregates"
     __table_args__ = (
-        UniqueConstraint("period_id", "source_id", "interface_id", "bucket_start", "bucket_seconds", "direction", name="uq_traffic_device_aggregate_bucket"),
+        Index("uq_traffic_device_aggregate_legacy_bucket", "period_id", "source_id", "interface_id", "bucket_start", "bucket_seconds", "direction", unique=True, sqlite_where=text("assignment_id IS NULL"), postgresql_where=text("assignment_id IS NULL")),
+        Index("uq_traffic_device_aggregate_assignment_bucket", "period_id", "assignment_id", "source_id", "interface_id", "bucket_start", "bucket_seconds", "direction", unique=True, sqlite_where=text("assignment_id IS NOT NULL"), postgresql_where=text("assignment_id IS NOT NULL")),
         Index("ix_traffic_device_aggregates_ip_time", "ip_address_id", "bucket_start"),
         Index("ix_traffic_device_aggregates_period_time", "period_id", "bucket_start"),
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     period_id: Mapped[int] = mapped_column(ForeignKey("traffic_device_monitoring_periods.id", ondelete="CASCADE"), index=True)
-    ip_address_id: Mapped[int] = mapped_column(ForeignKey("ip_addresses.id", ondelete="CASCADE"), index=True)
+    ip_address_id: Mapped[int | None] = mapped_column(ForeignKey("ip_addresses.id", ondelete="CASCADE"), nullable=True, index=True)
+    asset_id: Mapped[int | None] = mapped_column(ForeignKey("hardware_assets.id", ondelete="CASCADE"), nullable=True, index=True)
+    assignment_id: Mapped[int | None] = mapped_column(ForeignKey("asset_network_assignments.id", ondelete="CASCADE"), nullable=True, index=True)
+    endpoint_address: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    address_family: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    exporter_identity: Mapped[str | None] = mapped_column(String(45), nullable=True, index=True)
     source_id: Mapped[int] = mapped_column(ForeignKey("traffic_sources.id", ondelete="CASCADE"), index=True)
     interface_id: Mapped[int | None] = mapped_column(ForeignKey("traffic_interfaces.id", ondelete="SET NULL"), nullable=True, index=True)
     bucket_start: Mapped[datetime] = mapped_column(DateTime, index=True)
@@ -850,6 +867,8 @@ class TrafficDeviceAggregate(Base):
     attribution_confidence: Mapped[str] = mapped_column(String(20), default="unknown")
     first_observed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_observed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    asset = relationship("HardwareAsset")
+    assignment = relationship("AssetNetworkAssignment")
 
 
 class NetworkMonitorWallboard(Base):
