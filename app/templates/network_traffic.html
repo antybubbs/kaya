@@ -73,23 +73,23 @@
 
     <section class="card traffic-devices-card" aria-labelledby="traffic-devices-heading">
       <header class="traffic-card-header">
-        <div><h2 id="traffic-devices-heading">Device usage</h2><p class="muted">Only managed IP records with administrator-enabled traffic monitoring are shown. Totals use the selected persisted resolution.</p></div>
-        <input class="traffic-device-search" data-device-search type="search" maxlength="120" placeholder="Search name or IP" aria-label="Search opted-in devices">
+        <div><h2 id="traffic-devices-heading">Tracked devices</h2><p class="muted">Managed IP records with optional device tracking enabled. Usage for every observed address is on the Device Usage tab. Totals use the selected persisted resolution.</p></div>
+        <input class="traffic-device-search" data-device-search type="search" maxlength="120" placeholder="Search name or IP" aria-label="Search tracked devices">
       </header>
       <div class="traffic-device-table-wrap"><table class="traffic-device-table"><thead><tr><th scope="col">Device</th><th scope="col">VLAN</th><th scope="col" class="num">Download</th><th scope="col" class="num">Upload</th><th scope="col" class="traffic-total-col">Total</th><th scope="col">Last observed</th><th scope="col">Quality</th><th scope="col">Status</th><th scope="col"><span class="sr-only">History</span></th></tr></thead><tbody data-device-rows><tr><td colspan="9" class="muted">Loading device reports...</td></tr></tbody></table></div>
-      <p class="traffic-empty" data-device-empty hidden>No opted-in devices have persisted usage in this range. Enable monitoring for devices in VLAN/IP Manager.</p>
+      <p class="traffic-empty" data-device-empty hidden>No tracked devices have persisted usage in this range. Usage for all observed addresses is on the Device Usage tab.</p>
     </section>
     <section class="card traffic-device-detail" data-device-detail hidden><header class="traffic-card-header"><div><h2 data-device-detail-title>Device history</h2><p class="muted">Persisted volume buckets only; no instantaneous rate is inferred.</p></div><span class="muted" data-device-detail-quality></span></header><div class="traffic-chart" data-device-chart role="img" aria-label="Selected device traffic history"></div></section>
   </section>
 
   <section data-traffic-panel="devices"{% if traffic_page != 'devices' %} hidden{% endif %}>
     <section class="card device-usage-intro">
-      <header class="traffic-card-header"><div><h2>Device Usage</h2><p class="muted">Observed endpoints are shown together. Measured usage is available only after administrator-enabled monitoring; unmonitored usage is intentionally unavailable.</p></div><span class="traffic-status traffic-status-unknown" data-device-usage-quality>Loading</span></header>
+      <header class="traffic-card-header"><div><h2>Device Usage</h2><p class="muted">Usage is recorded automatically for observed addresses inside the configured local networks, per traffic source and exporter. No Asset Manager record, managed IP or device tracking is needed. Download/upload totals are not combined across sources that may measure the same traffic.</p></div><span class="traffic-status traffic-status-unknown" data-device-usage-quality>Loading</span></header>
       <div class="traffic-summary-grid device-usage-summary" aria-label="Device usage summary">
-        <article class="traffic-kpi"><span class="traffic-kpi-label">Monitored devices</span><strong data-device-summary="monitored_devices">No data</strong><small>Observed endpoints with active opt-in</small></article>
-        <article class="traffic-kpi traffic-kpi-download"><span class="traffic-kpi-label">Total download</span><strong data-device-summary="download_bytes">No data</strong><small>Persisted flow-derived usage</small></article>
+        <article class="traffic-kpi"><span class="traffic-kpi-label">Measured endpoints</span><strong data-device-summary="measured_endpoints">No data</strong><small>Source/exporter contexts with recorded usage</small></article>
+        <article class="traffic-kpi traffic-kpi-download"><span class="traffic-kpi-label">Total download</span><strong data-device-summary="download_bytes">No data</strong><small data-device-summary-note="download_bytes">Persisted flow-derived usage</small></article>
         <article class="traffic-kpi traffic-kpi-upload"><span class="traffic-kpi-label">Total upload</span><strong data-device-summary="upload_bytes">No data</strong><small>Persisted flow-derived usage</small></article>
-        <article class="traffic-kpi"><span class="traffic-kpi-label">Monitoring coverage</span><strong data-device-summary="coverage_percent">No data</strong><small>Observed buckets in selected period</small></article>
+        <article class="traffic-kpi"><span class="traffic-kpi-label">Observed coverage</span><strong data-device-summary="coverage_percent">No data</strong><small>Observed buckets in selected period</small></article>
       </div>
     </section>
     <section class="card">

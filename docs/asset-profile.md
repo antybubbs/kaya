@@ -38,9 +38,15 @@ service reads source-owned tables with bounded result limits; it does not copy
 records into Asset Manager, change traffic attribution, or merge SNMP WAN
 totals with device usage.
 
-Traffic history is included only when a confirmed network-assignment interval
-uniquely covers the persisted device-aggregate bucket. Ambiguous or missing
-interval evidence is excluded and reported as excluded coverage. DNS and Uptime
+Traffic history comes from the automatic observed-endpoint usage, read through
+the asset's confirmed network assignments; nothing is copied. A bucket counts
+only when a confirmed assignment (current VLAN context, in source/exporter scope)
+held the address for the whole bucket and no other asset's confirmed assignment
+overlapped it. Buckets crossing a handover or with competing ownership are
+excluded and reported as excluded coverage, so a reused or reassigned address
+never moves another device's traffic. When more than one source or exporter
+measured the address, per-source totals are shown instead of a sum. Optional
+device tracking is separate and is not needed for this history. DNS and Uptime
 sections are independently permission-gated. Missing observations are shown as
 unavailable rather than zero.
 

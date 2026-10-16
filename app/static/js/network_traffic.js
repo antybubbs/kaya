@@ -120,26 +120,29 @@
     const summary = payload.summary || {};
     app.querySelectorAll("[data-device-summary]").forEach((item) => {
       const value = summary[item.dataset.deviceSummary];
-      item.textContent = item.dataset.deviceSummary === "coverage_percent" ? `${Number(value || 0)}%` : item.dataset.deviceSummary === "monitored_devices" ? String(value || 0) : formatUsage(value);
+      item.textContent = item.dataset.deviceSummary === "coverage_percent" ? `${Number(value || 0)}%` : ["monitored_devices", "measured_endpoints"].includes(item.dataset.deviceSummary) ? String(value || 0) : summary.overlapping_sources ? "Per source" : formatUsage(value);
     });
+    const summaryNote = app.querySelector('[data-device-summary-note="download_bytes"]');
+    if (summaryNote) summaryNote.textContent = summary.overlapping_sources ? `Sources overlap: ${(summary.by_source || []).map((item) => `${item.source} ${formatUsage(item.download_bytes)} down / ${formatUsage(item.upload_bytes)} up`).join("; ")}` : "Persisted flow-derived usage";
     const rows = payload.devices || [];
     app.querySelector("[data-device-usage-quality]").textContent = rows.length ? `${payload.bucket_seconds}s persisted resolution` : "No usage data";
     app.querySelector("[data-device-usage-empty]")?.toggleAttribute("hidden", rows.length > 0);
     target.innerHTML = rows.length ? rows.map((item) => {
-      const identity = item.identity_status === "confirmed" && item.asset_url ? `<a href="${escape(item.asset_url)}">${escape(item.asset_name || "Confirmed asset")}</a>` : `${escape(item.identity_status || "unidentified")}<small><a href="/infrastructure/asset-manager/discovered">Review in Asset Manager</a></small>`;
-      const noUsage = { not_monitored: "Not monitored", awaiting_data: "Awaiting data", review_required: "Review required" }[item.monitoring_status];
+      const identityLabel = { suggested: "Recognised", unidentified: "Unidentified" }[item.identity_status] || "Unidentified";
+      const identity = item.identity_status === "confirmed" && item.asset_url ? `<a href="${escape(item.asset_url)}">${escape(item.asset_name || "Confirmed asset")}</a>${item.identity_whole_period === false ? "<small>Current holder of this address; usage shown is for the address and may include earlier occupants.</small>" : ""}` : `${escape(identityLabel)}<small><a href="/infrastructure/asset-manager/discovered">Review in Asset Manager</a></small>`;
+      // Usage is shown whenever it was measured; tracking never hides it.
+      const noUsage = item.usage_available ? null : "Traffic observed — usage unavailable";
       const usage = noUsage || formatUsage(item.download_bytes);
       const upload = noUsage || formatUsage(item.upload_bytes);
       const total = noUsage || formatUsage(item.total_bytes);
-      const monitoringLabel = item.monitoring_attention === "review_required" ? "Monitored — review required" : { monitored: "Monitored", awaiting_data: "Enabled — awaiting data", review_required: "Enabled — review required", not_monitored: "Not monitored" }[item.monitoring_status] || "Unknown";
+      const monitoringLabel = { monitored: "Device tracking on", awaiting_data: "Device tracking — awaiting data", review_required: "Device tracking — review required", not_monitored: "" }[item.monitoring_status] ?? "";
       const vlanStatus = ["confirmed", "none", "stale", "conflicting", "unresolved"].includes(item.vlan_status) ? item.vlan_status : "unknown";
       const vlanLabel = item.vlan || { none: "No VLAN", stale: "VLAN context stale", conflicting: "VLAN conflicting", unresolved: "VLAN unresolved" }[vlanStatus] || "VLAN unknown";
-      const sourceStatus = { monitored: "measured", awaiting_data: "enabled — awaiting data", review_required: "enabled — review required", not_monitored: "observed only, not monitored" };
-      const breakdown = (item.source_breakdown || []).map((entry) => `<span class="device-usage-source">${escape(entry.source)}${entry.exporter_identity ? ` <span class="mono">${escape(entry.exporter_identity)}</span>` : ""}<small>${escape(entry.usage === "measured" ? "measured" : sourceStatus[entry.monitoring_status] || "observed only")}${entry.coverage_percent != null ? ` · ${escape(String(entry.coverage_percent))}% observed` : ""}</small></span>`).join("");
+      const breakdown = (item.source_breakdown || []).map((entry) => `<span class="device-usage-source">${escape(entry.source)}${entry.exporter_identity ? ` <span class="mono">${escape(entry.exporter_identity)}</span>` : ""}<small>${escape(entry.usage === "measured" ? `measured · ${formatUsage(entry.download_bytes)} down / ${formatUsage(entry.upload_bytes)} up` : "observed — usage unavailable")}${entry.coverage_percent != null ? ` · ${escape(String(entry.coverage_percent))}% observed` : ""}</small></span>`).join("");
       const sourceCell = `${breakdown || escape((item.source_context || []).join(", ") || "Unknown source")}${item.separate_source_observation ? `<small class="device-usage-separate">Separate source observation</small>` : ""}`;
-      return `<tr><th scope="row">${escape(item.name)}<small class="mono">${escape(item.address)}</small></th><td><span class="traffic-status traffic-status-${stateClass(item.identity_status)}">${identity}</span><small class="muted"${item.monitoring_reason ? ` title="${escape(item.monitoring_reason)}"` : ""}>${escape(monitoringLabel)}</small></td><td>${escape(item.address)}<small class="muted" data-vlan-status="${vlanStatus}">${escape(vlanLabel)}</small></td><td class="traffic-muted-cell device-usage-sources">${sourceCell}</td><td class="num">${usage}</td><td class="num">${upload}</td><td class="num"><strong>${total}</strong></td><td class="traffic-muted-cell">${escape(dateLabel(item.last_observed_at))}</td><td>${escape(String(item.coverage_percent || 0))}%</td></tr>`;
-    }).join("") : `<tr><td colspan="9" class="muted">No matching opted-in devices.</td></tr>`;
-    app.querySelector("[data-device-usage-page-label]").textContent = `Page ${payload.page} of ${payload.page_count} · ${payload.total} monitored device${payload.total === 1 ? "" : "s"}`;
+      return `<tr><th scope="row">${escape(item.name)}<small class="mono">${escape(item.address)}</small></th><td><span class="traffic-status traffic-status-${stateClass(item.identity_status)}">${identity}</span>${monitoringLabel ? `<small class="muted"${item.monitoring_reason ? ` title="${escape(item.monitoring_reason)}"` : ""}>${escape(monitoringLabel)}</small>` : ""}</td><td>${escape(item.address)}<small class="muted" data-vlan-status="${vlanStatus}">${escape(vlanLabel)}</small></td><td class="traffic-muted-cell device-usage-sources">${sourceCell}</td><td class="num">${usage}</td><td class="num">${upload}</td><td class="num"><strong>${total}</strong></td><td class="traffic-muted-cell">${escape(dateLabel(item.last_observed_at))}</td><td>${escape(String(item.coverage_percent || 0))}%</td></tr>`;
+    }).join("") : `<tr><td colspan="9" class="muted">No observed endpoints match.</td></tr>`;
+    app.querySelector("[data-device-usage-page-label]").textContent = `Page ${payload.page} of ${payload.page_count} · ${payload.total} endpoint${payload.total === 1 ? "" : "s"}`;
     app.querySelector("[data-device-usage-prev]").disabled = payload.page <= 1;
     app.querySelector("[data-device-usage-next]").disabled = payload.page >= payload.page_count;
   };

@@ -23,6 +23,7 @@ from app.models.models import (
     TrafficDiscoveryNetworkMapping,
     TrafficDiscoveryObservation,
     TrafficInterface,
+    TrafficLocalNetwork,
     TrafficMonitoringConfiguration,
     TrafficSource,
     RemoteManagerSetting,
@@ -57,6 +58,8 @@ def seed_stage2b_acceptance(db) -> dict[str, int | str]:
 
     db.add_all([
         TrafficMonitoringConfiguration(id=1, is_enabled=True),
+        # Accounting topology: observed-endpoint usage is recorded inside it.
+        TrafficLocalNetwork(name="Stage2B LAN", network_cidr="192.0.2.0/24", is_enabled=True),
         RemoteManagerSetting(key="audit_capture_level", value="essential"),
     ])
     source_a = TrafficSource(id=9101, name="Stage2B Cisco exporter", provider_key="cisco_nsel", source_category="flow_export", is_enabled=True, is_deleted=False, configuration_state="configured", health_state="healthy", exporter_allowlist_json='["192.0.2.1"]', collector_port=2055)

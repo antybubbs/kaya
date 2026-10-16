@@ -9,7 +9,6 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime, timedelta
 
-from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from app.models.models import (
@@ -20,8 +19,8 @@ from app.models.models import (
     NetworkMonitor,
     NetworkMonitorCheck,
     NetworkMonitorStatistic,
-    TrafficDeviceAggregate,
-    TrafficDeviceMonitoring,
+    TrafficEndpointAggregate,
+    TrafficSource,
 )
 from app.services.modules import has_module_access
 from app.services.network_monitor_history import resolve_range
@@ -49,50 +48,84 @@ def _assignment_matches(row: AssetNetworkAssignment, at: datetime) -> bool:
     return row.status == "confirmed" and row.started_at <= at and (row.ended_at is None or at < row.ended_at)
 
 
+def _in_scope(row: AssetNetworkAssignment, source_id: int, exporter_identity: str) -> bool:
+    return (row.source_id is None or row.source_id == source_id) and (row.exporter_identity is None or row.exporter_identity == exporter_identity)
+
+
+def _context_current(row: AssetNetworkAssignment) -> bool:
+    if row.vlan_id is None:
+        return True
+    return bool(row.vlan and row.vlan.subnet_cidr and row.network_cidr and row.network_cidr.strip() == row.vlan.subnet_cidr.strip())
+
+
 def _traffic(db: Session, asset_id: int, assignments: list[AssetNetworkAssignment], window: dict) -> dict:
-    ip_ids = {row.ip_address_id for row in assignments if row.ip_address_id is not None}
-    assignment_ids = {row.id for row in assignments}
-    if not ip_ids and not assignment_ids:
-        return {"available": True, "history": [], "download_bytes": 0, "upload_bytes": 0, "excluded_buckets": 0}
+    """Observed-endpoint usage the asset's confirmed identity evidence supports.
+
+    A bucket counts only when, for its whole duration, a confirmed assignment of
+    this asset (current VLAN context, in source/exporter scope) held the address
+    and no other asset's confirmed assignment overlapped it. Buckets crossing a
+    handover, or with competing ownership, are excluded. Nothing is copied.
+    When more than one source/exporter measured the address, per-source totals
+    are reported instead of a sum, which could count the same flows twice.
+    """
+    own = [row for row in assignments if row.status == "confirmed" and row.asset_id == asset_id and _context_current(row)]
+    addresses = {row.address for row in own}
+    if not addresses:
+        return {"available": True, "history": [], "download_bytes": 0, "upload_bytes": 0, "excluded_buckets": 0, "sources": []}
     duration = window["end"] - window["start"]
     bucket_seconds = 300 if duration <= timedelta(hours=24) else 3600 if duration <= timedelta(days=7) else 86400
-    rows = db.query(TrafficDeviceAggregate).join(
-        TrafficDeviceMonitoring,
-        or_(
-            and_(TrafficDeviceAggregate.assignment_id.is_not(None), TrafficDeviceMonitoring.assignment_id == TrafficDeviceAggregate.assignment_id),
-            and_(TrafficDeviceAggregate.assignment_id.is_(None), TrafficDeviceMonitoring.ip_address_id == TrafficDeviceAggregate.ip_address_id),
-        ),
-    ).filter(
-        or_(TrafficDeviceAggregate.ip_address_id.in_(ip_ids or [-1]), TrafficDeviceAggregate.assignment_id.in_(assignment_ids or [-1])),
-        TrafficDeviceMonitoring.is_enabled.is_(True),
-        TrafficDeviceAggregate.bucket_seconds == bucket_seconds,
-        TrafficDeviceAggregate.bucket_start >= window["start"],
-        TrafficDeviceAggregate.bucket_start < window["end"],
-    ).order_by(TrafficDeviceAggregate.bucket_start.asc()).limit(MAX_ROWS).all()
-    points: dict[datetime, dict] = {}
-    excluded = 0
+    rows = db.query(TrafficEndpointAggregate).filter(
+        TrafficEndpointAggregate.endpoint_ip.in_(addresses),
+        TrafficEndpointAggregate.bucket_seconds == bucket_seconds,
+        TrafficEndpointAggregate.bucket_start >= window["start"],
+        TrafficEndpointAggregate.bucket_start < window["end"],
+    ).order_by(TrafficEndpointAggregate.bucket_start.asc()).limit(MAX_ROWS).all()
+    competitors = db.query(AssetNetworkAssignment).filter(
+        AssetNetworkAssignment.address.in_(addresses),
+        AssetNetworkAssignment.status == "confirmed",
+        AssetNetworkAssignment.asset_id != asset_id,
+    ).limit(MAX_ROWS).all()
+    by_context: dict[tuple, dict[datetime, dict]] = {}
+    excluded: set[tuple] = set()
+    span = timedelta(seconds=bucket_seconds)
     for row in rows:
-        matches = [
-            item for item in assignments
-            if _assignment_matches(item, row.bucket_start) and (
-                row.assignment_id == item.id or (row.assignment_id is None and item.ip_address_id == row.ip_address_id)
-            )
-        ]
-        if len(matches) != 1:
-            excluded += 1
+        bucket_end = row.bucket_start + span
+        scoped = [item for item in own if item.address == row.endpoint_ip and _in_scope(item, row.source_id, row.exporter_identity)]
+        covering = [item for item in scoped if item.started_at <= row.bucket_start and (item.ended_at is None or bucket_end <= item.ended_at)]
+        contested = any(
+            item.address == row.endpoint_ip and _in_scope(item, row.source_id, row.exporter_identity)
+            and item.started_at < bucket_end and (item.ended_at is None or item.ended_at > row.bucket_start)
+            for item in competitors
+        )
+        if not covering or contested:
+            # Count as excluded only contexts this asset claims for part of the bucket.
+            if any(item.started_at < bucket_end and (item.ended_at is None or item.ended_at > row.bucket_start) for item in scoped):
+                excluded.add((row.source_id, row.exporter_identity, row.bucket_start))
             continue
-        point = points.setdefault(_bucket(row.bucket_start, max(1, int(row.bucket_seconds or 1))), {"download_bytes": 0, "upload_bytes": 0, "quality": "observed"})
+        point = by_context.setdefault((row.source_id, row.exporter_identity), {}).setdefault(row.bucket_start, {"download_bytes": 0, "upload_bytes": 0, "quality": "observed"})
         if row.direction in {"download", "upload"}:
             point[f"{row.direction}_bytes"] += max(0, int(row.bytes_total or 0))
         if row.data_quality != "complete":
-            point["quality"] = row.data_quality or "partial"
+            point["quality"] = "partial"
+    names = {source.id: source.name for source in db.query(TrafficSource).filter(TrafficSource.id.in_([key[0] for key in by_context] or [-1])).all()}
+    sources = [
+        {"source": names.get(key[0], "Unknown source"), "exporter_identity": key[1],
+         "download_bytes": sum(point["download_bytes"] for point in points.values()),
+         "upload_bytes": sum(point["upload_bytes"] for point in points.values())}
+        for key, points in sorted(by_context.items(), key=lambda item: (item[0][0], item[0][1]))
+    ]
+    if len(by_context) != 1:
+        return {"available": True, "history": [], "download_bytes": None if by_context else 0, "upload_bytes": None if by_context else 0, "excluded_buckets": len(excluded), "sources": sources, "multiple_sources": len(by_context) > 1}
+    points = next(iter(by_context.values()))
     history = [{"at": _iso(at), **value} for at, value in sorted(points.items())]
     return {
         "available": True,
         "history": history,
         "download_bytes": sum(item["download_bytes"] for item in history),
         "upload_bytes": sum(item["upload_bytes"] for item in history),
-        "excluded_buckets": excluded,
+        "excluded_buckets": len(excluded),
+        "sources": sources,
+        "multiple_sources": False,
     }
 
 

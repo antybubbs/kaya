@@ -31,6 +31,7 @@ from app.models.models import (
     TrafficDeviceMonitoringPeriod,
     TrafficDiscoveryNetworkMapping,
     TrafficDiscoveryObservation,
+    TrafficLocalNetwork,
     TrafficMonitoringConfiguration,
     TrafficSource,
     User,
@@ -47,6 +48,7 @@ from app.services.device_traffic import (
     set_asset_monitoring,
     set_device_monitoring,
 )
+from app.services.endpoint_traffic import EndpointUsageBatch
 from app.services.flow_protocol import NormalizedFlowRecord
 from app.services.modules import grant_all_registered_modules
 from app.services.network_traffic_reporting import device_report, device_usage_report
@@ -87,7 +89,12 @@ def _flow(at, *, source_ip=DOORBELL, destination_ip=REMOTE, forward=1000, revers
 
 
 def _persist(db, record):
+    """Mirror the flow pipeline: tracked-device attribution plus automatic
+    observed-endpoint usage. Returns the tracked-device attribution count."""
     count = persist_device_traffic(db, record, record.bytes_total, record.packets_total, record.source_id)
+    batch = EndpointUsageBatch(db)
+    batch.add(record, record.bytes_total, record.packets_total, record.data_quality, record.source_id)
+    batch.flush()
     db.commit()
     return count
 
@@ -117,6 +124,8 @@ def doorbell_scenario(db, *, with_lease=True, with_source_less=True):
     firepower = TrafficSource(name="Synthetic Firepower consistency", provider_key="cisco_nsel", source_category="flow", is_enabled=True, is_deleted=False)
     second = TrafficSource(name="Synthetic second exporter consistency", provider_key="netflow_v9", source_category="flow", is_enabled=True, is_deleted=False)
     db.add_all([vlan, asset, firepower, second])
+    if not db.query(TrafficLocalNetwork).filter_by(network_cidr="192.0.2.0/24").first():
+        db.add(TrafficLocalNetwork(name="Synthetic LAN", network_cidr="192.0.2.0/24", is_enabled=True))
     config = db.get(TrafficMonitoringConfiguration, 1)
     if config is None:
         db.add(TrafficMonitoringConfiguration(id=1, is_enabled=True))
@@ -153,9 +162,19 @@ def _usage_row(db, user, address=DOORBELL, **kwargs):
     return rows[0] if rows else None
 
 
+def _profile_traffic(db, user, asset_id):
+    return asset_reporting_context(db, user, asset_id, period="24h")["traffic"]
+
+
 def _profile_totals(db, user, asset_id):
-    traffic = asset_reporting_context(db, user, asset_id, period="24h")["traffic"]
+    traffic = _profile_traffic(db, user, asset_id)
     return traffic["download_bytes"], traffic["upload_bytes"]
+
+
+def _tracked_totals(db, **filters):
+    """Totals of the optional tracked-device aggregates (legacy lifecycle)."""
+    rows = db.query(TrafficDeviceAggregate).filter_by(bucket_seconds=300, **filters).all()
+    return sum(r.bytes_total for r in rows if r.direction == "download"), sum(r.bytes_total for r in rows if r.direction == "upload")
 
 
 # ----------------------------------------------------------------- root cause
@@ -200,14 +219,28 @@ def test_eligible_traffic_reconciles_between_device_usage_and_asset_profile(db):
     _persist(db, _flow(NOW - timedelta(hours=2), source="second", exporter=OTHER_EXPORTER, sequence=4))  # other source
     _observe(db, buckets=3)
 
-    row = _usage_row(db, scenario.admin)
-    assert row["monitoring_status"] == "monitored"
-    assert row["identity_status"] == "confirmed"
-    assert row["asset_url"] == f"/infrastructure/asset-manager/{scenario.asset.id}"
-    # Doorbell as initiator: up 1500 / down 6000. As responder: reverse 300 is its
-    # upload and forward 700 its download.
-    assert (row["download_bytes"], row["upload_bytes"]) == (6700, 1800)
-    assert _profile_totals(db, scenario.admin, scenario.asset.id) == (6700, 1800)
+    rows = {row["source_breakdown"][0]["source"]: row for row in _rows(db, scenario.admin)}
+    firepower, second = rows["Synthetic Firepower consistency"], rows["Synthetic second exporter consistency"]
+    assert (firepower["monitoring_status"], firepower["identity_status"]) == ("monitored", "confirmed")
+    assert firepower["asset_url"] == f"/infrastructure/asset-manager/{scenario.asset.id}"
+    # Observed usage is automatic, including before tracking was enabled. As
+    # initiator the doorbell uploads forward and downloads reverse bytes; as
+    # responder reverse 300 is its upload and forward 700 its download.
+    assert (firepower["download_bytes"], firepower["upload_bytes"]) == (4000 + 6000 + 700, 1000 + 1500 + 300)
+    # The other exporter is its own context, never added to the Firepower row.
+    assert (second["download_bytes"], second["upload_bytes"], second["separate_source_observation"]) == (4000, 1000, True)
+    summary = device_usage_report(db, scenario.admin, report_range="24h", now=NOW)["summary"]
+    assert (summary["overlapping_sources"], summary["download_bytes"]) == (True, None)
+    # The source-less adoption assignment covers both contexts: the profile
+    # reports per-source totals rather than a sum that could double count.
+    traffic = _profile_traffic(db, scenario.admin, scenario.asset.id)
+    assert traffic["multiple_sources"] is True and traffic["download_bytes"] is None
+    assert {(item["source"], item["download_bytes"], item["upload_bytes"]) for item in traffic["sources"]} == {
+        ("Synthetic Firepower consistency", 10700, 2800), ("Synthetic second exporter consistency", 4000, 1000),
+    }
+    # Optional device tracking keeps its own lifecycle: only post-activation,
+    # in-scope traffic, and nothing from the other exporter.
+    assert _tracked_totals(db) == (6700, 1800)
     assert db.query(TrafficDeviceAggregate).filter(TrafficDeviceAggregate.source_id == SOURCES["second"]).count() == 0
 
 
@@ -492,13 +525,12 @@ def test_conflicting_vlan_evidence_is_unresolved(any_db):
 # ----------------------------------------------------------------- multiple exporters
 
 
-def test_secondary_unmonitored_source_is_a_breakdown_of_the_monitored_asset_row(any_db):
+def test_secondary_source_without_usage_is_a_breakdown_of_the_measured_asset_row(any_db):
     db = any_db
     scenario = doorbell_scenario(db)
     _enable(db, scenario)
     _persist(db, _flow(NOW - timedelta(hours=6), forward=1500, reverse=6000, sequence=1))
     _persist(db, _flow(NOW - timedelta(hours=3), source_ip=REMOTE, destination_ip=DOORBELL, forward=700, reverse=300, sequence=2))
-    _persist(db, _flow(NOW - timedelta(hours=2), source="second", exporter=OTHER_EXPORTER, forward=9999, reverse=9999, sequence=3))
     _observe(db, buckets=3)
     _observe(db, source="second", exporter=OTHER_EXPORTER, buckets=2)
     rows = _rows(db, scenario.admin)
@@ -511,9 +543,9 @@ def test_secondary_unmonitored_source_is_a_breakdown_of_the_monitored_asset_row(
         ("Synthetic second exporter consistency", OTHER_EXPORTER, "observed", "not_monitored"),
     ]
     assert row["source_breakdown"][1]["coverage_percent"] == 1  # 2 of 288 buckets
-    # Bytes from the unmonitored exporter are never merged into the row or totals.
+    # The second exporter observed the endpoint without byte data: no usage is invented.
     summary = device_usage_report(db, scenario.admin, report_range="24h", now=NOW)["summary"]
-    assert (summary["download_bytes"], summary["upload_bytes"]) == (6700, 1800)
+    assert (summary["download_bytes"], summary["upload_bytes"], summary["overlapping_sources"]) == (6700, 1800, False)
     assert _profile_totals(db, scenario.admin, scenario.asset.id) == (6700, 1800)
 
 
@@ -541,9 +573,10 @@ def test_source_scoped_only_asset_keeps_other_exporter_as_labelled_separate_row(
     _observe(db, source="second", exporter=OTHER_EXPORTER)
     rows = sorted(_rows(db, scenario.admin), key=lambda row: row["monitoring_status"])
     # The other exporter may see a different device on the same address; no
-    # confirmed evidence ties it to this asset, so it is not merged.
-    assert [(row["monitoring_status"], row["total_bytes"], row.get("separate_source_observation", False)) for row in rows] == [
-        ("monitored", 5000, False), ("not_monitored", None, True),
+    # confirmed evidence ties it to this asset, so it is not merged, and both
+    # rows are labelled as separate source observations.
+    assert [(row["monitoring_status"], row["total_bytes"], row["separate_source_observation"]) for row in rows] == [
+        ("monitored", 5000, True), ("not_monitored", None, True),
     ]
     assert rows[1]["asset_url"] is None
 
@@ -582,14 +615,18 @@ def test_previous_owner_monitor_never_labels_the_reassigned_address(any_db):
         source_id=SOURCES["firepower"], exporter_identity=EXPORTER, started_at=handover, provenance="synthetic reassignment", status="confirmed",
     ))
     db.commit()
-    assert _persist(db, _flow(NOW - timedelta(hours=2), sequence=2)) == 0
+    assert _persist(db, _flow(NOW - timedelta(hours=2), sequence=2)) == 0  # no tracked attribution
     _observe(db, buckets=2)
-    rows = {row["asset_name"]: row for row in _rows(db, scenario.admin)}
-    old, new = rows["Synthetic doorbell"], rows["Synthetic new owner"]
-    # The previous owner keeps only its own pre-handover usage, flagged for review.
-    assert (old["monitoring_status"], old["download_bytes"], old["upload_bytes"], old["monitoring_attention"]) == ("monitored", 4000, 1000, "review_required")
-    # The new owner is listed with its own identity and is not monitored.
-    assert (new["monitoring_status"], new["total_bytes"], new["vlan"]) == ("not_monitored", None, "Synthetic VLAN 1")
+    # Device Usage reports the address: both occupants' usage, identified by the
+    # current holder only, which is flagged as not holding it for the whole span.
+    (row,) = _rows(db, scenario.admin)
+    assert (row["download_bytes"], row["upload_bytes"]) == (8000, 2000)
+    assert (row["asset_name"], row["identity_whole_period"], row["vlan"]) == ("Synthetic new owner", False, "Synthetic VLAN 1")
+    # The previous owner's still-enabled monitor never labels the new occupant.
+    assert row["monitoring_status"] == "not_monitored"
+    # Each Asset Profile shows only traffic inside its own confirmed interval.
+    assert _profile_totals(db, scenario.admin, scenario.asset.id) == (4000, 1000)
+    assert _profile_totals(db, scenario.admin, newcomer.id) == (4000, 1000)
     assert asset_monitoring_status(db, scenario.asset.id, now=NOW)["status"] == "review_required"
 
 
@@ -737,7 +774,11 @@ def test_postgres_doorbell_reconciliation(postgres_db):
     _persist(db, _flow(NOW - timedelta(hours=6), forward=1500, reverse=6000, sequence=2))
     _persist(db, _flow(NOW - timedelta(hours=2), source="second", exporter=OTHER_EXPORTER, sequence=3))
     _observe(db)
-    row = _usage_row(db, scenario.admin)
-    assert row["monitoring_status"] == "monitored"
-    assert (row["download_bytes"], row["upload_bytes"]) == (6000, 1500)
-    assert _profile_totals(db, scenario.admin, scenario.asset.id) == (6000, 1500)
+    rows = {row["source_breakdown"][0]["source"]: row for row in _rows(db, scenario.admin)}
+    firepower = rows["Synthetic Firepower consistency"]
+    assert firepower["monitoring_status"] == "monitored"
+    # Observed usage includes the flow before tracking started; tracking does not.
+    assert (firepower["download_bytes"], firepower["upload_bytes"]) == (10000, 2500)
+    assert _tracked_totals(db) == (6000, 1500)
+    profile = {item["source"]: (item["download_bytes"], item["upload_bytes"]) for item in _profile_traffic(db, scenario.admin, scenario.asset.id)["sources"]}
+    assert profile["Synthetic Firepower consistency"] == (10000, 2500)

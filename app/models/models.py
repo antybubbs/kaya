@@ -871,6 +871,35 @@ class TrafficDeviceAggregate(Base):
     assignment = relationship("AssetNetworkAssignment")
 
 
+class TrafficEndpointAggregate(Base):
+    """Automatic usage per observed endpoint IP, scoped to source and exporter.
+
+    Written by the existing flow pipeline at 5-minute, hourly and daily UTC
+    resolution for original (pre-NAT) endpoints inside enabled local networks.
+    Holds no raw flows, identity or monitoring preference; identity is joined at
+    report time through confirmed, time-bound assignments. The primary key is the
+    upsert target and the per-IP history path; the time index serves reports and
+    retention. No foreign keys, to keep the per-flow write path minimal.
+    """
+
+    __tablename__ = "traffic_endpoint_aggregates"
+    __table_args__ = (
+        Index("ix_traffic_endpoint_aggregates_time", "bucket_seconds", "bucket_start"),
+    )
+    endpoint_ip: Mapped[str] = mapped_column(String(45), primary_key=True)
+    bucket_seconds: Mapped[int] = mapped_column(Integer, primary_key=True)
+    bucket_start: Mapped[datetime] = mapped_column(DateTime, primary_key=True)
+    source_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    exporter_identity: Mapped[str] = mapped_column(String(45), primary_key=True)
+    direction: Mapped[str] = mapped_column(String(8), primary_key=True)
+    address_family: Mapped[int] = mapped_column(Integer)
+    bytes_total: Mapped[int] = mapped_column(BYTE_COUNT, default=0)
+    packets_total: Mapped[int] = mapped_column(BYTE_COUNT, default=0)
+    sample_count: Mapped[int] = mapped_column(Integer, default=0)
+    data_quality: Mapped[str] = mapped_column(String(10), default="complete")
+    last_observed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class NetworkMonitorWallboard(Base):
     __tablename__ = "network_monitor_wallboards"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

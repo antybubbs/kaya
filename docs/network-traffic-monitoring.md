@@ -211,18 +211,60 @@ aggregates already exist per interface, summing all enabled WAN interfaces count
 each interface once; interfaces that measure the same link should not both be
 marked as WAN.
 
+## Automatic observed-endpoint usage
+
+Download and upload usage is recorded automatically for every observed endpoint IP
+inside the enabled local networks (`traffic_local_networks`, the same topology flow
+accounting uses), per traffic source and exporter. No Asset Manager record, managed
+IP record, Uptime monitor or device tracking is required, and none is created.
+
+- **Pipeline.** The existing collector's `process_records` adds each accepted flow
+  after replay protection and cumulative-counter conversion, so a flow contributes
+  once. Contributions are merged per datagram and written as one sorted multi-row
+  upsert. There is no new collector, decoder, worker or inventory.
+- **Endpoints and NAT.** Only the original (pre-NAT) source and destination are
+  counted. Translated addresses are never counted, so an inside host reached only
+  through a public mapped address is not attributed from that flow.
+- **Directions.** Directional NSEL deltas: the initiator uploads forward and
+  downloads reverse bytes; the responder the opposite. A unidirectional NetFlow
+  record is the source's upload and the destination's download. A LAN-to-LAN flow
+  is usage for both endpoints.
+- **Storage.** `traffic_endpoint_aggregates` holds one row per endpoint IP,
+  resolution, UTC bucket, source, exporter and direction, at 5-minute, hourly and
+  daily resolution. The primary key is the upsert target and per-IP history path;
+  one `(bucket_seconds, bucket_start)` index serves reports and retention. No raw
+  flows, identity or monitoring preference is stored.
+- **Retention.** The existing hourly Network Traffic retention job removes rows
+  older than the configured five-minute (default 7 days), hourly (90 days) and
+  daily (365 days) tiers. Each resolution is written at ingestion, so there is no
+  rollup to double count, and deletion by cutoff is idempotent.
+- **Measured cost** (PostgreSQL 16, synthetic NSEL): about 254 bytes per row
+  including indexes; 9,082 rows and about 2.2 MB per continuously active endpoint
+  at full default retention (about 220 MB for 100 and 1.1 GB for 500 endpoints).
+  Ingestion adds 3 statements and 1 write per single-record datagram, and 0.3
+  statements and 0.1 writes per flow at ten records per datagram.
+
 ## Device Usage
 
-The authenticated **Monitoring → Network Traffic → Device Usage** tab reports only
-persisted usage for IP Manager records whose Network Traffic monitoring was explicitly
-enabled by an administrator. It supports 24-hour, 7-day, 30-day, 90-day and bounded
-custom ranges, server-side search, sorting and pagination. SNMP WAN counters are not
-included in these totals.
+The authenticated **Monitoring → Network Traffic → Device Usage** tab reports the
+automatic observed-endpoint usage for 24-hour, 7-day, 30-day, 90-day and bounded
+custom ranges, with server-side search, sorting and pagination, at the one
+persisted resolution the range selects. SNMP WAN counters are not included.
 
-Rows retain source context and show confirmed, suggested or unidentified status. An IP
-address or hostname alone never confirms an asset. Confirmed asset names and profile
-links are returned only when the user has Asset Manager access; authorised Network
-Traffic users without that module still see traffic rows without asset metadata.
-Discovery never enables monitoring or creates assets. Coverage is an observed-bucket
-indication and may be partial when collection or monitoring was not active for the
-complete selected period.
+Each row is one source/exporter context for an endpoint IP. Contexts are never
+added together: when one address is measured by more than one source or exporter
+each keeps its own row, labelled as a separate source observation, and the
+summary reports per-source totals instead of a combined total that could count
+the same traffic twice. Contexts tied to one permanent asset for their whole span
+share a row when at most one of them carries usage. Endpoints seen by discovery
+without byte data show "Traffic observed — usage unavailable"; usage is never
+estimated from observation counts.
+
+Identity is unidentified, recognised (unconfirmed or ambiguous evidence) or a
+confirmed asset. An IP address, hostname or pending assignment alone never
+confirms an asset. A confirmed asset that did not hold the address for the whole
+reported span is marked as the current holder, because the row reports the
+address's usage. Asset names and links are returned only with Asset Manager
+access. Optional device tracking (the former monitoring control) is shown only as
+a tracking label; it never hides or adds usage. Coverage is an observed-bucket
+indication and may be partial.

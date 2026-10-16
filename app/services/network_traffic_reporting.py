@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 import ipaddress
 
-from sqlalchemy import or_
+from sqlalchemy import case, distinct, func
 from sqlalchemy.orm import Session, joinedload
 
 from app.models.models import (
@@ -14,13 +14,14 @@ from app.models.models import (
     TrafficDeviceAggregate,
     TrafficDeviceMonitoring,
     TrafficDiscoveryObservation,
+    TrafficEndpointAggregate,
     TrafficInterface,
     TrafficSource,
     VLAN,
     AssetNetworkAssignment,
     HardwareAsset,
 )
-from app.services.device_traffic import asset_monitoring_status, endpoint_monitoring_states
+from app.services.device_traffic import endpoint_monitoring_states
 from app.services.modules import has_module_access
 from app.services.network_discovery_mapping import mapped_network_contexts
 from app.services.network_monitor_history import resolve_range
@@ -414,6 +415,17 @@ def _single_owner(assignments: list[AssetNetworkAssignment], source_id: int | No
     return covering[0] if covering else None
 
 
+def _monitoring_label(state: dict | None) -> str:
+    """Map the shared monitoring lifecycle onto Device Usage tracking labels."""
+    if not state:
+        return "not_monitored"
+    status = state.get("status")
+    if status == "review_required":
+        return "review_required"
+    # Legacy managed-IP tracking reports "stale" after an hour without data.
+    return "monitored" if status in {"active", "stale"} else "awaiting_data"
+
+
 def device_usage_report(
     db: Session,
     user,
@@ -428,9 +440,12 @@ def device_usage_report(
 ) -> dict:
     """Return a bounded, read-only Device Usage view.
 
-    Traffic remains limited to administrator-enabled monitoring aggregates. Identity
-    labels are derived from existing reviewed evidence and are omitted when the
-    caller lacks Asset Manager access.
+    Usage comes from automatic observed-endpoint aggregates, one context per
+    traffic source, exporter and endpoint IP, at the one resolution the range
+    selects. Monitoring preferences never hide or add usage; they are reported
+    only as a tracking label. Endpoints seen by discovery without byte data are
+    listed with usage unavailable. Identity labels come from reviewed evidence
+    and are omitted when the caller lacks Asset Manager access.
     """
     if report_range == "custom":
         selected, start, bucket_seconds, end = custom_report_window(db, start_text, end_text, now=now)
@@ -441,13 +456,35 @@ def device_usage_report(
     query = (query or "").strip()[:120].lower()
     sort = sort if sort in {"total", "download", "upload", "name", "last"} else "total"
     can_assets = has_module_access(db, user, "asset_manager")
-    all_rows = _device_rows(db, start=start, bucket_seconds=bucket_seconds, include_context=True, end=end)
-    observed_rows = db.query(TrafficDiscoveryObservation).filter(
-        TrafficDiscoveryObservation.bucket_start >= start,
-        TrafficDiscoveryObservation.bucket_start < end,
-        TrafficDiscoveryObservation.endpoint_role.like("original%"),
-        TrafficDiscoveryObservation.classification == "internal",
-    ).order_by(TrafficDiscoveryObservation.last_seen_at.desc()).limit(MAX_REPORT_ROWS).all()
+    live_sources = {row.id: row.name for row in db.query(TrafficSource.id, TrafficSource.name).filter(TrafficSource.is_deleted.is_(False)).limit(1000)}
+
+    # One context per source, exporter and endpoint. Bytes from different
+    # contexts are never added together for one row.
+    usage_rows = db.query(
+        TrafficEndpointAggregate.source_id, TrafficEndpointAggregate.exporter_identity, TrafficEndpointAggregate.endpoint_ip,
+        func.sum(case((TrafficEndpointAggregate.direction == "download", TrafficEndpointAggregate.bytes_total), else_=0)),
+        func.sum(case((TrafficEndpointAggregate.direction == "upload", TrafficEndpointAggregate.bytes_total), else_=0)),
+        func.count(distinct(TrafficEndpointAggregate.bucket_start)),
+        func.min(TrafficEndpointAggregate.bucket_start),
+        func.max(TrafficEndpointAggregate.last_observed_at),
+        func.max(case((TrafficEndpointAggregate.data_quality != "complete", 1), else_=0)),
+    ).filter(
+        TrafficEndpointAggregate.bucket_seconds == bucket_seconds,
+        TrafficEndpointAggregate.bucket_start >= start,
+        TrafficEndpointAggregate.bucket_start < end,
+    ).group_by(
+        TrafficEndpointAggregate.source_id, TrafficEndpointAggregate.exporter_identity, TrafficEndpointAggregate.endpoint_ip,
+    ).limit(MAX_REPORT_ROWS + 1).all()
+    truncated = len(usage_rows) > MAX_REPORT_ROWS
+    contexts: dict[tuple, dict] = {}
+    for source_id, exporter_identity, address, download, upload, buckets, first_bucket, last_seen, partial in usage_rows[:MAX_REPORT_ROWS]:
+        if source_id not in live_sources:
+            continue
+        contexts[(source_id, exporter_identity, address)] = {
+            "download": int(download or 0), "upload": int(upload or 0), "measured": True, "usage_buckets": int(buckets or 0),
+            "observation_buckets": set(), "first_seen": first_bucket, "last_seen": last_seen or first_bucket,
+            "partial": bool(partial), "confidence": "high",
+        }
 
     def bucket_of(value: datetime) -> int:
         # Count presence at the report's resolution so the share cannot exceed
@@ -455,124 +492,106 @@ def device_usage_report(
         epoch = int((value - datetime(1970, 1, 1)).total_seconds())
         return epoch - epoch % bucket_seconds
 
-    # One group per source/exporter context and endpoint. Observations carry no
-    # usage; they never add bytes to any row.
-    groups: dict[tuple, dict] = {}
+    observed_rows = db.query(TrafficDiscoveryObservation).filter(
+        TrafficDiscoveryObservation.bucket_start >= start,
+        TrafficDiscoveryObservation.bucket_start < end,
+        TrafficDiscoveryObservation.endpoint_role.like("original%"),
+        TrafficDiscoveryObservation.classification == "internal",
+    ).order_by(TrafficDiscoveryObservation.last_seen_at.desc()).limit(MAX_REPORT_ROWS).all()
     for observation in observed_rows:
+        if observation.source_id not in live_sources:
+            continue
         key = (observation.source_id, observation.exporter_identity, observation.endpoint_ip)
-        group = groups.setdefault(key, {
-            "source_id": observation.source_id, "exporter_identity": observation.exporter_identity, "address": observation.endpoint_ip,
+        context = contexts.setdefault(key, {
+            "download": None, "upload": None, "measured": False, "usage_buckets": 0, "observation_buckets": set(),
             "first_seen": observation.first_seen_at or observation.bucket_start, "last_seen": observation.last_seen_at,
-            "confidence": observation.confidence or "unknown", "buckets": set(),
+            "partial": False, "confidence": observation.confidence or "unknown",
         })
-        group["first_seen"] = min(group["first_seen"], observation.first_seen_at or observation.bucket_start)
-        group["last_seen"] = max(group["last_seen"], observation.last_seen_at)
-        group["buckets"].add(bucket_of(observation.bucket_start))
+        context["first_seen"] = min(context["first_seen"], observation.first_seen_at or observation.bucket_start)
+        context["last_seen"] = max(context["last_seen"], observation.last_seen_at)
+        context["observation_buckets"].add(bucket_of(observation.bucket_start))
 
-    evidence, evidence_complete = _assignment_evidence(db, [row["address"] for row in all_rows] + [group["address"] for group in groups.values()])
-    assignment_by_id = {assignment.id: assignment for rows in evidence.values() for assignment in rows}
+    evidence, evidence_complete = _assignment_evidence(db, [key[2] for key in contexts])
     mapping_cache: dict = {}
+    states = endpoint_monitoring_states(db, contexts.keys(), now=end, observed_at={key: context["last_seen"] for key, context in contexts.items()})
 
-    # Measured rows: VLAN from the monitored record's validated context, and a
-    # per-source breakdown that starts with the measured source(s).
-    measured_by_asset: dict[int, dict | None] = {}
-    measured_assignments: dict[tuple, list[tuple[AssetNetworkAssignment, dict]]] = {}
-    legacy_by_source: dict[tuple, dict] = {}
-    for row in all_rows:
-        row["source_breakdown"] = {}
-        assignment = assignment_by_id.get(row.get("assignment_id"))
-        if row.get("assignment_id") is not None:
-            if assignment is None:
-                row["vlan"], row["vlan_status"] = None, "unresolved"
-            else:
-                last_seen = datetime.fromisoformat(row["last_observed_at"].rstrip("Z")) if row.get("last_observed_at") else end
-                mappings = _mapped_vlans(db, mapping_cache, assignment.source_id, assignment.exporter_identity)
-                row["vlan"], row["vlan_status"] = _resolve_vlan(evidence.get(assignment.address, []), mappings, assignment.address, assignment.source_id, assignment.exporter_identity, last_seen)
-                # Two measured rows for one asset are never combined.
-                measured_by_asset[assignment.asset_id] = None if assignment.asset_id in measured_by_asset else row
-                measured_assignments.setdefault((assignment.address, assignment.source_id), []).append((assignment, row))
-            for source_id in row["source_ids"]:
-                row["source_breakdown"][(source_id, assignment.exporter_identity if assignment else None)] = {"usage": "measured", "monitoring_status": "monitored", "buckets": set()}
+    # Contexts tied to one permanent asset for their whole span share a row when
+    # at most one of them carries usage; otherwise each measured context keeps
+    # its own row, labelled as a separate source observation.
+    by_owner: dict[int, list[tuple]] = {}
+    owners: dict[tuple, AssetNetworkAssignment | None] = {}
+    for key, context in contexts.items():
+        owner = _single_owner(evidence.get(key[2], []), key[0], key[1], context["first_seen"], context["last_seen"]) if evidence_complete and can_assets else None
+        owners[key] = owner
+        if owner is not None:
+            by_owner.setdefault(owner.asset_id, []).append(key)
+    row_groups: list[list[tuple]] = []
+    grouped_keys: set[tuple] = set()
+    for keys in by_owner.values():
+        measured = [key for key in keys if contexts[key]["measured"]]
+        observed_only = [key for key in keys if not contexts[key]["measured"]]
+        if len(measured) <= 1:
+            row_groups.append(measured + observed_only)
         else:
-            row["vlan_status"] = "confirmed" if row.get("vlan") else "none"
-            for source_id in row["source_ids"]:
-                row["source_breakdown"][(source_id, None)] = {"usage": "measured", "monitoring_status": "monitored", "buckets": set()}
-                legacy_by_source[(row["address"], source_id)] = row
+            heaviest = max(measured, key=lambda key: contexts[key]["download"] + contexts[key]["upload"])
+            row_groups.extend([[key] + (observed_only if key == heaviest else []) for key in measured])
+        grouped_keys.update(keys)
+    row_groups.extend([key] for key in contexts if key not in grouped_keys)
 
-    pending: list[tuple] = []
-    for key, group in groups.items():
-        source_id, exporter_identity, address = key
-        legacy = legacy_by_source.get((address, source_id))
-        if legacy is not None:
-            # Same managed-IP endpoint and source as eligible usage: one row.
-            legacy["source_breakdown"][(source_id, None)]["buckets"] |= group["buckets"]
-            continue
-        # The measured assignment's own source context, valid for the whole
-        # observation span: the same endpoint, already listed with its usage.
-        same_context = next((
-            (assignment, row) for assignment, row in measured_assignments.get((address, source_id), [])
-            if _in_source_scope(assignment, source_id, exporter_identity)
-            and _valid_at(assignment, group["first_seen"]) and _valid_at(assignment, group["last_seen"])
-        ), None)
-        if same_context is not None:
-            assignment, row = same_context
-            row["source_breakdown"][(source_id, assignment.exporter_identity)]["buckets"] |= group["buckets"]
-            continue
-        pending.append((key, group))
-
-    states = endpoint_monitoring_states(db, [key for key, _ in pending], now=end, observed_at={key: group["last_seen"] for key, group in pending})
-    observation_rows: dict[tuple, dict] = {}
-    for key, group in pending:
-        source_id, exporter_identity, address = key
-        state = states.get(key)
-        # An enabled monitor without eligible usage in this period is never
-        # reported as "not monitored"; the state is source- and time-scoped.
-        status = ("review_required" if state.get("status") == "review_required" else "awaiting_data") if state else "not_monitored"
-        entry = {"usage": "observed", "monitoring_status": status, "buckets": group["buckets"], "reason": state.get("reason") if state else None}
-        owner = _single_owner(evidence.get(address, []), source_id, exporter_identity, group["first_seen"], group["last_seen"]) if evidence_complete and can_assets else None
-        target = measured_by_asset.get(owner.asset_id) if owner else None
-        if target is not None:
-            # The same permanent asset already has measured usage: list this
-            # source as a separate context of that row. Bytes are not merged.
-            existing = target["source_breakdown"].get((source_id, exporter_identity)) or target["source_breakdown"].get((source_id, None))
-            if existing is not None and existing["usage"] == "measured":
-                existing["buckets"] |= group["buckets"]
-            else:
-                target["source_breakdown"][(source_id, exporter_identity)] = entry
-            target["source_ids"] = sorted(set(target["source_ids"]) | {source_id})
-            continue
-        row_key = ("asset", owner.asset_id) if owner else key
+    all_rows = []
+    for keys in row_groups:
+        primary = next((key for key in keys if contexts[key]["measured"]), keys[0])
+        context = contexts[primary]
+        address = primary[2]
         if evidence_complete:
-            vlan, vlan_status = _resolve_vlan(evidence.get(address, []), _mapped_vlans(db, mapping_cache, source_id, exporter_identity), address, source_id, exporter_identity, group["last_seen"])
+            vlan, vlan_status = _resolve_vlan(evidence.get(address, []), _mapped_vlans(db, mapping_cache, primary[0], primary[1]), address, primary[0], primary[1], context["last_seen"])
         else:
             vlan, vlan_status = None, "unresolved"
-        item = observation_rows.get(row_key)
-        if item is None:
-            item = observation_rows[row_key] = {
-                "id": None, "assignment_id": None, "name": address, "address": address,
-                "vlan": vlan, "vlan_status": vlan_status, "download_bytes": None, "upload_bytes": None, "total_bytes": None,
-                "last_observed_at": group["last_seen"], "quality": "unavailable", "confidence": group["confidence"],
-                "source_ids": set(), "observed_bucket_count": set(), "source_breakdown": {},
-                "monitoring_status": "not_monitored", "usage_available": False,
-                "_owner": owner,
+        row = {
+            "id": None, "assignment_id": None, "name": address, "address": address, "vlan": vlan, "vlan_status": vlan_status,
+            "download_bytes": context["download"], "upload_bytes": context["upload"],
+            "total_bytes": (context["download"] + context["upload"]) if context["measured"] else None,
+            "usage_available": context["measured"],
+            "last_observed_at": max(contexts[key]["last_seen"] for key in keys),
+            "quality": ("partial" if context["partial"] else "observed") if context["measured"] else "unavailable",
+            "confidence": context["confidence"], "source_ids": {key[0] for key in keys},
+            "observed_bucket_count": max(context["usage_buckets"], len(context["observation_buckets"])),
+            "source_breakdown": {}, "monitoring_status": "not_monitored", "monitoring_reason": None,
+            "_owner": owners[primary],
+        }
+        for key in keys:
+            state = states.get(key)
+            status = _monitoring_label(state)
+            item = contexts[key]
+            row["source_breakdown"][(key[0], key[1])] = {
+                "usage": "measured" if item["measured"] else "observed", "monitoring_status": status,
+                "buckets": max(item["usage_buckets"], len(item["observation_buckets"])),
+                "download_bytes": item["download"], "upload_bytes": item["upload"],
             }
-        elif (item["vlan"], item["vlan_status"]) != (vlan, vlan_status):
-            item["vlan"], item["vlan_status"] = None, "conflicting"
-        item["source_ids"].add(source_id)
-        item["observed_bucket_count"] |= group["buckets"]
-        item["last_observed_at"] = max(item["last_observed_at"], group["last_seen"])
-        item["source_breakdown"][(source_id, exporter_identity)] = entry
-        if MONITORING_PRIORITY[status] > MONITORING_PRIORITY[item["monitoring_status"]]:
-            item["monitoring_status"] = status
-            item["monitoring_reason"] = entry["reason"]
-    # Rows for the same address that could not be tied to one permanent asset
-    # remain separate and are labelled as separate source observations.
+            if MONITORING_PRIORITY.get(status, 1) > MONITORING_PRIORITY.get(row["monitoring_status"], 0) or (status == "monitored" and row["monitoring_status"] == "not_monitored"):
+                row["monitoring_status"] = status
+                row["monitoring_reason"] = state.get("reason") if state else None
+        all_rows.append(row)
     address_counts: dict[str, int] = {}
-    for row in [*all_rows, *observation_rows.values()]:
+    for row in all_rows:
         address_counts[row["address"]] = address_counts.get(row["address"], 0) + 1
-    for item in observation_rows.values():
-        item["separate_source_observation"] = item["_owner"] is None and address_counts[item["address"]] > 1
-    all_rows.extend(observation_rows.values())
+    for row in all_rows:
+        row["separate_source_observation"] = address_counts[row["address"]] > 1
+
+    # Totals never add the same endpoint as measured by two contexts.
+    measured_keys = [key for key, context in contexts.items() if context["measured"]]
+    per_source: dict[int, dict] = {}
+    contexts_per_address: dict[str, int] = {}
+    for key in measured_keys:
+        contexts_per_address[key[2]] = contexts_per_address.get(key[2], 0) + 1
+        bucket = per_source.setdefault(key[0], {"source": live_sources.get(key[0]), "download_bytes": 0, "upload_bytes": 0, "endpoints": 0})
+        bucket["download_bytes"] += contexts[key]["download"]
+        bucket["upload_bytes"] += contexts[key]["upload"]
+        bucket["endpoints"] += 1
+    overlapping = any(count > 1 for count in contexts_per_address.values())
+    measured_download = sum(contexts[key]["download"] for key in measured_keys)
+    measured_upload = sum(contexts[key]["upload"] for key in measured_keys)
+
     rows = list(all_rows)
     if query:
         rows = [row for row in rows if query in f"{row['name']} {row['address']} {row.get('vlan') or ''}".lower()]
@@ -587,65 +606,42 @@ def device_usage_report(
     page_count = max(1, (total + MAX_DEVICE_USAGE_PAGE - 1) // MAX_DEVICE_USAGE_PAGE)
     page = min(page, page_count)
     selected_rows = rows[(page - 1) * MAX_DEVICE_USAGE_PAGE : page * MAX_DEVICE_USAGE_PAGE]
-    ip_ids = [int(row["id"]) for row in selected_rows if row.get("id") is not None]
-    assignment_ids = [int(row["assignment_id"]) for row in selected_rows if row.get("assignment_id") is not None]
     addresses = [row["address"] for row in selected_rows if row.get("address")]
-    source_ids = set()
-    for row in selected_rows:
-        source_ids.update(int(value) for value in row.get("source_ids", []))
-    sources = {
-        source.id: source.name
-        for source in db.query(TrafficSource).filter(TrafficSource.id.in_(source_ids or [-1])).limit(100).all()
-    }
     assignments = db.query(AssetNetworkAssignment).options(
         joinedload(AssetNetworkAssignment.asset), joinedload(AssetNetworkAssignment.vlan)
     ).filter(
-        or_(AssetNetworkAssignment.ip_address_id.in_(ip_ids or [-1]), AssetNetworkAssignment.id.in_(assignment_ids or [-1]), AssetNetworkAssignment.address.in_(addresses or ["0.0.0.0"])),
+        AssetNetworkAssignment.address.in_(addresses or ["0.0.0.0"]),
         AssetNetworkAssignment.status.in_(("confirmed", "pending")),
     ).order_by(AssetNetworkAssignment.started_at.desc()).limit(500).all()
-    by_ip: dict[int, list[AssetNetworkAssignment]] = {}
-    by_assignment: dict[int, AssetNetworkAssignment] = {}
-    for assignment in assignments:
-        if assignment.ip_address_id is not None:
-            by_ip.setdefault(assignment.ip_address_id, []).append(assignment)
-        by_assignment[assignment.id] = assignment
-    measured_asset_ids = {
-        by_assignment[row["assignment_id"]].asset_id for row in selected_rows
-        if row.get("monitoring_status") == "monitored" and row.get("assignment_id") in by_assignment
-    } - {None}
-    monitors = {
-        monitor.asset_id: monitor
-        for monitor in db.query(TrafficDeviceMonitoring).filter(TrafficDeviceMonitoring.asset_id.in_(measured_asset_ids or [-1])).limit(MAX_DEVICE_USAGE_PAGE).all()
-    }
+    period_buckets = max(1, int((end - start).total_seconds() / bucket_seconds))
     for row in selected_rows:
-        last_value = row.get("last_observed_at")
-        observed = last_value if isinstance(last_value, datetime) else datetime.fromisoformat(last_value.rstrip("Z")) if last_value else None
+        observed = row["last_observed_at"]
+        exporters = {exporter for _, exporter in row["source_breakdown"]}
         candidates = []
         reviewable = []
-        source_candidates = [by_assignment[row["assignment_id"]]] if row.get("assignment_id") in by_assignment else by_ip.get(row.get("id"), [])
-        if not source_candidates and row.get("address"):
-            source_candidates = [item for item in assignments if item.address == row["address"]]
-        for assignment in source_candidates:
-            if observed and assignment.started_at <= observed and (assignment.ended_at is None or observed < assignment.ended_at):
-                if assignment.source_id is not None and assignment.source_id not in row.get("source_ids", []):
-                    continue
-                # Device aggregates retain source context but not exporter identity;
-                # exporter-scoped assignments therefore remain reviewable suggestions.
-                if assignment.exporter_identity and assignment.id != row.get("assignment_id"):
-                    reviewable.append(assignment)
-                    continue
-                if assignment.vlan_id is not None and assignment.vlan and assignment.network_cidr != assignment.vlan.subnet_cidr:
-                    continue
-                candidates.append(assignment)
+        for assignment in assignments:
+            if assignment.address != row["address"] or not observed or not _valid_at(assignment, observed):
+                continue
+            if assignment.source_id is not None and assignment.source_id not in row["source_ids"]:
+                continue
+            # Unconfirmed evidence can only make an endpoint recognised, never confirmed.
+            if assignment.status != "confirmed" or (assignment.exporter_identity and assignment.exporter_identity not in exporters):
+                reviewable.append(assignment)
+                continue
+            if not _vlan_context_current(assignment):
+                continue
+            candidates.append(assignment)
         asset_ids = {item.asset_id for item in candidates if item.asset_id is not None}
         owner = row.pop("_owner", None)
         if owner is not None and can_assets:
-            # Observations already tied to one permanent asset for their whole span.
+            # Contexts already tied to one permanent asset for their whole span.
             candidates, asset_ids = [owner], {owner.asset_id}
         if len(asset_ids) == 1 and can_assets:
             assignment = next(item for item in candidates if item.asset_id in asset_ids)
             row.update({
                 "identity_status": "confirmed",
+                # True when the asset held the address for the whole reported span.
+                "identity_whole_period": owner is not None,
                 "asset_id": assignment.asset_id,
                 "asset_name": assignment.asset.name if assignment.asset else None,
                 "asset_url": f"/infrastructure/asset-manager/{assignment.asset_id}",
@@ -654,31 +650,20 @@ def device_usage_report(
             row.update({"identity_status": "suggested", "asset_id": None, "asset_name": None, "asset_url": None})
         else:
             row.update({"identity_status": "unidentified", "asset_id": None, "asset_name": None, "asset_url": None})
-        row["source_context"] = [sources[source_id] for source_id in row.get("source_ids", []) if source_id in sources]
-        if isinstance(last_value, datetime):
-            row["last_observed_at"] = _iso(last_value)
-        period_buckets = max(1, int((end - start).total_seconds() / bucket_seconds))
-        bucket_count = row.get("observed_bucket_count", 0)
-        if isinstance(bucket_count, (set, list, tuple)):
-            bucket_count = len(bucket_count)
-        row["coverage_percent"] = min(100, round((int(bucket_count or 0) / period_buckets) * 100))
+        row["source_context"] = [live_sources[source_id] for source_id in sorted(row["source_ids"]) if source_id in live_sources]
+        row["last_observed_at"] = _iso(observed)
+        row["coverage_percent"] = min(100, round(int(row["observed_bucket_count"]) / period_buckets * 100))
         # Each source/exporter context stays distinguishable, with its own
-        # monitoring status and observed share; only measured contexts carry usage.
+        # usage, tracking status and observed share.
         row["source_breakdown"] = [
             {
-                "source": sources.get(source_id) or "Unknown source", "exporter_identity": exporter_identity,
+                "source": live_sources.get(source_id) or "Unknown source", "exporter_identity": exporter_identity,
                 "usage": entry["usage"], "monitoring_status": entry["monitoring_status"],
-                "coverage_percent": min(100, round(len(entry["buckets"]) / period_buckets * 100)) if entry["buckets"] else None,
+                "download_bytes": entry["download_bytes"], "upload_bytes": entry["upload_bytes"],
+                "coverage_percent": min(100, round(entry["buckets"] / period_buckets * 100)) if entry["buckets"] else None,
             }
-            for (source_id, exporter_identity), entry in sorted(row.get("source_breakdown", {}).items(), key=lambda item: (item[1]["usage"] != "measured", item[0][0], item[0][1] or ""))
+            for (source_id, exporter_identity), entry in sorted(row["source_breakdown"].items(), key=lambda item: (item[1]["usage"] != "measured", item[0][0], item[0][1] or ""))
         ]
-        if row.get("assignment_id") is not None and row.get("monitoring_status") == "monitored":
-            assignment = by_assignment.get(row["assignment_id"])
-            state = asset_monitoring_status(db, assignment.asset_id, now=end, monitor=monitors.get(assignment.asset_id)) if assignment and assignment.asset_id else None
-            if state and state.get("status") == "review_required":
-                # Usage already measured stays visible; the monitor itself needs review.
-                row["monitoring_attention"] = "review_required"
-                row["monitoring_reason"] = state.get("reason")
         row.pop("source_ids", None)
         row.pop("observed_bucket_count", None)
     return {
@@ -687,9 +672,15 @@ def device_usage_report(
         "devices": selected_rows,
         "summary": {
             "monitored_devices": sum(1 for row in all_rows if row.get("monitoring_status") == "monitored"),
-            "download_bytes": sum(int(row.get("download_bytes", 0) or 0) for row in all_rows),
-            "upload_bytes": sum(int(row.get("upload_bytes", 0) or 0) for row in all_rows),
-            "total_bytes": sum(int(row.get("total_bytes", 0) or 0) for row in all_rows),
-            "coverage_percent": round(sum(int(row.get("coverage_percent", 0) or 0) for row in all_rows if row.get("monitoring_status") == "monitored") / max(1, sum(1 for row in all_rows if row.get("monitoring_status") == "monitored"))),
+            "measured_endpoints": len(measured_keys),
+            # When one endpoint is measured by more than one source/exporter the
+            # contexts may overlap, so no combined total is claimed.
+            "overlapping_sources": overlapping,
+            "download_bytes": None if overlapping else measured_download,
+            "upload_bytes": None if overlapping else measured_upload,
+            "total_bytes": None if overlapping else measured_download + measured_upload,
+            "by_source": sorted(per_source.values(), key=lambda item: str(item["source"])),
+            "truncated": truncated,
+            "coverage_percent": round(sum(int(row.get("coverage_percent", 0) or 0) for row in selected_rows if row.get("usage_available")) / max(1, sum(1 for row in selected_rows if row.get("usage_available")))),
         },
     }

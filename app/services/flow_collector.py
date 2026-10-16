@@ -33,6 +33,7 @@ from app.services.flow_protocol import FlowDecodeError, MAX_DATAGRAM_SIZE, NetFl
 from app.services.network_discovery import DiscoveryRuntime, MAX_RECORD_BATCH
 from app.services.flow_accounting import classify_flow, resolve_flow_attribution
 from app.services.device_traffic import persist_device_traffic
+from app.services.endpoint_traffic import EndpointUsageBatch
 
 logger = logging.getLogger("kaya.flow_collector")
 MAX_QUEUE_SIZE = 10000
@@ -340,6 +341,7 @@ def process_records(
     """Persist one bounded packet batch idempotently and without raw payloads."""
     counters = {"accepted": 0, "duplicates": 0, "out_of_order": 0, "aggregates": 0}
     now = _now()
+    endpoint_usage = EndpointUsageBatch(db)
     for record in records:
         effective_source_id = source_id if source_id is not None else record.source_id
         state = _state(db, effective_source_id)
@@ -387,6 +389,9 @@ def process_records(
         _aggregate(db, record, max(0, byte_count), max(0, packet_count_value), quality, effective_source_id)
         _accounting_aggregate(db, record, max(0, byte_count), max(0, packet_count_value), quality, effective_source_id)
         persist_device_traffic(db, record, max(0, byte_count), max(0, packet_count_value), effective_source_id)
+        # Automatic observed-endpoint usage: after replay protection and counter
+        # deltas, so each accepted flow contributes exactly once.
+        endpoint_usage.add(record, max(0, byte_count), max(0, packet_count_value), quality, effective_source_id)
         state.last_valid_flow_at = record.observed_at
         state.last_aggregate_write_at = now
         state.packets_accepted += 1
@@ -394,6 +399,7 @@ def process_records(
         counters["aggregates"] += 1
         if accepted_records is not None and len(accepted_records) < MAX_RECORD_BATCH:
             accepted_records.append(record)
+    endpoint_usage.flush()
     db.query(TrafficFlowDeduplication).filter(TrafficFlowDeduplication.expires_at < now).delete(synchronize_session=False)
     db.query(TrafficFlowCounterState).filter(TrafficFlowCounterState.expires_at < now).delete(synchronize_session=False)
     return counters

@@ -7,6 +7,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.models import TrafficAggregate, TrafficDeviceAggregate, TrafficFlowAccountingAggregate, TrafficFlowReconciliation, TrafficInterface, TrafficSource
+from app.services.endpoint_traffic import cleanup_endpoint_aggregates
 from app.services.flow_accounting import retention_cutoffs
 
 
@@ -22,6 +23,7 @@ def cleanup_flow_accounting(db: Session, *, now: datetime, short_days: int, hour
             TrafficDeviceAggregate.bucket_seconds == bucket_seconds,
             TrafficDeviceAggregate.bucket_start < cutoff,
         ).delete(synchronize_session=False)
+    removed += cleanup_endpoint_aggregates(db, cutoffs)
     return removed
 
 

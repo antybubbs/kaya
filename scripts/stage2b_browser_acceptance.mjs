@@ -63,7 +63,13 @@ try {
     const report = async query => admin.evaluate(async queryString => (await fetch(`/networking/ip-wan-monitor/traffic/device-usage?${queryString}`)).json(), query);
     const customQuery = 'range=custom&start=2026-01-15T00:00:00&end=2026-01-15T23:59:00';
     const custom = await report(customQuery);
-    if (custom.summary.download_bytes !== 1000 || custom.summary.upload_bytes !== 300) throw new Error(`unexpected populated totals ${JSON.stringify(custom.summary)}`);
+    // The fixture's January rows are optional tracked-device history, which the
+    // Overview's tracked list reports; Device Usage reads automatic observed usage
+    // and must not repeat or invent it for that window.
+    if (custom.summary.download_bytes !== 0 || custom.summary.measured_endpoints !== 0) throw new Error(`unexpected observed totals ${JSON.stringify(custom.summary)}`);
+    const tracked = await admin.evaluate(async () => (await fetch('/networking/ip-wan-monitor/traffic/report?range=custom&start=2026-01-15T00:00&end=2026-01-15T23:59')).json());
+    const trackedTotals = tracked.devices.devices.reduce((sum, row) => [sum[0] + (row.download_bytes || 0), sum[1] + (row.upload_bytes || 0)], [0, 0]);
+    if (trackedTotals[0] !== 1000 || trackedTotals[1] !== 300) throw new Error(`tracked-device totals ${JSON.stringify(trackedTotals)}`);
     if (custom.page_count < 1 || custom.page_size < 1) throw new Error('pagination metadata missing');
     for (const period of ['24h', '7d', '30d', '90d']) {
       const response = await report(`range=${period}`);
@@ -122,29 +128,30 @@ try {
     const contextResponse = await Promise.all([page.waitForResponse(response => response.url().includes('/source-context')), contextForm.getByRole('button', { name: /Confirm source context/i }).click()]);
     if (contextResponse[0].status() !== 303) throw new Error(`context status ${contextResponse[0].status()}`);
     await page.waitForLoadState('networkidle');
-    if (!(await page.locator('body').innerText()).match(/Monitoring\s+Disabled/i)) throw new Error('context confirmation enabled monitoring');
+    if (!(await page.locator('body').innerText()).match(/Device tracking\s+Disabled/i)) throw new Error('context confirmation enabled device tracking');
     const noCsrf = await page.request.post(`${base}/infrastructure/asset-manager/9450/network-traffic`, { form: { enabled: '1', csrf_token: '' } });
     if (![400, 403, 422].includes(noCsrf.status())) throw new Error(`CSRF status ${noCsrf.status()}`);
     const enable = page.locator('form[action$="/network-traffic"]');
-    const enabledResponse = await Promise.all([page.waitForResponse(response => response.url().endsWith('/network-traffic')), enable.getByRole('button', { name: /Enable monitoring/i }).click()]);
+    const enabledResponse = await Promise.all([page.waitForResponse(response => response.url().endsWith('/network-traffic')), enable.getByRole('button', { name: /Start device tracking/i }).click()]);
     if (enabledResponse[0].status() !== 303) throw new Error(`enable status ${enabledResponse[0].status()}`);
     await page.waitForLoadState('networkidle');
     if (!(await page.locator('body').innerText()).match(/Active|Awaiting data/i)) throw new Error('enabled state missing');
     const disable = page.locator('form[action$="/network-traffic"]');
-    await disable.getByRole('button', { name: /Disable monitoring/i }).click();
+    await disable.getByRole('button', { name: /Stop device tracking/i }).click();
     await page.waitForLoadState('networkidle');
     if (!(await page.locator('body').innerText()).match(/Disabled/i)) throw new Error('disabled state missing');
   });
   await run('doorbell-monitoring-consistency', async () => {
     // Ring-doorbell-style device: DHCP identity, source-less adoption assignment
-    // and an administrator-confirmed Cisco context for the same address.
+    // and an administrator-confirmed Cisco context for the same address. Usage
+    // is recorded automatically; device tracking is optional and separate.
     const page = admin;
     const address = '192.0.2.115';
     const doorbellUrl = '/infrastructure/asset-manager/9460';
     const helper = mode => JSON.parse(execFileSync(process.env.KAYA_STAGE2B_PYTHON, ['scripts/stage2b_seed_doorbell_flows.py', ...(mode ? [mode] : [])], { encoding: 'utf8' }).trim().split('\n').at(-1));
     // The fixture's site timezone is UTC, so the custom range is entered in UTC.
     const utcNow = () => new Date().toISOString().slice(0, 16);
-    const usageRow = async () => {
+    const usageRows = async () => {
       await page.goto(`${base}/networking/ip-wan-monitor/traffic/devices`, { waitUntil: 'networkidle' });
       await page.locator('[data-device-usage-range]').selectOption('custom');
       await page.locator('[data-device-usage-search]').fill(address);
@@ -156,63 +163,140 @@ try {
       ]);
       await page.waitForLoadState('networkidle');
       const rows = page.locator('.device-usage-table tbody tr').filter({ hasText: address });
-      if (await rows.count() !== 1) throw new Error(`expected one Device Usage row for ${address}, found ${await rows.count()}`);
-      const cells = (await rows.first().locator('th, td').allInnerTexts()).map(text => text.replace(/\s+/g, ' ').trim());
-      return { row: rows.first(), cells, identity: cells[1], vlan: cells[2], source: cells[3], download: cells[4], upload: cells[5], observed: cells[8] };
+      const count = await rows.count();
+      const parsed = [];
+      for (let index = 0; index < count; index += 1) {
+        const cells = (await rows.nth(index).locator('th, td').allInnerTexts()).map(text => text.replace(/\s+/g, ' ').trim());
+        parsed.push({ row: rows.nth(index), cells, identity: cells[1], vlan: cells[2], source: cells[3], download: cells[4], upload: cells[5], observed: cells[8] });
+      }
+      return parsed;
+    };
+    const ciscoRow = async () => {
+      const rows = (await usageRows()).filter(item => item.source.includes('Stage2B Cisco exporter'));
+      if (rows.length !== 1) throw new Error(`expected one Cisco-context row for ${address}, found ${rows.length}`);
+      return rows[0];
     };
     const profileBody = async () => { await page.goto(`${base}${doorbellUrl}`, { waitUntil: 'networkidle' }); return (await page.locator('#asset-traffic').innerText()).replace(/\s+/g, ' '); };
     const api = async () => page.evaluate(async query => (await fetch(`/networking/ip-wan-monitor/traffic/device-usage?${query}`)).json(), `range=24h&q=${address}`);
 
-    // 1-3: recognised, linked to its asset, and not yet monitored.
-    let usage = await usageRow();
+    // 1-3: recognised and linked to its asset; observed without byte data yet.
+    let usage = await ciscoRow();
     if (!usage.identity.includes('Stage2B Doorbell')) throw new Error(`identity cell: ${usage.identity}`);
-    if (!usage.identity.includes('Not monitored') || usage.download !== 'Not monitored') throw new Error(`initial state: ${JSON.stringify(usage.cells)}`);
+    if (usage.download !== 'Traffic observed — usage unavailable' || /Not monitored/i.test(usage.cells.join(' '))) throw new Error(`initial state: ${JSON.stringify(usage.cells)}`);
     if (!/^\d+%$/.test(usage.observed)) throw new Error(`observed share cell: ${usage.observed}`);
-    // The confirmed assignment's VLAN is shown before monitoring, as in Asset Profile.
-    if (!usage.vlan.includes('Stage2B LAN A')) throw new Error(`VLAN cell before monitoring: ${usage.vlan}`);
-    if (!usage.source.includes('Stage2B Cisco exporter')) throw new Error(`source breakdown: ${usage.source}`);
+    // The confirmed assignment's VLAN is shown, as in Asset Profile.
+    if (!usage.vlan.includes('Stage2B LAN A')) throw new Error(`VLAN cell: ${usage.vlan}`);
     // 4: the identity link opens the permanent asset record.
     await Promise.all([page.waitForURL(`**${doorbellUrl}`), usage.row.getByRole('link', { name: 'Stage2B Doorbell' }).click()]);
-    // 5: confirmed source-scoped assignment and monitoring disabled.
+    // 5: confirmed assignment, optional tracking off and described as optional.
     const assetBody = await page.locator('body').innerText();
     if (!assetBody.includes(address)) throw new Error('assignment address missing from Asset Profile');
-    if (!/Monitoring\s+Disabled/i.test(assetBody)) throw new Error('doorbell monitoring was not disabled before the journey');
-    // 6: enable explicitly.
+    if (!/Device tracking\s+Disabled/i.test(assetBody)) throw new Error('doorbell tracking was not disabled before the journey');
+    if (!/recorded automatically/i.test(assetBody) || /must enable monitoring/i.test(assetBody)) throw new Error('Asset Profile still implies tracking is needed to see usage');
+    // 6: start optional tracking explicitly (CSRF-protected form).
     const enabled = await Promise.all([
       page.waitForResponse(response => response.url().endsWith('/9460/network-traffic')),
-      page.locator('form[action$="/network-traffic"]').getByRole('button', { name: /Enable monitoring/i }).click(),
+      page.locator('form[action$="/network-traffic"]').getByRole('button', { name: /Start device tracking/i }).click(),
     ]);
     if (enabled[0].status() !== 303) throw new Error(`enable status ${enabled[0].status()}`);
-    // 7: both screens agree that monitoring is enabled and awaiting data.
-    if (!/Monitoring Awaiting Data/i.test(await profileBody())) throw new Error('Asset Profile is not awaiting data after enabling');
-    usage = await usageRow();
-    if (!usage.identity.includes('Enabled — awaiting data') || usage.download !== 'Awaiting data') throw new Error(`Device Usage after enabling: ${JSON.stringify(usage.cells)}`);
-    // 8: synthetic NSEL flows through the real attribution path.
+    // 7: both screens agree on the tracking lifecycle.
+    if (!/Device tracking Awaiting Data/i.test(await profileBody())) throw new Error('Asset Profile is not awaiting data after enabling');
+    usage = await ciscoRow();
+    if (!usage.identity.includes('Device tracking — awaiting data')) throw new Error(`Device Usage after enabling: ${JSON.stringify(usage.cells)}`);
+    // 8: synthetic NSEL flows through the real collector path.
     const seeded = helper();
-    if (JSON.stringify(seeded.attributed) !== JSON.stringify([1, 1, 0])) throw new Error(`attribution ${JSON.stringify(seeded)}`);
-    // 9-10: measured usage appears in both reporting paths and reconciles.
-    usage = await usageRow();
-    if (!usage.identity.includes('Monitored') || usage.download === 'Awaiting data') throw new Error(`Device Usage after flows: ${JSON.stringify(usage.cells)}`);
-    if (!usage.vlan.includes('Stage2B LAN A') || !/measured/i.test(usage.source)) throw new Error(`measured VLAN/source: ${JSON.stringify(usage.cells)}`);
-    const measured = (await api()).devices.filter(row => row.address === address);
+    if (seeded.tracked['9101:download'] !== seeded.expected_download || seeded.tracked['9101:upload'] !== seeded.expected_upload || seeded.tracked['9102:download'] !== undefined) throw new Error(`tracked usage ${JSON.stringify(seeded)}`);
+    if (seeded.observed['9101:download'] !== seeded.expected_download || seeded.observed['9102:download'] !== seeded.other_source) throw new Error(`observed usage ${JSON.stringify(seeded)}`);
+    // 9-10: measured usage in both reporting paths, never combined across sources.
+    usage = await ciscoRow();
+    if (!usage.identity.includes('Device tracking on')) throw new Error(`Device Usage after flows: ${JSON.stringify(usage.cells)}`);
+    const measured = (await api()).devices.filter(row => row.address === address && row.source_context.includes('Stage2B Cisco exporter'));
     if (measured.length !== 1 || measured[0].download_bytes !== seeded.expected_download || measured[0].upload_bytes !== seeded.expected_upload) throw new Error(`Device Usage totals ${JSON.stringify(measured)}`);
+    const otherRows = (await usageRows()).filter(item => item.source.includes('Stage2B NetFlow exporter'));
+    if (otherRows.length !== 1 || !otherRows[0].source.includes('Separate source observation')) throw new Error(`second source row: ${JSON.stringify(otherRows.map(item => item.cells))}`);
     const profile = await profileBody();
-    if (!/Monitoring Active/i.test(profile)) throw new Error(`Asset Profile status after flows: ${profile.slice(0, 200)}`);
-    if (!profile.includes(`Download ${seeded.expected_download} bytes`) || !profile.includes(`Upload ${seeded.expected_upload} bytes`)) throw new Error(`Asset Profile totals: ${profile}`);
+    if (!/Device tracking Active/i.test(profile)) throw new Error(`Asset Profile status after flows: ${profile.slice(0, 200)}`);
+    // The source-less adoption assignment covers both sources: per-source totals, no sum.
+    if (!profile.includes(`Download ${seeded.expected_download} bytes · Upload ${seeded.expected_upload} bytes`) || !profile.includes(`Download ${seeded.other_source} bytes`)) throw new Error(`Asset Profile totals: ${profile}`);
     await screenshot(page, 'doorbell-asset-profile-measured');
-    // 11-12: disable; both screens agree.
-    await page.locator('form[action$="/network-traffic"]').getByRole('button', { name: /Disable monitoring/i }).click();
+    // 11-12: stop tracking; usage stays visible because it never depended on tracking.
+    await page.locator('form[action$="/network-traffic"]').getByRole('button', { name: /Stop device tracking/i }).click();
     await page.waitForLoadState('networkidle');
-    if (!/Monitoring Disabled/i.test(await profileBody())) throw new Error('Asset Profile not disabled');
-    usage = await usageRow();
-    if (!usage.identity.includes('Not monitored') || usage.download !== 'Not monitored') throw new Error(`Device Usage after disabling: ${JSON.stringify(usage.cells)}`);
-    // 13: the closed monitoring period and its aggregates are preserved.
+    if (!/Device tracking Disabled/i.test(await profileBody())) throw new Error('Asset Profile not disabled');
+    usage = await ciscoRow();
+    if (/Device tracking/i.test(usage.identity) || usage.download === 'Traffic observed — usage unavailable') throw new Error(`Device Usage after disabling: ${JSON.stringify(usage.cells)}`);
+    // 13: the closed tracking period and its aggregates are preserved.
     const inspected = helper('--inspect');
     if (inspected.periods.length !== 1 || !inspected.periods[0].closed || inspected.aggregates_300s < 2 || JSON.stringify(inspected.aggregate_source_ids) !== '[9101]') throw new Error(`history ${JSON.stringify(inspected)}`);
-    // Existing monitored devices keep reporting their own totals.
-    const legacy = await page.evaluate(async () => (await fetch('/networking/ip-wan-monitor/traffic/device-usage?range=custom&start=2026-01-15T00:00:00&end=2026-01-15T23:59:00')).json());
-    if (legacy.summary.download_bytes !== 1000 || legacy.summary.upload_bytes !== 300) throw new Error(`existing monitored totals changed ${JSON.stringify(legacy.summary)}`);
+    // Existing tracked devices keep reporting their own totals in the Overview list.
+    const legacy = await page.evaluate(async () => (await fetch('/networking/ip-wan-monitor/traffic/report?range=custom&start=2026-01-15T00:00&end=2026-01-15T23:59')).json());
+    const legacyDownload = legacy.devices.devices.reduce((sum, row) => sum + (row.download_bytes || 0), 0);
+    const legacyUpload = legacy.devices.devices.reduce((sum, row) => sum + (row.upload_bytes || 0), 0);
+    if (legacyDownload !== 1000 || legacyUpload !== 300) throw new Error(`existing tracked totals changed ${JSON.stringify(legacy.devices)}`);
     evidence.doorbell = { seeded, inspected, finalRow: usage.cells };
+  });
+  await run('automatic-observed-ip-usage-adoption-and-dhcp', async () => {
+    // Journey: unknown IP usage appears automatically; explicit adoption links
+    // identity without moving history; a DHCP change keeps ownership bounded.
+    const page = admin;
+    const seeded = JSON.parse(execFileSync(process.env.KAYA_STAGE2B_PYTHON, ['scripts/stage2b_seed_endpoint_flows.py'], { encoding: 'utf8' }).trim().split('\n').at(-1));
+    const inspect = () => JSON.parse(execFileSync(process.env.KAYA_STAGE2B_PYTHON, ['scripts/stage2b_seed_endpoint_flows.py', '--inspect'], { encoding: 'utf8' }).trim().split('\n').at(-1));
+    const usage = async (address, range = '24h') => (await page.evaluate(async query => (await fetch(`/networking/ip-wan-monitor/traffic/device-usage?${query}`)).json(), `range=${range}&q=${encodeURIComponent(address)}`)).devices.filter(row => row.address === address);
+    const profile = async (assetId) => { await page.goto(`${base}/infrastructure/asset-manager/${assetId}`, { waitUntil: 'networkidle' }); return (await page.locator('#asset-traffic').innerText()).replace(/\s+/g, ' '); };
+    const confirm = async (assetId, assignmentId) => {
+      await page.goto(`${base}/infrastructure/asset-manager/${assetId}`, { waitUntil: 'networkidle' });
+      const form = page.locator(`form[action$="/network-assignment/${assignmentId}/confirm"]`);
+      // Another scenario may have left a one-shot dialog handler registered.
+      page.once('dialog', dialog => dialog.accept().catch(() => {}));
+      const [response] = await Promise.all([page.waitForResponse(item => item.url().includes(`/network-assignment/${assignmentId}/confirm`)), form.getByRole('button', { name: /Confirm/i }).click()]);
+      if (![200, 303].includes(response.status())) throw new Error(`confirm status ${response.status()}`);
+      await page.waitForLoadState('networkidle');
+    };
+    // 1-4: an unknown IP shows measured bytes with no manual activation and no records created.
+    const unknown = await usage(seeded.addresses.unknown);
+    if (unknown.length !== 1 || unknown[0].download_bytes !== seeded.expected.unknown.download || unknown[0].upload_bytes !== seeded.expected.unknown.upload || unknown[0].identity_status !== 'unidentified') throw new Error(`unknown endpoint ${JSON.stringify(unknown)}`);
+    await page.goto(`${base}/networking/ip-wan-monitor/traffic/devices`, { waitUntil: 'networkidle' });
+    await page.locator('[data-device-usage-search]').fill(seeded.addresses.unknown);
+    await page.locator('[data-device-usage-search]').dispatchEvent('input');
+    await page.waitForLoadState('networkidle');
+    const unknownRow = page.locator('.device-usage-table tbody tr').filter({ hasText: seeded.addresses.unknown });
+    await unknownRow.first().waitFor();
+    const unknownCells = (await unknownRow.first().locator('th, td').allInnerTexts()).map(text => text.replace(/\s+/g, ' ').trim());
+    if (/Not monitored|usage unavailable/i.test(unknownCells.join(' ')) || !/Unidentified/.test(unknownCells[1])) throw new Error(`unknown endpoint cells ${JSON.stringify(unknownCells)}`);
+    let sideEffects = inspect();
+    if (sideEffects.managed_ips !== 0 || sideEffects.monitoring_records !== 0) throw new Error(`automatic records created ${JSON.stringify(sideEffects)}`);
+    // 5-7: a pending proposal does not confirm identity; explicit confirmation does,
+    // without changing the IP's usage, and the profile shows only its interval.
+    let adopt = await usage(seeded.addresses.adopt);
+    if (adopt.length !== 1 || adopt[0].identity_status === 'confirmed') throw new Error(`pending proposal confirmed identity ${JSON.stringify(adopt)}`);
+    await confirm(seeded.assets.adopt, seeded.pending.adopt);
+    adopt = await usage(seeded.addresses.adopt);
+    if (adopt.length !== 1 || adopt[0].asset_name !== 'Stage2B Adopted Camera' || adopt[0].download_bytes !== seeded.expected.adopt_usage.download || adopt[0].upload_bytes !== seeded.expected.adopt_usage.upload) throw new Error(`adopted endpoint ${JSON.stringify(adopt)}`);
+    const adoptedProfile = await profile(seeded.assets.adopt);
+    if (!adoptedProfile.includes(`Download ${seeded.expected.adopt_profile.download} bytes`) || !adoptedProfile.includes(`Upload ${seeded.expected.adopt_profile.upload} bytes`)) throw new Error(`adopted profile ${adoptedProfile}`);
+    // 8-10: DHCP renewal confirmed; each owner keeps only its own interval.
+    await confirm(seeded.assets.mover, seeded.pending.renewal);
+    const mover = await profile(seeded.assets.mover);
+    if (!mover.includes(`Download ${seeded.expected.mover_profile.download} bytes`) || !mover.includes(`Upload ${seeded.expected.mover_profile.upload} bytes`)) throw new Error(`DHCP mover profile ${mover}`);
+    const reuser = await profile(seeded.assets.reuser);
+    if (!reuser.includes(`Download ${seeded.expected.reuser_profile.download} bytes`) || !reuser.includes(`Upload ${seeded.expected.reuser_profile.upload} bytes`)) throw new Error(`reuser profile ${reuser}`);
+    const newAddress = await usage(seeded.addresses.new);
+    if (newAddress.length !== 1 || newAddress[0].download_bytes !== 66) throw new Error(`new DHCP address ${JSON.stringify(newAddress)}`);
+    const oldAddress = await usage(seeded.addresses.old);
+    if (oldAddress.length !== 1 || oldAddress[0].download_bytes !== seeded.expected.old_usage.download || oldAddress[0].asset_name !== 'Stage2B Address Reuser' || oldAddress[0].identity_whole_period !== false) throw new Error(`reused address ${JSON.stringify(oldAddress)}`);
+    // 11/14: every range reports the same usage once, and custom ranges work.
+    for (const range of ['7d', '30d', '90d']) {
+      const rows = await usage(seeded.addresses.unknown, range);
+      if (rows.length !== 1 || rows[0].download_bytes !== seeded.expected.unknown.download) throw new Error(`${range} unknown endpoint ${JSON.stringify(rows)}`);
+    }
+    const end = new Date().toISOString().slice(0, 16);
+    const start = new Date(Date.now() - 6 * 3600 * 1000).toISOString().slice(0, 16);
+    const custom = (await page.evaluate(async query => (await fetch(`/networking/ip-wan-monitor/traffic/device-usage?${query}`)).json(), `range=custom&start=${start}&end=${end}&q=${seeded.addresses.unknown}`)).devices;
+    if (custom.length !== 1 || custom[0].download_bytes !== seeded.expected.unknown.download) throw new Error(`custom range ${JSON.stringify(custom)}`);
+    sideEffects = inspect();
+    if (sideEffects.managed_ips !== 0 || sideEffects.monitoring_records !== 0) throw new Error(`records created during adoption ${JSON.stringify(sideEffects)}`);
+    await screenshot(page, 'automatic-observed-ip-usage');
+    evidence.automatic = { seeded: seeded.expected, sideEffects };
   });
   await run('wan-selected-period-transfer-totals', async () => {
     // Journey D: WAN transfer totals follow the History Range and WAN source,

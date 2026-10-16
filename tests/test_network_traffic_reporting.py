@@ -8,7 +8,7 @@ from app.db.session import Base
 from app.models.models import (
     AssetNetworkAssignment, HardwareAsset, IPAddress, TrafficAggregate, TrafficDeviceAggregate,
     TrafficDeviceMonitoring, TrafficDeviceMonitoringPeriod, TrafficInterface, TrafficSource, User, VLAN,
-    TrafficDiscoveryObservation,
+    TrafficDiscoveryObservation, TrafficEndpointAggregate,
 )
 from app.services.network_traffic_reporting import device_report, device_usage_report, report_window, wan_report
 
@@ -86,6 +86,13 @@ def test_device_usage_report_is_bounded_and_permission_aware(monkeypatch):
         db.add_all([
             TrafficDeviceAggregate(id=1, period_id=1, ip_address_id=1, source_id=1, bucket_start=now - timedelta(hours=1), bucket_seconds=300, direction="download", bytes_total=300, packets_total=3),
             TrafficDeviceAggregate(id=2, period_id=1, ip_address_id=1, source_id=1, bucket_start=now - timedelta(hours=1), bucket_seconds=300, direction="upload", bytes_total=100, packets_total=1),
+        ])
+        # Device Usage reads automatic observed-endpoint usage; the optional
+        # tracked-device rows above describe the same traffic and are not added again.
+        bucket = datetime(1970, 1, 1) + timedelta(seconds=(int((now - timedelta(hours=1) - datetime(1970, 1, 1)).total_seconds()) // 300) * 300)
+        db.add_all([
+            TrafficEndpointAggregate(endpoint_ip="192.0.2.20", bucket_seconds=300, bucket_start=bucket, source_id=1, exporter_identity="192.0.2.1", direction="download", address_family=4, bytes_total=300, packets_total=3, sample_count=1, last_observed_at=bucket),
+            TrafficEndpointAggregate(endpoint_ip="192.0.2.20", bucket_seconds=300, bucket_start=bucket, source_id=1, exporter_identity="192.0.2.1", direction="upload", address_family=4, bytes_total=100, packets_total=1, sample_count=1, last_observed_at=bucket),
         ])
         db.commit()
         monkeypatch.setattr("app.services.network_traffic_reporting.has_module_access", lambda _db, _user, key: key == "asset_manager")

@@ -125,7 +125,7 @@
           {% endfor %}
         </select>
         <button class="button secondary small" type="submit">Confirm source context</button>
-        <p class="muted">This records context only. Network Traffic monitoring remains disabled until enabled separately.</p>
+        <p class="muted">This records identity context only. Observed usage is recorded automatically; optional device tracking stays off until started separately.</p>
       </form>
       {% endif %}
       {% if not asset_profile.can_vlan %}<p class="muted">VLAN/IP Manager details are unavailable because that module is not enabled for this account.</p>{% endif %}
@@ -177,20 +177,23 @@
   <div class="asset-report-grid">
     <section class="record-panel" id="asset-traffic" aria-labelledby="asset-traffic-heading">
       <h3 id="asset-traffic-heading">Network Traffic</h3>
+      <p class="muted">Usage is recorded automatically for observed IP addresses. This profile shows only usage within this asset's confirmed network assignments.</p>
       {% if asset_profile.traffic_monitoring is not none %}
       <div class="record-kv-list compact">
-        <div><dt>Monitoring</dt><dd>{{ asset_profile.traffic_monitoring.status|replace('_', ' ')|title }}</dd></div>
+        <div><dt>Device tracking</dt><dd>{{ asset_profile.traffic_monitoring.status|replace('_', ' ')|title }}</dd></div>
         <div><dt>Status</dt><dd>{{ asset_profile.traffic_monitoring.reason }}</dd></div>
       </div>
       {% if user.role == 'admin' %}
       <form method="post" action="/infrastructure/asset-manager/{{ record.id }}/network-traffic" class="inline-actions section-gap">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="enabled" value="{{ '0' if asset_profile.traffic_monitoring.enabled else '1' }}">
-        <button class="button {{ 'danger' if asset_profile.traffic_monitoring.enabled else '' }}" type="submit">{{ 'Disable monitoring' if asset_profile.traffic_monitoring.enabled else 'Enable monitoring' }}</button>
+        <button class="button {{ 'danger' if asset_profile.traffic_monitoring.enabled else '' }}" type="submit">{{ 'Stop device tracking' if asset_profile.traffic_monitoring.enabled else 'Start device tracking' }}</button>
+        <small class="muted">Optional. Tracking lists this device in the Network Traffic Overview device list with its own tracking history. It is not needed to see its usage.</small>
       </form>
       {% endif %}
       {% endif %}
       {% if asset_reporting.traffic is none %}<p class="muted">Network Traffic history is unavailable because the module is not authorised for this account.</p>
+      {% elif asset_reporting.traffic.multiple_sources %}<p class="muted">More than one traffic source measured this asset's address. Totals are shown per source, because adding them could count the same traffic twice.</p><dl class="record-kv-list compact">{% for item in asset_reporting.traffic.sources %}<div><dt>{{ item.source }}{% if item.exporter_identity %} · {{ item.exporter_identity }}{% endif %}</dt><dd>Download {{ item.download_bytes }} bytes · Upload {{ item.upload_bytes }} bytes</dd></div>{% endfor %}<div><dt>Excluded ambiguous buckets</dt><dd>{{ asset_reporting.traffic.excluded_buckets }}</dd></div></dl>
       {% elif asset_reporting.traffic.history %}<dl class="record-kv-list compact"><div><dt>Download</dt><dd>{{ asset_reporting.traffic.download_bytes }} bytes</dd></div><div><dt>Upload</dt><dd>{{ asset_reporting.traffic.upload_bytes }} bytes</dd></div><div><dt>Excluded ambiguous buckets</dt><dd>{{ asset_reporting.traffic.excluded_buckets }}</dd></div></dl><div class="asset-history-bars" aria-label="Network Traffic history">{% for point in asset_reporting.traffic.history %}<div class="asset-history-bar"><span>{{ point.at }}</span><i style="--bar-value: {{ [1, (point.download_bytes + point.upload_bytes) / 1000000]|max }}px" title="{{ point.download_bytes + point.upload_bytes }} bytes"></i></div>{% endfor %}</div><a class="button secondary small" href="/networking/ip-wan-monitor/traffic">Open Network Traffic reporting</a>
       {% else %}<p class="muted">No authorised device usage was observed in this period. This does not mean usage was zero.</p>{% endif %}
     </section>

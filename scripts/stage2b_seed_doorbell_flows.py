@@ -11,11 +11,11 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, func
 from sqlalchemy.orm import sessionmaker
 
-from app.models.models import TrafficDeviceAggregate, TrafficDeviceMonitoringPeriod
-from app.services.device_traffic import persist_device_traffic
+from app.models.models import TrafficDeviceAggregate, TrafficDeviceMonitoringPeriod, TrafficEndpointAggregate
+from app.services.flow_collector import process_records
 from app.services.flow_protocol import NormalizedFlowRecord
 from scripts.kaya_test_migrations import _verify_connected_target, verify_disposable_url
 from tests.fixtures.stage2b_acceptance import DOORBELL_ADDRESS
@@ -71,15 +71,22 @@ def main() -> int:
             _flow(now, 1, source_ip=DOORBELL_ADDRESS, destination_ip=REMOTE, forward=1200, reverse=48000),
             # Doorbell as responder: reverse bytes are its upload, forward its download.
             _flow(now, 2, source_ip=REMOTE, destination_ip=DOORBELL_ADDRESS, forward=900, reverse=300),
-            # The same endpoint seen by a different source is not attributed.
+            # The same endpoint seen by a different source: its own observed
+            # context, never added to the Cisco context or to tracked usage.
             _flow(now, 3, source_ip=DOORBELL_ADDRESS, destination_ip=REMOTE, forward=7777, reverse=7777, source_id=OTHER_SOURCE_ID, exporter=OTHER_EXPORTER),
         ]
-        attributed = []
         with sessionmaker(bind=engine, expire_on_commit=False)() as db:
+            # The real collector path: replay protection, tracked-device
+            # attribution and automatic observed-endpoint usage.
             for record in records:
-                attributed.append(persist_device_traffic(db, record, record.bytes_total, record.packets_total, record.source_id))
+                process_records(db, [record], source_id=record.source_id)
             db.commit()
-        print(json.dumps({"attributed": attributed, "expected_download": 48900, "expected_upload": 1500}))
+            totals = {}
+            for model, key in ((TrafficDeviceAggregate, "tracked"), (TrafficEndpointAggregate, "observed")):
+                query = db.query(model.source_id, model.direction, func.sum(model.bytes_total)).filter(model.bucket_seconds == 300)
+                query = query.filter(model.asset_id == DOORBELL_ASSET_ID) if model is TrafficDeviceAggregate else query.filter(model.endpoint_ip == DOORBELL_ADDRESS)
+                totals[key] = {f"{source}:{direction}": int(value) for source, direction, value in query.group_by(model.source_id, model.direction).all()}
+        print(json.dumps({**totals, "expected_download": 48900, "expected_upload": 1500, "other_source": 7777}))
     finally:
         engine.dispose()
     return 0

@@ -59,7 +59,7 @@ try {
   check(overviewText.includes('Device usage'), 'Overview does not separate device usage');
   if (phase === 'empty') {
     check(overviewText.includes('WAN monitoring not configured'), 'WAN empty state is not informative');
-    check(overviewText.includes('No opted-in devices have persisted usage'), 'Device empty state is not informative');
+    check(overviewText.includes('No tracked devices have persisted usage'), 'Device empty state is not informative');
   } else {
     check(overviewText.includes('1000 B'), 'Populated download total is not displayed');
     check(overviewText.includes('300 B'), 'Populated upload total is not displayed');
