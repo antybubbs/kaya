@@ -9,6 +9,8 @@
   <link rel="stylesheet" href="/static/css/kaya.css?v={{ asset_version }}">
   <link rel="stylesheet" href="/static/css/network_monitor_wallboard.css?v={{ asset_version }}">
   <link rel="stylesheet" href="/static/css/responsive.css?v={{ asset_version }}">
+  <link rel="stylesheet" href="/static/css/fonts.css?v={{ asset_version }}">
+  <link rel="stylesheet" href="/static/css/kaya-refresh.css?v={{ asset_version }}">
 </head>
 <body class="network-wallboard" data-wallboard-columns="{{ wallboard_preferences.columns }}" data-wallboard-density="{{ wallboard_preferences.density }}"{% for key in ['show_graphs','show_summary','show_actions','show_ip_addresses','show_last_result','show_rolling_average','show_availability','show_header'] %} data-{{ key|replace('_','-') }}="{{ 'true' if wallboard_preferences[key] else 'false' }}"{% endfor %}>
   <header class="wallboard-header" data-wallboard-header>

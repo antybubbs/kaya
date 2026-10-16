@@ -1,0 +1,362 @@
+/* =====================================================================
+   Kaya refresh — one visual language for every page.
+   Carries the Operational dashboard's "command centre" tokens (dashboard.css)
+   across the shell and all modules. Loaded last; it changes styling only:
+   no markup, names, copy or behaviour.
+   ===================================================================== */
+
+/* Everything is scoped under html:not(#kaya-refresh) so it outranks the legacy !important rules
+   without touching them. Uses native CSS nesting (Chrome 120+, Safari 17.2+, Firefox 117+). */
+html:not(#kaya-refresh){
+&{
+  --k-bg:#090b0f;          /* page */
+  --k-shell:#0b0e12;       /* top bar + sidebar */
+  --k-panel:#11151b;       /* cards and panels */
+  --k-raised:#161b22;      /* hover / nested surfaces */
+  --k-inset:#0c0f14;       /* inputs, wells, code */
+  --k-border:#20262f;
+  --k-divider:#1a2028;
+  --k-control:#2a3340;
+  --k-selected:#1e2530;
+  --k-text:#e6e9ee;
+  --k-strong:#f3f5f8;
+  --k-muted:#8d97a6;
+  --k-faint:#77818f;
+  --k-amber:#f5a524;
+  --k-amber-text:#f5b94a;
+  --k-amber-hover:#ffc266;
+  --k-amber-ink:#1a1205;
+  --k-amber-soft:#1f180b;
+  --k-amber-line:#5a4318;
+  --k-blue:#6fb4ff;
+  --k-blue-soft:#0d1826;
+  --k-blue-line:#1f3a5a;
+  --k-green:#3ecf8e;
+  --k-green-text:#5fe0a3;
+  --k-green-soft:#0f2219;
+  --k-green-line:#1c4a33;
+  --k-red:#ff6b6b;
+  --k-red-text:#ff8f8f;
+  --k-red-soft:#25110f;
+  --k-red-line:#5a2522;
+  --k-sans:"IBM Plex Sans",Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Arial,sans-serif;
+  --k-mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --k-radius:10px;
+  --k-radius-lg:14px;
+  /* map the legacy variables used throughout app.css / kaya.css */
+  --bg:var(--k-bg);--panel:var(--k-panel);--panel2:var(--k-raised);--text:var(--k-text);--muted:var(--k-muted);
+  --line:var(--k-border);--accent:var(--k-amber);--accent2:var(--k-green);--danger:var(--k-red);
+  --kaya-orange:var(--k-amber);--kaya-orange-soft:var(--k-amber-text);--kaya-charcoal:var(--k-bg);
+  --kaya-panel:var(--k-panel);--kaya-panel-soft:var(--k-raised);--kaya-border:var(--k-border);
+  --kaya-text:var(--k-text);--kaya-muted:var(--k-muted);--kaya-success:var(--k-green);--kaya-warning:var(--k-amber);--kaya-danger:var(--k-red);
+  color-scheme:dark;
+}
+&[data-kaya-theme=light-ops],&[data-theme=light]{
+  --k-bg:#f3f5f8;--k-shell:#fbfcfd;--k-panel:#ffffff;--k-raised:#f6f8fb;--k-inset:#f6f8fb;
+  --k-border:#d8dee8;--k-divider:#e5e9f0;--k-control:#cfd6e1;--k-selected:#e8edf4;
+  --k-text:#1f2937;--k-strong:#111827;--k-muted:#4b5563;--k-faint:#5f6b7a;
+  --k-amber:#c87a00;--k-amber-text:#9a5b00;--k-amber-hover:#7a4800;--k-amber-ink:#1a1205;--k-amber-soft:#fff6e5;--k-amber-line:#ecd9b0;
+  --k-blue:#2f7fd6;--k-blue-soft:#eaf3ff;--k-blue-line:#bcd6f5;
+  --k-green:#1f9d63;--k-green-text:#13703f;--k-green-soft:#e6f6ee;--k-green-line:#b5e3cb;
+  --k-red:#d64545;--k-red-text:#b42323;--k-red-soft:#fdecec;--k-red-line:#f2c2c2;
+  color-scheme:light;
+}
+
+/* ---------------------------------------------------------------- base */
+&,& body{background:var(--k-bg)!important}
+& body{color:var(--k-text)!important;font-family:var(--k-sans)!important;font-size:14px!important;line-height:1.5!important;-webkit-font-smoothing:antialiased}
+& body:before{display:none!important}
+& body :is(h1,h2,h3,h4){letter-spacing:0!important;font-family:var(--k-sans)}
+& body h1{font-weight:600!important}
+& body :is(h2,h3,h4){font-weight:600!important}
+strong,b{font-weight:600}
+a,.panel a{color:var(--k-amber-text)}
+a:hover,.panel a:hover{color:var(--k-amber-hover)}
+:focus-visible{outline:2px solid var(--k-amber)!important;outline-offset:2px}
+.muted,.panel .muted,.card span,small{color:var(--k-muted)}
+.mono,code,kbd,pre,.num{font-family:var(--k-mono)!important}
+*{scrollbar-color:var(--k-control) transparent}
+
+/* ---------------------------------------------------------------- shell */
+.app-topbar{background:color-mix(in srgb,var(--k-shell) 92%,transparent)!important;border-bottom:1px solid var(--k-divider)!important;height:56px!important}
+.app-topbar-brand{height:56px!important;border-right:0!important}
+.app-brand-name{color:var(--k-strong)!important;font-weight:600!important;letter-spacing:.16em!important;font-size:15px!important}
+.brand-logo{filter:none!important;width:30px!important;height:30px!important}
+.sidebar-collapse-button,.mobile-menu-button{background:transparent!important;border:1px solid var(--k-control)!important;color:var(--k-muted)!important;border-radius:7px!important}
+.sidebar-collapse-button:hover{border-color:var(--k-muted)!important;color:var(--k-text)!important}
+.kaya-theme-switch{background:var(--k-inset)!important;border:1px solid var(--k-control)!important;border-radius:9px!important;padding:2px!important}
+.kaya-theme-switch button{background:transparent!important;border:0!important;border-radius:7px!important;color:var(--k-muted)!important;font-weight:500!important;font-size:12px!important;min-height:28px!important;padding:0 11px!important;box-shadow:none!important}
+.kaya-theme-switch button[aria-pressed=true]{background:var(--k-selected)!important;color:var(--k-strong)!important}
+.notification-menu>summary,.account-menu>summary{border-color:var(--k-control)!important;background:transparent!important}
+.account-menu .avatar{background:var(--k-amber-soft)!important;border:1px solid var(--k-amber-line)!important;color:var(--k-amber-text)!important;font-weight:600!important}
+.notification-badge{background:var(--k-red)!important;color:#fff!important;font-weight:600!important}
+.notification-popover,.account-popover{background:var(--k-panel)!important;border:1px solid var(--k-border)!important;border-radius:var(--k-radius-lg)!important;box-shadow:0 18px 48px rgba(0,0,0,.35)!important}
+
+.sidebar{background:var(--k-shell)!important;border-right:1px solid var(--k-divider)!important;box-shadow:none!important;top:56px!important}
+.sidebar:before,.sidebar:after,.sidebar::before,.sidebar::after{display:none!important}
+.sidebar .nav-tree{gap:2px!important}
+.sidebar .nav-link,.sidebar .nav-group>summary,.sidebar .nav-subgroup>summary{color:var(--k-muted)!important;text-shadow:none!important;font-weight:500!important;font-size:13.5px!important;border:0!important;border-radius:8px!important;min-height:34px!important;background:transparent!important}
+.sidebar .nav-icon{color:var(--k-faint)!important}
+.sidebar .nav-link:hover,.sidebar .nav-group>summary:hover,.sidebar .nav-subgroup>summary:hover{background:var(--k-raised)!important;color:var(--k-text)!important}
+.sidebar .nav-group[open]>summary{color:var(--k-text)!important}
+.sidebar .nav-link.active,.sidebar .nav-link[aria-current=page]{background:var(--k-selected)!important;color:var(--k-strong)!important}
+.sidebar .nav-group:has(.nav-link.active)>summary,.sidebar .nav-group:has(.nav-link[aria-current=page])>summary{background:transparent!important;color:var(--k-strong)!important}
+.sidebar .nav-link.active .nav-icon,.sidebar .nav-group:has(.nav-link.active)>summary .nav-icon,.sidebar .nav-link:hover .nav-icon{color:var(--k-amber)!important}
+.sidebar .nav-link.active:before,.sidebar .nav-group:has(.nav-link.active)>summary:before{background:var(--k-amber)!important;width:2px!important;top:9px!important;bottom:9px!important}
+.sidebar .nav-group:has(.nav-link.active)>summary:before{display:none!important}
+.sidebar .nav-children{border-left:1px solid var(--k-divider)!important;margin-left:22px!important;padding-left:8px!important}
+.sidebar .nav-children .nav-link{font-size:13px!important;min-height:31px!important}
+.admin-group{border-top-color:var(--k-divider)!important}
+.version-card{background:transparent!important;border:1px solid var(--k-divider)!important;border-radius:var(--k-radius)!important;box-shadow:none!important}
+.version-card div,.version-card a{color:var(--k-muted)!important;font-size:12px!important}
+.version-card strong{color:var(--k-text)!important;font-family:var(--k-mono)!important;font-weight:500!important;font-size:12px!important}
+.version-card .dev-version{color:var(--k-amber-text)!important}
+.maturity-badge,[class*=maturity]{background:var(--k-blue-soft)!important;border:1px solid var(--k-blue-line)!important;color:var(--k-blue)!important;font-weight:600!important;letter-spacing:.06em!important;border-radius:999px!important}
+
+.content{background:var(--k-bg)!important;padding-top:80px!important}
+
+/* ---------------------------------------------------------------- page headers */
+.module-header,.topbar,.record-hero,.dashboard-hero,.compute-hero,.audit-hero,.about-hero,.vault-header,.ha-header{
+  background:transparent!important;border:0!important;border-bottom:1px solid var(--k-divider)!important;border-radius:0!important;
+  box-shadow:none!important;padding:4px 0 18px!important;margin-bottom:18px!important}
+.module-header h1,.topbar h1,.record-hero h1,.module-heading h1,.module-title h1,.ha-header h1,.about-hero h1{color:var(--k-strong)!important;font-size:22px!important;line-height:1.25!important;font-weight:600!important}
+.module-heading .muted,.topbar .muted,.record-hero .muted,.module-header p{color:var(--k-muted)!important;font-size:13.5px!important}
+.eyebrow,.record-kicker,.about-kicker,.ha-sync-eyebrow,.login-kicker{color:var(--k-amber-text)!important;font-size:11px!important;font-weight:600!important;letter-spacing:.08em!important;text-transform:uppercase}
+.module-stat,.record-identifier{color:var(--k-muted)!important;font-weight:500!important;font-size:12px!important;background:var(--k-inset);border:1px solid var(--k-border);border-radius:999px;padding:3px 10px}
+.module-stat strong{color:var(--k-strong)!important;font-family:var(--k-mono)}
+.live-indicator{background:var(--k-green-soft)!important;border:1px solid var(--k-green-line)!important;color:var(--k-green-text)!important;font-weight:500!important}
+.live-indicator i{background:var(--k-green)!important;box-shadow:0 0 0 3px var(--k-green-soft)}
+
+/* module tabs (module_navigation macro, compute tabs, runbook feed tabs) */
+.module-nav,.module-tabs,.compute-tabs{background:transparent!important;border:0!important;border-bottom:1px solid var(--k-divider)!important;border-radius:0!important;box-shadow:none!important;padding:0!important;gap:20px!important;margin-bottom:20px!important}
+.module-nav__pages{gap:20px!important}
+.module-nav a,.module-tabs>a,.module-tabs>button,.module-tabs>span,.compute-tabs a{background:transparent!important;border:0!important;border-bottom:2px solid transparent!important;border-radius:0!important;box-shadow:none!important;color:var(--k-muted)!important;font-weight:500!important;font-size:13.5px!important;padding:10px 1px!important;margin-bottom:-1px!important;min-height:0!important}
+.module-nav a:hover,.module-tabs>a:hover,.module-tabs>button:hover,.compute-tabs a:hover{color:var(--k-text)!important;background:transparent!important}
+.module-nav a.active,.module-nav a[aria-current=page],.module-tabs>a.active,.module-tabs>button.active,.module-tabs>button[aria-selected=true],.compute-tabs a.active{color:var(--k-strong)!important;border-bottom-color:var(--k-amber)!important;background:transparent!important}
+.module-nav__actions{border:0!important;padding:0!important}
+.module-nav__settings{color:var(--k-muted)!important;background:transparent!important;border:0!important;font-weight:500!important}
+.module-nav__settings:hover{color:var(--k-amber-text)!important}
+.module-nav__badge{margin-left:6px!important}
+.runbook-feed-tabs{margin:0 0 4px!important}
+
+/* settings-style tab strips */
+.site-admin-tabs button,.settings-side-link,.vault-nav-link,.ad-tab{background:transparent!important;border:1px solid transparent!important;box-shadow:none!important;color:var(--k-muted)!important;font-weight:500!important;border-radius:8px!important}
+.site-admin-tabs button:hover,.settings-side-link:hover,.vault-nav-link:hover{background:var(--k-raised)!important;color:var(--k-text)!important}
+.site-admin-tabs button.active,.site-admin-tabs button[aria-selected=true],.settings-side-link.active,.settings-side-link[aria-current=page],.vault-nav-link.active{background:var(--k-selected)!important;color:var(--k-strong)!important;border-color:transparent!important;box-shadow:none!important}
+
+/* ---------------------------------------------------------------- surfaces */
+.panel,.card,.record-panel,.remote-card,.remote-settings-card,.monitor-card,.compute-host-card,.runbook-page-card,.rack-card,
+.service-card,.about-panel,.authentication-card,.vault-auth-card,.dns-summary-card,.dns-chart-panel,.vault-side,.settings-card,
+.compute-summary-grid article,.resource-gauge,.vault-summary-grid article,.runbook-overview-card,.table-settings-panel,.table-export-panel,
+.ha-choice-card,.ip-wan-card,.security-check-grid div,.inventory-counts div{
+  background:var(--k-panel)!important;border:1px solid var(--k-border)!important;border-radius:var(--k-radius-lg)!important;box-shadow:none!important;color:var(--k-text)!important}
+.panel,.record-panel,.remote-settings-card,.about-panel{padding:20px!important}
+.panel:has(> table),.panel:has(> .table-scroll),.panel:has(> .table-wrap){padding:0!important;overflow:hidden}
+.card:hover,.compute-host-card:hover,.rack-card:hover,.runbook-page-card:hover,.service-card:hover,.runbook-overview-card:hover,a.panel:hover{border-color:var(--k-control)!important;background:var(--k-raised)!important}
+.panel-heading,.runbook-section-header,.settings-card-heading,.traffic-card-header,.ad-card-head{border-color:var(--k-divider)!important}
+.panel h2,.panel-heading h2,.record-panel h2,.card h2,.remote-settings-card h2,.runbook-section-header h2{color:var(--k-strong)!important;font-size:15px!important;font-weight:600!important}
+.panel h3,.card h3{color:var(--k-strong)!important;font-size:14px!important}
+.section-gap{margin-top:18px!important}
+.empty-state,.compact-empty{background:transparent!important;border:1px dashed var(--k-control)!important;border-radius:var(--k-radius-lg)!important;color:var(--k-muted)!important}
+.empty-state h2,.empty-state strong{color:var(--k-strong)!important}
+.compute-empty-icon,.runbook-empty-icon{color:var(--k-amber)!important}
+.remote-settings-card header,.remote-setting-row{border-color:var(--k-divider)!important}
+.danger-zone,.audit-danger-zone{border-color:var(--k-red-line)!important}
+.danger-zone h2,.audit-danger-zone h2,.danger-text{color:var(--k-red-text)!important}
+
+/* stat tiles: big numbers in mono, like the dashboard KPIs */
+.compute-summary-grid article span,.vault-summary-grid article span,.runbook-overview-card span,.inventory-counts span,.resource-gauge span,.traffic-kpi-label,.ad-lbl{color:var(--k-muted)!important;font-size:11px!important;font-weight:500!important;letter-spacing:.07em!important;text-transform:uppercase}
+.compute-summary-grid strong,.resource-gauge strong,.card strong,.vault-summary-grid strong,.runbook-overview-card strong,.inventory-counts strong,.traffic-kpi strong,.ad-fact-value{color:var(--k-strong)!important;font-family:var(--k-mono)!important;font-weight:500!important;letter-spacing:-.01em}
+.runbook-overview-card strong.runbook-stat-title{font-family:var(--k-sans)!important;font-size:15px!important;font-weight:600!important}
+.compute-summary-grid article.good strong,.vault-summary-grid .good{color:var(--k-green-text)!important}
+.compute-summary-grid article.warn{border-color:var(--k-amber-line)!important}
+.compute-summary-grid article.warn strong{color:var(--k-amber-text)!important}
+.compute-summary-grid article small,.card small{color:var(--k-faint)!important}
+.resource-track,.cc-gauge-track{background:var(--k-inset)!important;border-radius:999px!important;height:6px!important}
+.resource-track i{background:var(--k-blue)!important;border-radius:999px!important}
+.platform-mark{background:var(--k-inset)!important;border:1px solid var(--k-border)!important;color:var(--k-muted)!important;font-family:var(--k-mono)!important;font-weight:500!important}
+.event-feed i{background:var(--k-amber)!important}
+
+/* ---------------------------------------------------------------- buttons */
+/* Base and primary styles carry no extra specificity (:where), so every component rule below,
+   and the scope itself, decides; only plain buttons fall back to the amber primary. */
+/* Primary amber goes to .button and to class-less <button>s only. Buttons that carry their own
+   component class keep that component's styling (restyled further down where it clashed). */
+:where(.button, button:not([class]), button[class=""], button.small, button.compact){
+  border-radius:8px!important;font-family:var(--k-sans)!important;font-size:13px!important;font-weight:500!important;min-height:34px!important;padding:6px 13px!important;box-shadow:none!important;
+  transition:background .12s,border-color .12s,color .12s}
+:where(.button:not(.secondary):not(.ghost):not(.icon-button):not(.danger), button:not([class]), button[class=""]){
+  background:var(--k-amber)!important;border:1px solid var(--k-amber)!important;color:var(--k-amber-ink)!important;font-weight:600!important}
+:where(.button:not(.secondary):not(.ghost):not(.icon-button):not(.danger), button:not([class]), button[class=""]):hover{
+  background:var(--k-amber-hover)!important;border-color:var(--k-amber-hover)!important;color:var(--k-amber-ink)!important}
+.remote-host-group-heading{background:var(--k-raised)!important;border:0!important;border-bottom:1px solid var(--k-divider)!important;color:var(--k-text)!important;font-weight:500!important;border-radius:8px 8px 0 0!important}
+.remote-host-group-heading strong,.remote-host-group-heading strong:before{color:var(--k-text)!important}
+.remote-host-group-heading span{color:var(--k-amber-text)!important}
+.remote-host-group-heading:hover{background:var(--k-selected)!important}
+.button.secondary,button.secondary,.ghost,.icon-button,.table-settings>summary,.table-export>summary,.favourites-menu>summary,
+.runbook-view-toggle .button,.runbook-editor-toolbar>button,.runbook-code-copy,.remote-host-toolbar button,.remote-host-toolbar a,.remote-layout-button,.remote-tab-tool,.remote-protocol-icon,.vault-view-toggle .button{
+  background:transparent!important;border:1px solid var(--k-control)!important;color:var(--k-text)!important;font-weight:500!important}
+.button.secondary:hover,button.secondary:hover,.ghost:hover,.icon-button:hover,.table-settings>summary:hover,.table-export>summary:hover,.favourites-menu>summary:hover,
+.runbook-editor-toolbar>button:hover,.remote-host-toolbar button:hover,.remote-host-toolbar a:hover{background:var(--k-raised)!important;border-color:var(--k-muted)!important;color:var(--k-strong)!important}
+.runbook-view-toggle .button.active,.remote-layout-button.active{background:var(--k-selected)!important;border-color:var(--k-control)!important;box-shadow:none!important;color:var(--k-strong)!important}
+.danger,.button.danger,button.danger{background:var(--k-red-soft)!important;border:1px solid var(--k-red-line)!important;color:var(--k-red-text)!important}
+.danger:hover,.button.danger:hover,button.danger:hover{background:var(--k-red)!important;border-color:var(--k-red)!important;color:#fff!important}
+.button.secondary.danger,button.secondary.danger{background:transparent!important}
+.button.small,td .button,td button,td form button,.panel td .button.secondary{font-size:12px!important;min-height:28px!important;padding:3px 10px!important}
+.account-popover .account-link{color:var(--k-text)!important}
+.account-popover .account-link:hover{background:var(--k-raised)!important}
+
+/* ---------------------------------------------------------------- forms */
+input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color]),textarea,select{
+  background:var(--k-inset)!important;border:1px solid var(--k-control)!important;border-radius:8px!important;color:var(--k-text)!important;
+  font-family:var(--k-sans)!important;font-size:13.5px!important;min-height:36px!important;box-shadow:none!important}
+input::placeholder,textarea::placeholder{color:var(--k-faint)!important}
+input:hover,textarea:hover,select:hover{border-color:var(--k-muted)!important}
+input:focus,textarea:focus,select:focus{border-color:var(--k-amber)!important;box-shadow:0 0 0 3px color-mix(in srgb,var(--k-amber) 22%,transparent)!important;outline:0!important}
+input[type=checkbox],input[type=radio]{accent-color:var(--k-amber)!important}
+label{color:var(--k-text)!important;font-weight:500!important}
+.field-label,label small,.form-grid small,.help-text{color:var(--k-muted)!important;font-weight:400!important}
+.remote-switch{background:var(--k-control)!important;border-color:var(--k-control)!important}
+.remote-switch:checked{background:var(--k-amber-soft)!important;border-color:var(--k-amber)!important}
+.remote-switch:checked:before{background:var(--k-amber)!important}
+.inline-edit-preview{border-color:var(--k-border)!important}
+
+/* ---------------------------------------------------------------- tables */
+.panel table,table{border-collapse:separate!important;border-spacing:0!important}
+th,.panel th,.table-head th{background:var(--k-panel)!important;color:var(--k-muted)!important;border-bottom:1px solid var(--k-border)!important;
+  font-size:11px!important;font-weight:600!important;letter-spacing:.07em!important;text-transform:uppercase;padding-top:11px!important;padding-bottom:11px!important}
+td{border-bottom:1px solid var(--k-divider)!important;color:var(--k-text)!important;font-size:13.5px!important}
+tbody th{background:transparent!important;text-transform:none!important;letter-spacing:0!important;font-size:13.5px!important;font-weight:500!important;color:var(--k-text)!important;border-bottom:1px solid var(--k-divider)!important}
+tbody th a{color:var(--k-strong)!important}
+.panel :is(th,td):first-child{padding-left:20px!important}
+.panel :is(th,td):last-child{padding-right:20px!important}
+tbody tr:last-child td{border-bottom:0!important}
+tbody tr:hover,.panel tbody tr:hover{background:var(--k-raised)!important}
+td a,td a strong{color:var(--k-strong)!important;font-weight:500!important}
+td a:hover{color:var(--k-amber-text)!important}
+.panel tbody tr.is-selected{background:var(--k-amber-soft)!important}
+.table-check{color:var(--k-muted)!important}
+.bulk-action-bar{border-color:var(--k-amber-line)!important;background:var(--k-amber-soft)!important}
+.audit-table th{background:var(--k-panel)!important}
+.panel>.panel-heading,.panel>header,.panel>.runbook-section-header{padding:18px 20px 12px!important;margin:0!important}
+.panel:has(> table)>header,.panel:has(> .table-scroll)>header,.panel:has(> .table-scroll)>.panel-heading,.panel:has(> .table-scroll)>div:not(.table-scroll){padding-left:20px!important;padding-right:20px!important}
+
+/* ---------------------------------------------------------------- chips, pills, states */
+.table-chip,.status-pill,.compute-state,.ha-status-chip,.ad-pill,.secure-send-status{
+  background:var(--k-inset)!important;border:1px solid var(--k-border)!important;border-radius:999px!important;color:var(--k-text)!important;
+  font-weight:500!important;font-size:11.5px!important;letter-spacing:0!important;text-transform:none!important;padding:2px 9px!important}
+.table-chip.muted-chip{color:var(--k-muted)!important}
+.status-pill.up,.compute-state.running,.compute-state.up,.compute-state.online,.table-chip.good,.status-healthy,.secure-send-status.status-active{background:var(--k-green-soft)!important;border-color:var(--k-green-line)!important;color:var(--k-green-text)!important}
+.status-pill.down,.compute-state.offline,.compute-state.missing,.table-chip.danger-chip,.compute-state.error,.secure-send-status.status-expired{background:var(--k-red-soft)!important;border-color:var(--k-red-line)!important;color:var(--k-red-text)!important}
+.compute-state.stopped,.compute-state.exited,.compute-state.restarting,.warn .table-chip,.table-chip.warn-chip,.secure-send-status.status-opened{background:var(--k-amber-soft)!important;border-color:var(--k-amber-line)!important;color:var(--k-amber-text)!important}
+.compute-state.stopped,.compute-state.exited{background:var(--k-inset)!important;border-color:var(--k-border)!important;color:var(--k-muted)!important}
+.compute-state:before,.status-pill:before{content:"●";font-size:8px;margin-right:6px;vertical-align:1px}
+.compute-state.offline:before,.compute-state.missing:before,.status-pill.down:before{content:"■"}
+.compute-state.restarting:before{content:"▲"}
+.compute-state.stopped:before,.compute-state.exited:before{content:"○"}
+.alert{background:var(--k-red-soft)!important;border:1px solid var(--k-red-line)!important;border-radius:var(--k-radius)!important;color:var(--k-red-text)!important}
+.success{background:var(--k-green-soft)!important;border:1px solid var(--k-green-line)!important;border-radius:var(--k-radius)!important;color:var(--k-green-text)!important}
+.notice,.warning:not(button){background:var(--k-amber-soft)!important;border:1px solid var(--k-amber-line)!important;border-radius:var(--k-radius)!important;color:var(--k-text)!important}
+.good{color:var(--k-green-text)!important}
+
+/* ---------------------------------------------------------------- module touches */
+.dns-summary-card:after,.dns-summary-card::after{display:none!important}
+.dns-summary-card strong{font-family:var(--k-mono)!important;font-weight:500!important;color:var(--k-strong)!important}
+.dns-summary-card span{color:var(--k-muted)!important;font-size:11px!important;letter-spacing:.07em!important;text-transform:uppercase;font-weight:500!important}
+.remote-console-empty,.remote-session-frame{background:var(--k-bg)!important;color:var(--k-text)!important}
+.remote-console-empty h1{color:var(--k-strong)!important;font-size:18px!important}
+.compute-host-card.status-offline{border-color:var(--k-red-line)!important}
+.compute-host-card .last-error,.compute-host-card [class*=error]{color:var(--k-red-text)!important}
+.rack-card-mini{background:var(--k-inset)!important;border-color:var(--k-border)!important}
+.rack-card-mini i.filled,.rack-device{background:var(--k-amber)!important}
+.runbook-editor-toolbar,.runbook-code-header{background:var(--k-raised)!important;border-color:var(--k-border)!important}
+.runbook-code-block,pre{background:var(--k-inset)!important;border-color:var(--k-border)!important;border-radius:var(--k-radius)!important}
+.runbook-feed-row{border-color:var(--k-divider)!important}
+.runbook-feed-title a{color:var(--k-strong)!important;font-weight:600!important}
+.runbook-rail-card a strong{color:var(--k-text)!important;font-weight:500!important}
+.runbook-rail-card a span{color:var(--k-muted)!important}
+.vault-item-card{background:var(--k-panel)!important;border:1px solid var(--k-border)!important;border-radius:var(--k-radius-lg)!important;color:var(--k-text)!important}
+.vault-item-card:hover{border-color:var(--k-control)!important;background:var(--k-raised)!important}
+.vault-item-icon{background:var(--k-amber-soft)!important;border:1px solid var(--k-amber-line)!important;color:var(--k-amber-text)!important;font-weight:600!important}
+.vault-item-card h3{color:var(--k-strong)!important}
+.vault-status{background:var(--k-green-soft)!important;border:1px solid var(--k-green-line)!important;color:var(--k-green-text)!important}
+.vault-session-note{border-color:var(--k-divider)!important;color:var(--k-muted)!important}
+.favourites-menu>summary span{background:var(--k-amber-soft)!important;border-color:var(--k-amber-line)!important;color:var(--k-amber-text)!important}
+.term-blue,.term-cyan{color:var(--k-blue)!important}
+.remote-host-rail,.remote-tab-workspace,.remote-tabbar{background:var(--k-bg)!important}
+.remote-session-tab.active{border-bottom-color:var(--k-amber)!important}
+.remote-host-card.active:before{background:var(--k-amber)!important}
+
+/* ---------------------------------------------------------------- public pages (login, setup, gateway) */
+.login-wrap,.login-page,.setup-page,.gateway-page{background:var(--k-bg)!important}
+.login-card,.setup-shell{background:var(--k-panel)!important;border:1px solid var(--k-border)!important;border-radius:18px!important;box-shadow:0 24px 64px rgba(0,0,0,.35)!important}
+.login-wrap:not(.login-page) .login-brand-panel,.setup-brand-panel{background:var(--k-shell)!important;border-color:var(--k-divider)!important}
+.login-page .login-brand-panel{background-color:var(--k-shell)!important;border-color:var(--k-divider)!important}
+.login-form-panel,.setup-form-panel{background:var(--k-panel)!important}
+.login-brand-copy h1,.setup-brand-panel h1{color:var(--k-strong)!important;font-weight:600!important;letter-spacing:-.02em!important}
+.login-brand-copy h1 span{color:var(--k-amber)!important}
+.login-brand-copy p,.login-feature small{color:var(--k-muted)!important}
+.login-feature strong{color:var(--k-text)!important;font-weight:600!important}
+.login-feature-icon{background:var(--k-amber-soft)!important;border-color:var(--k-amber-line)!important;color:var(--k-amber)!important}
+.login-form-heading h2,.login-card h1{color:var(--k-strong)!important;font-weight:600!important}
+.login-oidc-button{background:transparent!important;border:1px solid var(--k-control)!important;color:var(--k-text)!important}
+.login-oidc-button:hover{background:var(--k-raised)!important}
+.login-divider span{color:var(--k-faint)!important;background:var(--k-panel)!important}
+.login-divider:before,.login-divider:after{background:var(--k-divider)!important}
+
+/* Secure Send public gateway (its own stylesheet, no app shell) */
+.gateway-shell{background:var(--k-bg)!important;color:var(--k-text)!important}
+.gateway-card{background:var(--k-panel)!important;border:1px solid var(--k-border)!important;border-radius:18px!important;box-shadow:0 24px 64px rgba(0,0,0,.35)!important;color:var(--k-text)!important}
+.gateway-card header strong,.gateway-card h1,.gateway-card h2{color:var(--k-strong)!important;font-weight:600!important}
+.gateway-card header span,.gateway-section-copy,.gateway-card p{color:var(--k-muted)!important}
+.gateway-files,.gateway-downloads,.gateway-lock{border-color:var(--k-border)!important;background:var(--k-inset)!important;border-radius:var(--k-radius)!important}
+.gateway-alert,.gateway-error{background:var(--k-red-soft)!important;border-color:var(--k-red-line)!important;color:var(--k-red-text)!important}
+.gateway-status{color:var(--k-green-text)!important}
+
+/* ---------------------------------------------------------------- dashboard: share the shell's ground */
+.content:has(> .cc-dashboard){background:var(--k-bg)!important}
+
+/* ---------------------------------------------------------------- light ops: keep surfaces from the legacy light rules in step */
+&[data-kaya-theme=light-ops] .sidebar,&[data-theme=light] .sidebar{background:var(--k-shell)!important}
+&[data-kaya-theme=light-ops] .app-topbar,&[data-theme=light] .app-topbar{background:color-mix(in srgb,var(--k-shell) 92%,transparent)!important}
+&[data-kaya-theme=light-ops] :is(.panel,.card,.record-panel,.remote-settings-card,.compute-host-card,.rack-card,.compute-summary-grid article,.resource-gauge,.runbook-overview-card,.vault-item-card,.login-card),
+&[data-theme=light] :is(.panel,.card,.record-panel,.remote-settings-card,.compute-host-card,.rack-card,.compute-summary-grid article,.resource-gauge,.runbook-overview-card,.vault-item-card,.login-card){
+  background:var(--k-panel)!important;border-color:var(--k-border)!important;color:var(--k-text)!important}
+&[data-kaya-theme=light-ops] :is(.module-header,.topbar,.record-hero),&[data-theme=light] :is(.module-header,.topbar,.record-hero){background:transparent!important}
+&[data-kaya-theme=light-ops] :is(th,.panel th,.table-head th),&[data-theme=light] :is(th,.panel th,.table-head th){background:var(--k-panel)!important;color:var(--k-muted)!important}
+&[data-kaya-theme=light-ops] :is(.button.secondary,.ghost,.icon-button,.table-settings>summary,.category-tabs a,.compute-tabs a),
+&[data-theme=light] :is(.button.secondary,.ghost,.icon-button,.table-settings>summary,.category-tabs a,.compute-tabs a){background:transparent!important;color:var(--k-text)!important;border-color:var(--k-control)!important}
+&[data-kaya-theme=light-ops] .compute-tabs a.active,&[data-theme=light] .compute-tabs a.active{border-color:transparent transparent var(--k-amber)!important}
+&[data-kaya-theme=light-ops] :is(.module-stat,.record-identifier,.record-fields label,.record-kv-list dt,.runbook-info-list dt,.dashboard-hero .eyebrow),
+&[data-theme=light] :is(.module-stat,.record-identifier,.record-fields label,.record-kv-list dt,.runbook-info-list dt){color:var(--k-muted)!important}
+
+/* ---------------------------------------------------------------- record detail key/value lists */
+.record-fields label,.record-kv-list dt,.runbook-info-list dt,.preview-heading,.audit-method{color:var(--k-muted)!important;font-weight:500!important;font-size:12px!important;letter-spacing:.02em}
+.record-kv-list dd,.runbook-info-list dd{color:var(--k-text)!important}
+
+/* ---------------------------------------------------------------- full width, edge to edge
+   Module content already fills the space beside the sidebar; these panels and the
+   sign-in screens were the ones still capped at a fixed width. */
+.settings-tab-panel,.settings-tab-panel.active,.ha-failover-form,.site-admin-form,.remote-settings-card{max-width:none!important;width:100%!important}
+
+.login-wrap,.login-wrap.login-page,.setup-page{padding:0!important;min-height:100svh!important;place-items:stretch!important;display:grid!important}
+.login-page .login-shell,.login-shell{max-width:none!important;width:100%!important;margin:0!important;gap:0!important;grid-template-rows:1fr auto}
+.login-page .login-card,.login-wrap:not(.login-page) .login-card,.setup-shell{
+  max-width:none!important;width:100%!important;min-height:calc(100svh - 52px)!important;border:0!important;border-radius:0!important;box-shadow:none!important;
+  grid-template-columns:minmax(0,1.25fr) minmax(0,1fr)!important}
+.login-wrap:not(.login-page) .login-card,.setup-shell{min-height:100svh!important}
+.login-page .login-form-panel,.login-wrap:not(.login-page) .login-form-panel,.setup-form-panel{display:grid!important;align-content:center!important;justify-items:center!important}
+.login-page .login-form-inner,.login-wrap:not(.login-page) .login-form-panel>*,.setup-form-panel>*{width:min(420px,100%)!important}
+.login-page .login-shell>:not(.login-card){padding-block:16px!important;justify-content:center}
+.login-brand-copy h1{font-size:clamp(34px,3.4vw,56px)!important}
+.login-wrap:not(.login-page) .login-brand-panel,.setup-brand-panel{align-content:center!important;gap:28px!important;padding:clamp(32px,5vw,96px)!important}
+
+/* ---------------------------------------------------------------- small screens */
+@media (max-width:850px){
+  .login-page .login-card,.login-wrap:not(.login-page) .login-card,.setup-shell{grid-template-columns:1fr!important;min-height:100svh!important}
+  .content{padding-top:72px!important}
+  .module-header,.topbar,.record-hero{padding:0 0 14px!important}
+  .module-nav,.module-tabs,.compute-tabs{overflow-x:auto;flex-wrap:nowrap!important}
+}
+
+}
