@@ -18,6 +18,8 @@
   {% if remote.protocol == 'ssh' %}
   <link rel="stylesheet" href="/static/vendor/xterm/xterm.css?v={{ asset_version }}">
   {% endif %}
+  <link rel="stylesheet" href="/static/css/fonts.css?v={{ asset_version }}">
+  <link rel="stylesheet" href="/static/css/kaya-refresh.css?v={{ asset_version }}">
 </head>
 {% set is_popout = request.query_params.get('popout') == '1' %}
 <body class="remote-panel-body{% if is_popout %} has-popout-bar{% endif %}">
