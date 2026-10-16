@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import re
+from datetime import datetime
 from pathlib import Path
 from time import perf_counter
 from uuid import uuid4
@@ -36,7 +37,7 @@ from app.db.session import (
     engine,
     verify_database_engine,
 )
-from app.models.models import AuditLog, User
+from app.models.models import AuditLog, TrafficMonitoringConfiguration, User
 from app.routers import (
     admin,
     auth,
@@ -52,6 +53,7 @@ from app.routers import (
     ip_addresses,
     licences,
     network_monitor,
+    network_discovery,
     notifications,
     oidc,
     rack_manager,
@@ -81,11 +83,13 @@ from app.services.kaya_remote_service import (
 )
 from app.services.modules import enabled_modules
 from app.services.network_monitor import start_monitor_scheduler, stop_monitor_scheduler
+from app.services.network_traffic_poller import start_traffic_polling, stop_traffic_polling
 from app.services.notification_runtime import (
     start_notification_runtime,
     stop_notification_runtime,
 )
 from app.services.notifications import cleanup_retention
+from app.services.flow_reconciliation import cleanup_flow_accounting
 from app.services.secure_send import cleanup_loop as secure_send_cleanup_loop
 from app.services.site_settings import (
     cached_security_context,
@@ -403,7 +407,9 @@ async def on_startup():
     start_kaya_remote_service()
     global domain_poll_task, compute_monitor_task, dns_collector_task, secure_send_cleanup_task, ha_lease_reconciliation_task, ha_sync_monitor_task, ha_watchdog_task, notification_runtime_task, notification_retention_task
     start_monitor_scheduler()
+    start_traffic_polling()
     database_engine = engine.dialect.name
+    worker_started("traffic_monitor", database_engine)
     worker_started("domain_poll", database_engine)
     domain_poll_task = asyncio.create_task(domain_poll_loop())
     worker_started("compute_monitor", database_engine)
@@ -436,6 +442,22 @@ async def on_startup():
                 except Exception:
                     notification_db.rollback()
                     logger.exception("audit.retention.failed")
+                try:
+                    traffic_config = notification_db.get(TrafficMonitoringConfiguration, 1)
+                    if traffic_config:
+                        deleted = cleanup_flow_accounting(
+                            notification_db,
+                            now=datetime.utcnow(),
+                            short_days=traffic_config.five_minute_retention_days,
+                            hourly_days=traffic_config.hourly_retention_days,
+                            daily_days=traffic_config.daily_retention_days,
+                        )
+                        notification_db.commit()
+                        if deleted:
+                            logger.info("network_traffic.retention.completed deleted=%s", deleted)
+                except Exception:
+                    notification_db.rollback()
+                    logger.exception("network_traffic.retention.failed")
     worker_started("notification_retention", database_engine)
     notification_retention_task = asyncio.create_task(notification_retention_loop())
 
@@ -445,6 +467,7 @@ async def on_shutdown():
     if version_check_task:
         version_check_task.cancel()
     await stop_monitor_scheduler()
+    await stop_traffic_polling()
     if domain_poll_task:
         domain_poll_task.cancel()
     if compute_monitor_task:
@@ -473,6 +496,7 @@ app.include_router(licences.router)
 app.include_router(ip_addresses.router)
 app.include_router(hardware_assets.router)
 app.include_router(network_monitor.router)
+app.include_router(network_discovery.router)
 app.include_router(network_monitor.wallboard_router)
 app.include_router(remote_manager.router)
 app.include_router(runbooks.router)

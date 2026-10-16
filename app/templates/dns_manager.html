@@ -530,7 +530,7 @@
       {% for row in rows %}
       {% set status_label = client_status(row) %}
       <tr>
-        <td><a href="/networking/dns-manager/clients/{{ row.id }}"><strong>{{ client_display_name(row) }}</strong></a>{% if row.hostname and row.hostname != client_display_name(row) %}<br><span class="muted">{{ row.hostname }}</span>{% endif %}</td>
+        <td>{% if row.asset_parent %}<a href="/infrastructure/asset-manager/{{ row.asset_parent.id }}"><strong>{{ client_display_name(row) }}</strong></a><br><span class="muted">Confirmed asset: {{ row.asset_parent.name }}</span>{% else %}<a href="/networking/dns-manager/clients/{{ row.id }}"><strong>{{ client_display_name(row) }}</strong></a>{% endif %}{% if row.hostname and row.hostname != client_display_name(row) %}<br><span class="muted">{{ row.hostname }}</span>{% endif %}</td>
         <td class="mono">{{ row.current_ip or '-' }}{% if row.previous_ip and row.previous_ip != row.current_ip %}<br><span class="muted">Previous: {{ row.previous_ip }}</span>{% endif %}</td>
         <td class="mono">{{ row.normalised_mac or '-' }}</td>
         <td>{{ row.provider.name if row.provider else row.provider_type }}</td>
@@ -539,7 +539,7 @@
         <td>{{ display_number(row.observation_count) }}</td>
         <td>{% if row.linked_ip_record %}<a href="/networking/vlan-ip-manager/{{ row.linked_ip_record.id }}">{{ row.linked_ip_record.name or row.linked_ip_record.address }}</a>{% elif row.match_confidence %}Suggested match<br><span class="muted">{{ row.match_method|replace('_', ' ') }} · {{ row.match_confidence }}%</span>{% else %}Not managed{% endif %}</td>
         <td><span class="table-chip {% if status_label == 'Conflict' %}danger-chip{% elif status_label in ['Linked','Known'] %}good{% elif status_label in ['Ignored','Stale'] %}muted-chip{% endif %}">{{ status_label }}</span></td>
-        <td class="action-col"><a class="button secondary small" href="/networking/dns-manager/clients/{{ row.id }}">View client</a></td>
+        <td class="action-col">{% if row.asset_parent %}<a class="button secondary small" href="/infrastructure/asset-manager/{{ row.asset_parent.id }}">Open asset</a><a class="button secondary small" href="/networking/dns-manager/clients/{{ row.id }}">DNS detail</a>{% else %}<a class="button secondary small" href="/networking/dns-manager/clients/{{ row.id }}">View client</a>{% endif %}</td>
       </tr>
       {% else %}
       <tr><td colspan="10">No retained clients match these filters. The background collector will populate this list after its next successful provider sync.</td></tr>
@@ -590,12 +590,12 @@
   </label>
 </form>
   <table data-table-key="dns-dhcp" data-export-url="/networking/dns-manager/export/dhcp">
-    <thead><tr><th data-col="status">Status</th><th data-col="hostname">Hostname</th><th data-col="ip">IP Address</th><th data-col="mac">MAC Address</th><th data-col="lease-start">Lease Start</th><th data-col="last-seen">Last Seen</th><th data-col="lease-end">Lease End / Expiry</th><th data-col="range">VLAN / Range</th></tr></thead>
+    <thead><tr><th data-col="status">Status</th><th data-col="hostname">Hostname</th><th data-col="ip">IP Address</th><th data-col="mac">MAC Address</th><th data-col="lease-start">Lease Start</th><th data-col="last-seen">Last Seen</th><th data-col="lease-end">Lease End / Expiry</th><th data-col="range">VLAN / Range</th>{% if can_asset_manager %}<th>Asset</th>{% endif %}</tr></thead>
     <tbody>
       {% for row in rows %}
-      <tr><td><span class="table-chip {% if row.is_active %}good{% else %}muted-chip{% endif %}">{{ 'Active' if row.is_active else 'Ended' }}</span></td><td><strong>{{ row.hostname or '-' }}</strong>{% if row.client %}<br><a class="muted" href="/networking/dns-manager/clients/{{ row.client.id }}">View logical client</a>{% endif %}</td><td class="mono">{{ row.ip_address }}</td><td class="mono">{{ row.mac_address or '-' }}</td><td>{{ local_time(row.lease_started_at, 'minute') }}</td><td>{{ local_time(row.last_seen_at, 'minute') }}</td><td>{% if row.is_active and row.expires_at %}{{ local_time(row.expires_at, 'minute') }}{% elif row.ended_at %}{{ local_time(row.ended_at, 'minute') }}{% else %}-{% endif %}</td><td>{{ row.dhcp_range.name if row.dhcp_range else '-' }}{% if row.dhcp_range and row.dhcp_range.vlan %}<br><span class="muted">{{ row.dhcp_range.vlan.name }}</span>{% endif %}</td></tr>
+      <tr><td><span class="table-chip {% if row.is_active %}good{% else %}muted-chip{% endif %}">{{ 'Active' if row.is_active else 'Ended' }}</span></td><td><strong>{{ row.hostname or '-' }}</strong>{% if row.client %}<br><a class="muted" href="/networking/dns-manager/clients/{{ row.client.id }}">View logical client</a>{% endif %}</td><td class="mono">{{ row.ip_address }}</td><td class="mono">{{ row.mac_address or '-' }}</td><td>{{ local_time(row.lease_started_at, 'minute') }}</td><td>{{ local_time(row.last_seen_at, 'minute') }}</td><td>{% if row.is_active and row.expires_at %}{{ local_time(row.expires_at, 'minute') }}{% elif row.ended_at %}{{ local_time(row.ended_at, 'minute') }}{% else %}-{% endif %}</td><td>{{ row.dhcp_range.name if row.dhcp_range else '-' }}{% if row.dhcp_range and row.dhcp_range.vlan %}<br><span class="muted">{{ row.dhcp_range.vlan.name }}</span>{% endif %}</td>{% if can_asset_manager %}<td>{% if row.asset_parent %}<a class="button secondary small" href="/infrastructure/asset-manager/{{ row.asset_parent.id }}">View Asset</a>{% else %}<a class="button secondary small" href="/infrastructure/asset-manager/discovered/review?candidate_id=dhcp:{{ row.id }}">Review / Adopt</a>{% endif %}</td>{% endif %}</tr>
       {% else %}
-      <tr><td colspan="8">No retained DHCP leases match this filter.</td></tr>
+      <tr><td colspan="{{ 9 if can_asset_manager else 8 }}">No retained DHCP leases match this filter.</td></tr>
       {% endfor %}
     </tbody>
   </table>

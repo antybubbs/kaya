@@ -20,3 +20,4 @@ Authlib==1.6.12
 httpx==0.28.1
 httpx2==2.12.0
 pywebpush==2.3.0
+pysnmp==7.1.30

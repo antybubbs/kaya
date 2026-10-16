@@ -23,15 +23,20 @@ from app.models.models import (
     NetworkMonitorOutage,
     NetworkMonitorStatistic,
     NetworkMonitorTransition,
+    NotificationCategoryPolicy,
     NotificationDeliveryAttempt,
     NotificationEvent,
     NotificationOutbox,
+    NotificationPreference,
+    PushSubscription,
     RemoteManagerSetting,
     User,
     UserModulePermission,
     UserNotification,
 )
+from app.core.security import encrypt_secret
 from app.services import network_monitor, network_monitor_history
+from app.services import notification_delivery
 from app.services.notification_outbox import process_outbox
 from app.routers import network_monitor as network_monitor_router, notifications as notification_router
 from app.routers.auth import require_admin, require_editor
@@ -137,6 +142,58 @@ def test_monitor_transition_creates_in_app_notification_without_vapid_or_legacy_
             event_type="ipwan.host.recovered"
         ).count() == 1
         assert db.query(UserNotification).filter_by(user_id=recipient_id).count() == 2
+
+
+def test_uptime_offline_transition_queues_push_payload_without_dashboard(monkeypatch):
+    factory = session_factory()
+    recipient_id = add_monitor_recipient(factory)
+    monitor_id = add_monitor(factory, failure_threshold=1, recovery_threshold=1)
+    with factory() as db:
+        db.add_all([
+            RemoteManagerSetting(key="notifications_push_enabled", value="1"),
+            NotificationCategoryPolicy(
+                event_type="ipwan.host.offline",
+                enabled=True,
+                in_app_allowed=True,
+                push_allowed=True,
+            ),
+            NotificationPreference(
+                user_id=recipient_id,
+                event_type="ipwan.host.offline",
+                push_enabled=True,
+            ),
+            PushSubscription(
+                user_id=recipient_id,
+                endpoint_hash="u" * 64,
+                encrypted_subscription=encrypt_secret(
+                    '{"endpoint":"https://fcm.googleapis.com/fake","keys":{}}'
+                ),
+            ),
+        ])
+        monitor = db.get(NetworkMonitor, monitor_id)
+        network_monitor.record_monitor_result(
+            db, monitor, False, None, 100, "Synthetic timeout"
+        )
+        db.commit()
+        process_outbox(session_factory=factory)
+
+    monkeypatch.setattr(notification_delivery, "SessionLocal", factory)
+    monkeypatch.setattr(
+        notification_delivery,
+        "effective_credentials",
+        lambda _db: SimpleNamespace(
+            private_key="fake", subject="mailto:fake@example.invalid"
+        ),
+    )
+    payloads = []
+    monkeypatch.setattr(
+        notification_delivery,
+        "_send_push",
+        lambda _subscription, payload, _credentials: payloads.append(payload) or {},
+    )
+    assert notification_delivery.deliver_queued() == 1
+    assert payloads[0]["title"] == "Host offline"
+    assert payloads[0]["target"] == f"/networking/ip-wan-monitor/{monitor_id}"
 
 
 def test_existing_offline_monitor_is_reconciled_once():
@@ -495,6 +552,18 @@ def test_dashboard_rate_lease_overrides_saved_interval_and_expires():
         network_monitor._dashboard_interval_leases.clear()
 
 
+def test_scheduler_scans_at_background_cadence_unless_live_mode_is_leased():
+    network_monitor._dashboard_interval_leases.clear()
+    try:
+        assert network_monitor.scheduler_scan_interval() == 5
+        network_monitor.set_dashboard_interval_override("dashboard-live", "live")
+        assert network_monitor.scheduler_scan_interval() == 1
+        network_monitor.set_dashboard_interval_override("dashboard-live", "paused")
+        assert network_monitor.scheduler_scan_interval() == 5
+    finally:
+        network_monitor._dashboard_interval_leases.clear()
+
+
 def test_dashboard_rate_makes_monitor_due_before_saved_interval():
     network_monitor._dashboard_interval_leases.clear()
     factory = session_factory()
@@ -800,6 +869,10 @@ def test_per_host_and_global_threshold_controls_are_present():
     assert "Use Kaya default thresholds" in fields
     assert "module-network-monitor" in settings
     assert "_network_monitor_threshold_fields.html" in ip_detail
+    assert 'data-device-traffic-toggle-input' in ip_detail
+    assert 'class="remote-switch"' in ip_detail
+    assert 'Open device Network Traffic report' in ip_detail
+    assert 'role == \'admin\'' in ip_detail
 
 
 @pytest.mark.parametrize("selected,expected", [

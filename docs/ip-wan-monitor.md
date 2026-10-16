@@ -1,6 +1,6 @@
-# IP/WAN Monitor
+# Uptime
 
-IP/WAN Monitor is a background collector for ICMP availability, latency and packet-loss evidence. Opening a dashboard or detail page only reads retained observations; it never triggers a network probe. The explicit **Check now** and VLAN/IP Manager **Ping** actions are the exceptions because they are initiated by a user.
+Uptime is the user-facing name for Kaya's existing IP/WAN monitoring module. It is a background collector for ICMP availability, latency and packet-loss evidence. Opening a dashboard or detail page only reads retained observations; it never triggers a network probe. The explicit **Check now** and VLAN/IP Manager **Ping** actions are the exceptions because they are initiated by a user. Existing routes, APIs, permissions and internal identifiers retain their IP/WAN names for compatibility.
 
 ## Health and outages
 
@@ -10,7 +10,7 @@ State is evaluated centrally by the collector. A threshold breach is retained on
 
 Confirmed threshold breaches create degraded incidents. Confirmed availability failures create offline incidents with the first failure, confirmation time, failure count, timeout and last successful response recorded as structured, non-secret metadata. Incidents close only after the applicable recovery criteria. Automatic state changes are retained in the event feed.
 
-Default thresholds are managed under **Site Administration → Module Settings → IP/WAN Monitor**. Per-host inheritance and overrides are managed in the existing **VLAN/IP Manager → host → Services → IP/WAN Monitor** section or on the monitor detail Settings tab. Editors may change per-host values; global defaults remain administrator-only.
+Default thresholds are managed under **Site Administration → Module Settings → Uptime**. Per-host inheritance and overrides are managed in the existing **VLAN/IP Manager → host → Services → Uptime** section or on the monitor detail Settings tab. Editors may change per-host values; global defaults remain administrator-only.
 
 ## Detail workspace
 
@@ -22,7 +22,7 @@ One shared timeline combines a latency average with its genuine minimum/maximum 
 
 The 16 selected-period summary values, incident evidence and paginated table come from the same bounded response. Raw periods use individual checks; longer periods use server-side aggregation and retained statistics. Older buckets created before minimum latency and jitter retention was added expose those fields as unavailable rather than fabricating them. Percentiles over retained periods are explicitly identified as weighted bucket-average percentiles. Partial ranges show the first available observation, and empty ranges show a purpose-built message.
 
-Performance-table filtering, sorting and pagination are server-side. Selected-period CSV export is bounded to 5,000 displayed buckets, neutralises spreadsheet formula prefixes in text fields, requires the existing IP/WAN Monitor viewer permission and creates the normal redacted export audit event. Changing range, overlays, table pages or zoom does not create audit noise.
+Performance-table filtering, sorting and pagination are server-side. Selected-period CSV export is bounded to 5,000 displayed buckets, neutralises spreadsheet formula prefixes in text fields, requires the existing Uptime viewer permission and creates the normal redacted export audit event. Changing range, overlays, table pages or zoom does not create audit noise.
 
 Raw checks are searched, state-filtered and paginated server-side in 50-row pages, and can be exported as CSV. Exports are limited to 10,000 rows, neutralise spreadsheet formula prefixes in text fields, require module access and produce an audit record.
 
@@ -50,11 +50,11 @@ Authenticated users can reorder overview cards and open the standalone Wallboard
 
 The Wallboard consumes the existing batched live observation feed and mounted ECharts instances. It does not create another collector or one request per card. The Controls panel defaults to the Live rate and offers 5-second, 10-second and 60-second alternatives through the existing short backend override lease. Authenticated overrides require editor access. Shared overrides require an active restricted Wallboard session, its CSRF token and the Allow display-setting changes permission. Leaving or locking the display releases the lease, and abandoned leases expire automatically.
 
-Site administrators with IP/WAN Monitor module access can configure one shared Wallboard under **Site Administration > Module Settings > IP/WAN Monitor**. A shared link uses a random encrypted-at-rest URL identifier plus a separately configured Argon2-hashed PIN or passcode. Successful challenges create an opaque, hashed, revocable Wallboard session that is separate from the normal Kaya session and stored in an HttpOnly, path-scoped, SameSite cookie. The shared feed returns only allowlisted monitors, and every optional detail, Check now, Pause, reorder or display-setting operation is re-authorised server-side. The default shared configuration is disabled and read-only.
+Site administrators with Uptime module access can configure one shared Wallboard under **Site Administration > Module Settings > Uptime**. A shared link uses a random encrypted-at-rest URL identifier plus a separately configured Argon2-hashed PIN or passcode. Successful challenges create an opaque, hashed, revocable Wallboard session that is separate from the normal Kaya session and stored in an HttpOnly, path-scoped, SameSite cookie. The shared feed returns only allowlisted monitors, and every optional detail, Check now, Pause, reorder or display-setting operation is re-authorised server-side. The default shared configuration is disabled and read-only.
 
 Challenge failures are keyed by the trusted client IP and Wallboard identity. Five failures within ten minutes lock that source for fifteen minutes; administrators can clear lockouts. Disabling sharing, replacing the passcode, regenerating or revoking the URL, and explicitly invalidating sessions remove existing shared access. Raw passcodes, session tokens and URL identifiers are excluded from audit metadata and request-path audit records.
 
-The incremental feed is authenticated by the normal IP/WAN Monitor module gate, accepts only a non-negative last-observation ID, returns at most 1,000 observations from the current five-minute window, and exposes only the fields required by the charts. Changing the active rate requires the appropriate authenticated or restricted-session permission, a valid CSRF token and allowlisted rate/client values; mode changes are audited without recording the client token. Checks use a composite monitor/timestamp index for rolling-window queries.
+The incremental feed is authenticated by the normal Uptime module gate, accepts only a non-negative last-observation ID, returns at most 1,000 observations from the current five-minute window, and exposes only the fields required by the charts. Changing the active rate requires the appropriate authenticated or restricted-session permission, a valid CSRF token and allowlisted rate/client values; mode changes are audited without recording the client token. Checks use a composite monitor/timestamp index for rolling-window queries.
 
 ## Retention
 

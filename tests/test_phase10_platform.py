@@ -92,7 +92,7 @@ def test_schema_revision_missing_from_packaged_chain_fails_closed():
 def test_current_head_is_allowed(monkeypatch):
     script = _script()
     monkeypatch.setattr("app.db.platform_compatibility.inspect", lambda _connection: SimpleNamespace(get_table_names=lambda: ["alembic_version"]))
-    validate_postgres_platform(_Engine(("16.14", "160014"), ("20260902_01",)), script)
+    validate_postgres_platform(_Engine(("16.14", "160014"), ("20261008_02",)), script)
 
 
 def test_known_ancestor_is_allowed(monkeypatch):

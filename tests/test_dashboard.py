@@ -37,7 +37,7 @@ def test_preferences_are_per_user_and_persist(db):
     assert preferences(db,first)["widgets"][0]["width"] == "medium"
     assert preferences(db,second)["widgets"][0]["width"] == default_layout(db,second)["widgets"][0]["width"]
     assert db.query(DashboardPreference).count() == 1
-    assert saved["version"] == 1
+    assert saved["version"] == 2
 
 def test_invalid_widget_key_size_and_position_are_rejected(db):
     account=user(db)
@@ -67,7 +67,9 @@ def test_reset_restores_defaults(db):
 def test_restricted_widgets_are_not_returned(db):
     viewer=user(db)
     keys={item["key"] for item in config(db,viewer)["widgets"]}
-    assert "team_users" not in keys and "recent_activity" not in keys
+    assert "recent_activity" not in keys
+    cards = dashboard_service._build(db,viewer,"module_overview")["cards"]
+    assert "team_users" not in {card["key"] for card in cards}
     assert set(snapshot(db,viewer)["widgets"]).issubset(keys)
 
 def test_disabled_widget_is_excluded_from_snapshot(db):
@@ -82,8 +84,10 @@ def test_module_disabled_is_not_exposed_or_enabled(db):
     account=user(db)
     db.add(RemoteManagerSetting(key="dns_manager_enabled", value=""))
     db.commit()
-    assert "dns_summary" not in {item["key"] for item in config(db,account)["widgets"]}
-    assert "dns_summary" not in {item["key"] for item in preferences(db,account)["widgets"]}
+    cards = dashboard_service._build(db,account,"module_overview")["cards"]
+    assert "dns_manager" not in {card["key"] for card in cards}
+    traffic = dashboard_service._build(db,account,"network_traffic")
+    assert traffic["dns_blocked_percentage"] is None
 
 @pytest.mark.parametrize(("stored", "expected"), [("10", 10), ("30", 30), ("60", 60), ("300", 300), ("1", 10), ("broken", 10)])
 def test_polling_interval_is_one_of_the_supported_choices(db, stored, expected):
@@ -113,10 +117,10 @@ def test_malformed_preferences_fall_back_safely(db):
 def test_widget_failure_does_not_fail_snapshot(db, monkeypatch):
     account=user(db)
     original=dashboard_service._build
-    def broken(session, current_user, key):
+    def broken(session, current_user, key, context=None):
         if key == "infrastructure_summary":
             raise RuntimeError("secret provider detail")
-        return original(session, current_user, key)
+        return original(session, current_user, key, context)
     monkeypatch.setattr(dashboard_service, "_build", broken)
     result=snapshot(db,account)
     assert result["widgets"]["infrastructure_summary"] == {"status":"error","reason":"Widget data is temporarily unavailable"}

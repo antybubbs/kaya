@@ -4,7 +4,7 @@
   <section class="module-header monitor-detail-header">
     <div class="module-title-row">
       <div class="module-heading">
-        <p class="breadcrumb"><a href="/networking/ip-wan-monitor">IP/WAN Monitor</a> / {{ monitor.check_type|upper }}</p>
+        <p class="breadcrumb"><a href="/networking/ip-wan-monitor">Uptime</a> / {{ monitor.check_type|upper }}</p>
         <div class="monitor-title-line">
           <h1>{{ monitor.display_name or monitor.ip_address.name or monitor.ip_address.address }}</h1>
           {% set display_status = current_state %}
@@ -89,7 +89,7 @@
         <fieldset class="performance-overlays"><legend>Timeline overlays</legend>
           {% for key,label,checked in [('latency','Latency',true),('loss','Packet loss',true),('jitter','Jitter',false),('availability','Availability',false),('incidents','Incidents',true),('thresholds','Thresholds',true),('maintenance','Maintenance / pause',false)] %}<label><input type="checkbox" value="{{ key }}" data-performance-overlay {% if checked %}checked{% endif %}> {{ label }}</label>{% endfor %}
         </fieldset>
-        <div class="performance-chart" data-performance-chart role="img" aria-label="Interactive IP/WAN performance history"></div>
+        <div class="performance-chart" data-performance-chart role="img" aria-label="Interactive Uptime performance history"></div>
         <div class="empty-state performance-empty" data-performance-empty hidden><h3>No monitoring observations are available for this period.</h3><p class="muted" data-performance-available></p></div>
       </article>
 

@@ -80,12 +80,26 @@ STATIC_FILES = {
     ),
     "/favicon.svg": (Path("app/static/brand/kaya-favicon.svg"), "image/svg+xml"),
 }
+# The Kaya refresh theme and its self-hosted IBM Plex fonts. The paths mirror
+# /static/css and /static/vendor so fonts.css resolves its relative URLs here too.
+THEME_ASSETS = {
+    "/assets/css/fonts.css": (Path("app/static/css/fonts.css"), "text/css; charset=utf-8"),
+    "/assets/css/kaya-refresh.css": (Path("app/static/css/kaya-refresh.css"), "text/css; charset=utf-8"),
+    **{
+        f"/assets/vendor/fonts/ibm-plex/{name}.woff2": (Path(f"app/static/vendor/fonts/ibm-plex/{name}.woff2"), "font/woff2")
+        for name in (
+            "IBMPlexSans-Regular", "IBMPlexSans-Medium", "IBMPlexSans-SemiBold", "IBMPlexSans-Bold",
+            "IBMPlexMono-Regular", "IBMPlexMono-Medium", "IBMPlexMono-SemiBold",
+        )
+    },
+}
+STATIC_FILES.update(THEME_ASSETS)
 
 
 def security_headers(response: Response, *, https: bool) -> Response:
     response.headers.update(
         {
-            "Content-Security-Policy": "default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+            "Content-Security-Policy": "default-src 'none'; style-src 'self'; img-src 'self'; font-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
             # Edge can serialize the Origin header as "null" for a form POST when
             # the document policy is no-referrer. Keep the bearer-token path out of
             # referrers while preserving a usable same-origin CSRF signal.
@@ -337,6 +351,20 @@ def gateway_logo():
 @app.head("/favicon.svg", include_in_schema=False)
 def gateway_favicon():
     return FileResponse(STATIC_FILES["/favicon.svg"][0], media_type="image/svg+xml")
+
+
+def _theme_asset_route(asset_path: str):
+    file_path, media_type = THEME_ASSETS[asset_path]
+
+    def serve_theme_asset():
+        return FileResponse(file_path, media_type=media_type)
+
+    return serve_theme_asset
+
+
+# One explicit GET/HEAD route per allow-listed theme file; nothing else under /assets is served.
+for _asset_path in THEME_ASSETS:
+    app.add_api_route(_asset_path, _theme_asset_route(_asset_path), methods=["GET", "HEAD"], include_in_schema=False)
 
 
 def require_enabled(db: Session) -> None:

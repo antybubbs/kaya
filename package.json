@@ -8,5 +8,8 @@
     "guacamole-lite": "^1.2.0",
     "ssh2": "^1.17.0",
     "ws": "^8.20.0"
+  },
+  "devDependencies": {
+    "playwright": "^1.64.0"
   }
 }

@@ -27,9 +27,12 @@ from app.models.models import (
     DNSClientTrafficEvent,
     DNSInsight,
     DNSInvestigation,
+    AssetIdentityEvidence,
+    AssetNetworkAssignment,
     DNSProviderConfig,
     DNSRecognisedDevice,
     DNSStatisticsSnapshot,
+    HardwareAsset,
     IPAddress,
     RemoteManagerSetting,
 )
@@ -50,6 +53,7 @@ from app.services.dns_clients import (
     list_dhcp_leases,
     normalise_mac,
 )
+from app.services.asset_discovery import get_discovered_device
 from app.services.dns_insights import (
     CATEGORY_LABELS,
     SEVERITY_LABELS,
@@ -61,6 +65,7 @@ from app.services.dns_insights import (
 )
 from app.services.dns_providers import DNSProvider, DNSProviderResult, provider_for
 from app.services.site_settings import get_site_setting
+from app.services.modules import has_module_access
 from app.services.table_export import export_row_matches, table_export_response, validate_export_columns, validate_export_filters, validate_export_format
 
 
@@ -826,6 +831,18 @@ def _dns_client(db: Session, client_id: int) -> DNSRecognisedDevice:
     return row
 
 
+def _confirmed_asset_parent(db: Session, user, client: DNSRecognisedDevice) -> HardwareAsset | None:
+    if not client.hardware_asset_id or not has_module_access(db, user, "asset_manager"):
+        return None
+    asset = db.get(HardwareAsset, client.hardware_asset_id)
+    confirmed = db.query(AssetIdentityEvidence).filter(
+        AssetIdentityEvidence.asset_id == client.hardware_asset_id,
+        AssetIdentityEvidence.status == "confirmed",
+        AssetIdentityEvidence.source.in_(("dns", "discovery")),
+    ).first()
+    return asset if asset and confirmed else None
+
+
 def _client_audit(request: Request, db: Session, user, client: DNSRecognisedDevice, action: str, detail: str, **metadata) -> None:
     write_audit(db, user, action, "dns_client", str(client.id), request.client.host if request.client else None, detail=detail, metadata={"provider_id": client.provider_id, "linked_ip_record_id": client.linked_ip_record_id, **metadata})
 
@@ -945,6 +962,10 @@ def dns_client_detail(
         "traffic_rows": len(traffic_rows),
     }
     logger.log(logging.WARNING if total_duration_ms >= 1000 else logging.DEBUG, "dns client detail timing", extra=log_extra)
+    asset_parent = None
+    asset_parent = _confirmed_asset_parent(db, user, client)
+    can_asset_manager = bool(getattr(user, "is_active", False)) and has_module_access(db, user, "asset_manager")
+    discovery_candidate = get_discovered_device(db, f"dns:{client.id}") if can_asset_manager and not asset_parent else None
     return templates.TemplateResponse(request, "dns_client_detail.html", {
         "user": user, "client": client, "display_name": client_display_name(client), "status": client_status(client, stale_days),
         "ip_history": ip_history,
@@ -955,7 +976,8 @@ def dns_client_detail(
         "client_history_days": client_history_days, "traffic_history_days": traffic_history_days,
         "top_requested": top_requested, "top_blocked": top_blocked,
         "flagged_traffic_domains": open_investigation_domains(db, client.provider), "domain_root": domain_root, "domain_kind": domain_kind,
-        "ip_records": records, "preferred_ip_record_id": preferred_ip_record_id, "priority_ip_record_ids": priority_record_ids, "q": q.strip(), **csrf_context(request),
+        "ip_records": records, "preferred_ip_record_id": preferred_ip_record_id, "priority_ip_record_ids": priority_record_ids, "asset_parent": asset_parent,
+        "can_asset_manager": can_asset_manager, "discovery_candidate": discovery_candidate, "q": q.strip(), **csrf_context(request),
     })
 
 
@@ -1315,12 +1337,22 @@ def dns_manager(
             db, provider_id=provider.id if provider else None, search=client_q,
             status=client_status_filter, offset=(client_page - 1) * 50, limit=50,
         )
+        for row in retained_client_rows:
+            row.asset_parent = _confirmed_asset_parent(db, user, row)
     if active_tab == "dhcp":
         clean_dhcp_status = dhcp_status if dhcp_status in {"current", "active", "recent", "history", "all"} else "current"
         retained_dhcp_rows, retained_dhcp_total = list_dhcp_leases(
             db, provider_id=provider.id if provider else None, status=clean_dhcp_status,
             offset=(dhcp_page - 1) * 50, limit=50,
         )
+        if has_module_access(db, user, "asset_manager"):
+            for row in retained_dhcp_rows:
+                row.asset_parent = db.query(HardwareAsset).join(
+                    AssetNetworkAssignment, AssetNetworkAssignment.asset_id == HardwareAsset.id
+                ).filter(
+                    AssetNetworkAssignment.dhcp_lease_id == row.id,
+                    AssetNetworkAssignment.status == "confirmed",
+                ).order_by(AssetNetworkAssignment.started_at.desc()).first()
     else:
         clean_dhcp_status = "current"
     insight_rows: list[DNSInsight] = []
@@ -1420,6 +1452,7 @@ def dns_manager(
             "retained_dhcp_rows": retained_dhcp_rows,
             "retained_dhcp_total": retained_dhcp_total,
             "dhcp_filters": {"status": clean_dhcp_status, "page": dhcp_page},
+            "can_asset_manager": has_module_access(db, user, "asset_manager"),
             "client_display_name": client_display_name,
             "client_status": client_status,
             "flagged_domains": flagged_domains,

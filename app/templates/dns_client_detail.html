@@ -5,6 +5,7 @@
     <p class="muted"><a href="/networking/dns-manager?tab=clients">DNS Manager / Clients</a></p>
     <h1>{{ display_name }}</h1>
     <div class="record-chips"><span class="table-chip {% if status == 'Conflict' %}danger-chip{% elif status in ['Linked','Known'] %}good{% endif %}">{{ status }}</span><span class="table-chip muted-chip">{{ client.provider.name }}</span></div>
+    {% if asset_parent %}<p class="section-gap"><a class="button secondary" href="/infrastructure/asset-manager/{{ asset_parent.id }}">Open unified Asset Profile · {{ asset_parent.name }}</a></p>{% elif can_asset_manager and discovery_candidate and discovery_candidate.review_state != 'dismissed' %}<p class="section-gap"><a class="button secondary" href="/infrastructure/asset-manager/discovered/review?candidate_id=dns:{{ client.id }}">{{ 'Review association' if status in ['Suggested match', 'Conflict', 'Stale'] else 'Review / Adopt' }}</a></p>{% endif %}
   </div>
   {% if user.role in ['admin','editor'] %}<div class="inline-actions">
     <form method="post" action="/networking/dns-manager/clients/{{ client.id }}/state"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="action" value="{{ 'unknown' if client.is_known else 'known' }}"><button class="button secondary" type="submit">Mark {{ 'unknown' if client.is_known else 'known' }}</button></form>

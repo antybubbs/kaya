@@ -8,6 +8,7 @@
 <section class="panel">
 <form method="post" class="form-grid">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="traffic_monitoring_control" value="1">
   {% if dns_client %}<input type="hidden" name="dns_client_id" value="{{ dns_client.id }}">{% endif %}
   <label>IP Address<input name="address" placeholder="192.168.1.1" value="{{ record.address if record else dns_client.current_ip if dns_client else '' }}" required></label>
   <label>VLAN<select name="vlan_id" required>{% for vlan in vlans %}<option value="{{ vlan.id }}" {% if (record and record.vlan_id == vlan.id) or (not record and selected_vlan_id == vlan.id) %}selected{% endif %}>{{ vlan.name }}{% if vlan.subnet_cidr %} — {{ vlan.subnet_cidr }}{% endif %}</option>{% endfor %}</select></label>
@@ -17,7 +18,7 @@
   <label>Description<textarea name="description">{{ record.description if record and record.description else 'Created from DNS observation' if dns_client else '' }}</textarea></label>
   <label>Static/Dynamic<select name="assignment_type">{% for option in assignment_types %}<option value="{{ option }}" {% if (record and record.assignment_type == option) or (not record and selected_assignment_type|default('Static') == option) %}selected{% endif %}>{{ option }}</option>{% endfor %}</select></label>
   <div class="wide monitor-settings">
-    <div class="monitor-threshold-heading"><label class="checkbox-label"><input name="monitor_enabled" type="checkbox" value="1" {% if monitor and monitor.is_enabled %}checked{% endif %}> Show in IP/WAN Monitor</label><label class="checkbox-label"><input name="monitor_maintenance_mode" type="checkbox" value="1" {% if monitor and monitor.is_in_maintenance %}checked{% endif %}> Maintenance mode</label></div>
+    <div class="monitor-threshold-heading"><label class="checkbox-label"><input name="monitor_enabled" type="checkbox" value="1" {% if monitor and monitor.is_enabled %}checked{% endif %}> Show in Uptime</label><label class="checkbox-label"><input name="monitor_maintenance_mode" type="checkbox" value="1" {% if monitor and monitor.is_in_maintenance %}checked{% endif %}> Maintenance mode</label></div>
     <div class="form-grid">
       <label>Monitor display name<input name="monitor_display_name" placeholder="Uses name or IP address if blank" value="{{ monitor.display_name if monitor and monitor.display_name else '' }}"></label>
       <label>Check interval<select name="monitor_interval_seconds">
@@ -37,6 +38,15 @@
     </div>
     {% set monitor_field_prefix = 'monitor_' %}
     {% include "_network_monitor_threshold_fields.html" %}
+  </div>
+  <div class="wide monitor-settings">
+    {% if user.role == 'admin' %}
+    <label class="checkbox-label"><input name="traffic_monitoring_enabled" type="checkbox" value="1" {% if traffic_monitoring and traffic_monitoring.is_enabled %}checked{% endif %}> Opt in to Network Traffic device usage</label>
+    {% else %}
+    <input type="hidden" name="traffic_monitoring_enabled" value="{% if traffic_monitoring and traffic_monitoring.is_enabled %}1{% endif %}">
+    <span class="muted">Network Traffic device usage is controlled by an administrator.</span>
+    {% endif %}
+    <span class="muted">Stores bounded attributed aggregates only; it does not change firewall export settings or create a device inventory record.</span>
   </div>
   <div class="wide monitor-settings">
     <label class="checkbox-label"><input name="remote_enabled" type="checkbox" value="1" {% if remote and remote.is_enabled %}checked{% endif %}> Show in Remote Manager</label>

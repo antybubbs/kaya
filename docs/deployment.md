@@ -41,6 +41,25 @@ From a clean checkout, start the primary stack:
 docker compose up -d
 ```
 
+The optional Stage 3A flow collector is a separate UDP process and is not
+started by the default stack. Enable it only after configuring at least one
+NetFlow v9 or Cisco NSEL source with an exact exporter IP allowlist:
+
+```bash
+docker compose --profile flow-collector up -d flow-collector
+```
+
+When the NetFlow v9/Cisco NSEL protocol implementation changes, refresh the
+main Kaya image and the optional `flow-collector` image from the same release
+tag before restarting either service. Both services use the shared application
+code and must not be run at different protocol revisions.
+
+The collector binds loopback on the host by default. Set
+`KAYA_FLOW_COLLECTOR_HOST_BIND` deliberately when an exporter must reach a
+remote host, and keep the application container's bind address on the private
+Compose network. Its health probe is database-backed and reports listener
+readiness; it does not expose a public HTTP endpoint.
+
 The stack starts Kaya, PostgreSQL, the secure-send gateway and guacd, waits for
 PostgreSQL health, and then runs Kaya's normal Alembic preparation. PostgreSQL
 is private to the Compose network and is pinned to `postgres:16.14`; port 5432

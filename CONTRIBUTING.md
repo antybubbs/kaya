@@ -640,6 +640,38 @@ or implement an explicit best-effort contract.
 Run any configured type checker and security scanner when the repository adds
 one; do not imply type or security-tool coverage that is not configured.
 
+### Direct Chrome browser acceptance
+
+The repository's Node package owns the development-only Playwright dependency;
+do not create a second Node project or add Playwright to the production image.
+Install the locked development dependencies with:
+
+```powershell
+npm ci
+```
+
+The Network Traffic acceptance runner uses the installed Google Chrome channel
+and a local Kaya instance:
+
+```powershell
+$env:BASE_URL = "http://127.0.0.1:18080"
+$env:ARTIFACT_DIR = "stage4-artifacts/network-traffic-browser"
+node scripts/network_traffic_browser_acceptance.mjs
+```
+
+The runner creates a disposable administrator only when the database is fresh,
+uses synthetic credentials supplied through `ACCEPTANCE_ADMIN_EMAIL`,
+`ACCEPTANCE_ADMIN_PASSWORD` and `ACCEPTANCE_SETUP_TOKEN`, and writes desktop
+and mobile PNGs under `ARTIFACT_DIR`. It fails on application page errors,
+console errors, unexpected horizontal overflow, failed assertions, or failed
+CSRF checks. Set `ACCEPTANCE_PHASE=populated` after loading synthetic reporting
+fixtures to verify populated totals; never point `BASE_URL` at production.
+
+Use `npx playwright --version` to confirm the locked tool is available. The
+runner requests `channel: "chrome"`; it does not download or add another
+browser. If Chrome is not installed at the supported system location, stop and
+report that limitation rather than changing production dependencies.
+
 ### Integration changes
 
 Test both:

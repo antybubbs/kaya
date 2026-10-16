@@ -36,6 +36,20 @@ DNS_CLIENT_DETAIL_INDEXES = (
 )
 
 
+_TEST_ENGINES = []
+
+
+@pytest.fixture(autouse=True)
+def dispose_sqlite_test_engines():
+    """Close every engine created by a migration test before tmp_path cleanup."""
+    try:
+        yield
+    finally:
+        for engine in _TEST_ENGINES:
+            engine.dispose()
+        _TEST_ENGINES.clear()
+
+
 def settings_for(path: Path, backup_dir: Path) -> Settings:
     return Settings(
         app_env="test",
@@ -46,7 +60,9 @@ def settings_for(path: Path, backup_dir: Path) -> Settings:
 
 
 def engine_for(path: Path):
-    return create_engine(f"sqlite:///{path.as_posix()}")
+    engine = create_engine(f"sqlite:///{path.as_posix()}")
+    _TEST_ENGINES.append(engine)
+    return engine
 
 
 def test_fresh_install_and_repeated_start_are_idempotent(tmp_path):

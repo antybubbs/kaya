@@ -1,0 +1,661 @@
+"""Administrator-reviewed stable asset identity and network assignment operations."""
+
+from datetime import datetime
+import hashlib
+import ipaddress
+import re
+
+from sqlalchemy import and_, or_, text
+from sqlalchemy.orm import Session
+
+from app.models.models import (
+    AssetIdentityEvidence,
+    AssetNetworkAssignment,
+    DHCPLeaseHistory,
+    HardwareAsset,
+    IPAddress,
+    TrafficDiscoveryNetworkMapping,
+    TrafficSource,
+    User,
+    VLAN,
+)
+from app.services.audit import write_audit
+from app.services.modules import MODULE_BY_KEY, module_is_enabled
+
+
+EVIDENCE_TYPES = {"mac", "dhcp_client_id", "provider_client_id", "hostname", "serial_number"}
+STATUSES = {"pending", "confirmed", "revoked", "conflict", "unresolved"}
+_MAC = re.compile(r"^[0-9a-f]{12}$")
+
+
+def eligible_traffic_contexts(db: Session, address: str) -> list[dict]:
+    """Return current, unambiguous source/exporter/VLAN contexts for an address."""
+    normalised, family = _normalise_ip(address)
+    parsed = ipaddress.ip_address(normalised)
+    rows = (
+        db.query(TrafficDiscoveryNetworkMapping, TrafficSource, VLAN)
+        .join(TrafficSource, TrafficSource.id == TrafficDiscoveryNetworkMapping.source_id)
+        .join(VLAN, VLAN.id == TrafficDiscoveryNetworkMapping.vlan_id)
+        .filter(
+            TrafficDiscoveryNetworkMapping.is_enabled.is_(True),
+            TrafficSource.is_enabled.is_(True),
+            TrafficSource.is_deleted.is_(False),
+            TrafficSource.provider_key.in_(("netflow_v9", "cisco_nsel")),
+            VLAN.subnet_cidr.isnot(None),
+        )
+        .limit(256)
+        .all()
+    )
+    candidates = []
+    for mapping, source, vlan in rows:
+        try:
+            network = ipaddress.ip_network(vlan.subnet_cidr, strict=False)
+        except ValueError:
+            continue
+        if network.version == family and parsed in network:
+            candidates.append((mapping, source, vlan, str(network)))
+    counts = {}
+    for mapping, source, _vlan, _cidr in candidates:
+        key = (source.id, mapping.exporter_identity)
+        counts[key] = counts.get(key, 0) + 1
+    return [
+        {
+            "mapping_id": mapping.id,
+            "source_id": source.id,
+            "source_name": source.name,
+            "provider_key": source.provider_key,
+            "exporter_identity": mapping.exporter_identity,
+            "vlan_id": vlan.id,
+            "vlan_name": vlan.name,
+            "network_cidr": cidr,
+            "address": normalised,
+        }
+        for mapping, source, vlan, cidr in candidates
+        if counts[(source.id, mapping.exporter_identity)] == 1
+    ]
+
+
+def _assignment_lock_key(address: str, family: int, vlan_id: int | None, source_id: int | None, exporter_identity: str | None) -> int:
+    """Return a stable signed PostgreSQL advisory-lock key for one context."""
+    parts = (
+        address,
+        str(family),
+        str(vlan_id) if vlan_id is not None else "<null-vlan>",
+        str(source_id) if source_id is not None else "<null-source>",
+        exporter_identity if exporter_identity is not None else "<null-exporter>",
+    )
+    digest = hashlib.sha256("\x1f".join(parts).encode("utf-8")).digest()[:8]
+    return int.from_bytes(digest, byteorder="big", signed=True)
+
+
+def _lock_assignment_context(db: Session, *, address: str, family: int, vlan_id: int | None, source_id: int | None, exporter_identity: str | None) -> None:
+    """Serialize competing assignment confirmations on PostgreSQL only."""
+    bind = db.get_bind()
+    if bind.dialect.name == "postgresql":
+        db.execute(
+            text("SELECT pg_advisory_xact_lock(:lock_key)"),
+            {"lock_key": _assignment_lock_key(address, family, vlan_id, source_id, exporter_identity)},
+        )
+
+
+def _normalise_evidence(evidence_type: str, value: str) -> str:
+    kind = str(evidence_type or "").strip().lower()
+    value = str(value or "").strip()
+    if kind not in EVIDENCE_TYPES:
+        raise ValueError("Unsupported identity evidence type.")
+    if not value or len(value) > 255:
+        raise ValueError("Identity evidence must contain 1 to 255 characters.")
+    if kind == "mac":
+        compact = re.sub(r"[^0-9A-Fa-f]", "", value)
+        if not _MAC.fullmatch(compact):
+            raise ValueError("MAC evidence must be a valid 48-bit address.")
+        return ":".join(compact[i:i + 2] for i in range(0, 12, 2)).lower()
+    if kind in {"hostname", "dhcp_client_id", "provider_client_id", "serial_number"}:
+        return value.casefold()
+    return value
+
+
+def _normalise_ip(address: str) -> tuple[str, int]:
+    try:
+        parsed = ipaddress.ip_address(str(address).strip())
+    except ValueError as exc:
+        raise ValueError("Network assignment address must be a valid IPv4 or IPv6 address.") from exc
+    return parsed.compressed, parsed.version
+
+
+def _audit_commit(db: Session, user: User, action: str, entity: str, entity_id: int, detail: str) -> None:
+    # Identity mutations are security-relevant and must remain auditable even
+    # when the configured audit level is reduced to essential events.
+    event = write_audit(db, user, action, entity, str(entity_id), detail=detail, force=True, commit=False)
+    if event is None:
+        db.rollback()
+        raise RuntimeError("The identity change could not be audited.")
+    db.commit()
+
+
+def confirm_identity_evidence(
+    db: Session,
+    user: User,
+    *,
+    asset_id: int,
+    evidence_type: str,
+    value: str,
+    source: str,
+    source_scope: str | None = None,
+    observed_at: datetime | None = None,
+) -> AssetIdentityEvidence:
+    if not user or user.role != "admin":
+        raise PermissionError("Administrator access is required.")
+    asset = db.get(HardwareAsset, asset_id)
+    if not asset:
+        raise ValueError("Hardware asset not found.")
+    source = str(source or "").strip()
+    if not 1 <= len(source) <= 80:
+        raise ValueError("Evidence source must contain 1 to 80 characters.")
+    if source_scope is not None:
+        source_scope = str(source_scope).strip()
+        if not source_scope or len(source_scope) > 255:
+            raise ValueError("Evidence source scope must contain 1 to 255 characters.")
+    normalised = _normalise_evidence(evidence_type, value)
+    evidence_kind = evidence_type.strip().lower()
+    if evidence_kind in {"mac", "dhcp_client_id", "provider_client_id"}:
+        conflicting = db.query(AssetIdentityEvidence).filter(
+            AssetIdentityEvidence.evidence_type == evidence_kind,
+            AssetIdentityEvidence.normalised_value == normalised,
+            AssetIdentityEvidence.source == source,
+            AssetIdentityEvidence.source_scope == source_scope,
+            AssetIdentityEvidence.status == "confirmed",
+            AssetIdentityEvidence.asset_id != asset_id,
+        ).first()
+        if conflicting:
+            raise ValueError("Strong identity evidence is already confirmed for another asset in this source scope.")
+    now = observed_at or datetime.utcnow()
+    existing = db.query(AssetIdentityEvidence).filter(
+        AssetIdentityEvidence.asset_id == asset_id,
+        AssetIdentityEvidence.evidence_type == evidence_kind,
+        AssetIdentityEvidence.normalised_value == normalised,
+        AssetIdentityEvidence.source == source,
+        AssetIdentityEvidence.source_scope == source_scope,
+        AssetIdentityEvidence.status != "revoked",
+    ).first()
+    row = existing or AssetIdentityEvidence(
+        asset_id=asset_id,
+        evidence_type=evidence_kind,
+        normalised_value=normalised,
+        source=source,
+        source_scope=source_scope,
+        first_observed_at=now,
+    )
+    row.last_observed_at = now
+    row.status = "confirmed"
+    row.confirmed_by = user.id
+    row.confirmed_at = now
+    row.revoked_at = None
+    row.conflict_reason = None
+    db.add(row)
+    db.flush()
+    _audit_commit(db, user, "confirm", "asset_identity_evidence", row.id, "Confirmed asset identity evidence")
+    return row
+
+
+def revoke_identity_evidence(db: Session, user: User, evidence_id: int, *, revoked_at: datetime | None = None) -> AssetIdentityEvidence:
+    if not user or user.role != "admin":
+        raise PermissionError("Administrator access is required.")
+    row = db.get(AssetIdentityEvidence, evidence_id)
+    if not row:
+        raise ValueError("Identity evidence not found.")
+    row.status = "revoked"
+    row.revoked_at = revoked_at or datetime.utcnow()
+    db.flush()
+    _audit_commit(db, user, "revoke", "asset_identity_evidence", row.id, "Revoked asset identity evidence")
+    return row
+
+
+def confirm_existing_identity_evidence(db: Session, user: User, evidence_id: int, *, confirmed_at: datetime | None = None) -> AssetIdentityEvidence:
+    """Confirm an existing suggestion after reloading it inside the mutation transaction."""
+    if not user or user.role != "admin":
+        raise PermissionError("Administrator access is required.")
+    row = db.get(AssetIdentityEvidence, evidence_id)
+    if not row or row.asset_id is None:
+        raise ValueError("Identity evidence not found.")
+    return confirm_identity_evidence(
+        db,
+        user,
+        asset_id=row.asset_id,
+        evidence_type=row.evidence_type,
+        value=row.normalised_value,
+        source=row.source,
+        source_scope=row.source_scope,
+        observed_at=confirmed_at or row.last_observed_at or datetime.utcnow(),
+    )
+
+
+def assign_network_identity(
+    db: Session,
+    user: User,
+    *,
+    asset_id: int,
+    address: str,
+    started_at: datetime,
+    ended_at: datetime | None = None,
+    vlan_id: int | None = None,
+    ip_address_id: int | None = None,
+    dhcp_lease_id: int | None = None,
+    source_id: int | None = None,
+    exporter_identity: str | None = None,
+    provenance: str,
+) -> AssetNetworkAssignment:
+    if not user or user.role != "admin":
+        raise PermissionError("Administrator access is required.")
+    if not isinstance(started_at, datetime) or (ended_at is not None and ended_at <= started_at):
+        raise ValueError("Assignment interval is invalid.")
+    if not str(provenance or "").strip() or len(str(provenance)) > 80:
+        raise ValueError("Assignment provenance is required and bounded.")
+    normalised, family = _normalise_ip(address)
+    if not db.get(HardwareAsset, asset_id):
+        raise ValueError("Hardware asset not found.")
+    vlan = db.get(VLAN, vlan_id) if vlan_id is not None else None
+    if vlan_id is not None and not vlan:
+        raise ValueError("VLAN not found.")
+    ip_record = db.get(IPAddress, ip_address_id) if ip_address_id is not None else None
+    if ip_address_id is not None and (not ip_record or ip_record.address != normalised):
+        raise ValueError("Managed IP record does not match the assignment address.")
+    if ip_record and vlan_id is not None and ip_record.vlan_id != vlan_id:
+        raise ValueError("Managed IP record does not belong to the selected VLAN.")
+    scoped_exporter = str(exporter_identity).strip()[:255] if exporter_identity else None
+    _lock_assignment_context(
+        db,
+        address=normalised,
+        family=family,
+        vlan_id=vlan_id,
+        source_id=source_id,
+        exporter_identity=scoped_exporter,
+    )
+    query = db.query(AssetNetworkAssignment).filter(
+        AssetNetworkAssignment.address == normalised,
+        AssetNetworkAssignment.address_family == family,
+        AssetNetworkAssignment.vlan_id == vlan_id,
+        AssetNetworkAssignment.source_id == source_id,
+        AssetNetworkAssignment.exporter_identity == scoped_exporter,
+        AssetNetworkAssignment.status == "confirmed",
+    )
+    candidates = query.all()
+    for candidate in candidates:
+        overlaps = candidate.ended_at is None or started_at < candidate.ended_at
+        if ended_at is not None and candidate.started_at >= ended_at:
+            overlaps = False
+        if overlaps and candidate.asset_id != asset_id:
+            raise ValueError("A conflicting confirmed assignment already exists.")
+    row = AssetNetworkAssignment(
+        asset_id=asset_id, address=normalised, address_family=family, vlan_id=vlan_id,
+        network_cidr=(vlan.subnet_cidr.strip() if vlan and vlan.subnet_cidr else None),
+        ip_address_id=ip_address_id, dhcp_lease_id=dhcp_lease_id, source_id=source_id,
+        exporter_identity=scoped_exporter,
+        started_at=started_at, ended_at=ended_at, provenance=str(provenance).strip(),
+        status="confirmed", confirmed_by=user.id, confirmed_at=datetime.utcnow(),
+    )
+    db.add(row)
+    db.flush()
+    _audit_commit(db, user, "confirm", "asset_network_assignment", row.id, "Confirmed asset network assignment")
+    return row
+
+
+def close_network_assignment(db: Session, user: User, assignment_id: int, ended_at: datetime) -> AssetNetworkAssignment:
+    if not user or user.role != "admin":
+        raise PermissionError("Administrator access is required.")
+    row = db.get(AssetNetworkAssignment, assignment_id)
+    if not row:
+        raise ValueError("Network assignment not found.")
+    if ended_at <= row.started_at:
+        raise ValueError("Assignment end must be after its start.")
+    if row.ended_at is not None and ended_at > row.ended_at:
+        raise ValueError("Assignment cannot be extended after it was closed.")
+    row.ended_at = ended_at
+    db.flush()
+    _audit_commit(db, user, "close", "asset_network_assignment", row.id, "Closed asset network assignment")
+    return row
+
+
+def confirm_existing_network_assignment(db: Session, user: User, assignment_id: int, *, confirmed_at: datetime | None = None) -> AssetNetworkAssignment:
+    """Approve a pending assignment without creating or relinking any records."""
+    if not user or user.role != "admin":
+        raise PermissionError("Administrator access is required.")
+    row = db.get(AssetNetworkAssignment, assignment_id)
+    if not row or row.asset_id is None:
+        raise ValueError("Network assignment not found.")
+    if row.status == "confirmed":
+        return row
+    if row.status in {"revoked", "conflict", "unresolved"}:
+        raise ValueError("This network assignment is not eligible for confirmation.")
+    if row.vlan_id is not None:
+        vlan = db.get(VLAN, row.vlan_id)
+        if not vlan or not vlan.subnet_cidr:
+            raise ValueError("The VLAN network context is no longer valid.")
+        row.network_cidr = vlan.subnet_cidr.strip()
+    row.status = "confirmed"
+    row.confirmed_by = user.id
+    row.confirmed_at = confirmed_at or datetime.utcnow()
+    row.conflict_reason = None
+    db.flush()
+    _audit_commit(db, user, "confirm", "asset_network_assignment", row.id, "Confirmed existing asset network assignment")
+    return row
+
+
+def asset_identity_summary(db: Session, asset_id: int) -> dict[str, list]:
+    if not db.get(HardwareAsset, asset_id):
+        raise ValueError("Hardware asset not found.")
+    return {
+        "identities": db.query(AssetIdentityEvidence).filter(AssetIdentityEvidence.asset_id == asset_id).order_by(AssetIdentityEvidence.id).all(),
+        "assignments": db.query(AssetNetworkAssignment).filter(AssetNetworkAssignment.asset_id == asset_id).order_by(AssetNetworkAssignment.started_at).all(),
+    }
+
+
+def _dhcp_lease_identifiers(lease: DHCPLeaseHistory) -> tuple[str | None, set[str]]:
+    """Strong identifiers carried by a lease: its MAC and DHCP client identifier.
+
+    The client identifier is the value adoption records as ``dhcp_client_id``
+    evidence. The lease's DNS client link is deliberately not used: ingestion
+    may derive it from the IP address, and an address is never an identifier.
+    """
+    mac = None
+    if lease.mac_address:
+        try:
+            mac = _normalise_evidence("mac", lease.mac_address)
+        except ValueError:
+            mac = None
+    client_ids = set()
+    if lease.provider_lease_id:
+        client_ids.add(str(lease.provider_lease_id).strip().casefold())
+    client_ids.discard("")
+    return mac, client_ids
+
+
+def _dhcp_evidence_owner(db: Session, mac: str | None, client_ids: set[str]) -> tuple[int | None, bool]:
+    """Return ``(asset_id, conflict)`` from confirmed MAC / DHCP client-id evidence.
+
+    Every matching confirmed identifier must belong to the same single asset; a
+    MAC confirmed for one asset and a client id confirmed for another conflict.
+    """
+    filters = []
+    if mac:
+        filters.append(and_(AssetIdentityEvidence.evidence_type == "mac", AssetIdentityEvidence.normalised_value == mac))
+    if client_ids:
+        filters.append(and_(AssetIdentityEvidence.evidence_type == "dhcp_client_id", AssetIdentityEvidence.normalised_value.in_(sorted(client_ids))))
+    if not filters:
+        return None, False
+    rows = db.query(AssetIdentityEvidence.asset_id).filter(
+        AssetIdentityEvidence.status == "confirmed",
+        AssetIdentityEvidence.revoked_at.is_(None),
+        AssetIdentityEvidence.asset_id.isnot(None),
+        or_(*filters),
+    ).limit(50).all()
+    owners = {row[0] for row in rows}
+    if len(owners) > 1:
+        return None, True
+    return (next(iter(owners)) if owners else None), False
+
+
+def _dhcp_assignment_continuity_owner(db: Session, lease: DHCPLeaseHistory, client_ids: set[str]) -> int | None:
+    """Fallback: the single asset whose confirmed assignment came from an earlier
+    lease of the same provider with the same MAC or DHCP client identifier."""
+    identity_filters = _identity_lease_filters(lease, client_ids)
+    if not identity_filters:
+        return None
+    rows = db.query(AssetNetworkAssignment.asset_id).join(
+        DHCPLeaseHistory, DHCPLeaseHistory.id == AssetNetworkAssignment.dhcp_lease_id
+    ).filter(
+        AssetNetworkAssignment.status == "confirmed",
+        AssetNetworkAssignment.dhcp_lease_id != lease.id,
+        DHCPLeaseHistory.provider_id == lease.provider_id,
+    ).filter(or_(*identity_filters)).limit(20).all()
+    owners = {row[0] for row in rows if row[0] is not None}
+    return next(iter(owners)) if len(owners) == 1 else None
+
+
+def _identity_lease_filters(lease: DHCPLeaseHistory, client_ids: set[str]) -> list:
+    filters = []
+    if lease.mac_address:
+        filters.append(DHCPLeaseHistory.mac_address == lease.mac_address)
+    if client_ids:
+        filters.append(DHCPLeaseHistory.provider_lease_id.in_(sorted(client_ids)))
+    return filters
+
+
+def _lock_asset_dhcp(db: Session, asset_id: int) -> None:
+    """Serialise DHCP reconciliation per asset on PostgreSQL."""
+    if db.get_bind().dialect.name == "postgresql":
+        digest = hashlib.sha256(f"asset-dhcp-reconciliation\x1f{asset_id}".encode("utf-8")).digest()[:8]
+        db.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": int.from_bytes(digest, byteorder="big", signed=True)})
+
+
+def close_ended_dhcp_assignments(
+    db: Session,
+    *,
+    provider_id: int,
+    observed_at: datetime,
+    lease_ids: list[int] | None = None,
+    expired_only: bool = False,
+) -> int:
+    """Close open confirmed assignments whose DHCP lease no longer supports them.
+
+    Only assignments linked to a lease of this provider are considered, so
+    static and manually entered assignments are never closed here. A lease no
+    longer supports its assignment once a successful collection has ended it
+    (absent from the snapshot, or the address observed with another identity).
+    During a provider outage (``expired_only``) only a provider-reported expiry
+    that has passed counts; an expiry not after the lease start (for example an
+    infinite lease reported as 0) is not evidence. The assignment ends at the
+    lease's last observation, the last supported evidence of ownership, so the
+    uncertain interval is never attributed. Identity evidence is untouched.
+    """
+    if not module_is_enabled(db, MODULE_BY_KEY["asset_manager"]):
+        return 0
+    lease_state = (
+        and_(
+            DHCPLeaseHistory.is_active.is_(True),
+            DHCPLeaseHistory.expires_at.isnot(None),
+            DHCPLeaseHistory.expires_at > DHCPLeaseHistory.lease_started_at,
+            DHCPLeaseHistory.expires_at <= observed_at,
+        )
+        if expired_only
+        else DHCPLeaseHistory.is_active.is_(False)
+    )
+    query = db.query(AssetNetworkAssignment, DHCPLeaseHistory).join(
+        DHCPLeaseHistory, DHCPLeaseHistory.id == AssetNetworkAssignment.dhcp_lease_id
+    ).filter(
+        AssetNetworkAssignment.status == "confirmed",
+        AssetNetworkAssignment.ended_at.is_(None),
+        DHCPLeaseHistory.provider_id == provider_id,
+        lease_state,
+    )
+    if lease_ids is not None:
+        if not lease_ids:
+            return 0
+        query = query.filter(DHCPLeaseHistory.id.in_(lease_ids))
+    candidates = query.order_by(AssetNetworkAssignment.asset_id, AssetNetworkAssignment.id).limit(500).all()
+    closed = 0
+    postgresql = db.get_bind().dialect.name == "postgresql"
+    for row, lease in candidates:
+        _lock_asset_dhcp(db, row.asset_id)
+        if postgresql:
+            # Another collection may have closed it while this one waited.
+            db.refresh(row)
+        if row.ended_at is not None or row.status != "confirmed":
+            continue
+        last_seen = lease.last_seen_at or lease.first_seen_at or row.started_at
+        row.ended_at = max(row.started_at, min(last_seen, observed_at))
+        db.flush()
+        audit = write_audit(
+            db, None, "update", "asset_network_assignment", str(row.id),
+            detail="Closed DHCP network assignment after its lease ended",
+            metadata={"asset_id": row.asset_id, "lease_id": lease.id, "reason": "lease_expired" if expired_only else "lease_ended", "address_family": row.address_family},
+            force=True, commit=False,
+        )
+        if audit is None:
+            raise RuntimeError("The DHCP assignment closure could not be audited.")
+        closed += 1
+    return closed
+
+
+def dhcp_identity_conflict(db: Session, lease: DHCPLeaseHistory) -> bool:
+    """Whether the lease's confirmed MAC and DHCP client identifiers name different assets."""
+    mac, client_ids = _dhcp_lease_identifiers(lease)
+    return _dhcp_evidence_owner(db, mac, client_ids)[1]
+
+
+def reconcile_dhcp_assignment(db: Session, lease: DHCPLeaseHistory, *, observed_at: datetime) -> str:
+    """Carry a confirmed asset's network assignment across a DHCP address change.
+
+    Runs from DHCP lease ingestion. The asset is identified only by confirmed
+    strong evidence: a confirmed MAC or DHCP client identifier resolving to
+    exactly one asset, or (as before) a confirmed assignment made from an earlier
+    lease of the same identity. Hostnames, IP addresses, VLANs and exporters
+    never identify an asset, and no asset or managed IP is ever created. The
+    replacement assignment is source-less, so no exporter scope is invented.
+
+    Returns ``renewed`` (already current), ``reassigned`` (new assignment
+    created, earlier DHCP addresses of the same identity closed), ``superseded``
+    (a newer active lease of the same identity exists), or ``review_required``
+    (no single safe owner, conflicting identifiers, or address held elsewhere).
+    """
+    if not lease or not isinstance(observed_at, datetime):
+        return "review_required"
+    if not module_is_enabled(db, MODULE_BY_KEY["asset_manager"]):
+        return "review_required"
+    try:
+        normalised, family = _normalise_ip(lease.ip_address)
+    except ValueError:
+        return "review_required"
+    mac, client_ids = _dhcp_lease_identifiers(lease)
+    asset_id, conflict = _dhcp_evidence_owner(db, mac, client_ids)
+    if conflict:
+        return "review_required"
+    basis = "confirmed_identity_evidence"
+    if asset_id is None:
+        asset_id = _dhcp_assignment_continuity_owner(db, lease, client_ids)
+        basis = "confirmed_dhcp_assignment"
+        if asset_id is None:
+            return "review_required"
+    # Routine renewal: the asset already holds this address. A read-only early
+    # return, so it needs no lock; any change below is re-checked under locks.
+    current = db.query(AssetNetworkAssignment.id).filter(
+        AssetNetworkAssignment.asset_id == asset_id,
+        AssetNetworkAssignment.address == normalised,
+        AssetNetworkAssignment.address_family == family,
+        AssetNetworkAssignment.status == "confirmed",
+        AssetNetworkAssignment.ended_at.is_(None),
+    ).first()
+    if current is not None:
+        return "renewed"
+    identity_filters = _identity_lease_filters(lease, client_ids)
+    # Act only on the newest active lease of this identity, so an older lease
+    # that has not yet expired never pulls the asset back to its old address.
+    if identity_filters and lease.lease_started_at is not None:
+        newer = db.query(DHCPLeaseHistory.id).filter(
+            DHCPLeaseHistory.id != lease.id,
+            DHCPLeaseHistory.is_active.is_(True),
+            or_(*identity_filters),
+            or_(
+                DHCPLeaseHistory.lease_started_at > lease.lease_started_at,
+                and_(DHCPLeaseHistory.lease_started_at == lease.lease_started_at, DHCPLeaseHistory.id > lease.id),
+            ),
+        ).first()
+        if newer is not None:
+            return "superseded"
+    _lock_asset_dhcp(db, asset_id)
+    _lock_assignment_context(db, address=normalised, family=family, vlan_id=None, source_id=None, exporter_identity=None)
+    open_rows = db.query(AssetNetworkAssignment).filter(
+        AssetNetworkAssignment.asset_id == asset_id,
+        AssetNetworkAssignment.address_family == family,
+        AssetNetworkAssignment.status == "confirmed",
+        AssetNetworkAssignment.ended_at.is_(None),
+    ).limit(50).all()
+    if any(row.address == normalised for row in open_rows):
+        return "renewed"
+    held_elsewhere = db.query(AssetNetworkAssignment.id).filter(
+        AssetNetworkAssignment.address == normalised,
+        AssetNetworkAssignment.address_family == family,
+        AssetNetworkAssignment.status == "confirmed",
+        AssetNetworkAssignment.ended_at.is_(None),
+        AssetNetworkAssignment.asset_id != asset_id,
+    ).first()
+    if held_elsewhere is not None:
+        return "review_required"
+    # Close only open assignments for addresses DHCP previously leased to this
+    # same identity; static or unrelated assignments are left untouched. The
+    # earlier lease's last observation is the last supported evidence that the
+    # identity held that address: ownership after it is uncertain, so the old
+    # interval ends there (fail closed), never after this lease was first seen.
+    last_seen_by_address: dict[str, datetime | None] = {}
+    if identity_filters:
+        for address, last_seen_at in db.query(DHCPLeaseHistory.ip_address, DHCPLeaseHistory.last_seen_at).filter(
+            DHCPLeaseHistory.id != lease.id, or_(*identity_filters)
+        ).limit(500).all():
+            try:
+                key = _normalise_ip(address)[0]
+            except ValueError:
+                continue
+            previous = last_seen_by_address.get(key)
+            last_seen_by_address[key] = last_seen_at if previous is None else max(previous, last_seen_at or previous)
+    superseded_rows = [row for row in open_rows if row.address in last_seen_by_address]
+    started_at = min(observed_at, lease.first_seen_at or observed_at)
+    if superseded_rows:
+        started_at = max(started_at, max(row.started_at for row in superseded_rows))
+    # Never backfill over a closed interval of this address. A lease whose own
+    # assignment was closed (for example on confirmed expiry during a provider
+    # outage) is followed again only from this observation.
+    prior = db.query(AssetNetworkAssignment.ended_at, AssetNetworkAssignment.dhcp_lease_id).filter(
+        AssetNetworkAssignment.asset_id == asset_id,
+        AssetNetworkAssignment.address == normalised,
+        AssetNetworkAssignment.address_family == family,
+        AssetNetworkAssignment.status == "confirmed",
+        AssetNetworkAssignment.ended_at.isnot(None),
+    ).order_by(AssetNetworkAssignment.ended_at.desc()).limit(20).all()
+    if any(lease_id == lease.id for _ended, lease_id in prior):
+        started_at = max(started_at, observed_at)
+    elif prior:
+        started_at = max(started_at, prior[0][0])
+    vlan = None
+    parsed = ipaddress.ip_address(normalised)
+    for candidate in [*(row.vlan for row in superseded_rows), lease.dhcp_range.vlan if lease.dhcp_range else None]:
+        if not candidate or not candidate.subnet_cidr:
+            continue
+        try:
+            if parsed in ipaddress.ip_network(candidate.subnet_cidr.strip(), strict=False):
+                vlan = candidate
+                break
+        except ValueError:
+            continue
+    for row in superseded_rows:
+        last_seen = last_seen_by_address[row.address]
+        row.ended_at = started_at if last_seen is None else max(row.started_at, min(started_at, last_seen))
+    replacement = AssetNetworkAssignment(
+        asset_id=asset_id,
+        address=normalised,
+        address_family=family,
+        vlan_id=vlan.id if vlan else None,
+        network_cidr=vlan.subnet_cidr.strip() if vlan else None,
+        dhcp_lease_id=lease.id,
+        started_at=started_at,
+        provenance="dhcp_reconciliation",
+        status="confirmed",
+        confirmed_by=None,
+        confirmed_at=observed_at,
+    )
+    db.add(replacement)
+    db.flush()
+    audit = write_audit(
+        db, None, "update", "asset_network_assignment", str(replacement.id),
+        detail="Reconciled confirmed DHCP network assignment",
+        metadata={
+            "asset_id": asset_id,
+            "previous_assignment_ids": [row.id for row in superseded_rows],
+            "lease_id": lease.id,
+            "basis": basis,
+            "address_family": family,
+        },
+        force=True, commit=False,
+    )
+    if audit is None:
+        raise RuntimeError("The DHCP assignment reconciliation could not be audited.")
+    return "reassigned"

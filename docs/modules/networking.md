@@ -3,7 +3,7 @@
 **Kaya version:** `dev`  
 **Documentation version:** `dev`
 
-This page covers VLAN/IP Manager, IP/WAN Monitor, and Domain Manager. DNS Manager has its own page.
+This page covers VLAN/IP Manager and Domain Manager. Uptime is a Monitoring module; DNS Manager has its own page.
 
 ## VLAN/IP Manager
 
@@ -51,9 +51,9 @@ Risks:
 - Legacy placeholder rows created for every DHCP-pool address are not deleted automatically; administrators should review and retire them after configuring ranges.
 - Ping depends on OS/container network capability.
 
-## IP/WAN Monitor
+## Uptime
 
-Purpose: monitor reachability of IP-backed services.
+Purpose: monitor availability, latency, packet loss and outages for IP-backed services. Uptime is the user-facing name; internal routes and identifiers retain `ip-wan-monitor` for compatibility.
 
 Routes:
 
