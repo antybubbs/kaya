@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import ipaddress
 from datetime import datetime, timedelta
 from urllib.parse import quote
 
@@ -138,6 +139,12 @@ class TrafficLocalNetworkPayload(BaseModel):
     name: str = Field(..., min_length=1, max_length=120)
     network_cidr: str = Field(..., min_length=3, max_length=80)
     is_enabled: bool = True
+
+
+class TrafficLocalNetworkUpdatePayload(BaseModel):
+    """Name and enablement only; a CIDR is changed by removing and re-adding it."""
+    name: str | None = Field(None, min_length=1, max_length=120)
+    is_enabled: bool | None = None
 
 
 class TrafficConfigurationPayload(BaseModel):
@@ -1457,10 +1464,38 @@ def update_traffic_interface(source_id: int, interface_id: int, request: Request
     return {"id": row.id, **payload.model_dump()}
 
 
+def _local_network_view(row: TrafficLocalNetwork, rows: list[TrafficLocalNetwork]) -> dict:
+    try:
+        network = ipaddress.ip_network(row.network_cidr, strict=False)
+    except ValueError:
+        network = None
+    overlaps = []
+    if network is not None:
+        for other in rows:
+            if other.id == row.id:
+                continue
+            try:
+                candidate = ipaddress.ip_network(other.network_cidr, strict=False)
+            except ValueError:
+                continue
+            if candidate.version == network.version and candidate.overlaps(network):
+                overlaps.append(other.network_cidr)
+    return {"id": row.id, "name": row.name, "network_cidr": row.network_cidr, "is_enabled": row.is_enabled, "overlaps": overlaps}
+
+
+def _commit_local_network_change(db: Session, request: Request, user, action: str, row_id: int, detail: str, metadata: dict) -> None:
+    """Commit a local-network change only together with its audit event."""
+    audit = write_audit(db, user, action, "traffic_local_network", str(row_id), trusted_client_ip(request), detail=detail, metadata=metadata, force=True, commit=False)
+    if audit is None:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="The local network change could not be audited and was not saved.")
+    db.commit()
+
+
 @router.get("/traffic/local-networks")
 def traffic_local_networks(db: Session = Depends(get_db), user=Depends(require_user)):
     rows = db.query(TrafficLocalNetwork).order_by(TrafficLocalNetwork.network_cidr.asc()).all()
-    return {"local_networks": [{"id": row.id, "name": row.name, "network_cidr": row.network_cidr, "is_enabled": row.is_enabled} for row in rows]}
+    return {"local_networks": [_local_network_view(row, rows) for row in rows]}
 
 
 @router.post("/traffic/local-networks", status_code=201)
@@ -1475,9 +1510,43 @@ def create_traffic_local_network(request: Request, payload: TrafficLocalNetworkP
     if db.query(TrafficLocalNetwork).filter_by(network_cidr=cidr).first():
         raise HTTPException(status_code=409, detail="Local network already exists.")
     row = TrafficLocalNetwork(name=payload.name.strip(), network_cidr=cidr, is_enabled=payload.is_enabled)
-    db.add(row); db.commit()
-    write_audit(db, user, "create", "traffic_local_network", str(row.id), trusted_client_ip(request), detail="Created traffic local network", metadata={"network_cidr": cidr})
-    return {"id": row.id, "name": row.name, "network_cidr": row.network_cidr, "is_enabled": row.is_enabled}
+    db.add(row)
+    db.flush()
+    _commit_local_network_change(db, request, user, "create", row.id, "Created traffic local network", {"network_cidr": cidr, "is_enabled": row.is_enabled})
+    return _local_network_view(row, db.query(TrafficLocalNetwork).all())
+
+
+@router.patch("/traffic/local-networks/{network_id}")
+def update_traffic_local_network(request: Request, network_id: int, payload: TrafficLocalNetworkUpdatePayload, db: Session = Depends(get_db), user=Depends(require_admin)):
+    validate_csrf_token(request, request.headers.get("x-csrf-token"))
+    row = db.get(TrafficLocalNetwork, network_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Local network not found.")
+    if payload.name is not None and not payload.name.strip():
+        raise HTTPException(status_code=400, detail="Local network name must not be blank.")
+    before = {"name": row.name, "is_enabled": row.is_enabled}
+    if payload.name is not None:
+        row.name = payload.name.strip()
+    if payload.is_enabled is not None:
+        row.is_enabled = payload.is_enabled
+    after = {"name": row.name, "is_enabled": row.is_enabled}
+    if after != before:
+        _commit_local_network_change(db, request, user, "update", row.id, "Updated traffic local network", {"network_cidr": row.network_cidr, "before": before, "after": after})
+    return _local_network_view(row, db.query(TrafficLocalNetwork).all())
+
+
+@router.delete("/traffic/local-networks/{network_id}")
+def delete_traffic_local_network(request: Request, network_id: int, db: Session = Depends(get_db), user=Depends(require_admin)):
+    validate_csrf_token(request, request.headers.get("x-csrf-token"))
+    row = db.get(TrafficLocalNetwork, network_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Local network not found.")
+    metadata = {"network_cidr": row.network_cidr, "name": row.name}
+    db.delete(row)
+    db.flush()
+    # Recorded usage is retained; only new flows in this range stop being eligible.
+    _commit_local_network_change(db, request, user, "delete", network_id, "Removed traffic local network", metadata)
+    return {"deleted": network_id}
 
 
 @router.post("/{monitor_id}/refresh")

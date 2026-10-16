@@ -71,6 +71,9 @@ try {
     const trackedTotals = tracked.devices.devices.reduce((sum, row) => [sum[0] + (row.download_bytes || 0), sum[1] + (row.upload_bytes || 0)], [0, 0]);
     if (trackedTotals[0] !== 1000 || trackedTotals[1] !== 300) throw new Error(`tracked-device totals ${JSON.stringify(trackedTotals)}`);
     if (custom.page_count < 1 || custom.page_size < 1) throw new Error('pagination metadata missing');
+    // A configured local network makes automatic accounting ready; the notice stays hidden.
+    if (!custom.summary.accounting || custom.summary.accounting.ready !== true) throw new Error(`accounting readiness ${JSON.stringify(custom.summary.accounting)}`);
+    if (!(await admin.locator('[data-device-usage-accounting-notice]').isHidden())) throw new Error('accounting notice shown while ready');
     for (const period of ['24h', '7d', '30d', '90d']) {
       const response = await report(`range=${period}`);
       if (!response.range) throw new Error(`period ${period} was not accepted`);
@@ -357,6 +360,67 @@ try {
     if ((await cards()).download !== formatBytes(seeded.custom.all.download)) throw new Error('custom card did not update');
     await screenshot(page, 'wan-selected-period-totals');
     evidence.wan = { checked, custom: custom.period, backup: backup.period };
+  });
+  await run('local-network-settings-and-accounting-notice', async () => {
+    // Settings manages the local networks that make endpoints eligible for automatic
+    // accounting; Device Usage explains when nothing can be recorded.
+    const page = admin;
+    const settingsUrl = `${base}/networking/ip-wan-monitor/traffic/settings`;
+    const rowFor = cidr => page.locator('[data-local-network-rows] tr').filter({ hasText: cidr });
+    const waitStatus = async pattern => page.waitForFunction(source => new RegExp(source, 'i').test(document.querySelector('[data-local-network-status]')?.textContent || ''), pattern.source);
+    await page.goto(settingsUrl, { waitUntil: 'networkidle' });
+    await rowFor('192.0.2.0/24').waitFor();
+    if (!/eligible for automatic per-IP traffic accounting/i.test(await page.locator('#traffic-local-networks').innerText())) throw new Error('local network purpose not explained');
+    // Invalid input is rejected server-side and nothing is added. The browser logs
+    // that one deliberate 400; it is verified and then excluded from the console check.
+    const form = page.locator('[data-local-network-form]');
+    const consoleBefore = evidence.console.length;
+    await form.locator('[name="name"]').fill('Bad range');
+    await form.locator('[name="network_cidr"]').fill('192.0.2.0/33');
+    await form.getByRole('button', { name: /Add local network/i }).click();
+    await waitStatus(/valid IPv4 or IPv6 CIDR/);
+    for (let attempt = 0; attempt < 20 && evidence.console.length === consoleBefore; attempt += 1) await page.waitForTimeout(100);
+    const expected = evidence.console.splice(consoleBefore);
+    if (expected.length !== 1 || !/400/.test(expected[0])) throw new Error(`unexpected console output for invalid CIDR: ${JSON.stringify(expected)}`);
+    if (await rowFor('192.0.2.0/33').count() !== 0) throw new Error('invalid network listed');
+    // Add, rename, disable/enable and remove a synthetic range.
+    await form.locator('[name="name"]').fill('Stage2B lab');
+    await form.locator('[name="network_cidr"]').fill('203.0.113.9/24');
+    await form.getByRole('button', { name: /Add local network/i }).click();
+    await waitStatus(/Local network added/);
+    const lab = rowFor('203.0.113.0/24');
+    await lab.waitFor();
+    await lab.locator('[data-local-network-name]').fill('Stage2B lab renamed');
+    await lab.getByRole('button', { name: /Save name/i }).click();
+    await waitStatus(/name saved/);
+    if (await rowFor('203.0.113.0/24').locator('[data-local-network-name]').inputValue() !== 'Stage2B lab renamed') throw new Error('rename not shown');
+    // With the only accounting LAN disabled, Device Usage says nothing can be recorded.
+    await rowFor('192.0.2.0/24').getByRole('button', { name: /^Disable$/ }).click();
+    await waitStatus(/disabled/);
+    await rowFor('203.0.113.0/24').getByRole('button', { name: /^Disable$/ }).click();
+    await waitStatus(/disabled/);
+    await page.goto(`${base}/networking/ip-wan-monitor/traffic/devices`, { waitUntil: 'networkidle' });
+    const notice = page.locator('[data-device-usage-accounting-notice]');
+    await notice.waitFor({ state: 'visible' });
+    if (!/not being recorded/i.test(await notice.innerText())) throw new Error(`notice text ${await notice.innerText()}`);
+    await Promise.all([page.waitForURL('**/traffic/settings#traffic-local-networks'), notice.getByRole('link', { name: /Configure in Network Traffic Settings/i }).click()]);
+    await rowFor('192.0.2.0/24').waitFor();
+    await rowFor('192.0.2.0/24').getByRole('button', { name: /^Enable$/ }).click();
+    await waitStatus(/enabled/);
+    page.once('dialog', dialog => dialog.accept().catch(() => {}));
+    await rowFor('203.0.113.0/24').getByRole('button', { name: /Remove/i }).click();
+    await waitStatus(/removed/);
+    if (await rowFor('203.0.113.0/24').count() !== 0) throw new Error('removed network still listed');
+    await page.goto(`${base}/networking/ip-wan-monitor/traffic/devices`, { waitUntil: 'networkidle' });
+    if (!(await page.locator('[data-device-usage-accounting-notice]').isHidden())) throw new Error('notice still shown after re-enabling');
+    await screenshot(page, 'local-network-settings');
+    // Read-only users see the list but no controls; the server rejects their changes.
+    const viewer = await session(viewerEmail);
+    await viewer.goto(settingsUrl, { waitUntil: 'domcontentloaded' });
+    await viewer.locator('[data-local-network-rows] tr').filter({ hasText: '192.0.2.0/24' }).waitFor();
+    if (await viewer.locator('[data-local-network-form]').count() !== 0 || await viewer.locator('[data-local-network-rows] button').count() !== 0) throw new Error('read-only user sees local network controls');
+    const denied = await viewer.request.post(`${base}/networking/ip-wan-monitor/traffic/local-networks`, { data: { name: 'Viewer attempt', network_cidr: '198.18.0.0/15' } });
+    if (![400, 403].includes(denied.status())) throw new Error(`viewer create status ${denied.status()}`);
   });
   await run('mobile-layout-focus-and-browser-quality', async () => {
     const mobile = await session(adminEmail, true);

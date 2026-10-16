@@ -16,6 +16,8 @@ from app.models.models import (
     TrafficDiscoveryObservation,
     TrafficEndpointAggregate,
     TrafficInterface,
+    TrafficLocalNetwork,
+    TrafficMonitoringConfiguration,
     TrafficSource,
     VLAN,
     AssetNetworkAssignment,
@@ -415,6 +417,20 @@ def _single_owner(assignments: list[AssetNetworkAssignment], source_id: int | No
     return covering[0] if covering else None
 
 
+def _accounting_readiness(db: Session) -> dict:
+    """Whether automatic observed-endpoint usage can be recorded at all.
+
+    Usage is recorded only for endpoints inside enabled local networks while
+    Network Traffic is enabled; without them collection is silently empty, so
+    the state is reported explicitly rather than shown as zero usage.
+    """
+    config = db.get(TrafficMonitoringConfiguration, 1)
+    enabled = bool(config and config.is_enabled)
+    local_networks = int(db.query(func.count(TrafficLocalNetwork.id)).filter(TrafficLocalNetwork.is_enabled.is_(True)).scalar() or 0)
+    reason = None if enabled and local_networks else "traffic_disabled" if not enabled else "no_local_networks"
+    return {"ready": reason is None, "reason": reason, "enabled_local_networks": local_networks}
+
+
 def _monitoring_label(state: dict | None) -> str:
     """Map the shared monitoring lifecycle onto Device Usage tracking labels."""
     if not state:
@@ -681,6 +697,7 @@ def device_usage_report(
             "total_bytes": None if overlapping else measured_download + measured_upload,
             "by_source": sorted(per_source.values(), key=lambda item: str(item["source"])),
             "truncated": truncated,
+            "accounting": _accounting_readiness(db),
             "coverage_percent": round(sum(int(row.get("coverage_percent", 0) or 0) for row in selected_rows if row.get("usage_available")) / max(1, sum(1 for row in selected_rows if row.get("usage_available")))),
         },
     }

@@ -238,6 +238,22 @@ IP record, Uptime monitor or device tracking is required, and none is created.
   older than the configured five-minute (default 7 days), hourly (90 days) and
   daily (365 days) tiers. Each resolution is written at ingestion, so there is no
   rollup to double count, and deletion by cutoff is idempotent.
+- **Configuration required.** Usage is recorded only while Network Traffic is
+  enabled and at least one local network is enabled. Exporter-to-VLAN mappings
+  scope discovery only and never make an endpoint eligible, and local networks are
+  never created automatically. Administrators manage them under **Monitoring →
+  Network Traffic → Settings → Local networks** (add, rename, enable/disable,
+  remove). The section uses the existing `/networking/ip-wan-monitor/traffic/local-networks`
+  API: reads need Network Traffic access; changes need an administrator, the
+  session CSRF token, and commit only together with their audit event. A CIDR is
+  normalised (host bits cleared) and IPv4 or IPv6; an exact duplicate is rejected,
+  while overlapping ranges are permitted and shown. A network's CIDR is changed by
+  removing and re-adding it. Changes apply to new flows; recorded usage is kept and
+  nothing is backfilled. Local networks are global (not per source or exporter) and
+  are also used by flow classification. With no enabled local network, Device Usage
+  shows an explicit notice (`summary.accounting.reason` `no_local_networks`, or
+  `traffic_disabled`) linking administrators to the section, instead of reporting
+  zero usage.
 - **Measured cost** (PostgreSQL 16, synthetic NSEL): about 254 bytes per row
   including indexes; 9,082 rows and about 2.2 MB per continuously active endpoint
   at full default retention (about 220 MB for 100 and 1.1 GB for 500 endpoints).

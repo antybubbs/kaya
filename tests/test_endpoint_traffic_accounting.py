@@ -334,6 +334,50 @@ def test_pending_assignment_never_confirms_identity_or_attributes_usage(db):
     assert (traffic["download_bytes"], traffic["upload_bytes"]) == (0, 0)
 
 
+def test_missing_local_networks_is_reported_not_shown_as_zero_usage(db):
+    """The DEV shape: exporter-to-VLAN mapping and discovery observations exist,
+    but no local network, so no usage can be recorded. Device Usage must say so
+    explicitly; mappings never become accounting eligibility."""
+    from app.models.models import TrafficDiscoveryConfiguration, TrafficDiscoveryNetworkMapping, TrafficDiscoveryObservation, VLAN
+    from app.services.network_discovery import persist_discovery_batch
+
+    nsel, _ = _setup(db)
+    db.query(TrafficLocalNetwork).delete()
+    vlan = VLAN(name=f"Synthetic home {uuid.uuid4().hex[:6]}", subnet_cidr=LAN)
+    db.add(vlan)
+    if db.get(TrafficDiscoveryConfiguration, 1) is None:
+        db.add(TrafficDiscoveryConfiguration(id=1, is_enabled=True))
+    db.flush()
+    db.add(TrafficDiscoveryNetworkMapping(source_id=nsel.id, exporter_identity=EXPORTER, vlan_id=vlan.id, is_enabled=True))
+    db.commit()
+    admin = _admin(db)
+    accepted = []
+    process_records(db, [_record(nsel.id, source_ip="192.0.2.154")], source_id=nsel.id, accepted_records=accepted)
+    persist_discovery_batch(db, nsel.id, accepted)
+    db.commit()
+    assert db.query(TrafficDiscoveryObservation).filter_by(endpoint_ip="192.0.2.154").count() >= 1
+    assert db.query(TrafficEndpointAggregate).count() == 0
+    report = device_usage_report(db, admin, report_range="24h", now=NOW)
+    assert report["summary"]["accounting"] == {"ready": False, "reason": "no_local_networks", "enabled_local_networks": 0}
+    (row,) = [item for item in report["devices"] if item["address"] == "192.0.2.154"]
+    assert (row["usage_available"], row["download_bytes"]) == (False, None)
+    # Configuring the supported setting records new flows (no backfill).
+    db.add(TrafficLocalNetwork(name="Synthetic LAN", network_cidr=LAN, is_enabled=True))
+    db.commit()
+    process_records(db, [_record(nsel.id, source_ip="192.0.2.154", sequence=2)], source_id=nsel.id)
+    db.commit()
+    report = device_usage_report(db, admin, report_range="24h", now=NOW)
+    assert report["summary"]["accounting"]["ready"] is True
+    (row,) = [item for item in report["devices"] if item["address"] == "192.0.2.154"]
+    assert (row["download_bytes"], row["upload_bytes"]) == (4000, 1000)
+
+
+def test_disabled_network_traffic_is_reported(db):
+    _setup(db, enabled=False)
+    admin = _admin(db)
+    assert device_usage_report(db, admin, report_range="24h", now=NOW)["summary"]["accounting"]["reason"] == "traffic_disabled"
+
+
 @pytest.mark.parametrize("report_range", ["24h", "7d", "30d", "90d"])
 def test_ranges_report_the_same_usage(db, report_range):
     nsel, _ = _setup(db)

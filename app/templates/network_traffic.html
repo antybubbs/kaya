@@ -85,6 +85,7 @@
   <section data-traffic-panel="devices"{% if traffic_page != 'devices' %} hidden{% endif %}>
     <section class="card device-usage-intro">
       <header class="traffic-card-header"><div><h2>Device Usage</h2><p class="muted">Usage is recorded automatically for observed addresses inside the configured local networks, per traffic source and exporter. No Asset Manager record, managed IP or device tracking is needed. Download/upload totals are not combined across sources that may measure the same traffic.</p></div><span class="traffic-status traffic-status-unknown" data-device-usage-quality>Loading</span></header>
+      <p class="traffic-notice" data-device-usage-accounting-notice role="status" hidden></p>
       <div class="traffic-summary-grid device-usage-summary" aria-label="Device usage summary">
         <article class="traffic-kpi"><span class="traffic-kpi-label">Measured endpoints</span><strong data-device-summary="measured_endpoints">No data</strong><small>Source/exporter contexts with recorded usage</small></article>
         <article class="traffic-kpi traffic-kpi-download"><span class="traffic-kpi-label">Total download</span><strong data-device-summary="download_bytes">No data</strong><small data-device-summary-note="download_bytes">Persisted flow-derived usage</small></article>
@@ -128,6 +129,18 @@
 
   <section data-traffic-panel="settings"{% if traffic_page != 'settings' %} hidden{% endif %}>
     <section class="card traffic-settings-card"><header><h2>Network Traffic settings</h2><p class="muted">Disabling monitoring preserves historical observations and stops new collection and traffic alert evaluation.</p></header><form data-traffic-settings-form><label class="checkbox-row"><input name="is_enabled" type="checkbox"> Enable Network Traffic monitoring</label><div class="traffic-form-grid"><label>High-resolution retention (hours)<input name="high_resolution_retention_hours" type="number" min="1" max="8760"></label><label>Five-minute retention (days)<input name="five_minute_retention_days" type="number" min="1" max="3650"></label><label>Hourly retention (days)<input name="hourly_retention_days" type="number" min="1" max="3650"></label><label>Daily retention (days)<input name="daily_retention_days" type="number" min="1" max="3650"></label></div><div class="traffic-form-actions"><button class="button" type="submit">Save settings</button></div><p class="muted" data-settings-status role="status" aria-live="polite"></p></form></section>
+    <section class="card traffic-settings-card" id="traffic-local-networks" aria-labelledby="traffic-local-networks-heading" data-local-networks>
+      <header><h2 id="traffic-local-networks-heading">Local networks</h2><p class="muted">Endpoint IP addresses inside these enabled ranges are eligible for automatic per-IP traffic accounting in Device Usage, and are used for flow classification. Exporter-to-VLAN mappings scope discovery only and do not make addresses eligible. Changes apply to new flows; usage already recorded is kept and nothing is backfilled.</p></header>
+      <div class="traffic-device-table-wrap"><table class="traffic-device-table local-network-table"><thead><tr><th scope="col">Name</th><th scope="col">Network</th><th scope="col">Status</th>{% if can_manage_traffic %}<th scope="col">Actions</th>{% endif %}</tr></thead><tbody data-local-network-rows><tr><td colspan="4" class="muted">Loading local networks...</td></tr></tbody></table></div>
+      {% if can_manage_traffic %}
+      <form class="traffic-form-grid local-network-form" data-local-network-form>
+        <label for="local-network-name">Name<input id="local-network-name" name="name" required maxlength="120" placeholder="Home LAN"></label>
+        <label for="local-network-cidr">Network (CIDR)<input id="local-network-cidr" name="network_cidr" required maxlength="80" placeholder="192.168.1.0/24" spellcheck="false" autocomplete="off"></label>
+        <div class="traffic-form-actions"><button class="button" type="submit">Add local network</button></div>
+      </form>
+      {% else %}<p class="muted">Only an administrator can change local networks.</p>{% endif %}
+      <p class="muted" data-local-network-status role="status" aria-live="polite"></p>
+    </section>
   </section>
 
   <section data-traffic-panel="discovery"{% if traffic_page != 'discovery' %} hidden{% endif %}>
