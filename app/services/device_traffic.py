@@ -28,6 +28,11 @@ def asset_monitoring_for(db: Session, asset_id: int) -> TrafficDeviceMonitoring 
     return db.query(TrafficDeviceMonitoring).filter_by(asset_id=asset_id).first()
 
 
+# Upper bound on candidate assignments considered for one flow endpoint. One
+# extra row is fetched so an incomplete candidate set is detected, never judged.
+ASSIGNMENT_CANDIDATE_LIMIT = 10
+
+
 def _assignment_for_record(db: Session, record: NormalizedFlowRecord, address: str | None) -> AssetNetworkAssignment | None:
     if not address:
         return None
@@ -45,7 +50,11 @@ def _assignment_for_record(db: Session, record: NormalizedFlowRecord, address: s
         or_(AssetNetworkAssignment.source_id.is_(None), AssetNetworkAssignment.source_id == record.source_id),
         or_(AssetNetworkAssignment.exporter_identity.is_(None), AssetNetworkAssignment.exporter_identity == record.exporter_identity),
         or_(AssetNetworkAssignment.vlan_id.is_(None), AssetNetworkAssignment.network_cidr == VLAN.subnet_cidr),
-    ).limit(10).all()
+    ).order_by(AssetNetworkAssignment.id.asc()).limit(ASSIGNMENT_CANDIDATE_LIMIT + 1).all()
+    if len(rows) > ASSIGNMENT_CANDIDATE_LIMIT:
+        # Ownership cannot be proven unique from a truncated candidate set; a
+        # conflicting owner may lie beyond the bound. Fail closed.
+        return None
     if len(rows) == 1:
         return rows[0]
     # A single asset commonly holds both a source-less assignment and the
@@ -154,9 +163,14 @@ def set_asset_monitoring(db: Session, user, asset: HardwareAsset, enabled: bool,
     return {"changed": changed, "enabled": bool(row.is_enabled), "period_id": period_id, "assignment_id": assignment.id, "status": row.status, "reason": row.status_reason}
 
 
-def asset_monitoring_status(db: Session, asset_id: int, *, now: datetime | None = None) -> dict:
+def asset_monitoring_status(db: Session, asset_id: int, *, now: datetime | None = None, monitor: TrafficDeviceMonitoring | None = None) -> dict:
+    """Return the asset's monitoring lifecycle state.
+
+    ``monitor`` may be supplied when the caller already loaded the asset's
+    monitoring row, avoiding a repeat lookup; it must belong to ``asset_id``.
+    """
     now = now or datetime.utcnow()
-    row = asset_monitoring_for(db, asset_id)
+    row = monitor if monitor is not None and monitor.asset_id == asset_id else asset_monitoring_for(db, asset_id)
     if not row or not row.is_enabled:
         return {"enabled": False, "status": "disabled", "reason": row.status_reason if row else "Not enabled", "assignment_id": row.assignment_id if row else None}
     assignment = db.get(AssetNetworkAssignment, row.assignment_id) if row.assignment_id else None
@@ -169,16 +183,20 @@ def asset_monitoring_status(db: Session, asset_id: int, *, now: datetime | None 
     return {"enabled": True, "status": row.status, "reason": row.status_reason, "enabled_at": row.enabled_at, "disabled_at": row.disabled_at, "last_attributed_at": row.last_attributed_at, "assignment_id": row.assignment_id, "source_id": row.last_source_id}
 
 
-def endpoint_monitoring_states(db: Session, endpoints, *, now: datetime | None = None) -> dict[tuple, dict]:
+def endpoint_monitoring_states(db: Session, endpoints, *, now: datetime | None = None, observed_at: dict | None = None) -> dict[tuple, dict]:
     """Return the existing monitoring status for observed endpoints that have one.
 
     ``endpoints`` are ``(source_id, exporter_identity, address)`` keys. Asset
     monitors match only their confirmed assignment's address and source context;
-    managed-IP monitors match their managed address. Status comes from
-    ``asset_monitoring_status``/``device_monitoring_status`` so every view shares
-    one lifecycle. Endpoints without an enabled monitor are omitted.
+    managed-IP monitors match their managed address. When ``observed_at`` maps a
+    key to its observation time, an asset monitor matches only if its assignment
+    was valid then, so a previous owner's monitor never labels a reassigned
+    address. Status comes from ``asset_monitoring_status``/``device_monitoring_status``
+    so every view shares one lifecycle. Endpoints without an enabled monitor are
+    omitted; an endpoint claimed by two asset monitors is ``review_required``.
     """
     now = now or datetime.utcnow()
+    observed_at = observed_at or {}
     keys = list(endpoints)
     addresses = {address for _, _, address in keys if address}
     if not addresses:
@@ -192,15 +210,23 @@ def endpoint_monitoring_states(db: Session, endpoints, *, now: datetime | None =
         AssetNetworkAssignment.address.in_(addresses),
     ).limit(500).all()
     asset_status: dict[int, dict] = {}
+    keys_by_context: dict[tuple, list[tuple]] = {}
+    for key in keys:
+        keys_by_context.setdefault((key[2], key[0]), []).append(key)
     for monitor, assignment in asset_monitors:
-        status = asset_status.setdefault(monitor.asset_id, asset_monitoring_status(db, monitor.asset_id, now=now))
-        for key in keys:
+        for key in keys_by_context.get((assignment.address, assignment.source_id), ()):
             source_id, exporter_identity, address = key
-            if address != assignment.address or assignment.source_id != source_id:
-                continue
             if assignment.exporter_identity is not None and assignment.exporter_identity != exporter_identity:
                 continue
-            states[key] = {**status, "assignment_id": assignment.id, "asset_id": monitor.asset_id}
+            seen_at = observed_at.get(key)
+            if seen_at is not None and (assignment.started_at > seen_at or (assignment.ended_at is not None and seen_at >= assignment.ended_at)):
+                continue
+            if key in states and states[key].get("asset_id") != monitor.asset_id:
+                states[key] = {"enabled": True, "status": "review_required", "reason": "More than one monitored asset claims this address and source.", "assignment_id": None, "asset_id": None}
+                continue
+            if monitor.asset_id not in asset_status:
+                asset_status[monitor.asset_id] = asset_monitoring_status(db, monitor.asset_id, now=now, monitor=monitor)
+            states[key] = {**asset_status[monitor.asset_id], "assignment_id": assignment.id, "asset_id": monitor.asset_id}
     legacy_monitors = db.query(TrafficDeviceMonitoring, IPAddress).join(
         IPAddress, IPAddress.id == TrafficDeviceMonitoring.ip_address_id
     ).filter(

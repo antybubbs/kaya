@@ -124,6 +124,11 @@ html[data-theme=light] .traffic-page, html[data-kaya-theme=light-ops] .traffic-p
 .device-usage-table { min-width: 980px; }
 .device-usage-table tbody th { min-width: 11rem; }
 .device-usage-table .traffic-status { max-width: 15rem; overflow: hidden; text-overflow: ellipsis; }
+.device-usage-sources { white-space: normal; }
+.device-usage-source { display: block; white-space: nowrap; }
+.device-usage-source + .device-usage-source { margin-top: 4px; }
+.device-usage-source small, .device-usage-separate { display: block; font-size: 11px; }
+.device-usage-separate { color: var(--traffic-warn, var(--muted)); font-weight: 650; margin-top: 4px; }
 @media (max-width: 560px) { .device-usage-toolbar { align-items: stretch; } .device-usage-search { width: 100%; } }
 
 /* Shared */

@@ -23,6 +23,7 @@ from app.services.site_settings import get_site_settings
 logger = logging.getLogger(__name__)
 
 CHECK_INTERVAL_SECONDS = 1
+BACKGROUND_SCAN_INTERVAL_SECONDS = 5
 STARTUP_DELAY_SECONDS = 45
 MAX_CONCURRENT_CHECKS = 5
 SCHEDULER_HEARTBEAT_SECONDS = 60
@@ -284,6 +285,17 @@ def active_dashboard_interval() -> int | None:
     with _dashboard_interval_leases_guard:
         _prune_dashboard_interval_leases(now)
         return min((interval for _, interval, _ in _dashboard_interval_leases.values()), default=None)
+
+
+def scheduler_scan_interval() -> int:
+    """Return the shortest scan cadence required by the active dashboard mode.
+
+    Ordinary monitor intervals are clamped to five seconds.  The one-second
+    scheduler cadence is only needed while a dashboard has explicitly leased
+    live mode; otherwise scanning every second adds database work without
+    making any monitor eligible sooner.
+    """
+    return CHECK_INTERVAL_SECONDS if active_dashboard_interval() == 1 else BACKGROUND_SCAN_INTERVAL_SECONDS
 
 
 def monitor_check_lock(monitor_id: int) -> threading.Lock:
@@ -982,12 +994,13 @@ async def _run_monitor_loop() -> None:
                 logger.info("Uptime check queued monitor_id=%s", monitor_id)
                 in_flight[monitor_id] = asyncio.create_task(checked_monitor(monitor_id))
             logger.info("IP/WAN scheduler iteration finished iteration=%s queued=%s pending=%s", iteration, len(monitor_ids), len(in_flight))
-            next_tick += CHECK_INTERVAL_SECONDS
+            scan_interval = scheduler_scan_interval()
+            next_tick += scan_interval
             sleep_seconds = max(0, next_tick - time.monotonic())
             logger.info("IP/WAN scheduler sleeping seconds=%.3f", sleep_seconds)
             await asyncio.sleep(sleep_seconds)
             logger.info("IP/WAN scheduler resumed")
-            if next_tick < time.monotonic() - CHECK_INTERVAL_SECONDS:
+            if next_tick < time.monotonic() - scan_interval:
                 next_tick = time.monotonic()
     finally:
         for task in in_flight.values():

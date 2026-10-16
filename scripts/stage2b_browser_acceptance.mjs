@@ -158,7 +158,7 @@ try {
       const rows = page.locator('.device-usage-table tbody tr').filter({ hasText: address });
       if (await rows.count() !== 1) throw new Error(`expected one Device Usage row for ${address}, found ${await rows.count()}`);
       const cells = (await rows.first().locator('th, td').allInnerTexts()).map(text => text.replace(/\s+/g, ' ').trim());
-      return { row: rows.first(), cells, identity: cells[1], download: cells[4], upload: cells[5], observed: cells[8] };
+      return { row: rows.first(), cells, identity: cells[1], vlan: cells[2], source: cells[3], download: cells[4], upload: cells[5], observed: cells[8] };
     };
     const profileBody = async () => { await page.goto(`${base}${doorbellUrl}`, { waitUntil: 'networkidle' }); return (await page.locator('#asset-traffic').innerText()).replace(/\s+/g, ' '); };
     const api = async () => page.evaluate(async query => (await fetch(`/networking/ip-wan-monitor/traffic/device-usage?${query}`)).json(), `range=24h&q=${address}`);
@@ -168,6 +168,9 @@ try {
     if (!usage.identity.includes('Stage2B Doorbell')) throw new Error(`identity cell: ${usage.identity}`);
     if (!usage.identity.includes('Not monitored') || usage.download !== 'Not monitored') throw new Error(`initial state: ${JSON.stringify(usage.cells)}`);
     if (!/^\d+%$/.test(usage.observed)) throw new Error(`observed share cell: ${usage.observed}`);
+    // The confirmed assignment's VLAN is shown before monitoring, as in Asset Profile.
+    if (!usage.vlan.includes('Stage2B LAN A')) throw new Error(`VLAN cell before monitoring: ${usage.vlan}`);
+    if (!usage.source.includes('Stage2B Cisco exporter')) throw new Error(`source breakdown: ${usage.source}`);
     // 4: the identity link opens the permanent asset record.
     await Promise.all([page.waitForURL(`**${doorbellUrl}`), usage.row.getByRole('link', { name: 'Stage2B Doorbell' }).click()]);
     // 5: confirmed source-scoped assignment and monitoring disabled.
@@ -190,6 +193,7 @@ try {
     // 9-10: measured usage appears in both reporting paths and reconciles.
     usage = await usageRow();
     if (!usage.identity.includes('Monitored') || usage.download === 'Awaiting data') throw new Error(`Device Usage after flows: ${JSON.stringify(usage.cells)}`);
+    if (!usage.vlan.includes('Stage2B LAN A') || !/measured/i.test(usage.source)) throw new Error(`measured VLAN/source: ${JSON.stringify(usage.cells)}`);
     const measured = (await api()).devices.filter(row => row.address === address);
     if (measured.length !== 1 || measured[0].download_bytes !== seeded.expected_download || measured[0].upload_bytes !== seeded.expected_upload) throw new Error(`Device Usage totals ${JSON.stringify(measured)}`);
     const profile = await profileBody();

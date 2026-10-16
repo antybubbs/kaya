@@ -8,6 +8,8 @@ All data is synthetic (RFC 5737 addresses, example.invalid accounts).
 """
 
 import os
+import threading
+import uuid
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
@@ -27,6 +29,7 @@ from app.models.models import (
     TrafficDeviceAggregate,
     TrafficDeviceMonitoring,
     TrafficDeviceMonitoringPeriod,
+    TrafficDiscoveryNetworkMapping,
     TrafficDiscoveryObservation,
     TrafficMonitoringConfiguration,
     TrafficSource,
@@ -37,6 +40,7 @@ from app.models.models import (
 from app.services.asset_identity import assign_network_identity
 from app.services.asset_profile_reporting import asset_reporting_context
 from app.services.device_traffic import (
+    ASSIGNMENT_CANDIDATE_LIMIT,
     asset_monitoring_status,
     endpoint_monitoring_states,
     persist_device_traffic,
@@ -401,6 +405,328 @@ def postgres_db():
     transaction.rollback()
     connection.close()
     engine.dispose()
+
+
+@pytest.fixture(params=["sqlite", "postgresql"])
+def any_db(request):
+    if request.param == "sqlite":
+        yield request.getfixturevalue("db")
+    else:
+        yield request.getfixturevalue("postgres_db")
+
+
+def _rows(db, user, address=DOORBELL, report_range="24h"):
+    return [row for row in device_usage_report(db, user, report_range=report_range, now=NOW)["devices"] if row["address"] == address]
+
+
+def _map_exporter(db, vlan, *, source="firepower", exporter=EXPORTER):
+    db.add(TrafficDiscoveryNetworkMapping(source_id=SOURCES[source], exporter_identity=exporter, vlan_id=vlan.id, is_enabled=True))
+    db.commit()
+
+
+def _end_assignments(db, asset_id, at):
+    for assignment in db.query(AssetNetworkAssignment).filter_by(asset_id=asset_id).all():
+        assignment.ended_at = at
+    db.commit()
+
+
+# ----------------------------------------------------------------- VLAN context
+
+
+def test_vlan_from_confirmed_assignment_on_unmonitored_row_matches_asset_profile(any_db):
+    db = any_db
+    scenario = doorbell_scenario(db)
+    _observe(db)
+    row = _usage_row(db, scenario.admin)
+    assert (row["monitoring_status"], row["vlan"], row["vlan_status"]) == ("not_monitored", "Synthetic VLAN 1", "confirmed")
+    # Asset Profile renders the confirmed assignment's VLAN name.
+    assert scenario.scoped.vlan.name == row["vlan"]
+    _enable(db, scenario)
+    assert (_usage_row(db, scenario.admin)["vlan"], _usage_row(db, scenario.admin)["monitoring_status"]) == ("Synthetic VLAN 1", "awaiting_data")
+    _persist(db, _flow(NOW - timedelta(hours=1)))
+    assert (_usage_row(db, scenario.admin)["vlan"], _usage_row(db, scenario.admin)["monitoring_status"]) == ("Synthetic VLAN 1", "monitored")
+
+
+def test_vlan_is_never_inferred_from_the_address_alone(any_db):
+    db = any_db
+    scenario = doorbell_scenario(db)
+    _observe(db, address="192.0.2.77")  # inside the VLAN CIDR, but no assignment or mapping
+    row = _usage_row(db, scenario.admin, address="192.0.2.77")
+    assert (row["vlan"], row["vlan_status"]) == (None, "unknown")
+
+
+def test_vlan_from_exporter_mapping_is_source_and_exporter_scoped(any_db):
+    db = any_db
+    scenario = doorbell_scenario(db)
+    _map_exporter(db, scenario.vlan)
+    _observe(db, address="192.0.2.77")
+    _observe(db, address="192.0.2.77", source="second", exporter=OTHER_EXPORTER)
+    rows = {tuple(entry["source"] for entry in row["source_breakdown"]): row for row in _rows(db, scenario.admin, address="192.0.2.77")}
+    assert (rows[("Synthetic Firepower consistency",)]["vlan"], rows[("Synthetic Firepower consistency",)]["vlan_status"]) == ("Synthetic VLAN 1", "confirmed")
+    # The other exporter has no mapping: the same address stays unknown there.
+    assert (rows[("Synthetic second exporter consistency",)]["vlan"], rows[("Synthetic second exporter consistency",)]["vlan_status"]) == (None, "unknown")
+
+
+def test_stale_vlan_context_is_not_displayed(any_db):
+    db = any_db
+    scenario = doorbell_scenario(db)
+    scenario.vlan.subnet_cidr = "198.51.100.0/24"
+    db.commit()
+    _observe(db)
+    row = _usage_row(db, scenario.admin)
+    assert (row["vlan"], row["vlan_status"]) == (None, "stale")
+
+
+def test_conflicting_vlan_evidence_is_unresolved(any_db):
+    db = any_db
+    scenario = doorbell_scenario(db)
+    other = VLAN(name="Synthetic overlapping VLAN", subnet_cidr="192.0.2.128/25")
+    db.add(other)
+    db.commit()
+    _map_exporter(db, other)  # exporter says VLAN B; the confirmed assignment says VLAN 1
+    _observe(db)
+    row = _usage_row(db, scenario.admin)
+    assert (row["vlan"], row["vlan_status"]) == (None, "conflicting")
+
+
+# ----------------------------------------------------------------- multiple exporters
+
+
+def test_secondary_unmonitored_source_is_a_breakdown_of_the_monitored_asset_row(any_db):
+    db = any_db
+    scenario = doorbell_scenario(db)
+    _enable(db, scenario)
+    _persist(db, _flow(NOW - timedelta(hours=6), forward=1500, reverse=6000, sequence=1))
+    _persist(db, _flow(NOW - timedelta(hours=3), source_ip=REMOTE, destination_ip=DOORBELL, forward=700, reverse=300, sequence=2))
+    _persist(db, _flow(NOW - timedelta(hours=2), source="second", exporter=OTHER_EXPORTER, forward=9999, reverse=9999, sequence=3))
+    _observe(db, buckets=3)
+    _observe(db, source="second", exporter=OTHER_EXPORTER, buckets=2)
+    rows = _rows(db, scenario.admin)
+    assert len(rows) == 1
+    row = rows[0]
+    assert (row["monitoring_status"], row["download_bytes"], row["upload_bytes"]) == ("monitored", 6700, 1800)
+    assert row["asset_url"] == f"/infrastructure/asset-manager/{scenario.asset.id}"
+    assert [(entry["source"], entry["exporter_identity"], entry["usage"], entry["monitoring_status"]) for entry in row["source_breakdown"]] == [
+        ("Synthetic Firepower consistency", EXPORTER, "measured", "monitored"),
+        ("Synthetic second exporter consistency", OTHER_EXPORTER, "observed", "not_monitored"),
+    ]
+    assert row["source_breakdown"][1]["coverage_percent"] == 1  # 2 of 288 buckets
+    # Bytes from the unmonitored exporter are never merged into the row or totals.
+    summary = device_usage_report(db, scenario.admin, report_range="24h", now=NOW)["summary"]
+    assert (summary["download_bytes"], summary["upload_bytes"]) == (6700, 1800)
+    assert _profile_totals(db, scenario.admin, scenario.asset.id) == (6700, 1800)
+
+
+def test_unmonitored_asset_seen_by_two_sources_is_one_row_with_source_aware_status(any_db):
+    db = any_db
+    scenario = doorbell_scenario(db)
+    _enable(db, scenario)  # monitor is scoped to the Firepower context only
+    _observe(db)
+    _observe(db, source="second", exporter=OTHER_EXPORTER)
+    rows = _rows(db, scenario.admin)
+    assert len(rows) == 1
+    assert rows[0]["monitoring_status"] == "awaiting_data"
+    assert {(entry["source"], entry["monitoring_status"]) for entry in rows[0]["source_breakdown"]} == {
+        ("Synthetic Firepower consistency", "awaiting_data"),
+        ("Synthetic second exporter consistency", "not_monitored"),
+    }
+
+
+def test_source_scoped_only_asset_keeps_other_exporter_as_labelled_separate_row(any_db):
+    db = any_db
+    scenario = doorbell_scenario(db, with_source_less=False)
+    _enable(db, scenario)
+    _persist(db, _flow(NOW - timedelta(hours=2)))
+    _observe(db)
+    _observe(db, source="second", exporter=OTHER_EXPORTER)
+    rows = sorted(_rows(db, scenario.admin), key=lambda row: row["monitoring_status"])
+    # The other exporter may see a different device on the same address; no
+    # confirmed evidence ties it to this asset, so it is not merged.
+    assert [(row["monitoring_status"], row["total_bytes"], row.get("separate_source_observation", False)) for row in rows] == [
+        ("monitored", 5000, False), ("not_monitored", None, True),
+    ]
+    assert rows[1]["asset_url"] is None
+
+
+def test_without_asset_manager_access_same_source_is_not_duplicated(any_db):
+    db = any_db
+    scenario = doorbell_scenario(db)
+    _enable(db, scenario)
+    _persist(db, _flow(NOW - timedelta(hours=2)))
+    _observe(db)
+    viewer = User(email="synthetic-viewer@example.invalid", password_hash="x", role="viewer", is_active=True)
+    db.add(viewer)
+    db.flush()
+    grant_all_registered_modules(db, viewer)
+    db.query(UserModulePermission).filter_by(user_id=viewer.id, module_key="asset_manager").update({"allowed": False})
+    db.commit()
+    rows = _rows(db, viewer)
+    assert [(row["monitoring_status"], row["total_bytes"], row["asset_url"]) for row in rows] == [("monitored", 5000, None)]
+
+
+# ----------------------------------------------------------------- status ownership
+
+
+def test_previous_owner_monitor_never_labels_the_reassigned_address(any_db):
+    db = any_db
+    scenario = doorbell_scenario(db, with_lease=False)
+    _enable(db, scenario)
+    _persist(db, _flow(NOW - timedelta(hours=8), sequence=1))
+    handover = NOW - timedelta(hours=5)
+    _end_assignments(db, scenario.asset.id, handover)  # old monitor record stays enabled
+    newcomer = HardwareAsset(name="Synthetic new owner", status="In use")
+    db.add(newcomer)
+    db.flush()
+    db.add(AssetNetworkAssignment(
+        asset_id=newcomer.id, address=DOORBELL, address_family=4, vlan_id=scenario.vlan.id, network_cidr=scenario.vlan.subnet_cidr,
+        source_id=SOURCES["firepower"], exporter_identity=EXPORTER, started_at=handover, provenance="synthetic reassignment", status="confirmed",
+    ))
+    db.commit()
+    assert _persist(db, _flow(NOW - timedelta(hours=2), sequence=2)) == 0
+    _observe(db, buckets=2)
+    rows = {row["asset_name"]: row for row in _rows(db, scenario.admin)}
+    old, new = rows["Synthetic doorbell"], rows["Synthetic new owner"]
+    # The previous owner keeps only its own pre-handover usage, flagged for review.
+    assert (old["monitoring_status"], old["download_bytes"], old["upload_bytes"], old["monitoring_attention"]) == ("monitored", 4000, 1000, "review_required")
+    # The new owner is listed with its own identity and is not monitored.
+    assert (new["monitoring_status"], new["total_bytes"], new["vlan"]) == ("not_monitored", None, "Synthetic VLAN 1")
+    assert asset_monitoring_status(db, scenario.asset.id, now=NOW)["status"] == "review_required"
+
+
+def test_two_monitors_claiming_one_endpoint_are_review_required(any_db):
+    db = any_db
+    scenario = doorbell_scenario(db, with_source_less=False)
+    _enable(db, scenario)
+    rival = HardwareAsset(name="Synthetic rival", status="In use")
+    db.add(rival)
+    db.flush()
+    rival_assignment = AssetNetworkAssignment(
+        asset_id=rival.id, address=DOORBELL, address_family=4, source_id=SOURCES["firepower"], exporter_identity=None,
+        started_at=NOW - timedelta(days=1), provenance="synthetic rival", status="confirmed",
+    )
+    db.add(rival_assignment)
+    db.flush()
+    db.add(TrafficDeviceMonitoring(asset_id=rival.id, assignment_id=rival_assignment.id, is_enabled=True, status="awaiting_data"))
+    db.commit()
+    key = (SOURCES["firepower"], EXPORTER, DOORBELL)
+    state = endpoint_monitoring_states(db, [key], now=NOW, observed_at={key: NOW - timedelta(minutes=5)})[key]
+    assert (state["status"], state["asset_id"]) == ("review_required", None)
+
+
+# ----------------------------------------------------------------- candidate bound
+
+
+def _extra_assignments(db, asset_id, count, *, provenance="synthetic extra"):
+    for index in range(count):
+        db.add(AssetNetworkAssignment(
+            asset_id=asset_id, address=DOORBELL, address_family=4, started_at=NOW - timedelta(days=1, minutes=index),
+            provenance=f"{provenance} {index}", status="confirmed",
+        ))
+    db.commit()
+
+
+def test_conflicting_owner_beyond_the_candidate_bound_fails_closed(any_db):
+    db = any_db
+    scenario = doorbell_scenario(db)  # source-less + scoped
+    _enable(db, scenario)
+    _extra_assignments(db, scenario.asset.id, ASSIGNMENT_CANDIDATE_LIMIT)
+    rival = HardwareAsset(name="Synthetic rival beyond bound", status="In use")
+    db.add(rival)
+    db.flush()
+    db.add(AssetNetworkAssignment(asset_id=rival.id, address=DOORBELL, address_family=4, started_at=NOW - timedelta(days=1), provenance="synthetic rival", status="confirmed"))
+    db.commit()
+    assert _persist(db, _flow(NOW - timedelta(hours=2))) == 0
+    assert _persist(db, _flow(NOW - timedelta(hours=1), source_ip=REMOTE, destination_ip=DOORBELL, sequence=2)) == 0
+    assert db.query(TrafficDeviceAggregate).count() == 0
+
+
+def test_more_candidates_than_the_bound_fail_closed_even_for_one_asset(any_db):
+    db = any_db
+    scenario = doorbell_scenario(db)
+    _enable(db, scenario)
+    _extra_assignments(db, scenario.asset.id, ASSIGNMENT_CANDIDATE_LIMIT - 1)  # 2 + 9 = 11 candidates
+    assert _persist(db, _flow(NOW - timedelta(hours=2))) == 0
+
+
+def test_candidates_at_the_bound_keep_scoped_precedence(any_db):
+    db = any_db
+    scenario = doorbell_scenario(db)
+    _enable(db, scenario)
+    _extra_assignments(db, scenario.asset.id, ASSIGNMENT_CANDIDATE_LIMIT - 2)  # exactly the bound
+    assert _persist(db, _flow(NOW - timedelta(hours=2))) == 1
+    assert {row.assignment_id for row in db.query(TrafficDeviceAggregate)} == {scenario.scoped.id}
+
+
+def test_postgres_concurrent_conflicting_owner_never_receives_traffic():
+    """Flows ingested while a conflicting owner is committed are either
+    attributed to the original owner (before the conflict is visible) or
+    dropped; never attributed to the newcomer, never double counted."""
+    url = os.environ.get("KAYA_TEST_POSTGRES_URL")
+    if not url:
+        pytest.skip("KAYA_TEST_POSTGRES_URL is not configured")
+    engine = create_engine(url, pool_size=4, max_overflow=0)
+    factory = sessionmaker(bind=engine)
+    tag = uuid.uuid4().hex[:8]
+    created: dict[str, list[int]] = {"users": [], "assets": [], "sources": [], "vlans": []}
+    try:
+        with factory() as db:
+            SOURCES.clear()
+            admin = User(email=f"synthetic-race-{tag}@example.invalid", password_hash="x", role="admin", is_active=True)
+            vlan = VLAN(name=f"Synthetic race VLAN {tag}", subnet_cidr="192.0.2.0/24")
+            asset = HardwareAsset(name=f"Synthetic race owner {tag}", status="In use")
+            rival = HardwareAsset(name=f"Synthetic race rival {tag}", status="In use")
+            source = TrafficSource(name=f"Synthetic race source {tag}", provider_key="cisco_nsel", source_category="flow", is_enabled=True, is_deleted=False)
+            db.add_all([admin, vlan, asset, rival, source])
+            if db.get(TrafficMonitoringConfiguration, 1) is None:
+                db.add(TrafficMonitoringConfiguration(id=1, is_enabled=True))
+            db.flush()
+            created.update(users=[admin.id], assets=[asset.id, rival.id], sources=[source.id], vlans=[vlan.id])
+            db.add(AssetNetworkAssignment(asset_id=asset.id, address=DOORBELL, address_family=4, vlan_id=vlan.id, network_cidr=vlan.subnet_cidr, source_id=source.id, exporter_identity=EXPORTER, started_at=NOW - timedelta(days=2), provenance="synthetic race", status="confirmed"))
+            db.commit()
+            set_asset_monitoring(db, admin, asset, True, now=ENABLED_AT)
+            db.commit()
+            SOURCES["firepower"] = source.id
+            asset_id, rival_id = asset.id, rival.id
+        barrier = threading.Barrier(2)
+        attributed: list[int] = []
+
+        def ingest():
+            barrier.wait()
+            with factory() as db:
+                for sequence in range(40):
+                    attributed.append(_persist(db, _flow(NOW - timedelta(hours=1), forward=10, reverse=20, sequence=sequence)))
+
+        def conflict():
+            barrier.wait()
+            with factory() as db:
+                db.add(AssetNetworkAssignment(asset_id=rival_id, address=DOORBELL, address_family=4, started_at=NOW - timedelta(days=1), provenance="synthetic race rival", status="confirmed"))
+                db.commit()
+
+        threads = [threading.Thread(target=ingest), threading.Thread(target=conflict)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(30)
+        with factory() as db:
+            rows = db.query(TrafficDeviceAggregate).filter(TrafficDeviceAggregate.asset_id.in_([asset_id, rival_id]), TrafficDeviceAggregate.bucket_seconds == 300).all()
+            assert {row.asset_id for row in rows} <= {asset_id}
+            assert sum(row.bytes_total for row in rows) == 30 * sum(attributed)
+            assert _persist(db, _flow(NOW - timedelta(minutes=30), sequence=99)) == 0  # conflict now visible
+    finally:
+        with factory() as db:
+            asset_ids = created["assets"] or [-1]
+            monitor_ids = [row.id for row in db.query(TrafficDeviceMonitoring).filter(TrafficDeviceMonitoring.asset_id.in_(asset_ids))]
+            db.query(TrafficDeviceAggregate).filter(TrafficDeviceAggregate.asset_id.in_(asset_ids)).delete(synchronize_session=False)
+            db.query(TrafficDeviceMonitoringPeriod).filter(TrafficDeviceMonitoringPeriod.monitoring_id.in_(monitor_ids or [-1])).delete(synchronize_session=False)
+            db.query(TrafficDeviceMonitoring).filter(TrafficDeviceMonitoring.id.in_(monitor_ids or [-1])).delete(synchronize_session=False)
+            db.query(AuditLog).filter(AuditLog.user_id.in_(created["users"] or [-1])).delete(synchronize_session=False)
+            db.query(AssetNetworkAssignment).filter(AssetNetworkAssignment.asset_id.in_(asset_ids)).delete(synchronize_session=False)
+            db.query(HardwareAsset).filter(HardwareAsset.id.in_(asset_ids)).delete(synchronize_session=False)
+            db.query(TrafficSource).filter(TrafficSource.id.in_(created["sources"] or [-1])).delete(synchronize_session=False)
+            db.query(VLAN).filter(VLAN.id.in_(created["vlans"] or [-1])).delete(synchronize_session=False)
+            db.query(User).filter(User.id.in_(created["users"] or [-1])).delete(synchronize_session=False)
+            db.commit()
+        engine.dispose()
 
 
 def test_postgres_doorbell_reconciliation(postgres_db):
