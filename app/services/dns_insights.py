@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from app.models.models import DHCPLeaseHistory, DHCPRange, DNSClientTrafficEvent, DNSInsight, DNSProviderConfig, DNSStatisticsSnapshot
 from app.services.dns_providers import DNSProvider, DNSProviderResult, provider_for, provider_snapshot_for_io
 from app.services.dns_clients import normalise_mac, observe_client
-from app.services.asset_identity import reconcile_dhcp_assignment
+from app.services.asset_identity import close_ended_dhcp_assignments, reconcile_dhcp_assignment
 from app.services.site_settings import get_site_settings
 
 
@@ -430,7 +430,10 @@ def _persist_dhcp_leases(
         hostname = str(item.get("name") or item.get("hostname") or "").strip() or None
         client_id = by_mac.get(mac) if mac else None
         client_id = client_id or by_ip.get(address)
-        provider_lease_id = str(item.get("id") or item.get("lease_id") or "").strip() or None
+        # The DHCP client identifier (option 61 / DUID); dnsmasq reports "*" when absent.
+        dhcp_client_id = str(item.get("clientid") or item.get("client_id") or "").strip()
+        dhcp_client_id = None if dhcp_client_id in {"", "*"} else dhcp_client_id[:255]
+        provider_lease_id = dhcp_client_id or str(item.get("id") or item.get("lease_id") or "").strip()[:255] or None
         expires_at = _timestamp(item.get("expires_at") or item.get("expires") or item.get("expiry") or item.get("valid_until"))
         started_at = _timestamp(item.get("starts_at") or item.get("start") or item.get("leased_at")) or generated_at
         active = (
@@ -443,6 +446,9 @@ def _persist_dhcp_leases(
         if active and not same_identity:
             active.is_active = False
             active.ended_at = generated_at
+            # Another identity now holds the address: end the previous holder's
+            # assignment before this lease is reconciled.
+            close_ended_dhcp_assignments(db, provider_id=provider.id, observed_at=generated_at, lease_ids=[active.id])
             active = None
         scope = _dhcp_range_for(configured_ranges, address)
         if not active:
@@ -479,6 +485,7 @@ def _persist_dhcp_leases(
     for row in stale.all():
         row.is_active = False
         row.ended_at = generated_at
+    close_ended_dhcp_assignments(db, provider_id=provider.id, observed_at=generated_at)
 
 
 def _persist_client_traffic(
@@ -619,6 +626,10 @@ def build_context(
     clients = _normalise_clients(db, provider, payloads, known_hostnames_raw, generated_at)
     if payloads["dhcp"].ok:
         _persist_dhcp_leases(db, provider, payloads["dhcp"].data, clients, generated_at)
+    else:
+        # Lease absence cannot be judged without a snapshot; only a provider
+        # reported expiry that has passed ends an assignment during an outage.
+        close_ended_dhcp_assignments(db, provider_id=provider.id, observed_at=generated_at, expired_only=True)
     _persist_client_traffic(db, provider, query_rows, clients, generated_at)
     previous_snapshot = (
         db.query(DNSStatisticsSnapshot)

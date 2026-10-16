@@ -5,6 +5,10 @@
 <time data-utc-time="{{ value.isoformat() }}Z" data-time-format="{{ format }}">{{ shown }}</time>
 {%- else -%}{{ fallback }}{%- endif -%}
 {%- endmacro %}
+{#- UTC ISO strings from reporting ("…Z"); localised in the browser like when(). -#}
+{% macro when_iso(value, format='daytime') -%}
+{%- if value -%}<time data-utc-time="{{ value }}" data-time-format="{{ format }}">{{ value[:16]|replace('T', ' ') }}</time>{%- endif -%}
+{%- endmacro %}
 {% macro plain_date(value) -%}{{ value.day ~ ' ' ~ value.strftime('%b %Y') }}{%- endmacro %}
 {% block extra_head %}<link rel="stylesheet" href="/static/css/asset_detail.css?v={{ asset_version }}">{% endblock %}
 {% block content %}
@@ -98,12 +102,14 @@
       {% if host_evidence %}<span class="ad-mono ad-fact-value">{{ host_evidence.normalised_value }}</span><span class="ad-fact-sub{% if host_evidence.status == 'confirmed' %} ad-ok-text{% else %} ad-muted{% endif %}">{{ 'Suggested' if host_evidence.status == 'pending' else host_evidence.status|title }}</span>
       {% else %}<span class="ad-fact-value ad-muted">Not recorded</span>{% endif %}
     </div>
-    <div class="ad-fact">
-      <span class="ad-cap">Device tracking</span>
-      {% if asset_profile.traffic_monitoring is not none %}
-      {% set tracking = asset_profile.traffic_monitoring %}
-      <span class="ad-fact-value{% if tracking.status == 'awaiting_data' %} ad-warn-text{% elif tracking.status == 'disabled' %} ad-muted{% endif %}">{{ tracking.status|replace('_', ' ')|title }}</span>
-      {% if tracking.reason %}<span class="ad-muted ad-fact-sub">{{ tracking.reason }}</span>{% endif %}
+    <div class="ad-fact" data-asset-traffic-fact>
+      <span class="ad-cap">Network traffic</span>
+      {% if asset_reporting.traffic is not none %}
+      {% set traffic_status = asset_reporting.traffic.status %}
+      <span class="ad-fact-value{% if traffic_status.state == 'recorded' %} ad-ok-text{% else %} ad-muted{% endif %}" data-asset-traffic-status>{{ traffic_status.label }}</span>
+      {% if traffic_status.state == 'recorded' and not asset_reporting.traffic.multiple_sources %}<span class="ad-fact-sub">Download {{ bytes_label(asset_reporting.traffic.download_bytes) }} · Upload {{ bytes_label(asset_reporting.traffic.upload_bytes) }}</span>
+      {% elif traffic_status.state == 'recorded' %}<span class="ad-fact-sub">Measured by {{ asset_reporting.traffic.sources|length }} sources</span>{% endif %}
+      {% if asset_profile.traffic_monitoring is not none %}<span class="ad-muted ad-fact-sub" data-asset-optional-tracking>Optional device tracking: {{ asset_profile.traffic_monitoring.status|replace('_', ' ')|capitalize }}</span>{% endif %}
       {% else %}<span class="ad-fact-value ad-muted">Unavailable</span><span class="ad-muted ad-fact-sub">Network Traffic access is not granted</span>{% endif %}
     </div>
     <div class="ad-fact">
@@ -232,7 +238,7 @@
       <div class="asset-profile-list">
       {% for assignment in asset_profile.assignment_rows %}
         <article class="asset-profile-item">
-          <div><strong class="mono">{{ assignment.address }}</strong><span class="muted">IPv{{ assignment.address_family }} · {{ assignment.provenance }}</span>{% if asset_profile.can_vlan and assignment.vlan %}<span class="muted">{{ assignment.vlan.name }}{% if assignment.vlan.subnet_cidr %} · {{ assignment.vlan.subnet_cidr }}{% endif %}</span>{% endif %}<span class="muted">{{ assignment.started_at }}{% if assignment.ended_at %} → {{ assignment.ended_at }}{% endif %}</span></div>
+          <div><strong class="mono">{{ assignment.address }}</strong><span class="muted">IPv{{ assignment.address_family }} · {{ assignment.provenance }}</span>{% if asset_profile.can_vlan and assignment.vlan %}<span class="muted">{{ assignment.vlan.name }}{% if assignment.vlan.subnet_cidr %} · {{ assignment.vlan.subnet_cidr }}{% endif %}</span>{% endif %}<span class="muted">{{ when(assignment.started_at) }}{% if assignment.ended_at %} → {{ when(assignment.ended_at) }}{% endif %}</span></div>
           <span class="service-pill{% if assignment.profile_validity == 'valid' %} on{% endif %}">{{ assignment.profile_validity|title }}</span>
           {% if user.role == 'admin' %}<div class="inline-actions">
             {% if assignment.status != 'confirmed' %}<form method="post" action="/infrastructure/asset-manager/{{ record.id }}/network-assignment/{{ assignment.id }}/confirm" data-confirm-action="Confirm this network assignment for this asset?"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button small" type="submit">Confirm</button></form>{% endif %}
@@ -263,7 +269,7 @@
     <section class="record-panel" aria-labelledby="dhcp-heading">
       <h3 id="dhcp-heading">DHCP evidence</h3>
       {% if asset_profile.dhcp_leases is none %}<p class="muted">DHCP evidence is unavailable because DNS Manager access is not granted.</p>
-      {% elif asset_profile.dhcp_leases %}<div class="ad-table-scroll"><table><thead><tr><th>Address</th><th>Client</th><th>Observed</th><th>Status</th></tr></thead><tbody>{% for lease in asset_profile.dhcp_leases %}<tr><td class="mono">{{ lease.ip_address }}</td><td>{{ lease.hostname or lease.mac_address or lease.provider_lease_id or '-' }}</td><td>{{ lease.lease_started_at }}{% if lease.ended_at %} → {{ lease.ended_at }}{% endif %}</td><td>{{ 'Active' if lease.is_active else 'Historical' }}</td></tr>{% endfor %}</tbody></table></div>
+      {% elif asset_profile.dhcp_leases %}<div class="ad-table-scroll"><table><thead><tr><th>Address</th><th>Client</th><th>Observed</th><th>Status</th></tr></thead><tbody>{% for lease in asset_profile.dhcp_leases %}<tr><td class="mono">{{ lease.ip_address }}</td><td>{{ lease.hostname or lease.mac_address or lease.provider_lease_id or '-' }}</td><td>{{ when(lease.lease_started_at) }}{% if lease.ended_at %} → {{ when(lease.ended_at) }}{% endif %}</td><td>{{ 'Active' if lease.is_active else 'Historical' }}</td></tr>{% endfor %}</tbody></table></div>
       {% else %}<p class="muted">No related DHCP lease history is available.</p>{% endif %}
     </section>
     <section class="record-panel" aria-labelledby="dns-heading">
@@ -303,45 +309,57 @@
     <label>End <input type="datetime-local" name="report_end" value="{{ request.query_params.get('report_end', '') }}"></label>
     <button class="button" type="submit">Apply range</button>
   </form>
-  <p class="muted">{{ asset_reporting.window.timezone }} · {{ asset_reporting.window.aggregation }} · {{ asset_reporting.window.start }} to {{ asset_reporting.window.end }}</p>
+  <p class="muted">{{ asset_reporting.window.timezone }} · {{ asset_reporting.window.aggregation }} · {{ when(asset_reporting.window.start) }} to {{ when(asset_reporting.window.end) }}</p>
   <div class="asset-report-grid">
     <section class="record-panel" id="asset-traffic" aria-labelledby="asset-traffic-heading">
       <h3 id="asset-traffic-heading">Network Traffic</h3>
       <p class="muted">Usage is recorded automatically for observed IP addresses. This profile shows only usage within this asset's confirmed network assignments.</p>
+      {% if asset_reporting.traffic is not none %}
+      <dl class="record-kv-list compact" data-asset-traffic-summary>
+        <div><dt>Network traffic</dt><dd data-asset-traffic-status>{{ asset_reporting.traffic.status.label }}</dd></div>
+        <div><dt>Period</dt><dd>{{ when(asset_reporting.window.start) }} to {{ when(asset_reporting.window.end) }}</dd></div>
+        {% if asset_reporting.traffic.last_measured_at %}<div><dt>Latest measured interval</dt><dd>{{ when_iso(asset_reporting.traffic.last_measured_at) }}</dd></div>{% endif %}
+      </dl>
+      <p class="muted">{{ asset_reporting.traffic.status.detail }}</p>
+      {% endif %}
+      {% if asset_reporting.traffic is none %}<p class="muted">Network Traffic history is unavailable because the module is not authorised for this account.</p>
+      {% elif asset_reporting.traffic.multiple_sources %}<p class="muted">More than one traffic source measured this asset's address. Totals are shown per source, because adding them could count the same traffic twice.</p><dl class="record-kv-list compact">{% for item in asset_reporting.traffic.sources %}<div><dt>{{ item.source }}{% if item.exporter_identity %} · {{ item.exporter_identity }}{% endif %}</dt><dd>Download {{ bytes_label(item.download_bytes) }} · Upload {{ bytes_label(item.upload_bytes) }}</dd></div>{% endfor %}<div><dt>Excluded ambiguous buckets</dt><dd>{{ asset_reporting.traffic.excluded_buckets }}</dd></div></dl>
+      {% elif asset_reporting.traffic.history %}<dl class="record-kv-list compact"><div><dt>Download</dt><dd title="{{ asset_reporting.traffic.download_bytes }} bytes">{{ bytes_label(asset_reporting.traffic.download_bytes) }}</dd></div><div><dt>Upload</dt><dd title="{{ asset_reporting.traffic.upload_bytes }} bytes">{{ bytes_label(asset_reporting.traffic.upload_bytes) }}</dd></div>{% for item in asset_reporting.traffic.sources %}<div><dt>Source</dt><dd>{{ item.source }}{% if item.exporter_identity %} · {{ item.exporter_identity }}{% endif %}</dd></div>{% endfor %}<div><dt>Excluded ambiguous buckets</dt><dd>{{ asset_reporting.traffic.excluded_buckets }}</dd></div></dl><div class="asset-history-bars" aria-label="Network Traffic history">{% for point in asset_reporting.traffic.history %}<div class="asset-history-bar"><span>{{ when_iso(point.at, 'short') }}</span><i style="--bar-value: {{ [1, (point.download_bytes + point.upload_bytes) / 1000000]|max }}px" title="{{ bytes_label(point.download_bytes + point.upload_bytes) }}"></i></div>{% endfor %}</div><a class="button secondary small" href="/networking/ip-wan-monitor/traffic">Open Network Traffic reporting</a>
+      {% elif asset_reporting.traffic.excluded_buckets %}<dl class="record-kv-list compact"><div><dt>Excluded ambiguous buckets</dt><dd>{{ asset_reporting.traffic.excluded_buckets }}</dd></div></dl>{% endif %}
       {% if asset_profile.traffic_monitoring is not none %}
-      <div class="record-kv-list compact">
-        <div><dt>Device tracking</dt><dd>{{ asset_profile.traffic_monitoring.status|replace('_', ' ')|title }}</dd></div>
-        <div><dt>Status</dt><dd>{{ asset_profile.traffic_monitoring.reason }}</dd></div>
-      </div>
+      <div class="section-gap" data-asset-optional-tracking-panel>
+      <h4>Optional device tracking</h4>
+      <dl class="record-kv-list compact">
+        <div><dt>Optional device tracking</dt><dd>{{ asset_profile.traffic_monitoring.status|replace('_', ' ')|capitalize }}</dd></div>
+        <div><dt>Tracking status</dt><dd>{{ asset_profile.traffic_monitoring.reason }}</dd></div>
+      </dl>
+      <p class="muted">Optional device tracking keeps its own tracked-device history in Network Traffic. It is not required for the automatic usage shown above.</p>
       {% if user.role == 'admin' %}
       <form method="post" action="/infrastructure/asset-manager/{{ record.id }}/network-traffic" class="inline-actions section-gap">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="enabled" value="{{ '0' if asset_profile.traffic_monitoring.enabled else '1' }}">
         <button class="button {{ 'danger' if asset_profile.traffic_monitoring.enabled else '' }}" type="submit">{{ 'Stop device tracking' if asset_profile.traffic_monitoring.enabled else 'Start device tracking' }}</button>
-        <small class="muted">Optional. Tracking lists this device in the Network Traffic Overview device list with its own tracking history. It is not needed to see its usage.</small>
+        <small class="muted">Optional. Tracking lists this device in the Network Traffic Overview device list with its own tracking history. Starting or stopping it does not change automatic usage recording.</small>
       </form>
       {% endif %}
+      </div>
       {% endif %}
-      {% if asset_reporting.traffic is none %}<p class="muted">Network Traffic history is unavailable because the module is not authorised for this account.</p>
-      {% elif asset_reporting.traffic.multiple_sources %}<p class="muted">More than one traffic source measured this asset's address. Totals are shown per source, because adding them could count the same traffic twice.</p><dl class="record-kv-list compact">{% for item in asset_reporting.traffic.sources %}<div><dt>{{ item.source }}{% if item.exporter_identity %} · {{ item.exporter_identity }}{% endif %}</dt><dd>Download {{ item.download_bytes }} bytes · Upload {{ item.upload_bytes }} bytes</dd></div>{% endfor %}<div><dt>Excluded ambiguous buckets</dt><dd>{{ asset_reporting.traffic.excluded_buckets }}</dd></div></dl>
-      {% elif asset_reporting.traffic.history %}<dl class="record-kv-list compact"><div><dt>Download</dt><dd>{{ asset_reporting.traffic.download_bytes }} bytes</dd></div><div><dt>Upload</dt><dd>{{ asset_reporting.traffic.upload_bytes }} bytes</dd></div><div><dt>Excluded ambiguous buckets</dt><dd>{{ asset_reporting.traffic.excluded_buckets }}</dd></div></dl><div class="asset-history-bars" aria-label="Network Traffic history">{% for point in asset_reporting.traffic.history %}<div class="asset-history-bar"><span>{{ point.at }}</span><i style="--bar-value: {{ [1, (point.download_bytes + point.upload_bytes) / 1000000]|max }}px" title="{{ point.download_bytes + point.upload_bytes }} bytes"></i></div>{% endfor %}</div><a class="button secondary small" href="/networking/ip-wan-monitor/traffic">Open Network Traffic reporting</a>
-      {% else %}<p class="muted">No authorised device usage was observed in this period. This does not mean usage was zero.</p>{% endif %}
     </section>
     <section class="record-panel" id="asset-dns" aria-labelledby="asset-dns-heading">
       <h3 id="asset-dns-heading">DNS activity</h3>
       {% if asset_reporting.dns is none %}<p class="muted">DNS history is unavailable because DNS Manager is not authorised for this account.</p>
-      {% elif asset_reporting.dns.query_count %}<dl class="record-kv-list compact"><div><dt>Queries</dt><dd>{{ asset_reporting.dns.query_count }}</dd></div><div><dt>Blocked</dt><dd>{{ asset_reporting.dns.blocked_count }}</dd></div></dl><div class="asset-history-bars" aria-label="DNS query activity">{% for point in asset_reporting.dns.history %}<div class="asset-history-bar"><span>{{ point.at }}</span><i style="--bar-value: {{ [1, point.queries]|max }}px" title="{{ point.queries }} queries, {{ point.blocked }} blocked"></i></div>{% endfor %}</div><ul class="asset-report-list">{% for item in asset_reporting.dns.top_domains %}<li><span>{{ item.domain }}</span><strong>{{ item.count }}</strong></li>{% endfor %}</ul><form method="get" class="asset-report-filter"><input type="hidden" name="tab" value="history"><input type="hidden" name="report_period" value="{{ asset_reporting.period }}"><input type="search" name="report_dns_q" value="{{ request.query_params.get('report_dns_q', '') }}" maxlength="200" aria-label="Search retained DNS domains" placeholder="Search retained domains"><button class="button secondary small" type="submit">Search DNS history</button></form><div class="ad-table-scroll"><table><thead><tr><th>Observed</th><th>Domain</th><th>Result</th></tr></thead><tbody>{% for item in asset_reporting.dns.rows %}<tr><td>{{ item.observed_at }}</td><td>{{ item.domain }}</td><td>{{ 'Blocked' if item.blocked else (item.status or 'Allowed') }}</td></tr>{% else %}<tr><td colspan="3">No retained DNS rows match this search.</td></tr>{% endfor %}</tbody></table></div>{% if asset_reporting.dns.pages > 1 %}<nav class="pagination" aria-label="DNS history pages"><span>Page {{ asset_reporting.dns.page }} of {{ asset_reporting.dns.pages }}</span>{% if asset_reporting.dns.page > 1 %}<a class="button secondary small" href="?tab=history&amp;report_period={{ asset_reporting.period }}&amp;report_dns_q={{ request.query_params.get('report_dns_q', '')|urlencode }}&amp;report_dns_page={{ asset_reporting.dns.page - 1 }}#asset-dns">Back</a>{% endif %}{% if asset_reporting.dns.page < asset_reporting.dns.pages %}<a class="button secondary small" href="?tab=history&amp;report_period={{ asset_reporting.period }}&amp;report_dns_q={{ request.query_params.get('report_dns_q', '')|urlencode }}&amp;report_dns_page={{ asset_reporting.dns.page + 1 }}#asset-dns">Next</a>{% endif %}</nav>{% endif %}<a class="button secondary small" href="/networking/dns-manager?tab=clients">Open DNS Manager</a>
+      {% elif asset_reporting.dns.query_count %}<dl class="record-kv-list compact"><div><dt>Queries</dt><dd>{{ asset_reporting.dns.query_count }}</dd></div><div><dt>Blocked</dt><dd>{{ asset_reporting.dns.blocked_count }}</dd></div></dl><div class="asset-history-bars" aria-label="DNS query activity">{% for point in asset_reporting.dns.history %}<div class="asset-history-bar"><span>{{ when_iso(point.at, 'short') }}</span><i style="--bar-value: {{ [1, point.queries]|max }}px" title="{{ point.queries }} queries, {{ point.blocked }} blocked"></i></div>{% endfor %}</div><ul class="asset-report-list">{% for item in asset_reporting.dns.top_domains %}<li><span>{{ item.domain }}</span><strong>{{ item.count }}</strong></li>{% endfor %}</ul><form method="get" class="asset-report-filter"><input type="hidden" name="tab" value="history"><input type="hidden" name="report_period" value="{{ asset_reporting.period }}"><input type="search" name="report_dns_q" value="{{ request.query_params.get('report_dns_q', '') }}" maxlength="200" aria-label="Search retained DNS domains" placeholder="Search retained domains"><button class="button secondary small" type="submit">Search DNS history</button></form><div class="ad-table-scroll"><table><thead><tr><th>Observed</th><th>Domain</th><th>Result</th></tr></thead><tbody>{% for item in asset_reporting.dns.rows %}<tr><td>{{ when_iso(item.observed_at) }}</td><td>{{ item.domain }}</td><td>{{ 'Blocked' if item.blocked else (item.status or 'Allowed') }}</td></tr>{% else %}<tr><td colspan="3">No retained DNS rows match this search.</td></tr>{% endfor %}</tbody></table></div>{% if asset_reporting.dns.pages > 1 %}<nav class="pagination" aria-label="DNS history pages"><span>Page {{ asset_reporting.dns.page }} of {{ asset_reporting.dns.pages }}</span>{% if asset_reporting.dns.page > 1 %}<a class="button secondary small" href="?tab=history&amp;report_period={{ asset_reporting.period }}&amp;report_dns_q={{ request.query_params.get('report_dns_q', '')|urlencode }}&amp;report_dns_page={{ asset_reporting.dns.page - 1 }}#asset-dns">Back</a>{% endif %}{% if asset_reporting.dns.page < asset_reporting.dns.pages %}<a class="button secondary small" href="?tab=history&amp;report_period={{ asset_reporting.period }}&amp;report_dns_q={{ request.query_params.get('report_dns_q', '')|urlencode }}&amp;report_dns_page={{ asset_reporting.dns.page + 1 }}#asset-dns">Next</a>{% endif %}</nav>{% endif %}<a class="button secondary small" href="/networking/dns-manager?tab=clients">Open DNS Manager</a>
       {% else %}<p class="muted">No retained DNS activity is available for this period.</p>{% endif %}
     </section>
     <section class="record-panel" id="asset-network-dhcp" aria-labelledby="asset-uptime-heading">
       <h3 id="asset-uptime-heading">Uptime and latency</h3>
       {% if asset_reporting.uptime is none %}<p class="muted">Uptime history is unavailable because monitoring data is not authorised for this account.</p>
-      {% elif asset_reporting.uptime.history %}<div class="asset-report-list">{% for point in asset_reporting.uptime.history %}<div><span>{{ point.at }}</span><strong>{{ point.availability if point.availability is not none else 'Unavailable' }}{% if point.availability is not none %}%{% endif %}</strong><span class="muted">{{ point.latency_ms if point.latency_ms is not none else '—' }}{% if point.latency_ms is not none %} ms{% endif %}</span></div>{% endfor %}</div><a class="button secondary small" href="/networking/ip-wan-monitor">Open Uptime reporting</a>
+      {% elif asset_reporting.uptime.history %}<div class="asset-report-list">{% for point in asset_reporting.uptime.history %}<div><span>{{ when_iso(point.at, 'short') }}</span><strong>{{ point.availability if point.availability is not none else 'Unavailable' }}{% if point.availability is not none %}%{% endif %}</strong><span class="muted">{{ point.latency_ms if point.latency_ms is not none else '—' }}{% if point.latency_ms is not none %} ms{% endif %}</span></div>{% endfor %}</div><a class="button secondary small" href="/networking/ip-wan-monitor">Open Uptime reporting</a>
       {% else %}<p class="muted">No uptime observations are available in this period.</p>{% endif %}
     </section>
-    <section class="record-panel" id="asset-activity" aria-labelledby="asset-activity-heading"><h3 id="asset-activity-heading">Activity</h3>{% if asset_reporting.activity %}<ol class="asset-report-list">{% for item in asset_reporting.activity %}<li><span>{{ item.at }}</span><strong>{{ item.label }}</strong><span class="muted">{{ item.state|title }}</span></li>{% endfor %}</ol>{% else %}<p class="muted">No identity or network activity was recorded in this period.</p>{% endif %}</section>
+    <section class="record-panel" id="asset-activity" aria-labelledby="asset-activity-heading"><h3 id="asset-activity-heading">Activity</h3>{% if asset_reporting.activity %}<ol class="asset-report-list">{% for item in asset_reporting.activity %}<li><span>{{ when(item.at) }}</span><strong>{{ item.label }}</strong><span class="muted">{{ item.state|title }}</span></li>{% endfor %}</ol>{% else %}<p class="muted">No identity or network activity was recorded in this period.</p>{% endif %}</section>
     <section class="record-panel" id="asset-overview" aria-labelledby="asset-overview-heading"><h3 id="asset-overview-heading">Coverage</h3><p class="muted">The profile preserves the existing identity, lifecycle, photos, notes, attachments and reviewed network context. Each module keeps its own retention and attribution boundaries.</p></section>
-    <section class="record-panel" id="asset-lifecycle" aria-labelledby="asset-lifecycle-heading"><h3 id="asset-lifecycle-heading">Lifecycle</h3><dl class="record-kv-list compact"><div><dt>Created</dt><dd>{{ record.created_at }}</dd></div><div><dt>Updated</dt><dd>{{ record.updated_at }}</dd></div><div><dt>Status</dt><dd>{{ record.status }}</dd></div></dl></section>
+    <section class="record-panel" id="asset-lifecycle" aria-labelledby="asset-lifecycle-heading"><h3 id="asset-lifecycle-heading">Lifecycle</h3><dl class="record-kv-list compact"><div><dt>Created</dt><dd>{{ when(record.created_at) }}</dd></div><div><dt>Updated</dt><dd>{{ when(record.updated_at) }}</dd></div><div><dt>Status</dt><dd>{{ record.status }}</dd></div></dl></section>
   </div>
 </section>
 </div>

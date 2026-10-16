@@ -18,7 +18,7 @@ from app.models.models import (
     TrafficSource,
 )
 from app.services.audit import write_audit
-from app.services.asset_identity import _assignment_lock_key, _normalise_evidence
+from app.services.asset_identity import _assignment_lock_key, _normalise_evidence, dhcp_identity_conflict
 from app.services.asset_tags import allocate_asset_tag
 
 MAX_CANDIDATES = 5000
@@ -187,6 +187,11 @@ def get_discovered_device(db: Session, candidate_id: str) -> dict | None:
         if assignment:
             item["asset_id"] = assignment.asset_id
             item["asset_name"] = assignment.asset.name if assignment.asset else None
+        elif dhcp_identity_conflict(db, lease):
+            # Conflicting confirmed identifiers: never present the lease as
+            # associated through a MAC-linked DNS client; it needs review.
+            item["asset_id"] = None
+            item["identity_conflict"] = True
         if not lease.is_active or (lease.expires_at and lease.expires_at < datetime.utcnow()):
             item["review_state"] = "stale"
         return item

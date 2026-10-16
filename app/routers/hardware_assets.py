@@ -23,6 +23,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 
 from app.core.config import get_settings
 from app.core.csrf import csrf_context, validate_csrf_token
+from app.core.formatting import human_bytes
 from app.core.templating import templates
 from app.db.session import get_db
 from app.models.models import (
@@ -241,6 +242,10 @@ def clean_managed_value(value: str, allowed: list[str], current: str | None = No
     if clean in allowed or (current and clean == current):
         return clean
     return None
+
+
+def bytes_label(value: int | None) -> str:
+    return human_bytes(value, unknown="-")
 
 
 def asset_profile_context(db: Session, user, asset: HardwareAsset) -> dict:
@@ -512,7 +517,7 @@ def detail_asset(
     values = field_values(db, MODULE, ENTITY_TYPE, row.id)
     lists = list_values(db, MODULE)
     reporting = asset_reporting_context(db, user, row.id, period=report_period, start=report_start, end=report_end, dns_search=report_dns_q, dns_page=report_dns_page)
-    return templates.TemplateResponse(request, "hardware_asset_detail.html", {"user": user, "record": row, "attachments": attachments, "photos": photos, "categories": lists.get("category", []), "locations": lists.get("location", []), "statuses": lists.get("status", []), "custom_fields": fields, "custom_values": values, "option_list": option_list, "asset_profile": asset_profile_context(db, user, row), "asset_reporting": reporting, "now_date": datetime.utcnow().strftime("%Y-%m-%d"), **csrf_context(request)})
+    return templates.TemplateResponse(request, "hardware_asset_detail.html", {"user": user, "record": row, "attachments": attachments, "photos": photos, "categories": lists.get("category", []), "locations": lists.get("location", []), "statuses": lists.get("status", []), "custom_fields": fields, "custom_values": values, "option_list": option_list, "asset_profile": asset_profile_context(db, user, row), "asset_reporting": reporting, "bytes_label": bytes_label, "now_date": datetime.utcnow().strftime("%Y-%m-%d"), **csrf_context(request)})
 
 
 @router.post("/{asset_id}/network-traffic")
@@ -756,6 +761,9 @@ def confirm_asset_traffic_context(
             started_at=datetime.utcnow(),
             vlan_id=vlan.id,
             ip_address_id=assignment.ip_address_id,
+            # A context derived from a DHCP assignment stays bound to its lease,
+            # so it ends with that lease instead of outliving it.
+            dhcp_lease_id=assignment.dhcp_lease_id,
             source_id=source.id,
             exporter_identity=mapping.exporter_identity,
             provenance="administrator traffic context",

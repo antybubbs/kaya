@@ -37,6 +37,16 @@ async function session(email, mobile = false) {
   return page;
 }
 
+// Mirrors app.core.formatting.human_bytes (binary units), used by the Asset Profile.
+function kayaBytes(value) {
+  let size = Number(value);
+  for (const unit of ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB']) {
+    if (Math.abs(size) < 1024 || unit === 'PiB') return unit === 'B' ? `${Math.trunc(size)} B` : `${size.toFixed(1)} ${unit}`;
+    size /= 1024;
+  }
+  throw new Error('unreachable');
+}
+
 async function screenshot(page, name) { await page.screenshot({ path: `${artifacts}/${name}.png`, fullPage: true }); }
 // The Asset detail page groups sections into tabs; open one as a user would.
 async function openAssetTab(page, name) {
@@ -138,7 +148,7 @@ try {
     const contextResponse = await Promise.all([page.waitForResponse(response => response.url().includes('/source-context')), contextForm.getByRole('button', { name: /Confirm source context/i }).click()]);
     if (contextResponse[0].status() !== 303) throw new Error(`context status ${contextResponse[0].status()}`);
     await page.waitForLoadState('networkidle');
-    if (!(await page.locator('body').innerText()).match(/Device tracking\s+Disabled/i)) throw new Error('context confirmation enabled device tracking');
+    if (!(await page.locator('body').innerText()).match(/Optional device tracking:?\s+Disabled/)) throw new Error('context confirmation enabled device tracking');
     const noCsrf = await page.request.post(`${base}/infrastructure/asset-manager/9450/network-traffic`, { form: { enabled: '1', csrf_token: '' } });
     if (![400, 403, 422].includes(noCsrf.status())) throw new Error(`CSRF status ${noCsrf.status()}`);
     await openAssetTab(page, /History & reporting/);
@@ -204,7 +214,7 @@ try {
     await openAssetTab(page, /History & reporting/);
     const assetBody = await page.locator('body').innerText();
     if (!assetBody.includes(address)) throw new Error('assignment address missing from Asset Profile');
-    if (!/Device tracking\s+Disabled/i.test(assetBody)) throw new Error('doorbell tracking was not disabled before the journey');
+    if (!/Optional device tracking\s+Disabled/.test(assetBody)) throw new Error('doorbell tracking was not disabled before the journey');
     if (!/recorded automatically/i.test(assetBody) || /must enable monitoring/i.test(assetBody)) throw new Error('Asset Profile still implies tracking is needed to see usage');
     // 6: start optional tracking explicitly (CSRF-protected form).
     const enabled = await Promise.all([
@@ -213,7 +223,9 @@ try {
     ]);
     if (enabled[0].status() !== 303) throw new Error(`enable status ${enabled[0].status()}`);
     // 7: both screens agree on the tracking lifecycle.
-    if (!/Device tracking Awaiting Data/i.test(await profileBody())) throw new Error('Asset Profile is not awaiting data after enabling');
+    const awaiting = await profileBody();
+    if (!/Optional device tracking Awaiting data/.test(awaiting)) throw new Error('Asset Profile is not awaiting data after enabling');
+    if (!/^Network Traffic .*Network traffic (No measured traffic in selected period|Traffic recorded in selected period)/.test(awaiting)) throw new Error(`primary traffic status missing: ${awaiting.slice(0, 300)}`);
     usage = await ciscoRow();
     if (!usage.identity.includes('Device tracking — awaiting data')) throw new Error(`Device Usage after enabling: ${JSON.stringify(usage.cells)}`);
     // 8: synthetic NSEL flows through the real collector path.
@@ -228,14 +240,15 @@ try {
     const otherRows = (await usageRows()).filter(item => item.source.includes('Stage2B NetFlow exporter'));
     if (otherRows.length !== 1 || !otherRows[0].source.includes('Separate source observation')) throw new Error(`second source row: ${JSON.stringify(otherRows.map(item => item.cells))}`);
     const profile = await profileBody();
-    if (!/Device tracking Active/i.test(profile)) throw new Error(`Asset Profile status after flows: ${profile.slice(0, 200)}`);
+    if (!/Optional device tracking Active/.test(profile) || !profile.includes('Network traffic Traffic recorded in selected period')) throw new Error(`Asset Profile status after flows: ${profile.slice(0, 300)}`);
     // The source-less adoption assignment covers both sources: per-source totals, no sum.
-    if (!profile.includes(`Download ${seeded.expected_download} bytes · Upload ${seeded.expected_upload} bytes`) || !profile.includes(`Download ${seeded.other_source} bytes`)) throw new Error(`Asset Profile totals: ${profile}`);
+    if (!profile.includes(`Download ${kayaBytes(seeded.expected_download)} · Upload ${kayaBytes(seeded.expected_upload)}`) || !profile.includes(`Download ${kayaBytes(seeded.other_source)}`)) throw new Error(`Asset Profile totals: ${profile}`);
     await screenshot(page, 'doorbell-asset-profile-measured');
     // 11-12: stop tracking; usage stays visible because it never depended on tracking.
     await page.locator('form[action$="/network-traffic"]').getByRole('button', { name: /Stop device tracking/i }).click();
     await page.waitForLoadState('networkidle');
-    if (!/Device tracking Disabled/i.test(await profileBody())) throw new Error('Asset Profile not disabled');
+    const stopped = await profileBody();
+    if (!/Optional device tracking Disabled/.test(stopped) || !stopped.includes('Network traffic Traffic recorded in selected period')) throw new Error('Asset Profile not disabled, or usage hidden after stopping tracking');
     usage = await ciscoRow();
     if (/Device tracking/i.test(usage.identity) || usage.download === 'Traffic observed — usage unavailable') throw new Error(`Device Usage after disabling: ${JSON.stringify(usage.cells)}`);
     // 13: the closed tracking period and its aggregates are preserved.
@@ -287,13 +300,13 @@ try {
     adopt = await usage(seeded.addresses.adopt);
     if (adopt.length !== 1 || adopt[0].asset_name !== 'Stage2B Adopted Camera' || adopt[0].download_bytes !== seeded.expected.adopt_usage.download || adopt[0].upload_bytes !== seeded.expected.adopt_usage.upload) throw new Error(`adopted endpoint ${JSON.stringify(adopt)}`);
     const adoptedProfile = await profile(seeded.assets.adopt);
-    if (!adoptedProfile.includes(`Download ${seeded.expected.adopt_profile.download} bytes`) || !adoptedProfile.includes(`Upload ${seeded.expected.adopt_profile.upload} bytes`)) throw new Error(`adopted profile ${adoptedProfile}`);
+    if (!adoptedProfile.includes(`Download ${kayaBytes(seeded.expected.adopt_profile.download)}`) || !adoptedProfile.includes(`Upload ${kayaBytes(seeded.expected.adopt_profile.upload)}`)) throw new Error(`adopted profile ${adoptedProfile}`);
     // 8-10: DHCP renewal confirmed; each owner keeps only its own interval.
     await confirm(seeded.assets.mover, seeded.pending.renewal);
     const mover = await profile(seeded.assets.mover);
-    if (!mover.includes(`Download ${seeded.expected.mover_profile.download} bytes`) || !mover.includes(`Upload ${seeded.expected.mover_profile.upload} bytes`)) throw new Error(`DHCP mover profile ${mover}`);
+    if (!mover.includes(`Download ${kayaBytes(seeded.expected.mover_profile.download)}`) || !mover.includes(`Upload ${kayaBytes(seeded.expected.mover_profile.upload)}`)) throw new Error(`DHCP mover profile ${mover}`);
     const reuser = await profile(seeded.assets.reuser);
-    if (!reuser.includes(`Download ${seeded.expected.reuser_profile.download} bytes`) || !reuser.includes(`Upload ${seeded.expected.reuser_profile.upload} bytes`)) throw new Error(`reuser profile ${reuser}`);
+    if (!reuser.includes(`Download ${kayaBytes(seeded.expected.reuser_profile.download)}`) || !reuser.includes(`Upload ${kayaBytes(seeded.expected.reuser_profile.upload)}`)) throw new Error(`reuser profile ${reuser}`);
     const newAddress = await usage(seeded.addresses.new);
     if (newAddress.length !== 1 || newAddress[0].download_bytes !== 66) throw new Error(`new DHCP address ${JSON.stringify(newAddress)}`);
     const oldAddress = await usage(seeded.addresses.old);
@@ -311,6 +324,103 @@ try {
     if (sideEffects.managed_ips !== 0 || sideEffects.monitoring_records !== 0) throw new Error(`records created during adoption ${JSON.stringify(sideEffects)}`);
     await screenshot(page, 'automatic-observed-ip-usage');
     evidence.automatic = { seeded: seeded.expected, sideEffects };
+  });
+  await run('dhcp-identity-continuity-and-traffic-status', async () => {
+    // Journey: DHCP device → Review / Adopt once → it changes address and Kaya
+    // follows it automatically; traffic stays with the owner of each interval.
+    const page = admin;
+    const helper = (command, payload = [], minutesAgo) => JSON.parse(execFileSync(process.env.KAYA_STAGE2B_PYTHON, ['scripts/stage2b_seed_dhcp_continuity.py', command, JSON.stringify(payload), ...(minutesAgo === undefined ? [] : ['--minutes-ago', String(minutesAgo)])], { encoding: 'utf8' }).trim().split('\n').at(-1));
+    const [A1, A2, A3] = ['192.0.2.231', '192.0.2.232', '192.0.2.233'];
+    const phone = { ip: A1, hwaddr: '02:5b:00:00:23:01', clientid: 'ff:5b:00:23:01', name: 'stage2b-dhcp-phone' };
+    const other = { ip: A1, hwaddr: '02:5b:00:00:23:02', clientid: 'ff:5b:00:23:02', name: 'stage2b-dhcp-tablet' };
+    const guest = { ip: A1, hwaddr: '02:5b:00:00:23:03', name: 'stage2b-dhcp-guest' };
+    const text = async selector => (await page.locator(selector).first().innerText()).replace(/\s+/g, ' ').trim();
+    const fact = async caption => { const cell = page.locator('.ad-fact').filter({ has: page.locator('.ad-cap', { hasText: caption }) }).first(); const cap = (await cell.locator('.ad-cap').innerText()).trim(); return `${caption} ${(await cell.innerText()).replace(/\s+/g, ' ').trim().slice(cap.length).trim()}`; };
+    const usage = async address => (await page.evaluate(async query => (await fetch(`/networking/ip-wan-monitor/traffic/device-usage?${query}`)).json(), `range=24h&q=${encodeURIComponent(address)}`)).devices.filter(row => row.address === address);
+    const before = helper('inspect');
+    const adoptLease = async (leaseId, name) => {
+      await page.goto(`${base}/infrastructure/asset-manager/discovered/review?candidate_id=dhcp:${leaseId}`, { waitUntil: 'networkidle' });
+      await page.getByLabel('New asset name').fill(name);
+      page.once('dialog', dialog => dialog.accept().catch(() => {}));
+      await Promise.all([page.waitForURL(/\/infrastructure\/asset-manager\/\d+$/), page.getByRole('button', { name: 'Adopt discovery' }).click()]);
+      return Number(new URL(page.url()).pathname.split('/').at(-1));
+    };
+    const leaseId = (collected, address, mac) => collected.leases.find(row => row.ip === address && row.mac === mac && row.active).id;
+    // 1-2: the device's lease arrives through the real DNS Manager collection.
+    let collected = helper('collect', [phone], 360);
+    // 3-4: Review / Adopt once; MAC and DHCP client identity are confirmed.
+    const phoneId = await adoptLease(leaseId(collected, A1, phone.hwaddr), 'Stage2B DHCP Phone');
+    await openAssetTab(page, /Network & identity/);
+    const identity = (await page.locator('body').innerText()).replace(/\s+/g, ' ');
+    if (!/02:5b:00:00:23:01/.test(identity) || !/ff:5b:00:23:01/.test(identity)) throw new Error('adopted identity evidence missing');
+    // The next collection links the DHCP-only address without a managed IP.
+    helper('collect', [phone], 330);
+    await page.goto(`${base}/infrastructure/asset-manager/${phoneId}`, { waitUntil: 'networkidle' });
+    if (!(await fact('Current IP')).includes(A1)) throw new Error(`current IP before move ${await fact('Current IP')}`);
+    // 5-7: eligible traffic is attributed automatically; tracking stays optional and off.
+    helper('flows', [{ ip: A1, sequence: 7231001, minutes_ago: 270, upload: 230001, download: 1048576 }]);
+    helper('collect', [phone], 210);  // renewal: the last DHCP observation of A1 for the phone
+    await page.goto(`${base}/infrastructure/asset-manager/${phoneId}?tab=history`, { waitUntil: 'networkidle' });
+    let header = await fact('Network traffic');
+    if (!header.startsWith('Network traffic Traffic recorded in selected period') || !header.includes(`Download ${kayaBytes(1048576)} · Upload ${kayaBytes(230001)}`) || !header.includes('Optional device tracking: Disabled')) throw new Error(`header before move ${header}`);
+    if (/Awaiting data/i.test(header)) throw new Error('header shows awaiting data although traffic is measured');
+    // 8-11: DHCP issues a new address; the next collection reconciles it automatically.
+    collected = helper('collect', [{ ...phone, ip: A2 }], 180);
+    await page.goto(`${base}/infrastructure/asset-manager/discovered/review?candidate_id=dhcp:${leaseId(collected, A2, phone.hwaddr)}`, { waitUntil: 'networkidle' });
+    if (!(await page.locator('body').innerText()).includes('already associated with Stage2B DHCP Phone') || await page.getByRole('button', { name: 'Adopt discovery' }).count()) throw new Error('new lease still requires manual adoption');
+    await page.goto(`${base}/infrastructure/asset-manager/${phoneId}`, { waitUntil: 'networkidle' });
+    if (new URL(page.url()).pathname !== `/infrastructure/asset-manager/${phoneId}` || !(await fact('Current IP')).includes(A2)) throw new Error(`current IP after move ${await fact('Current IP')}`);
+    // 12-14: new-address traffic joins the same permanent profile; earlier history is kept.
+    helper('flows', [{ ip: A2, sequence: 7231002, minutes_ago: 150, upload: 3000, download: 524288 }]);
+    // 15-16: the old address first goes to an unadopted guest, then to another confirmed device;
+    // neither device's traffic moves to the phone, and the guest is never adopted.
+    helper('collect', [{ ...phone, ip: A2 }, guest], 120);
+    helper('flows', [{ ip: A1, sequence: 7231004, minutes_ago: 100, upload: 4444, download: 65536 }]);
+    collected = helper('collect', [{ ...phone, ip: A2 }, other], 60);
+    const otherId = await adoptLease(leaseId(collected, A1, other.hwaddr), 'Stage2B DHCP Tablet');
+    helper('collect', [{ ...phone, ip: A2 }, other], 45);
+    helper('flows', [{ ip: A1, sequence: 7231003, minutes_ago: 30, upload: 777, download: 8888 }]);
+    await page.goto(`${base}/infrastructure/asset-manager/${phoneId}?tab=history`, { waitUntil: 'networkidle' });
+    header = await fact('Network traffic');
+    if (!header.includes(`Download ${kayaBytes(1048576 + 524288)} · Upload ${kayaBytes(230001 + 3000)}`)) throw new Error(`phone totals after reuse ${header}`);
+    const phoneTraffic = await text('#asset-traffic');
+    if (!phoneTraffic.includes('Excluded ambiguous buckets 0')) throw new Error(`phone ambiguity ${phoneTraffic}`);
+    await screenshot(page, 'dhcp-continuity-asset-profile');
+    await page.goto(`${base}/infrastructure/asset-manager/${otherId}?tab=history`, { waitUntil: 'networkidle' });
+    const otherHeader = await fact('Network traffic');
+    if (!otherHeader.includes(`Download ${kayaBytes(8888)} · Upload ${kayaBytes(777)}`)) throw new Error(`reusing device totals ${otherHeader}`);
+    // 17: a lease whose MAC and client ID belong to different assets needs manual review.
+    collected = helper('collect', [{ ...phone, ip: A2 }, other, { ip: A3, hwaddr: phone.hwaddr, clientid: other.clientid, name: 'stage2b-dhcp-conflict' }], 15);
+    await page.goto(`${base}/infrastructure/asset-manager/discovered/review?candidate_id=dhcp:${leaseId(collected, A3, phone.hwaddr)}`, { waitUntil: 'networkidle' });
+    if (await page.getByRole('button', { name: 'Adopt discovery' }).count() !== 1 || await page.locator('[data-identity-conflict]').count() !== 1) throw new Error('conflicting lease was not flagged for review');
+    const state = helper('inspect');
+    const phoneRows = state.assets['Stage2B DHCP Phone'].assignments;
+    const otherRows = state.assets['Stage2B DHCP Tablet'].assignments;
+    if (JSON.stringify(phoneRows.map(row => [row.address, row.open])) !== JSON.stringify([[A1, false], [A2, true]])) throw new Error(`phone assignments ${JSON.stringify(phoneRows)}`);
+    if (JSON.stringify(otherRows.map(row => [row.address, row.open])) !== JSON.stringify([[A1, true]])) throw new Error(`tablet assignments ${JSON.stringify(otherRows)}`);
+    if (!(phoneRows[0].ended_at <= otherRows[0].started_at)) throw new Error('old address ownership overlaps');
+    if ([...phoneRows, ...otherRows].some(row => row.provenance !== 'dhcp_reconciliation' || row.source_id !== null || row.exporter_identity !== null)) throw new Error(`unexpected assignment scope ${JSON.stringify(state.assets)}`);
+    if (state.assets_total !== before.assets_total + 2) throw new Error(`assets created automatically ${before.assets_total} -> ${state.assets_total}`);
+    // 18: Device Usage keeps raw per-IP usage, unaffected by reconciliation.
+    const oldRows = await usage(A1);
+    if (oldRows.length !== 1 || oldRows[0].download_bytes !== 1048576 + 65536 + 8888 || oldRows[0].upload_bytes !== 230001 + 4444 + 777) throw new Error(`Device Usage old address ${JSON.stringify(oldRows)}`);
+    const newRows = await usage(A2);
+    if (newRows.length !== 1 || newRows[0].asset_name !== 'Stage2B DHCP Phone' || newRows[0].download_bytes !== 524288) throw new Error(`Device Usage new address ${JSON.stringify(newRows)}`);
+    // 19: DNS Manager lease history is preserved and its clients are untouched.
+    const phoneLeases = state.leases.filter(row => row.mac === phone.hwaddr);
+    if (phoneLeases.length !== 3 || phoneLeases.filter(row => row.active).length !== 2 || !phoneLeases.some(row => row.ip === A1 && !row.active && row.ended_at)) throw new Error(`lease history ${JSON.stringify(phoneLeases)}`);
+    // Collection records one DNS client per device; reconciliation never adds or relinks them.
+    const phoneClient = state.dns_clients_by_mac[phone.hwaddr];
+    const otherClient = state.dns_clients_by_mac[other.hwaddr];
+    if (!phoneClient || phoneClient.count !== 1 || phoneClient.hardware_asset_id !== phoneId || !otherClient || otherClient.count !== 1 || otherClient.hardware_asset_id !== otherId) throw new Error(`DNS clients ${JSON.stringify(state.dns_clients_by_mac)}`);
+    if (state.dns_clients !== before.dns_clients + 3) throw new Error(`unexpected DNS clients ${before.dns_clients} -> ${state.dns_clients}`);
+    // The phone's old interval ends at its last A1 observation, before the guest appeared.
+    if (!(phoneRows[0].ended_at < state.leases.find(row => row.mac === guest.hwaddr).first_seen_at)) throw new Error(`phone A1 interval ${JSON.stringify(phoneRows[0])}`);
+    const dnsPage = await page.goto(`${base}/networking/dns-manager?tab=clients`, { waitUntil: 'networkidle' });
+    if (dnsPage.status() !== 200) throw new Error(`DNS Manager status ${dnsPage.status()}`);
+    // 20: optional tracking, Uptime and managed IP records were not touched.
+    if (state.monitoring_records !== before.monitoring_records || state.uptime_monitors !== before.uptime_monitors || state.managed_ips !== 0) throw new Error(`side effects ${JSON.stringify({ before, state })}`);
+    evidence.dhcpContinuity = { phoneRows, otherRows, leases: phoneLeases, header, otherHeader };
   });
   await run('wan-selected-period-transfer-totals', async () => {
     // Journey D: WAN transfer totals follow the History Range and WAN source,
@@ -454,7 +564,7 @@ try {
     // Redesigned Asset detail page: real values bound, empty states, tabs, actions.
     const page = admin;
     const text = async selector => (await page.locator(selector).innerText()).replace(/\s+/g, ' ').trim();
-    const fact = async caption => (await page.locator('.ad-fact').filter({ has: page.locator('.ad-cap', { hasText: caption }) }).first().innerText()).replace(/\s+/g, ' ').trim();
+    const fact = async caption => { const cell = page.locator('.ad-fact').filter({ has: page.locator('.ad-cap', { hasText: caption }) }).first(); const cap = (await cell.locator('.ad-cap').innerText()).trim(); return `${caption} ${(await cell.innerText()).replace(/\s+/g, ' ').trim().slice(cap.length).trim()}`; };
     await page.goto(`${base}/infrastructure/asset-manager/9401`, { waitUntil: 'networkidle' });
     const body = await page.locator('[data-asset-page]').innerText();
     for (const sample of ['zappi', 'HAL-0007', '192.168.1.197', '28:97:b8']) if (body.includes(sample)) throw new Error(`reference sample value shown: ${sample}`);
@@ -463,13 +573,15 @@ try {
     if (await text('.ad-title-row h1') !== 'Stage2B Asset 001' || !(await text('.ad-tag')).includes('STAGE2B-001')) throw new Error('title or tag not bound');
     if (!/● In use/.test(await text('.ad-pill-row')) || !/No category/.test(await text('.ad-pill-row')) || !/No location/.test(await text('.ad-pill-row'))) throw new Error(`pills ${await text('.ad-pill-row')}`);
     if (!/^Last seen on the network \d{1,2} \w{3} \d{4}, \d{2}:\d{2} · Created \d{1,2} \w{3} \d{4}$/.test(await text('.ad-meta'))) throw new Error(`meta line ${await text('.ad-meta')}`);
-    const facts = { ip: await fact('Current IP'), mac: await fact('MAC address'), host: await fact('Hostname'), tracking: await fact('Device tracking'), warranty: await fact('Warranty') };
+    const facts = { ip: await fact('Current IP'), mac: await fact('MAC address'), host: await fact('Hostname'), traffic: await fact('Network traffic'), warranty: await fact('Warranty') };
     if (!/192\.0\.2\.11/.test(facts.ip) || !/Stage2B LAN A · Static/.test(facts.ip)) throw new Error(`current IP ${facts.ip}`);
     if (!/02:00:00:00:00:01 Confirmed/.test(facts.mac)) throw new Error(`MAC ${facts.mac}`);
     if (!/Not recorded/.test(facts.host) || !/Not recorded Add purchase details/.test(facts.warranty)) throw new Error(`empty states ${JSON.stringify(facts)}`);
-    // The tracking cell shows the same lifecycle value as the History tab's Network Traffic section.
-    const historyTracking = (await page.locator('#asset-traffic dd').first().textContent()).trim();
-    if (!facts.tracking.endsWith(historyTracking) && !facts.tracking.includes(` ${historyTracking}`)) throw new Error(`tracking ${facts.tracking} vs ${historyTracking}`);
+    // The header's automatic traffic status and optional tracking match the History tab.
+    const statuses = await page.locator('[data-asset-traffic-status]').allTextContents();
+    if (statuses.length !== 2 || statuses[0].trim() !== statuses[1].trim() || !facts.traffic.startsWith(`Network traffic ${statuses[0].trim()}`)) throw new Error(`traffic status ${facts.traffic} vs ${JSON.stringify(statuses)}`);
+    const historyTracking = (await page.locator('[data-asset-optional-tracking-panel] dd').first().textContent()).trim();
+    if (!facts.traffic.includes(`Optional device tracking: ${historyTracking}`)) throw new Error(`optional tracking ${facts.traffic} vs ${historyTracking}`);
     if (!/^2 of 8 fields filled$/.test(await text('.ad-progress-wrap'))) throw new Error(`fields filled ${await text('.ad-progress-wrap')}`);
     if (!/Add a purchase date and warranty/.test(body) || !/No notes yet\./.test(body)) throw new Error('purchase hint or notes empty state missing');
     if (!/MAC 02:00:00:00:00:01 via dns Confirmed/.test(await text('.ad-identity-list'))) throw new Error(`identity card ${await text('.ad-identity-list')}`);

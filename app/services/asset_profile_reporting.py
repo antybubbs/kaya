@@ -20,6 +20,7 @@ from app.models.models import (
     NetworkMonitorCheck,
     NetworkMonitorStatistic,
     TrafficEndpointAggregate,
+    TrafficMonitoringConfiguration,
     TrafficSource,
 )
 from app.services.modules import has_module_access
@@ -58,7 +59,42 @@ def _context_current(row: AssetNetworkAssignment) -> bool:
     return bool(row.vlan and row.vlan.subnet_cidr and row.network_cidr and row.network_cidr.strip() == row.vlan.subnet_cidr.strip())
 
 
+def _traffic_status(result: dict, *, has_assignment: bool, collection_enabled: bool) -> dict:
+    """The asset's automatic Network Traffic state for the selected period.
+
+    Derived only from the attributed result already computed, so it never adds
+    a query. It describes recorded history, not live collector health.
+    """
+    if result["sources"]:
+        state, label = "recorded", "Traffic recorded in selected period"
+        detail = "Measured automatically through this asset's confirmed network assignments."
+    elif not has_assignment:
+        state, label = "no_assignment", "No confirmed network assignment"
+        detail = "Usage can be attributed only once a confirmed network assignment links an address to this asset."
+    elif result["excluded_buckets"]:
+        state, label = "ambiguous", "No attributable traffic in selected period"
+        detail = "Measured periods were excluded because ownership of the address was ambiguous."
+    else:
+        state, label = "none", "No measured traffic in selected period"
+        detail = "No usage was measured for this asset's confirmed addresses. This does not mean usage was zero."
+    if not collection_enabled:
+        detail = f"{detail} Network Traffic collection is currently disabled."
+    return {"state": state, "label": label, "detail": detail, "collection_enabled": collection_enabled}
+
+
 def _traffic(db: Session, asset_id: int, assignments: list[AssetNetworkAssignment], window: dict) -> dict:
+    config = db.get(TrafficMonitoringConfiguration, 1)
+    collection_enabled = bool(config and config.is_enabled)
+    result = _traffic_usage(db, asset_id, assignments, window)
+    has_assignment = any(row.status == "confirmed" and row.asset_id == asset_id and _context_current(row) for row in assignments)
+    if not has_assignment:
+        # Without a confirmed assignment nothing is measurable: never show zero.
+        result["download_bytes"] = result["upload_bytes"] = None
+    result["status"] = _traffic_status(result, has_assignment=has_assignment, collection_enabled=collection_enabled)
+    return result
+
+
+def _traffic_usage(db: Session, asset_id: int, assignments: list[AssetNetworkAssignment], window: dict) -> dict:
     """Observed-endpoint usage the asset's confirmed identity evidence supports.
 
     A bucket counts only when, for its whole duration, a confirmed assignment of
@@ -71,7 +107,7 @@ def _traffic(db: Session, asset_id: int, assignments: list[AssetNetworkAssignmen
     own = [row for row in assignments if row.status == "confirmed" and row.asset_id == asset_id and _context_current(row)]
     addresses = {row.address for row in own}
     if not addresses:
-        return {"available": True, "history": [], "download_bytes": 0, "upload_bytes": 0, "excluded_buckets": 0, "sources": []}
+        return {"available": True, "history": [], "download_bytes": 0, "upload_bytes": 0, "excluded_buckets": 0, "sources": [], "multiple_sources": False, "last_measured_at": None}
     duration = window["end"] - window["start"]
     bucket_seconds = 300 if duration <= timedelta(hours=24) else 3600 if duration <= timedelta(days=7) else 86400
     rows = db.query(TrafficEndpointAggregate).filter(
@@ -108,6 +144,7 @@ def _traffic(db: Session, asset_id: int, assignments: list[AssetNetworkAssignmen
         if row.data_quality != "complete":
             point["quality"] = "partial"
     names = {source.id: source.name for source in db.query(TrafficSource).filter(TrafficSource.id.in_([key[0] for key in by_context] or [-1])).all()}
+    last_measured_at = _iso(max((at for points in by_context.values() for at in points), default=None))
     sources = [
         {"source": names.get(key[0], "Unknown source"), "exporter_identity": key[1],
          "download_bytes": sum(point["download_bytes"] for point in points.values()),
@@ -115,7 +152,7 @@ def _traffic(db: Session, asset_id: int, assignments: list[AssetNetworkAssignmen
         for key, points in sorted(by_context.items(), key=lambda item: (item[0][0], item[0][1]))
     ]
     if len(by_context) != 1:
-        return {"available": True, "history": [], "download_bytes": None if by_context else 0, "upload_bytes": None if by_context else 0, "excluded_buckets": len(excluded), "sources": sources, "multiple_sources": len(by_context) > 1}
+        return {"available": True, "history": [], "download_bytes": None if by_context else 0, "upload_bytes": None if by_context else 0, "excluded_buckets": len(excluded), "sources": sources, "multiple_sources": len(by_context) > 1, "last_measured_at": last_measured_at}
     points = next(iter(by_context.values()))
     history = [{"at": _iso(at), **value} for at, value in sorted(points.items())]
     return {
@@ -126,6 +163,7 @@ def _traffic(db: Session, asset_id: int, assignments: list[AssetNetworkAssignmen
         "excluded_buckets": len(excluded),
         "sources": sources,
         "multiple_sources": False,
+        "last_measured_at": last_measured_at,
     }
 
 

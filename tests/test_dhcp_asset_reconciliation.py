@@ -34,7 +34,8 @@ def test_confirmed_dhcp_identity_reassignment_closes_old_assignment_without_back
         db.commit()
         assignments = db.query(AssetNetworkAssignment).filter_by(asset_id=asset.id).order_by(AssetNetworkAssignment.started_at).all()
         assert len(assignments) == 2
-        assert assignments[0].ended_at == now
+        # Bounded by the old lease's recorded end, never an invented handover.
+        assert assignments[0].ended_at == old_lease.ended_at
         assert assignments[1].address == "192.0.2.11"
         assert assignments[1].started_at == now
         assert assignments[1].dhcp_lease_id == new_lease.id
@@ -79,6 +80,9 @@ def test_postgres_concurrent_dhcp_reassignment_is_idempotent(postgres_factory):
 
     with factory() as db:
         rows = db.query(AssetNetworkAssignment).filter_by(asset_id=asset_id).order_by(AssetNetworkAssignment.started_at).all()
-        assert sorted(results) == ["reassigned", "review_required"]
+        # The losing worker waits on the per-asset lock, then sees the committed
+        # replacement and treats the lease as an idempotent renewal.
+        assert sorted(results) == ["reassigned", "renewed"]
         assert len(rows) == 2
         assert sum(row.ended_at is None for row in rows) == 1
+        assert [row.address for row in rows if row.ended_at is None] == ["192.0.2.21"]

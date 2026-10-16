@@ -331,7 +331,9 @@ def test_pending_assignment_never_confirms_identity_or_attributes_usage(db):
     (row,) = [item for item in device_usage_report(db, admin, report_range="24h", now=NOW)["devices"] if item["address"] == "192.0.2.70"]
     assert (row["identity_status"], row["asset_url"], row["download_bytes"]) == ("suggested", None, 4000)
     traffic = asset_reporting_context(db, admin, asset.id, period="24h")["traffic"]
-    assert (traffic["download_bytes"], traffic["upload_bytes"]) == (0, 0)
+    # No confirmed assignment: totals are unavailable, never reported as zero.
+    assert (traffic["download_bytes"], traffic["upload_bytes"]) == (None, None)
+    assert traffic["status"]["state"] == "no_assignment"
 
 
 def test_missing_local_networks_is_reported_not_shown_as_zero_usage(db):
