@@ -14,7 +14,7 @@
     const response = await fetch(url, { credentials: "same-origin", headers: { Accept: "application/json", ...(options.body ? { "Content-Type": "application/json" } : {}), ...(options.method && options.method !== "GET" ? { "X-CSRF-Token": csrf } : {}), ...(options.headers || {}) }, ...options });
     let payload = null;
     try { payload = await response.json(); } catch (_) { payload = {}; }
-    if (!response.ok) throw new Error(payload.detail || "The request could not be completed.");
+    if (!response.ok) { const error = new Error(payload.detail || "The request could not be completed."); error.status = response.status; throw error; }
     return payload;
   };
   const formatRate = (value) => {
@@ -209,7 +209,7 @@
     const payload = await request("/networking/ip-wan-monitor/traffic/local-networks");
     const rows = payload.local_networks || [];
     // Names and CIDRs are written as text only, never into attributes.
-    target.innerHTML = rows.length ? rows.map((row) => `<tr data-local-network-id="${Number(row.id)}"><th scope="row">${canManage ? `<input class="local-network-name" aria-label="Name" maxlength="120" data-local-network-name>` : escape(row.name)}</th><td class="mono">${escape(row.network_cidr)}${row.overlaps && row.overlaps.length ? `<small class="muted">Overlaps ${escape(row.overlaps.join(", "))}</small>` : ""}</td><td><span class="traffic-status traffic-status-${row.is_enabled ? "healthy" : "disabled"}">${row.is_enabled ? "Enabled" : "Disabled"}</span></td>${canManage ? `<td class="traffic-form-actions"><button class="button secondary compact" type="button" data-local-network-save>Save name</button><button class="button secondary compact" type="button" data-local-network-toggle>${row.is_enabled ? "Disable" : "Enable"}</button><button class="button danger compact" type="button" data-local-network-delete>Remove</button></td>` : ""}</tr>`).join("") : `<tr><td colspan="4" class="muted">No local networks are configured. Automatic per-IP traffic accounting records nothing until at least one is added.</td></tr>`;
+    target.innerHTML = rows.length ? rows.map((row) => `<tr data-local-network-id="${Number(row.id)}"><th scope="row">${canManage ? `<input class="local-network-name" aria-label="Name" maxlength="120" data-local-network-name>` : escape(row.name)}</th><td class="mono">${escape(row.network_cidr)}${row.overlaps && row.overlaps.length ? `<small class="muted">Overlaps ${escape(row.overlaps.join(", "))}</small>` : ""}${row.policy && row.policy.message ? `<small class="${row.policy.allowed ? "muted" : "local-network-invalid"}" data-local-network-policy>${escape(row.policy.message)}</small>` : ""}</td><td><span class="traffic-status traffic-status-${row.is_enabled ? "healthy" : "disabled"}">${row.is_enabled ? "Enabled" : "Disabled"}</span></td>${canManage ? `<td class="traffic-form-actions"><button class="button secondary compact" type="button" data-local-network-save>Save name</button>${row.is_enabled || !row.policy || row.policy.allowed ? `<button class="button secondary compact" type="button" data-local-network-toggle>${row.is_enabled ? "Disable" : "Enable"}</button>` : ""}<button class="button danger compact" type="button" data-local-network-delete>Remove</button></td>` : ""}</tr>`).join("") : `<tr><td colspan="4" class="muted">No local networks are configured. Automatic per-IP traffic accounting records nothing until at least one is added.</td></tr>`;
     rows.forEach((row) => { const input = target.querySelector(`[data-local-network-id="${Number(row.id)}"] [data-local-network-name]`); if (input) input.value = row.name; });
     if (!canManage) return;
     target.querySelectorAll("[data-local-network-id]").forEach((element) => {
@@ -223,7 +223,15 @@
   app.querySelector("[data-local-network-form]")?.addEventListener("submit", async (event) => {
     event.preventDefault(); const form = event.currentTarget;
     try {
-      await request("/networking/ip-wan-monitor/traffic/local-networks", { method: "POST", body: JSON.stringify({ name: form.elements.name.value, network_cidr: form.elements.network_cidr.value, is_enabled: true }) });
+      const body = { name: form.elements.name.value, network_cidr: form.elements.network_cidr.value, is_enabled: true };
+      try {
+        await request("/networking/ip-wan-monitor/traffic/local-networks", { method: "POST", body: JSON.stringify(body) });
+      } catch (error) {
+        // 428: a broad but permitted range needs explicit confirmation; the server re-checks it.
+        if (error.status !== 428) throw error;
+        if (!window.confirm(error.message)) { localNetworkStatus("Not added."); return; }
+        await request("/networking/ip-wan-monitor/traffic/local-networks", { method: "POST", body: JSON.stringify({ ...body, confirm_broad: true }) });
+      }
       form.reset(); await loadLocalNetworks(); localNetworkStatus("Local network added. New flows in this range are accounted from now on.");
     } catch (error) { localNetworkStatus(error.message); }
   });

@@ -90,6 +90,7 @@ from app.services.network_monitor_wallboard import (
 from app.services.network_traffic import (
     apply_source_secrets,
     source_public_dict,
+    local_network_policy,
     validate_local_network,
     validate_source_input,
 )
@@ -139,6 +140,8 @@ class TrafficLocalNetworkPayload(BaseModel):
     name: str = Field(..., min_length=1, max_length=120)
     network_cidr: str = Field(..., min_length=3, max_length=80)
     is_enabled: bool = True
+    # Required for broad but permitted ranges; never bypasses the breadth limit.
+    confirm_broad: bool = False
 
 
 class TrafficLocalNetworkUpdatePayload(BaseModel):
@@ -1480,7 +1483,7 @@ def _local_network_view(row: TrafficLocalNetwork, rows: list[TrafficLocalNetwork
                 continue
             if candidate.version == network.version and candidate.overlaps(network):
                 overlaps.append(other.network_cidr)
-    return {"id": row.id, "name": row.name, "network_cidr": row.network_cidr, "is_enabled": row.is_enabled, "overlaps": overlaps}
+    return {"id": row.id, "name": row.name, "network_cidr": row.network_cidr, "is_enabled": row.is_enabled, "overlaps": overlaps, "policy": local_network_policy(row.network_cidr)}
 
 
 def _commit_local_network_change(db: Session, request: Request, user, action: str, row_id: int, detail: str, metadata: dict) -> None:
@@ -1509,10 +1512,13 @@ def create_traffic_local_network(request: Request, payload: TrafficLocalNetworkP
         raise HTTPException(status_code=400, detail="Local network name must not be blank.")
     if db.query(TrafficLocalNetwork).filter_by(network_cidr=cidr).first():
         raise HTTPException(status_code=409, detail="Local network already exists.")
+    policy = local_network_policy(cidr)
+    if policy["broad"] and not payload.confirm_broad:
+        raise HTTPException(status_code=428, detail=f"{cidr} is a broad range: every address inside it will be accounted. Confirm to add it.")
     row = TrafficLocalNetwork(name=payload.name.strip(), network_cidr=cidr, is_enabled=payload.is_enabled)
     db.add(row)
     db.flush()
-    _commit_local_network_change(db, request, user, "create", row.id, "Created traffic local network", {"network_cidr": cidr, "is_enabled": row.is_enabled})
+    _commit_local_network_change(db, request, user, "create", row.id, "Created traffic local network", {"network_cidr": cidr, "is_enabled": row.is_enabled, "broad_confirmed": policy["broad"]})
     return _local_network_view(row, db.query(TrafficLocalNetwork).all())
 
 
@@ -1524,6 +1530,8 @@ def update_traffic_local_network(request: Request, network_id: int, payload: Tra
         raise HTTPException(status_code=404, detail="Local network not found.")
     if payload.name is not None and not payload.name.strip():
         raise HTTPException(status_code=400, detail="Local network name must not be blank.")
+    if payload.is_enabled and not row.is_enabled and not local_network_policy(row.network_cidr)["allowed"]:
+        raise HTTPException(status_code=400, detail="This local network is broader than the permitted limit and cannot be re-enabled. Remove it and add a narrower range.")
     before = {"name": row.name, "is_enabled": row.is_enabled}
     if payload.name is not None:
         row.name = payload.name.strip()

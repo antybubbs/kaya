@@ -19,6 +19,7 @@ from sqlalchemy.pool import StaticPool
 from starlette.middleware.sessions import SessionMiddleware
 
 import app.routers.auth as auth
+import app.routers.network_discovery as network_discovery
 import app.routers.network_monitor as network_monitor
 from app.core.csrf import CSRF_SESSION_KEY
 from app.db.session import Base, get_db
@@ -107,6 +108,7 @@ def client(db, users, monkeypatch):
         return {"ok": True}
 
     app.include_router(network_monitor.router)
+    app.include_router(network_discovery.router)
     app.dependency_overrides[get_db] = lambda: db
     with TestClient(app) as test_client:
         yield test_client
@@ -116,8 +118,9 @@ def _login(client, user):
     assert client.get(f"/test-login/{user.id}").status_code == 200
 
 
-def _post(client, cidr, name="Synthetic LAN", token=CSRF):
-    return client.post(API, json={"name": name, "network_cidr": cidr}, headers={"x-csrf-token": token} if token else {})
+def _post(client, cidr, name="Synthetic LAN", token=CSRF, confirm_broad=False):
+    body = {"name": name, "network_cidr": cidr, **({"confirm_broad": True} if confirm_broad else {})}
+    return client.post(API, json=body, headers={"x-csrf-token": token} if token else {})
 
 
 def _audits(db, action=None):
@@ -157,7 +160,7 @@ def test_admin_adds_a_normalised_network_with_one_audit_event(db, users, client)
     _login(client, users["admin"])
     response = _post(client, "192.0.2.77/24", name="  Home LAN  ")
     assert response.status_code == 201
-    assert response.json() == {"id": response.json()["id"], "name": "Home LAN", "network_cidr": "192.0.2.0/24", "is_enabled": True, "overlaps": []}
+    assert response.json() == {"id": response.json()["id"], "name": "Home LAN", "network_cidr": "192.0.2.0/24", "is_enabled": True, "overlaps": [], "policy": {"allowed": True, "broad": False, "message": None}}
     assert _audits(db, "create") == 1
     assert device_usage_report(db, users["admin"], report_range="24h", now=NOW)["summary"]["accounting"]["ready"] is True
 
@@ -305,3 +308,80 @@ def test_eligibility_is_independent_of_vlan_mappings_and_spans_sources(db, users
     db.commit()
     assert {row.source_id for row in db.query(TrafficEndpointAggregate).filter_by(endpoint_ip="192.0.2.10")} == {first.id, second.id}
     assert db.query(TrafficEndpointAggregate).filter_by(endpoint_ip="203.0.113.5").count() == 0
+
+
+# ----------------------------------------------------------------- breadth policy
+
+
+@pytest.mark.parametrize("cidr", ["0.0.0.0/0", "10.0.0.0/7", "10.20.30.40/7", "::/0", "2001:db8::/31", "2001:db8:ffff::1/20"])
+def test_ranges_broader_than_the_limits_are_rejected(db, users, client, cidr):
+    _login(client, users["admin"])
+    for confirm in (False, True):  # confirmation never bypasses the limit
+        response = _post(client, cidr, confirm_broad=confirm)
+        assert response.status_code == 400 and "too broad" in response.json()["detail"]
+    assert db.query(TrafficLocalNetwork).count() == 0 and _audits(db) == 0
+
+
+@pytest.mark.parametrize(("cidr", "normalised", "broad"), [
+    ("10.0.0.0/8", "10.0.0.0/8", True), ("172.16.9.9/16", "172.16.0.0/16", False), ("192.0.2.0/24", "192.0.2.0/24", False),
+    ("2001:db8::/32", "2001:db8::/32", True), ("2001:db8:1::/48", "2001:db8:1::/48", False), ("2001:db8:1:2::1/64", "2001:db8:1:2::/64", False),
+])
+def test_ranges_within_the_limits_are_accepted(db, users, client, cidr, normalised, broad):
+    _login(client, users["admin"])
+    response = _post(client, cidr, confirm_broad=broad)
+    assert response.status_code == 201
+    assert (response.json()["network_cidr"], response.json()["policy"]["broad"]) == (normalised, broad)
+
+
+def test_broad_range_needs_explicit_confirmation(db, users, client):
+    _login(client, users["admin"])
+    unconfirmed = _post(client, "10.0.0.0/12")
+    assert unconfirmed.status_code == 428 and "broad range" in unconfirmed.json()["detail"]
+    assert db.query(TrafficLocalNetwork).count() == 0 and _audits(db) == 0
+    assert _post(client, "10.0.0.0/12", confirm_broad=True).status_code == 201
+    audit = db.query(AuditLog).filter(AuditLog.entity == "traffic_local_network").one()
+    assert '"broad_confirmed":true' in audit.metadata_json
+
+
+def test_existing_over_limit_networks_are_preserved_flagged_and_cannot_be_re_enabled(db, users, client):
+    db.add_all([
+        TrafficLocalNetwork(name="Legacy default route", network_cidr="0.0.0.0/0", is_enabled=True),
+        TrafficLocalNetwork(name="Legacy broad disabled", network_cidr="10.0.0.0/7", is_enabled=False),
+    ])
+    db.commit()
+    _login(client, users["admin"])
+    rows = {row["network_cidr"]: row for row in client.get(API).json()["local_networks"]}
+    assert rows["0.0.0.0/0"]["policy"]["allowed"] is False and "limit of /8" in rows["0.0.0.0/0"]["policy"]["message"]
+    assert rows["0.0.0.0/0"]["is_enabled"] is True  # never changed automatically
+    disabled_id = rows["10.0.0.0/7"]["id"]
+    refused = client.patch(f"{API}/{disabled_id}", json={"is_enabled": True}, headers={"x-csrf-token": CSRF})
+    assert refused.status_code == 400 and "cannot be re-enabled" in refused.json()["detail"]
+    db.expire_all()
+    assert db.get(TrafficLocalNetwork, disabled_id).is_enabled is False and _audits(db) == 0
+    # Renaming, disabling and removing an over-limit range still work.
+    enabled_id = rows["0.0.0.0/0"]["id"]
+    assert client.patch(f"{API}/{enabled_id}", json={"name": "Legacy renamed"}, headers={"x-csrf-token": CSRF}).status_code == 200
+    assert client.patch(f"{API}/{enabled_id}", json={"is_enabled": False}, headers={"x-csrf-token": CSRF}).status_code == 200
+    assert client.delete(f"{API}/{disabled_id}", headers={"x-csrf-token": CSRF}).status_code == 200
+
+
+def test_policy_mutations_keep_admin_csrf_and_atomic_audit(db, users, client, monkeypatch):
+    _login(client, users["viewer"])
+    assert _post(client, "10.0.0.0/8", confirm_broad=True).status_code == 403
+    _login(client, users["admin"])
+    assert _post(client, "10.0.0.0/8", confirm_broad=True, token="wrong-synthetic-token").status_code == 400
+    monkeypatch.setattr(network_monitor, "write_audit", lambda *args, **kwargs: None)
+    assert _post(client, "10.0.0.0/8", confirm_broad=True).status_code == 500
+    db.expire_all()
+    assert db.query(TrafficLocalNetwork).count() == 0
+
+
+def test_vlan_and_exporter_mapping_validation_are_unchanged(db, users, client):
+    source = _source(db)
+    vlan = VLAN(name=f"Synthetic wide VLAN {uuid.uuid4().hex[:6]}", subnet_cidr="10.0.0.0/7")
+    db.add(vlan)
+    db.commit()
+    _login(client, users["admin"])
+    response = client.post("/api/network-discovery/network-mappings", json={"source_id": source.id, "exporter_identity": "192.0.2.1", "vlan_id": vlan.id, "is_enabled": True}, headers={"x-csrf-token": CSRF})
+    assert response.status_code in (200, 201), response.text
+    assert db.query(TrafficDiscoveryNetworkMapping).filter_by(vlan_id=vlan.id).count() == 1

@@ -422,6 +422,23 @@ try {
     await rowFor('203.0.113.0/24').getByRole('button', { name: /Remove/i }).click();
     await waitStatus(/removed/);
     if (await rowFor('203.0.113.0/24').count() !== 0) throw new Error('removed network still listed');
+    // A broad but permitted range asks for confirmation (server-enforced), then shows its note.
+    let broadPrompt = '';
+    const consoleBeforeBroad = evidence.console.length;
+    page.once('dialog', dialog => { broadPrompt = dialog.message(); dialog.accept().catch(() => {}); });
+    await form.locator('[name="name"]').fill('Stage2B broad');
+    await form.locator('[name="network_cidr"]').fill('10.0.0.0/12');
+    await form.getByRole('button', { name: /Add local network/i }).click();
+    await waitStatus(/Local network added/);
+    if (!/broad range/i.test(broadPrompt)) throw new Error(`broad range was not confirmed: ${broadPrompt}`);
+    // The browser logs the deliberate 428 confirmation request; verify and exclude only that entry.
+    for (let attempt = 0; attempt < 20 && evidence.console.length === consoleBeforeBroad; attempt += 1) await page.waitForTimeout(100);
+    const confirmation = evidence.console.splice(consoleBeforeBroad);
+    if (confirmation.length !== 1 || !/428/.test(confirmation[0])) throw new Error(`unexpected console output for broad range: ${JSON.stringify(confirmation)}`);
+    if (!/Broad range \(\/12\)/.test(await rowFor('10.0.0.0/12').innerText())) throw new Error('broad range note missing');
+    page.once('dialog', dialog => dialog.accept().catch(() => {}));
+    await rowFor('10.0.0.0/12').getByRole('button', { name: /Remove/i }).click();
+    await waitStatus(/removed/);
     await page.goto(`${base}/networking/ip-wan-monitor/traffic/devices`, { waitUntil: 'networkidle' });
     if (!(await page.locator('[data-device-usage-accounting-notice]').isHidden())) throw new Error('notice still shown after re-enabling');
     await screenshot(page, 'local-network-settings');

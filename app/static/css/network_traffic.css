@@ -129,6 +129,8 @@ html[data-theme=light] .traffic-page, html[data-kaya-theme=light-ops] .traffic-p
 .device-usage-source + .device-usage-source { margin-top: 4px; }
 .device-usage-source small, .device-usage-separate { display: block; font-size: 11px; }
 .device-usage-separate { color: var(--traffic-warn, var(--muted)); font-weight: 650; margin-top: 4px; }
+.local-network-table td small { display: block; font-size: 11px; margin-top: 3px; }
+.local-network-table .local-network-invalid { color: var(--danger, #f87171); font-weight: 650; }
 @media (max-width: 560px) { .device-usage-toolbar { align-items: stretch; } .device-usage-search { width: 100%; } }
 
 /* Shared */

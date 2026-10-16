@@ -72,11 +72,35 @@ def validate_destination(value: str | None) -> str | None:
     return str(address)
 
 
+# Network Traffic local accounting networks only (not VLAN subnets or exporter
+# mappings): every endpoint inside them is accounted, so default routes and very
+# broad ranges would make public addresses eligible and grow storage without bound.
+LOCAL_NETWORK_MIN_PREFIX = {4: 8, 6: 32}
+LOCAL_NETWORK_BROAD_BELOW = {4: 16, 6: 48}
+
+
+def local_network_policy(cidr: str) -> dict:
+    """Classify a stored or proposed local network against the breadth limits."""
+    try:
+        network = ip_network(str(cidr).strip(), strict=False)
+    except ValueError:
+        return {"allowed": False, "broad": False, "message": "Not a valid IPv4 or IPv6 CIDR."}
+    minimum = LOCAL_NETWORK_MIN_PREFIX[network.version]
+    if network.prefixlen < minimum:
+        return {"allowed": False, "broad": False, "message": f"Broader than the IPv{network.version} limit of /{minimum}. Remove it and add a narrower range."}
+    if network.prefixlen < LOCAL_NETWORK_BROAD_BELOW[network.version]:
+        return {"allowed": True, "broad": True, "message": f"Broad range (/{network.prefixlen}): every address inside it is accounted."}
+    return {"allowed": True, "broad": False, "message": None}
+
+
 def validate_local_network(value: str) -> str:
     try:
         network = ip_network(value.strip(), strict=False)
     except ValueError as exc:
         raise ValueError("Local network must be a valid IPv4 or IPv6 CIDR.") from exc
+    minimum = LOCAL_NETWORK_MIN_PREFIX[network.version]
+    if network.prefixlen < minimum:
+        raise ValueError(f"Local network is too broad: IPv{network.version} ranges must be /{minimum} or narrower.")
     return str(network)
 
 
