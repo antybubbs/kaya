@@ -124,6 +124,8 @@ a:hover,.panel a:hover{color:var(--k-amber-hover)}
 .eyebrow,.record-kicker,.about-kicker,.ha-sync-eyebrow,.login-kicker{color:var(--k-amber-text)!important;font-size:11px!important;font-weight:600!important;letter-spacing:.08em!important;text-transform:uppercase}
 .module-stat,.record-identifier{color:var(--k-muted)!important;font-weight:500!important;font-size:12px!important;background:var(--k-inset);border:1px solid var(--k-border);border-radius:999px;padding:3px 10px}
 .module-stat strong{color:var(--k-strong)!important;font-family:var(--k-mono)}
+.dns-provider-state{flex-wrap:wrap!important;min-width:0!important;max-width:100%!important}
+.module-stat{max-width:100%!important;overflow:hidden!important;text-overflow:ellipsis!important}
 .live-indicator{background:var(--k-green-soft)!important;border:1px solid var(--k-green-line)!important;color:var(--k-green-text)!important;font-weight:500!important}
 .live-indicator i{background:var(--k-green)!important;box-shadow:0 0 0 3px var(--k-green-soft)}
 
