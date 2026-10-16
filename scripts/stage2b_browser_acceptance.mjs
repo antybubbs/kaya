@@ -214,6 +214,66 @@ try {
     if (legacy.summary.download_bytes !== 1000 || legacy.summary.upload_bytes !== 300) throw new Error(`existing monitored totals changed ${JSON.stringify(legacy.summary)}`);
     evidence.doorbell = { seeded, inspected, finalRow: usage.cells };
   });
+  await run('wan-selected-period-transfer-totals', async () => {
+    // Journey D: WAN transfer totals follow the History Range and WAN source,
+    // computed from seeded SNMP counter history; live throughput stays live.
+    const page = admin;
+    const seeded = JSON.parse(execFileSync(process.env.KAYA_STAGE2B_PYTHON, ['scripts/stage2b_seed_wan_history.py'], { encoding: 'utf8' }).trim().split('\n').at(-1));
+    const formatBytes = (value) => { const units = ['B', 'KB', 'MB', 'GB', 'TB']; let number = Number(value); let index = 0; while (number >= 1024 && index < units.length - 1) { number /= 1024; index += 1; } return `${number.toFixed(number >= 100 || index === 0 ? 0 : 1)} ${units[index]}`; };
+    const reports = [];
+    page.on('request', request => { if (request.url().includes('/traffic/report')) reports.push(request.url()); });
+    await page.goto(`${base}/networking/ip-wan-monitor/traffic`, { waitUntil: 'networkidle' });
+    const cards = async () => ({
+      download: (await page.locator('[data-summary="download_bytes_period"]').innerText()).trim(),
+      upload: (await page.locator('[data-summary="upload_bytes_period"]').innerText()).trim(),
+      downloadQuality: (await page.locator('[data-summary-quality="download_bytes_period"]').innerText()).trim(),
+      label: (await page.locator('[data-period-label]').first().innerText()).trim(),
+      live: (await page.locator('[data-summary="download_bps"]').innerText()).trim(),
+    });
+    const select = async (selector, value) => {
+      const [response] = await Promise.all([page.waitForResponse(response => response.url().includes('/traffic/report')), page.locator(selector).selectOption(value)]);
+      if (response.status() !== 200) throw new Error(`report status ${response.status()} for ${value}`);
+      const body = await response.json();
+      await page.waitForLoadState('networkidle');
+      return body.wan.summary;
+    };
+    const checked = {};
+    for (const [range, label] of [['24h', '24 hours'], ['7d', '7 days'], ['30d', '30 days'], ['90d', '90 days']]) {
+      const summary = await select('[data-traffic-range]', range);
+      const want = seeded.ranges[range].all;
+      if (summary.download_bytes_period !== want.download || summary.upload_bytes_period !== want.upload) throw new Error(`${range} totals ${JSON.stringify(summary.period)} expected ${JSON.stringify(want)}`);
+      const shown = await cards();
+      if (shown.download !== formatBytes(want.download) || shown.upload !== formatBytes(want.upload)) throw new Error(`${range} cards ${JSON.stringify(shown)}`);
+      if (!shown.label.includes(label)) throw new Error(`${range} card label ${shown.label}`);
+      if (!/coverage/i.test(shown.downloadQuality)) throw new Error(`${range} coverage text ${shown.downloadQuality}`);
+      if (shown.live === 'No data') throw new Error('live throughput card lost its value');
+      checked[range] = { download: summary.download_bytes_period, coverage: summary.period.coverage };
+    }
+    // 24h has twelve 5-minute buckets without a counter delta on one interface.
+    await select('[data-traffic-range]', '24h');
+    if (!/partial/i.test((await cards()).downloadQuality)) throw new Error('missing counter buckets were not reported as partial coverage');
+    // WAN source filter.
+    await page.waitForFunction(id => [...document.querySelectorAll('[data-traffic-source] option')].some(option => option.value === String(id)), seeded.sources.b);
+    const backup = await select('[data-traffic-source]', String(seeded.sources.b));
+    if (backup.download_bytes_period !== seeded.ranges['24h'].b.download) throw new Error(`source filter ${JSON.stringify(backup.period)}`);
+    if ((await cards()).download !== formatBytes(seeded.ranges['24h'].b.download)) throw new Error('source-filtered card did not update');
+    await select('[data-traffic-source]', '');
+    // Custom range: choosing Custom alone, or only a start, sends no request.
+    const before = reports.length;
+    await page.locator('[data-traffic-range]').selectOption('custom');
+    await page.locator('[data-traffic-start]').fill(seeded.custom.start);
+    await page.locator('[data-traffic-start]').dispatchEvent('change');
+    await page.waitForTimeout(300);
+    if (reports.length !== before) throw new Error('an incomplete custom range was requested');
+    await page.locator('[data-traffic-end]').fill(seeded.custom.end);
+    const [customResponse] = await Promise.all([page.waitForResponse(response => response.url().includes('/traffic/report') && response.url().includes('range=custom')), page.locator('[data-traffic-end]').dispatchEvent('change')]);
+    const custom = (await customResponse.json()).wan.summary;
+    if (custom.download_bytes_period !== seeded.custom.all.download || custom.upload_bytes_period !== seeded.custom.all.upload || custom.period.bucket_seconds !== 3600) throw new Error(`custom totals ${JSON.stringify(custom.period)} expected ${JSON.stringify(seeded.custom.all)}`);
+    await page.waitForLoadState('networkidle');
+    if ((await cards()).download !== formatBytes(seeded.custom.all.download)) throw new Error('custom card did not update');
+    await screenshot(page, 'wan-selected-period-totals');
+    evidence.wan = { checked, custom: custom.period, backup: backup.period };
+  });
   await run('mobile-layout-focus-and-browser-quality', async () => {
     const mobile = await session(adminEmail, true);
     await assertPage(mobile, '/networking/ip-wan-monitor/traffic/devices', [/Device Usage/i], 'mobile device usage');

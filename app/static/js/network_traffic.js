@@ -36,6 +36,24 @@
     const quality = app.querySelector(`[data-summary-quality="${key}"]`);
     if (quality) quality.textContent = approximate ? "Estimated from counter intervals" : value == null ? "Awaiting measurements" : "Observed data";
   };
+  const customRangeQuery = (startSelector, endSelector) => {
+    const start = app.querySelector(startSelector)?.value || ""; const end = app.querySelector(endSelector)?.value || "";
+    if (!start || !end || start >= end) return null;
+    return `&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`;
+  };
+  const overviewRangeQuery = () => {
+    const selectedRange = app.querySelector("[data-traffic-range]")?.value || "24h";
+    if (selectedRange !== "custom") return `range=${encodeURIComponent(selectedRange)}`;
+    const custom = customRangeQuery("[data-traffic-start]", "[data-traffic-end]");
+    return custom ? `range=custom${custom}` : null;
+  };
+  const setPeriodSummary = (direction, summary) => {
+    const period = summary.period || {}; const key = `${direction}_bytes_period`;
+    const target = app.querySelector(`[data-summary="${key}"]`); if (target) target.textContent = formatBytes(period[`${direction}_bytes`]);
+    const coverage = period[`${direction}_coverage_percent`];
+    const quality = app.querySelector(`[data-summary-quality="${key}"]`);
+    if (quality) quality.textContent = period[`${direction}_bytes`] == null ? "No counter data in this period" : `Counter-derived · ${coverage == null ? "unknown" : `${coverage}%`} coverage${period.coverage === "partial" ? " (partial)" : ""}`;
+  };
   const cssToken = (name, fallback) => (getComputedStyle(app).getPropertyValue(name) || "").trim() || fallback;
   const chartTheme = () => ({ download: cssToken("--traffic-download", "#ff8a00"), upload: cssToken("--traffic-upload", "#2dd4bf"), muted: cssToken("--muted", "#9ca3af"), grid: cssToken("--traffic-line-soft", "rgba(148,163,184,.16)"), line: cssToken("--traffic-line", "#2a303a"), panel: cssToken("--panel", "#14171d"), text: cssToken("--text", "#f5f5f2") });
   const areaFill = (colour) => window.echarts ? new window.echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: `${colour}40` }, { offset: 1, color: `${colour}00` }]) : undefined;
@@ -54,7 +72,7 @@
   };
   const renderDeviceDetail = (detail) => { const section = app.querySelector("[data-device-detail]"); const target = app.querySelector("[data-device-chart]"); if (!section || !target || !detail) { if (section) section.hidden = true; return; } section.hidden = false; app.querySelector("[data-device-detail-title]").textContent = `Device history · ${detail.ip_address_id}`; app.querySelector("[data-device-detail-quality]").textContent = `${detail.bucket_seconds}s persisted volume buckets`; if (!window.echarts) return; deviceChart = deviceChart || window.echarts.init(target); const history = detail.history || []; lastDeviceHistory = history; deviceChart.setOption(lineChartOptions(history, "bytes", formatBytes), true); };
   const renderDevices = (devices) => { const target = app.querySelector("[data-device-rows]"); const empty = app.querySelector("[data-device-empty]"); if (!target) return; const query = (app.querySelector("[data-device-search]")?.value || "").trim().toLowerCase(); const sort = app.querySelector("[data-device-sort]")?.value || "total"; const visible = devices.filter((item) => !query || `${item.name} ${item.address} ${item.vlan || ""}`.toLowerCase().includes(query)).sort((left, right) => sort === "name" ? left.name.localeCompare(right.name) : sort === "last" ? String(right.last_observed_at || "").localeCompare(String(left.last_observed_at || "")) : Number(right[`${sort}_bytes`] || 0) - Number(left[`${sort}_bytes`] || 0)); empty && (empty.hidden = visible.length > 0); const peak = Math.max(1, ...visible.map((item) => Number(item.total_bytes) || 0)); const pct = (value) => Math.max(0, Math.min(100, ((Number(value) || 0) / peak) * 100)).toFixed(1); target.innerHTML = visible.length ? visible.map((item) => `<tr><th scope="row"><a href="/networking/vlan-ip-manager/${encodeURIComponent(item.id)}">${escape(item.name)}</a><small class="mono">${escape(item.address)}</small></th><td class="traffic-muted-cell">${escape(item.vlan || "-")}</td><td class="num">${formatBytes(item.download_bytes)}</td><td class="num">${formatBytes(item.upload_bytes)}</td><td><div class="traffic-total"><strong>${formatBytes(item.total_bytes)}</strong><span class="traffic-share" aria-hidden="true"><i class="traffic-download" style="width:${pct(item.download_bytes)}%"></i><i class="traffic-upload" style="width:${pct(item.upload_bytes)}%"></i></span></div></td><td class="traffic-muted-cell">${escape(dateLabel(item.last_observed_at))}</td><td class="traffic-muted-cell">${escape(item.quality)} · ${escape(item.confidence)}</td><td><span class="traffic-status traffic-status-${stateClass(item.status)}">${escape(item.status)}</span></td><td><button class="button secondary compact" type="button" data-device-select="${escape(item.id)}" aria-label="View history for ${escape(item.name)}">View</button></td></tr>`).join("") : `<tr><td colspan="9" class="muted">No matching opted-in devices.</td></tr>`; target.querySelectorAll("[data-device-select]").forEach((button) => button.addEventListener("click", () => loadDeviceDetail(button.dataset.deviceSelect))); };
-  const loadDeviceDetail = async (deviceId) => { const selectedRange = app.querySelector("[data-traffic-range]")?.value || "24h"; const payload = await request(`/networking/ip-wan-monitor/traffic/report?range=${encodeURIComponent(selectedRange)}&device_id=${encodeURIComponent(deviceId)}`); renderDeviceDetail(payload.device); };
+  const loadDeviceDetail = async (deviceId) => { const rangeQuery = overviewRangeQuery(); if (!rangeQuery) return; const payload = await request(`/networking/ip-wan-monitor/traffic/report?${rangeQuery}&device_id=${encodeURIComponent(deviceId)}`); renderDeviceDetail(payload.device); };
   const renderHealth = (sources) => {
     const target = app.querySelector("[data-traffic-source-health]"); if (!target) return;
     if (!sources.length) { target.innerHTML = `<p class="traffic-empty">No sources configured. ${canManage ? "Add a source to begin monitoring." : "Ask an administrator to configure a source."}</p>`; return; }
@@ -71,18 +89,27 @@
     target.innerHTML = flowSources.map((source) => `<div class="traffic-flow-source ${tone(source.health_state)}"><strong>${escape(source.name)}</strong><span>${escape(source.health_reason || source.health_state || "Unknown")}</span><small class="muted">Last packet: ${escape(dateLabel(source.last_received_at))} · Last decoded: ${escape(dateLabel(source.last_decoded_at))}</small></div>`).join("");
   };
   const loadOverview = async () => {
-    const selectedRange = app.querySelector("[data-traffic-range]")?.value || "24h";
+    const rangeQuery = overviewRangeQuery();
+    if (!rangeQuery) { setMessage("Choose a custom start and end, with the start before the end."); return; }
+    setMessage("");
+    const rangeSelect = app.querySelector("[data-traffic-range]");
+    app.querySelectorAll("[data-period-label]").forEach((label) => { label.textContent = `· ${rangeSelect?.selectedOptions?.[0]?.textContent || "selected period"}`; });
     const legacy = await request("/networking/ip-wan-monitor/traffic/overview");
     const sourceSelect = app.querySelector("[data-traffic-source]"); const selectedSource = sourceSelect?.value || "";
     if (sourceSelect) { const prior = selectedSource; sourceSelect.innerHTML = `<option value="">All enabled WAN interfaces</option>${(legacy.sources || []).filter((source) => source.provider_key === "snmpv3" && source.is_enabled).map((source) => `<option value="${escape(source.id)}">${escape(source.name)}</option>`).join("")}`; sourceSelect.value = prior; }
     const sourceQuery = selectedSource ? `&source_id=${encodeURIComponent(selectedSource)}` : ""; const selectedDevice = new URLSearchParams(window.location.search).get("device_id"); const deviceQuery = selectedDevice ? `&device_id=${encodeURIComponent(selectedDevice)}` : "";
-    const payload = await request(`/networking/ip-wan-monitor/traffic/report?range=${encodeURIComponent(selectedRange)}${sourceQuery}${deviceQuery}`);
+    const payload = await request(`/networking/ip-wan-monitor/traffic/report?${rangeQuery}${sourceQuery}${deviceQuery}`);
     const summary = payload.wan.summary; stateLabel && (stateLabel.textContent = legacy.module_enabled ? (summary.interface_count ? "WAN monitoring active" : "WAN monitoring not configured") : "Monitoring disabled");
-    setSummary("download_bps", summary.current_download_bps, summary.quality === "approximate"); setSummary("upload_bps", summary.current_upload_bps, summary.quality === "approximate"); setSummary("download_bytes_today", summary.download_bytes_today, summary.quality === "approximate"); setSummary("upload_bytes_today", summary.upload_bytes_today, summary.quality === "approximate"); setSummary("last_observation_at", summary.last_observation_at);
+    setSummary("download_bps", summary.current_download_bps, summary.quality === "approximate"); setSummary("upload_bps", summary.current_upload_bps, summary.quality === "approximate"); setPeriodSummary("download", summary); setPeriodSummary("upload", summary); setSummary("last_observation_at", summary.last_observation_at);
     const quality = app.querySelector("[data-report-quality]"); if (quality) quality.textContent = `${payload.wan.bucket_seconds}s persisted resolution · ${summary.quality} · no synthetic gaps`;
     window.__trafficDevices = payload.devices.devices || []; renderChart(payload.wan.history || []); renderDevices(window.__trafficDevices); renderDeviceDetail(payload.device); renderHealth(legacy.sources || []); renderFlowSummary(legacy);
   };
-  app.querySelector("[data-traffic-range]")?.addEventListener("change", () => loadOverview().catch((error) => setMessage(error.message, true)));
+  app.querySelector("[data-traffic-range]")?.addEventListener("change", () => {
+    const custom = app.querySelector("[data-traffic-range]").value === "custom";
+    app.querySelector("[data-traffic-custom-start]")?.toggleAttribute("hidden", !custom); app.querySelector("[data-traffic-custom-end]")?.toggleAttribute("hidden", !custom);
+    if (!custom || overviewRangeQuery()) loadOverview().catch((error) => setMessage(error.message, true));
+  });
+  ["[data-traffic-start]", "[data-traffic-end]"].forEach((selector) => app.querySelector(selector)?.addEventListener("change", () => { if (overviewRangeQuery()) loadOverview().catch((error) => setMessage(error.message, true)); }));
   app.querySelector("[data-traffic-source]")?.addEventListener("change", () => loadOverview().catch((error) => setMessage(error.message, true)));
   app.querySelector("[data-device-search]")?.addEventListener("input", () => { if (window.__trafficDevices) renderDevices(window.__trafficDevices); });
   app.querySelector("[data-device-sort]")?.addEventListener("change", () => { if (window.__trafficDevices) renderDevices(window.__trafficDevices); });
@@ -120,9 +147,9 @@
     const range = app.querySelector("[data-device-usage-range]")?.value || "24h";
     const sort = app.querySelector("[data-device-usage-sort]")?.value || "total";
     const query = app.querySelector("[data-device-usage-search]")?.value || "";
-    const start = app.querySelector("[data-device-usage-start]")?.value || "";
-    const end = app.querySelector("[data-device-usage-end]")?.value || "";
-    const customQuery = range === "custom" ? `&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}` : "";
+    const customQuery = range === "custom" ? customRangeQuery("[data-device-usage-start]", "[data-device-usage-end]") : "";
+    if (customQuery === null) { setMessage("Choose a custom start and end, with the start before the end."); return; }
+    setMessage("");
     const payload = await request(`/networking/ip-wan-monitor/traffic/device-usage?range=${encodeURIComponent(range)}&q=${encodeURIComponent(query)}&page=${deviceUsagePage}&sort=${encodeURIComponent(sort)}${customQuery}`);
     renderDeviceUsage(payload);
   };

@@ -92,7 +92,7 @@ from app.services.network_traffic import (
     validate_local_network,
     validate_source_input,
 )
-from app.services.network_traffic_reporting import device_history, device_report, device_usage_report, report_window, wan_report
+from app.services.network_traffic_reporting import custom_report_window, device_history, device_report, device_usage_report, report_window, wan_report
 from app.services.network_traffic_poller import (
     discover_source_interfaces,
     persist_discovered_interfaces,
@@ -1142,15 +1142,22 @@ def traffic_overview(db: Session = Depends(get_db), user=Depends(require_user)):
 
 @router.get("/traffic/report")
 def traffic_reporting_report(
-    report_range: str = Query("24h", alias="range", max_length=4),
+    report_range: str = Query("24h", alias="range", max_length=6),
+    start: str | None = Query(None, max_length=40),
+    end: str | None = Query(None, max_length=40),
     source_id: int | None = Query(None, ge=1),
     device_id: int | None = Query(None, ge=1),
     db: Session = Depends(get_db),
     user=Depends(require_user),
 ):
     """Return the bounded reporting payload used by the central dashboard."""
+    window = None
     try:
-        report_window(report_range)
+        if report_range == "custom":
+            # One validated window (site timezone) for the graph, totals and devices.
+            window = custom_report_window(db, start, end)
+        else:
+            report_window(report_range)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if source_id is not None and not db.query(TrafficSource.id).filter(
@@ -1165,11 +1172,11 @@ def traffic_reporting_report(
         TrafficDeviceMonitoring.is_enabled.is_(True),
     ).first():
         raise HTTPException(status_code=404, detail="Opted-in device not found")
-    payload = {"wan": wan_report(db, report_range=report_range, source_id=source_id), "devices": {"available": False, "range": report_range, "bucket_seconds": None, "devices": []}}
+    payload = {"wan": wan_report(db, report_range=report_range, source_id=source_id, window=window), "devices": {"available": False, "range": report_range, "bucket_seconds": None, "devices": []}}
     if device_reporting_available:
-        payload["devices"] = {"available": True, **device_report(db, report_range=report_range, now=None)}
+        payload["devices"] = {"available": True, **device_report(db, report_range=report_range, now=None, window=window)}
     if device_id is not None:
-        payload["device"] = device_history(db, device_id, report_range=report_range)
+        payload["device"] = device_history(db, device_id, report_range=report_range, window=window)
     return payload
 
 

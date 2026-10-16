@@ -85,8 +85,32 @@ def _wan_current(db: Session, interfaces: list[TrafficInterface]) -> tuple[int |
     return download, upload, latest_at
 
 
-def wan_report(db: Session, *, report_range: str = "24h", source_id: int | None = None, now: datetime | None = None) -> dict:
-    selected, start, bucket_seconds = report_window(report_range, now=now)
+def custom_report_window(db: Session, start_text: str | None, end_text: str | None, *, now: datetime | None = None) -> tuple[str, datetime, int, datetime]:
+    """Validate a custom range once, in the site timezone, for every report on the page.
+
+    Uses the same persisted-resolution rule as the preset ranges.
+    """
+    window = resolve_range(db, "custom", start_text, end_text, now=now)
+    start, end = window["start"], window["end"]
+    duration = end - start
+    bucket_seconds = 300 if duration <= timedelta(hours=24) else 3600 if duration <= timedelta(days=7) else 86400
+    return "custom", start, bucket_seconds, end
+
+
+def _period_bucket_count(start: datetime, end: datetime, bucket_seconds: int) -> int:
+    """Number of persisted buckets whose start lies in ``[start, end)``."""
+    epoch = int((start - datetime(1970, 1, 1)).total_seconds())
+    first = epoch + (-epoch % bucket_seconds)
+    last = int((end - datetime(1970, 1, 1)).total_seconds())
+    return max(0, (last - first + bucket_seconds - 1) // bucket_seconds)
+
+
+def wan_report(db: Session, *, report_range: str = "24h", source_id: int | None = None, now: datetime | None = None, window: tuple | None = None) -> dict:
+    if window is not None:
+        selected, start, bucket_seconds, end = window
+    else:
+        selected, start, bucket_seconds = report_window(report_range, now=now)
+        end = now or datetime.utcnow()
     now = now or datetime.utcnow()
     interfaces = _wan_interfaces(db, source_id)
     interface_ids = {item.id for item in interfaces}
@@ -94,12 +118,17 @@ def wan_report(db: Session, *, report_range: str = "24h", source_id: int | None 
         TrafficAggregate.interface_id.in_(interface_ids or [-1]),
         TrafficAggregate.bucket_seconds == bucket_seconds,
         TrafficAggregate.bucket_start >= start,
+        TrafficAggregate.bucket_start < end,
         TrafficAggregate.direction.in_(["download", "upload"]),
-    ).order_by(TrafficAggregate.bucket_start.asc()).limit(MAX_REPORT_ROWS)
+    ).order_by(TrafficAggregate.bucket_start.asc()).limit(MAX_REPORT_ROWS + 1)
     rows = query.all()
+    truncated = len(rows) > MAX_REPORT_ROWS
+    rows = rows[:MAX_REPORT_ROWS]
     history: dict[datetime, dict] = {}
     totals = {"download": 0, "upload": 0}
+    covered: dict[str, set] = {"download": set(), "upload": set()}
     for row in rows:
+        covered[row.direction].add((row.interface_id, row.bucket_start))
         point = history.setdefault(row.bucket_start, {"download_bytes": 0, "upload_bytes": 0, "approximate": False, "quality": "observed"})
         key = f"{row.direction}_bytes"
         point[key] += max(0, int(row.bytes_total or 0))
@@ -117,6 +146,18 @@ def wan_report(db: Session, *, report_range: str = "24h", source_id: int | None 
     ).limit(MAX_REPORT_ROWS).all():
         today[row.direction] += max(0, int(row.bytes_total or 0))
     current_download, current_upload, current_at = _wan_current(db, interfaces)
+    # Selected-period transfer totals come from the same persisted, counter-
+    # derived rows and boundaries as the history graph; they are never derived
+    # from displayed rates. Buckets without a delta (no poll, counter reset or
+    # rejected sample) are reported as missing coverage, not as zero traffic.
+    expected = _period_bucket_count(start, end, bucket_seconds) * len(interfaces)
+    period = {"start": _iso(start), "end": _iso(end), "bucket_seconds": bucket_seconds, "expected_buckets": expected, "truncated": truncated}
+    for direction in ("download", "upload"):
+        present = len(covered[direction])
+        period[f"{direction}_bytes"] = totals[direction] if present else None
+        period[f"{direction}_coverage_percent"] = min(100, round(present / expected * 100)) if expected else None
+    coverages = [period["download_coverage_percent"], period["upload_coverage_percent"]]
+    period["coverage"] = "unavailable" if not any(covered.values()) else "partial" if truncated or any(value is None or value < 100 for value in coverages) else "complete"
     history_items = []
     for at, value in history.items():
         item = {"at": _iso(at), **value}
@@ -133,6 +174,9 @@ def wan_report(db: Session, *, report_range: str = "24h", source_id: int | None 
             "download_bytes_today": today["download"],
             "upload_bytes_today": today["upload"],
             "total_bytes": totals["download"] + totals["upload"],
+            "download_bytes_period": period["download_bytes"],
+            "upload_bytes_period": period["upload_bytes"],
+            "period": period,
             "last_observation_at": _iso(current_at),
             "interface_count": len(interfaces),
             "quality": "approximate" if any(point["approximate"] for point in history.values()) else "observed",
@@ -238,21 +282,24 @@ def _device_rows(
     return sorted(grouped.values(), key=lambda item: (-item["total_bytes"], item["name"].lower()))
 
 
-def device_report(db: Session, *, report_range: str = "24h", ip_address_id: int | None = None, now: datetime | None = None) -> dict:
-    selected, start, bucket_seconds = report_window(report_range, now=now)
-    rows = _device_rows(db, start=start, bucket_seconds=bucket_seconds, ip_address_id=ip_address_id)
+def device_report(db: Session, *, report_range: str = "24h", ip_address_id: int | None = None, now: datetime | None = None, window: tuple | None = None) -> dict:
+    selected, start, bucket_seconds, end = window if window is not None else (*report_window(report_range, now=now), None)
+    rows = _device_rows(db, start=start, bucket_seconds=bucket_seconds, ip_address_id=ip_address_id, end=end)
     return {"range": selected, "bucket_seconds": bucket_seconds, "devices": rows}
 
 
-def device_history(db: Session, ip_address_id: int, *, report_range: str = "24h", now: datetime | None = None) -> dict:
-    selected, start, bucket_seconds = report_window(report_range, now=now)
-    rows = db.query(TrafficDeviceAggregate).join(TrafficDeviceMonitoring, TrafficDeviceMonitoring.ip_address_id == TrafficDeviceAggregate.ip_address_id).filter(
+def device_history(db: Session, ip_address_id: int, *, report_range: str = "24h", now: datetime | None = None, window: tuple | None = None) -> dict:
+    selected, start, bucket_seconds, end = window if window is not None else (*report_window(report_range, now=now), None)
+    query = db.query(TrafficDeviceAggregate).join(TrafficDeviceMonitoring, TrafficDeviceMonitoring.ip_address_id == TrafficDeviceAggregate.ip_address_id).filter(
         TrafficDeviceAggregate.ip_address_id == ip_address_id,
         TrafficDeviceAggregate.assignment_id.is_(None),
         TrafficDeviceMonitoring.is_enabled.is_(True),
         TrafficDeviceAggregate.bucket_seconds == bucket_seconds,
         TrafficDeviceAggregate.bucket_start >= start,
-    ).order_by(TrafficDeviceAggregate.bucket_start.asc()).limit(MAX_REPORT_ROWS).all()
+    )
+    if end is not None:
+        query = query.filter(TrafficDeviceAggregate.bucket_start < end)
+    rows = query.order_by(TrafficDeviceAggregate.bucket_start.asc()).limit(MAX_REPORT_ROWS).all()
     points: dict[datetime, dict] = {}
     for row in rows:
         point = points.setdefault(row.bucket_start, {"download_bytes": 0, "upload_bytes": 0, "quality": "observed", "confidence": row.attribution_confidence})
@@ -386,12 +433,7 @@ def device_usage_report(
     caller lacks Asset Manager access.
     """
     if report_range == "custom":
-        window = resolve_range(db, "custom", start_text, end_text, now=now)
-        selected, start, end = window["key"], window["start"], window["end"]
-        # Device aggregates are persisted only at 5-minute, hourly and daily
-        # resolution; use the same selection rule as the preset ranges.
-        duration = end - start
-        bucket_seconds = 300 if duration <= timedelta(hours=24) else 3600 if duration <= timedelta(days=7) else 86400
+        selected, start, bucket_seconds, end = custom_report_window(db, start_text, end_text, now=now)
     else:
         selected, start, bucket_seconds = report_window(report_range, now=now)
         end = now or datetime.utcnow()

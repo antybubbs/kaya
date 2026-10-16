@@ -186,6 +186,31 @@ with VLAN, status, freshness, quality, and confidence fields. The dashboard
 uses the vendored ECharts library and the existing responsive page shell; the
 compact IP detail card remains linked to the Network Traffic dashboard.
 
+The Overview also accepts a bounded `custom` range (`start` and `end`, entered in
+the site timezone and validated together); the graph, transfer totals and device
+rows then share that one window. The browser sends a custom request only when both
+values are present and ordered.
+
+### Selected-period WAN transfer totals
+
+The two live cards (current download and upload) keep reporting the latest counter
+rate. The two transfer cards report bytes downloaded and uploaded over the selected
+History Range for the selected WAN source, or for all enabled WAN interfaces. They
+are the sum of the same persisted, counter-derived `traffic_aggregates` rows that
+draw the history graph, at the one resolution the range selects, for buckets whose
+start lies in `[start, end)`. They are never derived from displayed rates or chart
+points, and SNMP totals are never combined with NSEL/NetFlow usage.
+
+Buckets without a counter delta — no poll, a counter reset or discontinuity, or a
+rejected sample — are reported as missing coverage, not as zero traffic. The
+response includes per-direction coverage against the expected bucket count
+(`complete`, `partial` or `unavailable`); with no data in the period the totals are
+unavailable rather than zero. A missed poll's delta is spread proportionally across
+the buckets it spans, as before, and remains marked approximate. Because interface
+aggregates already exist per interface, summing all enabled WAN interfaces counts
+each interface once; interfaces that measure the same link should not both be
+marked as WAN.
+
 ## Device Usage
 
 The authenticated **Monitoring → Network Traffic → Device Usage** tab reports only
