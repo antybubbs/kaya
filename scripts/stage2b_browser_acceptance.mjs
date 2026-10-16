@@ -38,6 +38,12 @@ async function session(email, mobile = false) {
 }
 
 async function screenshot(page, name) { await page.screenshot({ path: `${artifacts}/${name}.png`, fullPage: true }); }
+// The Asset detail page groups sections into tabs; open one as a user would.
+async function openAssetTab(page, name) {
+  await page.getByRole('tab', { name }).click();
+  await page.locator('[data-asset-panel]:not([hidden])').first().waitFor();
+}
+
 async function assertPage(page, path, checks, name) {
   const started = performance.now();
   const response = await page.goto(`${base}${path}`, { waitUntil: 'networkidle' });
@@ -120,11 +126,12 @@ try {
   });
   await run('vlan-detail-and-asset-navigation', async () => {
     await assertPage(admin, '/networking/vlan-ip-manager/9251', [/Network Traffic/i], 'VLAN/IP detail');
-    await assertPage(admin, '/infrastructure/asset-manager/9401', [/Historical reporting/i, /Network Traffic/i], 'Asset Profile');
+    await assertPage(admin, '/infrastructure/asset-manager/9401?tab=history', [/Historical reporting/i, /Network Traffic/i], 'Asset Profile');
   });
   await run('static-context-enable-disable-and-csrf', async () => {
     const page = admin;
     await page.goto(`${base}/infrastructure/asset-manager/9450`, { waitUntil: 'networkidle' });
+    await openAssetTab(page, /Network & identity/);
     const contextForm = page.locator('[data-traffic-context-form]');
     if (await contextForm.count() !== 1) throw new Error('source-context form missing');
     await contextForm.locator('select[name="mapping_id"]').selectOption({ index: 1 });
@@ -134,11 +141,13 @@ try {
     if (!(await page.locator('body').innerText()).match(/Device tracking\s+Disabled/i)) throw new Error('context confirmation enabled device tracking');
     const noCsrf = await page.request.post(`${base}/infrastructure/asset-manager/9450/network-traffic`, { form: { enabled: '1', csrf_token: '' } });
     if (![400, 403, 422].includes(noCsrf.status())) throw new Error(`CSRF status ${noCsrf.status()}`);
+    await openAssetTab(page, /History & reporting/);
     const enable = page.locator('form[action$="/network-traffic"]');
     const enabledResponse = await Promise.all([page.waitForResponse(response => response.url().endsWith('/network-traffic')), enable.getByRole('button', { name: /Start device tracking/i }).click()]);
     if (enabledResponse[0].status() !== 303) throw new Error(`enable status ${enabledResponse[0].status()}`);
     await page.waitForLoadState('networkidle');
     if (!(await page.locator('body').innerText()).match(/Active|Awaiting data/i)) throw new Error('enabled state missing');
+    await openAssetTab(page, /History & reporting/);
     const disable = page.locator('form[action$="/network-traffic"]');
     await disable.getByRole('button', { name: /Stop device tracking/i }).click();
     await page.waitForLoadState('networkidle');
@@ -179,7 +188,7 @@ try {
       if (rows.length !== 1) throw new Error(`expected one Cisco-context row for ${address}, found ${rows.length}`);
       return rows[0];
     };
-    const profileBody = async () => { await page.goto(`${base}${doorbellUrl}`, { waitUntil: 'networkidle' }); return (await page.locator('#asset-traffic').innerText()).replace(/\s+/g, ' '); };
+    const profileBody = async () => { await page.goto(`${base}${doorbellUrl}?tab=history`, { waitUntil: 'networkidle' }); return (await page.locator('#asset-traffic').innerText()).replace(/\s+/g, ' '); };
     const api = async () => page.evaluate(async query => (await fetch(`/networking/ip-wan-monitor/traffic/device-usage?${query}`)).json(), `range=24h&q=${address}`);
 
     // 1-3: recognised and linked to its asset; observed without byte data yet.
@@ -192,6 +201,7 @@ try {
     // 4: the identity link opens the permanent asset record.
     await Promise.all([page.waitForURL(`**${doorbellUrl}`), usage.row.getByRole('link', { name: 'Stage2B Doorbell' }).click()]);
     // 5: confirmed assignment, optional tracking off and described as optional.
+    await openAssetTab(page, /History & reporting/);
     const assetBody = await page.locator('body').innerText();
     if (!assetBody.includes(address)) throw new Error('assignment address missing from Asset Profile');
     if (!/Device tracking\s+Disabled/i.test(assetBody)) throw new Error('doorbell tracking was not disabled before the journey');
@@ -245,9 +255,10 @@ try {
     const seeded = JSON.parse(execFileSync(process.env.KAYA_STAGE2B_PYTHON, ['scripts/stage2b_seed_endpoint_flows.py'], { encoding: 'utf8' }).trim().split('\n').at(-1));
     const inspect = () => JSON.parse(execFileSync(process.env.KAYA_STAGE2B_PYTHON, ['scripts/stage2b_seed_endpoint_flows.py', '--inspect'], { encoding: 'utf8' }).trim().split('\n').at(-1));
     const usage = async (address, range = '24h') => (await page.evaluate(async query => (await fetch(`/networking/ip-wan-monitor/traffic/device-usage?${query}`)).json(), `range=${range}&q=${encodeURIComponent(address)}`)).devices.filter(row => row.address === address);
-    const profile = async (assetId) => { await page.goto(`${base}/infrastructure/asset-manager/${assetId}`, { waitUntil: 'networkidle' }); return (await page.locator('#asset-traffic').innerText()).replace(/\s+/g, ' '); };
+    const profile = async (assetId) => { await page.goto(`${base}/infrastructure/asset-manager/${assetId}?tab=history`, { waitUntil: 'networkidle' }); return (await page.locator('#asset-traffic').innerText()).replace(/\s+/g, ' '); };
     const confirm = async (assetId, assignmentId) => {
       await page.goto(`${base}/infrastructure/asset-manager/${assetId}`, { waitUntil: 'networkidle' });
+      await openAssetTab(page, /Network & identity/);
       const form = page.locator(`form[action$="/network-assignment/${assignmentId}/confirm"]`);
       // Another scenario may have left a one-shot dialog handler registered.
       page.once('dialog', dialog => dialog.accept().catch(() => {}));
@@ -421,6 +432,74 @@ try {
     if (await viewer.locator('[data-local-network-form]').count() !== 0 || await viewer.locator('[data-local-network-rows] button').count() !== 0) throw new Error('read-only user sees local network controls');
     const denied = await viewer.request.post(`${base}/networking/ip-wan-monitor/traffic/local-networks`, { data: { name: 'Viewer attempt', network_cidr: '198.18.0.0/15' } });
     if (![400, 403].includes(denied.status())) throw new Error(`viewer create status ${denied.status()}`);
+  });
+  await run('asset-detail-design-a', async () => {
+    // Redesigned Asset detail page: real values bound, empty states, tabs, actions.
+    const page = admin;
+    const text = async selector => (await page.locator(selector).innerText()).replace(/\s+/g, ' ').trim();
+    const fact = async caption => (await page.locator('.ad-fact').filter({ has: page.locator('.ad-cap', { hasText: caption }) }).first().innerText()).replace(/\s+/g, ' ').trim();
+    await page.goto(`${base}/infrastructure/asset-manager/9401`, { waitUntil: 'networkidle' });
+    const body = await page.locator('[data-asset-page]').innerText();
+    for (const sample of ['zappi', 'HAL-0007', '192.168.1.197', '28:97:b8']) if (body.includes(sample)) throw new Error(`reference sample value shown: ${sample}`);
+    if (!/Infrastructure \/ Asset Manager \/ Stage2B Asset 001/.test(await text('.ad-breadcrumb'))) throw new Error(`breadcrumb ${await text('.ad-breadcrumb')}`);
+    if (await page.locator('.ad-breadcrumb a[href="/infrastructure/asset-manager"]').count() !== 1) throw new Error('breadcrumb link to asset list missing');
+    if (await text('.ad-title-row h1') !== 'Stage2B Asset 001' || !(await text('.ad-tag')).includes('STAGE2B-001')) throw new Error('title or tag not bound');
+    if (!/● In use/.test(await text('.ad-pill-row')) || !/No category/.test(await text('.ad-pill-row')) || !/No location/.test(await text('.ad-pill-row'))) throw new Error(`pills ${await text('.ad-pill-row')}`);
+    if (!/^Last seen on the network \d{1,2} \w{3} \d{4}, \d{2}:\d{2} · Created \d{1,2} \w{3} \d{4}$/.test(await text('.ad-meta'))) throw new Error(`meta line ${await text('.ad-meta')}`);
+    const facts = { ip: await fact('Current IP'), mac: await fact('MAC address'), host: await fact('Hostname'), tracking: await fact('Device tracking'), warranty: await fact('Warranty') };
+    if (!/192\.0\.2\.11/.test(facts.ip) || !/Stage2B LAN A · Static/.test(facts.ip)) throw new Error(`current IP ${facts.ip}`);
+    if (!/02:00:00:00:00:01 Confirmed/.test(facts.mac)) throw new Error(`MAC ${facts.mac}`);
+    if (!/Not recorded/.test(facts.host) || !/Not recorded Add purchase details/.test(facts.warranty)) throw new Error(`empty states ${JSON.stringify(facts)}`);
+    // The tracking cell shows the same lifecycle value as the History tab's Network Traffic section.
+    const historyTracking = (await page.locator('#asset-traffic dd').first().textContent()).trim();
+    if (!facts.tracking.endsWith(historyTracking) && !facts.tracking.includes(` ${historyTracking}`)) throw new Error(`tracking ${facts.tracking} vs ${historyTracking}`);
+    if (!/^2 of 8 fields filled$/.test(await text('.ad-progress-wrap'))) throw new Error(`fields filled ${await text('.ad-progress-wrap')}`);
+    if (!/Add a purchase date and warranty/.test(body) || !/No notes yet\./.test(body)) throw new Error('purchase hint or notes empty state missing');
+    if (!/MAC 02:00:00:00:00:01 via dns Confirmed/.test(await text('.ad-identity-list'))) throw new Error(`identity card ${await text('.ad-identity-list')}`);
+    if (!/Network assignment 192\.0\.2\.11/.test(await text('.ad-activity'))) throw new Error(`recent activity ${await text('.ad-activity')}`);
+    // Tabs: keyboard, URL sync and reload.
+    await page.getByRole('tab', { name: /^Overview/ }).focus();
+    await page.keyboard.press('ArrowRight');
+    if (new URL(page.url()).searchParams.get('tab') !== 'network' || await page.getByRole('tab', { name: /Network & identity/ }).getAttribute('aria-selected') !== 'true') throw new Error('arrow key did not select the next tab');
+    if (!/^Network & identity 2$/.test((await page.getByRole('tab', { name: /Network & identity/ }).innerText()).replace(/\s+/g, ' ').trim())) throw new Error('network count pill');
+    await page.getByRole('tab', { name: /Files/ }).click();
+    if (new URL(page.url()).searchParams.get('tab') !== 'files') throw new Error(`tab not synced to URL ${page.url()}`);
+    await page.reload({ waitUntil: 'networkidle' });
+    if (await page.getByRole('tab', { name: /Files/ }).getAttribute('aria-selected') !== 'true' || await page.locator('#asset-panel-files').isHidden()) throw new Error('tab lost after reload');
+    // Edit through "+ Set category" uses the existing inline edit; cancel restores view.
+    await page.getByRole('tab', { name: /^Overview/ }).click();
+    await page.getByRole('button', { name: '+ Set category' }).click();
+    if (!(await page.locator('form[data-inline-edit]').getAttribute('class')).includes('is-editing')) throw new Error('edit mode not entered');
+    if ((await page.evaluate(() => document.activeElement?.getAttribute('name'))) !== 'category') throw new Error('category field not focused');
+    if (!(await page.locator('[data-edit-save]').isVisible())) throw new Error('Save hidden in edit mode');
+    await page.getByRole('button', { name: /^Cancel$/ }).click();
+    if (await page.locator('[data-edit-save]').isVisible() || await page.locator('[data-edit-cancel]').isVisible()) throw new Error('Save/Cancel visible outside edit mode');
+    // Upload file opens the existing attachment picker in Files.
+    const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.getByRole('button', { name: /Upload file/ }).click()]);
+    if (chooser.isMultiple() || await page.getByRole('tab', { name: /Files/ }).getAttribute('aria-selected') !== 'true') throw new Error('upload did not open the attachment picker');
+    // More actions holds Delete hardware asset (not executed) and closes on Escape.
+    await page.getByRole('tab', { name: /^Overview/ }).click();
+    await page.locator('[data-asset-menu] summary').click();
+    if (!(await page.getByRole('menuitem', { name: 'Delete hardware asset' }).isVisible())) throw new Error('delete action missing from menu');
+    await page.keyboard.press('Escape');
+    if (await page.getByRole('menuitem', { name: 'Delete hardware asset' }).isVisible()) throw new Error('menu did not close on Escape');
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await screenshot(page, 'asset-detail-desktop');
+    // Sparse asset: empty states, no invented last-seen time.
+    await page.goto(`${base}/infrastructure/asset-manager/9412`, { waitUntil: 'networkidle' });
+    if (/Last seen/.test(await text('.ad-meta'))) throw new Error('last seen shown without an observation');
+    if (!/Not recorded/.test(await fact('MAC address')) || !/192\.0\.2\.141/.test(await fact('Current IP'))) throw new Error('sparse asset facts');
+    // Mobile: actions drop below the title, facts and columns stack, no page overflow.
+    const mobile = await session(adminEmail, true);
+    await mobile.goto(`${base}/infrastructure/asset-manager/9401`, { waitUntil: 'networkidle' });
+    const geometry = await mobile.evaluate(() => {
+      const box = selector => document.querySelector(selector)?.getBoundingClientRect();
+      return { width: innerWidth, scroll: document.documentElement.scrollWidth, title: box('.ad-title-block'), actions: box('.ad-actions'), main: box('.ad-col-main'), side: box('.ad-col-side'), fact0: document.querySelectorAll('.ad-fact')[0]?.getBoundingClientRect(), fact1: document.querySelectorAll('.ad-fact')[1]?.getBoundingClientRect() };
+    });
+    if (geometry.scroll > geometry.width + 1) throw new Error(`mobile horizontal overflow ${JSON.stringify(geometry)}`);
+    if (!(geometry.actions.top >= geometry.title.bottom - 1) || !(geometry.side.top >= geometry.main.bottom - 1) || !(geometry.fact1.top >= geometry.fact0.bottom - 1)) throw new Error(`mobile stacking ${JSON.stringify(geometry)}`);
+    await mobile.evaluate(() => window.scrollTo(0, 0));
+    await screenshot(mobile, 'asset-detail-mobile');
   });
   await run('mobile-layout-focus-and-browser-quality', async () => {
     const mobile = await session(adminEmail, true);
