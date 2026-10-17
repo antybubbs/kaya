@@ -15,6 +15,15 @@
   </div>
 </section>
 
+<section class="panel performance-capture" data-performance-capture data-csrf-token="{{ csrf_token }}">
+  <div class="performance-capture-heading"><div><h2>Performance Incident</h2><p class="muted">Capture a bounded, redacted diagnostic window for this admin session. Browser timings are collected only while the capture is active.</p></div><p class="performance-capture-status" data-capture-status role="status">No capture active.</p></div>
+  <div class="performance-capture-controls">
+    <label>Duration<select data-capture-duration><option value="15">15 seconds</option><option value="30" selected>30 seconds</option><option value="60">60 seconds</option></select></label>
+    <fieldset data-capture-collectors><legend>Collectors</legend><label><input type="checkbox" value="http" checked> HTTP</label><label><input type="checkbox" value="postgresql" checked> PostgreSQL</label><label><input type="checkbox" value="ha" checked> HA</label><label><input type="checkbox" value="background" checked> Jobs</label><label><input type="checkbox" value="resources" checked> Resources</label><label><input type="checkbox" value="browser" checked> Browser</label></fieldset>
+    <button type="button" data-capture-start>Start capture</button><button type="button" class="secondary" data-capture-stop hidden>Stop capture</button><a class="button secondary" data-capture-download href="/api/system/about/performance/capture/bundle" hidden>Download JSON bundle</a>
+  </div>
+</section>
+
 <section class="cards performance-cards" data-performance-summary></section>
 <section class="panel performance-filters">
   <div class="form-grid"><label>Route/module filter<input type="search" data-performance-route maxlength="120"></label><label>Status code<input type="number" data-performance-status-filter min="100" max="599" inputmode="numeric"></label><label class="performance-checkbox"><input type="checkbox" data-performance-slow> Slow only</label></div>
@@ -22,4 +31,4 @@
 <section class="panel performance-table-panel"><h2>Recent requests</h2><p class="muted" data-performance-window>Window: process-local retained samples.</p><div class="table-wrap"><table class="performance-table"><thead><tr><th>Time</th><th>Method</th><th>Route</th><th>Status</th><th>Total</th><th>SQL queries</th><th>SQL time</th><th>Template</th><th>External</th><th>External time</th><th>Memory</th></tr></thead><tbody data-performance-rows><tr><td colspan="11" class="muted">No samples retained.</td></tr></tbody></table></div></section>
 <section class="panel" data-dashboard-timings hidden><h2>Dashboard Snapshot</h2><div data-dashboard-timing-rows></div></section>
 {% endblock %}
-{% block extra_scripts %}<script src="/static/js/performance.js?v={{ asset_version }}" defer></script>{% endblock %}
+{% block extra_scripts %}<script src="/static/js/performance.js?v={{ asset_version }}" defer></script><script src="/static/js/performance_capture_controls.js?v={{ asset_version }}" defer></script>{% endblock %}

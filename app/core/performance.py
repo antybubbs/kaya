@@ -8,12 +8,14 @@ import json
 import logging
 import os
 import re
+import time
 from urllib.parse import urlsplit
 from collections import deque
 from datetime import datetime, timezone
-from threading import Lock
+from threading import Event, Lock, Thread
 from time import perf_counter
 from typing import Iterator
+from uuid import uuid4
 
 
 # Uvicorn configures this logger consistently in both packaged and local runs.
@@ -27,6 +29,19 @@ _samples_lock = Lock()
 _diagnostics_enabled = False
 _diagnostics_enabled_at: str | None = None
 _state_lock = Lock()
+_capture: dict | None = None
+_last_capture: dict | None = None
+_capture_lock = Lock()
+CAPTURE_DURATIONS = (15, 30, 60)
+CAPTURE_MAX_EVENTS = 500
+CAPTURE_COLLECTORS = {
+    "http",
+    "postgresql",
+    "ha",
+    "background",
+    "resources",
+    "browser",
+}
 
 
 def diagnostics_enabled() -> bool:
@@ -44,6 +59,7 @@ def set_diagnostics_enabled(enabled: bool, *, enabled_at: str | None = None) -> 
             _diagnostics_enabled_at = None
     if not enabled:
         clear_diagnostics()
+        clear_capture()
 
 
 def diagnostics_state() -> dict:
@@ -59,6 +75,209 @@ def clear_diagnostics() -> None:
         _samples.clear()
 
 
+def clear_capture() -> None:
+    global _capture, _last_capture
+    with _capture_lock:
+        if _capture is not None:
+            _capture["stop_event"].set()
+        _capture = None
+        _last_capture = None
+
+
+def _expire_capture_locked(now: float | None = None) -> None:
+    global _capture
+    if _capture is not None and (now or time.monotonic()) >= _capture["expires_monotonic"]:
+        _capture["status"] = "expired"
+        _capture["ended_at"] = datetime.now(timezone.utc).isoformat()
+        _capture["stop_event"].set()
+        _capture = None
+
+
+def start_capture(*, owner_session_id: str, duration: int, collectors: list[str]) -> dict:
+    global _capture, _last_capture
+    if not owner_session_id:
+        raise ValueError("A session-scoped capture owner is required")
+    if duration not in CAPTURE_DURATIONS:
+        raise ValueError("Unsupported capture duration")
+    selected = sorted(set(collectors) & CAPTURE_COLLECTORS)
+    if not selected:
+        raise ValueError("At least one collector is required")
+    with _capture_lock:
+        _expire_capture_locked()
+        if _capture is not None and _capture["status"] == "running":
+            raise RuntimeError("A diagnostic capture is already active")
+        _last_capture = None
+        started_at = datetime.now(timezone.utc).isoformat()
+        capture_id = uuid4().hex
+        stop_event = Event()
+        _capture = {
+            "capture_id": capture_id,
+            "owner_session_id": owner_session_id,
+            "started_at": started_at,
+            "expires_monotonic": time.monotonic() + duration,
+            "duration_seconds": duration,
+            "collectors": selected,
+            "status": "running",
+            "ended_at": None,
+            "events": deque(maxlen=CAPTURE_MAX_EVENTS),
+            "postgresql_samples": deque(maxlen=12),
+            "collector_errors": {},
+            "stop_event": stop_event,
+        }
+        result = _capture_status_locked(owner_session_id)
+    if "postgresql" in selected:
+        Thread(target=_run_postgres_capture, args=(capture_id, duration, stop_event), name="kaya-pg-diagnostic", daemon=True).start()
+    return result
+
+
+def _capture_status_locked(owner_session_id: str) -> dict:
+    _expire_capture_locked()
+    if _capture is None or _capture["owner_session_id"] != owner_session_id:
+        return {"active": False, "status": "idle"}
+    active = _capture["status"] == "running"
+    remaining = max(0, round(_capture["expires_monotonic"] - time.monotonic(), 2)) if active else 0
+    return {
+        "active": active,
+        "status": _capture["status"],
+        "capture_id": _capture["capture_id"],
+        "started_at": _capture["started_at"],
+        "duration_seconds": _capture["duration_seconds"],
+        "remaining_seconds": remaining,
+        "collectors": list(_capture["collectors"]),
+        "event_count": len(_capture["events"]),
+    }
+
+
+def capture_status(owner_session_id: str) -> dict:
+    with _capture_lock:
+        return _capture_status_locked(owner_session_id)
+
+
+def stop_capture(owner_session_id: str) -> dict:
+    global _capture, _last_capture
+    with _capture_lock:
+        _expire_capture_locked()
+        if _capture is None or _capture["owner_session_id"] != owner_session_id:
+            return {"active": False, "status": "idle"}
+        _capture["status"] = "stopped"
+        _capture["ended_at"] = datetime.now(timezone.utc).isoformat()
+        _capture["stop_event"].set()
+        _last_capture = _capture
+        result = _capture_status_locked(owner_session_id)
+        result["active"] = False
+        result["status"] = "stopped"
+        return result
+
+
+def add_capture_events(owner_session_id: str, events: list[dict]) -> dict:
+    with _capture_lock:
+        _expire_capture_locked()
+        if _capture is None or _capture["owner_session_id"] != owner_session_id or _capture["status"] != "running":
+            return {"accepted": 0, "active": False}
+        accepted = 0
+        for event in events[:100]:
+            if not isinstance(event, dict):
+                continue
+            name = str(event.get("name") or "")[:40]
+            if name not in {"navigation", "api", "resource", "browser_error"}:
+                continue
+            item = {"name": name, "captured_at": datetime.now(timezone.utc).isoformat()}
+            for key in ("duration_ms", "dom_content_loaded_ms", "load_ms", "error_count"):
+                value = event.get(key)
+                if isinstance(value, (int, float)) and 0 <= value <= 600000:
+                    item[key] = round(float(value), 2)
+            item["route"] = _safe_browser_route(event.get("route"))
+            _capture["events"].append(item)
+            accepted += 1
+        return {"accepted": accepted, "active": True}
+
+
+def _append_postgres_sample(capture_id: str, sample: dict) -> None:
+    with _capture_lock:
+        if _capture is None or _capture["capture_id"] != capture_id or _capture["status"] != "running":
+            return
+        _capture["postgresql_samples"].append(json.loads(json.dumps(sample, default=str)))
+
+
+def _run_postgres_capture(capture_id: str, duration: int, stop_event: Event) -> None:
+    try:
+        from app.core.config import get_settings
+        from scripts.collect_pg_diagnostics import collect
+
+        database_url = get_settings().database_url
+        if not database_url.startswith("postgresql"):
+            raise RuntimeError("PostgreSQL is not the active database")
+        collect(
+            database_url,
+            seconds=duration,
+            interval=min(5, max(1, duration // 6)),
+            stop_event=stop_event,
+            on_sample=lambda sample: _append_postgres_sample(capture_id, sample),
+        )
+    except Exception as exc:
+        with _capture_lock:
+            if _capture is not None and _capture["capture_id"] == capture_id:
+                _capture["collector_errors"]["postgresql"] = type(exc).__name__
+
+
+def _background_snapshot() -> dict:
+    snapshot = {}
+    try:
+        from app.services.network_monitor import monitor_scheduler_diagnostics
+        snapshot["uptime_network_monitor"] = monitor_scheduler_diagnostics()
+    except Exception as exc:
+        snapshot["uptime_network_monitor"] = {"available": False, "error": type(exc).__name__}
+    try:
+        from app.services.network_traffic_poller import polling_diagnostics
+        snapshot["traffic_collection"] = polling_diagnostics()
+    except Exception as exc:
+        snapshot["traffic_collection"] = {"available": False, "error": type(exc).__name__}
+    try:
+        from app.services.notification_runtime import notification_worker_snapshot
+        snapshot["notification_outbox"] = notification_worker_snapshot()
+    except Exception as exc:
+        snapshot["notification_outbox"] = {"available": False, "error": type(exc).__name__}
+    return json.loads(json.dumps(snapshot, default=str))
+
+
+def capture_bundle(owner_session_id: str) -> dict | None:
+    with _capture_lock:
+        _expire_capture_locked()
+        capture = _capture or _last_capture
+        if capture is None or capture["owner_session_id"] != owner_session_id:
+            return None
+        status = {
+            "capture_id": capture["capture_id"],
+            "started_at": capture["started_at"],
+        }
+        events = list(capture["events"])
+        selected = set(capture["collectors"])
+        background = _background_snapshot() if "background" in selected else None
+        statuses = {
+            "http": {"available": "http" in selected, "source": "request instrumentation"},
+            "postgresql": ({"available": True, "source": "dedicated read-only diagnostic connection", "sample_count": len(capture["postgresql_samples"])} if capture["postgresql_samples"] else {"available": False, "reason": capture["collector_errors"].get("postgresql", "No PostgreSQL samples were collected.")}),
+            "ha": {"available": "ha" in selected, "source": "request phase instrumentation"},
+            "background": {"available": background is not None, "source": "existing in-process worker snapshots"},
+            "resources": {"available": "resources" in selected, "source": "request resource snapshots"},
+            "browser": {"available": any(item["name"] != "request" for item in events), "source": "capture-session browser events"},
+        }
+        return {
+            "schema_version": 1,
+            "capture_id": status["capture_id"],
+            "capture_start": status["started_at"],
+            "capture_end": capture.get("ended_at") or datetime.now(timezone.utc).isoformat(),
+            "enabled_collectors": list(capture["collectors"]),
+            "collector_status": {name: statuses[name] for name in capture["collectors"]},
+            "http": {"events": [item for item in events if item["name"] == "request"]},
+            "resources": {"events": [item for item in events if item["name"] == "request" and "process_rss_bytes" in item]},
+            "ha": {"events": [item for item in events if item["name"] == "request" and "/ha/" in item.get("route", "")]},
+            "browser": {"events": [item for item in events if item["name"] != "request"]},
+            "postgresql": {"samples": list(capture["postgresql_samples"]), "error": capture["collector_errors"].get("postgresql")},
+            "background": background or {},
+            "timeline": sorted(events, key=lambda item: item["captured_at"]),
+        }
+
+
 def _safe_route(request) -> str:
     route = getattr(getattr(request, "scope", {}).get("route"), "path", None)
     path = str(route or urlsplit(str(request.url.path or "/")).path or "/")
@@ -66,6 +285,14 @@ def _safe_route(request) -> str:
     if len(path) > 300:
         path = path[:300]
     return path
+
+
+def _safe_browser_route(value) -> str:
+    raw = str(value or "")
+    if not raw.startswith("/"):
+        return "unknown"
+    path = urlsplit(raw).path or "/"
+    return re.sub(r"/(?:[0-9]+|[0-9a-f]{8}-[0-9a-f-]{27,})", "/{id}", path, flags=re.IGNORECASE)[:300]
 
 
 def record_dashboard_widget(name: str, duration_ms: float) -> None:
@@ -264,6 +491,7 @@ def process_rss_bytes() -> int | None:
 
 
 def log_request_metrics(*, request, response, metrics: dict, total_duration_ms: float) -> None:
+    timestamp = datetime.now(timezone.utc).isoformat()
     payload = {
         "event": "request_performance",
         "method": request.method,
@@ -282,13 +510,33 @@ def log_request_metrics(*, request, response, metrics: dict, total_duration_ms: 
         "db_pool": metrics.get("db_pool", {}),
         "thread_pool": metrics.get("thread_pool", {}),
         "external_calls": metrics.get("external_calls", []),
+        "request_id": str(getattr(getattr(request, "state", None), "request_id", ""))[:64],
+        "timestamp": timestamp,
     }
     logger.info(json.dumps(payload, separators=(",", ":")))
     if diagnostics_enabled() and not is_internal_diagnostics_path(request.url.path):
         sample = {key: payload[key] for key in payload if key not in {"event", "query_keys"}}
-        sample["timestamp"] = datetime.now(timezone.utc).isoformat()
+        sample["timestamp"] = timestamp
         with _samples_lock:
             _samples.append(sample)
+    with _capture_lock:
+        _expire_capture_locked()
+        if _capture is not None and {"http", "ha", "resources"}.intersection(_capture["collectors"]):
+            _capture["events"].append({
+                "name": "request",
+                "captured_at": payload.get("timestamp") or datetime.now(timezone.utc).isoformat(),
+                "request_id": payload["request_id"],
+                "route": payload["path"],
+                "method": payload["method"],
+                "status_code": payload["status_code"],
+                "duration_ms": payload["total_duration_ms"],
+                "database_duration_ms": payload["database_duration_ms"],
+                "database_query_count": payload["database_query_count"],
+                "process_rss_bytes": payload["process_rss_bytes"],
+                "phases": payload["phases"][:50],
+                "db_pool": payload["db_pool"],
+                "thread_pool": payload["thread_pool"],
+            })
 
 
 def is_internal_diagnostics_path(path: str) -> bool:

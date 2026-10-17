@@ -34,7 +34,17 @@ from app.core.config import get_settings
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.core.templating import templates
 from app.core.performance import external_call
-from app.core.performance import clear_diagnostics, diagnostics_snapshot, set_diagnostics_enabled
+from app.core.performance import (
+    CAPTURE_COLLECTORS,
+    add_capture_events,
+    capture_bundle,
+    capture_status,
+    clear_diagnostics,
+    diagnostics_snapshot,
+    set_diagnostics_enabled,
+    start_capture,
+    stop_capture,
+)
 from app.core.security import (
     decrypt_secret,
     encrypt_secret,
@@ -2871,6 +2881,89 @@ def performance_page(
 def performance_data(response: Response, user=Depends(require_admin)):
     response.headers["Cache-Control"] = "no-store"
     return diagnostics_snapshot()
+
+
+def _capture_owner_session(request: Request) -> str:
+    owner = str(request.session.get("session_id") or "")[:128]
+    if not owner:
+        raise HTTPException(400, "A session-scoped diagnostic owner is required")
+    return owner
+
+
+async def _capture_json(request: Request) -> dict:
+    content_length = request.headers.get("content-length")
+    try:
+        if content_length and int(content_length) > 65536:
+            raise HTTPException(413, "Diagnostic capture payload is too large")
+    except ValueError as exc:
+        raise HTTPException(400, "Invalid diagnostic capture payload") from exc
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(400, "Invalid diagnostic capture payload") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "Invalid diagnostic capture payload")
+    validate_csrf_token(request, str(request.headers.get("x-csrf-token") or payload.get("csrf_token") or ""))
+    return payload
+
+
+@router.post("/api/system/about/performance/capture/start")
+async def performance_capture_start(request: Request, db: Session = Depends(get_db), user=Depends(require_admin)):
+    payload = await _capture_json(request)
+    raw_duration = payload.get("duration_seconds") or 30
+    if isinstance(raw_duration, bool):
+        raise HTTPException(400, "Invalid diagnostic capture duration")
+    try:
+        duration = int(raw_duration)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, "Invalid diagnostic capture duration") from exc
+    collectors = payload.get("collectors") or sorted(CAPTURE_COLLECTORS)
+    if not isinstance(collectors, list) or len(collectors) > len(CAPTURE_COLLECTORS) or any(not isinstance(item, str) or len(item) > 30 for item in collectors):
+        raise HTTPException(400, "Invalid diagnostic collector selection")
+    try:
+        result = start_capture(owner_session_id=_capture_owner_session(request), duration=duration, collectors=collectors)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    write_audit(db, user, "performance_capture_started", "performance_capture", result["capture_id"], detail="Started a bounded performance diagnostic capture.", metadata={"duration_seconds": duration, "collectors": result["collectors"]})
+    db.commit()
+    return result
+
+
+@router.post("/api/system/about/performance/capture/stop")
+async def performance_capture_stop(request: Request, db: Session = Depends(get_db), user=Depends(require_admin)):
+    await _capture_json(request)
+    result = stop_capture(_capture_owner_session(request))
+    if result.get("status") == "idle":
+        raise HTTPException(404, "No diagnostic capture is active")
+    write_audit(db, user, "performance_capture_stopped", "performance_capture", result.get("capture_id"), detail="Stopped a bounded performance diagnostic capture.")
+    db.commit()
+    return result
+
+
+@router.get("/api/system/about/performance/capture")
+def performance_capture_status(request: Request, user=Depends(require_admin)):
+    return capture_status(_capture_owner_session(request))
+
+
+@router.post("/api/system/about/performance/capture/browser")
+async def performance_capture_browser(request: Request, user=Depends(require_admin)):
+    payload = await _capture_json(request)
+    events = payload.get("events") or []
+    if not isinstance(events, list):
+        raise HTTPException(400, "Invalid browser diagnostic events")
+    return add_capture_events(_capture_owner_session(request), events)
+
+
+@router.get("/api/system/about/performance/capture/bundle")
+def performance_capture_bundle(request: Request, db: Session = Depends(get_db), user=Depends(require_admin)):
+    bundle = capture_bundle(_capture_owner_session(request))
+    if bundle is None:
+        raise HTTPException(404, "No diagnostic capture is available for this session")
+    write_audit(db, user, "performance_capture_exported", "performance_capture", bundle["capture_id"], detail="Exported a performance diagnostic bundle.", metadata={"schema_version": bundle["schema_version"]})
+    db.commit()
+    return JSONResponse(bundle, headers={"Cache-Control": "no-store", "Content-Disposition": f'attachment; filename="kaya-performance-{bundle["capture_id"]}.json"'})
 
 
 @router.post("/system/about/performance/toggle")

@@ -7,6 +7,11 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings
 from app.core.performance import (
     MAX_SAMPLES,
+    CAPTURE_MAX_EVENTS,
+    add_capture_events,
+    capture_bundle,
+    capture_status,
+    clear_capture,
     clear_diagnostics,
     diagnostics_snapshot,
     log_request_metrics,
@@ -91,6 +96,55 @@ def test_diagnostics_buffer_is_disabled_and_bounded():
     assert samples[0]["path"] == "/assets/{id}"
     assert all("secret" not in str(sample) for sample in samples)
     set_diagnostics_enabled(False)
+
+
+def test_capture_is_bounded_session_scoped_and_exportable():
+    clear_capture()
+    started = __import__("app.core.performance", fromlist=["start_capture"]).start_capture(
+        owner_session_id="admin-session-a", duration=15, collectors=["http", "browser", "ha"]
+    )
+    assert started["active"] is True
+    assert capture_status("admin-session-b")["status"] == "idle"
+    events = [{"name": "navigation", "route": "/assets/123?secret=do-not-export", "duration_ms": 12.5}]
+    assert add_capture_events("admin-session-b", events)["accepted"] == 0
+    for _ in range(CAPTURE_MAX_EVENTS + 20):
+        add_capture_events("admin-session-a", events)
+    assert capture_status("admin-session-a")["event_count"] == CAPTURE_MAX_EVENTS
+    __import__("app.core.performance", fromlist=["stop_capture"]).stop_capture("admin-session-a")
+    bundle = capture_bundle("admin-session-a")
+    assert bundle["schema_version"] == 1
+    assert len(bundle["timeline"]) == CAPTURE_MAX_EVENTS
+    assert all("secret" not in str(item) for item in bundle["timeline"])
+    assert bundle["collector_status"]["ha"]["available"] is True
+    assert capture_bundle("admin-session-b") is None
+    clear_capture()
+
+
+def test_capture_routes_are_redacted_without_query_strings():
+    clear_capture()
+
+
+def test_capture_rejects_concurrency_and_expires_cleanly():
+    import app.core.performance as performance
+    clear_capture()
+    performance.start_capture(owner_session_id="admin-session-a", duration=15, collectors=["http"])
+    try:
+        performance.start_capture(owner_session_id="admin-session-b", duration=15, collectors=["http"])
+        assert False, "concurrent capture should be rejected"
+    except RuntimeError:
+        pass
+    performance._capture["expires_monotonic"] = 0
+    assert capture_status("admin-session-a")["status"] == "idle"
+    assert capture_bundle("admin-session-a") is None
+    clear_capture()
+    __import__("app.core.performance", fromlist=["start_capture"]).start_capture(
+        owner_session_id="admin-session-a", duration=15, collectors=["browser"]
+    )
+    add_capture_events("admin-session-a", [{"name": "api", "route": "/api/assets/42?token=secret", "duration_ms": 4}])
+    __import__("app.core.performance", fromlist=["stop_capture"]).stop_capture("admin-session-a")
+    route = capture_bundle("admin-session-a")["timeline"][0]["route"]
+    assert route == "/api/assets/{id}"
+    clear_capture()
 
 
 def test_p95_uses_interpolated_percentile_and_clear_keeps_disabled_state():

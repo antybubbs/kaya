@@ -730,6 +730,25 @@ async def stop_notification_runtime() -> None:
         _started_at = None
 
 
+def notification_worker_snapshot() -> dict:
+    """Return in-memory worker health without querying the notification tables."""
+    with _guard:
+        return {
+            name: {
+                "running": bool(_tasks.get(name) and not _tasks[name].done()),
+                "task_id": state["task_id"],
+                "last_heartbeat": _utc(state["last_heartbeat"]),
+                "last_loop_started": _utc(state["last_loop_started"]),
+                "last_loop_completed": _utc(state["last_loop_completed"]),
+                "loop_iteration": state["loop_iteration"],
+                "consecutive_failures": state["consecutive_failures"],
+                "consecutive_restarts": state["consecutive_restarts"],
+                "last_exception": state["last_exception_type"],
+            }
+            for name, state in _worker_states.items()
+        }
+
+
 def notification_health() -> dict:
     now = datetime.utcnow()
     with _guard:

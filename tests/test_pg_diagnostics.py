@@ -34,11 +34,13 @@ def test_collector_bounds_window_and_omits_sensitive_activity_fields(monkeypatch
     monkeypatch.setattr(collector.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(collector.time, "monotonic", iter([0, 1, 1, 31]).__next__)
 
-    report = collector.collect("postgresql+psycopg://kaya@db.invalid/kaya", seconds=999, interval=999)
+    samples = []
+    report = collector.collect("postgresql+psycopg://kaya@db.invalid/kaya", seconds=999, interval=999, on_sample=samples.append)
 
     assert report["duration_seconds"] == collector.MAX_SECONDS
     assert report["interval_seconds"] == collector.MAX_INTERVAL_SECONDS
     assert report["sample_count"] == 2
+    assert len(samples) == report["sample_count"]
     assert "query" not in report["samples"][0]["activity"]
     assert "client_addr" not in report["samples"][0]["activity"]
 

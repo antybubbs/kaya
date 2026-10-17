@@ -122,7 +122,7 @@ def _snapshot(connection) -> dict:
     }
 
 
-def collect(database_url: str, *, seconds: int = 15, interval: int = 5) -> dict:
+def collect(database_url: str, *, seconds: int = 15, interval: int = 5, stop_event=None, on_sample=None) -> dict:
     seconds = max(1, min(int(seconds), MAX_SECONDS))
     interval = max(1, min(int(interval), MAX_INTERVAL_SECONDS))
     url = _read_password_file(_database_url(database_url))
@@ -134,6 +134,7 @@ def collect(database_url: str, *, seconds: int = 15, interval: int = 5) -> dict:
         max_overflow=0,
         pool_timeout=3,
         connect_args={
+            "connect_timeout": 3,
             "options": "-c default_transaction_read_only=on -c statement_timeout=1500 -c lock_timeout=500",
         },
     )
@@ -142,10 +143,20 @@ def collect(database_url: str, *, seconds: int = 15, interval: int = 5) -> dict:
     try:
         with engine.connect() as connection:
             while len(samples) < MAX_SAMPLES:
+                if stop_event is not None and stop_event.is_set():
+                    break
                 samples.append(_snapshot(connection))
+                if on_sample is not None:
+                    on_sample(samples[-1])
                 if time.monotonic() - started >= seconds:
                     break
-                time.sleep(min(interval, max(0, seconds - (time.monotonic() - started))))
+                if stop_event is not None and stop_event.is_set():
+                    break
+                delay = min(interval, max(0, seconds - (time.monotonic() - started)))
+                if stop_event is not None:
+                    stop_event.wait(delay)
+                else:
+                    time.sleep(delay)
     finally:
         engine.dispose()
     return {

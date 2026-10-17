@@ -34,9 +34,9 @@
   <script src="/static/js/inline_edit.js?v={{ asset_version }}" defer></script>
   <script src="/static/js/module_access.js?v={{ asset_version }}" defer></script>
   <script src="{{ request.url_for('static', path='js/pwa.js') }}?v={{ asset_version }}" defer></script>
-  {% if user %}<script src="{{ request.url_for('static', path='js/notifications.js') }}?v={{ asset_version }}" defer></script>{% endif %}
+  {% if user %}<script src="{{ request.url_for('static', path='js/notifications.js') }}?v={{ asset_version }}" defer></script><script src="/static/js/performance_capture.js?v={{ asset_version }}" defer></script>{% endif %}
 </head>
-<body data-app-root="{{ request.scope.get('root_path', '') }}">
+<body data-app-root="{{ request.scope.get('root_path', '') }}" data-csrf-token="{{ csrf_token|default('', true) }}">
 {% if user %}
 <header class="app-topbar">
   <div class="app-topbar-brand">
