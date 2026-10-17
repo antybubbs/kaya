@@ -21,10 +21,25 @@ from app.core.performance import (
     end_request_metrics,
     external_call,
     performance_phase,
+    _safe_collector_error,
 )
 from app.db.session import Base
 from app.models.models import RemoteManagerSetting
 from app.services.site_settings import DEFAULT_SITE_SETTINGS, get_site_setting, get_site_settings
+
+
+def test_postgres_collector_error_is_redacted_to_safe_metadata():
+    class ProgrammingError(Exception):
+        sqlstate = "42601"
+
+    error = _safe_collector_error(ProgrammingError("SELECT secret_value FROM private_table"))
+
+    assert error == {
+        "type": "ProgrammingError",
+        "sqlstate": "42601",
+        "code": "database_query_incompatible_or_unavailable",
+    }
+    assert "secret_value" not in json.dumps(error)
 
 
 def test_performance_diagnostics_are_disabled_by_default():

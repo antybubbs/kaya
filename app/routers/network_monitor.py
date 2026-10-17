@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session, selectinload
 from starlette import status
 
 from app.core.csrf import csrf_context, validate_csrf_token
+from app.core.performance import performance_phase
 from app.core.templating import templates
 from app.db.session import get_db
 from app.models.models import (
@@ -233,7 +234,12 @@ def monitor_state(monitor: NetworkMonitor) -> str:
     )
 
 
-def monitor_rows(db: Session, allowed_ids: list[int] | None = None) -> tuple[list[dict], dict[str, int]]:
+def monitor_rows(
+    db: Session,
+    allowed_ids: list[int] | None = None,
+    *,
+    include_history: bool = True,
+) -> tuple[list[dict], dict[str, int]]:
     query = db.query(NetworkMonitor).options(selectinload(NetworkMonitor.ip_address))
     if allowed_ids is not None:
         if not allowed_ids:
@@ -260,22 +266,23 @@ def monitor_rows(db: Session, allowed_ids: list[int] | None = None) -> tuple[lis
                 NetworkMonitorCheck.checked_at >= since,
             ).group_by(NetworkMonitorCheck.monitor_id).all()
         }
-        recent_rank = func.row_number().over(
-            partition_by=NetworkMonitorCheck.monitor_id,
-            order_by=NetworkMonitorCheck.checked_at.desc(),
-        ).label("recent_rank")
-        recent_subquery = db.query(NetworkMonitorCheck.id.label("check_id"), recent_rank).filter(
-            NetworkMonitorCheck.monitor_id.in_(monitor_ids),
-            NetworkMonitorCheck.checked_at >= datetime.utcnow() - timedelta(minutes=5),
-        ).subquery()
-        recent_checks = db.query(NetworkMonitorCheck).join(
-            recent_subquery,
-            NetworkMonitorCheck.id == recent_subquery.c.check_id,
-        ).filter(
-            recent_subquery.c.recent_rank <= 400,
-        ).order_by(NetworkMonitorCheck.monitor_id.asc(), NetworkMonitorCheck.checked_at.asc()).all()
-        for check in recent_checks:
-            recent_by_monitor.setdefault(check.monitor_id, []).append(check)
+        if include_history:
+            recent_rank = func.row_number().over(
+                partition_by=NetworkMonitorCheck.monitor_id,
+                order_by=NetworkMonitorCheck.checked_at.desc(),
+            ).label("recent_rank")
+            recent_subquery = db.query(NetworkMonitorCheck.id.label("check_id"), recent_rank).filter(
+                NetworkMonitorCheck.monitor_id.in_(monitor_ids),
+                NetworkMonitorCheck.checked_at >= datetime.utcnow() - timedelta(minutes=5),
+            ).subquery()
+            recent_checks = db.query(NetworkMonitorCheck).join(
+                recent_subquery,
+                NetworkMonitorCheck.id == recent_subquery.c.check_id,
+            ).filter(
+                recent_subquery.c.recent_rank <= 400,
+            ).order_by(NetworkMonitorCheck.monitor_id.asc(), NetworkMonitorCheck.checked_at.asc()).all()
+            for check in recent_checks:
+                recent_by_monitor.setdefault(check.monitor_id, []).append(check)
     rows = []
     state_counts = {state: 0 for state in ("healthy", "warning", "critical", "recovering", "offline", "paused", "maintenance", "unknown")}
     for monitor in monitors:
@@ -312,8 +319,13 @@ def monitor_rows(db: Session, allowed_ids: list[int] | None = None) -> tuple[lis
     return rows, state_counts
 
 
-def dashboard_context(db: Session, allowed_ids: list[int] | None = None) -> dict:
-    rows, state_counts = monitor_rows(db, allowed_ids)
+def dashboard_context(
+    db: Session,
+    allowed_ids: list[int] | None = None,
+    *,
+    include_history: bool = True,
+) -> dict:
+    rows, state_counts = monitor_rows(db, allowed_ids, include_history=include_history)
     dashboard_interval = active_dashboard_interval()
     for row in rows:
         row["effective_interval"] = dashboard_interval or row["monitor"].interval_seconds
@@ -682,27 +694,33 @@ def live_dashboard_payload(db: Session, after: int, allowed_ids: list[int] | Non
     checks = checks_query.order_by(NetworkMonitorCheck.id.asc()).limit(1000).all()
     monitor_ids = {check.monitor_id for check in checks}
     monitors = {row.id: row for row in db.query(NetworkMonitor).filter(NetworkMonitor.id.in_(monitor_ids)).all()} if monitor_ids else {}
-    context = dashboard_context(db, allowed_ids)
+    with performance_phase("uptime.live.dashboard_context"):
+        context = dashboard_context(db, allowed_ids, include_history=False)
     open_incidents = {
         row.monitor_id: row for row in db.query(NetworkMonitorOutage).filter(NetworkMonitorOutage.ended_at.is_(None)).all()
     }
     observations = []
     previous_latency: dict[int, float | None] = {}
-    for check in checks:
-        monitor = monitors.get(check.monitor_id)
-        if not monitor:
-            continue
-        thresholds = effective_monitor_thresholds(db, monitor)
-        prior = previous_latency.get(check.monitor_id)
-        jitter = abs(check.latency_ms - prior) if check.latency_ms is not None and prior is not None else None
-        observations.append({
-            "id": check.id, "monitor_id": check.monitor_id,
-            "checked_at": check.checked_at.isoformat() + "Z",
-            "status": check.health_state or point_health(thresholds, check.latency_ms, check.packet_loss_percent, check.status == "up"),
-            "latency_ms": check.latency_ms, "packet_loss_percent": check.packet_loss_percent,
-            "jitter_ms": jitter,
-        })
-        previous_latency[check.monitor_id] = check.latency_ms
+    thresholds_by_monitor = {}
+    with performance_phase("uptime.live.observation_payload"):
+        for check in checks:
+            monitor = monitors.get(check.monitor_id)
+            if not monitor:
+                continue
+            thresholds = thresholds_by_monitor.get(check.monitor_id)
+            if thresholds is None:
+                thresholds = effective_monitor_thresholds(db, monitor)
+                thresholds_by_monitor[check.monitor_id] = thresholds
+            prior = previous_latency.get(check.monitor_id)
+            jitter = abs(check.latency_ms - prior) if check.latency_ms is not None and prior is not None else None
+            observations.append({
+                "id": check.id, "monitor_id": check.monitor_id,
+                "checked_at": check.checked_at.isoformat() + "Z",
+                "status": check.health_state or point_health(thresholds, check.latency_ms, check.packet_loss_percent, check.status == "up"),
+                "latency_ms": check.latency_ms, "packet_loss_percent": check.packet_loss_percent,
+                "jitter_ms": jitter,
+            })
+            previous_latency[check.monitor_id] = check.latency_ms
     return {
         "observations": observations,
         "monitors": [{

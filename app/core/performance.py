@@ -243,6 +243,25 @@ def _append_postgres_sample(capture_id: str, sample: dict) -> None:
         _capture["postgresql_samples"].append(json.loads(json.dumps(sample, default=str)))
 
 
+def _safe_collector_error(exc: Exception) -> dict[str, str]:
+    """Return bounded diagnostic metadata without exporting database details."""
+    error_type = type(exc).__name__[:80]
+    sqlstate = getattr(exc, "sqlstate", None)
+    original = getattr(exc, "orig", None)
+    if not sqlstate and original is not None:
+        sqlstate = getattr(original, "sqlstate", None)
+    if not isinstance(sqlstate, str) or not re.fullmatch(r"[0-9A-Z]{5}", sqlstate):
+        sqlstate = None
+    result = {"type": error_type}
+    if sqlstate:
+        result["sqlstate"] = sqlstate
+    result["code"] = (
+        "database_query_incompatible_or_unavailable"
+        if error_type == "ProgrammingError" else "collector_failed"
+    )
+    return result
+
+
 def _run_postgres_capture(capture_id: str, duration: int, stop_event: Event) -> None:
     try:
         from app.core.config import get_settings
@@ -261,7 +280,7 @@ def _run_postgres_capture(capture_id: str, duration: int, stop_event: Event) -> 
     except Exception as exc:
         with _capture_lock:
             if _capture is not None and _capture["capture_id"] == capture_id:
-                _capture["collector_errors"]["postgresql"] = type(exc).__name__
+                _capture["collector_errors"]["postgresql"] = _safe_collector_error(exc)
 
 
 def _background_snapshot() -> dict:
@@ -300,7 +319,7 @@ def capture_bundle(owner_session_id: str) -> dict | None:
         background = _background_snapshot() if "background" in selected else None
         statuses = {
             "http": {"available": "http" in selected, "source": "request instrumentation"},
-            "postgresql": ({"available": True, "source": "dedicated read-only diagnostic connection", "sample_count": len(capture["postgresql_samples"])} if capture["postgresql_samples"] else {"available": False, "reason": capture["collector_errors"].get("postgresql", "No PostgreSQL samples were collected.")}),
+            "postgresql": ({"available": True, "source": "dedicated read-only diagnostic connection", "sample_count": len(capture["postgresql_samples"])} if capture["postgresql_samples"] else {"available": False, "reason": capture["collector_errors"].get("postgresql", {"code": "no_samples"})}),
             "ha": {"available": "ha" in selected, "source": "request phase instrumentation"},
             "background": {"available": background is not None, "source": "existing in-process worker snapshots"},
             "resources": {"available": "resources" in selected, "source": "request resource snapshots"},

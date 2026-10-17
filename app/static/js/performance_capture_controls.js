@@ -44,7 +44,9 @@
       const data = await call("/api/system/about/performance/capture/start", "POST", {duration_seconds: Number(duration.value), collectors});
       sessionStorage.setItem(key, JSON.stringify({captureId: data.capture_id, expiresAt: Date.now() + Number(data.duration_seconds) * 1000}));
       render(data);
-      timer = setInterval(poll, 1000);
+      // Status is administrative UI only; avoid adding a database-backed auth
+      // request every second while the capture itself is collecting evidence.
+      timer = setInterval(poll, 2000);
     } catch (error) { setStatus(error.message); }
     finally { startButton.disabled = false; }
   });

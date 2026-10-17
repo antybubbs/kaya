@@ -681,6 +681,33 @@ def test_dashboard_summary_separates_critical_paused_and_active_incidents():
         assert context["active_incidents"] == 1
 
 
+def test_live_dashboard_uses_bounded_context_without_chart_history():
+    factory = session_factory()
+    monitor_id = add_monitor(factory)
+    with factory() as db:
+        now = datetime.utcnow()
+        db.add_all([
+            NetworkMonitorCheck(
+                monitor_id=monitor_id,
+                status="up",
+                health_state="healthy",
+                latency_ms=10,
+                packet_loss_percent=0,
+                checked_at=now - timedelta(seconds=index),
+            )
+            for index in range(5)
+        ])
+        db.commit()
+        payload = network_monitor_router.live_dashboard_payload(db, 0)
+
+        assert payload["observations"]
+        assert payload["monitors"][0]["id"] == monitor_id
+
+        lightweight = network_monitor_router.dashboard_context(db, include_history=False)
+        assert lightweight["rows"][0]["history"] == []
+        assert lightweight["rows"][0]["chart_points"] == []
+
+
 def test_detail_ranges_are_allowlisted_and_reduce_long_browser_series():
     now = datetime.utcnow()
     points = [{"at": now - timedelta(minutes=index), "latency": 20 + index % 4, "loss": 0, "samples": 1, "up_count": 1} for index in range(1440)]
