@@ -1069,6 +1069,10 @@ def test_retained_aggregation_records_latency_jitter_and_loss_evidence():
     assert statistic.loss_sample_count == 3 and statistic.avg_packet_loss_percent == 5
 
 
+def test_bucket_start_treats_naive_monitor_times_as_utc():
+    assert network_monitor._bucket_start(datetime(2026, 7, 29, 10, 0, 20), 300) == datetime(2026, 7, 29, 10, 0)
+
+
 def test_performance_workspace_uses_one_reusable_theme_aware_chart_without_navigation():
     root = Path(__file__).resolve().parents[1]
     template = (root / "app" / "templates" / "network_monitor_detail.html").read_text(encoding="utf-8")

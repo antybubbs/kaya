@@ -5,7 +5,7 @@ import re
 import subprocess
 import time
 import threading
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from ipaddress import ip_address
 from uuid import uuid4
 
@@ -304,8 +304,12 @@ def monitor_check_lock(monitor_id: int) -> threading.Lock:
 
 
 def _bucket_start(value: datetime, seconds: int) -> datetime:
-    epoch = int(value.timestamp())
-    return datetime.utcfromtimestamp(epoch - (epoch % seconds))
+    # Kaya stores these operational timestamps as naive UTC datetimes. Calling
+    # timestamp() on a naive value makes the host's local timezone part of the
+    # bucket calculation, which shifts buckets on non-UTC hosts.
+    utc_value = value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+    epoch = int(utc_value.timestamp())
+    return datetime.fromtimestamp(epoch - (epoch % seconds), UTC).replace(tzinfo=None)
 
 
 def _worst_health(states) -> str | None:
