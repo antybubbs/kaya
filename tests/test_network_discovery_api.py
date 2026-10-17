@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -17,7 +17,11 @@ from app.models.models import (
     TrafficSource,
     VLAN,
 )
-from app.services.network_discovery_matching import match_endpoint
+from app.services.network_discovery_matching import (
+    build_discovery_payload_context,
+    match_endpoint,
+    observation_keys_query,
+)
 from app.services.audit import write_audit
 from app.routers.network_discovery import (
     DiscoveryDecision,
@@ -64,6 +68,39 @@ def test_exact_matching_is_read_only_and_does_not_enable_device_monitoring():
     assert result.confidence == "high"
     assert result.managed_ip_address_id == 1
     assert session.query(IPAddress).one().traffic_monitoring is None
+
+
+def test_bulk_discovery_payload_query_count_does_not_grow_with_observation_keys():
+    session = db()
+    setup(session)
+    session.add_all([
+        IPAddress(id=index, vlan_id=1, address=f"10.0.0.{index}", name=f"Host {index}")
+        for index in range(21, 46)
+    ])
+    session.add_all([
+        TrafficDiscoveryObservation(
+            source_id=1, exporter_identity="192.0.2.1", endpoint_ip=f"10.0.0.{index}",
+            address_family=4, endpoint_role="original_source", bucket_start=datetime(2026, 1, 1, 0, index - 21),
+            first_seen_at=datetime(2026, 1, 1, 0, index - 21), last_seen_at=datetime(2026, 1, 1, 0, index - 21),
+            observation_count=1, classification="internal", confidence="high",
+        )
+        for index in range(21, 46)
+    ])
+    session.commit()
+
+    statements = []
+    event.listen(session.bind, "before_cursor_execute", lambda *_args: statements.append(True))
+    rows = observation_keys_query(session).all()
+    statements.clear()
+    [_row_payload(session, row) for row in rows]
+    naive_query_count = len(statements)
+    statements.clear()
+    context = build_discovery_payload_context(session, rows)
+    items = [_row_payload(session, row, context=context) for row in rows]
+
+    assert len(items) == 26  # the setup row plus the 25 synthetic rows
+    assert naive_query_count >= 4 * len(rows)
+    assert len(statements) <= 5
 
 
 def test_ipv6_and_dhcp_reuse_are_conservative():

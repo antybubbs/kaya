@@ -560,6 +560,41 @@ try {
     const denied = await viewer.request.post(`${base}/networking/ip-wan-monitor/traffic/local-networks`, { data: { name: 'Viewer attempt', network_cidr: '198.18.0.0/15' } });
     if (![400, 403].includes(denied.status())) throw new Error(`viewer create status ${denied.status()}`);
   });
+  await run('shared-tabs-and-table-card-spacing', async () => {
+    // Shared module tabs are not a scroll container on desktop, keep sideways scrolling on
+    // narrow screens, and edge-to-edge table cards keep their 20px inset around controls.
+    const measure = async page => page.evaluate(() => {
+      const strip = document.querySelector('.module-nav__pages');
+      const style = getComputedStyle(strip);
+      strip.scrollTop = 5; strip.scrollLeft = 5;
+      const moved = { top: strip.scrollTop, left: strip.scrollLeft };
+      strip.scrollTop = 0; strip.scrollLeft = 0;
+      const card = document.querySelector('.panel:has(> .table-scroll)');
+      const box = card.getBoundingClientRect();
+      const control = card.querySelector(':scope > .table-toolbar a, :scope > .table-toolbar button, :scope > .table-toolbar summary').getBoundingClientRect();
+      const firstCell = card.querySelector('.table-scroll thead th');
+      const range = document.createRange(); range.selectNodeContents(firstCell);
+      return {
+        overflowX: style.overflowX, overflowY: style.overflowY, moved, fitsWidth: strip.scrollWidth <= strip.clientWidth,
+        inset: { left: Math.round(control.left - box.left), top: Math.round(control.top - box.top), right: Math.round(box.right - card.querySelector(':scope > .table-toolbar').lastElementChild.getBoundingClientRect().right) },
+        columnLeft: Math.round(range.getBoundingClientRect().left - box.left),
+        pageOverflow: document.documentElement.scrollWidth - innerWidth,
+      };
+    });
+    await admin.goto(`${base}/infrastructure/asset-manager`, { waitUntil: 'networkidle' });
+    const desktop = await measure(admin);
+    if (desktop.overflowX !== 'visible' || desktop.overflowY !== 'visible' || desktop.moved.top !== 0 || desktop.moved.left !== 0) throw new Error(`desktop tabs scroll ${JSON.stringify(desktop)}`);
+    if (desktop.inset.left < 16 || desktop.inset.top < 12 || desktop.inset.right < 16) throw new Error(`table card controls touch the card edge ${JSON.stringify(desktop)}`);
+    if (Math.abs(desktop.inset.left - desktop.columnLeft) > 2) throw new Error(`toolbar and table columns misaligned ${JSON.stringify(desktop)}`);
+    if (desktop.pageOverflow > 1) throw new Error(`desktop page overflow ${JSON.stringify(desktop)}`);
+    const phone = await session(adminEmail, true);
+    await phone.goto(`${base}/infrastructure/asset-manager`, { waitUntil: 'networkidle' });
+    const narrow = await measure(phone);
+    if (narrow.overflowX !== 'auto' || narrow.overflowY !== 'hidden') throw new Error(`narrow tab overflow ${JSON.stringify(narrow)}`);
+    if (narrow.inset.left < 16 || narrow.pageOverflow > 1) throw new Error(`narrow layout ${JSON.stringify(narrow)}`);
+    await screenshot(admin, 'shared-tabs-and-table-card');
+    evidence.sharedLayout = { desktop, narrow };
+  });
   await run('asset-detail-design-a', async () => {
     // Redesigned Asset detail page: real values bound, empty states, tabs, actions.
     const page = admin;

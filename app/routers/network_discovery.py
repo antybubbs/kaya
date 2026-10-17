@@ -19,6 +19,8 @@ from app.services.audit import write_audit
 from app.services.client_ip import client_ip as trusted_client_ip
 from app.services.network_discovery import DISCOVERY_FLOW_PROVIDERS
 from app.services.network_discovery_matching import (
+    DiscoveryPayloadContext,
+    build_discovery_payload_context,
     current_link,
     latest_observation,
     match_endpoint,
@@ -64,12 +66,12 @@ def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
 
 
-def _linked_validity(db: Session, link: TrafficDiscoveryLink) -> tuple[str, str, int | None]:
+def _linked_validity(db: Session, link: TrafficDiscoveryLink, *, context: DiscoveryPayloadContext | None = None) -> tuple[str, str, int | None]:
     """Revalidate a stored link against the current exporter trust context."""
     if link.endpoint_role not in LINKABLE_ENDPOINT_ROLES:
         return "unresolved", "translated_endpoint_not_linkable", None
-    source = db.get(TrafficSource, link.source_id)
-    target = db.get(IPAddress, link.managed_ip_address_id) if link.managed_ip_address_id else None
+    source = context.sources.get(link.source_id) if context else db.get(TrafficSource, link.source_id)
+    target = context.targets.get(link.managed_ip_address_id) if context and link.managed_ip_address_id else db.get(IPAddress, link.managed_ip_address_id) if link.managed_ip_address_id else None
     if not source or source.is_deleted or source.provider_key not in DISCOVERY_FLOW_PROVIDERS:
         return "unresolved", "source_no_longer_eligible", None
     if not target:
@@ -78,7 +80,7 @@ def _linked_validity(db: Session, link: TrafficDiscoveryLink) -> tuple[str, str,
         endpoint = ipaddress.ip_address(link.endpoint_ip)
     except ValueError:
         return "unresolved", "invalid_endpoint", None
-    contexts = [context for context in mapped_network_contexts(db, link.source_id, link.exporter_identity) if endpoint.version == context[2].version and endpoint in context[2]]
+    contexts = [item for item in (context.network_contexts.get((link.source_id, link.exporter_identity), []) if context else mapped_network_contexts(db, link.source_id, link.exporter_identity)) if endpoint.version == item[2].version and endpoint in item[2]]
     if len(contexts) > 1:
         return "ambiguous", "overlapping_local_networks", None
     if not contexts:
@@ -93,12 +95,12 @@ def _linked_validity(db: Session, link: TrafficDiscoveryLink) -> tuple[str, str,
     return "valid", "administrator_link", target.id
 
 
-def _row_payload(db: Session, row) -> dict:
-    latest = latest_observation(db, row.source_id, row.exporter_identity, row.endpoint_ip, row.endpoint_role)
+def _row_payload(db: Session, row, *, context: DiscoveryPayloadContext | None = None) -> dict:
+    latest = latest_observation(db, row.source_id, row.exporter_identity, row.endpoint_ip, row.endpoint_role, context=context)
     classification = latest.classification if latest else "unknown"
     confidence = latest.confidence if latest else "unknown"
-    match = match_endpoint(db, row.source_id, row.exporter_identity, row.endpoint_ip, classification=classification)
-    link = current_link(db, row.source_id, row.exporter_identity, row.endpoint_ip, row.endpoint_role)
+    match = match_endpoint(db, row.source_id, row.exporter_identity, row.endpoint_ip, classification=classification, context=context)
+    link = current_link(db, row.source_id, row.exporter_identity, row.endpoint_ip, row.endpoint_role, context=context)
     status = match.status
     managed_id = match.managed_ip_address_id
     reason = match.reason
@@ -108,7 +110,7 @@ def _row_payload(db: Session, row) -> dict:
     if link and link.state == "ignored":
         status, managed_id, reason = "ignored", None, link.reason or "ignored_by_administrator"
     elif link and link.state == "linked":
-        link_validity, reason, managed_id = _linked_validity(db, link)
+        link_validity, reason, managed_id = _linked_validity(db, link, context=context)
         status = "linked" if link_validity == "valid" else link_validity
     return {
         "source_id": row.source_id,
@@ -148,7 +150,8 @@ def list_discovered_ips(
     query = observation_keys_query(db, source_id=source_id, exporter_identity=exporter_identity, endpoint_ip=endpoint_ip)
     query = query.order_by(func.max(TrafficDiscoveryObservation.last_seen_at).desc(), TrafficDiscoveryObservation.endpoint_ip.asc())
     rows = query.limit(MAX_QUERY_ROWS).all()
-    items = [_row_payload(db, row) for row in rows]
+    payload_context = build_discovery_payload_context(db, rows)
+    items = [_row_payload(db, row, context=payload_context) for row in rows]
     if status:
         items = [item for item in items if item["status"] == status]
     total = len(items)
@@ -160,8 +163,9 @@ def list_discovered_ips(
 def discovery_summary(db: Session = Depends(get_db), _user=Depends(require_user)):
     rows = observation_keys_query(db).limit(MAX_QUERY_ROWS).all()
     counts = {key: 0 for key in ("linked", "unlinked", "ignored", "stale", "ambiguous", "unmatched")}
+    payload_context = build_discovery_payload_context(db, rows)
     for row in rows:
-        counts[_row_payload(db, row)["status"]] += 1
+        counts[_row_payload(db, row, context=payload_context)["status"]] += 1
     return {"total": sum(counts.values()), "counts": counts, "truncated": len(rows) == MAX_QUERY_ROWS}
 
 

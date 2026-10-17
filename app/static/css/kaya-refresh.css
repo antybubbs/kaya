@@ -139,6 +139,18 @@ a:hover,.panel a:hover{color:var(--k-amber-hover)}
 .module-nav__settings{color:var(--k-muted)!important;background:transparent!important;border:0!important;font-weight:500!important}
 .module-nav__settings:hover{color:var(--k-amber-text)!important}
 .module-nav__badge{margin-left:6px!important}
+/* kaya.css makes .module-nav__pages a horizontal scroller at every width, and the tabs' -1px
+   underline offset above then overflows it vertically, leaving a live scroll container on
+   desktop. Desktop: no scroller; tabs wrap if they ever run out of room and the underline
+   lands on the divider. Below 1024px (responsive.css's touch layout) the tabs keep scrolling
+   sideways, without the stray vertical overflow. */
+@media (min-width:1024px){
+  .module-nav,.module-nav__pages{overflow:visible!important}
+  .module-nav__pages{flex-wrap:wrap!important}
+}
+@media (max-width:1023px){
+  .module-nav__pages{overflow-y:hidden!important}
+}
 .runbook-feed-tabs{margin:0 0 4px!important}
 
 /* settings-style tab strips */
@@ -242,6 +254,14 @@ td a:hover{color:var(--k-amber-text)!important}
 .audit-table th{background:var(--k-panel)!important}
 .panel>.panel-heading,.panel>header,.panel>.runbook-section-header{padding:18px 20px 12px!important;margin:0!important}
 .panel:has(> table)>header,.panel:has(> .table-scroll)>header,.panel:has(> .table-scroll)>.panel-heading,.panel:has(> .table-scroll)>div:not(.table-scroll){padding-left:20px!important;padding-right:20px!important}
+/* Edge-to-edge table cards drop their own padding so the table and row hovers reach the border.
+   Everything else in the card (toolbars, filters, headings, forms, notes) keeps the canonical
+   20px card inset, which also lines it up with the table's 20px first/last cell padding, and a
+   card that opens or closes with controls rather than a heading or the table keeps its
+   vertical inset too. */
+.panel:is(:has(> table),:has(> .table-scroll),:has(> .table-wrap))>:not(table,.table-scroll,.table-wrap){padding-left:20px!important;padding-right:20px!important}
+.panel:is(:has(> table),:has(> .table-scroll),:has(> .table-wrap))>:not(table,.table-scroll,.table-wrap,header,.panel-heading,.runbook-section-header):first-child{padding-top:16px!important}
+.panel:is(:has(> table),:has(> .table-scroll),:has(> .table-wrap))>:not(table,.table-scroll,.table-wrap):last-child{padding-bottom:16px!important}
 
 /* ---------------------------------------------------------------- chips, pills, states */
 .table-chip,.status-pill,.compute-state,.ha-status-chip,.ad-pill,.secure-send-status{
