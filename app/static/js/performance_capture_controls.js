@@ -7,6 +7,7 @@
   const startButton = root.querySelector("[data-capture-start]");
   const stopButton = root.querySelector("[data-capture-stop]");
   const download = root.querySelector("[data-capture-download]");
+  const discard = root.querySelector("[data-capture-discard]");
   const duration = root.querySelector("[data-capture-duration]");
   const boxes = [...root.querySelectorAll("[data-capture-collectors] input[type=checkbox]")];
   let timer = null;
@@ -21,16 +22,18 @@
     const active = Boolean(data.active);
     startButton.hidden = active;
     stopButton.hidden = !active;
-    download.hidden = active || !data.capture_id;
-    if (active) setStatus(`Capturing: ${data.remaining_seconds}s remaining · ${data.event_count} events`);
+    download.hidden = (!data.capture_id && !data.completed_available) || (active && !data.completed_available);
+    discard.hidden = (!data.capture_id && !data.completed_available) || (active && !data.completed_available);
+    if (active) setStatus(`Capturing: ${data.remaining_seconds}s remaining · ${data.event_count} events${data.completed_available ? " · previous result retained" : ""}`);
+    else if (data.status === "completed") setStatus(`Capture complete · ${data.event_count} events ready to download.`);
     else if (data.status === "stopped") setStatus(`Capture stopped · ${data.event_count} events ready to download.`);
-    else setStatus("No capture active.");
+    else setStatus(data.reason || "No completed capture is available.");
   }
   async function poll() {
     try {
       const data = await call("/api/system/about/performance/capture", "GET");
       render(data);
-      if (!data.active && timer) { clearInterval(timer); timer = null; sessionStorage.removeItem(key); }
+      if (!data.active && timer) { clearInterval(timer); timer = null; if (!["completed", "stopped"].includes(data.status)) sessionStorage.removeItem(key); }
     } catch (error) { setStatus(error.message); }
   }
   startButton.addEventListener("click", async () => {
@@ -50,6 +53,12 @@
     try { render(await call("/api/system/about/performance/capture/stop", "POST", {})); sessionStorage.removeItem(key); if (timer) clearInterval(timer); timer = null; }
     catch (error) { setStatus(error.message); }
     finally { stopButton.disabled = false; }
+  });
+  discard.addEventListener("click", async () => {
+    discard.disabled = true;
+    try { render(await call("/api/system/about/performance/capture/discard", "POST", {})); sessionStorage.removeItem(key); }
+    catch (error) { setStatus(error.message); }
+    finally { discard.disabled = false; }
   });
   poll();
 })();

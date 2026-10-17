@@ -12,6 +12,7 @@ from app.core.performance import (
     capture_bundle,
     capture_status,
     clear_capture,
+    discard_completed_captures,
     clear_diagnostics,
     diagnostics_snapshot,
     log_request_metrics,
@@ -104,7 +105,7 @@ def test_capture_is_bounded_session_scoped_and_exportable():
         owner_session_id="admin-session-a", duration=15, collectors=["http", "browser", "ha"]
     )
     assert started["active"] is True
-    assert capture_status("admin-session-b")["status"] == "idle"
+    assert capture_status("admin-session-b")["status"] == "unavailable"
     events = [{"name": "navigation", "route": "/assets/123?secret=do-not-export", "duration_ms": 12.5}]
     assert add_capture_events("admin-session-b", events)["accepted"] == 0
     for _ in range(CAPTURE_MAX_EVENTS + 20):
@@ -122,6 +123,28 @@ def test_capture_is_bounded_session_scoped_and_exportable():
 
 def test_capture_routes_are_redacted_without_query_strings():
     clear_capture()
+    __import__("app.core.performance", fromlist=["start_capture"]).start_capture(
+        owner_session_id="admin-session-a", duration=15, collectors=["browser"]
+    )
+    add_capture_events("admin-session-a", [{"name": "api", "route": "/api/assets/42?token=secret", "duration_ms": 4}])
+    __import__("app.core.performance", fromlist=["stop_capture"]).stop_capture("admin-session-a")
+    route = capture_bundle("admin-session-a")["timeline"][0]["route"]
+    assert route == "/api/assets/{id}"
+    assert "secret" not in str(capture_bundle("admin-session-a"))
+    clear_capture()
+
+
+def test_capture_automatically_completes_and_remains_downloadable_after_refresh():
+    import app.core.performance as performance
+    clear_capture()
+    performance.start_capture(owner_session_id="admin-session-a", duration=30, collectors=["http"])
+    performance._capture["expires_monotonic"] = 0
+    status_after_completion = capture_status("admin-session-a")
+    assert status_after_completion["status"] == "completed"
+    assert status_after_completion["capture_id"]
+    assert capture_bundle("admin-session-a")["capture_id"] == status_after_completion["capture_id"]
+    assert capture_status("admin-session-b")["status"] == "unavailable"
+    clear_capture()
 
 
 def test_capture_rejects_concurrency_and_expires_cleanly():
@@ -134,17 +157,34 @@ def test_capture_rejects_concurrency_and_expires_cleanly():
     except RuntimeError:
         pass
     performance._capture["expires_monotonic"] = 0
-    assert capture_status("admin-session-a")["status"] == "idle"
+    assert capture_status("admin-session-a")["status"] == "completed"
+    assert capture_bundle("admin-session-a") is not None
+    performance._completed_captures[0]["retention_expires_monotonic"] = 0
+    assert capture_status("admin-session-a")["status"] == "unavailable"
     assert capture_bundle("admin-session-a") is None
     clear_capture()
-    __import__("app.core.performance", fromlist=["start_capture"]).start_capture(
-        owner_session_id="admin-session-a", duration=15, collectors=["browser"]
-    )
-    add_capture_events("admin-session-a", [{"name": "api", "route": "/api/assets/42?token=secret", "duration_ms": 4}])
-    __import__("app.core.performance", fromlist=["stop_capture"]).stop_capture("admin-session-a")
-    route = capture_bundle("admin-session-a")["timeline"][0]["route"]
-    assert route == "/api/assets/{id}"
+
+
+def test_discard_removes_only_the_requesting_session_results():
+    import app.core.performance as performance
     clear_capture()
+    performance.start_capture(owner_session_id="admin-session-a", duration=15, collectors=["http"])
+    performance.stop_capture("admin-session-a")
+    performance.start_capture(owner_session_id="admin-session-b", duration=15, collectors=["http"])
+    performance.stop_capture("admin-session-b")
+    assert discard_completed_captures("admin-session-a") is True
+    assert capture_bundle("admin-session-a") is None
+    assert capture_bundle("admin-session-b") is not None
+    clear_capture()
+
+
+def test_capture_controls_expose_completed_bundle_and_discard_actions():
+    template = open("app/templates/performance.html", encoding="utf-8").read()
+    script = open("app/static/js/performance_capture_controls.js", encoding="utf-8").read()
+    assert 'data-capture-download href="/api/system/about/performance/capture/bundle"' in template
+    assert 'data-capture-discard' in template
+    assert 'data.status === "completed"' in script
+    assert '/api/system/about/performance/capture/discard' in script
 
 
 def test_p95_uses_interpolated_percentile_and_clear_keeps_disabled_state():

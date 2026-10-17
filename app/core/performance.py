@@ -30,10 +30,12 @@ _diagnostics_enabled = False
 _diagnostics_enabled_at: str | None = None
 _state_lock = Lock()
 _capture: dict | None = None
-_last_capture: dict | None = None
+_completed_captures: list[dict] = []
 _capture_lock = Lock()
 CAPTURE_DURATIONS = (15, 30, 60)
 CAPTURE_MAX_EVENTS = 500
+CAPTURE_MAX_COMPLETED = 4
+CAPTURE_RETENTION_SECONDS = 900
 CAPTURE_COLLECTORS = {
     "http",
     "postgresql",
@@ -76,25 +78,43 @@ def clear_diagnostics() -> None:
 
 
 def clear_capture() -> None:
-    global _capture, _last_capture
+    global _capture
     with _capture_lock:
         if _capture is not None:
             _capture["stop_event"].set()
         _capture = None
-        _last_capture = None
+        _completed_captures.clear()
+
+
+def _prune_completed_locked(now: float | None = None) -> None:
+    current = now or time.monotonic()
+    _completed_captures[:] = [
+        capture for capture in _completed_captures
+        if current < capture["retention_expires_monotonic"]
+    ][-CAPTURE_MAX_COMPLETED:]
+
+
+def _retain_completed_locked(capture: dict) -> None:
+    _prune_completed_locked()
+    _completed_captures.append(capture)
+    _completed_captures[:] = _completed_captures[-CAPTURE_MAX_COMPLETED:]
 
 
 def _expire_capture_locked(now: float | None = None) -> None:
     global _capture
-    if _capture is not None and (now or time.monotonic()) >= _capture["expires_monotonic"]:
-        _capture["status"] = "expired"
+    current = now or time.monotonic()
+    _prune_completed_locked(current)
+    if _capture is not None and current >= _capture["expires_monotonic"]:
+        _capture["status"] = "completed"
         _capture["ended_at"] = datetime.now(timezone.utc).isoformat()
+        _capture["retention_expires_monotonic"] = current + CAPTURE_RETENTION_SECONDS
         _capture["stop_event"].set()
+        _retain_completed_locked(_capture)
         _capture = None
 
 
 def start_capture(*, owner_session_id: str, duration: int, collectors: list[str]) -> dict:
-    global _capture, _last_capture
+    global _capture
     if not owner_session_id:
         raise ValueError("A session-scoped capture owner is required")
     if duration not in CAPTURE_DURATIONS:
@@ -106,7 +126,6 @@ def start_capture(*, owner_session_id: str, duration: int, collectors: list[str]
         _expire_capture_locked()
         if _capture is not None and _capture["status"] == "running":
             raise RuntimeError("A diagnostic capture is already active")
-        _last_capture = None
         started_at = datetime.now(timezone.utc).isoformat()
         capture_id = uuid4().hex
         stop_event = Event()
@@ -123,6 +142,7 @@ def start_capture(*, owner_session_id: str, duration: int, collectors: list[str]
             "postgresql_samples": deque(maxlen=12),
             "collector_errors": {},
             "stop_event": stop_event,
+            "retention_expires_monotonic": None,
         }
         result = _capture_status_locked(owner_session_id)
     if "postgresql" in selected:
@@ -132,20 +152,30 @@ def start_capture(*, owner_session_id: str, duration: int, collectors: list[str]
 
 def _capture_status_locked(owner_session_id: str) -> dict:
     _expire_capture_locked()
-    if _capture is None or _capture["owner_session_id"] != owner_session_id:
-        return {"active": False, "status": "idle"}
-    active = _capture["status"] == "running"
-    remaining = max(0, round(_capture["expires_monotonic"] - time.monotonic(), 2)) if active else 0
-    return {
+    capture = _capture if _capture is not None and _capture["owner_session_id"] == owner_session_id else None
+    owner_captures = [item for item in _completed_captures if item["owner_session_id"] == owner_session_id]
+    if capture is None:
+        capture = owner_captures[-1] if owner_captures else None
+    if capture is None:
+        return {"active": False, "status": "unavailable", "reason": "No completed capture is retained in this Kaya process. It may have expired, been discarded, or been lost during an application restart."}
+    active = capture["status"] == "running"
+    remaining = max(0, round(capture["expires_monotonic"] - time.monotonic(), 2)) if active else 0
+    retention_remaining = max(0, round(capture["retention_expires_monotonic"] - time.monotonic(), 2)) if not active and capture.get("retention_expires_monotonic") else None
+    result = {
         "active": active,
-        "status": _capture["status"],
-        "capture_id": _capture["capture_id"],
-        "started_at": _capture["started_at"],
-        "duration_seconds": _capture["duration_seconds"],
+        "status": capture["status"],
+        "capture_id": capture["capture_id"],
+        "started_at": capture["started_at"],
+        "duration_seconds": capture["duration_seconds"],
         "remaining_seconds": remaining,
-        "collectors": list(_capture["collectors"]),
-        "event_count": len(_capture["events"]),
+        "retention_remaining_seconds": retention_remaining,
+        "collectors": list(capture["collectors"]),
+        "event_count": len(capture["events"]),
     }
+    if active and owner_captures:
+        result["completed_available"] = True
+        result["completed_capture_id"] = owner_captures[-1]["capture_id"]
+    return result
 
 
 def capture_status(owner_session_id: str) -> dict:
@@ -154,7 +184,7 @@ def capture_status(owner_session_id: str) -> dict:
 
 
 def stop_capture(owner_session_id: str) -> dict:
-    global _capture, _last_capture
+    global _capture
     with _capture_lock:
         _expire_capture_locked()
         if _capture is None or _capture["owner_session_id"] != owner_session_id:
@@ -162,11 +192,25 @@ def stop_capture(owner_session_id: str) -> dict:
         _capture["status"] = "stopped"
         _capture["ended_at"] = datetime.now(timezone.utc).isoformat()
         _capture["stop_event"].set()
-        _last_capture = _capture
+        _capture["retention_expires_monotonic"] = time.monotonic() + CAPTURE_RETENTION_SECONDS
+        _capture["status"] = "stopped"
+        _retain_completed_locked(_capture)
         result = _capture_status_locked(owner_session_id)
         result["active"] = False
         result["status"] = "stopped"
+        _capture = None
         return result
+
+
+def discard_completed_captures(owner_session_id: str) -> bool:
+    with _capture_lock:
+        _prune_completed_locked()
+        before = len(_completed_captures)
+        _completed_captures[:] = [
+            capture for capture in _completed_captures
+            if capture["owner_session_id"] != owner_session_id
+        ]
+        return len(_completed_captures) != before
 
 
 def add_capture_events(owner_session_id: str, events: list[dict]) -> dict:
@@ -243,8 +287,9 @@ def _background_snapshot() -> dict:
 def capture_bundle(owner_session_id: str) -> dict | None:
     with _capture_lock:
         _expire_capture_locked()
-        capture = _capture or _last_capture
-        if capture is None or capture["owner_session_id"] != owner_session_id:
+        owner_captures = [item for item in _completed_captures if item["owner_session_id"] == owner_session_id]
+        capture = owner_captures[-1] if owner_captures else None
+        if capture is None:
             return None
         status = {
             "capture_id": capture["capture_id"],
