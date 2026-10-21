@@ -40,7 +40,6 @@ from app.core.performance import (
     capture_bundle,
     capture_status,
     clear_diagnostics,
-    discard_completed_captures,
     diagnostics_snapshot,
     set_diagnostics_enabled,
     start_capture,
@@ -2965,17 +2964,6 @@ def performance_capture_bundle(request: Request, db: Session = Depends(get_db), 
     write_audit(db, user, "performance_capture_exported", "performance_capture", bundle["capture_id"], detail="Exported a performance diagnostic bundle.", metadata={"schema_version": bundle["schema_version"]})
     db.commit()
     return JSONResponse(bundle, headers={"Cache-Control": "no-store", "Content-Disposition": f'attachment; filename="kaya-performance-{bundle["capture_id"]}.json"'})
-
-
-@router.post("/api/system/about/performance/capture/discard")
-async def performance_capture_discard(request: Request, db: Session = Depends(get_db), user=Depends(require_admin)):
-    await _capture_json(request)
-    owner = _capture_owner_session(request)
-    discarded = discard_completed_captures(owner)
-    if discarded:
-        write_audit(db, user, "performance_capture_discarded", "performance_capture", detail="Discarded retained performance diagnostic captures.")
-        db.commit()
-    return {"discarded": discarded, "status": "unavailable", "reason": "Diagnostic capture results were discarded."}
 
 
 @router.post("/system/about/performance/toggle")

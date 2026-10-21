@@ -83,7 +83,13 @@ def test_initial_setup_lock_serializes_first_admin_creation(engine_factory, tmp_
     engine = engine_factory(tmp_path) if engine_factory is _sqlite_engine else engine_factory()
     User.__table__.create(engine, checkfirst=True)
     with engine.begin() as connection:
-        connection.execute(text("DELETE FROM users"))
+        if engine.dialect.name == "postgresql":
+            # The migrated PostgreSQL schema retains audit rows for users.
+            # Clear this disposable test state through the FK graph before
+            # exercising first-admin creation.
+            connection.execute(text("TRUNCATE TABLE audit_logs, users RESTART IDENTITY CASCADE"))
+        else:
+            connection.execute(text("DELETE FROM users"))
     factory_errors = []
 
     def create_admin(email: str):

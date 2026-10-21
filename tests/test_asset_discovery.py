@@ -8,8 +8,10 @@ from sqlalchemy.pool import StaticPool
 
 from app.db.session import Base
 from app.models.models import (
+    AssetIdentityEvidence,
     AssetNetworkAssignment,
     DHCPLeaseHistory,
+    DHCPRange,
     DNSRecognisedDevice,
     HardwareAsset,
     HardwareAssetTagSequence,
@@ -75,6 +77,85 @@ def test_dns_candidate_falls_back_to_provider_mac_when_normalised_mac_is_missing
     candidate = get_discovered_device(db, "dns:7")
 
     assert candidate["mac_addresses"] == ["00:11:22:33:44:77"]
+
+
+def test_different_mac_is_not_blocked_by_historical_ip_assignment():
+    db = database()
+    old_at = datetime(2026, 1, 1)
+    new_at = datetime(2026, 1, 2)
+    old_asset = HardwareAsset(id=6, name="alyssa-iphone.hal.local", status="In use")
+    old_mac = "be:44:47:87:e0:32"
+    new_mac = "b0:45:30:9a:93:1b"
+    client = DNSRecognisedDevice(
+        id=1, provider_id=1, logical_provider_key="hal-dns", identity_type="mac",
+        identity_value=new_mac, hostname="sky-decoder", current_ip="192.0.2.178",
+        mac_address=new_mac, normalised_mac=new_mac, hardware_asset_id=old_asset.id,
+        first_seen_at=new_at, last_seen_at=new_at,
+    )
+    db.add_all([
+        old_asset,
+        client,
+        AssetIdentityEvidence(
+            asset_id=old_asset.id, evidence_type="mac", normalised_value=old_mac,
+            source="discovery", source_scope="dhcp", status="confirmed",
+            first_observed_at=old_at, last_observed_at=old_at,
+        ),
+        IPAddress(id=1, address="192.0.2.178"),
+        AssetNetworkAssignment(
+            asset_id=old_asset.id, address="192.0.2.178", address_family=4,
+            ip_address_id=1, started_at=old_at, ended_at=new_at,
+            provenance="dhcp_reconciliation", status="confirmed",
+        ),
+    ])
+    db.commit()
+
+    candidate = get_discovered_device(db, "dns:1")
+
+    assert candidate["asset_id"] is None
+    assert candidate["identity_conflict"] is True
+    assert candidate["historical_assignments"][0]["asset_id"] == old_asset.id
+
+
+def test_alyssa_sky_reassignment_can_be_adopted_without_merging_identity():
+    db = database()
+    old_at = datetime(2026, 1, 1)
+    reassigned_at = datetime(2026, 1, 2)
+    old_asset = HardwareAsset(id=6, asset_tag="HAL-0006", name="alyssa-iphone.hal.local", status="In use")
+    old_mac = "be:44:47:87:e0:32"
+    old_private_mac = "f4:c7:aa:1b:19:1c"
+    sky_mac = "b0:45:30:9a:93:1b"
+    vlan = VLAN(id=1, name="VLAN 1", subnet_cidr="192.0.2.0/24")
+    dhcp_range = DHCPRange(id=1, name="Main Home DHCP Range VLAN 1", vlan_id=1, start_address="192.0.2.150", end_address="192.0.2.210", is_enabled=True)
+    ip = IPAddress(id=1, address="192.0.2.178", vlan_id=1, name="DHCP address")
+    sky_client = DNSRecognisedDevice(
+        id=1, provider_id=1, logical_provider_key="hal-dns", identity_type="mac",
+        identity_value=sky_mac, hostname="sky-decoder", current_ip=ip.address,
+        mac_address=sky_mac, normalised_mac=sky_mac, hardware_asset_id=old_asset.id,
+        first_seen_at=reassigned_at, last_seen_at=reassigned_at,
+    )
+    db.add_all([
+        old_asset, vlan, dhcp_range, ip, sky_client,
+        AssetIdentityEvidence(asset_id=old_asset.id, evidence_type="mac", normalised_value=old_mac, source="discovery", source_scope="dhcp", status="confirmed", first_observed_at=old_at, last_observed_at=old_at),
+        AssetIdentityEvidence(asset_id=old_asset.id, evidence_type="mac", normalised_value=old_private_mac, source="discovery", source_scope="dhcp", status="confirmed", first_observed_at=old_at, last_observed_at=old_at),
+        DHCPLeaseHistory(id=1, provider_id=1, dns_client_id=1, dhcp_range_id=1, ip_address=ip.address, mac_address=sky_mac, hostname="sky-decoder", provider_lease_id="73", lease_started_at=reassigned_at, first_seen_at=reassigned_at, last_seen_at=reassigned_at, is_active=True),
+        AssetNetworkAssignment(asset_id=old_asset.id, address=ip.address, address_family=4, vlan_id=1, ip_address_id=1, started_at=old_at, ended_at=reassigned_at, provenance="dhcp_reconciliation", status="confirmed"),
+    ])
+    admin = User(id=1, email="synthetic-admin@example.invalid", password_hash="x", role="admin", is_active=True)
+    db.add(admin)
+    db.commit()
+
+    candidate = get_discovered_device(db, "dns:1")
+    adopted = adopt_discovered_device(db, admin, candidate, new_name="Sky Decoder")
+
+    assert adopted.id != old_asset.id
+    db.refresh(sky_client)
+    assert sky_client.hardware_asset_id == adopted.id
+    assert {row.normalised_value for row in db.query(AssetIdentityEvidence).filter_by(asset_id=old_asset.id, evidence_type="mac", status="confirmed")} == {old_mac, old_private_mac}
+    old_assignment = db.query(AssetNetworkAssignment).filter_by(asset_id=old_asset.id).one()
+    assert old_assignment.ended_at == reassigned_at
+    new_assignment = db.query(AssetNetworkAssignment).filter_by(asset_id=adopted.id).one()
+    assert new_assignment.address == ip.address
+    assert new_assignment.dhcp_lease_id is None  # Adoption preserves the source lease separately.
 
 
 def test_explicit_dhcp_candidate_namespace_resolves_grouped_active_lease():

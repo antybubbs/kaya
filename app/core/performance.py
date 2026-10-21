@@ -30,12 +30,10 @@ _diagnostics_enabled = False
 _diagnostics_enabled_at: str | None = None
 _state_lock = Lock()
 _capture: dict | None = None
-_completed_captures: list[dict] = []
+_last_capture: dict | None = None
 _capture_lock = Lock()
 CAPTURE_DURATIONS = (15, 30, 60)
 CAPTURE_MAX_EVENTS = 500
-CAPTURE_MAX_COMPLETED = 4
-CAPTURE_RETENTION_SECONDS = 900
 CAPTURE_COLLECTORS = {
     "http",
     "postgresql",
@@ -78,43 +76,25 @@ def clear_diagnostics() -> None:
 
 
 def clear_capture() -> None:
-    global _capture
+    global _capture, _last_capture
     with _capture_lock:
         if _capture is not None:
             _capture["stop_event"].set()
         _capture = None
-        _completed_captures.clear()
-
-
-def _prune_completed_locked(now: float | None = None) -> None:
-    current = now or time.monotonic()
-    _completed_captures[:] = [
-        capture for capture in _completed_captures
-        if current < capture["retention_expires_monotonic"]
-    ][-CAPTURE_MAX_COMPLETED:]
-
-
-def _retain_completed_locked(capture: dict) -> None:
-    _prune_completed_locked()
-    _completed_captures.append(capture)
-    _completed_captures[:] = _completed_captures[-CAPTURE_MAX_COMPLETED:]
+        _last_capture = None
 
 
 def _expire_capture_locked(now: float | None = None) -> None:
     global _capture
-    current = now or time.monotonic()
-    _prune_completed_locked(current)
-    if _capture is not None and current >= _capture["expires_monotonic"]:
-        _capture["status"] = "completed"
+    if _capture is not None and (now or time.monotonic()) >= _capture["expires_monotonic"]:
+        _capture["status"] = "expired"
         _capture["ended_at"] = datetime.now(timezone.utc).isoformat()
-        _capture["retention_expires_monotonic"] = current + CAPTURE_RETENTION_SECONDS
         _capture["stop_event"].set()
-        _retain_completed_locked(_capture)
         _capture = None
 
 
 def start_capture(*, owner_session_id: str, duration: int, collectors: list[str]) -> dict:
-    global _capture
+    global _capture, _last_capture
     if not owner_session_id:
         raise ValueError("A session-scoped capture owner is required")
     if duration not in CAPTURE_DURATIONS:
@@ -126,6 +106,7 @@ def start_capture(*, owner_session_id: str, duration: int, collectors: list[str]
         _expire_capture_locked()
         if _capture is not None and _capture["status"] == "running":
             raise RuntimeError("A diagnostic capture is already active")
+        _last_capture = None
         started_at = datetime.now(timezone.utc).isoformat()
         capture_id = uuid4().hex
         stop_event = Event()
@@ -142,7 +123,6 @@ def start_capture(*, owner_session_id: str, duration: int, collectors: list[str]
             "postgresql_samples": deque(maxlen=12),
             "collector_errors": {},
             "stop_event": stop_event,
-            "retention_expires_monotonic": None,
         }
         result = _capture_status_locked(owner_session_id)
     if "postgresql" in selected:
@@ -152,30 +132,20 @@ def start_capture(*, owner_session_id: str, duration: int, collectors: list[str]
 
 def _capture_status_locked(owner_session_id: str) -> dict:
     _expire_capture_locked()
-    capture = _capture if _capture is not None and _capture["owner_session_id"] == owner_session_id else None
-    owner_captures = [item for item in _completed_captures if item["owner_session_id"] == owner_session_id]
-    if capture is None:
-        capture = owner_captures[-1] if owner_captures else None
-    if capture is None:
-        return {"active": False, "status": "unavailable", "reason": "No completed capture is retained in this Kaya process. It may have expired, been discarded, or been lost during an application restart."}
-    active = capture["status"] == "running"
-    remaining = max(0, round(capture["expires_monotonic"] - time.monotonic(), 2)) if active else 0
-    retention_remaining = max(0, round(capture["retention_expires_monotonic"] - time.monotonic(), 2)) if not active and capture.get("retention_expires_monotonic") else None
-    result = {
+    if _capture is None or _capture["owner_session_id"] != owner_session_id:
+        return {"active": False, "status": "idle"}
+    active = _capture["status"] == "running"
+    remaining = max(0, round(_capture["expires_monotonic"] - time.monotonic(), 2)) if active else 0
+    return {
         "active": active,
-        "status": capture["status"],
-        "capture_id": capture["capture_id"],
-        "started_at": capture["started_at"],
-        "duration_seconds": capture["duration_seconds"],
+        "status": _capture["status"],
+        "capture_id": _capture["capture_id"],
+        "started_at": _capture["started_at"],
+        "duration_seconds": _capture["duration_seconds"],
         "remaining_seconds": remaining,
-        "retention_remaining_seconds": retention_remaining,
-        "collectors": list(capture["collectors"]),
-        "event_count": len(capture["events"]),
+        "collectors": list(_capture["collectors"]),
+        "event_count": len(_capture["events"]),
     }
-    if active and owner_captures:
-        result["completed_available"] = True
-        result["completed_capture_id"] = owner_captures[-1]["capture_id"]
-    return result
 
 
 def capture_status(owner_session_id: str) -> dict:
@@ -184,7 +154,7 @@ def capture_status(owner_session_id: str) -> dict:
 
 
 def stop_capture(owner_session_id: str) -> dict:
-    global _capture
+    global _capture, _last_capture
     with _capture_lock:
         _expire_capture_locked()
         if _capture is None or _capture["owner_session_id"] != owner_session_id:
@@ -192,25 +162,11 @@ def stop_capture(owner_session_id: str) -> dict:
         _capture["status"] = "stopped"
         _capture["ended_at"] = datetime.now(timezone.utc).isoformat()
         _capture["stop_event"].set()
-        _capture["retention_expires_monotonic"] = time.monotonic() + CAPTURE_RETENTION_SECONDS
-        _capture["status"] = "stopped"
-        _retain_completed_locked(_capture)
+        _last_capture = _capture
         result = _capture_status_locked(owner_session_id)
         result["active"] = False
         result["status"] = "stopped"
-        _capture = None
         return result
-
-
-def discard_completed_captures(owner_session_id: str) -> bool:
-    with _capture_lock:
-        _prune_completed_locked()
-        before = len(_completed_captures)
-        _completed_captures[:] = [
-            capture for capture in _completed_captures
-            if capture["owner_session_id"] != owner_session_id
-        ]
-        return len(_completed_captures) != before
 
 
 def add_capture_events(owner_session_id: str, events: list[dict]) -> dict:
@@ -243,25 +199,6 @@ def _append_postgres_sample(capture_id: str, sample: dict) -> None:
         _capture["postgresql_samples"].append(json.loads(json.dumps(sample, default=str)))
 
 
-def _safe_collector_error(exc: Exception) -> dict[str, str]:
-    """Return bounded diagnostic metadata without exporting database details."""
-    error_type = type(exc).__name__[:80]
-    sqlstate = getattr(exc, "sqlstate", None)
-    original = getattr(exc, "orig", None)
-    if not sqlstate and original is not None:
-        sqlstate = getattr(original, "sqlstate", None)
-    if not isinstance(sqlstate, str) or not re.fullmatch(r"[0-9A-Z]{5}", sqlstate):
-        sqlstate = None
-    result = {"type": error_type}
-    if sqlstate:
-        result["sqlstate"] = sqlstate
-    result["code"] = (
-        "database_query_incompatible_or_unavailable"
-        if error_type == "ProgrammingError" else "collector_failed"
-    )
-    return result
-
-
 def _run_postgres_capture(capture_id: str, duration: int, stop_event: Event) -> None:
     try:
         from app.core.config import get_settings
@@ -280,7 +217,7 @@ def _run_postgres_capture(capture_id: str, duration: int, stop_event: Event) -> 
     except Exception as exc:
         with _capture_lock:
             if _capture is not None and _capture["capture_id"] == capture_id:
-                _capture["collector_errors"]["postgresql"] = _safe_collector_error(exc)
+                _capture["collector_errors"]["postgresql"] = type(exc).__name__
 
 
 def _background_snapshot() -> dict:
@@ -306,9 +243,8 @@ def _background_snapshot() -> dict:
 def capture_bundle(owner_session_id: str) -> dict | None:
     with _capture_lock:
         _expire_capture_locked()
-        owner_captures = [item for item in _completed_captures if item["owner_session_id"] == owner_session_id]
-        capture = owner_captures[-1] if owner_captures else None
-        if capture is None:
+        capture = _capture or _last_capture
+        if capture is None or capture["owner_session_id"] != owner_session_id:
             return None
         status = {
             "capture_id": capture["capture_id"],
@@ -319,7 +255,7 @@ def capture_bundle(owner_session_id: str) -> dict | None:
         background = _background_snapshot() if "background" in selected else None
         statuses = {
             "http": {"available": "http" in selected, "source": "request instrumentation"},
-            "postgresql": ({"available": True, "source": "dedicated read-only diagnostic connection", "sample_count": len(capture["postgresql_samples"])} if capture["postgresql_samples"] else {"available": False, "reason": capture["collector_errors"].get("postgresql", {"code": "no_samples"})}),
+            "postgresql": ({"available": True, "source": "dedicated read-only diagnostic connection", "sample_count": len(capture["postgresql_samples"])} if capture["postgresql_samples"] else {"available": False, "reason": capture["collector_errors"].get("postgresql", "No PostgreSQL samples were collected.")}),
             "ha": {"available": "ha" in selected, "source": "request phase instrumentation"},
             "background": {"available": background is not None, "source": "existing in-process worker snapshots"},
             "resources": {"available": "resources" in selected, "source": "request resource snapshots"},

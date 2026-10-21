@@ -128,6 +128,8 @@ def _admin(db):
 
 def test_unknown_dhcp_only_and_static_endpoints_are_accounted_without_any_records(db):
     nsel, _ = _setup(db)
+    assets_before = db.query(HardwareAsset).count()
+    assignments_before = db.query(AssetNetworkAssignment).count()
     db.add(DHCPLeaseHistory(ip_address="192.0.2.11", mac_address="02:00:00:00:00:11", hostname="synthetic-dhcp", lease_started_at=NOW - timedelta(days=1)))
     db.commit()
     _ingest(db, nsel, _record(nsel.id, source_ip="192.0.2.10", sequence=1), _record(nsel.id, source_ip="192.0.2.11", sequence=2), _record(nsel.id, source_ip="192.0.2.12", sequence=3))
@@ -136,8 +138,8 @@ def test_unknown_dhcp_only_and_static_endpoints_are_accounted_without_any_record
     # Nothing is created as a side effect.
     assert db.query(IPAddress).count() == 0
     assert db.query(TrafficDeviceMonitoring).count() == 0
-    assert db.query(HardwareAsset).count() == 0
-    assert db.query(AssetNetworkAssignment).count() == 0
+    assert db.query(HardwareAsset).count() == assets_before
+    assert db.query(AssetNetworkAssignment).count() == assignments_before
 
 
 def test_only_local_original_endpoints_are_counted_never_translated_addresses(db):

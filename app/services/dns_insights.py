@@ -499,16 +499,30 @@ def _persist_client_traffic(
     values = get_site_settings(db, {"dns_retain_client_history", "dns_traffic_history_days"})
     if values["dns_retain_client_history"] != "1":
         return 0
-    by_ip = {row.ip: row.device_id for row in clients if row.device_id and row.ip not in {"", "-"}}
-    by_hostname = {
-        _normalise_hostname(row.hostname): row.device_id
-        for row in clients
-        if row.device_id and _normalise_hostname(row.hostname)
-    }
+    by_ip: dict[str, list[NormalisedClient]] = {}
+    for row in clients:
+        if row.device_id and row.ip not in {"", "-"}:
+            by_ip.setdefault(row.ip, []).append(row)
+    by_hostname: dict[str, list[int]] = {}
+    for row in clients:
+        hostname_key = _normalise_hostname(row.hostname)
+        if row.device_id and hostname_key:
+            by_hostname.setdefault(hostname_key, []).append(row.device_id)
     pending: list[tuple[str, int, str | None, dict[str, Any], datetime, str, bool]] = []
     for row in query_rows:
         client_name, client_ip = _query_client(row)
-        client_id = by_ip.get(client_ip) or by_hostname.get(_normalise_hostname(client_name))
+        ip_matches = by_ip.get(client_ip, [])
+        client_id = None
+        if len(ip_matches) == 1:
+            client_id = ip_matches[0].device_id
+        elif len(ip_matches) > 1:
+            hostname_matches = [row for row in ip_matches if _normalise_hostname(row.hostname) == _normalise_hostname(client_name)]
+            if len(hostname_matches) == 1:
+                client_id = hostname_matches[0].device_id
+        if client_id is None:
+            hostname_matches = by_hostname.get(_normalise_hostname(client_name), [])
+            if len(hostname_matches) == 1:
+                client_id = hostname_matches[0]
         domain = _query_domain(row)
         if not client_id or domain in {"", "-"}:
             continue

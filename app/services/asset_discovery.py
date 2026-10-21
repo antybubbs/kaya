@@ -54,6 +54,7 @@ def _candidate(store: dict[str, dict], key: str, *, kind: str, name: str | None,
         "asset_id": None, "asset_name": None, "evidence": [], "traffic": [], "dns_client_id": None,
         "provider_name": None,
         "dhcp_lease_ids": [], "traffic_observation": None,
+        "historical_assignments": [], "identity_conflict": False,
     })
     if name and row["name"] in {"Unidentified device", ip}:
         row["name"] = name
@@ -72,6 +73,11 @@ def compose_discovered_devices(db: Session, *, query: str = "", source: str = ""
     page = max(1, int(page))
     candidates: dict[str, dict] = {}
     dns_rows = db.query(DNSRecognisedDevice).order_by(DNSRecognisedDevice.last_seen_at.desc()).limit(MAX_SOURCE_ROWS).all()
+    hardware_asset_ids = {row.hardware_asset_id for row in dns_rows if row.hardware_asset_id is not None}
+    hardware_assets = {
+        row.id: row
+        for row in db.query(HardwareAsset).filter(HardwareAsset.id.in_(hardware_asset_ids or {-1})).all()
+    }
     dns_by_id: dict[int, dict] = {}
     for row in dns_rows:
         key = _candidate_key("dns", row.id)
@@ -82,7 +88,7 @@ def compose_discovered_devices(db: Session, *, query: str = "", source: str = ""
         item["evidence"] = [value for value in (row.hostname, row.mac_address, row.provider_client_id) if value]
         item["asset_id"] = row.hardware_asset_id
         if row.hardware_asset_id:
-            asset = db.get(HardwareAsset, row.hardware_asset_id)
+            asset = hardware_assets.get(row.hardware_asset_id)
             item["asset_name"] = asset.name if asset else None
         mac_address = row.normalised_mac or row.mac_address
         if mac_address:
@@ -122,20 +128,83 @@ def compose_discovered_devices(db: Session, *, query: str = "", source: str = ""
         AssetNetworkAssignment.status == "confirmed",
     ).order_by(AssetNetworkAssignment.started_at.desc()).limit(MAX_SOURCE_ROWS).all()
     assignment_by_ip: dict[int, AssetNetworkAssignment] = {}
+    assignments_by_ip: dict[int, list[AssetNetworkAssignment]] = {}
     for assignment in assignments:
-        assignment_by_ip.setdefault(assignment.ip_address_id, assignment)
+        assignments_by_ip.setdefault(assignment.ip_address_id, []).append(assignment)
+        # An address is an assignment at a point in time, not a permanent
+        # identity. Only an open assignment can be current evidence. Closed
+        # rows remain available below as historical context.
+        if assignment.ended_at is None:
+            assignment_by_ip.setdefault(assignment.ip_address_id, assignment)
+
+    evidence_values = {
+        ("mac", mac)
+        for item in candidates.values()
+        for mac in item["mac_addresses"]
+        if mac
+    }
+    evidence_values.update(
+        ("dhcp_client_id", client_id)
+        for item in candidates.values()
+        for client_id in item["dhcp_client_ids"]
+        if client_id
+    )
+    confirmed_identity_assets: dict[tuple[str, str], set[int]] = {}
+    if evidence_values:
+        evidence_rows = db.query(AssetIdentityEvidence).filter(
+            AssetIdentityEvidence.status == "confirmed",
+            AssetIdentityEvidence.revoked_at.is_(None),
+            AssetIdentityEvidence.evidence_type.in_({kind for kind, _value in evidence_values}),
+            AssetIdentityEvidence.normalised_value.in_({value.casefold() for _kind, value in evidence_values}),
+        ).limit(MAX_SOURCE_ROWS).all()
+        for row in evidence_rows:
+            if row.asset_id is not None:
+                confirmed_identity_assets.setdefault((row.evidence_type, row.normalised_value), set()).add(row.asset_id)
+
     for item in candidates.values():
+        strong_assets = set()
+        for evidence_type, values in (("mac", item["mac_addresses"]), ("dhcp_client_id", item["dhcp_client_ids"])):
+            for value in values:
+                strong_assets.update(confirmed_identity_assets.get((evidence_type, value.casefold()), set()))
+        if item["asset_id"] is not None and (item["mac_addresses"] or item["dhcp_client_ids"]) and item["asset_id"] not in strong_assets:
+            # A source-owned link that contradicts confirmed strong identity
+            # evidence is not allowed to block review/adoption. Preserve it as
+            # historical context instead of altering the source record.
+            item["historical_asset_id"] = item["asset_id"]
+            item["historical_asset_name"] = item["asset_name"]
+            item["asset_id"] = None
+            item["asset_name"] = None
+            item["identity_conflict"] = True
         for address in item["ip_addresses"]:
             ip_row = ip_rows.get(address)
             if not ip_row:
                 continue
             if ip_row.vlan and ip_row.vlan.name not in item["vlan_context"]:
                 item["vlan_context"].append(ip_row.vlan.name)
-            if item["asset_id"] is None:
-                assignment = assignment_by_ip.get(ip_row.id)
-                if assignment and assignment.asset_id:
-                    item["asset_id"] = assignment.asset_id
-                    item["asset_name"] = assignment.asset.name if assignment.asset else None
+            assignment = assignment_by_ip.get(ip_row.id)
+            if assignment and assignment.asset_id and assignment.asset_id not in strong_assets:
+                item["historical_assignments"].append({
+                    "asset_id": assignment.asset_id,
+                    "asset_name": assignment.asset.name if assignment.asset else None,
+                    "address": assignment.address,
+                    "started_at": _iso(assignment.started_at),
+                    "ended_at": _iso(assignment.ended_at),
+                })
+            if item["asset_id"] is None and assignment and assignment.asset_id and assignment.asset_id in strong_assets:
+                item["asset_id"] = assignment.asset_id
+                item["asset_name"] = assignment.asset.name if assignment.asset else None
+            for historical in assignments_by_ip.get(ip_row.id, []):
+                if historical.ip_address_id == ip_row.id and historical.ended_at is not None and historical.asset_id:
+                    item["historical_assignments"].append({
+                        "asset_id": historical.asset_id,
+                        "asset_name": historical.asset.name if historical.asset else None,
+                        "address": historical.address,
+                        "started_at": _iso(historical.started_at),
+                        "ended_at": _iso(historical.ended_at),
+                    })
+        if item["historical_assignments"]:
+            seen = set()
+            item["historical_assignments"] = [row for row in item["historical_assignments"] if not ((row["asset_id"], row["started_at"], row["ended_at"]) in seen or seen.add((row["asset_id"], row["started_at"], row["ended_at"])))]
 
     clean_query = query.strip().casefold()[:120]
     rows = list(candidates.values())
@@ -231,7 +300,10 @@ def _revalidate_source_candidate(db: Session, candidate: dict) -> None:
             raise ValueError("The discovery source record no longer exists.")
         if row.is_ignored:
             raise ValueError("This discovery is not available for adoption.")
-        if row.hardware_asset_id:
+        if row.hardware_asset_id and not (
+            candidate.get("identity_conflict")
+            and candidate.get("historical_asset_id") == row.hardware_asset_id
+        ):
             raise ValueError("This discovery is already associated with an asset.")
     elif kind == "dhcp":
         raw_id = str(candidate.get("id") or "")
