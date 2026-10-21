@@ -361,6 +361,28 @@ def review_discovered_device(request: Request, candidate_id: str = Query(..., mi
     return templates.TemplateResponse(request, "hardware_discovered_device_review.html", {"user": user, "candidate": candidate, "assets": assets, **csrf_context(request)})
 
 
+def _adoption_review_response(request: Request, candidate_id: str, db: Session, user, *, error: str, asset_id: int | None, new_name: str, category: str, status_code: int):
+    candidate = get_discovered_device(db, candidate_id.strip())
+    if not candidate:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Discovered device not found")
+    assets = db.query(HardwareAsset).order_by(HardwareAsset.name.asc()).limit(500).all()
+    return templates.TemplateResponse(
+        request,
+        "hardware_discovered_device_review.html",
+        {
+            "user": user,
+            "candidate": candidate,
+            "assets": assets,
+            "error": error,
+            "selected_asset_id": asset_id,
+            "new_name": new_name,
+            "category": category,
+            **csrf_context(request),
+        },
+        status_code=status_code,
+    )
+
+
 @router.post("/discovered/adopt")
 def adopt_discovered_device_route(request: Request, candidate_id: str = Form(..., max_length=255), asset_id: int | None = Form(None), new_name: str = Form("", max_length=255), category: str = Form("", max_length=120), csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_admin)):
     validate_csrf_token(request, csrf_token)
@@ -374,7 +396,17 @@ def adopt_discovered_device_route(request: Request, candidate_id: str = Form(...
         asset = adopt_discovered_device(db, user, candidate, asset_id=asset_id, new_name=new_name, category=category)
     except (ValueError, PermissionError) as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        return _adoption_review_response(
+            request,
+            candidate_id,
+            db,
+            user,
+            error=str(exc),
+            asset_id=asset_id,
+            new_name=new_name,
+            category=category,
+            status_code=status.HTTP_409_CONFLICT,
+        )
     except RuntimeError as exc:
         db.rollback()
         raise HTTPException(

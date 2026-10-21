@@ -1,6 +1,7 @@
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -13,7 +14,6 @@ from app.models.models import (
     DNSProviderConfig,
     DNSRecognisedDevice,
     HardwareAsset,
-    HardwareAssetTagSequence,
     User,
     RemoteManagerSetting,
 )
@@ -46,7 +46,6 @@ def _case(factory, *, second_provider=False):
             RemoteManagerSetting(key="asset_tags_separator", value="-"),
             RemoteManagerSetting(key="asset_tags_padding", value="4"),
             RemoteManagerSetting(key="asset_tags_start_number", value="1"),
-            HardwareAssetTagSequence(id=1, next_number=1),
         ])
         if second_provider:
             other_provider = DNSProviderConfig(name=f"Phase55 DNS two {token}", base_url="http://198.51.100.21")
@@ -87,6 +86,7 @@ def _case(factory, *, second_provider=False):
             "asset_ids": [first.id, second.id],
             "client_ids": [client.id] + ([other_client.id] if other_client else []),
             "provider_ids": [provider.id] + ([other_provider.id] if second_provider else []),
+            "adopted_name": f"Sky Decoder {token}",
         }
     return result
 
@@ -110,7 +110,7 @@ def _cleanup(factory, case):
     with factory.begin() as db:
         cleanup_assets = db.query(HardwareAsset.id).filter(
             (HardwareAsset.id.in_(case["asset_ids"])) |
-            (HardwareAsset.name.in_(["Concurrent synthetic asset", "Manual concurrent asset"]))
+            (HardwareAsset.name.in_(["Concurrent synthetic asset", "Manual concurrent asset", case["adopted_name"]]))
         ).all()
         cleanup_asset_ids = [row[0] for row in cleanup_assets]
         db.query(AuditLog).filter(AuditLog.user_id == case["actor_id"]).delete(synchronize_session=False)
@@ -119,10 +119,9 @@ def _cleanup(factory, case):
         db.query(DNSProviderConfig).filter(DNSProviderConfig.id.in_(case["provider_ids"])).delete(synchronize_session=False)
         db.query(HardwareAsset).filter(
             (HardwareAsset.id.in_(case["asset_ids"])) |
-            (HardwareAsset.name.in_(["Concurrent synthetic asset", "Manual concurrent asset"]))
+            (HardwareAsset.name.in_(["Concurrent synthetic asset", "Manual concurrent asset", case["adopted_name"]]))
         ).delete(synchronize_session=False)
         db.query(RemoteManagerSetting).filter(RemoteManagerSetting.key.like("asset_tags_%")).delete(synchronize_session=False)
-        db.query(HardwareAssetTagSequence).filter(HardwareAssetTagSequence.id == 1).delete(synchronize_session=False)
         db.query(User).filter(User.id == case["actor_id"]).delete(synchronize_session=False)
 
 
@@ -157,6 +156,54 @@ def test_postgres_same_candidate_can_be_adopted_by_only_one_existing_asset(postg
             assert db.query(AssetIdentityEvidence).filter_by(normalised_value=client.normalised_mac).count() == 1
             assert db.query(AuditLog).filter_by(action="adopt", entity="discovered_device").count() == 1
     finally:
+        _cleanup(postgres_factory, case)
+
+
+def test_postgres_real_adoption_route_allows_new_mac_with_legacy_unscoped_dhcp_id(postgres_factory, monkeypatch):
+    case = _case(postgres_factory)
+    route_db = None
+    try:
+        from app.routers import hardware_assets
+
+        with postgres_factory() as db:
+            actor = db.get(User, case["actor_id"])
+            client = db.get(DNSRecognisedDevice, case["client_ids"][0])
+            client.provider_client_id = "73"
+            db.add(AssetIdentityEvidence(
+                asset_id=case["asset_ids"][0], evidence_type="dhcp_client_id", normalised_value="73",
+                source="dhcp", source_scope=None, status="confirmed",
+                first_observed_at=datetime(2026, 1, 1), last_observed_at=datetime(2026, 1, 1),
+                confirmed_by=actor.id, confirmed_at=datetime(2026, 1, 1),
+            ))
+            db.commit()
+
+        monkeypatch.setattr(hardware_assets, "validate_csrf_token", lambda *_args: None)
+        monkeypatch.setattr(hardware_assets, "csrf_context", lambda *_args: {"csrf_token": "synthetic-csrf"})
+        route_db = postgres_factory()
+        actor = route_db.get(User, case["actor_id"])
+        result = hardware_assets.adopt_discovered_device_route(
+            SimpleNamespace(),
+            candidate_id=f"dns:{case['client_ids'][0]}",
+            asset_id=None,
+            new_name=case["adopted_name"],
+            category="",
+            csrf_token="synthetic-csrf",
+            db=route_db,
+            user=actor,
+        )
+
+        assert result.status_code == 303
+        with postgres_factory() as db:
+            client = db.get(DNSRecognisedDevice, case["client_ids"][0])
+            new_asset = db.query(HardwareAsset).filter(HardwareAsset.name == case["adopted_name"]).one()
+            assert client.hardware_asset_id == new_asset.id
+            assert client.hardware_asset_id not in case["asset_ids"]
+            assert db.query(AssetIdentityEvidence).filter_by(asset_id=case["asset_ids"][0], evidence_type="dhcp_client_id").one().status == "confirmed"
+            assert db.query(AssetIdentityEvidence).filter_by(asset_id=new_asset.id, evidence_type="mac", status="confirmed").count() == 1
+            assert db.query(AssetIdentityEvidence).filter_by(asset_id=new_asset.id, evidence_type="dhcp_client_id", source_scope=f"provider:{client.provider_id}:range:unscoped", status="confirmed").count() == 1
+    finally:
+        if route_db is not None:
+            route_db.close()
         _cleanup(postgres_factory, case)
 
 

@@ -46,6 +46,13 @@ def _candidate_key(kind: str, value: object) -> str:
     return f"{kind}:{value}"
 
 
+def _dhcp_identity_scope(provider_id: int | None, dhcp_range_id: int | None) -> str | None:
+    if provider_id is None:
+        return None
+    range_part = str(dhcp_range_id) if dhcp_range_id is not None else "unscoped"
+    return f"provider:{provider_id}:range:{range_part}"
+
+
 def _candidate(store: dict[str, dict], key: str, *, kind: str, name: str | None, ip: str | None, first: datetime | None, last: datetime | None) -> dict:
     row = store.setdefault(key, {
         "id": key, "kind": kind, "name": name or ip or "Unidentified device", "ip_addresses": [],
@@ -53,6 +60,7 @@ def _candidate(store: dict[str, dict], key: str, *, kind: str, name: str | None,
         "first_seen_at": _iso(first), "last_seen_at": _iso(last), "review_state": "review",
         "asset_id": None, "asset_name": None, "evidence": [], "traffic": [], "dns_client_id": None,
         "provider_name": None,
+        "dhcp_identity_scope": None,
         "dhcp_lease_ids": [], "traffic_observation": None,
         "historical_assignments": [], "identity_conflict": False,
     })
@@ -85,6 +93,7 @@ def compose_discovered_devices(db: Session, *, query: str = "", source: str = ""
         item["dns_client_id"] = row.id
         item["sources"] = sorted(set(item["sources"]) | {"DNS Manager"})
         item["provider_name"] = row.provider.name if row.provider else row.provider_type
+        item["dhcp_identity_scope"] = _dhcp_identity_scope(row.provider_id, None)
         item["evidence"] = [value for value in (row.hostname, row.mac_address, row.provider_client_id) if value]
         item["asset_id"] = row.hardware_asset_id
         if row.hardware_asset_id:
@@ -109,6 +118,7 @@ def compose_discovered_devices(db: Session, *, query: str = "", source: str = ""
         if row.mac_address and row.mac_address not in item["mac_addresses"]:
             item["mac_addresses"].append(row.mac_address)
         item["dhcp_lease_ids"].append(row.id)
+        item["dhcp_identity_scope"] = _dhcp_identity_scope(row.provider_id, row.dhcp_range_id) or item["dhcp_identity_scope"]
 
     observations = db.query(TrafficDiscoveryObservation).order_by(TrafficDiscoveryObservation.last_seen_at.desc()).limit(MAX_SOURCE_ROWS).all()
     source_rows = {row.id: row for row in db.query(TrafficSource).filter(TrafficSource.id.in_({row.source_id for row in observations} or {-1})).all()}
@@ -238,6 +248,7 @@ def get_discovered_device(db: Session, candidate_id: str) -> dict | None:
         )
         item["sources"] = ["DHCP"]
         item["provider_name"] = lease.provider.name if lease.provider else None
+        item["dhcp_identity_scope"] = _dhcp_identity_scope(lease.provider_id, lease.dhcp_range_id)
         item["mac_addresses"] = [lease.mac_address] if lease.mac_address else []
         item["dhcp_client_ids"] = [lease.provider_lease_id] if lease.provider_lease_id else []
         item["dhcp_lease_ids"] = [lease.id]
@@ -275,13 +286,21 @@ def _normalise_ip(value: str) -> tuple[str, int]:
 
 def _add_evidence(db: Session, user, asset_id: int, evidence_type: str, value: str, source: str, source_scope: str | None, now: datetime) -> None:
     normalised = _normalise_evidence(evidence_type, value)
-    conflict = db.query(AssetIdentityEvidence).filter(AssetIdentityEvidence.evidence_type == evidence_type, AssetIdentityEvidence.normalised_value == normalised, AssetIdentityEvidence.source == source, AssetIdentityEvidence.source_scope == source_scope, AssetIdentityEvidence.status == "confirmed", AssetIdentityEvidence.asset_id != asset_id).first()
+    conflict = db.query(AssetIdentityEvidence).filter(
+        AssetIdentityEvidence.evidence_type == evidence_type,
+        AssetIdentityEvidence.normalised_value == normalised,
+        AssetIdentityEvidence.source == source,
+        AssetIdentityEvidence.source_scope == source_scope,
+        AssetIdentityEvidence.status == "confirmed",
+        AssetIdentityEvidence.asset_id != asset_id,
+    ).first()
     if conflict:
         raise ValueError("The selected evidence is already confirmed for another asset in this source scope.")
     row = db.query(AssetIdentityEvidence).filter(AssetIdentityEvidence.asset_id == asset_id, AssetIdentityEvidence.evidence_type == evidence_type, AssetIdentityEvidence.normalised_value == normalised, AssetIdentityEvidence.source == source, AssetIdentityEvidence.source_scope == source_scope, AssetIdentityEvidence.status != "revoked").first()
     if row is None:
         row = AssetIdentityEvidence(asset_id=asset_id, evidence_type=evidence_type, normalised_value=normalised, source=source, source_scope=source_scope, first_observed_at=now)
-    row.status, row.confirmed_by, row.confirmed_at, row.last_observed_at = "confirmed", user.id, now, now
+    row.status, row.confirmed_by, row.confirmed_at = "confirmed", user.id, now
+    row.last_observed_at = now
     row.conflict_reason = None
     db.add(row)
 
@@ -346,7 +365,7 @@ def adopt_discovered_device(db: Session, user, candidate: dict, *, asset_id: int
     if candidate.get("mac_addresses"):
         evidence_values.append(("mac", candidate["mac_addresses"][0], "discovery", "dns" if candidate["kind"] == "dns" else "dhcp"))
     if candidate.get("dhcp_client_ids"):
-        evidence_values.append(("dhcp_client_id", candidate["dhcp_client_ids"][0], "dhcp", None))
+        evidence_values.append(("dhcp_client_id", candidate["dhcp_client_ids"][0], "dhcp", candidate.get("dhcp_identity_scope")))
     if candidate.get("kind") != "traffic" and candidate.get("name") and candidate["name"] != "Unidentified device":
         evidence_values.append(("hostname", candidate["name"], "dns" if candidate["kind"] == "dns" else "dhcp", None))
     for evidence_type, value, source, scope in evidence_values:

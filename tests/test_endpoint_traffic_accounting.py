@@ -130,6 +130,7 @@ def test_unknown_dhcp_only_and_static_endpoints_are_accounted_without_any_record
     nsel, _ = _setup(db)
     assets_before = db.query(HardwareAsset).count()
     assignments_before = db.query(AssetNetworkAssignment).count()
+    monitoring_before = db.query(TrafficDeviceMonitoring).count()
     db.add(DHCPLeaseHistory(ip_address="192.0.2.11", mac_address="02:00:00:00:00:11", hostname="synthetic-dhcp", lease_started_at=NOW - timedelta(days=1)))
     db.commit()
     _ingest(db, nsel, _record(nsel.id, source_ip="192.0.2.10", sequence=1), _record(nsel.id, source_ip="192.0.2.11", sequence=2), _record(nsel.id, source_ip="192.0.2.12", sequence=3))
@@ -137,7 +138,7 @@ def test_unknown_dhcp_only_and_static_endpoints_are_accounted_without_any_record
         assert _usage(db, address) == {"upload": 1000, "download": 4000}
     # Nothing is created as a side effect.
     assert db.query(IPAddress).count() == 0
-    assert db.query(TrafficDeviceMonitoring).count() == 0
+    assert db.query(TrafficDeviceMonitoring).count() == monitoring_before
     assert db.query(HardwareAsset).count() == assets_before
     assert db.query(AssetNetworkAssignment).count() == assignments_before
 

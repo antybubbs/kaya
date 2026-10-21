@@ -158,6 +158,44 @@ def test_alyssa_sky_reassignment_can_be_adopted_without_merging_identity():
     assert new_assignment.dhcp_lease_id is None  # Adoption preserves the source lease separately.
 
 
+def test_reused_dhcp_identifier_is_retained_for_review_without_blocking_new_mac_adoption():
+    db = database()
+    old_at = datetime(2026, 1, 1)
+    reassigned_at = datetime(2026, 1, 2)
+    old_asset = HardwareAsset(id=6, asset_tag="HAL-0006", name="alyssa-iphone.hal.local", status="In use")
+    sky_mac = "b0:45:30:9a:93:1b"
+    ip = IPAddress(id=1, address="192.0.2.178")
+    client = DNSRecognisedDevice(
+        id=1, provider_id=1, logical_provider_key="hal-dns", identity_type="mac",
+        identity_value=sky_mac, hostname="sky-decoder", current_ip=ip.address,
+        mac_address=sky_mac, normalised_mac=sky_mac, provider_client_id="73",
+        first_seen_at=reassigned_at, last_seen_at=reassigned_at,
+    )
+    db.add_all([
+        old_asset,
+        ip,
+        client,
+        AssetIdentityEvidence(asset_id=old_asset.id, evidence_type="mac", normalised_value="be:44:47:87:e0:32", source="discovery", source_scope="dhcp", status="confirmed", first_observed_at=old_at, last_observed_at=old_at),
+        AssetIdentityEvidence(asset_id=old_asset.id, evidence_type="dhcp_client_id", normalised_value="73", source="dhcp", source_scope=None, status="confirmed", first_observed_at=old_at, last_observed_at=old_at),
+        AssetNetworkAssignment(asset_id=old_asset.id, address=ip.address, address_family=4, ip_address_id=ip.id, started_at=old_at, ended_at=reassigned_at, provenance="dhcp_reconciliation", status="confirmed"),
+    ])
+    admin = User(id=1, email="synthetic-admin@example.invalid", password_hash="x", role="admin", is_active=True)
+    db.add(admin)
+    db.commit()
+
+    candidate = get_discovered_device(db, "dns:1")
+    adopted = adopt_discovered_device(db, admin, candidate, new_name="Sky Decoder")
+
+    assert adopted.id != old_asset.id
+    assert db.get(DNSRecognisedDevice, client.id).hardware_asset_id == adopted.id
+    assert db.query(AssetIdentityEvidence).filter_by(asset_id=old_asset.id, evidence_type="mac", status="confirmed").count() == 1
+    review_id = db.query(AssetIdentityEvidence).filter_by(asset_id=adopted.id, evidence_type="dhcp_client_id").one()
+    assert review_id.normalised_value == "73"
+    assert review_id.status == "confirmed"
+    assert review_id.source_scope == "provider:1:range:unscoped"
+    assert db.query(AssetNetworkAssignment).filter_by(asset_id=old_asset.id).one().ended_at == reassigned_at
+
+
 def test_explicit_dhcp_candidate_namespace_resolves_grouped_active_lease():
     db = database()
     now = datetime(2026, 1, 2)
@@ -308,6 +346,55 @@ def test_adoption_audit_failure_is_returned_as_controlled_service_error(monkeypa
     assert exc_info.value.status_code == 503
     assert "audit record was not saved" in exc_info.value.detail
     assert "internal audit detail" not in exc_info.value.detail
+
+
+def test_adoption_conflict_returns_review_page_with_submitted_values(monkeypatch):
+    import app.routers.hardware_assets as hardware_assets
+
+    db = database()
+    admin = User(id=1, email="admin@example.invalid", role="admin", is_active=True)
+    existing = HardwareAsset(id=7, name="Existing synthetic asset", status="In use")
+    db.add_all([admin, existing])
+    db.commit()
+    candidate = {
+        "id": "dns:561", "kind": "dns", "name": "Sky Decoder", "review_state": "review",
+        "asset_id": None, "ip_addresses": ["192.0.2.178"], "mac_addresses": ["b0:45:30:9a:93:1b"],
+        "dhcp_client_ids": ["73"], "sources": ["DHCP", "DNS Manager"], "identity_conflict": True,
+    }
+    rendered = {}
+
+    monkeypatch.setattr(hardware_assets, "validate_csrf_token", lambda *_args: None)
+    monkeypatch.setattr(hardware_assets, "get_discovered_device", lambda *_args: candidate)
+    monkeypatch.setattr(hardware_assets, "list_values", lambda *_args: {"category": ["Media"]})
+    monkeypatch.setattr(hardware_assets, "csrf_context", lambda *_args: {"csrf_token": "synthetic-csrf"})
+    monkeypatch.setattr(
+        hardware_assets.templates,
+        "TemplateResponse",
+        lambda *args, **kwargs: rendered.update({"context": args[2], "status_code": kwargs["status_code"]}) or rendered,
+    )
+    monkeypatch.setattr(
+        hardware_assets,
+        "adopt_discovered_device",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("The selected evidence is already confirmed for another asset in this source scope.")),
+    )
+
+    response = hardware_assets.adopt_discovered_device_route(
+        SimpleNamespace(),
+        candidate_id="dns:561",
+        asset_id=existing.id,
+        new_name="Sky Decoder replacement",
+        category="Media",
+        csrf_token="synthetic-csrf",
+        db=db,
+        user=admin,
+    )
+
+    assert response is rendered
+    assert rendered["status_code"] == 409
+    assert rendered["context"]["error"] == "The selected evidence is already confirmed for another asset in this source scope."
+    assert rendered["context"]["selected_asset_id"] == existing.id
+    assert rendered["context"]["new_name"] == "Sky Decoder replacement"
+    assert rendered["context"]["category"] == "Media"
 
 
 def test_adoption_requires_administrator():
