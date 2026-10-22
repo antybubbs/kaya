@@ -758,6 +758,7 @@ def test_postgres_concurrent_conflicting_owner_never_receives_traffic():
             db.query(TrafficDeviceMonitoring).filter(TrafficDeviceMonitoring.id.in_(monitor_ids or [-1])).delete(synchronize_session=False)
             db.query(AuditLog).filter(AuditLog.user_id.in_(created["users"] or [-1])).delete(synchronize_session=False)
             db.query(AssetNetworkAssignment).filter(AssetNetworkAssignment.asset_id.in_(asset_ids)).delete(synchronize_session=False)
+            db.query(UserModulePermission).filter(UserModulePermission.user_id.in_(created["users"] or [-1])).delete(synchronize_session=False)
             db.query(HardwareAsset).filter(HardwareAsset.id.in_(asset_ids)).delete(synchronize_session=False)
             db.query(TrafficSource).filter(TrafficSource.id.in_(created["sources"] or [-1])).delete(synchronize_session=False)
             db.query(VLAN).filter(VLAN.id.in_(created["vlans"] or [-1])).delete(synchronize_session=False)

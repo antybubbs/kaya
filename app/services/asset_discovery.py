@@ -63,6 +63,7 @@ def _candidate(store: dict[str, dict], key: str, *, kind: str, name: str | None,
         "dhcp_identity_scope": None,
         "dhcp_lease_ids": [], "traffic_observation": None,
         "historical_assignments": [], "identity_conflict": False,
+        "stale_reason": None,
     })
     if name and row["name"] in {"Unidentified device", ip}:
         row["name"] = name
@@ -272,8 +273,12 @@ def get_discovered_device(db: Session, candidate_id: str) -> dict | None:
             # associated through a MAC-linked DNS client; it needs review.
             item["asset_id"] = None
             item["identity_conflict"] = True
-        if not lease.is_active or (lease.expires_at and lease.expires_at < datetime.utcnow()):
+        if lease.expires_at and lease.expires_at < datetime.utcnow():
             item["review_state"] = "stale"
+            item["stale_reason"] = "DHCP lease expired."
+        elif not lease.is_active:
+            item["review_state"] = "stale"
+            item["stale_reason"] = "DHCP lease is inactive or superseded."
         return item
     result = compose_discovered_devices(db, page=1, page_size=MAX_CANDIDATES)
     return next((row for row in result["rows"] if row["id"] == candidate_id), None)

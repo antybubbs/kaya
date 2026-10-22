@@ -21,6 +21,7 @@ from app.services.dns_insights import (
     ProviderDisconnectedRule,
     RepeatedBlockedDomainRule,
     _persist_insights,
+    _timestamp,
     calculate_health_score,
 )
 
@@ -45,6 +46,20 @@ def context(**overrides):
     }
     values.update(overrides)
     return DNSInsightContext(**values)
+
+
+def test_dhcp_expiry_normalisation_treats_numeric_and_string_zero_as_missing():
+    assert _timestamp(0) is None
+    assert _timestamp("0") is None
+    assert _timestamp("0.0") is None
+    assert _timestamp(None) is None
+
+
+def test_dhcp_expiry_normalisation_preserves_valid_and_rejects_malformed_values():
+    assert _timestamp(2_000_000_000) == datetime(2033, 5, 18, 3, 33, 20)
+    assert _timestamp("2033-05-18T03:33:20Z") == datetime(2033, 5, 18, 3, 33, 20)
+    assert _timestamp("not-a-timestamp") is None
+    assert _timestamp(float("nan")) is None
 
 
 def test_navigation_places_insights_between_dashboard_and_reports():

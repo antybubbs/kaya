@@ -61,6 +61,7 @@ from app.services.dns_insights import (
     AnalysisAlreadyRunning,
     analyse_provider,
     calculate_health_score,
+    dhcp_lease_diagnostics,
     insight_action_target,
 )
 from app.services.dns_providers import DNSProvider, DNSProviderResult, provider_for
@@ -1164,6 +1165,17 @@ def dns_connection_status(provider_id: int | None = Query(None), db: Session = D
     result = call_provider(provider, "test_connection", provider_for(provider))
     db.commit()
     return JSONResponse({"connected": result.ok, "message": result.message})
+
+
+@router.get("/dhcp-diagnostics")
+def dhcp_diagnostics(
+    provider_id: int | None = Query(None, ge=1),
+    recent_hours: int = Query(24, ge=1, le=24 * 30),
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    """Return bounded aggregate DHCP lifecycle diagnostics without provider I/O."""
+    return JSONResponse(dhcp_lease_diagnostics(db, provider_id=provider_id, recent_hours=recent_hours))
 
 
 @router.post("/blocklists/update")

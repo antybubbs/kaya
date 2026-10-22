@@ -400,6 +400,6 @@ def test_confirmed_source_context_from_a_dhcp_assignment_ends_with_its_lease(db,
     scoped = [row for row in rows if row.source_id == source.id]
     assert len(scoped) == 1 and scoped[0].dhcp_lease_id == lease.id
 
-    _persist_dhcp_leases(db, provider, {"leases": []}, [], NOW - timedelta(hours=1))  # the lease ends
+    _persist_dhcp_leases(db, provider, {"leases": []}, [], NOW - timedelta(hours=1), snapshot_authoritative=True)  # the authoritative inventory ends the lease
     db.commit()
     assert all(row.ended_at is not None for row in db.query(AssetNetworkAssignment).filter_by(asset_id=asset.id))

@@ -106,9 +106,9 @@ def _item(ip, mac=None, clientid=None, name="synthetic-phone"):
     return item
 
 
-def _sync(db, provider, *items, at):
+def _sync(db, provider, *items, at, authoritative=True):
     """One DNS Manager DHCP collection through the real ingestion function."""
-    _persist_dhcp_leases(db, provider, {"leases": list(items)}, [], at)
+    _persist_dhcp_leases(db, provider, {"leases": list(items)}, [], at, snapshot_authoritative=authoritative)
     db.commit()
 
 
@@ -712,11 +712,29 @@ def test_repeated_collections_close_once_and_audit_once(db):
     assert len(_closure_audits(db, asset)) == 1
 
 
+def test_successful_unverified_empty_snapshot_retains_active_lease(db):
+    provider, _, asset = _adopted_device(db, mac=_mac())
+    _persist_dhcp_leases(db, provider, {"leases": []}, [], T2)
+    db.commit()
+    assert _open(db, asset) == [OLD_IP]
+    lease = _lease(db, provider, OLD_IP, active=False)
+    assert lease is not None and lease.is_active is True
+
+
+def test_authoritative_empty_snapshot_closes_active_lease(db):
+    provider, _, asset = _adopted_device(db, mac=_mac())
+    _persist_dhcp_leases(db, provider, {"leases": []}, [], T2, snapshot_authoritative=True)
+    db.commit()
+    assert _open(db, asset) == []
+    lease = _lease(db, provider, OLD_IP, active=False)
+    assert lease is not None and lease.is_active is False
+
+
 def test_closure_audit_failure_rolls_back_the_closure(db, monkeypatch):
     provider, _, asset = _adopted_device(db, mac=_mac())
     monkeypatch.setattr(asset_identity, "write_audit", lambda *args, **kwargs: None)
     with pytest.raises(RuntimeError):
-        _persist_dhcp_leases(db, provider, {"leases": []}, [], T2)
+        _persist_dhcp_leases(db, provider, {"leases": []}, [], T2, snapshot_authoritative=True)
     db.rollback()
     monkeypatch.undo()
     assert _open(db, asset) == [OLD_IP]

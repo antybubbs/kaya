@@ -7,6 +7,7 @@ import hashlib
 from ipaddress import ip_address
 import json
 import logging
+import math
 import threading
 import time
 from typing import Any
@@ -118,6 +119,7 @@ class DNSInsightContext:
     previous_snapshot: DNSStatisticsSnapshot | None
     last_successful_snapshot_at: datetime | None
     capabilities: set[str] = field(default_factory=set)
+    dhcp_sync_summary: dict[str, int] | None = None
 
 
 @dataclass
@@ -195,8 +197,14 @@ def _int(value: Any) -> int | None:
 def _timestamp(value: Any) -> datetime | None:
     if value in (None, "", "-"):
         return None
+    if isinstance(value, bool):
+        return None
     try:
         numeric = float(value)
+        if not math.isfinite(numeric) or numeric == 0:
+            # Pi-hole uses zero for an infinite/unspecified lease. Treat
+            # numeric and string representations identically.
+            return None
         return datetime.utcfromtimestamp(numeric)
     except (TypeError, ValueError, OSError):
         pass
@@ -410,8 +418,17 @@ def _persist_dhcp_leases(
     dhcp_data: Any,
     clients: list[NormalisedClient],
     generated_at: datetime,
-) -> None:
-    """Retain lease intervals so an address reused later does not inherit another client's history."""
+    *,
+    snapshot_authoritative: bool = False,
+) -> dict[str, int]:
+    """Persist observed lease intervals without guessing about missing leases.
+
+    The current provider contract reports whether a request succeeded, but does
+    not prove that the returned inventory is complete.  Consequently bulk
+    deactivation is opt-in and remains disabled until an adapter can provide a
+    reviewed authority signal.  A lease explicitly returned with a different
+    identity, or an explicit expiry, is still reconciled normally.
+    """
     lease_rows = [row for row in _rows(dhcp_data, "leases", "data") if isinstance(row, dict)]
     by_ip = {row.ip: row.device_id for row in clients if row.device_id and row.ip not in {"", "-"}}
     by_mac = {normalise_mac(row.mac): row.device_id for row in clients if row.device_id and normalise_mac(row.mac)}
@@ -422,10 +439,23 @@ def _persist_dhcp_leases(
         except ValueError:
             continue
     seen_ids: set[int] = set()
+    summary = {
+        "returned": 0,
+        "activated": 0,
+        "renewed": 0,
+        "marked_inactive": 0,
+        "expired": 0,
+        "missing_or_zero_expiry": 0,
+        "malformed_expiry": 0,
+        "snapshot_received": 1,
+        "snapshot_authoritative": int(snapshot_authoritative),
+        "retained_unverified": 0,
+    }
     for item in lease_rows:
         address = str(item.get("ip") or item.get("address") or item.get("ip_address") or "").strip()
         if not address:
             continue
+        summary["returned"] += 1
         mac = normalise_mac(item.get("mac") or item.get("hwaddr") or item.get("mac_address"))
         hostname = str(item.get("name") or item.get("hostname") or "").strip() or None
         client_id = by_mac.get(mac) if mac else None
@@ -434,7 +464,16 @@ def _persist_dhcp_leases(
         dhcp_client_id = str(item.get("clientid") or item.get("client_id") or "").strip()
         dhcp_client_id = None if dhcp_client_id in {"", "*"} else dhcp_client_id[:255]
         provider_lease_id = dhcp_client_id or str(item.get("id") or item.get("lease_id") or "").strip()[:255] or None
-        expires_at = _timestamp(item.get("expires_at") or item.get("expires") or item.get("expiry") or item.get("valid_until"))
+        expiry_raw = next(
+            (item[key] for key in ("expires_at", "expires", "expiry", "valid_until")
+             if key in item and item[key] not in (None, "", "-")),
+            None,
+        )
+        expires_at = _timestamp(expiry_raw)
+        if expiry_raw in (None, "", "-", 0, "0", 0.0, "0.0"):
+            summary["missing_or_zero_expiry"] += 1
+        elif expires_at is None:
+            summary["malformed_expiry"] += 1
         started_at = _timestamp(item.get("starts_at") or item.get("start") or item.get("leased_at")) or generated_at
         active = (
             db.query(DHCPLeaseHistory)
@@ -446,6 +485,7 @@ def _persist_dhcp_leases(
         if active and not same_identity:
             active.is_active = False
             active.ended_at = generated_at
+            summary["marked_inactive"] += 1
             # Another identity now holds the address: end the previous holder's
             # assignment before this lease is reconciled.
             close_ended_dhcp_assignments(db, provider_id=provider.id, observed_at=generated_at, lease_ids=[active.id])
@@ -469,6 +509,7 @@ def _persist_dhcp_leases(
             )
             db.add(active)
             db.flush()
+            summary["activated"] += 1
         else:
             active.dns_client_id = active.dns_client_id or client_id
             active.mac_address = mac or active.mac_address
@@ -477,15 +518,26 @@ def _persist_dhcp_leases(
             active.dhcp_range_id = active.dhcp_range_id or (scope.id if scope else None)
             active.last_seen_at = generated_at
             active.expires_at = expires_at or active.expires_at
+            summary["renewed"] += 1
+        if expires_at and expires_at <= generated_at:
+            summary["expired"] += 1
         reconcile_dhcp_assignment(db, active, observed_at=generated_at)
         seen_ids.add(active.id)
-    stale = db.query(DHCPLeaseHistory).filter_by(provider_id=provider.id, is_active=True)
-    if seen_ids:
-        stale = stale.filter(~DHCPLeaseHistory.id.in_(seen_ids))
-    for row in stale.all():
-        row.is_active = False
-        row.ended_at = generated_at
+    if snapshot_authoritative:
+        stale = db.query(DHCPLeaseHistory).filter_by(provider_id=provider.id, is_active=True)
+        if seen_ids:
+            stale = stale.filter(~DHCPLeaseHistory.id.in_(seen_ids))
+        for row in stale.all():
+            row.is_active = False
+            row.ended_at = generated_at
+            summary["marked_inactive"] += 1
+    else:
+        retained = db.query(DHCPLeaseHistory).filter_by(provider_id=provider.id, is_active=True)
+        if seen_ids:
+            retained = retained.filter(~DHCPLeaseHistory.id.in_(seen_ids))
+        summary["retained_unverified"] = retained.count()
     close_ended_dhcp_assignments(db, provider_id=provider.id, observed_at=generated_at)
+    return summary
 
 
 def _persist_client_traffic(
@@ -638,8 +690,9 @@ def build_context(
     query_data = payloads["queries"].data if payloads["queries"].ok else {}
     query_rows = [row for row in _rows(query_data, "queries", "data") if isinstance(row, dict)]
     clients = _normalise_clients(db, provider, payloads, known_hostnames_raw, generated_at)
+    dhcp_sync_summary = None
     if payloads["dhcp"].ok:
-        _persist_dhcp_leases(db, provider, payloads["dhcp"].data, clients, generated_at)
+        dhcp_sync_summary = _persist_dhcp_leases(db, provider, payloads["dhcp"].data, clients, generated_at)
     else:
         # Lease absence cannot be judged without a snapshot; only a provider
         # reported expiry that has passed ends an assignment during an outage.
@@ -668,7 +721,86 @@ def build_context(
         previous_snapshot=previous_snapshot,
         last_successful_snapshot_at=previous_snapshot.period_end if previous_snapshot and previous_snapshot.provider_connected else None,
         capabilities=capabilities,
+        dhcp_sync_summary=dhcp_sync_summary,
     )
+
+
+def dhcp_lease_diagnostics(
+    db: Session,
+    *,
+    provider_id: int | None = None,
+    now: datetime | None = None,
+    recent_hours: int = 24,
+    limit: int = 5000,
+) -> dict[str, Any]:
+    """Return bounded, aggregate-only DHCP lifecycle diagnostics.
+
+    This intentionally reads Kaya's retained state only. It does not call a
+    provider, expose lease identifiers, or change lease/identity state.
+    """
+    now = now or datetime.utcnow()
+    recent_hours = max(1, min(int(recent_hours), 24 * 30))
+    limit = max(1, min(int(limit), 5000))
+    provider_query = db.query(DNSProviderConfig)
+    if provider_id is not None:
+        provider_query = provider_query.filter(DNSProviderConfig.id == provider_id)
+    providers = provider_query.order_by(DNSProviderConfig.id.asc()).limit(50).all()
+    result = []
+    for provider in providers:
+        leases = (
+            db.query(DHCPLeaseHistory)
+            .filter(DHCPLeaseHistory.provider_id == provider.id)
+            .order_by(DHCPLeaseHistory.last_seen_at.desc(), DHCPLeaseHistory.id.desc())
+            .limit(limit)
+            .all()
+        )
+        active_unexpired = active_expired = inactive_unexpired = inactive_expired = recently_stale = 0
+        missing_or_zero = 0
+        recent_cutoff = now - timedelta(hours=recent_hours)
+        for lease in leases:
+            expired = bool(lease.expires_at and lease.expires_at < now)
+            if lease.expires_at is None:
+                missing_or_zero += 1
+            if lease.is_active and expired:
+                active_expired += 1
+            elif lease.is_active:
+                active_unexpired += 1
+            elif expired:
+                inactive_expired += 1
+            else:
+                inactive_unexpired += 1
+            if lease.last_seen_at and lease.last_seen_at >= recent_cutoff and (not lease.is_active or expired):
+                recently_stale += 1
+        latest = (
+            db.query(DNSStatisticsSnapshot)
+            .filter(DNSStatisticsSnapshot.provider_id == provider.id)
+            .order_by(DNSStatisticsSnapshot.period_end.desc())
+            .first()
+        )
+        sync_summary = None
+        if latest and latest.analysis_summary_json:
+            try:
+                sync_summary = json.loads(latest.analysis_summary_json).get("dhcp_sync")
+            except (TypeError, ValueError):
+                sync_summary = None
+        result.append({
+            "provider_id": provider.id,
+            "provider_name": provider.name,
+            "last_sync_at": provider.last_checked_at.isoformat() if provider.last_checked_at else None,
+            "last_sync_status": provider.last_status,
+            "lease_rows_examined": len(leases),
+            "lease_rows_bounded": len(leases) >= limit,
+            "active_unexpired": active_unexpired,
+            "active_expired": active_expired,
+            "inactive_unexpired": inactive_unexpired,
+            "inactive_expired": inactive_expired,
+            "recently_observed_stale": recently_stale,
+            "missing_or_zero_expiry": missing_or_zero,
+            "eligible_leases": active_unexpired,
+            "stale_leases": active_expired + inactive_unexpired + inactive_expired,
+            "last_sync_summary": sync_summary,
+        })
+    return {"generated_at": now.isoformat(), "recent_hours": recent_hours, "providers": result}
 
 
 class DNSInsightRule:
@@ -1106,6 +1238,7 @@ def _snapshot(
             "rules_skipped": rules_skipped,
             "insights_generated": insights_generated,
             "baseline_available": context.previous_snapshot is not None,
+            "dhcp_sync": context.dhcp_sync_summary,
         }
     )
     return row

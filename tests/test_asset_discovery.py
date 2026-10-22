@@ -228,6 +228,7 @@ def test_explicit_dhcp_candidate_marks_expired_lease_stale():
     candidate = get_discovered_device(db, "dhcp:3010")
 
     assert candidate["review_state"] == "stale"
+    assert candidate["stale_reason"] == "DHCP lease expired."
 
 
 def test_admin_adoption_creates_one_asset_and_reviewed_evidence_atomically():
