@@ -338,8 +338,9 @@ def _revalidate_source_candidate(db: Session, candidate: dict) -> None:
         row = db.get(DHCPLeaseHistory, source_id)
         if not row:
             raise ValueError("The discovery source record no longer exists.")
-        if not row.is_active or (row.expires_at and row.expires_at < datetime.utcnow()):
-            raise ValueError("This DHCP lease is no longer active and cannot be adopted.")
+        # Lease freshness controls whether the address may be assigned as
+        # current evidence; it must not prevent adoption of a valid MAC.
+        # Confirmed MAC uniqueness is enforced separately by _add_evidence.
     elif kind == "traffic":
         observation = candidate.get("traffic_observation") or {}
         row = db.query(TrafficDiscoveryObservation).filter(
@@ -429,8 +430,23 @@ def adopt_discovered_device(db: Session, user, candidate: dict, *, asset_id: int
             started_at=now, provenance="network_traffic_adoption", status="confirmed",
             confirmed_by=user.id, confirmed_at=now,
         ))
+    current_dhcp_evidence = True
+    if candidate["kind"] == "dhcp":
+        lease = db.get(DHCPLeaseHistory, candidate["dhcp_lease_ids"][0]) if candidate.get("dhcp_lease_ids") else None
+        current_dhcp_evidence = bool(lease and lease.is_active and (not lease.expires_at or lease.expires_at >= now))
+    elif candidate.get("dhcp_lease_ids"):
+        current_dhcp_evidence = db.query(DHCPLeaseHistory).filter(
+            DHCPLeaseHistory.id.in_(candidate["dhcp_lease_ids"]),
+            DHCPLeaseHistory.is_active.is_(True),
+        ).filter(
+            (DHCPLeaseHistory.expires_at.is_(None)) | (DHCPLeaseHistory.expires_at >= now)
+        ).first() is not None
     for address in candidate["ip_addresses"][:1] if not traffic_observation else []:
         normalised, family = _normalise_ip(address)
+        if candidate.get("dhcp_lease_ids") and not current_dhcp_evidence:
+            # Preserve the lease history without promoting expired/inactive
+            # DHCP evidence into a current asset assignment.
+            continue
         ip_row = db.query(IPAddress).filter(IPAddress.address == normalised).order_by(IPAddress.id.asc()).first()
         if not ip_row:
             continue
@@ -439,6 +455,11 @@ def adopt_discovered_device(db: Session, user, candidate: dict, *, asset_id: int
             continue
         conflict = db.query(AssetNetworkAssignment).filter(AssetNetworkAssignment.address == normalised, AssetNetworkAssignment.address_family == family, AssetNetworkAssignment.status == "confirmed", AssetNetworkAssignment.ended_at.is_(None), AssetNetworkAssignment.asset_id != asset.id).first()
         if conflict:
+            if candidate.get("mac_addresses"):
+                # IP ownership is temporal. A verified new MAC may be adopted
+                # while the previous open assignment remains intact; current
+                # address reassignment is a separate reviewed action.
+                continue
             raise ValueError("The observed address is already assigned to another asset.")
         db.add(AssetNetworkAssignment(asset_id=asset.id, address=normalised, address_family=family, vlan_id=ip_row.vlan_id, network_cidr=ip_row.vlan.subnet_cidr if ip_row.vlan else None, ip_address_id=ip_row.id, started_at=now, provenance="discovered_device_adoption", status="confirmed", confirmed_by=user.id, confirmed_at=now))
     audit = write_audit(

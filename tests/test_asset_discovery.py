@@ -231,6 +231,61 @@ def test_explicit_dhcp_candidate_marks_expired_lease_stale():
     assert candidate["stale_reason"] == "DHCP lease expired."
 
 
+def test_new_mac_with_expired_dhcp_lease_can_be_adopted_without_current_ip_assignment():
+    db = database()
+    now = datetime(2026, 1, 2)
+    admin = User(email="expired-adopter@example.invalid", role="admin", is_active=True)
+    ip = IPAddress(id=1, address="192.0.2.20")
+    lease = DHCPLeaseHistory(
+        id=3011, provider_id=1, ip_address=ip.address, mac_address="02:00:00:00:20:11",
+        hostname="expired-device", lease_started_at=now - timedelta(days=2),
+        first_seen_at=now - timedelta(days=2), last_seen_at=now - timedelta(days=1),
+        expires_at=now - timedelta(days=1), is_active=False,
+    )
+    db.add_all([admin, ip, lease])
+    db.commit()
+
+    adopted = adopt_discovered_device(db, admin, get_discovered_device(db, f"dhcp:{lease.id}"), new_name="Expired device")
+
+    assert adopted.name == "Expired device"
+    assert db.query(AssetIdentityEvidence).filter_by(asset_id=adopted.id, evidence_type="mac").count() == 1
+    assert db.query(AssetNetworkAssignment).filter_by(asset_id=adopted.id).count() == 0
+
+
+def test_new_mac_can_reuse_historical_ip_without_closing_history():
+    db = database()
+    now = datetime(2026, 1, 2)
+    admin = User(email="reused-ip-adopter@example.invalid", role="admin", is_active=True)
+    old_asset = HardwareAsset(id=6, name="Previous owner", status="In use")
+    ip = IPAddress(id=1, address="192.0.2.21")
+    db.add_all([
+        admin, old_asset, ip,
+        AssetNetworkAssignment(asset_id=old_asset.id, address=ip.address, address_family=4, ip_address_id=ip.id, started_at=now - timedelta(days=3), ended_at=now - timedelta(days=1), provenance="dhcp_reconciliation", status="confirmed"),
+        DHCPLeaseHistory(id=3012, provider_id=1, ip_address=ip.address, mac_address="02:00:00:00:21:12", hostname="new-device", lease_started_at=now, first_seen_at=now, last_seen_at=now, is_active=True),
+    ])
+    db.commit()
+
+    adopted = adopt_discovered_device(db, admin, get_discovered_device(db, "dhcp:3012"), new_name="New device")
+
+    assert adopted.id != old_asset.id
+    assert db.query(AssetNetworkAssignment).filter_by(asset_id=old_asset.id).one().ended_at is not None
+    assert db.query(AssetNetworkAssignment).filter_by(asset_id=adopted.id).count() == 1
+
+
+def test_confirmed_mac_cannot_be_adopted_as_a_second_asset_even_when_lease_is_stale():
+    db = database()
+    now = datetime(2026, 1, 2)
+    admin = User(email="duplicate-mac-adopter@example.invalid", role="admin", is_active=True)
+    old_asset = HardwareAsset(id=6, name="Existing MAC owner", status="In use")
+    mac = "02:00:00:00:22:13"
+    lease = DHCPLeaseHistory(id=3013, provider_id=1, ip_address="192.0.2.22", mac_address=mac, hostname="duplicate-device", lease_started_at=now - timedelta(days=2), first_seen_at=now - timedelta(days=2), last_seen_at=now - timedelta(days=1), is_active=False)
+    db.add_all([admin, old_asset, lease, AssetIdentityEvidence(asset_id=old_asset.id, evidence_type="mac", normalised_value=mac, source="discovery", source_scope="dhcp", status="confirmed", first_observed_at=now - timedelta(days=2), last_observed_at=now - timedelta(days=1))])
+    db.commit()
+
+    with pytest.raises(ValueError, match="already confirmed"):
+        adopt_discovered_device(db, admin, get_discovered_device(db, f"dhcp:{lease.id}"), new_name="Wrong duplicate")
+
+
 def test_admin_adoption_creates_one_asset_and_reviewed_evidence_atomically():
     db = database()
     admin = User(id=1, email="admin@example.invalid", role="admin", is_active=True)

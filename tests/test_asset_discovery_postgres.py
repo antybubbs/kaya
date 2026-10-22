@@ -1,6 +1,6 @@
 import os
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -9,13 +9,16 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.models.models import (
+    AssetNetworkAssignment,
     AssetIdentityEvidence,
     AuditLog,
+    DHCPLeaseHistory,
     DNSProviderConfig,
     DNSRecognisedDevice,
     HardwareAsset,
     User,
     RemoteManagerSetting,
+    IPAddress,
 )
 from app.services import asset_discovery
 from app.services.asset_discovery import adopt_discovered_device
@@ -204,6 +207,77 @@ def test_postgres_real_adoption_route_allows_new_mac_with_legacy_unscoped_dhcp_i
     finally:
         if route_db is not None:
             route_db.close()
+        _cleanup(postgres_factory, case)
+
+
+def test_postgres_dhcp_adoption_uses_mac_not_lease_freshness_or_historical_ip(postgres_factory, monkeypatch):
+    """Exercise the administrator adoption route for stale and current DHCP evidence."""
+    case = _case(postgres_factory)
+    route_db = None
+    try:
+        from app.routers import hardware_assets
+
+        monkeypatch.setattr(hardware_assets, "validate_csrf_token", lambda *_args: None)
+        monkeypatch.setattr(hardware_assets, "csrf_context", lambda *_args: {"csrf_token": "synthetic-csrf"})
+        now = datetime.utcnow()
+        old_mac = "02:00:00:00:71:01"
+        expired_mac = "02:00:00:00:71:02"
+        active_mac = "02:00:00:00:71:03"
+        duplicate_mac = old_mac
+        with postgres_factory.begin() as db:
+            old_asset = db.get(HardwareAsset, case["asset_ids"][0])
+            db.add(AssetIdentityEvidence(asset_id=old_asset.id, evidence_type="mac", normalised_value=old_mac, source="discovery", source_scope="dhcp", status="confirmed", first_observed_at=now, last_observed_at=now, confirmed_by=case["actor_id"], confirmed_at=now))
+            old_ip = IPAddress(address="192.0.2.171")
+            expired_ip = IPAddress(address="192.0.2.172")
+            active_ip = IPAddress(address="192.0.2.173")
+            db.add_all([old_ip, expired_ip, active_ip])
+            db.flush()
+            db.add(AssetNetworkAssignment(asset_id=old_asset.id, address=old_ip.address, address_family=4, ip_address_id=old_ip.id, started_at=now - timedelta(days=2), ended_at=now - timedelta(days=1), provenance="dhcp_reconciliation", status="confirmed"))
+            expired = DHCPLeaseHistory(provider_id=case["provider_ids"][0], ip_address=expired_ip.address, mac_address=expired_mac, hostname="expired-new-device", lease_started_at=now - timedelta(days=2), first_seen_at=now - timedelta(days=2), last_seen_at=now - timedelta(days=1), expires_at=now - timedelta(days=1), is_active=False)
+            active = DHCPLeaseHistory(provider_id=case["provider_ids"][0], ip_address=active_ip.address, mac_address=active_mac, hostname="active-new-device", lease_started_at=now, first_seen_at=now, last_seen_at=now, expires_at=now + timedelta(days=1), is_active=True)
+            duplicate = DHCPLeaseHistory(provider_id=case["provider_ids"][0], ip_address=old_ip.address, mac_address=duplicate_mac, hostname="duplicate-device", lease_started_at=now - timedelta(days=2), first_seen_at=now - timedelta(days=2), last_seen_at=now - timedelta(days=1), is_active=False)
+            db.add_all([expired, active, duplicate])
+            db.flush()
+            expired_id, active_id, duplicate_id = expired.id, active.id, duplicate.id
+
+        def adopt(lease_id, name):
+            nonlocal route_db
+            route_db = postgres_factory()
+            actor = route_db.get(User, case["actor_id"])
+            result = hardware_assets.adopt_discovered_device_route(
+                SimpleNamespace(), candidate_id=f"dhcp:{lease_id}", asset_id=None,
+                new_name=name, category="", csrf_token="synthetic-csrf", db=route_db, user=actor,
+            )
+            route_db.close()
+            route_db = None
+            return result
+
+        assert adopt(expired_id, "Expired new device").status_code == 303
+        assert adopt(active_id, "Active new device").status_code == 303
+        with postgres_factory() as db:
+            actor = db.get(User, case["actor_id"])
+            with pytest.raises(ValueError, match="already confirmed"):
+                adopt_discovered_device(db, actor, asset_discovery.get_discovered_device(db, f"dhcp:{duplicate_id}"), new_name="Duplicate device")
+
+        with postgres_factory() as db:
+            assert db.query(HardwareAsset).filter(HardwareAsset.name == "Expired new device").count() == 1
+            assert db.query(HardwareAsset).filter(HardwareAsset.name == "Active new device").count() == 1
+            expired_asset = db.query(HardwareAsset).filter(HardwareAsset.name == "Expired new device").one()
+            active_asset = db.query(HardwareAsset).filter(HardwareAsset.name == "Active new device").one()
+            assert db.query(AssetNetworkAssignment).filter_by(asset_id=expired_asset.id).count() == 0
+            assert db.query(AssetNetworkAssignment).filter_by(asset_id=active_asset.id, address="192.0.2.173", ended_at=None).count() == 1
+            assert db.query(AssetNetworkAssignment).filter_by(asset_id=case["asset_ids"][0], address="192.0.2.171").one().ended_at is not None
+            assert db.query(HardwareAsset).filter(HardwareAsset.name == "Duplicate device").count() == 0
+    finally:
+        if route_db is not None:
+            route_db.close()
+        with postgres_factory.begin() as db:
+            adopted_ids = [row[0] for row in db.query(HardwareAsset.id).filter(HardwareAsset.name.in_(["Expired new device", "Active new device", "Duplicate device"])).all()]
+            db.query(AssetIdentityEvidence).filter(AssetIdentityEvidence.asset_id.in_(adopted_ids or [-1])).delete(synchronize_session=False)
+            db.query(AssetNetworkAssignment).filter(AssetNetworkAssignment.asset_id.in_(adopted_ids or [-1])).delete(synchronize_session=False)
+            db.query(HardwareAsset).filter(HardwareAsset.id.in_(adopted_ids or [-1])).delete(synchronize_session=False)
+            db.query(DHCPLeaseHistory).filter(DHCPLeaseHistory.ip_address.in_(["192.0.2.171", "192.0.2.172", "192.0.2.173"])).delete(synchronize_session=False)
+            db.query(IPAddress).filter(IPAddress.address.in_(["192.0.2.171", "192.0.2.172", "192.0.2.173"])).delete(synchronize_session=False)
         _cleanup(postgres_factory, case)
 
 
