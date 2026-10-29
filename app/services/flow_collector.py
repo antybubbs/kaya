@@ -310,7 +310,9 @@ def _accounting_aggregate(db, record: NormalizedFlowRecord, byte_count: int, pac
             if row is None:
                 db.add(TrafficFlowAccountingAggregate(**values))
             else:
-                row.bytes_total += byte_count; row.packets_total += packet_count; row.sample_count += 1
+                row.bytes_total += byte_count
+                row.packets_total += packet_count
+                row.sample_count += 1
                 row.data_quality = "partial" if "partial" in {row.data_quality, quality} else row.data_quality
 
 

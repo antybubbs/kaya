@@ -22,7 +22,7 @@ def _start_agent(port: int):
     from pysnmp.carrier.asyncio.dgram import udp
     from pysnmp.entity import config, engine
     from pysnmp.entity.rfc3413 import cmdrsp, context
-    from pysnmp.proto.rfc1902 import Counter32, Counter64, Gauge32, Integer32, OctetString, TimeTicks
+    from pysnmp.proto.rfc1902 import Counter64, Gauge32, Integer32, OctetString, TimeTicks
 
     snmp_engine = engine.SnmpEngine()
     config.add_transport(snmp_engine, udp.DOMAIN_NAME, udp.UdpTransport().open_server_mode(("127.0.0.1", port)))

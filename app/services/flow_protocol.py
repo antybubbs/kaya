@@ -10,7 +10,7 @@ import ipaddress
 import struct
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 
 
 MAX_DATAGRAM_SIZE = 8192

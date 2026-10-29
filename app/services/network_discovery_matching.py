@@ -15,7 +15,7 @@ from app.models.models import (
     TrafficSource,
     VLAN,
 )
-from app.services.network_discovery_mapping import mapped_network_contexts, mapped_networks
+from app.services.network_discovery_mapping import mapped_networks
 
 
 @dataclass(frozen=True)

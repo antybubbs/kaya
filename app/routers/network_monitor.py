@@ -35,7 +35,6 @@ from app.models.models import (
     TrafficFlowAggregate,
     TrafficDeviceAggregate,
     TrafficFlowAccountingAggregate,
-    TrafficFlowReconciliation,
     TrafficDeviceMonitoring,
     NotificationDeliveryAttempt,
     NotificationEvent,
@@ -98,7 +97,6 @@ from app.services.network_traffic import (
 from app.services.network_traffic_reporting import custom_report_window, device_history, device_report, device_usage_report, report_window, wan_report
 from app.services.network_traffic_poller import (
     discover_source_interfaces,
-    persist_discovered_interfaces,
     polling_diagnostics,
 )
 from app.services.flow_collector import collector_settings
@@ -1459,7 +1457,8 @@ def create_traffic_interface(source_id: int, request: Request, payload: TrafficI
     if payload.inbound_direction == payload.outbound_direction and payload.inbound_direction != "unknown":
         raise HTTPException(status_code=400, detail="Inbound and outbound direction mappings must be distinct or unknown.")
     row = TrafficInterface(source_id=source.id, **payload.model_dump())
-    db.add(row); db.commit()
+    db.add(row)
+    db.commit()
     write_audit(db, user, "create", "traffic_interface", str(row.id), trusted_client_ip(request), detail="Created traffic interface", metadata={"source_id": source.id, "is_wan": row.is_wan})
     return {"id": row.id, **payload.model_dump()}
 

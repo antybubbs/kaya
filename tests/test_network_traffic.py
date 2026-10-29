@@ -1,7 +1,6 @@
 import json
 import asyncio
 from datetime import datetime, timedelta
-import json
 from pathlib import Path
 
 import pytest
@@ -13,7 +12,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.core.security import decrypt_secret
 from app.db.session import Base
-from app.models.models import TrafficAggregate, TrafficCounterObservation, TrafficFlowCollectorGlobalState, TrafficFlowCollectorState, TrafficInterface, TrafficLocalNetwork, TrafficMonitoringConfiguration, TrafficPollingLease, TrafficSource
+from app.models.models import TrafficAggregate, TrafficCounterObservation, TrafficFlowCollectorGlobalState, TrafficFlowCollectorState, TrafficInterface, TrafficMonitoringConfiguration, TrafficPollingLease, TrafficSource
 from app.services.network_traffic import (
     apply_source_secrets,
     source_public_dict,
@@ -24,7 +23,7 @@ from app.services.network_traffic import (
 )
 from app.routers import network_monitor as network_monitor_router
 from app.services.network_traffic_poller import _upsert_aggregate, acquire_polling_lease, poll_source_once
-from app.services.network_traffic_snmp import InterfaceSnapshot, SNMPProviderError, calculate_rate
+from app.services.network_traffic_snmp import InterfaceSnapshot, calculate_rate
 
 
 @pytest.fixture()
@@ -387,7 +386,8 @@ def test_polling_persists_discovery_baselines_rates_and_aggregates_without_doubl
     source_id = _poll_source(db)
     first = InterfaceSnapshot(7, "ifIndex:7", "outside", "outside", 1, 1, 1_000_000_000, 1_000, 2_000, 64, 10, 100)
     second = InterfaceSnapshot(7, "ifIndex:7", "outside", "outside", 1, 1, 1_000_000_000, 2_000, 4_000, 64, 10, 110)
-    factory = lambda: db
+    def factory():
+        return db
     assert asyncio.run(poll_source_once(factory, source_id, provider=FakeSNMPProvider([first]), now=datetime(2026, 1, 1, 0, 0, 0))) is True
     db.expire_all()
     assert db.query(TrafficCounterObservation).one().inbound_bps is None
@@ -409,7 +409,7 @@ def test_disabled_feature_prevents_polling_and_lease_is_exclusive(db):
     assert second is False
 
 
-def test_flow_sources_are_never_authorized_for_snmp_polling(db):
+def test_flow_sources_are_never_authorized_for_snmp_polling_again(db):
     db.add(TrafficMonitoringConfiguration(id=1, is_enabled=True))
     values = validate_source_input({
         "name": "Synthetic NSEL polling guard",
@@ -448,7 +448,6 @@ def test_flow_sources_are_never_authorized_for_snmp_polling(db):
 @pytest.mark.parametrize("change", ["lease", "source", "module"])
 def test_lost_lease_or_disabled_state_rejects_late_poll_persistence(db, change):
     source_id = _poll_source(db, enabled=True)
-    source = db.get(TrafficSource, source_id)
     snapshot = InterfaceSnapshot(7, "ifIndex:7", "outside", None, 1, 1, 1_000_000_000, 100, 100, 64, 1, 1)
     token = "owner-a"
     assert acquire_polling_lease(db, token, datetime(2026, 1, 1)) is True

@@ -193,7 +193,6 @@ def test_rejected_template_identifies_bounded_template_context():
 
 def test_template_summary_preserves_accepted_evidence_when_missing_lookups_repeat():
     import json
-    from datetime import datetime
 
     state = TrafficFlowCollectorState(source_id=1)
     missing = {"exporter_identity": "192.0.2.1", "source_id": 0, "template_id": 263, "status": "lookup_failed", "reason": "missing", "cache_present": False}

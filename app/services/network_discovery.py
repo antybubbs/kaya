@@ -8,7 +8,7 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import case, func, or_, text
+from sqlalchemy import case, func, text
 from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session

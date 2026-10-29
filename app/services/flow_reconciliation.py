@@ -6,7 +6,7 @@ from datetime import datetime
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.models.models import TrafficAggregate, TrafficDeviceAggregate, TrafficFlowAccountingAggregate, TrafficFlowReconciliation, TrafficInterface, TrafficSource
+from app.models.models import TrafficDeviceAggregate, TrafficFlowAccountingAggregate, TrafficFlowReconciliation, TrafficInterface, TrafficSource
 from app.services.endpoint_traffic import cleanup_endpoint_aggregates
 from app.services.flow_accounting import retention_cutoffs
 

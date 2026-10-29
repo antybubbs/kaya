@@ -14,8 +14,7 @@ from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session, selectinload
 
-from app.core.security import decrypt_secret
-from app.db.session import SessionLocal, database_write_context
+from app.db.session import SessionLocal
 from app.models.models import (
     TrafficAggregate,
     TrafficCounterObservation,
