@@ -92,7 +92,7 @@ revision() {
 assert_revision() {
     local actual
     actual="$(revision)"
-    [[ "$actual" == "20260902_01" ]] || { echo "unexpected Alembic revision: $actual" >&2; return 1; }
+    [[ "$actual" == "20261018_01" ]] || { echo "unexpected Alembic revision: $actual" >&2; return 1; }
 }
 
 setup_token() {
