@@ -122,6 +122,13 @@
   .audit-filter-actions,.form-actions{flex-wrap:wrap}
 }
 
+@media (min-width:1024px) and (max-width:1100px){
+  .network-monitor-header .module-title-row{flex-wrap:wrap}
+  .network-monitor-header .module-actions{flex:1 1 100%;max-width:100%;min-width:0;width:100%}
+  .network-monitor-header .monitor-refresh-control{min-width:0}
+  .network-monitor-header #monitor-refresh-help{max-width:100%}
+}
+
 @media (max-width:639px){
   .content,body.sidebar-collapsed .content{padding-left:12px!important;padding-right:12px!important}
   .login-wrap{padding:12px}

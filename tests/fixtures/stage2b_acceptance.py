@@ -47,7 +47,7 @@ def seed_stage2b_acceptance(db) -> dict[str, int | str]:
     dns_only = User(id=9005, email="stage2b-dns@example.invalid", password_hash=hash_password(FIXTURE_PASSWORD), role="viewer")
     db.add_all([admin, viewer, network_only, asset_only, dns_only])
     db.flush()
-    db.add_all(UserModulePermission(user_id=admin.id, module_key=key, allowed=True) for key in {"asset_manager", "network_monitor", "dns_manager", "vlan_ip_manager"})
+    db.add_all(UserModulePermission(user_id=admin.id, module_key=key, allowed=True) for key in {"asset_manager", "network_monitor", "dns_manager", "vlan_ip_manager", "dashboard", "remote_manager"})
     for user, allowed in (
         (viewer, {"asset_manager", "network_monitor", "dns_manager", "vlan_ip_manager"}),
         (network_only, {"network_monitor"}),
