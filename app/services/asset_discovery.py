@@ -18,7 +18,18 @@ from app.models.models import (
     TrafficSource,
 )
 from app.services.audit import write_audit
-from app.services.asset_identity import _assignment_lock_key, _normalise_evidence, dhcp_identity_conflict
+from app.services.asset_identity import (
+    MANAGED_HOSTNAME_SOURCE,
+    MANAGED_STATIC_PROVENANCE,
+    _assignment_lock_key,
+    _lock_asset_dhcp,
+    _normalise_evidence,
+    confirmed_mac_owned_elsewhere,
+    dhcp_identity_conflict,
+    mac_identity_lock_key,
+    managed_static_record_mac,
+    superseded_dhcp_assignments,
+)
 from app.services.asset_tags import allocate_asset_tag
 
 MAX_CANDIDATES = 5000
@@ -291,6 +302,10 @@ def _normalise_ip(value: str) -> tuple[str, int]:
 
 def _add_evidence(db: Session, user, asset_id: int, evidence_type: str, value: str, source: str, source_scope: str | None, now: datetime) -> None:
     normalised = _normalise_evidence(evidence_type, value)
+    # MAC ownership is global across discovery sources; the caller already
+    # holds the per-MAC adoption lock. Other identifiers stay source-scoped.
+    if evidence_type == "mac" and confirmed_mac_owned_elsewhere(db, normalised, asset_id):
+        raise ValueError("The selected evidence is already confirmed for another asset.")
     conflict = db.query(AssetIdentityEvidence).filter(
         AssetIdentityEvidence.evidence_type == evidence_type,
         AssetIdentityEvidence.normalised_value == normalised,
@@ -308,6 +323,18 @@ def _add_evidence(db: Session, user, asset_id: int, evidence_type: str, value: s
     row.last_observed_at = now
     row.conflict_reason = None
     db.add(row)
+
+
+def _managed_static_record(db: Session, address: str, mac: str | None) -> IPAddress | None:
+    """Return the single administrator-managed static record for this address and MAC."""
+    if not mac:
+        return None
+    rows = db.query(IPAddress).filter(
+        IPAddress.address == address,
+        IPAddress.mac_address.isnot(None),
+    ).order_by(IPAddress.id.asc()).limit(20).all()
+    matches = [row for row in rows if managed_static_record_mac(row) == mac]
+    return matches[0] if len(matches) == 1 else None
 
 
 def _revalidate_source_candidate(db: Session, candidate: dict) -> None:
@@ -374,12 +401,26 @@ def adopt_discovered_device(db: Session, user, candidate: dict, *, asset_id: int
         evidence_values.append(("dhcp_client_id", candidate["dhcp_client_ids"][0], "dhcp", candidate.get("dhcp_identity_scope")))
     if candidate.get("kind") != "traffic" and candidate.get("name") and candidate["name"] != "Unidentified device":
         evidence_values.append(("hostname", candidate["name"], "dns" if candidate["kind"] == "dns" else "dhcp", None))
+    # An administrator-managed static IP/VLAN Manager record for the candidate's
+    # MAC is explicit current intent, outranking DHCP-derived network state.
+    managed_static = None
+    if candidate.get("kind") in {"dns", "dhcp"} and candidate.get("mac_addresses") and candidate.get("ip_addresses"):
+        try:
+            candidate_mac = _normalise_evidence("mac", candidate["mac_addresses"][0])
+        except ValueError:
+            candidate_mac = None
+        managed_static = _managed_static_record(db, _normalise_ip(candidate["ip_addresses"][0])[0], candidate_mac)
+    if managed_static and managed_static.name and managed_static.name.strip():
+        evidence_values.append(("hostname", managed_static.name.strip(), MANAGED_HOSTNAME_SOURCE, None))
     for evidence_type, value, source, scope in evidence_values:
         normalised = _normalise_evidence(evidence_type, value)
         lock_keys.append(_discovery_lock_key(f"evidence:{evidence_type}:{normalised}:{source}:{scope or '<null>'}"))
+        if evidence_type == "mac":
+            # Serialises every confirmation of this MAC, whatever its source.
+            lock_keys.append(mac_identity_lock_key(normalised))
     if candidate.get("ip_addresses"):
         normalised, family = _normalise_ip(candidate["ip_addresses"][0])
-        ip_row = db.query(IPAddress).filter(IPAddress.address == normalised).order_by(IPAddress.id.asc()).first()
+        ip_row = managed_static or db.query(IPAddress).filter(IPAddress.address == normalised).order_by(IPAddress.id.asc()).first()
         if ip_row:
             lock_keys.append(_assignment_lock_key(normalised, family, ip_row.vlan_id, None, None))
     if candidate.get("kind") == "traffic" and candidate.get("traffic_observation"):
@@ -441,27 +482,41 @@ def adopt_discovered_device(db: Session, user, candidate: dict, *, asset_id: int
         ).filter(
             (DHCPLeaseHistory.expires_at.is_(None)) | (DHCPLeaseHistory.expires_at >= now)
         ).first() is not None
+    closed_assignment_ids: list[int] = []
     for address in candidate["ip_addresses"][:1] if not traffic_observation else []:
         normalised, family = _normalise_ip(address)
-        if candidate.get("dhcp_lease_ids") and not current_dhcp_evidence:
+        if candidate.get("dhcp_lease_ids") and not current_dhcp_evidence and managed_static is None:
             # Preserve the lease history without promoting expired/inactive
-            # DHCP evidence into a current asset assignment.
+            # DHCP evidence into a current asset assignment. A managed static
+            # record is not DHCP evidence, so stale leases never suppress it.
             continue
-        ip_row = db.query(IPAddress).filter(IPAddress.address == normalised).order_by(IPAddress.id.asc()).first()
+        ip_row = managed_static or db.query(IPAddress).filter(IPAddress.address == normalised).order_by(IPAddress.id.asc()).first()
         if not ip_row:
             continue
         existing = db.query(AssetNetworkAssignment).filter(AssetNetworkAssignment.asset_id == asset.id, AssetNetworkAssignment.address == normalised, AssetNetworkAssignment.status == "confirmed", AssetNetworkAssignment.ended_at.is_(None)).first()
-        if existing:
-            continue
-        conflict = db.query(AssetNetworkAssignment).filter(AssetNetworkAssignment.address == normalised, AssetNetworkAssignment.address_family == family, AssetNetworkAssignment.status == "confirmed", AssetNetworkAssignment.ended_at.is_(None), AssetNetworkAssignment.asset_id != asset.id).first()
-        if conflict:
-            if candidate.get("mac_addresses"):
-                # IP ownership is temporal. A verified new MAC may be adopted
-                # while the previous open assignment remains intact; current
-                # address reassignment is a separate reviewed action.
-                continue
-            raise ValueError("The observed address is already assigned to another asset.")
-        db.add(AssetNetworkAssignment(asset_id=asset.id, address=normalised, address_family=family, vlan_id=ip_row.vlan_id, network_cidr=ip_row.vlan.subnet_cidr if ip_row.vlan else None, ip_address_id=ip_row.id, started_at=now, provenance="discovered_device_adoption", status="confirmed", confirmed_by=user.id, confirmed_at=now))
+        if not existing:
+            conflict = db.query(AssetNetworkAssignment).filter(AssetNetworkAssignment.address == normalised, AssetNetworkAssignment.address_family == family, AssetNetworkAssignment.status == "confirmed", AssetNetworkAssignment.ended_at.is_(None), AssetNetworkAssignment.asset_id != asset.id).first()
+            if conflict:
+                if candidate.get("mac_addresses"):
+                    # IP ownership is temporal. A verified new MAC may be adopted
+                    # while the previous open assignment remains intact; current
+                    # address reassignment is a separate reviewed action.
+                    continue
+                raise ValueError("The observed address is already assigned to another asset.")
+            provenance = MANAGED_STATIC_PROVENANCE if managed_static else "discovered_device_adoption"
+            db.add(AssetNetworkAssignment(asset_id=asset.id, address=normalised, address_family=family, vlan_id=ip_row.vlan_id, network_cidr=ip_row.vlan.subnet_cidr if ip_row.vlan else None, ip_address_id=ip_row.id, started_at=now, provenance=provenance, status="confirmed", confirmed_by=user.id, confirmed_at=now))
+        if managed_static:
+            # The asset now holds its managed static address: earlier DHCP
+            # addresses of the same MAC stop being current but stay as history.
+            # Serialise with concurrent DHCP reconciliation of this asset.
+            _lock_asset_dhcp(db, asset.id)
+            superseded = superseded_dhcp_assignments(
+                db, asset.id, keep_address=normalised, family=family,
+                macs=candidate.get("mac_addresses") or [], lease_ids=candidate.get("dhcp_lease_ids") or [],
+            )
+            for row in superseded:
+                row.ended_at = max(row.started_at, now)
+            closed_assignment_ids = [row.id for row in superseded]
     audit = write_audit(
         db,
         user,
@@ -469,6 +524,7 @@ def adopt_discovered_device(db: Session, user, candidate: dict, *, asset_id: int
         "discovered_device",
         candidate["id"],
         detail="Adopted a reviewed discovery into Asset Manager",
+        metadata={"asset_id": asset.id, "managed_static_ip_address_id": managed_static.id, "closed_assignment_ids": closed_assignment_ids} if managed_static else None,
         force=True,
         commit=False,
     )

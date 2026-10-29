@@ -19,9 +19,9 @@
 {% set current_assignment = asset_profile.assignment_rows|selectattr('ended_at', 'none')|selectattr('status', 'equalto', 'confirmed')|selectattr('profile_validity', 'equalto', 'valid')|first %}
 {% set open_assignments = asset_profile.assignment_rows|selectattr('ended_at', 'none')|list %}
 {% set mac_rows = asset_profile.identity_rows|selectattr('evidence_type', 'equalto', 'mac')|list %}
-{% set host_rows = asset_profile.identity_rows|selectattr('evidence_type', 'equalto', 'hostname')|list %}
 {% set mac_evidence = (mac_rows|selectattr('status', 'equalto', 'confirmed')|first) or (mac_rows|first) %}
-{% set host_evidence = (host_rows|selectattr('status', 'equalto', 'confirmed')|first) or (host_rows|first) %}
+{#- Hostname: managed IP/VLAN Manager name first, then newest confirmed, then newest suggestion. -#}
+{% set host_evidence = asset_profile.preferred_hostname %}
 {#- Last seen: the latest real DHCP or DNS observation the page already loads (permission-gated). -#}
 {% set seen = namespace(at=none) %}
 {% for lease in (asset_profile.dhcp_leases or []) %}{% if lease.last_seen_at and (seen.at is none or lease.last_seen_at > seen.at) %}{% set seen.at = lease.last_seen_at %}{% endif %}{% endfor %}

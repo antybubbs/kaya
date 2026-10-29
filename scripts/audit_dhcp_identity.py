@@ -21,8 +21,10 @@ from app.models.models import (
     AssetIdentityEvidence,
     AssetNetworkAssignment,
     DHCPLeaseHistory,
+    DNSClientEvent,
     DNSClientTrafficEvent,
     DNSRecognisedDevice,
+    IPAddress,
 )
 
 
@@ -181,6 +183,76 @@ def _traffic_conflicts(db: Session, limit: int) -> list[dict]:
     return result
 
 
+def _cross_asset_mac_duplicates(db: Session, limit: int) -> list[dict]:
+    """Confirmed MACs owned by more than one asset (recorded under different sources)."""
+    grouped = db.query(
+        AssetIdentityEvidence.normalised_value,
+        func.count(distinct(AssetIdentityEvidence.asset_id)),
+    ).filter(
+        AssetIdentityEvidence.evidence_type == "mac",
+        AssetIdentityEvidence.status == "confirmed",
+        AssetIdentityEvidence.revoked_at.is_(None),
+        AssetIdentityEvidence.asset_id.isnot(None),
+    ).group_by(AssetIdentityEvidence.normalised_value).having(
+        func.count(distinct(AssetIdentityEvidence.asset_id)) > 1
+    ).limit(limit).all()
+    result = []
+    for mac, count in grouped:
+        rows = db.query(AssetIdentityEvidence).filter(
+            AssetIdentityEvidence.evidence_type == "mac",
+            AssetIdentityEvidence.normalised_value == mac,
+            AssetIdentityEvidence.status == "confirmed",
+            AssetIdentityEvidence.revoked_at.is_(None),
+            AssetIdentityEvidence.asset_id.isnot(None),
+        ).order_by(AssetIdentityEvidence.id.asc()).limit(50).all()
+        result.append({
+            "mac": mac,
+            "distinct_asset_count": count,
+            "evidence": [{"evidence_id": row.id, "asset_id": row.asset_id, "source": row.source, "source_scope": row.source_scope, "confirmed_at": _iso(row.confirmed_at)} for row in rows],
+            "classification": "definite_conflict",
+        })
+    return result
+
+
+def _suspect_dhcp_client_id_evidence(db: Session, limit: int) -> list[dict]:
+    """Confirmed DHCP client-id evidence that looks like a provider lease record number.
+
+    The former ingestion fallback stored a provider's lease ``id`` as the client
+    identifier. Genuine option-61 identifiers and DUIDs are not bare decimals.
+    """
+    rows = db.query(AssetIdentityEvidence).filter(
+        AssetIdentityEvidence.evidence_type == "dhcp_client_id",
+        AssetIdentityEvidence.status == "confirmed",
+        AssetIdentityEvidence.revoked_at.is_(None),
+    ).order_by(AssetIdentityEvidence.id.asc()).limit(limit * 4).all()
+    return [{
+        "evidence_id": row.id,
+        "asset_id": row.asset_id,
+        "value": row.normalised_value,
+        "source_scope": row.source_scope,
+        "classification": "suspected_provider_record_id",
+    } for row in rows if row.normalised_value.isdigit()][:limit]
+
+
+def _auto_filled_static_hostnames(db: Session, limit: int) -> list[dict]:
+    """Static records whose current name was copied from a DNS observation."""
+    rows = db.query(DNSClientEvent, DNSRecognisedDevice, IPAddress).join(
+        DNSRecognisedDevice, DNSRecognisedDevice.id == DNSClientEvent.dns_client_id,
+    ).join(IPAddress, IPAddress.id == DNSRecognisedDevice.linked_ip_record_id).filter(
+        DNSClientEvent.event_type == "managed_record_updated",
+        DNSClientEvent.source == "automatic empty hostname update",
+        IPAddress.assignment_type != "Dynamic",
+    ).order_by(DNSClientEvent.id.asc()).limit(limit).all()
+    return [{
+        "ip_address_id": record.id,
+        "dns_client_id": client.id,
+        "event_id": event.id,
+        "filled_at": _iso(event.created_at),
+        "name_unchanged_since_fill": record.name == event.new_value,
+        "classification": "review_managed_hostname_authority",
+    } for event, client, record in rows]
+
+
 def run_audit(db: Session, limit: int) -> dict:
     now = datetime.utcnow()
     dns_conflicts = _dns_link_conflicts(db, limit)
@@ -192,6 +264,9 @@ def run_audit(db: Session, limit: int) -> dict:
         "open_assignments_with_ended_leases": _expired_open_assignments(db, now, limit),
         "active_ip_ownership_conflicts": _active_ip_conflicts(db, limit),
         "legacy_dns_traffic_conflicts": _traffic_conflicts(db, limit),
+        "cross_asset_confirmed_mac_duplicates": _cross_asset_mac_duplicates(db, limit),
+        "suspect_dhcp_client_id_evidence": _suspect_dhcp_client_id_evidence(db, limit),
+        "auto_filled_static_hostnames": _auto_filled_static_hostnames(db, limit),
         "discovery_association_review": [
             {
                 "candidate_id": f"dns:{row['dns_client_id']}",

@@ -25,6 +25,11 @@ from app.services.modules import MODULE_BY_KEY, module_is_enabled
 
 EVIDENCE_TYPES = {"mac", "dhcp_client_id", "provider_client_id", "hostname", "serial_number"}
 STATUSES = {"pending", "confirmed", "revoked", "conflict", "unresolved"}
+# Explicit administrator-managed IP/VLAN Manager static intent. It outranks
+# DHCP-derived network state and observed DHCP/DNS hostnames for the same MAC.
+MANAGED_STATIC_PROVENANCE = "managed_static_adoption"
+MANAGED_STATIC_REPAIR_PROVENANCE = "managed_static_repair"
+MANAGED_HOSTNAME_SOURCE = "vlan_ip_manager"
 _MAC = re.compile(r"^[0-9a-f]{12}$")
 
 
@@ -106,13 +111,46 @@ def _normalise_evidence(evidence_type: str, value: str) -> str:
     if not value or len(value) > 255:
         raise ValueError("Identity evidence must contain 1 to 255 characters.")
     if kind == "mac":
-        compact = re.sub(r"[^0-9A-Fa-f]", "", value)
+        compact = re.sub(r"[^0-9A-Fa-f]", "", value).lower()
         if not _MAC.fullmatch(compact):
             raise ValueError("MAC evidence must be a valid 48-bit address.")
-        return ":".join(compact[i:i + 2] for i in range(0, 12, 2)).lower()
+        return ":".join(compact[i:i + 2] for i in range(0, 12, 2))
     if kind in {"hostname", "dhcp_client_id", "provider_client_id", "serial_number"}:
         return value.casefold()
     return value
+
+
+def mac_identity_lock_key(normalised_mac: str) -> int:
+    """Advisory-lock key for one physical MAC, independent of evidence source."""
+    digest = hashlib.sha256(f"asset-identity-mac\x1f{normalised_mac}".encode("utf-8")).digest()[:8]
+    return int.from_bytes(digest, byteorder="big", signed=True)
+
+
+def confirmed_mac_owned_elsewhere(db: Session, normalised_mac: str, asset_id: int) -> bool:
+    """Whether another asset holds this MAC as confirmed, unrevoked evidence.
+
+    A MAC names one physical interface, so ownership is global: the evidence
+    source and scope (DHCP, DNS discovery, manual) do not partition it. One
+    asset may still hold many MACs, and suggestions or revoked rows never count.
+    """
+    return db.query(AssetIdentityEvidence.id).filter(
+        AssetIdentityEvidence.evidence_type == "mac",
+        AssetIdentityEvidence.normalised_value == normalised_mac,
+        AssetIdentityEvidence.status == "confirmed",
+        AssetIdentityEvidence.revoked_at.is_(None),
+        AssetIdentityEvidence.asset_id.isnot(None),
+        AssetIdentityEvidence.asset_id != asset_id,
+    ).first() is not None
+
+
+def managed_static_record_mac(record: IPAddress | None) -> str | None:
+    """Normalised MAC of a static (non-Dynamic) managed IP record, else ``None``."""
+    if record is None or not record.mac_address or record.assignment_type == "Dynamic":
+        return None
+    try:
+        return _normalise_evidence("mac", record.mac_address)
+    except ValueError:
+        return None
 
 
 def _normalise_ip(address: str) -> tuple[str, int]:
@@ -158,7 +196,12 @@ def confirm_identity_evidence(
             raise ValueError("Evidence source scope must contain 1 to 255 characters.")
     normalised = _normalise_evidence(evidence_type, value)
     evidence_kind = evidence_type.strip().lower()
-    if evidence_kind in {"mac", "dhcp_client_id", "provider_client_id"}:
+    if evidence_kind == "mac":
+        if db.get_bind().dialect.name == "postgresql":
+            db.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": mac_identity_lock_key(normalised)})
+        if confirmed_mac_owned_elsewhere(db, normalised, asset_id):
+            raise ValueError("Strong identity evidence is already confirmed for another asset.")
+    elif evidence_kind in {"dhcp_client_id", "provider_client_id"}:
         conflicting = db.query(AssetIdentityEvidence).filter(
             AssetIdentityEvidence.evidence_type == evidence_kind,
             AssetIdentityEvidence.normalised_value == normalised,
@@ -421,6 +464,190 @@ def _identity_lease_filters(lease: DHCPLeaseHistory, client_ids: set[str]) -> li
     return filters
 
 
+def superseded_dhcp_assignments(db: Session, asset_id: int, *, keep_address: str, family: int, macs: list[str], lease_ids: list[int] | None = None) -> list[AssetNetworkAssignment]:
+    """This asset's open assignments for other addresses DHCP leased to the same MAC.
+
+    These stop being current once an explicit managed static assignment for that
+    MAC is current. Static, traffic-only and unrelated assignments never match.
+    The caller closes them (at the current time, so attributed history stays).
+    """
+    filters = []
+    if macs:
+        filters.append(DHCPLeaseHistory.mac_address.in_(sorted(set(macs))))
+    if lease_ids:
+        filters.append(DHCPLeaseHistory.id.in_(sorted(set(lease_ids))))
+    if not filters:
+        return []
+    dhcp_addresses = set()
+    for (address,) in db.query(DHCPLeaseHistory.ip_address).filter(or_(*filters)).limit(5000).all():
+        try:
+            dhcp_addresses.add(_normalise_ip(address)[0])
+        except ValueError:
+            continue
+    rows = db.query(AssetNetworkAssignment).filter(
+        AssetNetworkAssignment.asset_id == asset_id,
+        AssetNetworkAssignment.address_family == family,
+        AssetNetworkAssignment.address != keep_address,
+        AssetNetworkAssignment.status == "confirmed",
+        AssetNetworkAssignment.ended_at.is_(None),
+    ).order_by(AssetNetworkAssignment.id.asc()).limit(50).all()
+    return [row for row in rows if row.address in dhcp_addresses]
+
+
+def repair_managed_static_assignment(
+    db: Session,
+    *,
+    asset_id: int,
+    asset_tag: str,
+    mac: str,
+    address: str,
+    ip_address_id: int | None = None,
+    actor: User | None = None,
+    execute: bool = False,
+    now: datetime | None = None,
+) -> dict:
+    """Idempotently make a managed static record the asset's current address.
+
+    For assets adopted before managed static precedence existed. Every target is
+    verified before any change: the asset by id and tag, its confirmed MAC, a
+    single Static IP/VLAN Manager record for that address carrying the MAC, and
+    no other asset holding the address. It then creates the missing managed
+    static assignment and closes superseded DHCP-derived assignments at repair
+    time. DHCP history, identity evidence and traffic rows are never modified.
+    A dry run (the default) reports the plan and rolls back; ``execute`` commits
+    the change with one forced audit record, or nothing at all.
+    """
+    if actor is not None and (actor.role != "admin" or not actor.is_active):
+        raise PermissionError("An active administrator is required to attribute the repair.")
+    normalised_mac = _normalise_evidence("mac", mac)
+    normalised, family = _normalise_ip(address)
+    clean_tag = str(asset_tag or "").strip()
+    if not clean_tag or len(clean_tag) > 120:
+        raise ValueError("The asset tag must contain 1 to 120 characters.")
+    now = now or datetime.utcnow()
+    try:
+        if db.get_bind().dialect.name == "postgresql":
+            db.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": mac_identity_lock_key(normalised_mac)})
+        _lock_asset_dhcp(db, asset_id)
+        asset = db.get(HardwareAsset, asset_id)
+        if not asset or (asset.asset_tag or "").strip() != clean_tag:
+            raise ValueError("The asset id and asset tag do not identify the same asset.")
+        owns_mac = db.query(AssetIdentityEvidence.id).filter(
+            AssetIdentityEvidence.asset_id == asset.id,
+            AssetIdentityEvidence.evidence_type == "mac",
+            AssetIdentityEvidence.normalised_value == normalised_mac,
+            AssetIdentityEvidence.status == "confirmed",
+            AssetIdentityEvidence.revoked_at.is_(None),
+        ).first()
+        if owns_mac is None:
+            raise ValueError("The asset does not hold this MAC as confirmed identity evidence.")
+        if confirmed_mac_owned_elsewhere(db, normalised_mac, asset.id):
+            raise ValueError("This MAC is also confirmed for another asset; resolve that conflict first.")
+        records = db.query(IPAddress).filter(IPAddress.address == normalised).order_by(IPAddress.id.asc()).limit(20).all()
+        records = [row for row in records if managed_static_record_mac(row) == normalised_mac and (ip_address_id is None or row.id == ip_address_id)]
+        if len(records) != 1:
+            raise ValueError("Exactly one Static IP/VLAN Manager record for this address must carry this MAC.")
+        record = records[0]
+        _lock_assignment_context(db, address=normalised, family=family, vlan_id=record.vlan_id, source_id=None, exporter_identity=None)
+        held_elsewhere = db.query(AssetNetworkAssignment.id, AssetNetworkAssignment.asset_id).filter(
+            AssetNetworkAssignment.address == normalised,
+            AssetNetworkAssignment.address_family == family,
+            AssetNetworkAssignment.status == "confirmed",
+            AssetNetworkAssignment.ended_at.is_(None),
+            AssetNetworkAssignment.asset_id != asset.id,
+        ).first()
+        if held_elsewhere is not None:
+            raise ValueError("The managed static address is currently assigned to another asset.")
+        current = db.query(AssetNetworkAssignment).filter(
+            AssetNetworkAssignment.asset_id == asset.id,
+            AssetNetworkAssignment.address == normalised,
+            AssetNetworkAssignment.address_family == family,
+            AssetNetworkAssignment.status == "confirmed",
+            AssetNetworkAssignment.ended_at.is_(None),
+        ).first()
+        superseded = superseded_dhcp_assignments(db, asset.id, keep_address=normalised, family=family, macs=[normalised_mac])
+        plan = {
+            "asset_id": asset.id,
+            "asset_tag": asset.asset_tag,
+            "mac": normalised_mac,
+            "ip_address_id": record.id,
+            "address": normalised,
+            "vlan_id": record.vlan_id,
+            "existing_assignment_id": current.id if current else None,
+            "create_assignment": current is None,
+            "close_assignments": [
+                {"assignment_id": row.id, "address": row.address, "started_at": row.started_at.isoformat(), "provenance": row.provenance}
+                for row in superseded
+            ],
+            "repair_time": now.isoformat(),
+            "executed": False,
+        }
+        plan["changes_required"] = bool(plan["create_assignment"] or superseded)
+        if not execute or not plan["changes_required"]:
+            db.rollback()
+            return plan
+        created = None
+        if current is None:
+            created = AssetNetworkAssignment(
+                asset_id=asset.id, address=normalised, address_family=family,
+                vlan_id=record.vlan_id, network_cidr=record.vlan.subnet_cidr.strip() if record.vlan and record.vlan.subnet_cidr else None,
+                ip_address_id=record.id, started_at=now, provenance=MANAGED_STATIC_REPAIR_PROVENANCE,
+                status="confirmed", confirmed_by=actor.id if actor else None, confirmed_at=now,
+            )
+            db.add(created)
+        for row in superseded:
+            row.ended_at = max(row.started_at, now)
+        db.flush()
+        audit = write_audit(
+            db, actor, "repair", "asset_network_assignment", str(created.id if created else current.id),
+            detail="Repaired managed static network assignment",
+            metadata={
+                "asset_id": asset.id,
+                "ip_address_id": record.id,
+                "created_assignment_id": created.id if created else None,
+                "closed_assignment_ids": [row.id for row in superseded],
+                "address_family": family,
+            },
+            force=True, commit=False,
+        )
+        if audit is None:
+            raise RuntimeError("The repair could not be audited.")
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    plan["executed"] = True
+    plan["created_assignment_id"] = created.id if created else None
+    return plan
+
+
+def _managed_static_outranks_lease(db: Session, asset_id: int, lease: DHCPLeaseHistory, mac: str | None, family: int) -> bool:
+    """Whether a newer managed static assignment for this MAC outranks the lease.
+
+    The asset must hold an open confirmed assignment whose managed IP record is
+    still Static and still carries the lease's MAC, started after this lease was
+    first seen. A lease first seen later (the device genuinely back on DHCP), or
+    a record since made Dynamic, removed or re-MACed, reconciles as before.
+    """
+    if not mac:
+        return False
+    lease_seen = lease.first_seen_at or lease.lease_started_at
+    rows = db.query(AssetNetworkAssignment, IPAddress).join(
+        IPAddress, IPAddress.id == AssetNetworkAssignment.ip_address_id
+    ).filter(
+        AssetNetworkAssignment.asset_id == asset_id,
+        AssetNetworkAssignment.address_family == family,
+        AssetNetworkAssignment.status == "confirmed",
+        AssetNetworkAssignment.ended_at.is_(None),
+    ).limit(50).all()
+    return any(
+        record.address == assignment.address
+        and managed_static_record_mac(record) == mac
+        and (lease_seen is None or assignment.started_at >= lease_seen)
+        for assignment, record in rows
+    )
+
+
 def _lock_asset_dhcp(db: Session, asset_id: int) -> None:
     """Serialise DHCP reconciliation per asset on PostgreSQL."""
     if db.get_bind().dialect.name == "postgresql":
@@ -515,7 +742,8 @@ def reconcile_dhcp_assignment(db: Session, lease: DHCPLeaseHistory, *, observed_
 
     Returns ``renewed`` (already current), ``reassigned`` (new assignment
     created, earlier DHCP addresses of the same identity closed), ``superseded``
-    (a newer active lease of the same identity exists), or ``review_required``
+    (a newer active lease of the same identity, or a newer managed static
+    assignment for the same MAC, exists), or ``review_required``
     (no single safe owner, conflicting identifiers, or address held elsewhere).
     """
     if not lease or not isinstance(observed_at, datetime):
@@ -562,6 +790,10 @@ def reconcile_dhcp_assignment(db: Session, lease: DHCPLeaseHistory, *, observed_
         ).first()
         if newer is not None:
             return "superseded"
+    # Explicit managed static intent for this MAC is newer than this lease, so
+    # an older lease that has not yet expired never pulls the asset back.
+    if _managed_static_outranks_lease(db, asset_id, lease, mac, family):
+        return "superseded"
     _lock_asset_dhcp(db, asset_id)
     _lock_assignment_context(db, address=normalised, family=family, vlan_id=None, source_id=None, exporter_identity=None)
     open_rows = db.query(AssetNetworkAssignment).filter(

@@ -226,7 +226,11 @@ def _suggest_managed_record(db: Session, client: DNSRecognisedDevice) -> None:
                     db, managed, address=client.current_ip, reason="dns_automatic_update",
                 )
                 _event(db, client, "managed_record_updated", "Dynamic managed IP updated from stable client identity", old=old, new=managed.address, source="automatic dynamic IP update")
-        if not managed.name and client.hostname and settings["dns_update_empty_managed_hostname"] == "1":
+        # A Static record's name is administrator authority: an observed (and
+        # possibly stale DHCP-era) hostname stays discovery evidence on the
+        # DNS client and never becomes the managed name. Only blank Dynamic
+        # records, which follow DHCP state, may be filled from observation.
+        if managed.assignment_type == "Dynamic" and not managed.name and client.hostname and settings["dns_update_empty_managed_hostname"] == "1":
             managed.name = client.hostname
             _event(db, client, "managed_record_updated", "Empty managed hostname populated from observation", new=managed.name, source="automatic empty hostname update")
 

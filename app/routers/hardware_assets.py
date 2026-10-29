@@ -46,6 +46,7 @@ from app.routers.auth import require_admin, require_editor, require_module_acces
 from app.services.audit import write_audit
 from app.services.asset_tags import allocate_asset_tag, asset_tag_settings, next_asset_tag_preview
 from app.services.asset_identity import (
+    MANAGED_HOSTNAME_SOURCE,
     close_network_assignment,
     confirm_existing_identity_evidence,
     confirm_existing_network_assignment,
@@ -248,6 +249,18 @@ def bytes_label(value: int | None) -> str:
     return human_bytes(value, unknown="-")
 
 
+def preferred_hostname_evidence(identity_rows: list[AssetIdentityEvidence]) -> AssetIdentityEvidence | None:
+    """Pick the displayed hostname deterministically from newest-first evidence.
+
+    A confirmed managed IP/VLAN Manager hostname outranks observed DHCP/DNS
+    names; otherwise the newest confirmed hostname, then the newest suggestion.
+    """
+    hosts = [row for row in identity_rows if row.evidence_type == "hostname"]
+    confirmed = [row for row in hosts if row.status == "confirmed"]
+    managed = [row for row in confirmed if row.source == MANAGED_HOSTNAME_SOURCE]
+    return next(iter(managed or confirmed or hosts), None)
+
+
 def asset_profile_context(db: Session, user, asset: HardwareAsset) -> dict:
     """Build a permission-aware, bounded profile without calling providers."""
     can_dns = has_module_access(db, user, "dns_manager")
@@ -317,6 +330,7 @@ def asset_profile_context(db: Session, user, asset: HardwareAsset) -> dict:
                         traffic_context_options.append(option)
     return {
         "identity_rows": identity_rows,
+        "preferred_hostname": preferred_hostname_evidence(identity_rows),
         "assignment_rows": assignment_rows,
         "dns_clients": dns_clients if can_dns else None,
         "dhcp_leases": dhcp_leases if can_dns else None,

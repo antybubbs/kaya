@@ -463,7 +463,11 @@ def _persist_dhcp_leases(
         # The DHCP client identifier (option 61 / DUID); dnsmasq reports "*" when absent.
         dhcp_client_id = str(item.get("clientid") or item.get("client_id") or "").strip()
         dhcp_client_id = None if dhcp_client_id in {"", "*"} else dhcp_client_id[:255]
-        provider_lease_id = dhcp_client_id or str(item.get("id") or item.get("lease_id") or "").strip()[:255] or None
+        # Only a genuine client identifier is identity evidence. A provider's
+        # own lease record number is local to that provider and may be reused
+        # for another device, so it is never stored as the client identifier.
+        provider_lease_id = dhcp_client_id
+        provider_record_id = str(item.get("id") or item.get("lease_id") or "").strip()[:255] or None
         expiry_raw = next(
             (item[key] for key in ("expires_at", "expires", "expiry", "valid_until")
              if key in item and item[key] not in (None, "", "-")),
@@ -514,7 +518,12 @@ def _persist_dhcp_leases(
             active.dns_client_id = active.dns_client_id or client_id
             active.mac_address = mac or active.mac_address
             active.hostname = hostname or active.hostname
-            active.provider_lease_id = provider_lease_id or active.provider_lease_id
+            if provider_lease_id:
+                active.provider_lease_id = provider_lease_id
+            elif provider_record_id and active.provider_lease_id == provider_record_id:
+                # Written by the former record-number fallback for this same
+                # lease: it was never a DHCP client identifier.
+                active.provider_lease_id = None
             active.dhcp_range_id = active.dhcp_range_id or (scope.id if scope else None)
             active.last_seen_at = generated_at
             active.expires_at = expires_at or active.expires_at

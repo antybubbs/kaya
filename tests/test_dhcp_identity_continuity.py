@@ -37,8 +37,9 @@ from app.models.models import (
     User,
     VLAN,
 )
+from app.routers.hardware_assets import asset_profile_context
 from app.services.asset_discovery import adopt_discovered_device, get_discovered_device
-from app.services.asset_identity import reconcile_dhcp_assignment
+from app.services.asset_identity import confirm_identity_evidence, reconcile_dhcp_assignment
 from app.services.asset_profile_reporting import asset_reporting_context
 from app.services import dns_insights
 from app.services.dns_insights import _persist_dhcp_leases
@@ -781,3 +782,200 @@ def test_postgres_concurrent_lease_end_closes_once():
             db.query(HardwareAsset).filter_by(id=asset_id).delete()
             db.query(DNSProviderConfig).filter_by(id=provider_id).delete()
         engine.dispose()
+
+
+# ------------------------------------------------------------ 26. DHCP → managed static conversion
+
+STATIC_IP = "192.0.2.148"
+LATER = NOW + timedelta(hours=1)
+
+
+def _vlan(db):
+    vlan = VLAN(name=f"Synthetic static LAN {uuid.uuid4().hex[:6]}", subnet_cidr="192.0.2.0/24")
+    db.add(vlan)
+    db.flush()
+    return vlan
+
+
+def _dhcp_asset_with_open_adoption_row(db, mac, vlan):
+    """A DHCP device adopted while its address had a managed record, then gone quiet.
+
+    Adoption makes a lease-less assignment for the DHCP address, so lease
+    closure never ends it: the state in which the old address stayed current.
+    """
+    db.add(IPAddress(address=OLD_IP, vlan_id=vlan.id, assignment_type="Dynamic"))
+    db.commit()
+    provider, admin = _provider(db), _admin(db)
+    _sync(db, provider, _item(OLD_IP, mac, name="synthetic-phone.example.invalid"), at=T0)
+    asset = _adopt(db, admin, provider, OLD_IP, name="Synthetic phone")
+    _sync(db, provider, at=T2)  # the device left DHCP; its lease is now inactive
+    assert _open(db, asset) == [OLD_IP]
+    return provider, admin, asset
+
+
+def _static_record(db, vlan, mac, name=None):
+    record = IPAddress(address=STATIC_IP, vlan_id=vlan.id, assignment_type="Static", mac_address=mac, name=name)
+    db.add(record)
+    db.commit()
+    return record
+
+
+def _dns_candidate(db, provider, mac, *, hostname="synthetic-phone.example.invalid"):
+    """The DNS Manager client for the same MAC, now seen at the static address."""
+    client = DNSRecognisedDevice(
+        provider_id=provider.id, logical_provider_key=f"synthetic-{uuid.uuid4().hex[:6]}",
+        identity_key=f"mac:{mac}", identity_type="mac", identity_value=mac,
+        hostname=hostname, normalised_hostname=hostname, current_ip=STATIC_IP, previous_ip=OLD_IP,
+        mac_address=mac, normalised_mac=mac, first_seen_at=T0, last_seen_at=T3,
+    )
+    db.add(client)
+    db.flush()
+    for lease in db.query(DHCPLeaseHistory).filter_by(provider_id=provider.id, mac_address=mac):
+        lease.dns_client_id = client.id  # as lease ingestion links it by MAC
+    db.commit()
+    candidate = get_discovered_device(db, f"dns:{client.id}")
+    assert candidate["asset_id"] is None and candidate["dhcp_lease_ids"]
+    return candidate
+
+
+def _hostnames(db, asset):
+    return {(row.normalised_value, row.source, row.status) for row in db.query(AssetIdentityEvidence).filter_by(asset_id=asset.id, evidence_type="hostname")}
+
+
+def test_dhcp_to_managed_static_conversion_makes_static_ip_current_and_keeps_history(db):
+    mac = _mac()
+    vlan = _vlan(db)
+    provider, admin, asset = _dhcp_asset_with_open_adoption_row(db, mac, vlan)
+    record = _static_record(db, vlan, mac)
+    assets_before = db.query(HardwareAsset).count()
+    leases_before = db.query(DHCPLeaseHistory).filter_by(mac_address=mac).count()
+
+    adopted = adopt_discovered_device(db, admin, _dns_candidate(db, provider, mac), asset_id=asset.id)
+
+    assert adopted.id == asset.id and db.query(HardwareAsset).count() == assets_before
+    rows = _rows(db, asset)
+    assert _open(db, asset) == [STATIC_IP]
+    current = next(row for row in rows if row.ended_at is None)
+    assert current.provenance == "managed_static_adoption" and current.ip_address_id == record.id and current.vlan_id == vlan.id
+    old = next(row for row in rows if row.address == OLD_IP)
+    assert old.ended_at is not None and old.ended_at >= old.started_at  # retained as history
+    assert db.query(DHCPLeaseHistory).filter_by(mac_address=mac).count() == leases_before
+    confirmed = {row.evidence_type for row in db.query(AssetIdentityEvidence).filter_by(asset_id=asset.id, status="confirmed")}
+    assert {"mac", "hostname"} <= confirmed
+    assert db.query(AssetIdentityEvidence).filter(AssetIdentityEvidence.evidence_type == "mac", AssetIdentityEvidence.normalised_value == mac, AssetIdentityEvidence.asset_id != asset.id).count() == 0
+    profile = asset_profile_context(db, admin, asset)
+    current_rows = [row for row in profile["assignment_rows"] if row.ended_at is None and row.profile_validity == "valid"]
+    assert [row.address for row in current_rows] == [STATIC_IP]
+    audit = db.query(AuditLog).filter(AuditLog.action == "adopt", AuditLog.entity == "discovered_device").order_by(AuditLog.id.desc()).first()
+    assert audit is not None
+
+
+def test_stale_dhcp_lease_cannot_reclaim_current_ip_from_managed_static(db):
+    mac = _mac()
+    vlan = _vlan(db)
+    db.add(IPAddress(address=OLD_IP, vlan_id=vlan.id, assignment_type="Dynamic"))
+    db.commit()
+    provider, admin = _provider(db), _admin(db)
+    _sync(db, provider, _item(OLD_IP, mac), at=T0)
+    asset = _adopt(db, admin, provider, OLD_IP)
+    _static_record(db, vlan, mac)
+    adopt_discovered_device(db, admin, _dns_candidate(db, provider, mac), asset_id=asset.id)
+    # The provider still lists the unexpired old lease after the conversion.
+    _sync(db, provider, _item(OLD_IP, mac), at=LATER)
+    assert reconcile_dhcp_assignment(db, _lease(db, provider, OLD_IP), observed_at=LATER) == "superseded"
+    assert _open(db, asset) == [STATIC_IP]
+
+
+def test_managed_static_hostname_becomes_preferred_and_stale_hostname_stays_history(db):
+    mac = _mac()
+    vlan = _vlan(db)
+    provider, admin, asset = _dhcp_asset_with_open_adoption_row(db, mac, vlan)
+    _static_record(db, vlan, mac, name="synthetic-phone-static.example.invalid")
+
+    adopt_discovered_device(db, admin, _dns_candidate(db, provider, mac), asset_id=asset.id)
+
+    hostnames = _hostnames(db, asset)
+    assert ("synthetic-phone-static.example.invalid", "vlan_ip_manager", "confirmed") in hostnames
+    assert ("synthetic-phone.example.invalid", "dhcp", "confirmed") in hostnames  # historical evidence kept
+    preferred = asset_profile_context(db, admin, asset)["preferred_hostname"]
+    assert (preferred.normalised_value, preferred.source) == ("synthetic-phone-static.example.invalid", "vlan_ip_manager")
+    # A newer DHCP/DNS-derived hostname confirmation never reclaims preference.
+    confirm_identity_evidence(db, admin, asset_id=asset.id, evidence_type="hostname", value="synthetic-phone.example.invalid", source="dns-observed")
+    preferred = asset_profile_context(db, admin, asset)["preferred_hostname"]
+    assert preferred.source == "vlan_ip_manager"
+
+
+def test_managed_static_without_hostname_keeps_existing_hostname_precedence(db):
+    """No managed name: nothing is invented or cleared. The displayed hostname
+    stays the newest confirmed hostname evidence, as before this change."""
+    mac = _mac()
+    vlan = _vlan(db)
+    provider, admin, asset = _dhcp_asset_with_open_adoption_row(db, mac, vlan)
+    _static_record(db, vlan, mac, name=None)
+    before = _hostnames(db, asset)
+
+    adopt_discovered_device(db, admin, _dns_candidate(db, provider, mac), asset_id=asset.id)
+
+    after = _hostnames(db, asset)
+    assert before <= after
+    assert not any(source == "vlan_ip_manager" for _value, source, _status in after)
+    newest = db.query(AssetIdentityEvidence).filter_by(asset_id=asset.id, evidence_type="hostname", status="confirmed").order_by(AssetIdentityEvidence.id.desc()).first()
+    assert asset_profile_context(db, admin, asset)["preferred_hostname"].id == newest.id
+    assert _open(db, asset) == [STATIC_IP]
+
+
+def test_dynamic_managed_record_does_not_change_normal_dhcp_movement(db):
+    mac = _mac()
+    vlan = _vlan(db)
+    provider, _, asset = _adopted_device(db, mac=mac)
+    db.add(IPAddress(address=OLD_IP, vlan_id=vlan.id, assignment_type="Dynamic", mac_address=mac))
+    db.commit()
+    _sync(db, provider, _item(NEW_IP, mac), at=T2)
+    assert _open(db, asset) == [NEW_IP]
+
+
+def test_device_back_on_dhcp_after_static_reconciles_from_its_new_lease(db):
+    mac = _mac()
+    vlan = _vlan(db)
+    provider, admin, asset = _dhcp_asset_with_open_adoption_row(db, mac, vlan)
+    _static_record(db, vlan, mac)
+    adopt_discovered_device(db, admin, _dns_candidate(db, provider, mac), asset_id=asset.id)
+    # A lease first seen after the static assignment is genuinely current DHCP evidence.
+    _sync(db, provider, _item("192.0.2.190", mac), at=LATER + timedelta(hours=1))
+    assert "192.0.2.190" in _open(db, asset)
+
+
+def test_old_dhcp_address_reused_by_another_mac_never_transfers_identity(db):
+    mac_a, mac_b = _mac(), _mac()
+    vlan = _vlan(db)
+    provider, admin, asset = _dhcp_asset_with_open_adoption_row(db, mac_a, vlan)
+    _static_record(db, vlan, mac_a)
+    adopt_discovered_device(db, admin, _dns_candidate(db, provider, mac_a), asset_id=asset.id)
+    _sync(db, provider, _item(OLD_IP, mac_b, name="synthetic-other"), at=LATER)
+    lease_b = _lease(db, provider, OLD_IP)
+    assert reconcile_dhcp_assignment(db, lease_b, observed_at=LATER) == "review_required"
+    assert _open(db, asset) == [STATIC_IP]
+    assert db.query(AssetNetworkAssignment).filter_by(dhcp_lease_id=lease_b.id).count() == 0
+    assert db.query(AssetIdentityEvidence).filter_by(normalised_value=mac_b).count() == 0
+
+
+def test_confirmed_mac_cannot_be_adopted_as_second_asset_via_managed_static(db):
+    mac = _mac()
+    vlan = _vlan(db)
+    provider, admin, asset = _dhcp_asset_with_open_adoption_row(db, mac, vlan)
+    _static_record(db, vlan, mac)
+    # A not-yet-reconciled lease of the same MAC at the managed static address.
+    other_provider = _provider(db, "Synthetic second Pi-hole")
+    lease = DHCPLeaseHistory(provider_id=other_provider.id, ip_address=STATIC_IP, mac_address=mac, lease_started_at=LATER, first_seen_at=LATER, last_seen_at=LATER, is_active=True)
+    db.add(lease)
+    db.commit()
+    candidate = get_discovered_device(db, f"dhcp:{lease.id}")
+    assert candidate["asset_id"] is None
+    assets_before = db.query(HardwareAsset).count()
+
+    with pytest.raises(ValueError, match="already confirmed"):
+        adopt_discovered_device(db, admin, candidate, new_name="Wrong duplicate")
+    db.rollback()
+
+    assert db.query(HardwareAsset).count() == assets_before
+    assert _open(db, asset) == [OLD_IP]
