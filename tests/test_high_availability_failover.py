@@ -583,16 +583,16 @@ def test_unhealthy_dns_cannot_complete_promotion(monkeypatch):
         run = start_controlled_failover(db, cluster, target, user, confirmation="Test Pair", acknowledged=True)
         run.phase = "VERIFYING_TARGET"
         run.report_json = '{"verification_started_at":"2020-01-01T00:00:00"}'
-        source.dhcp_running = False
+        observe_dhcp(source, False)
         source.vip_owned = False
-        target.dhcp_running = True
+        observe_dhcp(target, True)
         target.vip_owned = True
         target.dns_healthy = False
 
         advance_failover(db, cluster)
 
         assert run.status == "FAILED_SAFE"
-        assert "healthy DNS" in run.error_redacted
+        assert "Final topology verification did not converge" in run.error_redacted
 
 
 def test_lease_replacement_preserves_service_ownership_and_mode(tmp_path, monkeypatch):

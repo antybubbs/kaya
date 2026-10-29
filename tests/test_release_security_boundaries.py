@@ -188,6 +188,7 @@ def test_trusted_ssh_host_key_accepts_enrolled_supported_identity():
 
 def rdp_remote(fingerprints=None):
     return SimpleNamespace(
+        protocol="rdp",
         rdp_cert_fingerprints=fingerprints,
         ip_address=SimpleNamespace(address="192.0.2.40"),
         port=3389,
