@@ -1,5 +1,6 @@
 """Administrator-reviewed stable asset identity and network assignment operations."""
 
+from collections.abc import Iterable
 from datetime import datetime
 import hashlib
 import ipaddress
@@ -197,8 +198,7 @@ def confirm_identity_evidence(
     normalised = _normalise_evidence(evidence_type, value)
     evidence_kind = evidence_type.strip().lower()
     if evidence_kind == "mac":
-        if db.get_bind().dialect.name == "postgresql":
-            db.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": mac_identity_lock_key(normalised)})
+        lock_identity_scope(db, macs=[normalised])
         if confirmed_mac_owned_elsewhere(db, normalised, asset_id):
             raise ValueError("Strong identity evidence is already confirmed for another asset.")
     elif evidence_kind in {"dhcp_client_id", "provider_client_id"}:
@@ -526,9 +526,7 @@ def repair_managed_static_assignment(
         raise ValueError("The asset tag must contain 1 to 120 characters.")
     now = now or datetime.utcnow()
     try:
-        if db.get_bind().dialect.name == "postgresql":
-            db.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": mac_identity_lock_key(normalised_mac)})
-        _lock_asset_dhcp(db, asset_id)
+        lock_identity_scope(db, macs=[normalised_mac], asset_ids=[asset_id])
         asset = db.get(HardwareAsset, asset_id)
         if not asset or (asset.asset_tag or "").strip() != clean_tag:
             raise ValueError("The asset id and asset tag do not identify the same asset.")
@@ -548,7 +546,11 @@ def repair_managed_static_assignment(
         if len(records) != 1:
             raise ValueError("Exactly one Static IP/VLAN Manager record for this address must carry this MAC.")
         record = records[0]
-        _lock_assignment_context(db, address=normalised, family=family, vlan_id=record.vlan_id, source_id=None, exporter_identity=None)
+        # Also the DHCP reconciliation key, so the two exclude each other here.
+        lock_identity_scope(db, assignment_keys=[
+            _assignment_lock_key(normalised, family, record.vlan_id, None, None),
+            dhcp_address_lock_key(normalised, family),
+        ])
         held_elsewhere = db.query(AssetNetworkAssignment.id, AssetNetworkAssignment.asset_id).filter(
             AssetNetworkAssignment.address == normalised,
             AssetNetworkAssignment.address_family == family,
@@ -648,11 +650,47 @@ def _managed_static_outranks_lease(db: Session, asset_id: int, lease: DHCPLeaseH
     )
 
 
+def _asset_dhcp_lock_key(asset_id: int) -> int:
+    digest = hashlib.sha256(f"asset-dhcp-reconciliation\x1f{asset_id}".encode("utf-8")).digest()[:8]
+    return int.from_bytes(digest, byteorder="big", signed=True)
+
+
 def _lock_asset_dhcp(db: Session, asset_id: int) -> None:
     """Serialise DHCP reconciliation per asset on PostgreSQL."""
     if db.get_bind().dialect.name == "postgresql":
-        digest = hashlib.sha256(f"asset-dhcp-reconciliation\x1f{asset_id}".encode("utf-8")).digest()[:8]
-        db.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": int.from_bytes(digest, byteorder="big", signed=True)})
+        db.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": _asset_dhcp_lock_key(asset_id)})
+
+
+def dhcp_address_lock_key(address: str, family: int) -> int:
+    """The VLAN-independent address key DHCP reconciliation serialises on."""
+    return _assignment_lock_key(address, family, None, None, None)
+
+
+def lock_identity_scope(
+    db: Session,
+    *,
+    macs: Iterable[str] = (),
+    asset_ids: Iterable[int] = (),
+    assignment_keys: Iterable[int] = (),
+) -> None:
+    """Take identity locks in the one global order: MAC, then asset, then address.
+
+    Adoption, DHCP reconciliation, evidence confirmation and the managed static
+    repair all acquire these tiers in this order, each tier sorted, so no two
+    of them wait on each other in opposite orders. A caller may skip tiers or
+    call again for a later tier, but never for an earlier one. Advisory locks
+    are transaction-scoped and re-entrant; this is a no-op on SQLite.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        return
+    tiers = (
+        sorted({mac_identity_lock_key(mac) for mac in macs}),
+        sorted({_asset_dhcp_lock_key(asset_id) for asset_id in asset_ids}),
+        sorted(set(assignment_keys)),
+    )
+    for keys in tiers:
+        for key in keys:
+            db.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": key})
 
 
 def close_ended_dhcp_assignments(
@@ -794,8 +832,7 @@ def reconcile_dhcp_assignment(db: Session, lease: DHCPLeaseHistory, *, observed_
     # an older lease that has not yet expired never pulls the asset back.
     if _managed_static_outranks_lease(db, asset_id, lease, mac, family):
         return "superseded"
-    _lock_asset_dhcp(db, asset_id)
-    _lock_assignment_context(db, address=normalised, family=family, vlan_id=None, source_id=None, exporter_identity=None)
+    lock_identity_scope(db, asset_ids=[asset_id], assignment_keys=[dhcp_address_lock_key(normalised, family)])
     open_rows = db.query(AssetNetworkAssignment).filter(
         AssetNetworkAssignment.asset_id == asset_id,
         AssetNetworkAssignment.address_family == family,

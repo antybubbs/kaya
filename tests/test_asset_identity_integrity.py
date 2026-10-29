@@ -8,6 +8,7 @@ addresses, locally administered MACs, example.invalid accounts).
 
 import os
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
@@ -29,9 +30,17 @@ from app.models.models import (
     IPAddress,
     RemoteManagerSetting,
     User,
+    VLAN,
 )
 from app.services.asset_discovery import adopt_discovered_device, get_discovered_device
-from app.services.asset_identity import confirm_identity_evidence, reconcile_dhcp_assignment, repair_managed_static_assignment
+from app.services.asset_identity import (
+    _assignment_lock_key,
+    confirm_identity_evidence,
+    dhcp_address_lock_key,
+    lock_identity_scope,
+    reconcile_dhcp_assignment,
+    repair_managed_static_assignment,
+)
 from app.services.dns_clients import _suggest_managed_record
 from scripts.audit_dhcp_identity import run_audit
 import tests.test_dhcp_identity_continuity as continuity
@@ -324,6 +333,191 @@ def test_postgres_concurrent_adoption_from_different_sources_confirms_mac_once()
             session.query(HardwareAsset).filter(HardwareAsset.id.in_(ids["assets"])).delete(synchronize_session=False)
             session.query(DNSProviderConfig).filter_by(id=ids["provider"]).delete(synchronize_session=False)
             session.query(User).filter_by(id=ids["actor"]).delete(synchronize_session=False)
+        engine.dispose()
+
+
+
+# ------------------------------------------------------------ lock order
+
+
+class _RecordingSession:
+    """Records advisory-lock keys as PostgreSQL would receive them."""
+
+    def __init__(self):
+        self.keys = []
+
+    def get_bind(self):
+        return type("Bind", (), {"dialect": type("Dialect", (), {"name": "postgresql"})()})()
+
+    def execute(self, _statement, params):
+        self.keys.append(params["lock_key"])
+
+
+def test_identity_locks_are_taken_mac_then_asset_then_address():
+    recorder = _RecordingSession()
+    macs = [_mac(), _mac()]
+    addresses = [dhcp_address_lock_key(STATIC_IP, 4), _assignment_lock_key(STATIC_IP, 4, 7, None, None)]
+    lock_identity_scope(recorder, macs=macs, asset_ids=[9, 3], assignment_keys=addresses)
+    mac_keys = sorted(asset_identity.mac_identity_lock_key(mac) for mac in macs)
+    asset_keys = sorted(asset_identity._asset_dhcp_lock_key(asset_id) for asset_id in (9, 3))
+    assert recorder.keys == mac_keys + asset_keys + sorted(addresses)
+
+
+def _backend_waiting_on_advisory_lock(engine, pid, timeout=10.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with engine.connect() as connection:
+            waiting = connection.exec_driver_sql(
+                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND pid = %(pid)s", {"pid": pid}
+            ).scalar()
+        if waiting:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def _seed_static_adoption(factory, *, existing_asset):
+    """Committed synthetic DNS client at a managed static address, optionally with a target asset."""
+    mac, token = _mac(), uuid.uuid4().hex[:8]
+    address = f"192.0.2.{200 + int(token[:2], 16) % 50}"
+    with factory.begin() as session:
+        actor = User(email=f"synthetic-lock-{token}@example.invalid", password_hash="x", role="admin", is_active=True)
+        provider = DNSProviderConfig(name=f"Synthetic lock DNS {token}", base_url="https://dns.example.invalid", provider_type="pihole")
+        vlan = VLAN(name=f"Synthetic lock LAN {token}", subnet_cidr="192.0.2.0/24")
+        asset = HardwareAsset(name=f"Synthetic lock asset {token}", status="In use") if existing_asset else None
+        session.add_all([row for row in (actor, provider, vlan, asset) if row is not None])
+        session.flush()
+        record = IPAddress(address=address, vlan_id=vlan.id, assignment_type="Static", mac_address=mac)
+        client = DNSRecognisedDevice(
+            provider_id=provider.id, logical_provider_key=f"lock-{token}", identity_key=f"mac:{mac}", identity_type="mac",
+            identity_value=mac, hostname="lock.example.invalid", current_ip=address, mac_address=mac, normalised_mac=mac,
+            first_seen_at=T0, last_seen_at=T0,
+        )
+        session.add_all([record, client])
+        session.flush()
+        ids = {"actor": actor.id, "provider": provider.id, "vlan": vlan.id, "record": record.id, "client": client.id,
+               "assets": [asset.id] if asset else [], "address": address, "mac": mac,
+               "vlan_key": _assignment_lock_key(address, 4, vlan.id, None, None)}
+    with factory() as session:
+        ids["candidate"] = get_discovered_device(session, f"dns:{ids['client']}")
+    assert ids["candidate"]["ip_addresses"] == [address]
+    return ids
+
+
+def _cleanup_static_adoption(factory, ids):
+    with factory.begin() as session:
+        client = session.get(DNSRecognisedDevice, ids["client"])
+        assets = set(ids["assets"]) | ({client.hardware_asset_id} if client and client.hardware_asset_id else set())
+        assignment_ids = [str(row.id) for row in session.query(AssetNetworkAssignment.id).filter(AssetNetworkAssignment.asset_id.in_(assets))]
+        session.query(AuditLog).filter(
+            (AuditLog.user_id == ids["actor"]) | AuditLog.entity_id.in_(assignment_ids)
+        ).delete(synchronize_session=False)
+        session.query(AssetNetworkAssignment).filter(AssetNetworkAssignment.asset_id.in_(assets)).delete(synchronize_session=False)
+        session.query(AssetIdentityEvidence).filter(AssetIdentityEvidence.asset_id.in_(assets)).delete(synchronize_session=False)
+        session.query(DHCPLeaseHistory).filter_by(provider_id=ids["provider"]).delete(synchronize_session=False)
+        session.query(DNSRecognisedDevice).filter_by(id=ids["client"]).delete(synchronize_session=False)
+        session.query(IPAddress).filter_by(id=ids["record"]).delete(synchronize_session=False)
+        session.query(HardwareAsset).filter(HardwareAsset.id.in_(assets)).delete(synchronize_session=False)
+        session.query(VLAN).filter_by(id=ids["vlan"]).delete(synchronize_session=False)
+        session.query(DNSProviderConfig).filter_by(id=ids["provider"]).delete(synchronize_session=False)
+        session.query(User).filter_by(id=ids["actor"]).delete(synchronize_session=False)
+
+
+def _adopt_in_thread(pool, factory, ids, asset_id):
+    started = threading.Event()
+    state = {}
+
+    def worker():
+        with factory() as session:
+            state["pid"] = session.connection().exec_driver_sql("SELECT pg_backend_pid()").scalar()
+            started.set()
+            return adopt_discovered_device(session, session.get(User, ids["actor"]), ids["candidate"], asset_id=asset_id).id
+
+    future = pool.submit(worker)
+    assert started.wait(10)
+    return future, state["pid"]
+
+
+def test_postgres_adoption_waits_for_the_asset_before_taking_address_locks():
+    """A holder of the asset lock (DHCP reconciliation, repair) can still take the address locks."""
+    engine, factory = _pg_factory()
+    ids = _seed_static_adoption(factory, existing_asset=True)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with factory() as holder:
+                lock_identity_scope(holder, asset_ids=ids["assets"])
+                future, pid = _adopt_in_thread(pool, factory, ids, ids["assets"][0])
+                assert _backend_waiting_on_advisory_lock(engine, pid)
+                holder.execute(asset_identity.text("SET LOCAL lock_timeout = '3s'"))
+                # Before the fix the waiting adoption already held these address
+                # keys, so this request completed a deadlock cycle.
+                lock_identity_scope(holder, assignment_keys=[ids["vlan_key"], dhcp_address_lock_key(ids["address"], 4)])
+                holder.commit()
+            assert future.result(timeout=15) == ids["assets"][0]
+        with factory() as session:
+            rows = session.query(AssetNetworkAssignment).filter_by(asset_id=ids["assets"][0], address=ids["address"], ended_at=None).all()
+            assert [row.provenance for row in rows] == ["managed_static_adoption"]
+    finally:
+        _cleanup_static_adoption(factory, ids)
+        engine.dispose()
+
+
+def test_postgres_adoption_and_dhcp_reconciliation_exclude_each_other_on_an_address():
+    engine, factory = _pg_factory()
+    ids = _seed_static_adoption(factory, existing_asset=False)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with factory() as holder:
+                # The key DHCP reconciliation holds while it assigns this address.
+                lock_identity_scope(holder, assignment_keys=[dhcp_address_lock_key(ids["address"], 4)])
+                future, pid = _adopt_in_thread(pool, factory, ids, None)
+                assert _backend_waiting_on_advisory_lock(engine, pid)
+                assert not future.done()
+                holder.commit()
+            ids["assets"].append(future.result(timeout=15))
+    finally:
+        _cleanup_static_adoption(factory, ids)
+        engine.dispose()
+
+
+def test_postgres_concurrent_adoption_and_dhcp_reconciliation_of_one_asset_both_complete():
+    """The real paths, started together for one asset and MAC, finish without deadlock."""
+    engine, factory = _pg_factory()
+    ids = _seed_static_adoption(factory, existing_asset=True)
+    try:
+        with factory.begin() as session:
+            session.add(AssetIdentityEvidence(
+                asset_id=ids["assets"][0], evidence_type="mac", normalised_value=ids["mac"],
+                source="manual", status="confirmed", first_observed_at=T0, last_observed_at=T0, confirmed_at=T0,
+            ))
+            lease = DHCPLeaseHistory(provider_id=ids["provider"], ip_address="198.51.100.77", mac_address=ids["mac"],
+                                     lease_started_at=T0, first_seen_at=T0, last_seen_at=T0, is_active=True)
+            session.add(lease)
+            session.flush()
+            lease_id = lease.id
+        barrier = threading.Barrier(2)
+
+        def adopt():
+            with factory() as session:
+                barrier.wait()
+                return adopt_discovered_device(session, session.get(User, ids["actor"]), ids["candidate"], asset_id=ids["assets"][0]).id
+
+        def reconcile():
+            with factory() as session:
+                barrier.wait()
+                result = reconcile_dhcp_assignment(session, session.get(DHCPLeaseHistory, lease_id), observed_at=T1)
+                session.commit()
+                return result
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            adopted, reconciled = pool.submit(adopt), pool.submit(reconcile)
+            assert adopted.result(timeout=30) == ids["assets"][0]
+            assert reconciled.result(timeout=30) in {"reassigned", "superseded", "review_required"}
+        with factory() as session:
+            open_rows = session.query(AssetNetworkAssignment).filter_by(asset_id=ids["assets"][0], ended_at=None, status="confirmed").all()
+            assert ids["address"] in {row.address for row in open_rows}
+    finally:
+        _cleanup_static_adoption(factory, ids)
         engine.dispose()
 
 

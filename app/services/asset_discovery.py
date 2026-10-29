@@ -25,8 +25,9 @@ from app.services.asset_identity import (
     _lock_asset_dhcp,
     _normalise_evidence,
     confirmed_mac_owned_elsewhere,
+    dhcp_address_lock_key,
     dhcp_identity_conflict,
-    mac_identity_lock_key,
+    lock_identity_scope,
     managed_static_record_mac,
     superseded_dhcp_assignments,
 )
@@ -394,6 +395,8 @@ def adopt_discovered_device(db: Session, user, candidate: dict, *, asset_id: int
     if candidate.get("kind") != "traffic" and not candidate.get("mac_addresses") and not candidate.get("dhcp_client_ids"):
         raise ValueError("A stable MAC or DHCP client identifier is required before adoption.")
     lock_keys = [_discovery_lock_key(str(candidate.get("id") or ""))]
+    lock_macs: list[str] = []
+    address_keys: list[int] = []
     evidence_values = []
     if candidate.get("mac_addresses"):
         evidence_values.append(("mac", candidate["mac_addresses"][0], "discovery", "dns" if candidate["kind"] == "dns" else "dhcp"))
@@ -417,18 +420,23 @@ def adopt_discovered_device(db: Session, user, candidate: dict, *, asset_id: int
         lock_keys.append(_discovery_lock_key(f"evidence:{evidence_type}:{normalised}:{source}:{scope or '<null>'}"))
         if evidence_type == "mac":
             # Serialises every confirmation of this MAC, whatever its source.
-            lock_keys.append(mac_identity_lock_key(normalised))
+            lock_macs.append(normalised)
     if candidate.get("ip_addresses"):
         normalised, family = _normalise_ip(candidate["ip_addresses"][0])
         ip_row = managed_static or db.query(IPAddress).filter(IPAddress.address == normalised).order_by(IPAddress.id.asc()).first()
         if ip_row:
-            lock_keys.append(_assignment_lock_key(normalised, family, ip_row.vlan_id, None, None))
+            address_keys.append(_assignment_lock_key(normalised, family, ip_row.vlan_id, None, None))
+            # DHCP reconciliation serialises on this key for the same address.
+            address_keys.append(dhcp_address_lock_key(normalised, family))
     if candidate.get("kind") == "traffic" and candidate.get("traffic_observation"):
         observation = candidate["traffic_observation"]
         lock_keys.append(_discovery_lock_key(
             f"traffic:{observation.get('source_id')}:{observation.get('exporter_identity')}:{observation.get('endpoint_ip')}:{observation.get('endpoint_role')}"
         ))
+    # Adoption-only discovery keys first, then the shared MAC, asset and
+    # address tiers in the global order used by DHCP reconciliation and repair.
     _lock_adoption_keys(db, lock_keys)
+    lock_identity_scope(db, macs=lock_macs, asset_ids=[asset_id] if asset_id else [], assignment_keys=address_keys)
     _revalidate_source_candidate(db, candidate)
     now = datetime.utcnow()
     asset = db.get(HardwareAsset, asset_id) if asset_id else HardwareAsset(
@@ -508,7 +516,9 @@ def adopt_discovered_device(db: Session, user, candidate: dict, *, asset_id: int
         if managed_static:
             # The asset now holds its managed static address: earlier DHCP
             # addresses of the same MAC stop being current but stay as history.
-            # Serialise with concurrent DHCP reconciliation of this asset.
+            # Serialise with concurrent DHCP reconciliation of this asset. An
+            # existing asset is already locked above, in order; a new asset is
+            # invisible to other transactions until commit, so nothing waits on it.
             _lock_asset_dhcp(db, asset.id)
             superseded = superseded_dhcp_assignments(
                 db, asset.id, keep_address=normalised, family=family,
