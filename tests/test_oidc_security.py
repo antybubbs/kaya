@@ -4,6 +4,7 @@ import base64
 
 import pytest
 from authlib.jose import JsonWebKey, JsonWebToken
+from authlib.jose import JsonWebSignature
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from sqlalchemy import create_engine
@@ -59,6 +60,17 @@ def token(private_pem, **changes):
     claims = {"iss": "https://id.example.com", "aud": "kaya", "sub": "subject-1", "exp": now + 300, "iat": now, "nonce": "nonce-1"}
     claims.update(changes)
     return JsonWebToken(["RS256"]).encode({"alg": "RS256", "kid": "test-key"}, claims, private_pem).decode()
+
+
+def test_authlib_is_patched_and_rejects_unsigned_json_jws():
+    import authlib
+
+    version = tuple(int(part) for part in authlib.__version__.split(".")[:3])
+    assert version >= (1, 9, 1)
+
+    payload = base64.urlsafe_b64encode(b'{"sub":"attacker"}').rstrip(b"=").decode()
+    with pytest.raises(Exception):
+        JsonWebSignature().deserialize_json({"payload": payload, "signatures": []}, key=None)
 
 
 def test_discovery_rejects_unsafe_issuer_and_incomplete_or_mismatched_metadata(monkeypatch):
