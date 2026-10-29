@@ -92,7 +92,7 @@ revision() {
 assert_revision() {
     local actual
     actual="$(revision)"
-    [[ "$actual" == "20261018_01" ]] || { echo "unexpected Alembic revision: $actual" >&2; return 1; }
+    [[ "$actual" == "$CURRENT_ALEMBIC_HEAD" ]] || { echo "unexpected Alembic revision: $actual (expected $CURRENT_ALEMBIC_HEAD)" >&2; return 1; }
 }
 
 setup_token() {
@@ -160,6 +160,7 @@ mkdir -p "$RUN_ROOT"
 export DOCKER_BUILDKIT=1
 docker build -f "$ROOT_DIR/Dockerfile" -t "$IMAGE_A" "$ROOT_DIR"
 docker build -f "$ROOT_DIR/Dockerfile" -t "$IMAGE_B" "$ROOT_DIR"
+CURRENT_ALEMBIC_HEAD="$(docker run --rm --entrypoint python "$IMAGE_A" /app/scripts/current_alembic_head.py)"
 docker image inspect "$IMAGE_A" --format 'image_a={{.Id}}'
 docker image inspect "$IMAGE_B" --format 'image_b={{.Id}}'
 KAYA_RUNTIME_UID="$(docker run --rm --entrypoint sh "$IMAGE_A" -c 'id -u kaya')"
@@ -372,7 +373,7 @@ docker compose -p "$restore_project" -f "$ROOT_DIR/ci/compose/docker-compose.pos
 docker compose -p "$restore_project" -f "$ROOT_DIR/ci/compose/docker-compose.postgres-test.yml" exec -T postgres \
     pg_restore -U kaya_test -d kaya_test --exit-on-error --no-owner < "$backup"
 restore_revision="$(docker compose -p "$restore_project" -f "$ROOT_DIR/ci/compose/docker-compose.postgres-test.yml" exec -T postgres psql -U kaya_test -d kaya_test -Atc 'SELECT version_num FROM alembic_version' | tr -d '\r')"
-[[ "$restore_revision" == "20260902_01" ]]
+[[ "$restore_revision" == "$CURRENT_ALEMBIC_HEAD" ]]
 echo 'PostgreSQL backup and separate restore passed'
 
 echo 'Phase 7D runtime validation passed'

@@ -137,7 +137,7 @@ jobs:
           set -Eeuo pipefail
           docker run --rm --shm-size=1g \
             -e PYTHONPATH=/workspace:/workspace/external/Kaya-Docker-Agent -e APP_ENV=test \
-            -e TMPDIR=/workspace/.pytest-tmp -e SQLITE_TMPDIR=/workspace/.pytest-tmp \
+            -e TMPDIR=/tmp/kaya-pytest-tmp -e SQLITE_TMPDIR=/tmp/kaya-pytest-tmp \
             -e SECRET_KEY=rc-readiness-synthetic-secret-key-012345678901234567890123 \
             -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
             -v "$PWD:/workspace" -w /workspace "$TEST_IMAGE" \
@@ -146,7 +146,7 @@ jobs:
               python -c "import sqlite3; print(f\"SQLite {sqlite3.sqlite_version}\")"
               echo "TMPDIR=${TMPDIR-}"
               echo "SQLITE_TMPDIR=${SQLITE_TMPDIR-}"
-              echo "pytest_basetemp=/workspace/.pytest-tmp"
+              echo "pytest_basetemp=/tmp/kaya-pytest-tmp"
               df -hT /tmp /workspace
               df -i /tmp /workspace
               mount
@@ -162,11 +162,11 @@ jobs:
           status=0
           docker run --rm --shm-size=1g \
             -e PYTHONPATH=/workspace:/workspace/external/Kaya-Docker-Agent -e APP_ENV=test \
-            -e TMPDIR=/workspace/.pytest-tmp -e SQLITE_TMPDIR=/workspace/.pytest-tmp \
+            -e TMPDIR=/tmp/kaya-pytest-tmp -e SQLITE_TMPDIR=/tmp/kaya-pytest-tmp \
             -e SECRET_KEY=rc-readiness-synthetic-secret-key-012345678901234567890123 \
             -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
             -v "$PWD:/workspace" -w /workspace "$TEST_IMAGE" \
-            bash -Eeuc 'pytest -vv -s --basetemp=/workspace/.pytest-tmp tests/test_phase6_cutover.py -k "not historical_sqlite_revision_is_eligible_and_upgraded_with_backup" && pytest -vv -s --basetemp=/workspace/.pytest-tmp tests/test_phase6_cutover.py -k historical_sqlite_revision_is_eligible_and_upgraded_with_backup' \
+            bash -Eeuc 'pytest -vv -s --basetemp=/tmp/kaya-pytest-tmp tests/test_phase6_cutover.py -k "not historical_sqlite_revision_is_eligible_and_upgraded_with_backup" && pytest -vv -s --basetemp=/tmp/kaya-pytest-tmp tests/test_phase6_cutover.py -k historical_sqlite_revision_is_eligible_and_upgraded_with_backup' \
             >"$phase6_log" 2>&1 || status=$?
           cat "$phase6_log"
           if [[ "$status" -eq 0 ]]; then
@@ -200,7 +200,7 @@ jobs:
           set -Eeuo pipefail
           docker run --rm --shm-size=1g \
             -e PYTHONPATH=/workspace:/workspace/external/Kaya-Docker-Agent -e APP_ENV=test \
-            -e TMPDIR=/workspace/.pytest-tmp -e SQLITE_TMPDIR=/workspace/.pytest-tmp \
+            -e TMPDIR=/tmp/kaya-pytest-tmp -e SQLITE_TMPDIR=/tmp/kaya-pytest-tmp \
             -e SECRET_KEY=rc-readiness-synthetic-secret-key-012345678901234567890123 \
             -e ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
             -v "$PWD:/workspace" -w /workspace "$TEST_IMAGE" \
@@ -210,7 +210,7 @@ jobs:
               for test_file in "${test_files[@]}"; do
                 echo "Running $test_file in an isolated pytest process"
                 status=0
-                pytest -q --basetemp=/workspace/.pytest-tmp "$test_file" || status=$?
+                pytest -q --basetemp=/tmp/kaya-pytest-tmp "$test_file" || status=$?
                 if [[ "$status" -ne 0 && "$status" -ne 5 ]]; then exit "$status"; fi
                 if [[ "$status" -eq 5 ]]; then echo "No tests collected for $test_file"; fi
               done
