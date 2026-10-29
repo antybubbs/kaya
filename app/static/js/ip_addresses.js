@@ -1,4 +1,12 @@
 (function () {
+  function setupVlanFilter() {
+    document.querySelectorAll("[data-vlan-filter]").forEach((select) => {
+      const form = select.form;
+      if (!form) return;
+      select.addEventListener("change", () => form.requestSubmit());
+    });
+  }
+
   function setupBulkEdit() {
     const form = document.querySelector("[data-ip-bulk-form]");
     if (!form) {
@@ -204,6 +212,7 @@
     });
   }
 
+  setupVlanFilter();
   setupBulkEdit();
   setupQuickPing();
   setupDeviceTrafficToggle();

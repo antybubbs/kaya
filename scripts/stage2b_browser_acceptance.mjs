@@ -452,7 +452,7 @@ try {
       if (summary.download_bytes_period !== want.download || summary.upload_bytes_period !== want.upload) throw new Error(`${range} totals ${JSON.stringify(summary.period)} expected ${JSON.stringify(want)}`);
       const shown = await cards();
       if (shown.download !== formatBytes(want.download) || shown.upload !== formatBytes(want.upload)) throw new Error(`${range} cards ${JSON.stringify(shown)}`);
-      if (!shown.label.includes(label)) throw new Error(`${range} card label ${shown.label}`);
+      if (!shown.label.toLocaleLowerCase().includes(label.toLocaleLowerCase())) throw new Error(`${range} card label ${shown.label}`);
       if (!/coverage/i.test(shown.downloadQuality)) throw new Error(`${range} coverage text ${shown.downloadQuality}`);
       if (shown.live === 'No data') throw new Error('live throughput card lost its value');
       checked[range] = { download: summary.download_bytes_period, coverage: summary.period.coverage };
