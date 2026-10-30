@@ -2631,3 +2631,85 @@ class SecureSendActivity(Base):
     actor_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     encrypted_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class DataIntegrityRun(Base):
+    """One read-only Data Integrity audit. ``active_slot`` is unique while queued or running."""
+    __tablename__ = "data_integrity_runs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_uuid: Mapped[str] = mapped_column(String(36), unique=True, default=lambda: str(uuid4()))
+    trigger: Mapped[str] = mapped_column(String(20), default="manual")
+    initiated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(20), default="queued", index=True)
+    active_slot: Mapped[str | None] = mapped_column(String(20), nullable=True, unique=True)
+    check_set_version: Mapped[str] = mapped_column(String(40))
+    queued_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    progress_done: Mapped[int] = mapped_column(Integer, default=0)
+    progress_total: Mapped[int] = mapped_column(Integer, default=0)
+    records_examined: Mapped[int] = mapped_column(Integer, default=0)
+    findings_total: Mapped[int] = mapped_column(Integer, default=0)
+    new_count: Mapped[int] = mapped_column(Integer, default=0)
+    resolved_count: Mapped[int] = mapped_column(Integer, default=0)
+    reopened_count: Mapped[int] = mapped_column(Integer, default=0)
+    open_count: Mapped[int] = mapped_column(Integer, default=0)
+    critical_count: Mapped[int] = mapped_column(Integer, default=0)
+    counts_json: Mapped[str] = mapped_column(Text, default="{}")
+    errors_json: Mapped[str] = mapped_column(Text, default="[]")
+
+
+class DataIntegrityFinding(Base):
+    """A logical inconsistency with a stable identity across audits."""
+    __tablename__ = "data_integrity_findings"
+    __table_args__ = (
+        Index("ix_data_integrity_findings_status_severity", "status", "severity"),
+        Index("ix_data_integrity_findings_type_status", "finding_type", "status"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    finding_key: Mapped[str] = mapped_column(String(64), unique=True)
+    finding_type: Mapped[str] = mapped_column(String(60))
+    category: Mapped[str] = mapped_column(String(20), index=True)
+    severity: Mapped[str] = mapped_column(String(20))
+    status: Mapped[str] = mapped_column(String(20))
+    required_modules: Mapped[str] = mapped_column(String(255), default="")
+    title: Mapped[str] = mapped_column(String(255))
+    affected_label: Mapped[str] = mapped_column(String(255))
+    search_text: Mapped[str] = mapped_column(String(1000), default="")
+    asset_id: Mapped[int | None] = mapped_column(ForeignKey("hardware_assets.id", ondelete="SET NULL"), nullable=True, index=True)
+    mac: Mapped[str | None] = mapped_column(String(17), nullable=True, index=True)
+    ip_address: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    hostname: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    evidence_fingerprint: Mapped[str] = mapped_column(String(64))
+    evidence_json: Mapped[str] = mapped_column(Text, default="{}")
+    repairable: Mapped[bool] = mapped_column(Boolean, default=False)
+    bulk_repairable: Mapped[bool] = mapped_column(Boolean, default=False)
+    first_detected_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    last_detected_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    last_run_id: Mapped[int | None] = mapped_column(ForeignKey("data_integrity_runs.id", ondelete="SET NULL"), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    resolved_run_id: Mapped[int | None] = mapped_column(ForeignKey("data_integrity_runs.id", ondelete="SET NULL"), nullable=True)
+    resolution: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    ignored_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    ignored_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    ignore_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    ignored_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    reopened_count: Mapped[int] = mapped_column(Integer, default=0)
+    notified_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class DataIntegrityFindingEvent(Base):
+    """Lifecycle history for a finding; never rewritten when a finding reopens."""
+    __tablename__ = "data_integrity_finding_events"
+    __table_args__ = (Index("ix_data_integrity_finding_events_finding_created", "finding_id", "created_at"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    finding_id: Mapped[int] = mapped_column(ForeignKey("data_integrity_findings.id", ondelete="CASCADE"))
+    run_id: Mapped[int | None] = mapped_column(ForeignKey("data_integrity_runs.id", ondelete="SET NULL"), nullable=True, index=True)
+    event: Mapped[str] = mapped_column(String(40))
+    actor_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    detail_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)

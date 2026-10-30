@@ -118,12 +118,15 @@ from app.services.importer import ImportCSVError, import_csv, import_ip_addresse
 from app.services.mail import MailConfigurationError, render_email_template, send_mail
 from app.services.managed_lists import MANAGED_LIST_MODULES, MANAGED_LISTS, list_label
 from app.services.modules import (
+    CAPABILITIES,
     MODULE_KEYS,
     accessible_module_keys,
+    granted_capability_keys,
     enabled_modules,
     granted_module_keys,
     has_module_access,
     module_access_counts,
+    replace_capability_access,
     replace_module_access,
 )
 from app.services.network_monitor import monitor_label, validate_threshold_values
@@ -205,7 +208,36 @@ def module_form_context(
             if selected is not None
             else (set(accessible_module_keys(db, target)) if target else set())
         ),
+        "capabilities": CAPABILITIES,
+        "selected_capability_keys": set(granted_capability_keys(db, target)) if target else set(),
     }
+
+
+def selected_capability_keys(values) -> set[str]:
+    if not isinstance(values, list):
+        return set()
+    if len(values) > len(CAPABILITIES):
+        raise ValueError("One or more selected capabilities are invalid.")
+    selected = {value for value in values if isinstance(value, str)}
+    if len(selected) != len(values) or selected - set(CAPABILITIES):
+        raise ValueError("One or more selected capabilities are invalid.")
+    return selected
+
+
+def audit_capability_changes(request: Request, db: Session, actor: User, target: User, granted: set[str], removed: set[str]) -> None:
+    for action, keys in (("capability_granted", granted), ("capability_removed", removed)):
+        for key in sorted(keys):
+            write_audit(
+                db,
+                actor,
+                action,
+                "module_permission",
+                f"{target.id}:{key}",
+                trusted_client_ip(request),
+                detail=f"{'Granted' if action == 'capability_granted' else 'Removed'} {key} for user {target.id}",
+                metadata={"target_user_id": target.id, "capability": key},
+                force=True,
+            )
 
 
 def selected_module_keys(values) -> set[str]:
@@ -1283,6 +1315,7 @@ def create_user(
     password: str = Form(..., min_length=12, max_length=255),
     role: str = Form("viewer"),
     module_keys: list[str] = Form(default=[]),
+    capability_keys: list[str] = Form(default=[]),
     csrf_token: str = Form(...),
     db: Session = Depends(get_db),
     user=Depends(require_admin),
@@ -1292,6 +1325,7 @@ def create_user(
     role = role if role in ROLES else "viewer"
     try:
         selected_modules = selected_module_keys(module_keys)
+        selected_capabilities = selected_capability_keys(capability_keys)
     except ValueError as exc:
         return templates.TemplateResponse(
             request,
@@ -1370,7 +1404,9 @@ def create_user(
     db.add(row)
     db.flush()
     added_modules, _ = replace_module_access(db, row, selected_modules, user)
+    added_capabilities, _ = replace_capability_access(db, row, selected_capabilities, user)
     db.commit()
+    audit_capability_changes(request, db, user, row, added_capabilities, set())
 
     write_audit(
         db,
@@ -1438,6 +1474,7 @@ def update_user(
     password: str = Form("", max_length=255),
     role: str = Form("viewer"),
     module_keys: list[str] = Form(default=[]),
+    capability_keys: list[str] = Form(default=[]),
     is_active: str = Form(""),
     is_break_glass: str = Form(""),
     role_source: str = Form("local"),
@@ -1457,6 +1494,7 @@ def update_user(
 
     try:
         selected_modules = selected_module_keys(module_keys)
+        selected_capabilities = selected_capability_keys(capability_keys)
     except ValueError as exc:
         return templates.TemplateResponse(
             request,
@@ -1576,6 +1614,9 @@ def update_user(
     granted_modules, removed_modules = replace_module_access(
         db, target, selected_modules, user
     )
+    granted_capabilities, removed_capabilities = replace_capability_access(
+        db, target, selected_capabilities, user
+    )
     db.query(VaultSession).filter(
         VaultSession.user_id == target.id, VaultSession.revoked_at.is_(None)
     ).update({VaultSession.revoked_at: datetime.utcnow()}, synchronize_session=False)
@@ -1587,6 +1628,7 @@ def update_user(
         ),
     )
     db.commit()
+    audit_capability_changes(request, db, user, target, granted_capabilities, removed_capabilities)
 
     write_audit(
         db,

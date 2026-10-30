@@ -70,6 +70,21 @@
       </div>
     </section>
 
+    <section class="panel user-editor-card" aria-labelledby="capability-access-heading">
+      <header>
+        <h2 id="capability-access-heading">Administrator capabilities</h2>
+        <p>Additional authority within the Administrator role. Ignored, and removed on save, for any other role.</p>
+      </header>
+      <div class="module-access-grid">
+        {% for key, label in capabilities.items() %}
+        <label class="module-access-option checkbox-row">
+          <input type="checkbox" name="capability_keys" value="{{ key }}" {{ 'checked' if key in selected_capability_keys else '' }}>
+          <span><strong>{{ label }}</strong><small class="mono">{{ key }}</small></span>
+        </label>
+        {% endfor %}
+      </div>
+    </section>
+
     {% if target %}
     <section class="panel user-editor-card" aria-labelledby="access-authentication-heading">
       <header>

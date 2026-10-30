@@ -150,7 +150,7 @@ def test_postgresql_fresh_alembic_base_to_head():
     engine = _postgres_engine()
     _reset_postgres_schema(engine)
     result = prepare_database(engine, _settings(os.environ["KAYA_TEST_POSTGRES_URL"]))
-    assert result.current_revision == "20261018_01"
+    assert result.current_revision == "20261030_01"
 
 
 def test_sqlite_migration_guard_rejects_non_disposable_target(tmp_path):

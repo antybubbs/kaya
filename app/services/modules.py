@@ -166,7 +166,73 @@ def grant_all_registered_modules(db: Session, target: User, actor: User | None =
             row.updated_at = datetime.utcnow()
         else:
             db.add(UserModulePermission(user_id=target.id, module_key=key, allowed=True, created_by=actor.id))
+    if target.role == "admin":
+        # The first administrator and pre-permission installations keep every
+        # administrator capability, matching the migration's default grant.
+        for key in CAPABILITIES:
+            row = existing.get(key)
+            if row:
+                row.allowed = True
+            else:
+                db.add(UserModulePermission(user_id=target.id, module_key=key, allowed=True, created_by=actor.id))
     target._accessible_module_keys = None
+
+
+# Capabilities refine what an administrator may do inside a feature. They share
+# the per-user grant table with modules but never grant module or route access:
+# each is effective only for an active administrator holding an explicit grant.
+CAPABILITIES = {
+    "data_integrity.repair": "Data Integrity repairs",
+}
+
+
+def granted_capability_keys(db: Session, user: User | None) -> frozenset[str]:
+    if not user or not user.is_active or user.role != "admin":
+        return frozenset()
+    return frozenset(
+        key
+        for (key,) in db.query(UserModulePermission.module_key)
+        .filter(
+            UserModulePermission.user_id == user.id,
+            UserModulePermission.allowed.is_(True),
+            UserModulePermission.module_key.in_(CAPABILITIES),
+        )
+        .all()
+    )
+
+
+def has_capability(db: Session, user: User | None, key: str) -> bool:
+    return key in CAPABILITIES and key in granted_capability_keys(db, user)
+
+
+def replace_capability_access(
+    db: Session, target: User, selected_keys: set[str], actor: User
+) -> tuple[set[str], set[str]]:
+    """Set a user's capability grants; non-administrators never keep one."""
+    unknown = selected_keys - set(CAPABILITIES)
+    if unknown:
+        raise ValueError("One or more selected capabilities are invalid.")
+    selected = selected_keys if target.role == "admin" else set()
+    rows = {
+        row.module_key: row
+        for row in db.query(UserModulePermission)
+        .filter(UserModulePermission.user_id == target.id, UserModulePermission.module_key.in_(CAPABILITIES))
+        .all()
+    }
+    before = {key for key, row in rows.items() if row.allowed}
+    now = datetime.utcnow()
+    for key in before - selected:
+        rows[key].allowed = False
+        rows[key].updated_at = now
+    for key in selected - before:
+        row = rows.get(key)
+        if row:
+            row.allowed = True
+            row.created_by = actor.id
+            row.updated_at = now
+        else:
+            db.add(UserModulePermission(user_id=target.id, module_key=key, allowed=True, created_by=actor.id))
+    return selected - before, before - selected
 
 
 def module_access_counts(db: Session, users: list[User]) -> dict[int, int]:

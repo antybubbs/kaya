@@ -84,6 +84,8 @@ DEFAULT_SITE_SETTINGS = {
     "dns_traffic_history_days": "30",
     "dns_vlan_enrichment_enabled": "1",
     "dns_update_empty_managed_hostname": "",
+    "data_integrity_schedule_hours": "24",
+    "data_integrity_notify_critical": "1",
     "authentication_mode": "local_only",
     "oidc_button_label": "Sign in with SSO",
     "oidc_auto_redirect_required": "1",

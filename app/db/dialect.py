@@ -45,3 +45,16 @@ def begin_initial_setup_transaction(db: Session) -> None:
         db.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": 739_184_211})
     else:
         raise RuntimeError(f"Unsupported database engine: {detected.name}")
+
+
+def begin_serialised_write(db: Session) -> None:
+    """Start a write transaction that serialises read-validate-write sequences.
+
+    SQLite has no advisory locks, so take its single writer lock before
+    re-validating. PostgreSQL callers rely on their advisory lock tiers and
+    row locks instead, so this only ends any pending transaction there.
+    """
+    detected = capabilities(db)
+    db.commit()
+    if detected.is_sqlite:
+        db.execute(text("BEGIN IMMEDIATE"))

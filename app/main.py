@@ -45,6 +45,7 @@ from app.routers import (
     backup_agent_v2,
     compute_manager,
     dashboard,
+    data_integrity,
     dns_manager,
     domain_manager,
     ha_agent_api,
@@ -71,6 +72,7 @@ from app.services.audit import (
 )
 from app.services.client_ip import TrustedProxyMiddleware, client_ip
 from app.services.compute_monitor import compute_monitor_loop
+from app.services.data_integrity import data_integrity_loop
 from app.services.dns_collector import dns_collector_loop
 from app.services.domain_polling import domain_poll_loop
 from app.services.guacamole_bridge import stop_guacamole_bridge
@@ -118,6 +120,7 @@ secure_send_cleanup_task = None
 ha_lease_reconciliation_task = None
 ha_sync_monitor_task = None
 ha_watchdog_task = None
+data_integrity_task = None
 notification_runtime_task = None
 notification_retention_task = None
 
@@ -405,7 +408,7 @@ async def on_startup():
     global version_check_task
     version_check_task = asyncio.create_task(version_check_loop())
     start_kaya_remote_service()
-    global domain_poll_task, compute_monitor_task, dns_collector_task, secure_send_cleanup_task, ha_lease_reconciliation_task, ha_sync_monitor_task, ha_watchdog_task, notification_runtime_task, notification_retention_task
+    global domain_poll_task, compute_monitor_task, dns_collector_task, secure_send_cleanup_task, ha_lease_reconciliation_task, ha_sync_monitor_task, ha_watchdog_task, notification_runtime_task, notification_retention_task, data_integrity_task
     start_monitor_scheduler()
     start_traffic_polling()
     database_engine = engine.dialect.name
@@ -416,6 +419,8 @@ async def on_startup():
     compute_monitor_task = asyncio.create_task(compute_monitor_loop())
     worker_started("dns_collector", database_engine)
     dns_collector_task = asyncio.create_task(dns_collector_loop())
+    worker_started("data_integrity", database_engine)
+    data_integrity_task = asyncio.create_task(data_integrity_loop())
     worker_started("secure_send_cleanup", database_engine)
     secure_send_cleanup_task = asyncio.create_task(secure_send_cleanup_loop())
     worker_started("ha_lease_reconciliation", database_engine)
@@ -482,6 +487,8 @@ async def on_shutdown():
         ha_sync_monitor_task.cancel()
     if ha_watchdog_task:
         ha_watchdog_task.cancel()
+    if data_integrity_task:
+        data_integrity_task.cancel()
     await stop_notification_runtime()
     if notification_retention_task:
         notification_retention_task.cancel()
@@ -513,6 +520,8 @@ app.include_router(high_availability.router)
 app.include_router(ha_agent_api.router)
 app.include_router(notifications.router)
 app.include_router(admin.router)
+app.include_router(data_integrity.page_router)
+app.include_router(data_integrity.router)
 
 @app.get("/healthz", include_in_schema=False)
 def healthz():

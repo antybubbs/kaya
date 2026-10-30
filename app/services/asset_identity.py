@@ -494,6 +494,84 @@ def superseded_dhcp_assignments(db: Session, asset_id: int, *, keep_address: str
     return [row for row in rows if row.address in dhcp_addresses]
 
 
+def _managed_static_record_for(db: Session, normalised: str, normalised_mac: str, ip_address_id: int | None) -> IPAddress:
+    records = db.query(IPAddress).filter(IPAddress.address == normalised).order_by(IPAddress.id.asc()).limit(20).all()
+    records = [row for row in records if managed_static_record_mac(row) == normalised_mac and (ip_address_id is None or row.id == ip_address_id)]
+    if len(records) != 1:
+        raise ValueError("Exactly one Static IP/VLAN Manager record for this address must carry this MAC.")
+    return records[0]
+
+
+def _managed_static_owner_checks(db: Session, asset: HardwareAsset, normalised_mac: str) -> None:
+    owns_mac = db.query(AssetIdentityEvidence.id).filter(
+        AssetIdentityEvidence.asset_id == asset.id,
+        AssetIdentityEvidence.evidence_type == "mac",
+        AssetIdentityEvidence.normalised_value == normalised_mac,
+        AssetIdentityEvidence.status == "confirmed",
+        AssetIdentityEvidence.revoked_at.is_(None),
+    ).first()
+    if owns_mac is None:
+        raise ValueError("The asset does not hold this MAC as confirmed identity evidence.")
+    if confirmed_mac_owned_elsewhere(db, normalised_mac, asset.id):
+        raise ValueError("This MAC is also confirmed for another asset; resolve that conflict first.")
+
+
+def _managed_static_state(
+    db: Session, asset: HardwareAsset, normalised_mac: str, record: IPAddress, normalised: str, family: int, now: datetime
+) -> tuple[dict, AssetNetworkAssignment | None, list[AssetNetworkAssignment]]:
+    held_elsewhere = db.query(AssetNetworkAssignment.id, AssetNetworkAssignment.asset_id).filter(
+        AssetNetworkAssignment.address == normalised,
+        AssetNetworkAssignment.address_family == family,
+        AssetNetworkAssignment.status == "confirmed",
+        AssetNetworkAssignment.ended_at.is_(None),
+        AssetNetworkAssignment.asset_id != asset.id,
+    ).first()
+    if held_elsewhere is not None:
+        raise ValueError("The managed static address is currently assigned to another asset.")
+    current = db.query(AssetNetworkAssignment).filter(
+        AssetNetworkAssignment.asset_id == asset.id,
+        AssetNetworkAssignment.address == normalised,
+        AssetNetworkAssignment.address_family == family,
+        AssetNetworkAssignment.status == "confirmed",
+        AssetNetworkAssignment.ended_at.is_(None),
+    ).first()
+    superseded = superseded_dhcp_assignments(db, asset.id, keep_address=normalised, family=family, macs=[normalised_mac])
+    plan = {
+        "asset_id": asset.id,
+        "asset_tag": asset.asset_tag,
+        "mac": normalised_mac,
+        "ip_address_id": record.id,
+        "address": normalised,
+        "vlan_id": record.vlan_id,
+        "existing_assignment_id": current.id if current else None,
+        "create_assignment": current is None,
+        "close_assignments": [
+            {"assignment_id": row.id, "address": row.address, "started_at": row.started_at.isoformat(), "provenance": row.provenance}
+            for row in superseded
+        ],
+        "repair_time": now.isoformat(),
+        "executed": False,
+    }
+    plan["changes_required"] = bool(plan["create_assignment"] or superseded)
+    return plan, current, superseded
+
+
+def plan_managed_static_assignment(
+    db: Session, *, asset: HardwareAsset, mac: str, address: str, ip_address_id: int | None = None, now: datetime | None = None
+) -> dict:
+    """The managed static repair plan without locks or changes (for audits and previews).
+
+    Applies exactly the validation of ``repair_managed_static_assignment`` and
+    raises ``ValueError`` where it would refuse. Execution always re-plans
+    under locks, so this result never authorises a change by itself.
+    """
+    normalised_mac = _normalise_evidence("mac", mac)
+    normalised, family = _normalise_ip(address)
+    _managed_static_owner_checks(db, asset, normalised_mac)
+    record = _managed_static_record_for(db, normalised, normalised_mac, ip_address_id)
+    return _managed_static_state(db, asset, normalised_mac, record, normalised, family, now or datetime.utcnow())[0]
+
+
 def repair_managed_static_assignment(
     db: Session,
     *,
@@ -505,6 +583,9 @@ def repair_managed_static_assignment(
     actor: User | None = None,
     execute: bool = False,
     now: datetime | None = None,
+    audit_context: dict | None = None,
+    on_plan=None,
+    before_commit=None,
 ) -> dict:
     """Idempotently make a managed static record the asset's current address.
 
@@ -516,6 +597,11 @@ def repair_managed_static_assignment(
     time. DHCP history, identity evidence and traffic rows are never modified.
     A dry run (the default) reports the plan and rolls back; ``execute`` commits
     the change with one forced audit record, or nothing at all.
+
+    ``on_plan(plan)`` runs under the locks before any change and may raise to
+    refuse (for example a stale preview); ``before_commit(plan)`` runs in the
+    same transaction after the audit record. ``audit_context`` adds bounded
+    caller identifiers to the audit metadata.
     """
     if actor is not None and (actor.role != "admin" or not actor.is_active):
         raise PermissionError("An active administrator is required to attribute the repair.")
@@ -530,61 +616,16 @@ def repair_managed_static_assignment(
         asset = db.get(HardwareAsset, asset_id)
         if not asset or (asset.asset_tag or "").strip() != clean_tag:
             raise ValueError("The asset id and asset tag do not identify the same asset.")
-        owns_mac = db.query(AssetIdentityEvidence.id).filter(
-            AssetIdentityEvidence.asset_id == asset.id,
-            AssetIdentityEvidence.evidence_type == "mac",
-            AssetIdentityEvidence.normalised_value == normalised_mac,
-            AssetIdentityEvidence.status == "confirmed",
-            AssetIdentityEvidence.revoked_at.is_(None),
-        ).first()
-        if owns_mac is None:
-            raise ValueError("The asset does not hold this MAC as confirmed identity evidence.")
-        if confirmed_mac_owned_elsewhere(db, normalised_mac, asset.id):
-            raise ValueError("This MAC is also confirmed for another asset; resolve that conflict first.")
-        records = db.query(IPAddress).filter(IPAddress.address == normalised).order_by(IPAddress.id.asc()).limit(20).all()
-        records = [row for row in records if managed_static_record_mac(row) == normalised_mac and (ip_address_id is None or row.id == ip_address_id)]
-        if len(records) != 1:
-            raise ValueError("Exactly one Static IP/VLAN Manager record for this address must carry this MAC.")
-        record = records[0]
+        _managed_static_owner_checks(db, asset, normalised_mac)
+        record = _managed_static_record_for(db, normalised, normalised_mac, ip_address_id)
         # Also the DHCP reconciliation key, so the two exclude each other here.
         lock_identity_scope(db, assignment_keys=[
             _assignment_lock_key(normalised, family, record.vlan_id, None, None),
             dhcp_address_lock_key(normalised, family),
         ])
-        held_elsewhere = db.query(AssetNetworkAssignment.id, AssetNetworkAssignment.asset_id).filter(
-            AssetNetworkAssignment.address == normalised,
-            AssetNetworkAssignment.address_family == family,
-            AssetNetworkAssignment.status == "confirmed",
-            AssetNetworkAssignment.ended_at.is_(None),
-            AssetNetworkAssignment.asset_id != asset.id,
-        ).first()
-        if held_elsewhere is not None:
-            raise ValueError("The managed static address is currently assigned to another asset.")
-        current = db.query(AssetNetworkAssignment).filter(
-            AssetNetworkAssignment.asset_id == asset.id,
-            AssetNetworkAssignment.address == normalised,
-            AssetNetworkAssignment.address_family == family,
-            AssetNetworkAssignment.status == "confirmed",
-            AssetNetworkAssignment.ended_at.is_(None),
-        ).first()
-        superseded = superseded_dhcp_assignments(db, asset.id, keep_address=normalised, family=family, macs=[normalised_mac])
-        plan = {
-            "asset_id": asset.id,
-            "asset_tag": asset.asset_tag,
-            "mac": normalised_mac,
-            "ip_address_id": record.id,
-            "address": normalised,
-            "vlan_id": record.vlan_id,
-            "existing_assignment_id": current.id if current else None,
-            "create_assignment": current is None,
-            "close_assignments": [
-                {"assignment_id": row.id, "address": row.address, "started_at": row.started_at.isoformat(), "provenance": row.provenance}
-                for row in superseded
-            ],
-            "repair_time": now.isoformat(),
-            "executed": False,
-        }
-        plan["changes_required"] = bool(plan["create_assignment"] or superseded)
+        plan, current, superseded = _managed_static_state(db, asset, normalised_mac, record, normalised, family, now)
+        if on_plan is not None:
+            on_plan(plan)
         if not execute or not plan["changes_required"]:
             db.rollback()
             return plan
@@ -600,10 +641,12 @@ def repair_managed_static_assignment(
         for row in superseded:
             row.ended_at = max(row.started_at, now)
         db.flush()
+        context = {key: value for key, value in (audit_context or {}).items() if isinstance(value, (int, str)) and len(str(value)) <= 80}
         audit = write_audit(
             db, actor, "repair", "asset_network_assignment", str(created.id if created else current.id),
             detail="Repaired managed static network assignment",
             metadata={
+                **context,
                 "asset_id": asset.id,
                 "ip_address_id": record.id,
                 "created_assignment_id": created.id if created else None,
@@ -614,12 +657,14 @@ def repair_managed_static_assignment(
         )
         if audit is None:
             raise RuntimeError("The repair could not be audited.")
+        plan["executed"] = True
+        plan["created_assignment_id"] = created.id if created else None
+        if before_commit is not None:
+            before_commit(plan)
         db.commit()
     except Exception:
         db.rollback()
         raise
-    plan["executed"] = True
-    plan["created_assignment_id"] = created.id if created else None
     return plan
 
 

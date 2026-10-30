@@ -8,27 +8,25 @@ needed for administrator review.
 from __future__ import annotations
 
 import argparse
-from collections import defaultdict
 from datetime import datetime
 import json
 import sys
 
-from sqlalchemy import create_engine, distinct, func
+from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import get_settings
-from app.models.models import (
-    AssetIdentityEvidence,
-    AssetNetworkAssignment,
-    DHCPLeaseHistory,
-    DNSClientEvent,
-    DNSClientTrafficEvent,
-    DNSRecognisedDevice,
-    IPAddress,
+from app.models.models import DNSClientTrafficEvent, DNSRecognisedDevice
+from app.services.data_integrity_checks import (
+    MAX_LIMIT,
+    asset_confirmed_macs,
+    auto_filled_static_hostnames,
+    confirmed_mac_duplicates,
+    dns_link_conflicts,
+    obsolete_dhcp_assignments,
+    run_check,
+    suspect_dhcp_client_id_evidence,
 )
-
-
-MAX_LIMIT = 5000
 
 
 def _limit(value: int) -> int:
@@ -39,126 +37,45 @@ def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
 
 
-def _asset_mac_evidence(db: Session) -> dict[int, set[str]]:
-    rows = db.query(AssetIdentityEvidence).filter(
-        AssetIdentityEvidence.evidence_type == "mac",
-        AssetIdentityEvidence.status == "confirmed",
-        AssetIdentityEvidence.revoked_at.is_(None),
-        AssetIdentityEvidence.asset_id.isnot(None),
-    ).limit(MAX_LIMIT * 4).all()
-    result: dict[int, set[str]] = defaultdict(set)
-    for row in rows:
-        result[row.asset_id].add(row.normalised_value.casefold())
-    return result
-
-
 def _dns_link_conflicts(db: Session, limit: int) -> list[dict]:
-    evidence = _asset_mac_evidence(db)
-    clients = db.query(DNSRecognisedDevice).filter(
-        DNSRecognisedDevice.hardware_asset_id.isnot(None),
-        DNSRecognisedDevice.normalised_mac.isnot(None),
-    ).order_by(DNSRecognisedDevice.id.asc()).limit(limit).all()
+    return [{key: value for key, value in row.items() if key != "client"} for row in dns_link_conflicts(db, limit)]
+
+
+def _expired_open_assignments(db: Session, now: datetime, limit: int) -> list[dict]:
+    return [{
+        "assignment_id": assignment.id,
+        "asset_id": assignment.asset_id,
+        "lease_id": lease.id,
+        "address": assignment.address,
+        "dhcp_mac": lease.mac_address,
+        "lease_active": bool(lease.is_active),
+        "lease_ended_at": _iso(lease.ended_at),
+        "lease_expires_at": _iso(lease.expires_at),
+        "superseded_by_lease_id": replacement.id if replacement else None,
+        "reason": reason,
+        "classification": "definite_inconsistency",
+    } for assignment, lease, replacement, reason in obsolete_dhcp_assignments(db, now, limit)]
+
+
+def _active_ip_conflicts(db: Session, limit: int) -> list[dict]:
     rows = []
-    for client in clients:
-        observed = (client.normalised_mac or client.mac_address or "").casefold()
-        confirmed = evidence.get(client.hardware_asset_id, set())
-        if observed in confirmed:
-            continue
-        other_assets = [asset_id for asset_id, values in evidence.items() if observed in values and asset_id != client.hardware_asset_id]
+    for detection in run_check(db, "duplicate_active_ip", limit=limit).detections:
+        source, exporter, vlan = detection.evidence["scope"].split("|")
         rows.append({
-            "dns_client_id": client.id,
-            "asset_id": client.hardware_asset_id,
-            "observed_mac": observed,
-            "confirmed_asset_macs": sorted(confirmed),
-            "matching_other_asset_ids": sorted(other_assets),
-            "classification": "definite_conflict" if other_assets else "suspected_unverified_link",
+            "address": detection.evidence["address"],
+            "address_family": detection.evidence["address_family"],
+            "vlan_id": None if vlan == "any" else int(vlan),
+            "source_id": None if source == "-" else int(source),
+            "exporter_identity": None if exporter == "-" else exporter,
+            "distinct_asset_count": len({row["asset_id"] for row in detection.evidence["assignments"]}),
+            "assignment_ids": [row["assignment_id"] for row in detection.evidence["assignments"]],
+            "classification": "definite_inconsistency",
         })
     return rows
 
 
-def _expired_open_assignments(db: Session, now: datetime, limit: int) -> list[dict]:
-    rows = db.query(AssetNetworkAssignment, DHCPLeaseHistory).join(
-        DHCPLeaseHistory, DHCPLeaseHistory.id == AssetNetworkAssignment.dhcp_lease_id,
-    ).filter(
-        AssetNetworkAssignment.status == "confirmed",
-        AssetNetworkAssignment.ended_at.is_(None),
-    ).order_by(AssetNetworkAssignment.id.asc()).limit(limit).all()
-    provider_ids = {lease.provider_id for _assignment, lease in rows if lease.provider_id is not None}
-    addresses = {lease.ip_address for _assignment, lease in rows}
-    active_rows = db.query(DHCPLeaseHistory).filter(
-        DHCPLeaseHistory.is_active.is_(True),
-        DHCPLeaseHistory.provider_id.in_(provider_ids or {-1}),
-        DHCPLeaseHistory.ip_address.in_(addresses or {"0.0.0.0"}),
-    ).order_by(DHCPLeaseHistory.last_seen_at.desc()).limit(limit * 2).all()
-    newest: dict[tuple[int | None, str], DHCPLeaseHistory] = {}
-    for active in active_rows:
-        key = (active.provider_id, active.ip_address)
-        current = newest.get(key)
-        if current is None or (active.lease_started_at, active.id) > (current.lease_started_at, current.id):
-            newest[key] = active
-    result = []
-    for assignment, lease in rows:
-        replacement = newest.get((lease.provider_id, lease.ip_address))
-        superseded = bool(
-            replacement
-            and replacement.id != lease.id
-            and (replacement.lease_started_at, replacement.id) > (lease.lease_started_at, lease.id)
-            and replacement.mac_address != lease.mac_address
-        )
-        expired = bool(
-            not lease.is_active
-            or lease.ended_at is not None
-            or (lease.expires_at is not None and lease.expires_at < now)
-        )
-        if not expired and not superseded:
-            continue
-        result.append({
-            "assignment_id": assignment.id,
-            "asset_id": assignment.asset_id,
-            "lease_id": lease.id,
-            "address": assignment.address,
-            "dhcp_mac": lease.mac_address,
-            "lease_active": bool(lease.is_active),
-            "lease_ended_at": _iso(lease.ended_at),
-            "lease_expires_at": _iso(lease.expires_at),
-            "superseded_by_lease_id": replacement.id if superseded else None,
-            "classification": "definite_inconsistency",
-        })
-    return result
-
-
-def _active_ip_conflicts(db: Session, limit: int) -> list[dict]:
-    grouped = db.query(
-        AssetNetworkAssignment.address,
-        AssetNetworkAssignment.address_family,
-        AssetNetworkAssignment.vlan_id,
-        AssetNetworkAssignment.source_id,
-        AssetNetworkAssignment.exporter_identity,
-        func.count(distinct(AssetNetworkAssignment.asset_id)),
-    ).filter(
-        AssetNetworkAssignment.status == "confirmed",
-        AssetNetworkAssignment.ended_at.is_(None),
-        AssetNetworkAssignment.asset_id.isnot(None),
-    ).group_by(
-        AssetNetworkAssignment.address,
-        AssetNetworkAssignment.address_family,
-        AssetNetworkAssignment.vlan_id,
-        AssetNetworkAssignment.source_id,
-        AssetNetworkAssignment.exporter_identity,
-    ).having(func.count(distinct(AssetNetworkAssignment.asset_id)) > 1).limit(limit).all()
-    return [{
-        "address": address,
-        "address_family": family,
-        "vlan_id": vlan_id,
-        "source_id": source_id,
-        "exporter_identity": exporter,
-        "distinct_asset_count": count,
-        "classification": "definite_inconsistency",
-    } for address, family, vlan_id, source_id, exporter, count in grouped]
-
-
 def _traffic_conflicts(db: Session, limit: int) -> list[dict]:
-    evidence = _asset_mac_evidence(db)
+    evidence = asset_confirmed_macs(db)
     rows = db.query(DNSClientTrafficEvent, DNSRecognisedDevice).join(
         DNSRecognisedDevice, DNSRecognisedDevice.id == DNSClientTrafficEvent.dns_client_id,
     ).filter(
@@ -185,33 +102,12 @@ def _traffic_conflicts(db: Session, limit: int) -> list[dict]:
 
 def _cross_asset_mac_duplicates(db: Session, limit: int) -> list[dict]:
     """Confirmed MACs owned by more than one asset (recorded under different sources)."""
-    grouped = db.query(
-        AssetIdentityEvidence.normalised_value,
-        func.count(distinct(AssetIdentityEvidence.asset_id)),
-    ).filter(
-        AssetIdentityEvidence.evidence_type == "mac",
-        AssetIdentityEvidence.status == "confirmed",
-        AssetIdentityEvidence.revoked_at.is_(None),
-        AssetIdentityEvidence.asset_id.isnot(None),
-    ).group_by(AssetIdentityEvidence.normalised_value).having(
-        func.count(distinct(AssetIdentityEvidence.asset_id)) > 1
-    ).limit(limit).all()
-    result = []
-    for mac, count in grouped:
-        rows = db.query(AssetIdentityEvidence).filter(
-            AssetIdentityEvidence.evidence_type == "mac",
-            AssetIdentityEvidence.normalised_value == mac,
-            AssetIdentityEvidence.status == "confirmed",
-            AssetIdentityEvidence.revoked_at.is_(None),
-            AssetIdentityEvidence.asset_id.isnot(None),
-        ).order_by(AssetIdentityEvidence.id.asc()).limit(50).all()
-        result.append({
-            "mac": mac,
-            "distinct_asset_count": count,
-            "evidence": [{"evidence_id": row.id, "asset_id": row.asset_id, "source": row.source, "source_scope": row.source_scope, "confirmed_at": _iso(row.confirmed_at)} for row in rows],
-            "classification": "definite_conflict",
-        })
-    return result
+    return [{
+        "mac": mac,
+        "distinct_asset_count": len({row.asset_id for row in rows}),
+        "evidence": [{"evidence_id": row.id, "asset_id": row.asset_id, "source": row.source, "source_scope": row.source_scope, "confirmed_at": _iso(row.confirmed_at)} for row in rows],
+        "classification": "definite_conflict",
+    } for mac, rows in confirmed_mac_duplicates(db, limit)]
 
 
 def _suspect_dhcp_client_id_evidence(db: Session, limit: int) -> list[dict]:
@@ -220,29 +116,17 @@ def _suspect_dhcp_client_id_evidence(db: Session, limit: int) -> list[dict]:
     The former ingestion fallback stored a provider's lease ``id`` as the client
     identifier. Genuine option-61 identifiers and DUIDs are not bare decimals.
     """
-    rows = db.query(AssetIdentityEvidence).filter(
-        AssetIdentityEvidence.evidence_type == "dhcp_client_id",
-        AssetIdentityEvidence.status == "confirmed",
-        AssetIdentityEvidence.revoked_at.is_(None),
-    ).order_by(AssetIdentityEvidence.id.asc()).limit(limit * 4).all()
     return [{
         "evidence_id": row.id,
         "asset_id": row.asset_id,
         "value": row.normalised_value,
         "source_scope": row.source_scope,
         "classification": "suspected_provider_record_id",
-    } for row in rows if row.normalised_value.isdigit()][:limit]
+    } for row in suspect_dhcp_client_id_evidence(db, limit)]
 
 
 def _auto_filled_static_hostnames(db: Session, limit: int) -> list[dict]:
     """Static records whose current name was copied from a DNS observation."""
-    rows = db.query(DNSClientEvent, DNSRecognisedDevice, IPAddress).join(
-        DNSRecognisedDevice, DNSRecognisedDevice.id == DNSClientEvent.dns_client_id,
-    ).join(IPAddress, IPAddress.id == DNSRecognisedDevice.linked_ip_record_id).filter(
-        DNSClientEvent.event_type == "managed_record_updated",
-        DNSClientEvent.source == "automatic empty hostname update",
-        IPAddress.assignment_type != "Dynamic",
-    ).order_by(DNSClientEvent.id.asc()).limit(limit).all()
     return [{
         "ip_address_id": record.id,
         "dns_client_id": client.id,
@@ -250,7 +134,7 @@ def _auto_filled_static_hostnames(db: Session, limit: int) -> list[dict]:
         "filled_at": _iso(event.created_at),
         "name_unchanged_since_fill": record.name == event.new_value,
         "classification": "review_managed_hostname_authority",
-    } for event, client, record in rows]
+    } for event, client, record in auto_filled_static_hostnames(db, limit)]
 
 
 def run_audit(db: Session, limit: int) -> dict:
