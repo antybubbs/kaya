@@ -591,7 +591,7 @@ def update_asset_network_monitoring(
     except RuntimeError as exc:
         db.rollback()
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="The monitoring change could not be audited. Please retry.") from exc
-    return RedirectResponse(f"/infrastructure/asset-manager/{asset_id}#asset-traffic", status_code=303)
+    return RedirectResponse(f"/infrastructure/asset-manager/{asset.id}#asset-traffic", status_code=303)
 
 
 @router.get("/{asset_id}/profile")
