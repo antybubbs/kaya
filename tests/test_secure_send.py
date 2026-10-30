@@ -245,6 +245,21 @@ def test_gateway_exposes_only_dedicated_static_assets():
         assert client.get("/favicon.svg", headers=headers).status_code == 200
         assert client.get("/static/js/login.js", headers=headers).status_code == 403
         assert client.get("/assets/gateway.css", headers={"Host": "attacker.example"}).status_code == 403
+        # The refresh theme and its self-hosted fonts are explicit allow-list entries only.
+        for path, media_type in (("/assets/css/fonts.css", "text/css"), ("/assets/css/kaya-refresh.css", "text/css")):
+            response = client.get(path, headers=headers)
+            assert response.status_code == 200 and response.headers["content-type"].startswith(media_type)
+        for path in gateway.THEME_ASSETS:
+            if path.endswith(".woff2"):
+                response = client.get(path, headers=headers)
+                assert response.status_code == 200 and response.headers["content-type"] == "font/woff2"
+                assert response.content[:4] == b"wOF2"
+        for path in ("/assets/vendor/fonts/ibm-plex/OFL.txt", "/assets/vendor/fonts/ibm-plex/Other.woff2", "/assets/css/app.css", "/assets/vendor/fonts/ibm-plex/../../../css/app.css"):
+            assert client.get(path, headers=headers).status_code == 403
+        assert client.get("/assets/css/fonts.css?v=1", headers=headers).status_code == 403
+        policy = client.get("/assets/css/fonts.css", headers=headers).headers["content-security-policy"]
+        # Only font-src 'self' is added; the rest of the policy is unchanged.
+        assert policy == "default-src 'none'; style-src 'self'; img-src 'self'; font-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
 
 
 def test_gateway_rejection_logging_explains_guard_without_sensitive_request_data(caplog):

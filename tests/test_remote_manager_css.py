@@ -37,6 +37,16 @@ def test_fluid_remote_typography_bounds_across_supported_rail_widths():
     assert secondary == [10, 11.568, 11.995, 12]
 
 
+def test_remote_workspace_is_contained_below_desktop_header():
+    css = REMOTE_CSS.read_text(encoding="utf-8")
+
+    assert "@media(min-width:851px)" in css
+    assert ".content.remote-main{box-sizing:border-box;height:calc(100dvh - 56px);min-height:0;overflow:hidden;padding:0}" in css
+    assert ".remote-workspace{height:100%;min-height:0}" in css
+    assert ".remote-tab-workspace,.remote-tab-panels,.remote-session-frame,.ssh-session,.rdp-session{min-width:0;min-height:0}" in css
+    assert ".remote-tab-panels{overflow:hidden}" in css
+
+
 def test_rdp_host_cards_use_compact_accessible_certificate_shields():
     css = REMOTE_CSS.read_text(encoding="utf-8")
     template = HOST_RAIL_TEMPLATE.read_text(encoding="utf-8")

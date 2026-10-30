@@ -2,6 +2,7 @@ from datetime import datetime, timedelta
 from ipaddress import ip_address
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
+from pydantic import BaseModel
 from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy import case, func, or_
 from sqlalchemy.orm import Session, joinedload
@@ -11,6 +12,7 @@ from app.core.csrf import csrf_context, validate_csrf_token
 from app.core.templating import templates
 from app.db.session import get_db
 from app.models.models import (
+    AssetNetworkAssignment,
     VLAN,
     ComputeWorkload,
     CustomFieldValue,
@@ -19,6 +21,7 @@ from app.models.models import (
     DNSClientTrafficEvent,
     DNSRecognisedDevice,
     IPAddress,
+    HardwareAsset,
     NetworkMonitor,
     NetworkMonitorCheck,
     NetworkMonitorEvent,
@@ -26,9 +29,10 @@ from app.models.models import (
     NetworkMonitorStatistic,
     RemoteAccess,
     RemoteSessionRecording,
+    TrafficDeviceAggregate,
     User,
 )
-from app.routers.auth import require_editor, require_module_access, require_user
+from app.routers.auth import require_admin, require_editor, require_module_access, require_user
 from app.routers.compute_manager import uptime_label, workload_addresses
 from app.routers.remote_manager import (
     RDP_SETTING_KEYS,
@@ -66,6 +70,8 @@ from app.services.network_monitor import (
     validate_threshold_values,
 )
 from app.services.client_ip import client_ip as trusted_client_ip
+from app.services.modules import has_module_access
+from app.services.asset_identity_resolution import evidence_for_asset
 from app.services.site_settings import get_site_setting
 from app.services.table_export import (
     export_row_matches,
@@ -74,11 +80,16 @@ from app.services.table_export import (
     validate_export_filters,
     validate_export_format,
 )
+from app.services.device_traffic import device_monitoring_status, set_device_monitoring, traffic_monitoring_for
 
 router = APIRouter(prefix="/networking/vlan-ip-manager", dependencies=[Depends(require_module_access("vlan_ip_manager"))])
 
 ASSIGNMENT_TYPES = {"Static", "Dynamic"}
 REMOTE_PROTOCOLS = {"ssh", "rdp", "vnc"}
+
+
+class DeviceMonitoringPayload(BaseModel):
+    enabled: bool
 
 
 def clean_ip(value: str) -> str:
@@ -538,11 +549,11 @@ def new_ip_address(request: Request, vlan_id: int | None = Query(None), dns_clie
     vlans = db.query(VLAN).order_by(VLAN.name.asc()).all()
     scope = dhcp_range_for_ip(db, dns_client.current_ip) if dns_client else None
     inferred_vlan_id = vlan_id or (scope.vlan_id if scope else None)
-    return templates.TemplateResponse(request, "ip_address_form.html", {"user": user, "record": None, "dns_client": dns_client, "monitor": None, "remote": None, "categories": categories, "vlans": vlans, "selected_vlan_id": resolve_vlan(db, inferred_vlan_id).id, "selected_assignment_type": "Dynamic" if scope else "Static", "dhcp_range": scope, "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": {}, "option_list": option_list, "error": None, **monitor_form_context(db, None), **remote_settings_context(None), **csrf_context(request)})
+    return templates.TemplateResponse(request, "ip_address_form.html", {"user": user, "record": None, "dns_client": dns_client, "monitor": None, "remote": None, "traffic_monitoring": None, "categories": categories, "vlans": vlans, "selected_vlan_id": resolve_vlan(db, inferred_vlan_id).id, "selected_assignment_type": "Dynamic" if scope else "Static", "dhcp_range": scope, "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": {}, "option_list": option_list, "error": None, **monitor_form_context(db, None), **remote_settings_context(None), **csrf_context(request)})
 
 
 @router.post("/new")
-async def create_ip_address(request: Request, address: str = Form(..., max_length=80), vlan_id: int | None = Form(None), mac_address: str = Form("", max_length=40), category: str = Form("", max_length=120), name: str = Form("", max_length=255), description: str = Form("", max_length=5000), assignment_type: str = Form("Static"), dns_client_id: int | None = Form(None), monitor_enabled: str = Form(""), monitor_display_name: str = Form("", max_length=255), monitor_interval_seconds: int = Form(300), monitor_timeout_ms: int = Form(2000), remote_enabled: str = Form(""), remote_display_name: str = Form("", max_length=255), remote_protocol: str = Form("ssh"), remote_port: int = Form(22), remote_username: str = Form("", max_length=120), notes: str = Form("", max_length=10000), csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_editor)):
+async def create_ip_address(request: Request, address: str = Form(..., max_length=80), vlan_id: int | None = Form(None), mac_address: str = Form("", max_length=40), category: str = Form("", max_length=120), name: str = Form("", max_length=255), description: str = Form("", max_length=5000), assignment_type: str = Form("Static"), dns_client_id: int | None = Form(None), monitor_enabled: str = Form(""), traffic_monitoring_enabled: str = Form(""), monitor_display_name: str = Form("", max_length=255), monitor_interval_seconds: int = Form(300), monitor_timeout_ms: int = Form(2000), remote_enabled: str = Form(""), remote_display_name: str = Form("", max_length=255), remote_protocol: str = Form("ssh"), remote_port: int = Form(22), remote_username: str = Form("", max_length=120), notes: str = Form("", max_length=10000), csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_editor)):
     validate_csrf_token(request, csrf_token)
     clean_address = clean_ip(address)
     selected_vlan = resolve_vlan(db, vlan_id)
@@ -566,6 +577,9 @@ async def create_ip_address(request: Request, address: str = Form(..., max_lengt
     row = IPAddress(vlan_id=selected_vlan.id, address=clean_address, mac_address=clean_mac, category=clean_category(category, categories), name=name.strip() or None, description=description.strip() or None, assignment_type=clean_assignment_type(assignment_type), notes=notes.strip() or None)
     db.add(row)
     db.flush()
+    if traffic_monitoring_enabled and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Administrator permission is required to enable device traffic monitoring.")
+    traffic_changes = set_device_monitoring(db, row, bool(traffic_monitoring_enabled)) if user.role == "admin" else {"changed": False, "enabled": False}
     dns_client = db.get(DNSRecognisedDevice, dns_client_id) if dns_client_id else None
     if dns_client:
         if dns_client.linked_ip_record_id:
@@ -582,7 +596,7 @@ async def create_ip_address(request: Request, address: str = Form(..., max_lengt
     save_remote_settings(db, row, bool(remote_enabled), remote_display_name, remote_protocol, remote_port, remote_username, remote_override_settings(form, TERMINAL_SETTING_KEYS), {**remote_override_settings(form, RDP_SETTING_KEYS), **remote_override_settings(form, VNC_SETTING_KEYS)})
     save_custom_values(db, fields, form, ENTITY_TYPE, row.id)
     db.commit()
-    write_audit(db, user, "create", "ip_address", str(row.id), request.client.host if request.client else None, detail=clean_address, metadata={"dns_client_id": dns_client.id if dns_client else None, "monitor_settings": monitor_changes})
+    write_audit(db, user, "create", "ip_address", str(row.id), request.client.host if request.client else None, detail=clean_address, metadata={"dns_client_id": dns_client.id if dns_client else None, "monitor_settings": monitor_changes, "traffic_monitoring": traffic_changes})
     return RedirectResponse(f"/networking/vlan-ip-manager/{row.id}", status_code=303)
 
 
@@ -622,6 +636,8 @@ def detail_ip_address(request: Request, record_id: int, db: Session = Depends(ge
         candidates = db.query(DNSRecognisedDevice).filter(DNSRecognisedDevice.linked_ip_record_id.is_(None), DNSRecognisedDevice.is_ignored == False, or_(*match_conditions)).order_by(DNSRecognisedDevice.last_seen_at.desc()).all()  # noqa: E712
         dns_link_candidates = [{"client": candidate, "ip_match": dns_link_match(candidate, row)[0], "mac_match": dns_link_match(candidate, row)[1]} for candidate in candidates]
     monitor = monitor_for(db, row.id)
+    traffic_monitoring = traffic_monitoring_for(db, row.id)
+    traffic_status = device_monitoring_status(db, row.id)
     monitor_observations = None
     if monitor:
         since = datetime.utcnow() - timedelta(hours=24)
@@ -645,7 +661,48 @@ def detail_ip_address(request: Request, record_id: int, db: Session = Depends(ge
             "events": db.query(NetworkMonitorEvent).filter(NetworkMonitorEvent.monitor_id == monitor.id).order_by(NetworkMonitorEvent.occurred_at.desc()).limit(5).all(),
             "outages": db.query(NetworkMonitorOutage).filter(NetworkMonitorOutage.monitor_id == monitor.id, NetworkMonitorOutage.started_at >= since).count(),
         }
-    return templates.TemplateResponse(request, "ip_address_detail.html", {"user": user, "record": row, "monitor": monitor, "monitor_observations": monitor_observations, "remote": remote_for(db, row.id), "compute_matches": compute_matches, "dns_clients": dns_clients, "dns_link_candidates": dns_link_candidates, "lease_history": lease_history, "ip_traffic_history": ip_traffic_history, "dns_client_status": client_status, "uptime_label": uptime_label, "categories": categories, "vlans": db.query(VLAN).order_by(VLAN.name.asc()).all(), "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": values, "option_list": option_list, **monitor_form_context(db, monitor), **remote_settings_context(remote_for(db, row.id)), **csrf_context(request)})
+    asset_parent = None
+    if has_module_access(db, user, "asset_manager"):
+        assignment = db.query(AssetNetworkAssignment).filter(
+            AssetNetworkAssignment.ip_address_id == row.id,
+            AssetNetworkAssignment.status == "confirmed",
+            AssetNetworkAssignment.asset_id.is_not(None),
+        ).order_by(AssetNetworkAssignment.started_at.desc()).first()
+        if assignment:
+            current = evidence_for_asset(db, assignment.asset_id, limit=100)["current"]
+            if any(item.evidence_type == "network_assignment" and item.normalised_reference == row.address for item in current):
+                asset_parent = db.get(HardwareAsset, assignment.asset_id)
+    return templates.TemplateResponse(request, "ip_address_detail.html", {"user": user, "record": row, "asset_parent": asset_parent, "monitor": monitor, "traffic_monitoring": traffic_monitoring, "traffic_status": traffic_status, "monitor_observations": monitor_observations, "remote": remote_for(db, row.id), "compute_matches": compute_matches, "dns_clients": dns_clients, "dns_link_candidates": dns_link_candidates, "lease_history": lease_history, "ip_traffic_history": ip_traffic_history, "dns_client_status": client_status, "uptime_label": uptime_label, "categories": categories, "vlans": db.query(VLAN).order_by(VLAN.name.asc()).all(), "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": values, "option_list": option_list, **monitor_form_context(db, monitor), **remote_settings_context(remote_for(db, row.id)), **csrf_context(request)})
+
+
+@router.get("/{record_id}/network-traffic")
+def device_traffic_status(request: Request, record_id: int, db: Session = Depends(get_db), user=Depends(require_user), _traffic=Depends(require_module_access("network_monitor"))):
+    if not db.get(IPAddress, record_id):
+        raise HTTPException(status_code=404, detail="IP address not found")
+    return {"ip_address_id": record_id, **device_monitoring_status(db, record_id)}
+
+
+@router.put("/{record_id}/network-traffic")
+def update_device_traffic(request: Request, record_id: int, payload: DeviceMonitoringPayload, db: Session = Depends(get_db), user=Depends(require_admin), _traffic=Depends(require_module_access("network_monitor"))):
+    validate_csrf_token(request, request.headers.get("x-csrf-token"))
+    row = db.get(IPAddress, record_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="IP address not found")
+    change = set_device_monitoring(db, row, payload.enabled)
+    db.commit()
+    write_audit(db, user, "update", "device_traffic_monitoring", str(record_id), request.client.host if request.client else None, detail="Device traffic monitoring state changed", metadata={"enabled": payload.enabled, "period_id": change.get("period_id")})
+    return {"ip_address_id": record_id, **device_monitoring_status(db, record_id)}
+
+
+@router.get("/{record_id}/network-traffic/usage")
+def device_traffic_usage(request: Request, record_id: int, hours: int = Query(24, ge=1, le=8760), db: Session = Depends(get_db), user=Depends(require_user), _traffic=Depends(require_module_access("network_monitor"))):
+    if not db.get(IPAddress, record_id):
+        raise HTTPException(status_code=404, detail="IP address not found")
+    since = datetime.utcnow() - timedelta(hours=hours)
+    rows = db.query(TrafficDeviceAggregate).filter(TrafficDeviceAggregate.ip_address_id == record_id, TrafficDeviceAggregate.bucket_start >= since).order_by(TrafficDeviceAggregate.bucket_start.desc()).limit(10000).all()
+    items = [{"bucket_start": row.bucket_start, "bucket_seconds": row.bucket_seconds, "direction": row.direction, "bytes": int(row.bytes_total or 0), "packets": int(row.packets_total or 0), "samples": row.sample_count, "data_quality": row.data_quality, "confidence": row.attribution_confidence, "source_id": row.source_id, "interface_id": row.interface_id, "period_id": row.period_id} for row in rows]
+    summary_items = [item for item in items if item["bucket_seconds"] == 300]
+    return {"ip_address_id": record_id, "hours": hours, "summary": {"resolution_seconds": 300, "upload_bytes": sum(i["bytes"] for i in summary_items if i["direction"] == "upload"), "download_bytes": sum(i["bytes"] for i in summary_items if i["direction"] == "download"), "total_bytes": sum(i["bytes"] for i in summary_items)}, "items": items}
 
 
 @router.post("/{record_id}/link-dns-client")
@@ -685,15 +742,16 @@ def edit_ip_address(request: Request, record_id: int, db: Session = Depends(get_
     categories = list_values(db, MODULE).get("category", [])
     remote = remote_for(db, row.id)
     monitor = monitor_for(db, row.id)
-    return templates.TemplateResponse(request, "ip_address_form.html", {"user": user, "record": row, "monitor": monitor, "remote": remote, "categories": categories, "vlans": db.query(VLAN).order_by(VLAN.name.asc()).all(), "selected_vlan_id": row.vlan_id, "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": values, "option_list": option_list, "error": None, **monitor_form_context(db, monitor), **remote_settings_context(remote), **csrf_context(request)})
+    return templates.TemplateResponse(request, "ip_address_form.html", {"user": user, "record": row, "monitor": monitor, "traffic_monitoring": traffic_monitoring_for(db, row.id), "remote": remote, "categories": categories, "vlans": db.query(VLAN).order_by(VLAN.name.asc()).all(), "selected_vlan_id": row.vlan_id, "assignment_types": sorted(ASSIGNMENT_TYPES), "remote_protocols": sorted(REMOTE_PROTOCOLS), "custom_fields": fields, "custom_values": values, "option_list": option_list, "error": None, **monitor_form_context(db, monitor), **remote_settings_context(remote), **csrf_context(request)})
 
 
 @router.post("/{record_id}/edit")
-async def update_ip_address(request: Request, record_id: int, address: str = Form(..., max_length=80), vlan_id: int | None = Form(None), mac_address: str = Form("", max_length=40), category: str = Form("", max_length=120), name: str = Form("", max_length=255), description: str = Form("", max_length=5000), assignment_type: str = Form("Static"), monitor_enabled: str = Form(""), monitor_display_name: str = Form("", max_length=255), monitor_interval_seconds: int = Form(300), monitor_timeout_ms: int = Form(2000), remote_enabled: str = Form(""), remote_display_name: str = Form("", max_length=255), remote_protocol: str = Form("ssh"), remote_port: int = Form(22), remote_username: str = Form("", max_length=120), notes: str = Form("", max_length=10000), csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_editor)):
+async def update_ip_address(request: Request, record_id: int, address: str = Form(..., max_length=80), vlan_id: int | None = Form(None), mac_address: str = Form("", max_length=40), category: str = Form("", max_length=120), name: str = Form("", max_length=255), description: str = Form("", max_length=5000), assignment_type: str = Form("Static"), monitor_enabled: str = Form(""), traffic_monitoring_enabled: str = Form(""), monitor_display_name: str = Form("", max_length=255), monitor_interval_seconds: int = Form(300), monitor_timeout_ms: int = Form(2000), remote_enabled: str = Form(""), remote_display_name: str = Form("", max_length=255), remote_protocol: str = Form("ssh"), remote_port: int = Form(22), remote_username: str = Form("", max_length=120), notes: str = Form("", max_length=10000), csrf_token: str = Form(...), db: Session = Depends(get_db), user=Depends(require_editor)):
     validate_csrf_token(request, csrf_token)
     row = db.get(IPAddress, record_id)
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="IP address not found")
+    current_traffic = traffic_monitoring_for(db, row.id)
     clean_address = clean_ip(address)
     selected_vlan = resolve_vlan(db, vlan_id or row.vlan_id)
     fields = active_fields(db, MODULE)
@@ -701,6 +759,11 @@ async def update_ip_address(request: Request, record_id: int, address: str = For
     categories = list_values(db, MODULE).get("category", [])
     vlans = db.query(VLAN).order_by(VLAN.name.asc()).all()
     form = await request.form()
+    if "traffic_monitoring_enabled" not in form and "traffic_monitoring_control" not in form:
+        traffic_monitoring_enabled = "1" if current_traffic and current_traffic.is_enabled else ""
+    if user.role != "admin":
+        traffic_monitoring_enabled = "1" if current_traffic and current_traffic.is_enabled else ""
+    traffic_changes = set_device_monitoring(db, row, bool(traffic_monitoring_enabled)) if user.role == "admin" else {"changed": False}
     use_default_thresholds, monitor_thresholds = monitor_threshold_form_values(form)
     try:
         validate_monitor_timing(monitor_interval_seconds, monitor_timeout_ms)
@@ -746,7 +809,7 @@ async def update_ip_address(request: Request, record_id: int, address: str = For
     )
     save_custom_values(db, fields, form, ENTITY_TYPE, row.id)
     db.commit()
-    write_audit(db, user, "update", "ip_address", str(row.id), request.client.host if request.client else None, detail=clean_address, metadata={"monitor_settings": monitor_changes})
+    write_audit(db, user, "update", "ip_address", str(row.id), request.client.host if request.client else None, detail=clean_address, metadata={"monitor_settings": monitor_changes, "traffic_monitoring": traffic_changes})
     return RedirectResponse(f"/networking/vlan-ip-manager/{row.id}", status_code=303)
 
 

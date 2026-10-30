@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import re
+from datetime import datetime
 from pathlib import Path
 from time import perf_counter
 from uuid import uuid4
@@ -36,7 +37,7 @@ from app.db.session import (
     engine,
     verify_database_engine,
 )
-from app.models.models import AuditLog, User
+from app.models.models import AuditLog, TrafficMonitoringConfiguration, User
 from app.routers import (
     admin,
     auth,
@@ -44,6 +45,7 @@ from app.routers import (
     backup_agent_v2,
     compute_manager,
     dashboard,
+    data_integrity,
     dns_manager,
     domain_manager,
     ha_agent_api,
@@ -52,6 +54,7 @@ from app.routers import (
     ip_addresses,
     licences,
     network_monitor,
+    network_discovery,
     notifications,
     oidc,
     rack_manager,
@@ -69,6 +72,7 @@ from app.services.audit import (
 )
 from app.services.client_ip import TrustedProxyMiddleware, client_ip
 from app.services.compute_monitor import compute_monitor_loop
+from app.services.data_integrity import data_integrity_loop
 from app.services.dns_collector import dns_collector_loop
 from app.services.domain_polling import domain_poll_loop
 from app.services.guacamole_bridge import stop_guacamole_bridge
@@ -81,11 +85,13 @@ from app.services.kaya_remote_service import (
 )
 from app.services.modules import enabled_modules
 from app.services.network_monitor import start_monitor_scheduler, stop_monitor_scheduler
+from app.services.network_traffic_poller import start_traffic_polling, stop_traffic_polling
 from app.services.notification_runtime import (
     start_notification_runtime,
     stop_notification_runtime,
 )
 from app.services.notifications import cleanup_retention
+from app.services.flow_reconciliation import cleanup_flow_accounting
 from app.services.secure_send import cleanup_loop as secure_send_cleanup_loop
 from app.services.site_settings import (
     cached_security_context,
@@ -114,6 +120,7 @@ secure_send_cleanup_task = None
 ha_lease_reconciliation_task = None
 ha_sync_monitor_task = None
 ha_watchdog_task = None
+data_integrity_task = None
 notification_runtime_task = None
 notification_retention_task = None
 
@@ -401,15 +408,19 @@ async def on_startup():
     global version_check_task
     version_check_task = asyncio.create_task(version_check_loop())
     start_kaya_remote_service()
-    global domain_poll_task, compute_monitor_task, dns_collector_task, secure_send_cleanup_task, ha_lease_reconciliation_task, ha_sync_monitor_task, ha_watchdog_task, notification_runtime_task, notification_retention_task
+    global domain_poll_task, compute_monitor_task, dns_collector_task, secure_send_cleanup_task, ha_lease_reconciliation_task, ha_sync_monitor_task, ha_watchdog_task, notification_runtime_task, notification_retention_task, data_integrity_task
     start_monitor_scheduler()
+    start_traffic_polling()
     database_engine = engine.dialect.name
+    worker_started("traffic_monitor", database_engine)
     worker_started("domain_poll", database_engine)
     domain_poll_task = asyncio.create_task(domain_poll_loop())
     worker_started("compute_monitor", database_engine)
     compute_monitor_task = asyncio.create_task(compute_monitor_loop())
     worker_started("dns_collector", database_engine)
     dns_collector_task = asyncio.create_task(dns_collector_loop())
+    worker_started("data_integrity", database_engine)
+    data_integrity_task = asyncio.create_task(data_integrity_loop())
     worker_started("secure_send_cleanup", database_engine)
     secure_send_cleanup_task = asyncio.create_task(secure_send_cleanup_loop())
     worker_started("ha_lease_reconciliation", database_engine)
@@ -436,6 +447,22 @@ async def on_startup():
                 except Exception:
                     notification_db.rollback()
                     logger.exception("audit.retention.failed")
+                try:
+                    traffic_config = notification_db.get(TrafficMonitoringConfiguration, 1)
+                    if traffic_config:
+                        deleted = cleanup_flow_accounting(
+                            notification_db,
+                            now=datetime.utcnow(),
+                            short_days=traffic_config.five_minute_retention_days,
+                            hourly_days=traffic_config.hourly_retention_days,
+                            daily_days=traffic_config.daily_retention_days,
+                        )
+                        notification_db.commit()
+                        if deleted:
+                            logger.info("network_traffic.retention.completed deleted=%s", deleted)
+                except Exception:
+                    notification_db.rollback()
+                    logger.exception("network_traffic.retention.failed")
     worker_started("notification_retention", database_engine)
     notification_retention_task = asyncio.create_task(notification_retention_loop())
 
@@ -445,6 +472,7 @@ async def on_shutdown():
     if version_check_task:
         version_check_task.cancel()
     await stop_monitor_scheduler()
+    await stop_traffic_polling()
     if domain_poll_task:
         domain_poll_task.cancel()
     if compute_monitor_task:
@@ -459,6 +487,8 @@ async def on_shutdown():
         ha_sync_monitor_task.cancel()
     if ha_watchdog_task:
         ha_watchdog_task.cancel()
+    if data_integrity_task:
+        data_integrity_task.cancel()
     await stop_notification_runtime()
     if notification_retention_task:
         notification_retention_task.cancel()
@@ -473,6 +503,7 @@ app.include_router(licences.router)
 app.include_router(ip_addresses.router)
 app.include_router(hardware_assets.router)
 app.include_router(network_monitor.router)
+app.include_router(network_discovery.router)
 app.include_router(network_monitor.wallboard_router)
 app.include_router(remote_manager.router)
 app.include_router(runbooks.router)
@@ -489,6 +520,8 @@ app.include_router(high_availability.router)
 app.include_router(ha_agent_api.router)
 app.include_router(notifications.router)
 app.include_router(admin.router)
+app.include_router(data_integrity.page_router)
+app.include_router(data_integrity.router)
 
 @app.get("/healthz", include_in_schema=False)
 def healthz():

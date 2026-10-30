@@ -21,6 +21,7 @@
 </section>
 {{ module_navigation('Asset Manager navigation', [
   {'label': 'Overview', 'url': '/infrastructure/asset-manager', 'active': true},
+  {'label': 'Discovered Devices', 'url': '/infrastructure/asset-manager/discovered'},
   {'label': 'Categories', 'url': '/data/categories?module=hardware_assets', 'visible': user.role == 'admin'},
   {'label': 'Custom Fields', 'url': '/data/custom-fields?module=hardware_assets', 'visible': user.role == 'admin'}
 ]) }}

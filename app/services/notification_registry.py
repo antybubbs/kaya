@@ -46,6 +46,13 @@ _ROWS = (
     ),
     ("system.security.warning", "system", "security", "Security warning", "critical"),
     (
+        "system.data_integrity.critical_findings",
+        "system",
+        "system",
+        "Critical data integrity findings",
+        "critical",
+    ),
+    (
         "ipwan.host.offline",
         "network_monitor",
         "host_status",
@@ -224,6 +231,7 @@ _IMPLEMENTED_PUBLISHERS = {
     "system.notification.test": "notification_outbox",
     "system.web_push.keys_rotated": "notification_service",
     "system.background_task.failed": "notification_supervisor_outbox",
+    "system.data_integrity.critical_findings": "data_integrity_run_outbox",
     "ipwan.host.offline": "network_monitor_transition_outbox",
     "ipwan.host.recovered": "network_monitor_transition_outbox",
     "backup.job.failed": "backup_job_outbox",

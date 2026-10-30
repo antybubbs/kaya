@@ -133,6 +133,8 @@ test -f "$PHASE12_ROOT/backups/.role-migration-backup-verified"
 record_pass 11 '{"backup_marker":"created","legacy_role":"kaya"}'
 record_pass 12 '{"backup_marker":"verified","archive":"redacted"}'
 "${compose[@]}" up --abort-on-container-exit --exit-code-from postgres-role-init postgres-role-init
+CURRENT_ALEMBIC_HEAD="$(docker run --rm --entrypoint python "$PHASE12_APP_IMAGE" /app/scripts/current_alembic_head.py)"
+export CURRENT_ALEMBIC_HEAD
 stage=application_start
 # Re-run the startup dependency boundary after the legacy topology has been
 # migrated.  This is the production restart case: the reused PostgreSQL volume
@@ -145,7 +147,7 @@ grep -q 'postgres.role_backup state=current action=not_required reason=role_topo
 "${compose[@]}" up -d --no-deps kaya
 for _ in $(seq 1 90); do curl --fail --silent --max-time 3 "http://127.0.0.1:${PHASE12_HTTP_PORT:-18132}/healthz" >/dev/null 2>&1 && break; sleep 2; done
 curl --fail --silent --max-time 3 "http://127.0.0.1:${PHASE12_HTTP_PORT:-18132}/healthz" >/dev/null
-record_pass 23 '{"healthz":200,"postgres_revision":"20260902_01"}'
+record_pass 23 "{\"healthz\":200,\"postgres_revision\":\"${CURRENT_ALEMBIC_HEAD}\"}"
 setup_token="$("${compose[@]}" exec -T kaya sh -c "sed -n 's/^SETUP_TOKEN=//p' /app/data/.runtime.env" | tr -d '\r')"
 PHASE7D_HTTP_BASE="http://127.0.0.1:${PHASE12_HTTP_PORT:-18132}" KAYA_SETUP_TOKEN="$setup_token" KAYA_PHASE7D_SETUP_ONLY=1 python scripts/phase7d_http_smoke.py
 "${compose[@]}" exec -T kaya python -c 'from app.db.session import SessionLocal; from app.models.models import RemoteManagerSetting, User, UserModulePermission; db=SessionLocal(); user=db.query(User).filter_by(email="synthetic@example.invalid").one(); permission=db.query(UserModulePermission).filter_by(user_id=user.id, module_key="high_availability").first(); permission=permission or UserModulePermission(user_id=user.id, module_key="high_availability", allowed=True, created_by=user.id); db.add(permission); setting=db.query(RemoteManagerSetting).filter_by(key="high_availability_enabled").first(); setting=setting or RemoteManagerSetting(key="high_availability_enabled"); setting.value="1"; db.add(setting); db.commit(); db.close()'
@@ -205,7 +207,7 @@ generated_id="$("${compose[@]}" exec -T postgres psql -U kaya -d kaya -Atqc "INS
 record_pass 20 '{"table":"audit_logs","select_update_delete":"passed as kaya"}'
 record_pass 21 "{\"generated_id\":${generated_id},\"sequence\":\"used\"}"
 revision_after="$("${compose[@]}" exec -T postgres psql -U kaya -d kaya -Atqc 'SELECT version_num FROM alembic_version' | tr -d '\r')"
-[[ "$revision_after" == "20260902_01" ]]
+[[ "$revision_after" == "$CURRENT_ALEMBIC_HEAD" ]]
 record_pass 22 "{\"alembic_revision\":\"${revision_after}\",\"runtime_role\":\"kaya\"}"
 
 "${compose[@]}" exec -T postgres psql -U kaya_bootstrap -d postgres -v ON_ERROR_STOP=1 -c \

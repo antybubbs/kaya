@@ -36,6 +36,45 @@ services:
     tmpfs:
       - /tmp:size=128m,noexec,nosuid
 
+  flow-collector:
+    image: ${KAYA_IMAGE:-ghcr.io/antybubbs/kaya:${KAYA_VERSION:-v0.28.0}}
+    container_name: kaya-flow-collector
+    profiles: ["flow-collector"]
+    restart: unless-stopped
+    command: ["python", "-m", "scripts.flow_collector"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://kaya@postgres:5432/kaya
+      KAYA_POSTGRES_DATABASE_URL: postgresql+psycopg://kaya@postgres:5432/kaya
+      DATABASE_PASSWORD_FILE: /run/kaya-secrets/postgres_password
+      KAYA_FLOW_COLLECTOR_ENABLED: "true"
+      KAYA_FLOW_COLLECTOR_BIND_ADDRESS: "0.0.0.0"
+      KAYA_FLOW_COLLECTOR_PORT: ${KAYA_FLOW_COLLECTOR_PORT:-2055}
+      KAYA_FLOW_COLLECTOR_WORKERS: ${KAYA_FLOW_COLLECTOR_WORKERS:-2}
+      KAYA_FLOW_COLLECTOR_QUEUE_SIZE: ${KAYA_FLOW_COLLECTOR_QUEUE_SIZE:-2048}
+      KAYA_FLOW_COLLECTOR_MAX_PACKETS_PER_SECOND: ${KAYA_FLOW_COLLECTOR_MAX_PACKETS_PER_SECOND:-1000}
+    ports:
+      - "${KAYA_FLOW_COLLECTOR_HOST_BIND:-127.0.0.1}:${KAYA_FLOW_COLLECTOR_PORT:-2055}:${KAYA_FLOW_COLLECTOR_PORT:-2055}/udp"
+    volumes:
+      - ${KAYA_DATA_DIR:-./data}:/app/data
+      - ${KAYA_UPLOAD_DIR:-./uploads}:/app/uploads
+      - ${KAYA_POSTGRES_PASSWORD_DIR:-./data/secrets}:/run/kaya-secrets:ro
+    depends_on:
+      kaya:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "set -a && . /app/data/.runtime.env && set +a && python -m scripts.flow_collector_health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid
+
   secure-send-gateway:
     image: ${KAYA_IMAGE:-ghcr.io/antybubbs/kaya:${KAYA_VERSION:-v0.28.0}}
     container_name: kaya-secure-send

@@ -2,6 +2,9 @@ FROM python:3.12.11-slim
 
 WORKDIR /workspace
 COPY requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt pytest
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir -r /tmp/requirements.txt pytest
 
 CMD ["python", "-m", "pytest", "-q"]

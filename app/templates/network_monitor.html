@@ -3,8 +3,8 @@
 <section class="module-header network-monitor-header">
   <div class="module-title-row">
     <div class="module-heading">
-      <h1>IP/WAN Monitor</h1>
-      <p class="muted module-description">Background availability, latency, packet-loss, event and outage history for managed IP addresses.</p>
+      <h1>Uptime</h1>
+      <p class="muted module-description">Monitor device availability, response times, packet loss and outages.</p>
     </div>
     <div class="module-actions">
       <a class="button secondary" href="/monitoring/ip-wan-monitor/wallboard">Wallboard</a>
@@ -26,7 +26,7 @@
     </div>
   </div>
 </section>
-{{ module_navigation('IP/WAN Monitor navigation', [
+{{ module_navigation('Uptime navigation', [
   {'label': 'Overview', 'url': '/networking/ip-wan-monitor', 'active': true}
 ]) }}
 <div data-monitor-content data-dashboard-layout data-preferences-endpoint="/monitoring/ip-wan-monitor/wallboard/preferences" data-reset-endpoint="/monitoring/ip-wan-monitor/wallboard/preferences/reset" data-csrf="{{ csrf_token }}" data-shared="false" data-can-reorder="true" data-preferences='{{ wallboard_preferences|tojson|forceescape }}'>

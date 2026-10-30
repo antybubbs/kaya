@@ -11,6 +11,7 @@ from urllib.parse import urlencode
 from authlib.jose import JoseError, JsonWebToken
 from authlib.oidc.core import CodeIDToken
 import httpx
+from joserfc.errors import JoseError as JoseRFCError
 from sqlalchemy.orm import Session
 
 from app.core.security import decrypt_secret, encrypt_secret
@@ -306,7 +307,7 @@ def validate_id_token(
         claims.validate(leeway=60)
     except OIDCFlowError:
         raise
-    except (JoseError, ValueError, TypeError) as exc:
+    except (JoseError, JoseRFCError, ValueError, TypeError) as exc:
         raise OIDCFlowError("invalid_id_token") from exc
     result = dict(claims)
     return result

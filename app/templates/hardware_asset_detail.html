@@ -1,112 +1,418 @@
 {% extends "base.html" %}
+{% macro when(value, format='daytime', fallback='') -%}
+{%- if value -%}
+{%- if format == 'day' -%}{% set shown = value.day ~ ' ' ~ value.strftime('%b %Y') %}{%- elif format == 'short' -%}{% set shown = value.day ~ ' ' ~ value.strftime('%b, %H:%M') %}{%- else -%}{% set shown = value.day ~ ' ' ~ value.strftime('%b %Y, %H:%M') %}{%- endif -%}
+<time data-utc-time="{{ value.isoformat() }}Z" data-time-format="{{ format }}">{{ shown }}</time>
+{%- else -%}{{ fallback }}{%- endif -%}
+{%- endmacro %}
+{#- UTC ISO strings from reporting ("…Z"); localised in the browser like when(). -#}
+{% macro when_iso(value, format='daytime') -%}
+{%- if value -%}<time data-utc-time="{{ value }}" data-time-format="{{ format }}">{{ value[:16]|replace('T', ' ') }}</time>{%- endif -%}
+{%- endmacro %}
+{% macro plain_date(value) -%}{{ value.day ~ ' ' ~ value.strftime('%b %Y') }}{%- endmacro %}
+{% block extra_head %}<link rel="stylesheet" href="/static/css/asset_detail.css?v={{ asset_version }}">{% endblock %}
 {% block content %}
-{% if user.role in ['admin','editor'] %}
+{% set can_edit = user.role in ['admin','editor'] %}
+{% set primary_photo = photos|selectattr('is_primary')|first if photos else none %}
+{% set evidence_labels = {'mac': 'MAC', 'hostname': 'Hostname', 'dhcp_client_id': 'DHCP client ID', 'provider_client_id': 'Provider client ID', 'serial_number': 'Serial number'} %}
+{#- Current network assignment: the newest open, confirmed and currently valid assignment. -#}
+{% set current_assignment = asset_profile.assignment_rows|selectattr('ended_at', 'none')|selectattr('status', 'equalto', 'confirmed')|selectattr('profile_validity', 'equalto', 'valid')|first %}
+{% set open_assignments = asset_profile.assignment_rows|selectattr('ended_at', 'none')|list %}
+{% set mac_rows = asset_profile.identity_rows|selectattr('evidence_type', 'equalto', 'mac')|list %}
+{% set mac_evidence = (mac_rows|selectattr('status', 'equalto', 'confirmed')|first) or (mac_rows|first) %}
+{#- Hostname: managed IP/VLAN Manager name first, then newest confirmed, then newest suggestion. -#}
+{% set host_evidence = asset_profile.preferred_hostname %}
+{#- Last seen: the latest real DHCP or DNS observation the page already loads (permission-gated). -#}
+{% set seen = namespace(at=none) %}
+{% for lease in (asset_profile.dhcp_leases or []) %}{% if lease.last_seen_at and (seen.at is none or lease.last_seen_at > seen.at) %}{% set seen.at = lease.last_seen_at %}{% endif %}{% endfor %}
+{% for client in (asset_profile.dns_clients or []) %}{% if client.last_seen_at and (seen.at is none or client.last_seen_at > seen.at) %}{% set seen.at = client.last_seen_at %}{% endif %}{% endfor %}
+{% set active_statuses = ['in use', 'active', 'deployed', 'in service', 'online', 'operational'] %}
+{% set status_ok = record.status and record.status|lower in active_statuses %}
+{% set detail_values = [record.asset_tag, record.status, record.category, record.location, record.manufacturer, record.model, record.serial_number, record.supplier] %}
+{% set filled = detail_values|select|list|length %}
+{#- Recent activity: identity evidence and network assignments, newest first. -#}
+{% set activity = namespace(items=[]) %}
+{% for evidence in asset_profile.identity_rows %}{% if evidence.created_at %}{% set activity.items = activity.items + [{'at': evidence.created_at, 'label': 'Identity evidence: ' ~ ('MAC' if evidence.evidence_type == 'mac' else evidence.evidence_type|replace('_', ' ')), 'address': none, 'state': evidence.status}] %}{% endif %}{% endfor %}
+{% for assignment in asset_profile.assignment_rows %}{% if assignment.started_at %}{% set activity.items = activity.items + [{'at': assignment.started_at, 'label': 'Network assignment', 'address': assignment.address, 'state': assignment.status}] %}{% endif %}{% endfor %}
+{% set recent = (activity.items|sort(attribute='at', reverse=True))[:4] %}
+{% if can_edit %}
 <form id="asset-photo-upload" method="post" action="/infrastructure/asset-manager/{{ record.id }}/photos" enctype="multipart/form-data"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
 <form id="asset-photo-primary" method="post" action="" data-photo-primary-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
 <form id="asset-photo-remove" method="post" action="" data-photo-remove-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
 {% endif %}
-<form method="post" action="/infrastructure/asset-manager/{{ record.id }}/edit" class="inline-record" data-inline-edit enctype="multipart/form-data">
+<div class="asset-page" data-asset-page>
+<nav class="ad-breadcrumb" aria-label="Breadcrumb"><span>Infrastructure</span><span aria-hidden="true">/</span><a href="/infrastructure/asset-manager">Asset Manager</a><span aria-hidden="true">/</span><span class="ad-current" aria-current="page">{{ record.name }}</span></nav>
+<form method="post" action="/infrastructure/asset-manager/{{ record.id }}/edit" class="inline-record ad-edit-form" data-inline-edit enctype="multipart/form-data">
 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-<div class="record-hero">
-  <div>
-    <h1><span data-view>{{ record.name }}</span><input data-edit name="name" value="{{ record.name }}" required></h1>
-    <p class="record-identifier mono"><span data-view>{{ record.asset_tag or record.serial_number or 'No asset tag' }}</span><input data-edit name="asset_tag" value="{{ record.asset_tag or '' }}" placeholder="Asset tag"></p>
-    <div class="record-chips">
-      <span class="table-chip muted-chip">{{ record.status }}</span>
-      {% if record.category %}<span class="table-chip">{{ record.category }}</span>{% endif %}
-      {% if record.location %}<span class="table-chip muted-chip">{{ record.location }}</span>{% endif %}
+<section class="ad-card ad-summary" aria-label="Asset summary">
+  <div class="ad-summary-top">
+    {% if primary_photo %}
+    <button class="secondary ad-photo-tile has-photo" type="button" data-asset-tab-target="files" aria-label="Open photos of {{ record.name }}"><img src="/infrastructure/asset-manager/{{ record.id }}/photos/{{ primary_photo.id }}/thumbnail" alt=""></button>
+    {% elif can_edit %}
+    <button class="secondary ad-photo-tile" type="button" data-asset-photo-add aria-label="Add asset photo"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"></path><circle cx="12" cy="13" r="3.5"></circle></svg>Add photo</button>
+    {% else %}
+    <div class="secondary ad-photo-tile" aria-label="No asset photo" role="img"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"></path><circle cx="12" cy="13" r="3.5"></circle></svg>No photo</div>
+    {% endif %}
+    <div class="ad-title-block">
+      <div class="ad-title-row">
+        <h1><span data-view>{{ record.name }}</span><input data-edit name="name" value="{{ record.name }}" required aria-label="Asset name"></h1>
+        <span class="ad-mono ad-tag"><span data-view>{{ record.asset_tag or '' }}</span><input data-edit name="asset_tag" value="{{ record.asset_tag or '' }}" placeholder="Asset tag" aria-label="Asset tag"></span>
+      </div>
+      <div class="ad-pill-row">
+        {% if record.status %}<span class="ad-pill{% if status_ok %} ad-ok{% endif %}">{% if status_ok %}● {% endif %}{{ record.status }}</span>{% endif %}
+        {% if record.category %}<span class="ad-pill ad-or">{{ record.category }}</span>{% else %}<span class="ad-pill">No category</span>{% endif %}
+        <span class="ad-pill">{{ record.location or 'No location' }}</span>
+      </div>
+      <p class="ad-meta">{% if seen.at %}Last seen on the network {{ when(seen.at) }} · {% endif %}Created {{ when(record.created_at, 'day') }}</p>
+    </div>
+    {% if can_edit %}
+    <div class="ad-actions">
+      <button class="ad-btn secondary" type="button" data-asset-upload-file><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 12v7h16v-7M12 3v12M7 8l5-5 5 5"></path></svg>Upload file</button>
+      <button class="ad-btn ad-pri" type="button" data-edit-toggle><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16z"></path></svg>Edit asset</button>
+      <button class="ad-btn secondary" type="button" data-edit-cancel>Cancel</button>
+      <button class="ad-btn ad-pri" type="submit" data-edit-save>Save</button>
+      <details class="ad-menu" data-asset-menu>
+        <summary class="ad-btn ad-icon-btn" aria-label="More actions"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8"></circle><circle cx="12" cy="12" r="1.8"></circle><circle cx="19" cy="12" r="1.8"></circle></svg></summary>
+        <div class="ad-menu-panel" role="menu">
+          {% if primary_photo %}<button class="ad-menu-item" type="submit" form="asset-photo-remove" role="menuitem">Remove photo</button>{% endif %}
+          <button class="ad-menu-item ad-danger" type="submit" form="asset-delete-form" role="menuitem">Delete hardware asset</button>
+        </div>
+      </details>
+    </div>
+    {% endif %}
+  </div>
+  <div class="ad-facts">
+    <div class="ad-fact">
+      <span class="ad-cap">Current IP</span>
+      {% if current_assignment %}
+      <span class="ad-mono ad-fact-value">{{ current_assignment.address }}</span>
+      {% set managed = (asset_profile.managed_ips or [])|selectattr('id', 'equalto', current_assignment.ip_address_id)|first if current_assignment.ip_address_id else none %}
+      {% set vlan_text = current_assignment.vlan.name if asset_profile.can_vlan and current_assignment.vlan else '' %}
+      {% set type_text = managed.assignment_type if managed and managed.assignment_type else '' %}
+      {% if vlan_text or type_text %}<span class="ad-muted ad-fact-sub">{{ vlan_text }}{% if vlan_text and type_text %} · {% endif %}{{ type_text }}</span>{% endif %}
+      {% else %}<span class="ad-fact-value ad-muted">Not recorded</span>{% endif %}
+    </div>
+    <div class="ad-fact">
+      <span class="ad-cap">MAC address</span>
+      {% if mac_evidence %}<span class="ad-mono ad-fact-value">{{ mac_evidence.normalised_value }}</span><span class="ad-fact-sub{% if mac_evidence.status == 'confirmed' %} ad-ok-text{% else %} ad-muted{% endif %}">{{ 'Suggested' if mac_evidence.status == 'pending' else mac_evidence.status|title }}</span>
+      {% else %}<span class="ad-fact-value ad-muted">Not recorded</span>{% endif %}
+    </div>
+    <div class="ad-fact">
+      <span class="ad-cap">Hostname</span>
+      {% if host_evidence %}<span class="ad-mono ad-fact-value">{{ host_evidence.normalised_value }}</span><span class="ad-fact-sub{% if host_evidence.status == 'confirmed' %} ad-ok-text{% else %} ad-muted{% endif %}">{{ 'Suggested' if host_evidence.status == 'pending' else host_evidence.status|title }}</span>
+      {% else %}<span class="ad-fact-value ad-muted">Not recorded</span>{% endif %}
+    </div>
+    <div class="ad-fact" data-asset-traffic-fact>
+      <span class="ad-cap">Network traffic</span>
+      {% if asset_reporting.traffic is not none %}
+      {% set traffic_status = asset_reporting.traffic.status %}
+      <span class="ad-fact-value{% if traffic_status.state == 'recorded' %} ad-ok-text{% else %} ad-muted{% endif %}" data-asset-traffic-status>{{ traffic_status.label }}</span>
+      {% if traffic_status.state == 'recorded' and not asset_reporting.traffic.multiple_sources %}<span class="ad-fact-sub">Download {{ bytes_label(asset_reporting.traffic.download_bytes) }} · Upload {{ bytes_label(asset_reporting.traffic.upload_bytes) }}</span>
+      {% elif traffic_status.state == 'recorded' %}<span class="ad-fact-sub">Measured by {{ asset_reporting.traffic.sources|length }} sources</span>{% endif %}
+      {% if asset_profile.traffic_monitoring is not none %}<span class="ad-muted ad-fact-sub" data-asset-optional-tracking>Optional device tracking: {{ asset_profile.traffic_monitoring.status|replace('_', ' ')|capitalize }}</span>{% endif %}
+      {% else %}<span class="ad-fact-value ad-muted">Unavailable</span><span class="ad-muted ad-fact-sub">Network Traffic access is not granted</span>{% endif %}
+    </div>
+    <div class="ad-fact">
+      <span class="ad-cap">Warranty</span>
+      {% if record.warranty_expires %}<span class="ad-fact-value">{{ plain_date(record.warranty_expires) }}</span>
+      {% else %}<span class="ad-fact-value ad-muted">Not recorded</span>{% if can_edit %}<button class="secondary ad-link ad-fact-sub" type="button" data-asset-edit-field="warranty_expires">Add purchase details</button>{% endif %}{% endif %}
     </div>
   </div>
-  {% if user.role in ['admin','editor'] %}
-  <div class="inline-actions">
-    <button class="button" type="button" data-edit-toggle>Edit</button>
-    <button class="button secondary" type="button" data-edit-cancel>Cancel</button>
-    <button class="button" type="submit" data-edit-save>Save</button>
-  </div>
-  {% endif %}
-</div>
-<section class="record-layout asset-record-layout">
-  <section class="panel record-panel media-panel">
-    <h2>Photo</h2>
-    {% set primary_photo = photos|selectattr('is_primary')|first if photos else none %}
-    <div class="asset-photo-gallery" data-asset-photo-gallery data-asset-id="{{ record.id }}" data-asset-name="{{ record.name }}">
-      {% if primary_photo %}<button class="asset-photo-preview" type="button" data-photo-preview data-full-src="/infrastructure/asset-manager/{{ record.id }}/photos/{{ primary_photo.id }}" aria-label="View larger photo of {{ record.name }}"><img class="asset-photo" data-photo-main src="/infrastructure/asset-manager/{{ record.id }}/photos/{{ primary_photo.id }}" alt="{{ record.name }}"></button>{% else %}<div class="asset-photo-empty"><span aria-hidden="true">📷</span><strong>Add asset photo</strong><span>Take a photo or choose an image</span></div>{% endif %}
-      {% if photos %}<div class="asset-photo-thumbnails" role="list" aria-label="Asset photos">{% for photo in photos %}<button class="asset-photo-thumbnail{% if photo.is_primary %} is-primary{% endif %}" type="button" role="listitem" data-photo-id="{{ photo.id }}" data-full-src="/infrastructure/asset-manager/{{ record.id }}/photos/{{ photo.id }}" data-thumb-src="/infrastructure/asset-manager/{{ record.id }}/photos/{{ photo.id }}/thumbnail" data-is-primary="{{ '1' if photo.is_primary else '0' }}" aria-label="{{ 'Primary photo' if photo.is_primary else 'View photo' }} {{ loop.index }}"><img src="/infrastructure/asset-manager/{{ record.id }}/photos/{{ photo.id }}/thumbnail" alt=""><span>{% if photo.is_primary %}Primary{% else %}{{ loop.index }}{% endif %}</span></button>{% endfor %}</div>{% endif %}
-      {% if user.role in ['admin','editor'] %}<div class="asset-photo-actions">{% if photos|length < 5 %}<input id="asset-photo-file" form="asset-photo-upload" name="photos" type="file" accept="image/*" multiple required><button class="button secondary" form="asset-photo-upload" type="submit">Add photo</button>{% else %}<span class="muted">Maximum of 5 photos reached.</span>{% endif %}{% if primary_photo %}<button class="button secondary" form="asset-photo-primary" type="submit" data-photo-primary-submit hidden>Set primary</button><button class="button danger" form="asset-photo-remove" type="submit" data-photo-remove-submit>Remove photo</button>{% endif %}</div>{% endif %}
-    </div>
-  </section>
-  <section class="panel record-panel">
-    <h2>Overview</h2>
-    <dl class="record-kv-list">
-      <div><dt>Asset Tag</dt><dd class="mono"><span data-view>{{ record.asset_tag or '-' }}</span><input data-edit data-display-copy name="asset_tag_display" value="{{ record.asset_tag or '' }}" disabled></dd></div>
-      <div><dt>Status</dt><dd><span data-view><span class="table-chip muted-chip">{{ record.status }}</span></span><select data-edit name="asset_status">{% if record.status and record.status not in statuses %}<option value="{{ record.status }}" selected>{{ record.status }}</option>{% endif %}{% for option in statuses %}<option value="{{ option }}" {% if record.status == option %}selected{% endif %}>{{ option }}</option>{% endfor %}</select></dd></div>
-      <div><dt>Category</dt><dd><span data-view>{% if record.category %}<span class="table-chip">{{ record.category }}</span>{% else %}-{% endif %}</span><select data-edit name="category"><option value=""></option>{% if record.category and record.category not in categories %}<option value="{{ record.category }}" selected>{{ record.category }}</option>{% endif %}{% for option in categories %}<option value="{{ option }}" {% if record.category == option %}selected{% endif %}>{{ option }}</option>{% endfor %}</select></dd></div>
-      <div><dt>Location</dt><dd><span data-view>{{ record.location or '-' }}</span><select data-edit name="location"><option value=""></option>{% if record.location and record.location not in locations %}<option value="{{ record.location }}" selected>{{ record.location }}</option>{% endif %}{% for option in locations %}<option value="{{ option }}" {% if record.location == option %}selected{% endif %}>{{ option }}</option>{% endfor %}</select></dd></div>
-      <div><dt>Manufacturer</dt><dd><span data-view>{{ record.manufacturer or '-' }}</span><input data-edit name="manufacturer" value="{{ record.manufacturer or '' }}"></dd></div>
-      <div><dt>Model</dt><dd><span data-view>{{ record.model or '-' }}</span><input data-edit name="model" value="{{ record.model or '' }}"></dd></div>
-      <div><dt>Serial Number</dt><dd><span data-view>{{ record.serial_number or '-' }}</span><input data-edit name="serial_number" value="{{ record.serial_number or '' }}"></dd></div>
-      <div><dt>Supplier</dt><dd><span data-view>{{ record.supplier or '-' }}</span><input data-edit name="supplier" value="{{ record.supplier or '' }}"></dd></div>
-    </dl>
-  </section>
-  <section class="panel record-panel wide">
-    <h2>Purchase and Warranty</h2>
-    <dl class="record-kv-list full">
-      <div><dt>Purchase Date</dt><dd><span data-view>{{ record.purchase_date or '-' }}</span><input data-edit name="purchase_date" type="date" value="{{ record.purchase_date or '' }}"></dd></div>
-      <div><dt>Purchase Cost</dt><dd><span data-view>{{ record.purchase_cost or '-' }}</span><input data-edit name="purchase_cost" value="{{ record.purchase_cost or '' }}"></dd></div>
-      <div><dt>Warranty Expires</dt><dd><span data-view>{{ record.warranty_expires or '-' }}</span><input data-edit name="warranty_expires" type="date" value="{{ record.warranty_expires or '' }}"></dd></div>
-    </dl>
-  </section>
-  <section class="panel record-panel wide">
-    <h2>Notes and Custom Fields</h2>
-    <dl class="record-kv-list full">
-      <div><dt>Notes</dt><dd><span data-view>{{ record.notes or '-' }}</span><textarea data-edit name="notes">{{ record.notes or '' }}</textarea></dd></div>
-      {% for field in custom_fields %}
-      {% set current_value = custom_values.get(field.id, '') %}
-      <div><dt>{{ field.label }}</dt><dd><span data-view>{{ current_value or '-' }}</span>
-        {% if field.field_type == 'textarea' %}
-        <textarea data-edit name="custom_{{ field.id }}" {% if field.is_required %}required{% endif %}>{{ current_value }}</textarea>
-        {% elif field.field_type in ['radio','select'] %}
-        <select data-edit name="custom_{{ field.id }}" {% if field.is_required %}required{% endif %}><option value=""></option>{% for option in option_list(field) %}<option value="{{ option }}" {% if current_value == option %}selected{% endif %}>{{ option }}</option>{% endfor %}</select>
-        {% else %}
-        <input data-edit name="custom_{{ field.id }}" value="{{ current_value }}" {% if field.is_required %}required{% endif %}>
-        {% endif %}
-      </dd></div>
-      {% endfor %}
-    </dl>
-  </section>
 </section>
+
+<div class="ad-tabs" role="tablist" aria-label="Asset sections" data-asset-tabs>
+  <button class="ad-tab" type="button" role="tab" id="asset-tab-overview" aria-controls="asset-panel-overview" data-asset-tab="overview">Overview</button>
+  <button class="ad-tab" type="button" role="tab" id="asset-tab-network" aria-controls="asset-panel-network" data-asset-tab="network">Network &amp; identity <span class="ad-pill ad-count">{{ asset_profile.identity_rows|length + open_assignments|length }}</span></button>
+  <button class="ad-tab" type="button" role="tab" id="asset-tab-history" aria-controls="asset-panel-history" data-asset-tab="history">History &amp; reporting</button>
+  <button class="ad-tab" type="button" role="tab" id="asset-tab-files" aria-controls="asset-panel-files" data-asset-tab="files">Files <span class="ad-pill ad-count">{{ attachments|length }}</span></button>
+  <button class="ad-tab" type="button" role="tab" id="asset-tab-settings" aria-controls="asset-panel-settings" data-asset-tab="settings">Settings</button>
+</div>
+
+<div class="ad-panel ad-overview" role="tabpanel" id="asset-panel-overview" aria-labelledby="asset-tab-overview" data-asset-panel="overview">
+  <div class="ad-col-main">
+    <section class="ad-card ad-pad ad-details-card" aria-labelledby="asset-details-heading">
+      <div class="ad-card-head">
+        <h2 id="asset-details-heading">Details</h2>
+        <div class="ad-progress-wrap"><span class="ad-muted ad-small">{{ filled }} of 8 fields filled</span><div class="ad-progress" role="progressbar" aria-label="Detail fields filled" aria-valuemin="0" aria-valuemax="8" aria-valuenow="{{ filled }}"><div style="width: {{ (filled * 100 / 8)|round(1) }}%"></div></div></div>
+      </div>
+      <dl class="ad-dl">
+        <div class="ad-row"><dt class="ad-lbl">Asset tag</dt><dd><span data-view>{% if record.asset_tag %}<span class="ad-mono">{{ record.asset_tag }}</span>{% elif can_edit %}<button class="secondary ad-link" type="button" data-asset-edit-field="asset_tag">+ Add</button>{% else %}<span class="ad-empty">Not set</span>{% endif %}</span><input data-edit data-display-copy name="asset_tag_display" value="{{ record.asset_tag or '' }}" disabled aria-label="Asset tag (edit in the title)"></dd></div>
+        <div class="ad-row"><dt class="ad-lbl">Status</dt><dd><span data-view>{% if record.status %}<span class="ad-pill{% if status_ok %} ad-ok{% endif %}">{{ record.status }}</span>{% elif can_edit %}<button class="secondary ad-link" type="button" data-asset-edit-field="asset_status">+ Add</button>{% else %}<span class="ad-empty">Not set</span>{% endif %}</span><select data-edit name="asset_status" aria-label="Status">{% if record.status and record.status not in statuses %}<option value="{{ record.status }}" selected>{{ record.status }}</option>{% endif %}{% for option in statuses %}<option value="{{ option }}" {% if record.status == option %}selected{% endif %}>{{ option }}</option>{% endfor %}</select></dd></div>
+        <div class="ad-row"><dt class="ad-lbl">Category</dt><dd><span data-view>{% if record.category %}{{ record.category }}{% elif can_edit %}<button class="secondary ad-link" type="button" data-asset-edit-field="category">+ Set category</button>{% else %}<span class="ad-empty">Not set</span>{% endif %}</span><select data-edit name="category" aria-label="Category"><option value=""></option>{% if record.category and record.category not in categories %}<option value="{{ record.category }}" selected>{{ record.category }}</option>{% endif %}{% for option in categories %}<option value="{{ option }}" {% if record.category == option %}selected{% endif %}>{{ option }}</option>{% endfor %}</select></dd></div>
+        <div class="ad-row"><dt class="ad-lbl">Location</dt><dd><span data-view>{% if record.location %}{{ record.location }}{% elif can_edit %}<button class="secondary ad-link" type="button" data-asset-edit-field="location">+ Set location</button>{% else %}<span class="ad-empty">Not set</span>{% endif %}</span><select data-edit name="location" aria-label="Location"><option value=""></option>{% if record.location and record.location not in locations %}<option value="{{ record.location }}" selected>{{ record.location }}</option>{% endif %}{% for option in locations %}<option value="{{ option }}" {% if record.location == option %}selected{% endif %}>{{ option }}</option>{% endfor %}</select></dd></div>
+        {% for field, label, value in [('manufacturer', 'Manufacturer', record.manufacturer), ('model', 'Model', record.model), ('serial_number', 'Serial number', record.serial_number), ('supplier', 'Supplier', record.supplier)] %}
+        <div class="ad-row"><dt class="ad-lbl">{{ label }}</dt><dd><span data-view>{% if value %}{{ value }}{% elif can_edit %}<button class="secondary ad-link" type="button" data-asset-edit-field="{{ field }}">+ Add</button>{% else %}<span class="ad-empty">Not set</span>{% endif %}</span><input data-edit name="{{ field }}" value="{{ value or '' }}" aria-label="{{ label }}"></dd></div>
+        {% endfor %}
+        {% for field in custom_fields %}
+        {% set current_value = custom_values.get(field.id, '') %}
+        <div class="ad-row"><dt class="ad-lbl">{{ field.label }}</dt><dd><span data-view>{% if current_value %}{{ current_value }}{% elif can_edit %}<button class="secondary ad-link" type="button" data-asset-edit-field="custom_{{ field.id }}">+ Add</button>{% else %}<span class="ad-empty">Not set</span>{% endif %}</span>
+          {% if field.field_type == 'textarea' %}
+          <textarea data-edit name="custom_{{ field.id }}" aria-label="{{ field.label }}" {% if field.is_required %}required{% endif %}>{{ current_value }}</textarea>
+          {% elif field.field_type in ['radio','select'] %}
+          <select data-edit name="custom_{{ field.id }}" aria-label="{{ field.label }}" {% if field.is_required %}required{% endif %}><option value=""></option>{% for option in option_list(field) %}<option value="{{ option }}" {% if current_value == option %}selected{% endif %}>{{ option }}</option>{% endfor %}</select>
+          {% else %}
+          <input data-edit name="custom_{{ field.id }}" value="{{ current_value }}" aria-label="{{ field.label }}" {% if field.is_required %}required{% endif %}>
+          {% endif %}
+        </dd></div>
+        {% endfor %}
+      </dl>
+    </section>
+
+    <section class="ad-card ad-pad" aria-labelledby="asset-purchase-heading">
+      <h2 id="asset-purchase-heading" class="ad-h2-gap">Purchase &amp; warranty</h2>
+      <div class="ad-purchase-grid">
+        <div class="ad-stack"><span class="ad-lbl">Purchase date</span><span data-view>{% if record.purchase_date %}{{ plain_date(record.purchase_date) }}{% else %}<span class="ad-empty">Not set</span>{% endif %}</span><input data-edit name="purchase_date" type="date" value="{{ record.purchase_date or '' }}" aria-label="Purchase date"></div>
+        <div class="ad-stack"><span class="ad-lbl">Purchase cost</span><span data-view>{% if record.purchase_cost %}{{ record.purchase_cost }}{% else %}<span class="ad-empty">Not set</span>{% endif %}</span><input data-edit name="purchase_cost" value="{{ record.purchase_cost or '' }}" aria-label="Purchase cost"></div>
+        <div class="ad-stack"><span class="ad-lbl">Warranty expires</span><span data-view>{% if record.warranty_expires %}{{ plain_date(record.warranty_expires) }}{% else %}<span class="ad-empty">Not set</span>{% endif %}</span><input data-edit name="warranty_expires" type="date" value="{{ record.warranty_expires or '' }}" aria-label="Warranty expires"></div>
+      </div>
+      {% if record.warranty_expires %}
+      <p class="ad-warranty-line" data-warranty-countdown data-warranty-date="{{ record.warranty_expires.isoformat() }}">Warranty expires {{ plain_date(record.warranty_expires) }}</p>
+      {% elif not record.purchase_date %}
+      <div class="ad-hint" data-view><span class="ad-muted">Add a purchase date and warranty to get an expiry countdown here.</span>{% if can_edit %}<button class="ad-btn secondary" type="button" data-asset-edit-field="purchase_date">Add purchase details</button>{% endif %}</div>
+      {% endif %}
+    </section>
+
+    <section class="ad-card ad-pad" aria-labelledby="asset-notes-heading">
+      <div class="ad-card-head ad-tight"><h2 id="asset-notes-heading">Notes</h2>{% if can_edit %}<button class="ad-btn ad-btn-sm secondary" type="button" data-asset-edit-field="notes" data-view>Edit notes</button>{% endif %}</div>
+      <p class="ad-notes" data-view>{% if record.notes %}{{ record.notes }}{% else %}<span class="ad-empty">No notes yet.</span>{% endif %}</p>
+      <textarea data-edit name="notes" aria-label="Notes">{{ record.notes or '' }}</textarea>
+    </section>
+  </div>
+
+  <aside class="ad-col-side" aria-label="Asset summary details">
+    <section class="ad-card ad-pad" aria-labelledby="asset-identity-heading">
+      <div class="ad-card-head ad-tight"><h2 id="asset-identity-heading">Identity</h2><button class="secondary ad-link ad-small" type="button" data-asset-tab-target="network">Manage</button></div>
+      {% if asset_profile.identity_rows %}
+      <div class="ad-identity-list">
+        {% for evidence in asset_profile.identity_rows %}
+        <div class="ad-inner-row"><div class="ad-min0"><div class="ad-lbl">{{ evidence_labels.get(evidence.evidence_type, evidence.evidence_type|replace('_', ' ')|title) }}</div><div class="ad-mono ad-identity-value">{{ evidence.normalised_value }}</div><div class="ad-muted ad-tiny">via {{ evidence.source }}{% if evidence.source_scope %} · {{ evidence.source_scope }}{% endif %}</div></div><span class="ad-pill{% if evidence.status == 'confirmed' %} ad-ok{% endif %}">{{ 'Suggested' if evidence.status == 'pending' else evidence.status|title }}</span></div>
+        {% endfor %}
+      </div>
+      {% else %}<p class="ad-muted ad-body-sm">No identity evidence has been reviewed for this asset.</p>{% endif %}
+    </section>
+
+    <section class="ad-card ad-pad" aria-labelledby="asset-recent-heading">
+      <div class="ad-card-head ad-tight"><h2 id="asset-recent-heading">Recent activity</h2><button class="secondary ad-link ad-small" type="button" data-asset-tab-target="history" data-asset-scroll="asset-activity">View all</button></div>
+      {% if recent %}
+      <ol class="ad-activity">
+        {% for item in recent %}
+        <li><span class="ad-dot{% if loop.first %} ad-dot-new{% endif %}" aria-hidden="true"></span><div><div class="ad-body-sm">{{ item.label }}{% if item.address %} <span class="ad-mono">{{ item.address }}</span>{% endif %}</div><div class="ad-muted ad-small">{{ item.state|title }} · {{ when(item.at, 'short') }}</div></div></li>
+        {% endfor %}
+      </ol>
+      {% else %}<p class="ad-muted ad-body-sm">No activity recorded yet.</p>{% endif %}
+    </section>
+
+    <section class="ad-card ad-pad" aria-labelledby="asset-record-heading">
+      <h2 id="asset-record-heading" class="ad-h2-gap-sm">Record</h2>
+      <div class="ad-record-row"><span class="ad-lbl">Created</span><span>{{ when(record.created_at) }}</span></div>
+      <div class="ad-record-row"><span class="ad-lbl">Updated</span><span>{{ when(record.updated_at) }}</span></div>
+    </section>
+  </aside>
+</div>
 </form>
-<section class="panel section-gap">
-  <div class="topbar compact"><h2>Attachments</h2></div>
+
+<div class="ad-panel" role="tabpanel" id="asset-panel-network" aria-labelledby="asset-tab-network" data-asset-panel="network" hidden>
+<section class="ad-card ad-pad ad-legacy asset-identity-profile" aria-labelledby="device-identity-heading">
+  <div class="ad-card-head"><div><h2 id="device-identity-heading">Device Identity &amp; Connected Services</h2><p class="ad-muted ad-body-sm">Reviewed identity evidence and current, time-bounded associations. Nothing here changes collection or monitoring automatically.</p></div></div>
+  <div class="asset-profile-grid">
+    <section class="record-panel" aria-labelledby="identity-overview-heading">
+      <h3 id="identity-overview-heading">Identity overview</h3>
+      {% if asset_profile.identity_rows %}
+      <div class="asset-profile-list">
+      {% for evidence in asset_profile.identity_rows %}
+        <article class="asset-profile-item">
+          <div><strong>{{ evidence_labels.get(evidence.evidence_type, evidence.evidence_type|replace('_', ' ')|title) }}</strong><span class="muted mono">{{ evidence.normalised_value }}</span><span class="muted">{{ evidence.source }}{% if evidence.source_scope %} · {{ evidence.source_scope }}{% endif %}</span></div>
+          <span class="service-pill{% if evidence.status == 'confirmed' %} on{% endif %}">{{ 'Suggested' if evidence.status == 'pending' else evidence.status|title }}</span>
+          {% if user.role == 'admin' %}<div class="inline-actions">
+            {% if evidence.status != 'confirmed' %}<form method="post" action="/infrastructure/asset-manager/{{ record.id }}/identity-evidence/{{ evidence.id }}/confirm" data-confirm-action="Confirm this identity evidence for this asset?"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button small" type="submit">Confirm</button></form>{% endif %}
+            {% if evidence.status == 'confirmed' %}<form method="post" action="/infrastructure/asset-manager/{{ record.id }}/identity-evidence/{{ evidence.id }}/revoke" data-confirm-action="Revoke this confirmed identity evidence? Existing history will be retained."><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button danger small" type="submit">Revoke</button></form>{% endif %}
+          </div>{% endif %}
+        </article>
+      {% endfor %}
+      </div>
+      {% else %}<p class="muted">No identity evidence has been reviewed for this asset.</p>{% endif %}
+    </section>
+    <section class="record-panel" aria-labelledby="network-assignment-heading">
+      <h3 id="network-assignment-heading">Current and historical network assignments</h3>
+      {% if asset_profile.assignment_rows %}
+      <div class="asset-profile-list">
+      {% for assignment in asset_profile.assignment_rows %}
+        <article class="asset-profile-item">
+          <div><strong class="mono">{{ assignment.address }}</strong><span class="muted">IPv{{ assignment.address_family }} · {{ assignment.provenance }}</span>{% if asset_profile.can_vlan and assignment.vlan %}<span class="muted">{{ assignment.vlan.name }}{% if assignment.vlan.subnet_cidr %} · {{ assignment.vlan.subnet_cidr }}{% endif %}</span>{% endif %}<span class="muted">{{ when(assignment.started_at) }}{% if assignment.ended_at %} → {{ when(assignment.ended_at) }}{% endif %}</span></div>
+          <span class="service-pill{% if assignment.profile_validity == 'valid' %} on{% endif %}">{{ assignment.profile_validity|title }}</span>
+          {% if user.role == 'admin' %}<div class="inline-actions">
+            {% if assignment.status != 'confirmed' %}<form method="post" action="/infrastructure/asset-manager/{{ record.id }}/network-assignment/{{ assignment.id }}/confirm" data-confirm-action="Confirm this network assignment for this asset?"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button small" type="submit">Confirm</button></form>{% endif %}
+            {% if assignment.status == 'confirmed' and not assignment.ended_at %}<form method="post" action="/infrastructure/asset-manager/{{ record.id }}/network-assignment/{{ assignment.id }}/close" data-confirm-action="Close this network assignment at today’s date? The historical record will be retained."><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="ended_at" value="{{ now_date }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary small" type="submit">Close assignment</button></form>{% endif %}
+          </div>{% endif %}
+        </article>
+      {% endfor %}
+      </div>
+      {% else %}<p class="muted">No network assignments are recorded.</p>{% endif %}
+      {% if user.role == 'admin' and asset_profile.can_network and asset_profile.can_vlan and asset_profile.traffic_context_options %}
+      <form method="post" action="/infrastructure/asset-manager/{{ record.id }}/network-assignment/source-context" class="inline-record" data-traffic-context-form>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label for="traffic-context-mapping">Confirm Network Traffic source context</label>
+        <select id="traffic-context-mapping" name="mapping_id" required>
+          <option value="">Choose a source, exporter and VLAN</option>
+          {% for option in asset_profile.traffic_context_options %}
+          <option value="{{ option.mapping_id }}">{{ option.source_name }} · {{ option.exporter_identity }} · {{ option.vlan_name }} ({{ option.network_cidr }})</option>
+          {% endfor %}
+        </select>
+        <button class="button secondary small" type="submit">Confirm source context</button>
+        <p class="muted">This records identity context only. Observed usage is recorded automatically; optional device tracking stays off until started separately.</p>
+      </form>
+      {% endif %}
+      {% if not asset_profile.can_vlan %}<p class="muted">VLAN/IP Manager details are unavailable because that module is not enabled for this account.</p>{% endif %}
+    </section>
+  </div>
+  <div class="asset-profile-grid">
+    <section class="record-panel" aria-labelledby="dhcp-heading">
+      <h3 id="dhcp-heading">DHCP evidence</h3>
+      {% if asset_profile.dhcp_leases is none %}<p class="muted">DHCP evidence is unavailable because DNS Manager access is not granted.</p>
+      {% elif asset_profile.dhcp_leases %}<div class="ad-table-scroll"><table><thead><tr><th>Address</th><th>Client</th><th>Observed</th><th>Status</th></tr></thead><tbody>{% for lease in asset_profile.dhcp_leases %}<tr><td class="mono">{{ lease.ip_address }}</td><td>{{ lease.hostname or lease.mac_address or lease.provider_lease_id or '-' }}</td><td>{{ when(lease.lease_started_at) }}{% if lease.ended_at %} → {{ when(lease.ended_at) }}{% endif %}</td><td>{{ 'Active' if lease.is_active else 'Historical' }}</td></tr>{% endfor %}</tbody></table></div>
+      {% else %}<p class="muted">No related DHCP lease history is available.</p>{% endif %}
+    </section>
+    <section class="record-panel" aria-labelledby="dns-heading">
+      <h3 id="dns-heading">DNS associations</h3>
+      {% if asset_profile.dns_clients is none %}<p class="muted">DNS associations are unavailable because DNS Manager access is not granted.</p>
+      {% elif asset_profile.dns_clients %}<div class="ad-table-scroll"><table><thead><tr><th>Client</th><th>Current IP</th><th>Previous IP</th><th>Provider</th><th></th></tr></thead><tbody>{% for client in asset_profile.dns_clients %}<tr><td>{{ client.friendly_name or client.hostname or client.normalised_hostname or '-' }}</td><td class="mono">{{ client.current_ip or '-' }}</td><td class="mono">{{ client.previous_ip or '-' }}</td><td>{{ client.logical_provider_key }}</td><td><a class="button secondary small" href="/networking/dns-manager/clients/{{ client.id }}">Open DNS client</a></td></tr>{% endfor %}</tbody></table></div>
+      {% else %}<p class="muted">No DNS-recognised clients are linked to this asset.</p>{% endif %}
+    </section>
+  </div>
+  <div class="asset-profile-grid">
+    <section class="record-panel" aria-labelledby="traffic-evidence-heading">
+      <h3 id="traffic-evidence-heading">Network Traffic discovery evidence</h3>
+      {% if asset_profile.discovery_links is none %}<p class="muted">Network Traffic evidence is unavailable because Network Traffic access is not granted.</p>
+      {% elif asset_profile.discovery_links %}<div class="ad-table-scroll"><table><thead><tr><th>Endpoint</th><th>Role</th><th>Exporter</th><th>State</th><th></th></tr></thead><tbody>{% for link in asset_profile.discovery_links %}<tr><td class="mono">{{ link.endpoint_ip }}</td><td>{{ link.endpoint_role }}</td><td class="mono">{{ link.exporter_identity }}</td><td>{{ link.state|title }}{% if link.reason %}<span class="muted">{{ link.reason }}</span>{% endif %}</td><td>{% if asset_profile.can_vlan %}<a class="button secondary small" href="/networking/vlan-ip-manager/{{ link.managed_ip_address_id }}">Open managed IP</a>{% endif %}</td></tr>{% endfor %}</tbody></table></div>
+      {% else %}<p class="muted">No linked discovery evidence is available for this asset’s managed IP records.</p>{% endif %}
+    </section>
+    <section class="record-panel" aria-labelledby="managed-ip-heading">
+      <h3 id="managed-ip-heading">Managed IP records</h3>
+      {% if asset_profile.managed_ips is none %}<p class="muted">Managed IP details are unavailable because VLAN/IP Manager access is not granted.</p>
+      {% elif asset_profile.managed_ips %}<div class="asset-profile-list">{% for ip in asset_profile.managed_ips %}<article class="asset-profile-item"><div><strong class="mono">{{ ip.address }}</strong><span class="muted">{{ ip.name or ip.category or 'Managed IP' }}</span></div><a class="button secondary small" href="/networking/vlan-ip-manager/{{ ip.id }}">Open managed IP</a></article>{% endfor %}</div>
+      {% else %}<p class="muted">No associated managed IP records are available.</p>{% endif %}
+    </section>
+  </div>
+</section>
+</div>
+
+<div class="ad-panel" role="tabpanel" id="asset-panel-history" aria-labelledby="asset-tab-history" data-asset-panel="history" hidden>
+<section class="ad-card ad-pad ad-legacy asset-reporting" aria-labelledby="asset-reporting-heading">
+  <div class="ad-card-head"><div><h2 id="asset-reporting-heading">Historical reporting</h2><p class="ad-muted ad-body-sm">Read-only views of source-owned history. Missing observations are left unavailable, not treated as zero.</p></div></div>
+  <nav class="record-tabs" aria-label="Asset profile sections">
+    <a href="#asset-overview">Overview</a><a href="#asset-network-dhcp">Network &amp; DHCP</a><a href="#asset-dns">DNS</a><a href="#asset-traffic">Network Traffic</a><a href="#asset-activity">Activity</a><a href="#asset-lifecycle">Lifecycle</a>
+  </nav>
+  <form method="get" class="asset-report-filter" aria-label="Historical reporting period">
+    <input type="hidden" name="tab" value="history">
+    <label>Reporting period<select name="report_period"><option value="24h" {% if asset_reporting.period == '24h' %}selected{% endif %}>24 hours</option><option value="7d" {% if asset_reporting.period == '7d' %}selected{% endif %}>7 days</option><option value="30d" {% if asset_reporting.period == '30d' %}selected{% endif %}>30 days</option><option value="90d" {% if asset_reporting.period == '90d' %}selected{% endif %}>90 days</option><option value="custom" {% if asset_reporting.period == 'custom' %}selected{% endif %}>Custom range</option></select></label>
+    <label>Start <input type="datetime-local" name="report_start" value="{{ request.query_params.get('report_start', '') }}"></label>
+    <label>End <input type="datetime-local" name="report_end" value="{{ request.query_params.get('report_end', '') }}"></label>
+    <button class="button" type="submit">Apply range</button>
+  </form>
+  <p class="muted">{{ asset_reporting.window.timezone }} · {{ asset_reporting.window.aggregation }} · {{ when(asset_reporting.window.start) }} to {{ when(asset_reporting.window.end) }}</p>
+  <div class="asset-report-grid">
+    <section class="record-panel" id="asset-traffic" aria-labelledby="asset-traffic-heading">
+      <h3 id="asset-traffic-heading">Network Traffic</h3>
+      <p class="muted">Usage is recorded automatically for observed IP addresses. This profile shows only usage within this asset's confirmed network assignments.</p>
+      {% if asset_reporting.traffic is not none %}
+      <dl class="record-kv-list compact" data-asset-traffic-summary>
+        <div><dt>Network traffic</dt><dd data-asset-traffic-status>{{ asset_reporting.traffic.status.label }}</dd></div>
+        <div><dt>Period</dt><dd>{{ when(asset_reporting.window.start) }} to {{ when(asset_reporting.window.end) }}</dd></div>
+        {% if asset_reporting.traffic.last_measured_at %}<div><dt>Latest measured interval</dt><dd>{{ when_iso(asset_reporting.traffic.last_measured_at) }}</dd></div>{% endif %}
+      </dl>
+      <p class="muted">{{ asset_reporting.traffic.status.detail }}</p>
+      {% endif %}
+      {% if asset_reporting.traffic is none %}<p class="muted">Network Traffic history is unavailable because the module is not authorised for this account.</p>
+      {% elif asset_reporting.traffic.multiple_sources %}<p class="muted">More than one traffic source measured this asset's address. Totals are shown per source, because adding them could count the same traffic twice.</p><dl class="record-kv-list compact">{% for item in asset_reporting.traffic.sources %}<div><dt>{{ item.source }}{% if item.exporter_identity %} · {{ item.exporter_identity }}{% endif %}</dt><dd>Download {{ bytes_label(item.download_bytes) }} · Upload {{ bytes_label(item.upload_bytes) }}</dd></div>{% endfor %}<div><dt>Excluded ambiguous buckets</dt><dd>{{ asset_reporting.traffic.excluded_buckets }}</dd></div></dl>
+      {% elif asset_reporting.traffic.history %}<dl class="record-kv-list compact"><div><dt>Download</dt><dd title="{{ asset_reporting.traffic.download_bytes }} bytes">{{ bytes_label(asset_reporting.traffic.download_bytes) }}</dd></div><div><dt>Upload</dt><dd title="{{ asset_reporting.traffic.upload_bytes }} bytes">{{ bytes_label(asset_reporting.traffic.upload_bytes) }}</dd></div>{% for item in asset_reporting.traffic.sources %}<div><dt>Source</dt><dd>{{ item.source }}{% if item.exporter_identity %} · {{ item.exporter_identity }}{% endif %}</dd></div>{% endfor %}<div><dt>Excluded ambiguous buckets</dt><dd>{{ asset_reporting.traffic.excluded_buckets }}</dd></div></dl><div class="asset-history-chart" data-asset-history-chart="traffic" data-asset-history-points='{{ asset_reporting.traffic.history|tojson|forceescape }}' role="img" aria-label="Network Traffic download and upload over time"></div><a class="button secondary small" href="/networking/ip-wan-monitor/traffic">Open Network Traffic reporting</a>
+      {% elif asset_reporting.traffic.excluded_buckets %}<dl class="record-kv-list compact"><div><dt>Excluded ambiguous buckets</dt><dd>{{ asset_reporting.traffic.excluded_buckets }}</dd></div></dl>{% endif %}
+      {% if asset_profile.traffic_monitoring is not none %}
+      <div class="section-gap" data-asset-optional-tracking-panel>
+      <h4>Optional device tracking</h4>
+      <dl class="record-kv-list compact">
+        <div><dt>Optional device tracking</dt><dd>{{ asset_profile.traffic_monitoring.status|replace('_', ' ')|capitalize }}</dd></div>
+        <div><dt>Tracking status</dt><dd>{{ asset_profile.traffic_monitoring.reason }}</dd></div>
+      </dl>
+      <p class="muted">Optional device tracking keeps its own tracked-device history in Network Traffic. It is not required for the automatic usage shown above.</p>
+      {% if user.role == 'admin' %}
+      <form method="post" action="/infrastructure/asset-manager/{{ record.id }}/network-traffic" class="inline-actions section-gap">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="enabled" value="{{ '0' if asset_profile.traffic_monitoring.enabled else '1' }}">
+        <button class="button {{ 'danger' if asset_profile.traffic_monitoring.enabled else '' }}" type="submit">{{ 'Stop device tracking' if asset_profile.traffic_monitoring.enabled else 'Start device tracking' }}</button>
+        <small class="muted">Optional. Tracking lists this device in the Network Traffic Overview device list with its own tracking history. Starting or stopping it does not change automatic usage recording.</small>
+      </form>
+      {% endif %}
+      </div>
+      {% endif %}
+    </section>
+    <section class="record-panel" id="asset-dns" aria-labelledby="asset-dns-heading">
+      <h3 id="asset-dns-heading">DNS activity</h3>
+      {% if asset_reporting.dns is none %}<p class="muted">DNS history is unavailable because DNS Manager is not authorised for this account.</p>
+      {% elif asset_reporting.dns.query_count %}<dl class="record-kv-list compact"><div><dt>Queries</dt><dd>{{ asset_reporting.dns.query_count }}</dd></div><div><dt>Blocked</dt><dd>{{ asset_reporting.dns.blocked_count }}</dd></div></dl><div class="asset-history-chart" data-asset-history-chart="dns" data-asset-history-points='{{ asset_reporting.dns.history|tojson|forceescape }}' role="img" aria-label="DNS queries and blocked queries over time"></div><ul class="asset-report-list">{% for item in asset_reporting.dns.top_domains %}<li><span>{{ item.domain }}</span><strong>{{ item.count }}</strong></li>{% endfor %}</ul><form method="get" class="asset-report-filter"><input type="hidden" name="tab" value="history"><input type="hidden" name="report_period" value="{{ asset_reporting.period }}"><input type="search" name="report_dns_q" value="{{ request.query_params.get('report_dns_q', '') }}" maxlength="200" aria-label="Search retained DNS domains" placeholder="Search retained domains"><button class="button secondary small" type="submit">Search DNS history</button></form><div class="ad-table-scroll"><table><thead><tr><th>Observed</th><th>Domain</th><th>Result</th></tr></thead><tbody>{% for item in asset_reporting.dns.rows %}<tr><td>{{ when_iso(item.observed_at) }}</td><td>{{ item.domain }}</td><td>{{ 'Blocked' if item.blocked else (item.status or 'Allowed') }}</td></tr>{% else %}<tr><td colspan="3">No retained DNS rows match this search.</td></tr>{% endfor %}</tbody></table></div>{% if asset_reporting.dns.pages > 1 %}<nav class="pagination" aria-label="DNS history pages"><span>Page {{ asset_reporting.dns.page }} of {{ asset_reporting.dns.pages }}</span>{% if asset_reporting.dns.page > 1 %}<a class="button secondary small" href="?tab=history&amp;report_period={{ asset_reporting.period }}&amp;report_dns_q={{ request.query_params.get('report_dns_q', '')|urlencode }}&amp;report_dns_page={{ asset_reporting.dns.page - 1 }}#asset-dns">Back</a>{% endif %}{% if asset_reporting.dns.page < asset_reporting.dns.pages %}<a class="button secondary small" href="?tab=history&amp;report_period={{ asset_reporting.period }}&amp;report_dns_q={{ request.query_params.get('report_dns_q', '')|urlencode }}&amp;report_dns_page={{ asset_reporting.dns.page + 1 }}#asset-dns">Next</a>{% endif %}</nav>{% endif %}<a class="button secondary small" href="/networking/dns-manager?tab=clients">Open DNS Manager</a>
+      {% else %}<p class="muted">No retained DNS activity is available for this period.</p>{% endif %}
+    </section>
+    <section class="record-panel" id="asset-network-dhcp" aria-labelledby="asset-uptime-heading">
+      <h3 id="asset-uptime-heading">Uptime and latency</h3>
+      {% if asset_reporting.uptime is none %}<p class="muted">Uptime history is unavailable because monitoring data is not authorised for this account.</p>
+      {% elif asset_reporting.uptime.history %}<div class="asset-history-chart" data-asset-history-chart="uptime" data-asset-history-points='{{ asset_reporting.uptime.history|tojson|forceescape }}' role="img" aria-label="Availability and latency over time"></div><a class="button secondary small" href="/networking/ip-wan-monitor">Open Uptime reporting</a>
+      {% else %}<p class="muted">No uptime observations are available in this period.</p>{% endif %}
+    </section>
+    <section class="record-panel" id="asset-activity" aria-labelledby="asset-activity-heading"><h3 id="asset-activity-heading">Activity</h3>{% if asset_reporting.activity %}<ol class="asset-report-list">{% for item in asset_reporting.activity %}<li><span>{{ when(item.at) }}</span><strong>{{ item.label }}</strong><span class="muted">{{ item.state|title }}</span></li>{% endfor %}</ol>{% else %}<p class="muted">No identity or network activity was recorded in this period.</p>{% endif %}</section>
+    <section class="record-panel" id="asset-overview" aria-labelledby="asset-overview-heading"><h3 id="asset-overview-heading">Coverage</h3><p class="muted">The profile preserves the existing identity, lifecycle, photos, notes, attachments and reviewed network context. Each module keeps its own retention and attribution boundaries.</p></section>
+    <section class="record-panel" id="asset-lifecycle" aria-labelledby="asset-lifecycle-heading"><h3 id="asset-lifecycle-heading">Lifecycle</h3><dl class="record-kv-list compact"><div><dt>Created</dt><dd>{{ when(record.created_at) }}</dd></div><div><dt>Updated</dt><dd>{{ when(record.updated_at) }}</dd></div><div><dt>Status</dt><dd>{{ record.status }}</dd></div></dl></section>
+  </div>
+</section>
+</div>
+
+<div class="ad-panel ad-files" role="tabpanel" id="asset-panel-files" aria-labelledby="asset-tab-files" data-asset-panel="files" hidden>
+<section class="ad-card ad-pad ad-legacy media-panel" aria-labelledby="asset-photo-heading">
+  <h2 id="asset-photo-heading" class="ad-h2-gap">Photo</h2>
+  <div class="asset-photo-gallery" data-asset-photo-gallery data-asset-id="{{ record.id }}" data-asset-name="{{ record.name }}">
+    {% if primary_photo %}<button class="asset-photo-preview" type="button" data-photo-preview data-full-src="/infrastructure/asset-manager/{{ record.id }}/photos/{{ primary_photo.id }}" aria-label="View larger photo of {{ record.name }}"><img class="asset-photo" data-photo-main src="/infrastructure/asset-manager/{{ record.id }}/photos/{{ primary_photo.id }}" alt="{{ record.name }}"></button>{% else %}<div class="asset-photo-empty"><span aria-hidden="true">📷</span><strong>Add asset photo</strong><span>Take a photo or choose an image</span></div>{% endif %}
+    {% if photos %}<div class="asset-photo-thumbnails" role="list" aria-label="Asset photos">{% for photo in photos %}<button class="asset-photo-thumbnail{% if photo.is_primary %} is-primary{% endif %}" type="button" role="listitem" data-photo-id="{{ photo.id }}" data-full-src="/infrastructure/asset-manager/{{ record.id }}/photos/{{ photo.id }}" data-thumb-src="/infrastructure/asset-manager/{{ record.id }}/photos/{{ photo.id }}/thumbnail" data-is-primary="{{ '1' if photo.is_primary else '0' }}" aria-label="{{ 'Primary photo' if photo.is_primary else 'View photo' }} {{ loop.index }}"><img src="/infrastructure/asset-manager/{{ record.id }}/photos/{{ photo.id }}/thumbnail" alt=""><span>{% if photo.is_primary %}Primary{% else %}{{ loop.index }}{% endif %}</span></button>{% endfor %}</div>{% endif %}
+    {% if can_edit %}<div class="asset-photo-actions">{% if photos|length < 5 %}<input id="asset-photo-file" form="asset-photo-upload" name="photos" type="file" accept="image/*" multiple required><button class="button secondary" form="asset-photo-upload" type="submit">Add photo</button>{% else %}<span class="muted">Maximum of 5 photos reached.</span>{% endif %}{% if primary_photo %}<button class="button secondary" form="asset-photo-primary" type="submit" data-photo-primary-submit hidden>Set primary</button><button class="button danger" form="asset-photo-remove" type="submit" data-photo-remove-submit>Remove photo</button>{% endif %}</div>{% endif %}
+  </div>
+</section>
+<section class="ad-card ad-pad ad-legacy" aria-labelledby="asset-attachments-heading">
+  <h2 id="asset-attachments-heading" class="ad-h2-gap">Attachments</h2>
   {% if attachments %}
+  <div class="ad-table-scroll">
   <table>
     <thead><tr><th>File</th><th>Uploaded</th><th></th></tr></thead>
     <tbody>
     {% for attachment in attachments %}
-    <tr><td>{{ attachment.original_filename }}</td><td>{{ attachment.uploaded_at }}</td><td><div class="inline-actions"><a class="button secondary" href="/infrastructure/asset-manager/{{ record.id }}/attachments/{{ attachment.id }}">Download</a>{% if user.role in ['admin','editor'] %}<form method="post" action="/infrastructure/asset-manager/{{ record.id }}/attachments/{{ attachment.id }}/delete" data-confirm-delete="Delete attachment {{ attachment.original_filename }}?"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button danger" type="submit">Delete</button></form>{% endif %}</div></td></tr>
+    <tr><td>{{ attachment.original_filename }}</td><td>{{ attachment.uploaded_at }}</td><td><div class="inline-actions"><a class="button secondary" href="/infrastructure/asset-manager/{{ record.id }}/attachments/{{ attachment.id }}">Download</a>{% if can_edit %}<form method="post" action="/infrastructure/asset-manager/{{ record.id }}/attachments/{{ attachment.id }}/delete" data-confirm-delete="Delete attachment {{ attachment.original_filename }}?"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button danger" type="submit">Delete</button></form>{% endif %}</div></td></tr>
     {% endfor %}
     </tbody>
   </table>
+  </div>
   {% else %}
   <p class="muted">No attachments yet.</p>
   {% endif %}
-  {% if user.role in ['admin','editor'] %}
+  {% if can_edit %}
   <form method="post" action="/infrastructure/asset-manager/{{ record.id }}/attachments" enctype="multipart/form-data" class="search section-gap">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <input name="attachment" type="file" required>
+    <input name="attachment" type="file" required data-asset-attachment-input aria-label="Attachment file">
     <button type="submit">Upload attachment</button>
   </form>
   {% endif %}
 </section>
-{% if user.role in ['admin','editor'] %}
-<section class="panel section-gap danger-zone">
-  <div class="panel-heading"><div><h2>Danger Zone</h2><p class="muted">Permanently delete this asset, its custom values, photo, and attachments. Rack placements and recognised DNS devices will remain but become unlinked.</p></div></div>
-  <form method="post" action="/infrastructure/asset-manager/{{ record.id }}/delete" data-confirm-delete="Delete hardware asset {{ record.name }} and all its uploaded files? This cannot be undone.">
+</div>
+
+<div class="ad-panel" role="tabpanel" id="asset-panel-settings" aria-labelledby="asset-tab-settings" data-asset-panel="settings" hidden>
+{% if can_edit %}
+<section class="ad-card ad-pad ad-legacy danger-zone" aria-labelledby="asset-danger-heading">
+  <div class="panel-heading"><div><h2 id="asset-danger-heading">Danger Zone</h2><p class="muted">Permanently delete this asset, its custom values, photo, and attachments. Rack placements and recognised DNS devices will remain but become unlinked.</p></div></div>
+  <form id="asset-delete-form" method="post" action="/infrastructure/asset-manager/{{ record.id }}/delete" data-confirm-delete="Delete hardware asset {{ record.name }} and all its uploaded files? This cannot be undone.">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <button class="button danger" type="submit">Delete hardware asset</button>
   </form>
 </section>
+{% else %}
+<section class="ad-card ad-pad"><p class="ad-muted ad-body-sm">No settings are available for your role.</p></section>
 {% endif %}
+</div>
+</div>
 <dialog class="asset-photo-lightbox" data-asset-photo-lightbox aria-label="Larger asset photo"><form method="dialog"><button class="button secondary" type="submit" aria-label="Close larger photo">Close</button></form><img data-photo-lightbox-image alt=""></dialog>
 {% endblock %}
-{% block extra_scripts %}<script src="/static/js/hardware_assets.js?v={{ asset_version }}" defer></script>{% endblock %}
+{% block extra_scripts %}<script src="/static/vendor/echarts/echarts.min.js?v=6.1.0" defer></script><script src="/static/js/hardware_assets.js?v={{ asset_version }}" defer></script><script src="/static/js/asset_history_charts.js?v={{ asset_version }}" defer></script>{% endblock %}

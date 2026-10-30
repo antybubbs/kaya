@@ -66,3 +66,29 @@ def test_shared_navigation_styles_keep_settings_separate_and_mobile_reachable():
     active_rule = css[css.index(".module-nav__pages>a.active"):css.index(".module-nav__pages>a:focus-visible")]
     assert "box-shadow:none" in active_rule
     assert "inset 0 -2px" not in active_rule
+
+
+def test_refresh_theme_keeps_desktop_tabs_out_of_a_scroll_container():
+    # The refresh's -1px tab underline offset overflows .module-nav__pages vertically, and kaya.css
+    # makes that strip overflow-x:auto everywhere, which left a live scroll container on desktop.
+    css = (ROOT / "app" / "static" / "css" / "kaya-refresh.css").read_text(encoding="utf-8")
+    desktop = css[css.index("@media (min-width:1024px){"):]
+    desktop = desktop[:desktop.index("}\n}") + 1]
+    assert ".module-nav,.module-nav__pages{overflow:visible!important}" in desktop
+    assert ".module-nav__pages{flex-wrap:wrap!important}" in desktop
+    narrow = css[css.index("@media (max-width:1023px){"):]
+    narrow = narrow[:narrow.index("}\n}") + 1]
+    # Narrow screens keep kaya.css's sideways scrolling, but never a vertical scroll.
+    assert ".module-nav__pages{overflow-y:hidden!important}" in narrow
+    assert "overflow-x" not in narrow
+
+
+def test_refresh_theme_keeps_card_inset_around_edge_to_edge_tables():
+    css = (ROOT / "app" / "static" / "css" / "kaya-refresh.css").read_text(encoding="utf-8")
+    table_card = ".panel:is(:has(> table),:has(> .table-scroll),:has(> .table-wrap))"
+    # The card itself still gives its table the full width ...
+    assert ".panel:has(> table),.panel:has(> .table-scroll),.panel:has(> .table-wrap){padding:0!important;overflow:hidden}" in css
+    # ... while every other child keeps the canonical 20px inset and vertical breathing room.
+    assert f"{table_card}>:not(table,.table-scroll,.table-wrap){{padding-left:20px!important;padding-right:20px!important}}" in css
+    assert f"{table_card}>:not(table,.table-scroll,.table-wrap,header,.panel-heading,.runbook-section-header):first-child{{padding-top:16px!important}}" in css
+    assert f"{table_card}>:not(table,.table-scroll,.table-wrap):last-child{{padding-bottom:16px!important}}" in css

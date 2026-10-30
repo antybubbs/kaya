@@ -5,7 +5,7 @@ import re
 import subprocess
 import time
 import threading
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from ipaddress import ip_address
 from uuid import uuid4
 
@@ -23,6 +23,7 @@ from app.services.site_settings import get_site_settings
 logger = logging.getLogger(__name__)
 
 CHECK_INTERVAL_SECONDS = 1
+BACKGROUND_SCAN_INTERVAL_SECONDS = 5
 STARTUP_DELAY_SECONDS = 45
 MAX_CONCURRENT_CHECKS = 5
 SCHEDULER_HEARTBEAT_SECONDS = 60
@@ -286,14 +287,29 @@ def active_dashboard_interval() -> int | None:
         return min((interval for _, interval, _ in _dashboard_interval_leases.values()), default=None)
 
 
+def scheduler_scan_interval() -> int:
+    """Return the shortest scan cadence required by the active dashboard mode.
+
+    Ordinary monitor intervals are clamped to five seconds.  The one-second
+    scheduler cadence is only needed while a dashboard has explicitly leased
+    live mode; otherwise scanning every second adds database work without
+    making any monitor eligible sooner.
+    """
+    return CHECK_INTERVAL_SECONDS if active_dashboard_interval() == 1 else BACKGROUND_SCAN_INTERVAL_SECONDS
+
+
 def monitor_check_lock(monitor_id: int) -> threading.Lock:
     with _monitor_check_locks_guard:
         return _monitor_check_locks.setdefault(monitor_id, threading.Lock())
 
 
 def _bucket_start(value: datetime, seconds: int) -> datetime:
-    epoch = int(value.timestamp())
-    return datetime.utcfromtimestamp(epoch - (epoch % seconds))
+    # Kaya stores these operational timestamps as naive UTC datetimes. Calling
+    # timestamp() on a naive value makes the host's local timezone part of the
+    # bucket calculation, which shifts buckets on non-UTC hosts.
+    utc_value = value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+    epoch = int(utc_value.timestamp())
+    return datetime.fromtimestamp(epoch - (epoch % seconds), UTC).replace(tzinfo=None)
 
 
 def _worst_health(states) -> str | None:
@@ -910,12 +926,12 @@ def _reap_finished_monitor_tasks(in_flight: dict[int, asyncio.Task]) -> dict[int
         if not task.done():
             continue
         if task.cancelled():
-            logger.warning("IP/WAN monitor task cancelled monitor_id=%s", monitor_id)
+            logger.warning("Uptime task cancelled monitor_id=%s", monitor_id)
             continue
         try:
             task.result()
         except Exception:
-            logger.exception("IP/WAN monitor task failed monitor_id=%s", monitor_id)
+            logger.exception("Uptime task failed monitor_id=%s", monitor_id)
     return {monitor_id: task for monitor_id, task in in_flight.items() if not task.done()}
 
 
@@ -939,7 +955,7 @@ async def _run_monitor_loop() -> None:
                     with _scheduler_state_guard:
                         global _last_monitor_execution
                         _last_monitor_execution = datetime.utcnow()
-                logger.info("IP/WAN monitor completed monitor_id=%s executed=%s", monitor_id, completed)
+                logger.info("Uptime check completed monitor_id=%s executed=%s", monitor_id, completed)
         finally:
             with _scheduler_state_guard:
                 _pending_monitor_ids.discard(monitor_id)
@@ -979,15 +995,16 @@ async def _run_monitor_loop() -> None:
             for monitor_id in monitor_ids:
                 with _scheduler_state_guard:
                     _pending_monitor_ids.add(monitor_id)
-                logger.info("IP/WAN monitor queued monitor_id=%s", monitor_id)
+                logger.info("Uptime check queued monitor_id=%s", monitor_id)
                 in_flight[monitor_id] = asyncio.create_task(checked_monitor(monitor_id))
             logger.info("IP/WAN scheduler iteration finished iteration=%s queued=%s pending=%s", iteration, len(monitor_ids), len(in_flight))
-            next_tick += CHECK_INTERVAL_SECONDS
+            scan_interval = scheduler_scan_interval()
+            next_tick += scan_interval
             sleep_seconds = max(0, next_tick - time.monotonic())
             logger.info("IP/WAN scheduler sleeping seconds=%.3f", sleep_seconds)
             await asyncio.sleep(sleep_seconds)
             logger.info("IP/WAN scheduler resumed")
-            if next_tick < time.monotonic() - CHECK_INTERVAL_SECONDS:
+            if next_tick < time.monotonic() - scan_interval:
                 next_tick = time.monotonic()
     finally:
         for task in in_flight.values():

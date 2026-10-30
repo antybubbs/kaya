@@ -29,3 +29,17 @@ Every database pull request includes:
 Run at minimum the migration tests, a fresh upgrade, repeated startup, downgrade testing on disposable data where supported, and the complete test suite. No future column may be added with normal-startup `ALTER TABLE` code.
 
 Ordinary clean startup uses bounded integrity, foreign-key, revision, and required-table checks. Use `validate_schema()` in migration tests and diagnostics when the complete table, column, type, index, unique-constraint, and foreign-key contract must be inspected.
+
+## Disposable PostgreSQL Stage A validation
+
+On Linux with Docker available, run the isolated PostgreSQL 16.15 workflow from the repository root:
+
+```bash
+export KAYA_STAGEA_TEST_MARKER=I_UNDERSTAND_DISPOSABLE_STAGEA
+export KAYA_STAGEA_TEST_PASSWORD='synthetic-only-password'
+bash scripts/validate-stagea-postgres.sh
+```
+
+The script creates only a run-scoped container and volume named `kaya-stagea-*`, binds the temporary server to `127.0.0.1`, uses test-only database names, verifies `current_database()` and the local server address before every migration operation, runs `scripts/kaya_test_migrations.py`, and removes its exact container and volume on exit. It refuses to run without the explicit marker or against production-like database names. It does not use the production Compose stack, live volumes, `C:\\app\\data\\kaya.db`, or production credentials.
+
+The workflow validates fresh migration, the `20261014_03` upgrade path, downgrade/re-upgrade, link-context nullability, mapping indexes and foreign keys, and the PostgreSQL compatibility tests. Set `KAYA_STAGEA_PG_PORT` to another unprivileged localhost port if `55439` is occupied. The password is synthetic and disposable; do not use a deployment secret.

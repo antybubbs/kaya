@@ -11,7 +11,7 @@
   <div class="card"><span>Active incidents</span><strong data-monitor-summary="active_incidents">{{ active_incidents }}</strong></div>
 </section>
 {% if not rows %}
-<section class="panel"><p class="muted">No IP addresses are enabled for IP/WAN Monitor yet.</p></section>
+<section class="panel"><p class="muted">No IP addresses are enabled for Uptime yet.</p></section>
 {% else %}
 <section class="monitor-grid monitor-live-grid" data-monitor-live-grid data-latest-observation-id="{{ latest_observation_id }}">
 {% for row in rows %}

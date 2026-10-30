@@ -25,7 +25,7 @@ def test_ip_detail_aggregates_monitor_summary_and_bounds_display_checks(monkeypa
         lambda request, template, context: captured.update(context) or context,
     )
     request = SimpleNamespace(session={}, client=None)
-    user = SimpleNamespace(role="viewer")
+    user = SimpleNamespace(id=1, role="viewer", is_active=True)
     now = datetime.utcnow()
     with Session(engine) as db:
         record = IPAddress(address="192.0.2.10", name="Synthetic target")

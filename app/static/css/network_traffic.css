@@ -1,0 +1,216 @@
+/* Network Traffic — Kaya dark ops theme. Colours come from kaya.css tokens. */
+.traffic-page {
+  --traffic-download: var(--kaya-orange, #ff8a00);
+  --traffic-upload: #2dd4bf;
+  --traffic-surface: var(--kaya-panel-soft, #1a1f27);
+  --traffic-inset: var(--kaya-ink, #101319);
+  --traffic-line: var(--kaya-border, #2a303a);
+  --traffic-line-soft: var(--kaya-border-soft, rgba(148,163,184,.16));
+  --traffic-heading: #fff;
+  --traffic-ok: var(--kaya-success, #22c55e);
+  --traffic-warn: var(--kaya-warning, #f59e0b);
+  --traffic-bad: var(--kaya-danger, #ef4444);
+  display: grid; gap: 16px; min-width: 0; width: 100%;
+}
+html[data-theme=light] .traffic-page, html[data-kaya-theme=light-ops] .traffic-page {
+  --traffic-download: #d96f00; --traffic-upload: #0f9488; --traffic-surface: #f8fafc; --traffic-inset: #f1f5f9;
+  --traffic-line: #d8dee8; --traffic-line-soft: #e5e9f0; --traffic-heading: #111827; --traffic-ok: #15803d; --traffic-warn: #b45309; --traffic-bad: #b91c1c;
+}
+.traffic-page > section, .traffic-overview { min-width: 0; }
+.traffic-overview { display: grid; gap: 16px; }
+.traffic-page h2 { color: var(--traffic-heading); font-size: 15px; font-weight: 800; letter-spacing: 0; margin: 0; }
+.traffic-page .traffic-card-header p { font-size: 12.5px; margin: 4px 0 0; }
+/* Neutralise Kaya's global `.card strong { font-size: 30px }` inside this module. */
+.traffic-page .card strong { color: var(--traffic-heading); font-size: inherit; font-weight: 700; }
+.traffic-card-header { align-items: flex-start; display: flex; gap: 16px; justify-content: space-between; }
+.traffic-card-header > div:first-child { min-width: 0; }
+.traffic-card-header .button { flex: 0 0 auto; }
+.compact { font-size: 12.5px; padding: 6px 10px; }
+
+/* Filter bar */
+.traffic-toolbar { align-items: flex-end; display: flex; flex-wrap: wrap; gap: 12px 20px; justify-content: space-between; min-width: 0; padding: 12px 16px; }
+.traffic-toolbar:hover { border-color: var(--traffic-line); }
+.traffic-filters { display: flex; flex-wrap: wrap; gap: 12px; min-width: 0; }
+.traffic-page .traffic-toolbar .traffic-filters label { color: var(--muted); display: grid; font-size: 11px; font-weight: 750; gap: 5px; letter-spacing: .06em; text-transform: uppercase; }
+.traffic-filters select { font-size: 13px; letter-spacing: 0; min-width: 13rem; text-transform: none; }
+.traffic-quality-chip { align-items: center; background: var(--traffic-inset); border: 1px solid var(--traffic-line); border-radius: 999px; color: var(--muted); display: inline-flex; font-size: 12px; gap: 7px; padding: 6px 11px; }
+.traffic-quality-chip::before { background: var(--traffic-download); border-radius: 50%; content: ""; height: 6px; width: 6px; }
+
+/* WAN summary */
+.traffic-wan-card { display: grid; gap: 14px; }
+.traffic-wan-card:hover, .traffic-history-card:hover, .traffic-health-card:hover, .traffic-flow-card:hover, .traffic-devices-card:hover { border-color: var(--traffic-line); }
+.traffic-summary-grid { display: grid; gap: 12px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.traffic-kpi { background: var(--traffic-surface); border: 1px solid var(--traffic-line-soft); border-radius: var(--kaya-radius, 8px); display: grid; gap: 6px; padding: 14px 16px 13px; position: relative; overflow: hidden; }
+.traffic-kpi::before { background: var(--kpi-colour); content: ""; inset: 0 auto 0 0; position: absolute; width: 3px; }
+.traffic-kpi-download { --kpi-colour: var(--traffic-download); }
+.traffic-kpi-upload { --kpi-colour: var(--traffic-upload); }
+.traffic-kpi-label { align-items: center; color: var(--muted); display: inline-flex; font-size: 12.5px; gap: 7px; }
+.traffic-kpi-icon { fill: none; height: 14px; stroke: var(--kpi-colour); stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; width: 14px; }
+.traffic-page .traffic-kpi strong { font-size: clamp(22px, 2.2vw, 28px); font-variant-numeric: tabular-nums; font-weight: 850; letter-spacing: -.01em; line-height: 1.1; }
+.traffic-kpi small { color: var(--kaya-subtle, #6b7280); font-size: 11.5px; min-height: 1.1em; }
+
+/* Layout */
+.traffic-two-column { display: grid; gap: 16px; grid-template-columns: minmax(0, 1.75fr) minmax(20rem, 1fr); }
+.traffic-two-column > .card, .traffic-settings-card { min-width: 0; }
+
+/* Bandwidth history */
+.traffic-history-meta { align-items: flex-end; display: grid; gap: 6px; justify-items: end; flex: 0 0 auto; }
+.traffic-timestamp { font-size: 12px; font-variant-numeric: tabular-nums; }
+.traffic-chart { margin-top: 10px; min-height: 17rem; }
+.traffic-chart svg { height: 15rem; overflow: visible; width: 100%; }
+.traffic-chart-axis { stroke: var(--traffic-line); stroke-width: 1; }
+.traffic-line { fill: none; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
+.traffic-line.traffic-download { stroke: var(--traffic-download); }
+.traffic-line.traffic-upload { stroke: var(--traffic-upload); }
+.traffic-chart-legend { color: var(--muted); display: flex; flex-wrap: wrap; font-size: 12px; gap: 14px; }
+.traffic-chart-legend > span { align-items: center; display: inline-flex; }
+.traffic-dot { border-radius: 50%; display: inline-block; height: 8px; margin-right: 6px; width: 8px; }
+.traffic-dot.traffic-download { background: var(--traffic-download); }
+.traffic-dot.traffic-upload { background: var(--traffic-upload); }
+
+/* Source health */
+.traffic-health-list { display: grid; gap: 8px; margin-top: 14px; }
+.traffic-health-row { align-items: flex-start; background: var(--traffic-surface); border: 1px solid var(--traffic-line-soft); border-radius: var(--kaya-radius, 8px); display: flex; gap: 12px; justify-content: space-between; padding: 12px 14px; }
+.traffic-health-row > div { display: grid; gap: 3px; min-width: 0; }
+.traffic-page .traffic-health-row strong { font-size: 14px; font-weight: 800; }
+.traffic-health-meta { align-items: center; display: flex; flex-wrap: wrap; gap: 6px; }
+.traffic-provider { background: var(--traffic-inset); border: 1px solid var(--traffic-line); border-radius: 4px; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; padding: 1px 6px; }
+.traffic-health-row small { color: var(--muted); display: block; font-size: 12px; }
+
+/* Status pills */
+.traffic-status { align-items: center; background: color-mix(in srgb, var(--muted) 14%, transparent); border: 1px solid color-mix(in srgb, var(--muted) 26%, transparent); border-radius: 999px; color: var(--muted); display: inline-flex; flex: 0 0 auto; font-size: 11.5px; font-weight: 750; gap: 6px; line-height: 1; padding: 5px 9px; text-transform: none; vertical-align: middle; white-space: nowrap; }
+.traffic-status::before { background: currentColor; border-radius: 50%; content: ""; height: 6px; width: 6px; }
+.traffic-status-healthy, .traffic-status-active, .traffic-status-receiving_decoding { --tone: var(--traffic-ok); }
+.traffic-status-degraded, .traffic-status-stale, .traffic-status-receiving_awaiting_template, .traffic-status-receiving_awaiting_record, .traffic-status-collector_healthy_awaiting_traffic { --tone: var(--traffic-warn); }
+.traffic-status-error, .traffic-status-collector_offline { --tone: var(--traffic-bad); }
+.traffic-status[class*="traffic-status-"]:not(.traffic-status-unknown):not(.traffic-status-unconfigured):not(.traffic-status-disabled) { background: color-mix(in srgb, var(--tone, var(--muted)) 12%, transparent); border-color: color-mix(in srgb, var(--tone, var(--muted)) 34%, transparent); color: var(--tone, var(--muted)); }
+.traffic-flow-card h2 .traffic-status { margin-left: 8px; }
+
+/* Flow collection */
+.traffic-flow-summary { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr)); margin-top: 14px; }
+.traffic-flow-source { background: var(--traffic-surface); border: 1px solid var(--traffic-line-soft); border-left: 3px solid var(--tone, var(--traffic-ok)); border-radius: var(--kaya-radius, 8px); display: grid; gap: 4px; padding: 11px 14px; }
+.traffic-flow-source.is-warn { --tone: var(--traffic-warn); }
+.traffic-flow-source.is-bad { --tone: var(--traffic-bad); }
+.traffic-page .traffic-flow-source strong { font-size: 14px; font-weight: 800; }
+.traffic-flow-source span { color: var(--text); font-size: 13px; }
+.traffic-flow-source small { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+/* Device usage */
+.traffic-device-search { max-width: 18rem; width: 100%; }
+.traffic-device-table-wrap { margin-top: 14px; overflow-x: auto; position: relative; }
+.traffic-device-table { border-collapse: collapse; font-size: 13px; min-width: 860px; width: 100%; }
+.traffic-device-table thead th { border-bottom: 1px solid var(--traffic-line); color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .06em; padding: 9px 10px; text-align: left; text-transform: uppercase; white-space: nowrap; }
+.traffic-device-table td, .traffic-device-table tbody th { padding: 11px 10px; text-align: left; vertical-align: middle; }
+.traffic-device-table tbody tr { border-top: 1px solid var(--traffic-line-soft); }
+.traffic-device-table tbody tr:first-child { border-top: 0; }
+.traffic-device-table tbody tr:hover { background: color-mix(in srgb, var(--traffic-download) 5%, transparent); }
+.traffic-device-table tbody th a { color: var(--traffic-heading); font-weight: 750; text-decoration: none; }
+.traffic-device-table tbody th a:hover, .traffic-device-table tbody th a:focus-visible { color: var(--traffic-download); text-decoration: underline; }
+.traffic-device-table tbody th small { color: var(--muted); display: block; font-size: 12px; font-weight: 400; margin-top: 2px; }
+.traffic-device-table .num { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.traffic-device-table .traffic-total-col { min-width: 11rem; }
+.traffic-total { display: grid; gap: 5px; }
+.traffic-page .traffic-total strong { font-size: 13.5px; font-variant-numeric: tabular-nums; font-weight: 800; }
+.traffic-share { background: var(--traffic-inset); border-radius: 999px; display: flex; height: 4px; overflow: hidden; width: 100%; }
+.traffic-share i { display: block; height: 100%; }
+.traffic-share .traffic-download { background: var(--traffic-download); }
+.traffic-share .traffic-upload { background: var(--traffic-upload); }
+.traffic-muted-cell { color: var(--muted); white-space: nowrap; }
+.traffic-device-table td:last-child { text-align: right; }
+.device-usage-toolbar { margin-bottom: 14px; }
+.device-usage-search { color: var(--muted); display: grid; font-size: 11px; font-weight: 750; gap: 5px; letter-spacing: .06em; text-transform: uppercase; }
+.device-usage-search input { font-size: 13px; letter-spacing: 0; text-transform: none; }
+.device-usage-summary { margin-top: 14px; }
+.device-usage-table { min-width: 980px; }
+.device-usage-table tbody th { min-width: 11rem; }
+.device-usage-table .traffic-status { max-width: 15rem; overflow: hidden; text-overflow: ellipsis; }
+.device-usage-sources { white-space: normal; }
+.device-usage-source { display: block; white-space: nowrap; }
+.device-usage-source + .device-usage-source { margin-top: 4px; }
+.device-usage-source small, .device-usage-separate { display: block; font-size: 11px; }
+.device-usage-separate { color: var(--traffic-warn, var(--muted)); font-weight: 650; margin-top: 4px; }
+.local-network-table td small { display: block; font-size: 11px; margin-top: 3px; }
+.local-network-table .local-network-invalid { color: var(--danger, #f87171); font-weight: 650; }
+@media (max-width: 560px) { .device-usage-toolbar { align-items: stretch; } .device-usage-search { width: 100%; } }
+
+/* Shared */
+.traffic-notice { background: color-mix(in srgb, var(--traffic-download) 8%, transparent); border: 1px solid var(--traffic-line); border-radius: var(--kaya-radius, 8px); padding: 10px 14px; }
+.traffic-notice.is-error { background: rgba(248, 113, 113, .08); border-color: rgba(248, 113, 113, .5); color: #fecaca; }
+html[data-theme=light] .traffic-notice.is-error, html[data-kaya-theme=light-ops] .traffic-notice.is-error { color: #991b1b; }
+.traffic-empty { color: var(--muted); padding: 20px 0; }
+.traffic-source-row, .traffic-interface-row, .traffic-diagnostic-row { align-items: center; border-bottom: 1px solid var(--traffic-line); display: flex; gap: .75rem; justify-content: space-between; padding: .8rem 0; }
+.traffic-source-row:last-child, .traffic-interface-row:last-child, .traffic-diagnostic-row:last-child { border-bottom: 0; }
+.traffic-two-column > .card, .traffic-settings-card { min-width: 0; }
+.traffic-source-row:last-child, .traffic-interface-row:last-child, .traffic-diagnostic-row:last-child { border-bottom: 0; }
+.traffic-source-row strong, .traffic-interface-row strong, .traffic-diagnostic-row strong { display: block; }
+.traffic-source-row small, .traffic-interface-row small, .traffic-diagnostic-row small { display: block; margin-top: .18rem; }
+.traffic-source-actions, .traffic-form-actions { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; }
+.traffic-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+.traffic-page form { display: grid; gap: .85rem; }
+.traffic-page label:not(.checkbox-row) { display: grid; gap: .3rem; font-weight: 600; }
+.traffic-page input, .traffic-page select { width: 100%; }
+.traffic-page label small { font-weight: 400; }
+.traffic-interface-editor { margin-top: 1.2rem; padding-top: 1rem; border-top: 1px solid var(--border, #344052); }
+.traffic-interface-row { align-items: end; flex-wrap: wrap; }
+.traffic-interface-row > div:first-child { flex: 1 1 13rem; }
+.traffic-interface-row > label { min-width: 6.5rem; font-size: .82rem; }
+.traffic-interface-row > label select { margin-top: .25rem; }
+.traffic-diagnostic-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; margin-bottom: 1rem; }
+.traffic-diagnostic-grid div { display: grid; gap: .25rem; padding: .75rem; border: 1px solid var(--border, #344052); border-radius: .45rem; }
+.traffic-diagnostic-list { border-top: 1px solid var(--border, #344052); }
+.traffic-diagnostic-row { align-items: flex-start; flex-wrap: wrap; }
+.traffic-diagnostic-row > div:first-child { flex: 1 1 18rem; min-width: 0; }
+.traffic-diagnostic-row > div:last-child { display: flex; flex-wrap: wrap; gap: .65rem 1rem; justify-content: flex-end; color: var(--muted); font-size: .82rem; }
+.traffic-template-lifecycle { flex-basis: 100%; margin-top: .75rem; }
+.traffic-template-lifecycle-summary { flex-basis: 100%; margin-top: .75rem; }
+.traffic-template-lifecycle-summary summary { color: var(--text); cursor: pointer; font-size: .82rem; font-weight: 700; }
+.traffic-template-lifecycle summary { color: var(--text); cursor: pointer; font-size: .82rem; font-weight: 700; }
+.traffic-template-lifecycle-table { margin-top: .55rem; overflow-x: auto; }
+.traffic-template-lifecycle table { border-collapse: collapse; font-size: .76rem; min-width: 720px; width: 100%; }
+.traffic-template-lifecycle th, .traffic-template-lifecycle td { border-bottom: 1px solid var(--border, #344052); padding: .4rem .5rem; text-align: left; white-space: nowrap; }
+.traffic-template-lifecycle th { color: var(--muted); font-weight: 700; }
+.compact { padding: .4rem .65rem; font-size: .82rem; }
+
+@media (max-width: 1100px) { .traffic-two-column { grid-template-columns: 1fr; } }
+@media (max-width: 900px) { .traffic-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 560px) {
+  .traffic-form-grid, .traffic-diagnostic-grid { grid-template-columns: 1fr; }
+  .traffic-summary-grid { gap: 8px; }
+  .traffic-kpi { padding: 12px 12px 11px 14px; }
+  .traffic-card-header, .traffic-source-row, .traffic-health-row { align-items: flex-start; flex-direction: column; }
+  .traffic-history-meta { justify-items: start; }
+  .traffic-source-actions { justify-content: space-between; width: 100%; }
+  .traffic-card-header .button { width: 100%; }
+  .traffic-toolbar, .traffic-filters { align-items: stretch; flex-direction: column; }
+  .traffic-filters select, .traffic-device-search { max-width: none; min-width: 0; width: 100%; }
+}
+
+/* Scope overrides for Kaya's global `.card span { display: block }` and table header cells. */
+.traffic-page .card .traffic-status { display: inline-flex; width: auto; }
+.traffic-page .card .traffic-kpi-label, .traffic-page .card .traffic-chart-legend > span { display: inline-flex; align-items: center; }
+.traffic-page .card .traffic-chart-legend { display: flex; }
+.traffic-page .card .traffic-health-meta { display: flex; }
+.traffic-page .card .traffic-provider { display: inline-block; justify-self: start; }
+.traffic-page .card .traffic-share { display: flex; }
+.traffic-page .card .traffic-quality-chip { display: inline-flex; }
+.traffic-flow-card h2 { align-items: center; display: flex; flex-wrap: wrap; gap: 4px 10px; }
+.traffic-flow-card h2 .traffic-status { margin-left: 0; }
+/* Row headers are data cells visually; Kaya styles every th as a column header with !important. */
+.traffic-page .traffic-device-table tbody th { background-color: transparent !important; font-weight: 400; letter-spacing: 0; text-transform: none; }
+.discovery-summary { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.discovery-intro, .discovery-observations-card { min-width: 0; }
+.discovery-filters { align-items: end; display: flex; flex-wrap: wrap; gap: 10px; margin: 16px 0; }
+.discovery-filters label { color: var(--muted); display: grid; font-size: 11px; font-weight: 750; gap: 5px; text-transform: uppercase; }
+.discovery-filters select, .discovery-filters input { min-width: 11rem; text-transform: none; }
+.discovery-search-label { flex: 1 1 14rem; }
+.discovery-table-wrap { overflow-x: auto; }
+.discovery-table { border-collapse: collapse; min-width: 900px; width: 100%; }
+.discovery-table th, .discovery-table td { border-bottom: 1px solid var(--traffic-line-soft); padding: 10px 8px; text-align: left; vertical-align: top; }
+.discovery-table thead th { color: var(--muted); font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
+.discovery-table tbody th { font-weight: 700; }
+.discovery-table tbody th small, .discovery-table td small { display: block; margin-top: 3px; }
+.discovery-actions { align-items: flex-start; display: flex; flex-wrap: wrap; gap: 6px; min-width: 12rem; }
+.discovery-pagination { align-items: center; display: flex; justify-content: space-between; margin-top: 14px; }
+.discovery-pagination span:last-child { display: flex; gap: 6px; }
+@media (max-width: 900px) { .discovery-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 560px) { .discovery-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } .discovery-filters { align-items: stretch; display: grid; } .discovery-filters label, .discovery-filters select, .discovery-filters input, .discovery-filters button { min-width: 0; width: 100%; } .discovery-pagination { align-items: stretch; flex-direction: column; gap: 8px; } .discovery-pagination span:last-child { justify-content: space-between; } }

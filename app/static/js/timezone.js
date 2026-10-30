@@ -31,14 +31,21 @@
       var value = new Date(element.dataset.utcTime);
       if (Number.isNaN(value.getTime())) return;
       var format = element.dataset.timeFormat || "datetime";
-      var options = format === "date"
+      var options = format === "day"
+        ? { day: "numeric", month: "short", year: "numeric" }
+        : format === "daytime"
+        ? { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }
+        : format === "short"
+        ? { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }
+        : format === "date"
         ? { year: "numeric", month: "2-digit", day: "2-digit" }
         : format === "friendly"
           ? { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }
           : { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: format === "minute" ? undefined : "2-digit", hourCycle: "h23" };
       options.timeZone = timezone;
       try {
-        element.textContent = new Intl.DateTimeFormat(undefined, options).format(value);
+        // "day", "daytime" and "short" always use the "5 Oct 2026", "5 Oct 2026, 19:48" and "5 Oct, 19:48" shapes.
+        element.textContent = new Intl.DateTimeFormat(["day", "daytime", "short"].indexOf(format) !== -1 ? "en-GB" : undefined, options).format(value);
         element.title = timezone;
       } catch (_) {
         element.title = "UTC";

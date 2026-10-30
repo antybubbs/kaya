@@ -191,6 +191,8 @@
 
   document.querySelectorAll(".content table").forEach((table, tableIndex) => {
     if (!table.tHead || !table.tBodies.length) return;
+    // Server-paginated tables with their own row behaviour (paired detail rows) opt out.
+    if (table.dataset.tableEnhance === "off") return;
     if (table.closest("#checks") && /\/networking\/ip-wan-monitor\/\d+$/.test(location.pathname)) {
       table.dataset.tableKey = "network-monitor-checks";
       table.dataset.exportUrl = `${location.pathname}/checks.csv`;

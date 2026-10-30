@@ -63,7 +63,7 @@ Kaya is more than a homelab inventory. It is a self-hosted operations hub for th
 
 ### Monitoring
 - Docker & Proxmox monitoring
-- IP/WAN monitoring
+- Uptime monitoring (availability, latency, packet loss and outages)
 - Historical performance
 - Dashboard & Wallboard
 - Live alerts

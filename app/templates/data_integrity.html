@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+{% block extra_head %}<link rel="stylesheet" href="/static/css/data_integrity.css?v={{ asset_version }}">{% endblock %}
+{% block content %}
+{% set counts = summary.counts %}
+{% set latest = summary.latest %}
+{% set active_run = summary.active %}
+<section class="panel module-header audit-hero di-hero" data-di-root data-can-repair="{{ '1' if can_repair else '0' }}" data-max-bulk="{{ max_bulk }}">
+  <div class="module-title-row">
+    <div class="module-heading">
+      <h1>Data Integrity</h1>
+      <p class="muted">Detect, investigate and resolve inconsistencies across Asset Manager, IP/VLAN Manager, DNS and DHCP. Audits are read-only; every repair is previewed, confirmed and audited.</p>
+    </div>
+    <div class="di-actions">
+      <button type="button" data-di-run {% if active_run %}disabled{% endif %}>{% if active_run %}Audit running…{% else %}Run Audit{% endif %}</button>
+      <a class="button secondary" href="{{ request.url.path }}{% if request.url.query %}?{{ request.url.query }}{% endif %}">Refresh Results</a>
+      <details class="di-menu">
+        <summary class="button secondary">Export Report</summary>
+        <div class="di-menu-items" role="menu">
+          <a role="menuitem" href="/api/data-integrity/export?format=csv{% if export_query %}&amp;{{ export_query }}{% endif %}">CSV (filtered findings)</a>
+          <a role="menuitem" href="/api/data-integrity/export?format=json{% if export_query %}&amp;{{ export_query }}{% endif %}">JSON with evidence</a>
+        </div>
+      </details>
+      <button type="button" class="button secondary" data-di-history-open>Audit History</button>
+    </div>
+  </div>
+  <div class="di-run-state" data-di-run-state data-freshness="{{ summary.freshness }}" role="status" aria-live="polite">
+    {% if active_run %}
+      <span class="status-pill warning">{{ active_run.status|title }}</span>
+      <span>Audit #{{ active_run.id }} — {{ active_run.progress_done }} of {{ active_run.progress_total }} checks</span>
+      <progress max="{{ active_run.progress_total }}" value="{{ active_run.progress_done }}" aria-label="Audit progress"></progress>
+    {% elif summary.freshness == 'never' %}
+      <span class="status-pill unknown">No audit yet</span><span>Run an audit to assess data integrity. Findings below are empty until then.</span>
+    {% elif summary.freshness == 'failed' %}
+      <span class="status-pill critical">Last audit {{ summary.last_finished.status }}</span><span>The most recent audit did not finish, so the results below come from audit #{{ latest.id }} and are not a complete current assessment.</span>
+    {% elif summary.freshness == 'incomplete' %}
+      <span class="status-pill warning">Incomplete</span><span>Audit #{{ latest.id }} skipped {{ latest.errors|length }} check(s). Its results are not a complete integrity assessment.</span>
+    {% elif summary.freshness == 'stale' %}
+      <span class="status-pill warning">Stale</span><span>Results are from {{ local_time(latest.completed_at) }}. Records may have changed since; run an audit for a current assessment.</span>
+    {% else %}
+      <span class="status-pill healthy">Current</span><span>Results from audit #{{ latest.id }}, completed {{ local_time(latest.completed_at) }}. Investigating a finding always re-checks it against live data.</span>
+    {% endif %}
+  </div>
+</section>
+
+<section class="audit-summary-grid di-summary" aria-label="Integrity summary">
+  <article class="{% if counts.critical %}critical{% endif %}"><span>Critical</span><strong>{{ counts.critical }}</strong><small>open critical findings</small></article>
+  <article class="{% if counts.warning %}warn{% endif %}"><span>Warnings</span><strong>{{ counts.warning }}</strong><small>open warnings</small></article>
+  <article><span>Needs review</span><strong>{{ counts.needs_review }}</strong><small>require a decision</small></article>
+  <article><span>Resolved</span><strong>{{ counts.resolved }}</strong><small>verified as corrected</small></article>
+  <article><span>Ignored</span><strong>{{ counts.ignored }}</strong><small>acknowledged with a reason</small></article>
+  <article><span>Last completed audit</span><strong class="di-summary-time">{% if latest %}{{ local_time(latest.completed_at, 'datetime') }}{% else %}Never{% endif %}</strong><small>{% if latest %}{{ latest.records_examined }} records examined{% if latest.status == 'incomplete' %} · incomplete{% endif %}{% else %}no audit has completed{% endif %}</small></article>
+</section>
+
+<section class="panel audit-filter-panel">
+  <form class="audit-filters di-filters" method="get" action="{{ request.url.path }}">
+    <label class="audit-search">Search<input name="q" value="{{ filters.q }}" maxlength="255" placeholder="Asset tag, MAC, IP, hostname…"></label>
+    <label>Severity<select name="severity"><option value="">All severities</option>{% for value in ['critical','warning','info'] %}<option value="{{ value }}" {% if filters.severity == value %}selected{% endif %}>{{ value|title }}</option>{% endfor %}</select></label>
+    <label>Module<select name="category"><option value="">All modules</option>{% for value in category_options %}<option value="{{ value }}" {% if filters.category == value %}selected{% endif %}>{{ category_labels[value] }}</option>{% endfor %}</select></label>
+    <label>Finding type<select name="finding_type"><option value="">All types</option>{% for key, label in type_options %}<option value="{{ key }}" {% if filters.finding_type == key %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+    <label>Status<select name="status">{% for value, label in [('active','Open and needs review'),('open','Open'),('needs_review','Needs review'),('resolved','Resolved'),('ignored','Ignored'),('all','All statuses')] %}<option value="{{ value }}" {% if filters.status == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+    <label>Asset<input name="asset" value="{{ filters.asset }}" maxlength="120" placeholder="Tag or name"></label>
+    <label>MAC address<input name="mac" value="{{ filters.mac }}" maxlength="40" placeholder="02:00:5e:…" autocomplete="off"></label>
+    <label>IP address<input name="ip" value="{{ filters.ip }}" maxlength="80" placeholder="192.0.2.10" autocomplete="off"></label>
+    <label>Hostname<input name="hostname" value="{{ filters.hostname }}" maxlength="255"></label>
+    <label>Rows<select name="per_page">{% for value in page_sizes %}<option value="{{ value }}" {% if listing.per_page == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label>
+    <input type="hidden" name="sort" value="{{ filters.sort }}"><input type="hidden" name="direction" value="{{ filters.direction }}">
+    <div class="audit-filter-actions"><button type="submit">Apply filters</button><a class="button secondary" href="{{ request.url.path }}">Reset</a></div>
+  </form>
+</section>
+
+<section class="panel audit-log-panel di-findings">
+  <div class="audit-table-heading di-table-heading">
+    <div><h2>Findings</h2><p class="muted">{{ listing.total }} matching finding{% if listing.total != 1 %}s{% endif %}</p></div>
+    {% if can_repair %}
+    <div class="di-bulk-bar" data-di-bulk-bar>
+      <span data-di-selected-count>0 selected</span>
+      <button type="button" class="button secondary" data-di-bulk-preview disabled>Preview bulk repair</button>
+    </div>
+    {% endif %}
+  </div>
+  <div class="di-table-wrap">
+    <table class="di-table" data-table-enhance="off">
+      <thead>
+        <tr>
+          {% if can_repair %}<th class="di-select-col"><input type="checkbox" data-di-select-all aria-label="Select all bulk-repairable findings on this page"></th>{% endif %}
+          <th><a href="{{ sort_url('severity') }}">Severity</a></th>
+          <th>Module</th>
+          <th><a href="{{ sort_url('type') }}">Finding</a></th>
+          <th>Affected record</th>
+          <th><a href="{{ sort_url('detected') }}">Detected</a></th>
+          <th><a href="{{ sort_url('status') }}">Status</a></th>
+          <th class="di-actions-col">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for row in listing.rows %}
+        <tr class="di-row" data-di-row="{{ row.id }}">
+          {% if can_repair %}<td class="di-select-col" data-label="Select">{% if row.bulk_repairable %}<input type="checkbox" data-di-select value="{{ row.id }}" aria-label="Select finding {{ row.id }} for bulk repair">{% else %}<span class="muted" title="Needs an individual decision">—</span>{% endif %}</td>{% endif %}
+          <td data-label="Severity"><span class="audit-severity {{ row.severity }}">{{ row.severity|title }}</span></td>
+          <td data-label="Module">{{ row.category_label }}</td>
+          <td data-label="Finding"><strong>{{ row.type_label }}</strong><small class="di-subtle">{{ row.title }}</small></td>
+          <td data-label="Affected record" class="di-affected">{{ row.affected_label }}</td>
+          <td data-label="Detected">{{ local_time(row.last_detected_at) }}{% if row.reopened_count %}<small class="di-subtle">reopened {{ row.reopened_count }}×</small>{% endif %}</td>
+          <td data-label="Status"><span class="di-status {{ row.status }}">{{ row.status_label }}</span></td>
+          <td data-label="Actions" class="di-actions-col">
+            <button type="button" class="button secondary di-investigate" data-di-investigate="{{ row.id }}" aria-expanded="false" aria-controls="di-panel-{{ row.id }}">{% if row.repairable and row.status in ['open', 'needs_review'] %}Investigate &amp; resolve{% else %}Investigate{% endif %}</button>
+          </td>
+        </tr>
+        <tr class="di-detail-row" id="di-panel-{{ row.id }}" hidden>
+          <td colspan="{{ 8 if can_repair else 7 }}"><div class="di-panel" data-di-panel="{{ row.id }}" tabindex="-1"></div></td>
+        </tr>
+      {% else %}
+        <tr><td colspan="{{ 8 if can_repair else 7 }}"><div class="audit-empty"><strong>{% if summary.freshness == 'never' %}No audit has run yet.{% else %}No findings match these filters.{% endif %}</strong><span>{% if summary.freshness == 'never' %}Use Run Audit to check your data.{% else %}Try another status or clear a filter.{% endif %}</span></div></td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <nav class="audit-pagination" aria-label="Finding pages">
+    {% if previous_url %}<a class="button secondary" href="{{ previous_url }}">Previous</a>{% else %}<span></span>{% endif %}
+    <span>Page {{ listing.page }} of {{ listing.pages }} · {{ listing.total }} finding{% if listing.total != 1 %}s{% endif %}</span>
+    {% if next_url %}<a class="button secondary" href="{{ next_url }}">Next</a>{% else %}<span></span>{% endif %}
+  </nav>
+</section>
+
+<section class="panel di-settings" aria-labelledby="di-settings-heading">
+  <h2 id="di-settings-heading">Scheduled audits</h2>
+  <p class="muted">Scheduled audits are read-only and never repair records. Administrators are notified only about new or materially changed critical findings.</p>
+  <form class="di-settings-form" data-di-settings>
+    <label>Schedule<select name="schedule_hours">{% for value, label in schedule_choices.items() %}<option value="{{ value }}" {% if schedule.schedule_hours == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+    <label class="checkbox-label"><input type="checkbox" name="notify_critical" {% if schedule.notify_critical %}checked{% endif %}> Notify administrators about critical findings</label>
+    <button type="submit">Save schedule</button>
+    <span class="di-form-status" data-di-settings-status role="status" aria-live="polite"></span>
+  </form>
+</section>
+
+<dialog class="di-dialog di-history-dialog" data-di-history aria-labelledby="di-history-title">
+  <header><div><p class="eyebrow">Data Integrity</p><h2 id="di-history-title">Audit history</h2></div><button type="button" class="button secondary" data-di-close aria-label="Close audit history">Close</button></header>
+  <div class="di-chart" data-di-history-chart role="img" aria-label="Open, critical, new, resolved and reopened findings per audit"></div>
+  <div class="di-history-compare" data-di-history-compare></div>
+  <div class="di-table-wrap"><table class="di-table di-history-table" data-table-enhance="off"><thead><tr><th>Audit</th><th>Trigger</th><th>Status</th><th>Completed</th><th>Open</th><th>Critical</th><th>New</th><th>Resolved</th><th>Reopened</th><th>Duration</th></tr></thead><tbody data-di-history-rows><tr><td colspan="10">Loading…</td></tr></tbody></table></div>
+</dialog>
+
+<dialog class="di-dialog di-bulk-dialog" data-di-bulk aria-labelledby="di-bulk-title">
+  <header><div><p class="eyebrow">Bulk repair</p><h2 id="di-bulk-title">Preview selected repairs</h2></div><button type="button" class="button secondary" data-di-close aria-label="Close bulk repair">Close</button></header>
+  <p class="muted">Only deterministic repairs are offered: managed static assignments with one confirmed owner, and assignments whose DHCP lease definitely ended. Each repair is re-validated and committed on its own; one failure never leaves another partly applied.</p>
+  <div data-di-bulk-body></div>
+  <footer><label class="checkbox-label"><input type="checkbox" data-di-bulk-confirm> I reviewed every change above</label><button type="button" class="button danger" data-di-bulk-execute disabled>Apply repairs</button></footer>
+</dialog>
+{% endblock %}
+{% block extra_scripts %}<script src="/static/vendor/echarts/echarts.min.js?v=6.1.0" defer></script><script src="/static/js/data_integrity.js?v={{ asset_version }}" defer></script>{% endblock %}

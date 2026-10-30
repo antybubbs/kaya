@@ -12,6 +12,7 @@ from datetime import datetime
 
 import pytest
 from alembic import command
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import IntegrityError
 
@@ -26,6 +27,10 @@ def _postgres_url() -> str:
     if not url:
         pytest.skip("KAYA_TEST_POSTGRES_URL is not configured")
     return url
+
+
+def _head_revision() -> str:
+    return ScriptDirectory.from_config(_alembic_config(_postgres_url())).get_current_head()
 
 
 def _fresh_postgres_engine():
@@ -43,7 +48,7 @@ def test_postgresql_manifest_is_actual_base_to_head_schema():
     comparison = compare_manifest_to_models(manifest, Base.metadata)
     with engine.connect() as connection:
         revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-    assert revision == "20260902_01"
+    assert revision == _head_revision()
     assert comparison == {"missing_tables": [], "missing_columns": []}
     assert manifest["triggers"]
     assert manifest["sequences"]
@@ -315,7 +320,7 @@ def test_postgresql_trigger_migration_downgrade_and_upgrade_round_trip():
     with engine.connect() as connection:
         assert connection.execute(
             text("SELECT version_num FROM alembic_version")
-        ).scalar_one() == "20260902_01"
+        ).scalar_one() == _head_revision()
 
 
 def test_postgresql_schema_has_no_unexpected_model_table_or_column_drift():
@@ -334,7 +339,7 @@ def test_postgresql_schema_drift_detection_rejects_missing_critical_index():
         validate_engine_schema(
             engine,
             Base.metadata,
-        require_revision="20260902_01",
+            require_revision=_head_revision(),
             required_indexes=(("hardware_asset_photos", "uq_hardware_asset_photos_primary"),),
         )
 
@@ -344,9 +349,12 @@ def test_sqlite_and_postgresql_have_the_same_logical_table_and_column_sets():
     with TemporaryDirectory() as temporary_directory:
         sqlite_path = Path(temporary_directory) / "logical.sqlite3"
         sqlite = create_engine(f"sqlite:///{sqlite_path.as_posix()}")
-        command.upgrade(_alembic_config(str(sqlite.url)), "head")
-        postgres_manifest = schema_manifest(postgres)
-        sqlite_manifest = schema_manifest(sqlite)
+        try:
+            command.upgrade(_alembic_config(str(sqlite.url)), "head")
+            postgres_manifest = schema_manifest(postgres)
+            sqlite_manifest = schema_manifest(sqlite)
+        finally:
+            sqlite.dispose()
     postgres_tables = {table["name"]: {column["name"] for column in table["columns"]} for table in postgres_manifest["tables"]}
     sqlite_tables = {table["name"]: {column["name"] for column in table["columns"]} for table in sqlite_manifest["tables"]}
     assert postgres_tables == sqlite_tables

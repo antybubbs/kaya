@@ -8,7 +8,8 @@ Kaya uses a shared responsive layer in `app/static/css/responsive.css`. Desktop 
 - Dashboard widgets, controls, manager dialog, live refresh and touch reordering
 - Infrastructure: rack manager/detail, backup manager, asset manager/detail/forms, Compute Manager and workload/host views
 - Remote Manager: host rail, session workspace, SSH/RDP panels, settings and recordings
-- Networking: VLAN/IP lists/details/forms, IP/WAN Monitor, DNS dashboard/tables/forms, Domain Manager
+- Networking: VLAN/IP lists/details/forms, DNS dashboard/tables/forms, Domain Manager
+- Monitoring: Uptime, Network Traffic
 - Security and licence list/detail/forms
 - Documentation and Runbook Manager editor/detail/list views
 - Team users and user forms

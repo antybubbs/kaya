@@ -13,7 +13,7 @@
       <form class="search list-search" method="get">
         <input type="hidden" name="view" value="{{ active_view }}">
         {% if active_category and active_view == 'managed' %}<input type="hidden" name="category" value="{{ active_category }}">{% endif %}
-        <select name="vlan_id" aria-label="Filter by VLAN" onchange="this.form.submit()"><option value="">All VLANs</option>{% for vlan in vlans %}<option value="{{ vlan.id }}" {% if active_vlan_id == vlan.id %}selected{% endif %}>{{ vlan.name }}</option>{% endfor %}</select>
+        <select name="vlan_id" aria-label="Filter by VLAN" data-vlan-filter><option value="">All VLANs</option>{% for vlan in vlans %}<option value="{{ vlan.id }}" {% if active_vlan_id == vlan.id %}selected{% endif %}>{{ vlan.name }}</option>{% endfor %}</select>
         <input name="q" placeholder="{% if active_view == 'observed' %}Search observed DNS clients...{% else %}Search VLAN/IP records...{% endif %}" value="{{ q }}">
         <button>Search</button>
       </form>

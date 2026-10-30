@@ -72,7 +72,7 @@ Several modules expose JSON or partial-refresh endpoints for UI interactions, in
 - Remote RDP preflight/start
 - Site Administration test actions
 
-IP/WAN Monitor's authenticated internal UI surface includes:
+Uptime's authenticated internal UI surface uses the existing `ip-wan-monitor` route and includes:
 
 - `GET /networking/ip-wan-monitor/live?after={observation_id}` for bounded incremental observations and current summary/state data. `after` must be a non-negative integer; the response is capped at 1,000 records from the current five-minute window.
 - `POST /networking/ip-wan-monitor/collection-rate` for an editor/admin dashboard lease. The mode and opaque client ID are allowlisted, CSRF validation is required, and the lease expires automatically.

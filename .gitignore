@@ -30,3 +30,11 @@ migration-workspace-*/
 sqlite-tmp/
 test-data-temp/
 .sqlite-integration/
+tmp/
+.stage*-tmp/
+.stage*-validation-venv/
+.phase*-validation/
+stage4-artifacts/
+stage4a-artifacts/
+stage4b-artifacts/
+stage5-artifacts/

@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import re
 import smtplib
 import socket
@@ -33,7 +34,17 @@ from app.core.config import get_settings
 from app.core.csrf import csrf_context, validate_csrf_token
 from app.core.templating import templates
 from app.core.performance import external_call
-from app.core.performance import clear_diagnostics, diagnostics_snapshot, set_diagnostics_enabled
+from app.core.performance import (
+    CAPTURE_COLLECTORS,
+    add_capture_events,
+    capture_bundle,
+    capture_status,
+    clear_diagnostics,
+    diagnostics_snapshot,
+    set_diagnostics_enabled,
+    start_capture,
+    stop_capture,
+)
 from app.core.security import (
     decrypt_secret,
     encrypt_secret,
@@ -65,6 +76,10 @@ from app.models.models import (
     ManagedListItem,
     NetworkMonitor,
     NetworkMonitorWallboardMembership,
+    TrafficFlowCollectorGlobalState,
+    TrafficFlowCollectorState,
+    TrafficMonitoringConfiguration,
+    TrafficSource,
     RemoteManagerSetting,
     User,
     VaultSession,
@@ -103,15 +118,19 @@ from app.services.importer import ImportCSVError, import_csv, import_ip_addresse
 from app.services.mail import MailConfigurationError, render_email_template, send_mail
 from app.services.managed_lists import MANAGED_LIST_MODULES, MANAGED_LISTS, list_label
 from app.services.modules import (
+    CAPABILITIES,
     MODULE_KEYS,
     accessible_module_keys,
+    granted_capability_keys,
     enabled_modules,
     granted_module_keys,
     has_module_access,
     module_access_counts,
+    replace_capability_access,
     replace_module_access,
 )
 from app.services.network_monitor import monitor_label, validate_threshold_values
+from app.services.flow_collector import collector_settings
 from app.services.table_export import export_row_matches, table_export_response, validate_export_columns, validate_export_filters, validate_export_format
 from app.services.network_monitor_wallboard import (
     DISPLAY_DEFAULTS,
@@ -170,6 +189,7 @@ MODULE_SETTINGS_TABS = {
     "module-dashboard": "dashboard",
     "module-dns-manager": "dns_manager",
     "module-network-monitor": "network_monitor",
+    "module-network-traffic": "network_monitor",
     "module-vlan-ip-manager": "vlan_ip_manager",
     "module-remote-manager": "remote_manager",
     "module-asset-manager": "asset_manager",
@@ -188,7 +208,36 @@ def module_form_context(
             if selected is not None
             else (set(accessible_module_keys(db, target)) if target else set())
         ),
+        "capabilities": CAPABILITIES,
+        "selected_capability_keys": set(granted_capability_keys(db, target)) if target else set(),
     }
+
+
+def selected_capability_keys(values) -> set[str]:
+    if not isinstance(values, list):
+        return set()
+    if len(values) > len(CAPABILITIES):
+        raise ValueError("One or more selected capabilities are invalid.")
+    selected = {value for value in values if isinstance(value, str)}
+    if len(selected) != len(values) or selected - set(CAPABILITIES):
+        raise ValueError("One or more selected capabilities are invalid.")
+    return selected
+
+
+def audit_capability_changes(request: Request, db: Session, actor: User, target: User, granted: set[str], removed: set[str]) -> None:
+    for action, keys in (("capability_granted", granted), ("capability_removed", removed)):
+        for key in sorted(keys):
+            write_audit(
+                db,
+                actor,
+                action,
+                "module_permission",
+                f"{target.id}:{key}",
+                trusted_client_ip(request),
+                detail=f"{'Granted' if action == 'capability_granted' else 'Removed'} {key} for user {target.id}",
+                metadata={"target_user_id": target.id, "capability": key},
+                force=True,
+            )
 
 
 def selected_module_keys(values) -> set[str]:
@@ -1266,6 +1315,7 @@ def create_user(
     password: str = Form(..., min_length=12, max_length=255),
     role: str = Form("viewer"),
     module_keys: list[str] = Form(default=[]),
+    capability_keys: list[str] = Form(default=[]),
     csrf_token: str = Form(...),
     db: Session = Depends(get_db),
     user=Depends(require_admin),
@@ -1275,6 +1325,7 @@ def create_user(
     role = role if role in ROLES else "viewer"
     try:
         selected_modules = selected_module_keys(module_keys)
+        selected_capabilities = selected_capability_keys(capability_keys)
     except ValueError as exc:
         return templates.TemplateResponse(
             request,
@@ -1353,7 +1404,9 @@ def create_user(
     db.add(row)
     db.flush()
     added_modules, _ = replace_module_access(db, row, selected_modules, user)
+    added_capabilities, _ = replace_capability_access(db, row, selected_capabilities, user)
     db.commit()
+    audit_capability_changes(request, db, user, row, added_capabilities, set())
 
     write_audit(
         db,
@@ -1421,6 +1474,7 @@ def update_user(
     password: str = Form("", max_length=255),
     role: str = Form("viewer"),
     module_keys: list[str] = Form(default=[]),
+    capability_keys: list[str] = Form(default=[]),
     is_active: str = Form(""),
     is_break_glass: str = Form(""),
     role_source: str = Form("local"),
@@ -1440,6 +1494,7 @@ def update_user(
 
     try:
         selected_modules = selected_module_keys(module_keys)
+        selected_capabilities = selected_capability_keys(capability_keys)
     except ValueError as exc:
         return templates.TemplateResponse(
             request,
@@ -1559,6 +1614,9 @@ def update_user(
     granted_modules, removed_modules = replace_module_access(
         db, target, selected_modules, user
     )
+    granted_capabilities, removed_capabilities = replace_capability_access(
+        db, target, selected_capabilities, user
+    )
     db.query(VaultSession).filter(
         VaultSession.user_id == target.id, VaultSession.revoked_at.is_(None)
     ).update({VaultSession.revoked_at: datetime.utcnow()}, synchronize_session=False)
@@ -1570,6 +1628,7 @@ def update_user(
         ),
     )
     db.commit()
+    audit_capability_changes(request, db, user, target, granted_capabilities, removed_capabilities)
 
     write_audit(
         db,
@@ -2866,6 +2925,89 @@ def performance_data(response: Response, user=Depends(require_admin)):
     return diagnostics_snapshot()
 
 
+def _capture_owner_session(request: Request) -> str:
+    owner = str(request.session.get("session_id") or "")[:128]
+    if not owner:
+        raise HTTPException(400, "A session-scoped diagnostic owner is required")
+    return owner
+
+
+async def _capture_json(request: Request) -> dict:
+    content_length = request.headers.get("content-length")
+    try:
+        if content_length and int(content_length) > 65536:
+            raise HTTPException(413, "Diagnostic capture payload is too large")
+    except ValueError as exc:
+        raise HTTPException(400, "Invalid diagnostic capture payload") from exc
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(400, "Invalid diagnostic capture payload") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "Invalid diagnostic capture payload")
+    validate_csrf_token(request, str(request.headers.get("x-csrf-token") or payload.get("csrf_token") or ""))
+    return payload
+
+
+@router.post("/api/system/about/performance/capture/start")
+async def performance_capture_start(request: Request, db: Session = Depends(get_db), user=Depends(require_admin)):
+    payload = await _capture_json(request)
+    raw_duration = payload.get("duration_seconds") or 30
+    if isinstance(raw_duration, bool):
+        raise HTTPException(400, "Invalid diagnostic capture duration")
+    try:
+        duration = int(raw_duration)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, "Invalid diagnostic capture duration") from exc
+    collectors = payload.get("collectors") or sorted(CAPTURE_COLLECTORS)
+    if not isinstance(collectors, list) or len(collectors) > len(CAPTURE_COLLECTORS) or any(not isinstance(item, str) or len(item) > 30 for item in collectors):
+        raise HTTPException(400, "Invalid diagnostic collector selection")
+    try:
+        result = start_capture(owner_session_id=_capture_owner_session(request), duration=duration, collectors=collectors)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    write_audit(db, user, "performance_capture_started", "performance_capture", result["capture_id"], detail="Started a bounded performance diagnostic capture.", metadata={"duration_seconds": duration, "collectors": result["collectors"]})
+    db.commit()
+    return result
+
+
+@router.post("/api/system/about/performance/capture/stop")
+async def performance_capture_stop(request: Request, db: Session = Depends(get_db), user=Depends(require_admin)):
+    await _capture_json(request)
+    result = stop_capture(_capture_owner_session(request))
+    if result.get("status") == "idle":
+        raise HTTPException(404, "No diagnostic capture is active")
+    write_audit(db, user, "performance_capture_stopped", "performance_capture", result.get("capture_id"), detail="Stopped a bounded performance diagnostic capture.")
+    db.commit()
+    return result
+
+
+@router.get("/api/system/about/performance/capture")
+def performance_capture_status(request: Request, user=Depends(require_admin)):
+    return capture_status(_capture_owner_session(request))
+
+
+@router.post("/api/system/about/performance/capture/browser")
+async def performance_capture_browser(request: Request, user=Depends(require_admin)):
+    payload = await _capture_json(request)
+    events = payload.get("events") or []
+    if not isinstance(events, list):
+        raise HTTPException(400, "Invalid browser diagnostic events")
+    return add_capture_events(_capture_owner_session(request), events)
+
+
+@router.get("/api/system/about/performance/capture/bundle")
+def performance_capture_bundle(request: Request, db: Session = Depends(get_db), user=Depends(require_admin)):
+    bundle = capture_bundle(_capture_owner_session(request))
+    if bundle is None:
+        raise HTTPException(404, "No diagnostic capture is available for this session")
+    write_audit(db, user, "performance_capture_exported", "performance_capture", bundle["capture_id"], detail="Exported a performance diagnostic bundle.", metadata={"schema_version": bundle["schema_version"]})
+    db.commit()
+    return JSONResponse(bundle, headers={"Cache-Control": "no-store", "Content-Disposition": f'attachment; filename="kaya-performance-{bundle["capture_id"]}.json"'})
+
+
 @router.post("/system/about/performance/toggle")
 async def performance_toggle(
     request: Request,
@@ -2964,32 +3106,194 @@ def settings_page(
     user=Depends(require_admin),
 ):
     require_module_settings_tab(request, db, user)
-    return templates.TemplateResponse(
-        request,
-        "settings.html",
-        {
-            "user": user,
-            "module_access": granted_module_keys(db, user),
-            "settings": load_site_settings(db),
-            "asset_tag_preview": next_asset_tag_preview(db),
-            **wallboard_admin_context(request, db),
-            "ha_active_cluster_count": db.query(HACluster)
-            .filter(HACluster.deleted_at.is_(None))
-            .count(),
-            "backup_preserved_item_count": db.query(BackupRecord).count()
-            + db.query(BackupJob).count(),
-            "backup_inflight_job_count": db.query(BackupJob)
-            .filter(BackupJob.status.in_(["queued", "dispatched", "running"]))
-            .count(),
-            "dns_providers": dns_providers_for_admin(db),
-            "ha_dns_clusters": ha_dns_clusters_for_admin(db),
-            **vlan_ip_admin_context(db),
-            "security_check": security_check_context(request, db),
-            "message": None,
-            "error": None,
-            **csrf_context(request),
+    return templates.TemplateResponse(request, "settings.html", _settings_page_context(
+        request, db, user, settings=load_site_settings(db), message=None, error=None,
+    ))
+
+
+FLOW_HEARTBEAT_STALE_SECONDS = 15
+
+
+def _settings_page_context(
+    request: Request,
+    db: Session,
+    user,
+    *,
+    settings: dict | None = None,
+    module_access: set[str] | None = None,
+    message: str | None = None,
+    error: str | None = None,
+    **extra,
+) -> dict:
+    """Build the complete context required by every settings.html render path."""
+    context = {
+        "user": user,
+        "module_access": module_access if module_access is not None else granted_module_keys(db, user),
+        "network_traffic_status": _network_traffic_admin_status(db),
+        "settings": settings if settings is not None else load_site_settings(db),
+        "asset_tag_preview": next_asset_tag_preview(db),
+        **wallboard_admin_context(request, db),
+        "ha_active_cluster_count": db.query(HACluster).filter(HACluster.deleted_at.is_(None)).count(),
+        "backup_preserved_item_count": db.query(BackupRecord).count() + db.query(BackupJob).count(),
+        "backup_inflight_job_count": db.query(BackupJob).filter(BackupJob.status.in_(["queued", "dispatched", "running"])).count(),
+        "dns_providers": dns_providers_for_admin(db),
+        "ha_dns_clusters": ha_dns_clusters_for_admin(db),
+        **vlan_ip_admin_context(db),
+        "security_check": security_check_context(request, db),
+        "message": message,
+        "error": error,
+        **csrf_context(request),
+    }
+    context.update(extra)
+    return context
+
+
+def _network_traffic_admin_status(db: Session) -> dict:
+    """Return redacted, database-backed collector health for administrators."""
+    now = datetime.utcnow()
+    config = db.get(TrafficMonitoringConfiguration, 1)
+    flow_sources = db.query(TrafficSource).filter(
+        TrafficSource.is_deleted.is_(False),
+        TrafficSource.provider_key.in_(["netflow_v9", "cisco_nsel"]),
+    ).order_by(TrafficSource.name.asc()).all()
+    global_state = db.get(TrafficFlowCollectorGlobalState, 1)
+    states = {
+        row.source_id: row
+        for row in db.query(TrafficFlowCollectorState).filter(
+            TrafficFlowCollectorState.source_id.in_([source.id for source in flow_sources] or [-1])
+        ).all()
+    }
+    try:
+        runtime = collector_settings()
+        # The application cannot observe Docker's host-side published address.
+        # Do not present the collector's default bind as a verified runtime bind
+        # unless the deployment explicitly supplied it.
+        if "KAYA_FLOW_COLLECTOR_BIND_ADDRESS" not in os.environ:
+            runtime = {**runtime, "bind_address": None}
+        runtime_error = None
+    except RuntimeError:
+        runtime = {}
+        logger.exception("Failed to validate flow collector runtime configuration")
+        runtime_error = "Collector runtime configuration could not be validated."
+
+    heartbeat = global_state.updated_at if global_state else None
+    heartbeat_age = (now - heartbeat).total_seconds() if heartbeat else None
+    if runtime_error:
+        status = "unknown"
+        status_label = "Unknown"
+        status_reason = "Collector runtime configuration could not be validated."
+    elif global_state is None:
+        if not runtime.get("enabled"):
+            status = "not_running"
+            status_label = "Not running"
+            status_reason = "The optional flow-collector deployment setting is disabled and no collector heartbeat is recorded."
+        else:
+            status = "not_detected"
+            status_label = "Not detected"
+            status_reason = "No collector heartbeat has been recorded. Start the optional flow-collector service."
+    elif global_state.listener_state != "running":
+        status = "not_running"
+        status_label = "Not running"
+        status_reason = f"The last recorded collector state is {global_state.listener_state}."
+    elif heartbeat_age is None or heartbeat_age > FLOW_HEARTBEAT_STALE_SECONDS:
+        status = "unhealthy"
+        status_label = "Heartbeat stale"
+        status_reason = "The collector heartbeat is older than the accepted freshness window."
+    else:
+        status = "healthy"
+        status_label = "Running / Healthy"
+        status_reason = "The collector is running and its database heartbeat is current."
+        if not runtime.get("enabled"):
+            status_reason += " Runtime telemetry is authoritative; the main Kaya container's optional deployment flag is disabled."
+
+    counters = {
+        "packets_received": global_state.packets_received if global_state else 0,
+        "unknown_exporters": global_state.unknown_exporter_packets if global_state else 0,
+        "rate_limited": global_state.rate_limited_packets if global_state else 0,
+        "oversized": global_state.oversized_packets if global_state else 0,
+        "packets_processed": sum(row.packets_accepted or 0 for row in states.values()),
+        "packets_rejected": sum(row.packets_rejected or 0 for row in states.values()),
+        "malformed": sum(row.malformed_packets or 0 for row in states.values()),
+        "decode_failures": sum(row.decode_failures or 0 for row in states.values()),
+        "queue_drops": sum(row.queue_drops or 0 for row in states.values()),
+        "worker_errors": sum(row.persistence_failures or 0 for row in states.values()),
+    }
+    def authorised_exporter_count(source: TrafficSource) -> int:
+        try:
+            values = json.loads(source.exporter_allowlist_json or "[]")
+        except (TypeError, ValueError):
+            return 0
+        return len(values) if isinstance(values, list) else 0
+
+    warnings: list[str] = []
+    if config and not config.is_enabled:
+        warnings.append("Global Network Traffic ingestion is disabled.")
+    if not flow_sources:
+        warnings.append("No NetFlow v9 or Cisco NSEL sources are configured.")
+    elif not any(source.is_enabled for source in flow_sources):
+        warnings.append("Flow sources exist, but none are enabled.")
+    if flow_sources and runtime:
+        if not any(source.is_enabled and source.collector_port == runtime["port"] for source in flow_sources):
+            warnings.append("No enabled flow source matches the collector UDP port.")
+        if any(source.is_enabled and authorised_exporter_count(source) == 0 for source in flow_sources):
+            warnings.append("An enabled flow source has no authorised exporters.")
+    if status == "healthy" and counters["packets_received"] == 0:
+        warnings.append("Collector heartbeat is healthy, but no packets have been received.")
+    last_error = next((row.last_error_category for row in states.values() if row.last_error_category), None)
+    if last_error:
+        warnings.append(f"Last collector error category: {last_error}.")
+    source_rows = []
+    for source in flow_sources:
+        source_rows.append({
+            "name": source.name,
+            "provider": source.provider_key,
+            "enabled": bool(source.is_enabled),
+            "port": source.collector_port,
+            "exporter_count": authorised_exporter_count(source),
+            "listener_state": states[source.id].listener_state if source.id in states else "not detected",
+        })
+
+    return {
+        "status": status,
+        "status_label": status_label,
+        "status_reason": status_reason,
+        "global_enabled": bool(config and config.is_enabled),
+        "heartbeat_at": heartbeat.isoformat() + "Z" if heartbeat else None,
+        "heartbeat_age_seconds": round(heartbeat_age, 1) if heartbeat_age is not None else None,
+        "listener_state": global_state.listener_state if global_state else "unknown",
+        "last_packet_at": global_state.last_datagram_at.isoformat() + "Z" if global_state and global_state.last_datagram_at else None,
+        "runtime": runtime,
+        "runtime_error": runtime_error,
+        "sources": {
+            "configured": len(flow_sources),
+            "enabled": sum(1 for source in flow_sources if source.is_enabled),
+            "matching_port": sum(1 for source in flow_sources if source.is_enabled and runtime and source.collector_port == runtime["port"]),
+            "rows": source_rows,
         },
-    )
+        "counters": counters,
+        "warnings": warnings,
+        "deployment_guidance": "Enable the existing flow-collector Compose profile and confirm its UDP bind/firewall mapping; this page does not modify Docker deployment settings.",
+    }
+
+
+@router.get("/system/site-administration/network-traffic")
+def network_traffic_admin_page(
+    request: Request,
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    require_module_settings_access(request, db, user, "network_monitor")
+    return RedirectResponse("/system/site-administration?tab=module-network-traffic", status_code=303)
+
+
+@router.get("/system/site-administration/network-traffic/status")
+def network_traffic_admin_status(
+    request: Request,
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    require_module_settings_access(request, db, user, "network_monitor")
+    return JSONResponse(_network_traffic_admin_status(db), headers={"Cache-Control": "no-store"})
 
 
 @router.post("/system/site-administration/experimental-features/high-availability")
@@ -3419,7 +3723,7 @@ async def save_network_monitor_defaults(
         "network_monitor_defaults",
         None,
         trusted_client_ip(request),
-        detail="Updated inherited IP/WAN Monitor health thresholds",
+        detail="Updated inherited Uptime health thresholds",
         metadata={"old": old_values, "new": values},
     )
     return RedirectResponse(
@@ -3872,19 +4176,13 @@ async def save_settings(
         return templates.TemplateResponse(
             request,
             "settings.html",
-            {
-                "user": user,
-                "module_access": module_settings_access,
-                "settings": submitted_settings,
-                "dns_providers": dns_providers_for_admin(db),
-                "ha_dns_clusters": ha_dns_clusters_for_admin(db),
-                **vlan_ip_admin_context(db),
-                "security_check": security_check_context(request, db),
-                "allowed_host_errors": allowed_host_errors,
-                "message": None,
-                "error": "Review the highlighted allowed-host entries before saving.",
-                **csrf_context(request),
-            },
+            _settings_page_context(
+                request, db, user, module_access=module_settings_access,
+                settings=submitted_settings,
+                allowed_host_errors=allowed_host_errors,
+                message=None,
+                error="Review the highlighted allowed-host entries before saving.",
+            ),
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         )
 
@@ -4081,18 +4379,10 @@ async def save_settings(
             return templates.TemplateResponse(
                 request,
                 "settings.html",
-                {
-                    "user": user,
-                    "module_access": module_settings_access,
-                    "settings": submitted_settings,
-                    "dns_providers": dns_providers_for_admin(db),
-                    "ha_dns_clusters": ha_dns_clusters_for_admin(db),
-                    **vlan_ip_admin_context(db),
-                    "security_check": security_check_context(request, db),
-                    "message": None,
-                    "error": asset_tag_error,
-                    **csrf_context(request),
-                },
+                _settings_page_context(
+                    request, db, user, module_access=module_settings_access,
+                    settings=submitted_settings, message=None, error=asset_tag_error,
+                ),
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             )
         for key, value in asset_tag_values.items():
@@ -4153,18 +4443,10 @@ async def save_settings(
             return templates.TemplateResponse(
                 request,
                 "settings.html",
-                {
-                    "user": user,
-                    "module_access": module_settings_access,
-                    "settings": load_site_settings(db),
-                    "dns_providers": dns_providers_for_admin(db),
-                    "ha_dns_clusters": ha_dns_clusters_for_admin(db),
-                    **vlan_ip_admin_context(db),
-                    "security_check": security_check_context(request, db),
-                    "message": None,
-                    "error": str(exc),
-                    **csrf_context(request),
-                },
+                _settings_page_context(
+                    request, db, user, module_access=module_settings_access,
+                    message=None, error=str(exc),
+                ),
                 status_code=422,
             )
     guacamole_bridge_changed = (
@@ -4190,19 +4472,10 @@ async def save_settings(
     return templates.TemplateResponse(
         request,
         "settings.html",
-        {
-            "user": user,
-            "module_access": module_settings_access,
-            "settings": load_site_settings(db),
-            **wallboard_admin_context(request, db),
-            "dns_providers": dns_providers_for_admin(db),
-            "ha_dns_clusters": ha_dns_clusters_for_admin(db),
-            **vlan_ip_admin_context(db),
-            "security_check": security_check_context(request, db),
-            "message": "Settings saved successfully.",
-            "error": None,
-            **csrf_context(request),
-        },
+        _settings_page_context(
+            request, db, user, module_access=module_settings_access,
+            message="Settings saved successfully.", error=None,
+        ),
     )
 
 
