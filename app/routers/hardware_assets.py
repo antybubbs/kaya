@@ -46,6 +46,7 @@ from app.routers.auth import require_admin, require_editor, require_module_acces
 from app.services.audit import write_audit
 from app.services.asset_tags import allocate_asset_tag, asset_tag_settings, next_asset_tag_preview
 from app.services.asset_identity import (
+    ADMINISTRATOR_HOSTNAME_SOURCE,
     MANAGED_HOSTNAME_SOURCE,
     close_network_assignment,
     confirm_existing_identity_evidence,
@@ -53,6 +54,7 @@ from app.services.asset_identity import (
     assign_network_identity,
     eligible_traffic_contexts,
     revoke_identity_evidence,
+    set_administrator_hostname,
 )
 from app.services.asset_identity_resolution import evidence_for_asset
 from app.services.asset_profile_reporting import asset_reporting_context
@@ -255,10 +257,11 @@ def preferred_hostname_evidence(identity_rows: list[AssetIdentityEvidence]) -> A
     A confirmed managed IP/VLAN Manager hostname outranks observed DHCP/DNS
     names; otherwise the newest confirmed hostname, then the newest suggestion.
     """
-    hosts = [row for row in identity_rows if row.evidence_type == "hostname"]
+    hosts = [row for row in identity_rows if row.evidence_type == "hostname" and row.status in {"confirmed", "pending"}]
     confirmed = [row for row in hosts if row.status == "confirmed"]
+    administrator = [row for row in confirmed if row.source == ADMINISTRATOR_HOSTNAME_SOURCE]
     managed = [row for row in confirmed if row.source == MANAGED_HOSTNAME_SOURCE]
-    return next(iter(managed or confirmed or hosts), None)
+    return next(iter(administrator or managed or confirmed or hosts), None)
 
 
 def asset_profile_context(db: Session, user, asset: HardwareAsset) -> dict:
@@ -706,6 +709,33 @@ def confirm_asset_identity_evidence(request: Request, asset_id: int, evidence_id
     except (ValueError, PermissionError) as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return RedirectResponse(f"/infrastructure/asset-manager/{asset_id}", status_code=303)
+
+
+@router.post("/{asset_id}/hostname")
+def set_asset_hostname(
+    request: Request,
+    asset_id: int,
+    hostname: str = Form("", max_length=255),
+    managed_ip_address_id: int | None = Form(None),
+    update_managed_hostname: str = Form(""),
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+):
+    validate_csrf_token(request, csrf_token)
+    _asset_or_404(db, asset_id)
+    try:
+        set_administrator_hostname(
+            db, user, asset_id=asset_id, hostname=hostname,
+            managed_ip_address_id=managed_ip_address_id,
+            update_managed_hostname=update_managed_hostname.strip().lower() in {"1", "true", "yes", "on"},
+        )
+    except (ValueError, PermissionError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="The hostname change could not be audited. Please retry.") from exc
+    return RedirectResponse(f"/infrastructure/asset-manager/{asset_id}#asset-panel-network", status_code=303)
 
 
 @router.post("/{asset_id}/identity-evidence/{evidence_id}/revoke")

@@ -34,7 +34,9 @@ from app.services.asset_identity import (
     _assignment_lock_key,
     dhcp_address_lock_key,
     lock_identity_scope,
+    normalise_hostname_value,
     repair_managed_static_assignment,
+    set_administrator_hostname,
 )
 from app.services.audit import write_audit
 from app.services.data_integrity import (
@@ -90,6 +92,8 @@ ACTIONS = {
                      "Revoke this DHCP client-ID evidence. Lease history is kept."),
         RepairAction("replace_hostname", "Replace hostname", ("static_hostname_auto_filled",), False,
                      "Replace the managed name with the selected observed hostname."),
+        RepairAction("set_asset_hostname", "Set asset hostname", ("static_hostname_auto_filled",), False,
+                     "Set the linked asset's administrator-confirmed hostname."),
         RepairAction("clear_hostname", "Clear hostname", ("static_hostname_auto_filled",), False,
                      "Clear the automatically copied managed name."),
         RepairAction("relink_dns_client", "Link to MAC owner", ("dns_asset_link_conflict",), True,
@@ -246,6 +250,29 @@ def _plan(db: Session, finding: DataIntegrityFinding, detection: Detection, acti
             changes=[{"record": f"IP/VLAN Manager record #{record['ip_address_id']} ({record['address']})", "field": "name", "current": record["name"], "proposed": hostname or "(blank)"}],
             preserved=["The DNS client, its observations and DHCP history are unchanged."],
             risks=[] if hostname else ["The record will have no name until an administrator sets one."],
+        )
+    if action == "set_asset_hostname":
+        record = evidence["record"]
+        assignment = evidence.get("current_assignment")
+        asset_id = assignment.get("asset_id") if assignment else None
+        if asset_id is None and evidence.get("mac"):
+            owner = db.query(AssetIdentityEvidence.asset_id).filter(
+                AssetIdentityEvidence.evidence_type == "mac",
+                AssetIdentityEvidence.normalised_value == evidence["mac"],
+                AssetIdentityEvidence.status == "confirmed",
+                AssetIdentityEvidence.revoked_at.is_(None),
+            ).all()
+            ids = {row[0] for row in owner if row[0] is not None}
+            asset_id = next(iter(ids), None) if len(ids) == 1 else None
+        if asset_id is None:
+            raise RepairRefused("This managed record is not linked to one unambiguous asset.")
+        if action == "set_asset_hostname":
+            hostname = normalise_hostname_value(params.get("hostname"), allow_empty=True)
+        return Plan(
+            {"asset_id": asset_id, "record": record["ip_address_id"], "current": record.get("name"), "proposed": hostname},
+            changes=[{"record": f"Asset #{asset_id}", "field": "preferred hostname", "current": "(current evidence)" if record.get("name") else "(unset)", "proposed": hostname or "(cleared)"}],
+            preserved=["Revoked and observed hostname evidence remains historical.", "The managed IP record, DHCP leases and DNS observations are unchanged."],
+            asset_ids=[asset_id],
         )
     if action in {"relink_dns_client", "unlink_dns_client"}:
         client = evidence["dns_client"]
@@ -410,6 +437,11 @@ def _apply(db: Session, finding: DataIntegrityFinding, action: str, plan: Plan, 
                 old_value=material["current"], new_value=material["proposed"], source=HOSTNAME_SOURCE, provider_id=client.provider_id,
             ))
         return {"ip_address_id": record.id, "subject": evidence, "before": material["current"], "after": material["proposed"]}
+    if action == "set_asset_hostname":
+        result = set_administrator_hostname(
+            db, user, asset_id=material["asset_id"], hostname=material["proposed"], commit=False,
+        )
+        return result
     if action in {"relink_dns_client", "unlink_dns_client"}:
         query = db.query(DNSRecognisedDevice).filter(DNSRecognisedDevice.id == material["client"])
         if db.get_bind().dialect.name == "postgresql":

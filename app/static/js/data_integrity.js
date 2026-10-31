@@ -119,6 +119,9 @@
       if (!options.length) box.append(message("warning", "No alternative observed hostname is available."));
       else box.append(el("label", {}, "Observed hostname",
         el("select", { "data-param": "hostname" }, el("option", { value: "", text: "Select a hostname" }), options.map((name) => el("option", { value: name, text: name })))));
+    } else if (action === "set_asset_hostname") {
+      box.append(el("p", { class: "muted", text: "Set the linked asset's preferred hostname. Leave blank to explicitly clear its administrator preference." }));
+      box.append(el("label", {}, "Hostname or FQDN", el("input", { type: "text", maxlength: "255", autocomplete: "off", "data-param": "hostname", placeholder: "device.example.invalid" })));
     }
     return box;
   }

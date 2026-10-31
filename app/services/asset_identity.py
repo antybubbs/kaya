@@ -31,7 +31,9 @@ STATUSES = {"pending", "confirmed", "revoked", "conflict", "unresolved"}
 MANAGED_STATIC_PROVENANCE = "managed_static_adoption"
 MANAGED_STATIC_REPAIR_PROVENANCE = "managed_static_repair"
 MANAGED_HOSTNAME_SOURCE = "vlan_ip_manager"
+ADMINISTRATOR_HOSTNAME_SOURCE = "administrator"
 _MAC = re.compile(r"^[0-9a-f]{12}$")
+_HOST_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", re.IGNORECASE)
 
 
 def eligible_traffic_contexts(db: Session, address: str) -> list[dict]:
@@ -119,6 +121,18 @@ def _normalise_evidence(evidence_type: str, value: str) -> str:
     if kind in {"hostname", "dhcp_client_id", "provider_client_id", "serial_number"}:
         return value.casefold()
     return value
+
+
+def normalise_hostname_value(value: str | None, *, allow_empty: bool = False) -> str | None:
+    """Validate the hostname form Kaya accepts for administrator identity."""
+    clean = " ".join(str(value or "").split()).strip().rstrip(".").casefold()
+    if not clean:
+        if allow_empty:
+            return None
+        raise ValueError("Hostname is required.")
+    if len(clean) > 253 or any(not _HOST_LABEL.fullmatch(label) for label in clean.split(".")):
+        raise ValueError("Enter a valid hostname or FQDN using letters, numbers and hyphens.")
+    return clean
 
 
 def mac_identity_lock_key(normalised_mac: str) -> int:
@@ -271,6 +285,110 @@ def confirm_existing_identity_evidence(db: Session, user: User, evidence_id: int
         source_scope=row.source_scope,
         observed_at=confirmed_at or row.last_observed_at or datetime.utcnow(),
     )
+
+
+def set_administrator_hostname(
+    db: Session,
+    user: User,
+    *,
+    asset_id: int,
+    hostname: str | None,
+    managed_ip_address_id: int | None = None,
+    update_managed_hostname: bool = False,
+    commit: bool = True,
+) -> dict:
+    """Set or explicitly clear the administrator-preferred hostname.
+
+    Revoked evidence is never changed. A non-empty correction creates or updates
+    only the administrator source row; observations and leases remain history.
+    """
+    if not user or user.role != "admin":
+        raise PermissionError("Administrator access is required.")
+    asset = db.get(HardwareAsset, asset_id)
+    if not asset:
+        raise ValueError("Hardware asset not found.")
+    clean = normalise_hostname_value(hostname, allow_empty=True)
+    now = datetime.utcnow()
+    current = db.query(AssetIdentityEvidence).filter(
+        AssetIdentityEvidence.asset_id == asset_id,
+        AssetIdentityEvidence.evidence_type == "hostname",
+        AssetIdentityEvidence.source == ADMINISTRATOR_HOSTNAME_SOURCE,
+        AssetIdentityEvidence.status == "confirmed",
+    ).order_by(AssetIdentityEvidence.id.desc()).first()
+    previous = current.normalised_value if current else None
+    managed_record = None
+    if update_managed_hostname:
+        if managed_ip_address_id is None:
+            raise ValueError("Select an associated Static IP/VLAN Manager record.")
+        managed_record = db.get(IPAddress, managed_ip_address_id)
+        if not managed_record or managed_record.assignment_type == "Dynamic":
+            raise ValueError("The selected managed record is not a valid Static record.")
+        linked = db.query(AssetNetworkAssignment).filter(
+            AssetNetworkAssignment.asset_id == asset_id,
+            AssetNetworkAssignment.ip_address_id == managed_ip_address_id,
+        ).first()
+        if linked is None:
+            raise ValueError("The managed record is not associated with this asset.")
+        macs = {row.normalised_value for row in db.query(AssetIdentityEvidence).filter(
+            AssetIdentityEvidence.asset_id == asset_id,
+            AssetIdentityEvidence.evidence_type == "mac",
+            AssetIdentityEvidence.status == "confirmed",
+            AssetIdentityEvidence.revoked_at.is_(None),
+        ).all()}
+        record_mac = managed_static_record_mac(managed_record)
+        if not record_mac or record_mac not in macs:
+            raise ValueError("The managed record MAC is not confirmed for this asset.")
+    if clean:
+        row = db.query(AssetIdentityEvidence).filter(
+            AssetIdentityEvidence.asset_id == asset_id,
+            AssetIdentityEvidence.evidence_type == "hostname",
+            AssetIdentityEvidence.normalised_value == clean,
+            AssetIdentityEvidence.source == ADMINISTRATOR_HOSTNAME_SOURCE,
+            AssetIdentityEvidence.status != "revoked",
+        ).first()
+        for previous_row in db.query(AssetIdentityEvidence).filter(
+            AssetIdentityEvidence.asset_id == asset_id,
+            AssetIdentityEvidence.evidence_type == "hostname",
+            AssetIdentityEvidence.source == ADMINISTRATOR_HOSTNAME_SOURCE,
+            AssetIdentityEvidence.status == "confirmed",
+            AssetIdentityEvidence.normalised_value != clean,
+        ).all():
+            previous_row.status = "revoked"
+            previous_row.revoked_at = now
+        if row is None:
+            row = AssetIdentityEvidence(
+                asset_id=asset_id, evidence_type="hostname", normalised_value=clean,
+                source=ADMINISTRATOR_HOSTNAME_SOURCE, first_observed_at=now,
+            )
+        row.last_observed_at = now
+        row.status = "confirmed"
+        row.confirmed_by = user.id
+        row.confirmed_at = now
+        row.revoked_at = None
+        row.conflict_reason = None
+        db.add(row)
+    else:
+        for row in db.query(AssetIdentityEvidence).filter(
+            AssetIdentityEvidence.asset_id == asset_id,
+            AssetIdentityEvidence.evidence_type == "hostname",
+            AssetIdentityEvidence.source == ADMINISTRATOR_HOSTNAME_SOURCE,
+            AssetIdentityEvidence.status == "confirmed",
+        ).all():
+            row.status = "revoked"
+            row.revoked_at = now
+    if managed_record is not None:
+        managed_record.name = clean
+    db.flush()
+    detail = f"Administrator hostname correction: {previous or '(none)'} -> {clean or '(cleared)'}"
+    if managed_record is not None:
+        detail += f"; updated managed IP record {managed_record.id}"
+    event = write_audit(db, user, "set_hostname", "hardware_asset", str(asset_id), detail=detail, force=True, commit=False)
+    if event is None:
+        db.rollback()
+        raise RuntimeError("The hostname change could not be audited.")
+    if commit:
+        db.commit()
+    return {"asset_id": asset_id, "previous_hostname": previous, "hostname": clean, "managed_ip_address_id": managed_record.id if managed_record else None}
 
 
 def assign_network_identity(

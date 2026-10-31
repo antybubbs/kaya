@@ -109,7 +109,7 @@ FINDING_TYPES = {
             "A Static IP/VLAN Manager record's name was filled automatically from a DNS observation and has not been changed by an administrator since.",
             "Retain the name, replace it with a selected observed hostname, or clear it.",
             "An automatically copied name may be stale, but it is treated as administrator-managed.",
-            ("replace_hostname", "clear_hostname"), ("retain_hostname",),
+            ("set_asset_hostname", "replace_hostname", "clear_hostname"), ("retain_hostname",),
         ),
         FindingType(
             "dns_asset_link_conflict", "DNS client linked to the wrong asset", "dns", ("dns_manager", "asset_manager"), "warning", "needs_review",

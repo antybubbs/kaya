@@ -6,8 +6,8 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
-from app.models.models import AssetNetworkAssignment, HardwareAsset, TrafficSource, User
-from app.services.asset_identity import assign_network_identity
+from app.models.models import AuditLog, AssetIdentityEvidence, AssetNetworkAssignment, HardwareAsset, IPAddress, TrafficSource, User
+from app.services.asset_identity import assign_network_identity, confirm_identity_evidence, revoke_identity_evidence, set_administrator_hostname
 
 
 @pytest.fixture
@@ -61,4 +61,59 @@ def test_postgres_concurrent_assignment_confirmation_allows_only_one_owner(postg
             text("SELECT count(*) FROM audit_logs WHERE entity = 'asset_network_assignment' AND detail = 'Confirmed asset network assignment'")
         ).scalar_one()
         assert audit_count == 1
+
+
+def test_postgres_administrator_hostname_lifecycle_is_transactional_and_preserves_history(postgres_factory, monkeypatch):
+    token = "pg-hostname-" + os.urandom(4).hex()
+    with postgres_factory.begin() as db:
+        admin = User(email=f"{token}-admin@example.invalid", role="admin", is_active=True)
+        asset = HardwareAsset(name=f"{token} asset", status="In use")
+        other = HardwareAsset(name=f"{token} other", status="In use")
+        db.add_all([admin, asset, other])
+        db.flush()
+        record = IPAddress(address=f"198.51.100.{20 + (asset.id % 100)}", name="old.example.invalid", mac_address="02:00:00:00:00:21", assignment_type="Static")
+        db.add(record)
+        db.flush()
+        assignment = AssetNetworkAssignment(asset_id=asset.id, address=record.address, address_family=4, ip_address_id=record.id, started_at=datetime(2026, 1, 1), provenance="synthetic-static", status="confirmed")
+        db.add(assignment)
+        db.flush()
+        admin_id, asset_id, other_id, record_id = admin.id, asset.id, other.id, record.id
+        assignment_id, record_address = assignment.id, record.address
+
+    try:
+        with postgres_factory() as db:
+            actor = db.get(User, admin_id)
+            mac = confirm_identity_evidence(db, actor, asset_id=asset_id, evidence_type="mac", value="02:00:00:00:00:21", source="manual")
+            old = confirm_identity_evidence(db, actor, asset_id=asset_id, evidence_type="hostname", value="old.example.invalid", source="dhcp")
+            revoke_identity_evidence(db, actor, old.id)
+            result = set_administrator_hostname(db, actor, asset_id=asset_id, hostname="managed.example.invalid", managed_ip_address_id=record_id, update_managed_hostname=True)
+            assert result["hostname"] == "managed.example.invalid"
+            assert db.get(IPAddress, record_id).name == "managed.example.invalid"
+            assert db.get(AssetIdentityEvidence, old.id).status == "revoked"
+            manual = db.query(AssetIdentityEvidence).filter_by(asset_id=asset_id, source="administrator", status="confirmed").one()
+            assert manual.normalised_value == "managed.example.invalid"
+            assert db.query(AssetNetworkAssignment).filter_by(id=assignment_id).one().address == record_address
+
+            with pytest.raises(ValueError, match="not associated"):
+                set_administrator_hostname(db, actor, asset_id=other_id, hostname="other.example.invalid", managed_ip_address_id=record_id, update_managed_hostname=True)
+
+            set_administrator_hostname(db, actor, asset_id=asset_id, hostname="")
+            assert db.get(AssetIdentityEvidence, manual.id).status == "revoked"
+            assert db.query(AssetIdentityEvidence).filter_by(asset_id=asset_id, source="administrator", status="confirmed").count() == 0
+
+        with postgres_factory() as db:
+            actor = db.get(User, admin_id)
+            monkeypatch.setattr("app.services.asset_identity.write_audit", lambda *args, **kwargs: None)
+            with pytest.raises(RuntimeError, match="could not be audited"):
+                set_administrator_hostname(db, actor, asset_id=asset_id, hostname="rolled-back.example.invalid")
+            assert db.query(AssetIdentityEvidence).filter_by(asset_id=asset_id, normalised_value="rolled-back.example.invalid").count() == 0
+            assert db.query(AssetNetworkAssignment).filter_by(id=assignment_id).one().address == record_address
+    finally:
+        with postgres_factory.begin() as db:
+            db.query(AuditLog).filter(AuditLog.user_id == admin_id).delete(synchronize_session=False)
+            db.query(AssetIdentityEvidence).filter(AssetIdentityEvidence.asset_id.in_([asset_id, other_id])).delete(synchronize_session=False)
+            db.query(AssetNetworkAssignment).filter(AssetNetworkAssignment.asset_id.in_([asset_id, other_id])).delete(synchronize_session=False)
+            db.query(IPAddress).filter(IPAddress.id == record_id).delete(synchronize_session=False)
+            db.query(HardwareAsset).filter(HardwareAsset.id.in_([asset_id, other_id])).delete(synchronize_session=False)
+            db.query(User).filter(User.id == admin_id).delete(synchronize_session=False)
 
