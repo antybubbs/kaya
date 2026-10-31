@@ -83,7 +83,7 @@ def test_postgres_administrator_hostname_lifecycle_is_transactional_and_preserve
     try:
         with postgres_factory() as db:
             actor = db.get(User, admin_id)
-            mac = confirm_identity_evidence(db, actor, asset_id=asset_id, evidence_type="mac", value="02:00:00:00:00:21", source="manual")
+            confirm_identity_evidence(db, actor, asset_id=asset_id, evidence_type="mac", value="02:00:00:00:00:21", source="manual")
             old = confirm_identity_evidence(db, actor, asset_id=asset_id, evidence_type="hostname", value="old.example.invalid", source="dhcp")
             revoke_identity_evidence(db, actor, old.id)
             result = set_administrator_hostname(db, actor, asset_id=asset_id, hostname="managed.example.invalid", managed_ip_address_id=record_id, update_managed_hostname=True)
