@@ -485,7 +485,13 @@ def _persist_dhcp_leases(
             .order_by(DHCPLeaseHistory.last_seen_at.desc())
             .first()
         )
-        same_identity = bool(active and ((mac and active.mac_address == mac) or (client_id and active.dns_client_id == client_id)))
+        # MAC first: when both carry a MAC it alone decides. The DNS client link
+        # may come from the address (``by_ip``), and an address is never an
+        # identity, so it only decides when a MAC is missing on either side.
+        if active and mac and active.mac_address:
+            same_identity = active.mac_address == mac
+        else:
+            same_identity = bool(active and client_id and active.dns_client_id == client_id)
         if active and not same_identity:
             active.is_active = False
             active.ended_at = generated_at
@@ -526,7 +532,9 @@ def _persist_dhcp_leases(
                 active.provider_lease_id = None
             active.dhcp_range_id = active.dhcp_range_id or (scope.id if scope else None)
             active.last_seen_at = generated_at
-            active.expires_at = expires_at or active.expires_at
+            # An explicit zero is the provider reporting an infinite lease, so an
+            # earlier finite expiry no longer applies; a missing value keeps it.
+            active.expires_at = None if expiry_raw in (0, "0", 0.0, "0.0") else expires_at or active.expires_at
             summary["renewed"] += 1
         if expires_at and expires_at <= generated_at:
             summary["expired"] += 1
@@ -541,10 +549,16 @@ def _persist_dhcp_leases(
             row.ended_at = generated_at
             summary["marked_inactive"] += 1
     else:
-        retained = db.query(DHCPLeaseHistory).filter_by(provider_id=provider.id, is_active=True)
+        retained = db.query(DHCPLeaseHistory.id).filter_by(provider_id=provider.id, is_active=True)
         if seen_ids:
             retained = retained.filter(~DHCPLeaseHistory.id.in_(seen_ids))
-        summary["retained_unverified"] = retained.count()
+        retained_ids = [row_id for (row_id,) in retained.all()]
+        summary["retained_unverified"] = len(retained_ids)
+        # Absence from an unverified snapshot proves nothing, but a lease the
+        # provider itself said has expired, and that this collection did not
+        # renew, no longer supports its assignment: the same evidence an
+        # outage accepts. The lease row itself stays as it was.
+        close_ended_dhcp_assignments(db, provider_id=provider.id, observed_at=generated_at, lease_ids=retained_ids, expired_only=True)
     close_ended_dhcp_assignments(db, provider_id=provider.id, observed_at=generated_at)
     return summary
 

@@ -203,7 +203,8 @@ def test_postgres_real_adoption_route_allows_new_mac_with_legacy_unscoped_dhcp_i
             assert client.hardware_asset_id not in case["asset_ids"]
             assert db.query(AssetIdentityEvidence).filter_by(asset_id=case["asset_ids"][0], evidence_type="dhcp_client_id").one().status == "confirmed"
             assert db.query(AssetIdentityEvidence).filter_by(asset_id=new_asset.id, evidence_type="mac", status="confirmed").count() == 1
-            assert db.query(AssetIdentityEvidence).filter_by(asset_id=new_asset.id, evidence_type="dhcp_client_id", source_scope=f"provider:{client.provider_id}:range:unscoped", status="confirmed").count() == 1
+            # The DNS provider's client record number is not a DHCP client ID.
+            assert db.query(AssetIdentityEvidence).filter_by(asset_id=new_asset.id, evidence_type="dhcp_client_id").count() == 0
     finally:
         if route_db is not None:
             route_db.close()

@@ -71,6 +71,7 @@ from app.services.network_monitor import (
 )
 from app.services.client_ip import client_ip as trusted_client_ip
 from app.services.modules import has_module_access
+from app.services.asset_identity import promote_managed_static_record
 from app.services.asset_identity_resolution import evidence_for_asset
 from app.services.site_settings import get_site_setting
 from app.services.table_export import (
@@ -597,6 +598,7 @@ async def create_ip_address(request: Request, address: str = Form(..., max_lengt
     save_custom_values(db, fields, form, ENTITY_TYPE, row.id)
     db.commit()
     write_audit(db, user, "create", "ip_address", str(row.id), request.client.host if request.client else None, detail=clean_address, metadata={"dns_client_id": dns_client.id if dns_client else None, "monitor_settings": monitor_changes, "traffic_monitoring": traffic_changes})
+    promote_managed_static_record(db, row.id, actor=user)
     return RedirectResponse(f"/networking/vlan-ip-manager/{row.id}", status_code=303)
 
 
@@ -810,6 +812,7 @@ async def update_ip_address(request: Request, record_id: int, address: str = For
     save_custom_values(db, fields, form, ENTITY_TYPE, row.id)
     db.commit()
     write_audit(db, user, "update", "ip_address", str(row.id), request.client.host if request.client else None, detail=clean_address, metadata={"monitor_settings": monitor_changes, "traffic_monitoring": traffic_changes})
+    promote_managed_static_record(db, row.id, actor=user)
     return RedirectResponse(f"/networking/vlan-ip-manager/{row.id}", status_code=303)
 
 

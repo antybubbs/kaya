@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import get_settings
 from app.models.models import DNSClientTrafficEvent, DNSRecognisedDevice
+from app.services.asset_identity import pending_legacy_adoption_closures
 from app.services.data_integrity_checks import (
     MAX_LIMIT,
     asset_confirmed_macs,
@@ -55,6 +56,21 @@ def _expired_open_assignments(db: Session, now: datetime, limit: int) -> list[di
         "reason": reason,
         "classification": "definite_inconsistency",
     } for assignment, lease, replacement, reason in obsolete_dhcp_assignments(db, now, limit)]
+
+
+def _pending_legacy_adoption_closures(db: Session, now: datetime, limit: int) -> list[dict]:
+    """Lease-less adoption rows that the next DHCP collections are expected to close."""
+    return [{
+        "assignment_id": assignment.id,
+        "asset_id": assignment.asset_id,
+        "lease_id": lease.id,
+        "address": assignment.address,
+        "lease_last_seen_at": _iso(lease.last_seen_at),
+        "lease_ended_at": _iso(lease.ended_at),
+        "lease_expires_at": _iso(lease.expires_at),
+        "reason": reason,
+        "classification": "pending_automatic_closure",
+    } for assignment, lease, reason in pending_legacy_adoption_closures(db, observed_at=now)[:limit]]
 
 
 def _active_ip_conflicts(db: Session, limit: int) -> list[dict]:
@@ -146,6 +162,7 @@ def run_audit(db: Session, limit: int) -> dict:
         "limit_per_category": limit,
         "dns_asset_link_conflicts": dns_conflicts,
         "open_assignments_with_ended_leases": _expired_open_assignments(db, now, limit),
+        "legacy_adoption_rows_pending_automatic_closure": _pending_legacy_adoption_closures(db, now, limit),
         "active_ip_ownership_conflicts": _active_ip_conflicts(db, limit),
         "legacy_dns_traffic_conflicts": _traffic_conflicts(db, limit),
         "cross_asset_confirmed_mac_duplicates": _cross_asset_mac_duplicates(db, limit),

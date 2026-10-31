@@ -786,6 +786,49 @@ def repair_managed_static_assignment(
     return plan
 
 
+def promote_managed_static_record(db: Session, record_id: int, *, actor: User | None) -> str:
+    """Make a just-saved Static IP/VLAN Manager record current for the asset owning its MAC.
+
+    Called after an administrator creates or edits a record, so the explicit
+    static intent takes effect without a separate Data Integrity repair. It
+    runs ``repair_managed_static_assignment`` with every one of its checks and
+    locks, attributed to that administrator. Editors may change records but not
+    asset identity, so for anyone else nothing changes and any mismatch stays a
+    Data Integrity finding, as does every ambiguous or conflicting case.
+
+    Returns ``not_applicable``, ``unchanged``, ``promoted`` or ``review_required``.
+    """
+    if actor is None or actor.role != "admin" or not actor.is_active:
+        return "not_applicable"
+    if not module_is_enabled(db, MODULE_BY_KEY["asset_manager"]):
+        return "not_applicable"
+    record = db.get(IPAddress, record_id)
+    mac = managed_static_record_mac(record)
+    if mac is None:
+        return "not_applicable"
+    owners = {owner for (owner,) in db.query(AssetIdentityEvidence.asset_id).filter(
+        AssetIdentityEvidence.evidence_type == "mac",
+        AssetIdentityEvidence.normalised_value == mac,
+        AssetIdentityEvidence.status == "confirmed",
+        AssetIdentityEvidence.revoked_at.is_(None),
+        AssetIdentityEvidence.asset_id.isnot(None),
+    ).limit(20).all()}
+    if not owners:
+        return "not_applicable"
+    asset = db.get(HardwareAsset, next(iter(owners))) if len(owners) == 1 else None
+    if asset is None or not (asset.asset_tag or "").strip():
+        return "review_required"
+    try:
+        plan = repair_managed_static_assignment(
+            db, asset_id=asset.id, asset_tag=asset.asset_tag, mac=mac, address=record.address,
+            ip_address_id=record.id, actor=actor, execute=True,
+            audit_context={"trigger": "managed_record_saved"},
+        )
+    except ValueError:
+        return "review_required"
+    return "promoted" if plan.get("executed") else "unchanged"
+
+
 def _managed_static_outranks_lease(db: Session, asset_id: int, lease: DHCPLeaseHistory, mac: str | None, family: int) -> bool:
     """Whether a newer managed static assignment for this MAC outranks the lease.
 
@@ -856,6 +899,104 @@ def lock_identity_scope(
             db.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": key})
 
 
+ADOPTION_PROVENANCE = "discovered_device_adoption"
+
+
+def _ended_lease_state(observed_at: datetime, *, expired_only: bool):
+    """Lease rows that no longer support an assignment (see ``close_ended_dhcp_assignments``)."""
+    if expired_only:
+        return and_(
+            DHCPLeaseHistory.is_active.is_(True),
+            DHCPLeaseHistory.expires_at.isnot(None),
+            DHCPLeaseHistory.expires_at > DHCPLeaseHistory.lease_started_at,
+            DHCPLeaseHistory.expires_at <= observed_at,
+        )
+    return DHCPLeaseHistory.is_active.is_(False)
+
+
+def pending_legacy_adoption_closures(db: Session, *, observed_at: datetime) -> list[tuple]:
+    """Read-only preview: ``(assignment, lease, reason)`` that collections would now close.
+
+    Covers lease-less Review / Adopt rows only; lease-linked rows are already
+    reported by the obsolete DHCP assignment check. An expired lease is listed
+    although a collection closes it only while the provider no longer reports it.
+    """
+    result, seen = [], set()
+    provider_ids = [row_id for (row_id,) in db.query(DHCPLeaseHistory.provider_id).filter(DHCPLeaseHistory.provider_id.isnot(None)).distinct().limit(200).all()]
+    for provider_id in sorted(provider_ids):
+        for expired_only, reason in ((False, "lease_ended"), (True, "lease_expired")):
+            state = _ended_lease_state(observed_at, expired_only=expired_only)
+            for row, lease in _legacy_adoption_candidates(db, provider_id=provider_id, observed_at=observed_at, lease_state=state, lease_ids=None):
+                if row.id not in seen:
+                    seen.add(row.id)
+                    result.append((row, lease, reason))
+    return result
+
+
+def _legacy_adoption_candidates(db: Session, *, provider_id: int, observed_at: datetime, lease_state, lease_ids: list[int] | None) -> list[tuple]:
+    """Lease-less Review / Adopt assignments that an ended lease of this provider supported.
+
+    Adoption records the address without a lease link, so lease closure alone
+    never ends it. Such an assignment is attributed to a lease only when every
+    condition holds: its managed record is Dynamic (a Static record is
+    administrator intent and is never closed by DHCP evidence), the lease is for
+    the same address and was active when the assignment started, the lease's
+    MAC is confirmed for this asset and no other, and no other lease still
+    supports the same address and MAC. Anything less stays open for review.
+    """
+    if lease_ids is not None and not lease_ids:
+        return []
+    query = db.query(AssetNetworkAssignment, DHCPLeaseHistory).join(
+        IPAddress, IPAddress.id == AssetNetworkAssignment.ip_address_id
+    ).join(
+        DHCPLeaseHistory, and_(
+            DHCPLeaseHistory.ip_address == AssetNetworkAssignment.address,
+            DHCPLeaseHistory.first_seen_at <= AssetNetworkAssignment.started_at,
+            or_(DHCPLeaseHistory.ended_at.is_(None), DHCPLeaseHistory.ended_at > AssetNetworkAssignment.started_at),
+        )
+    ).filter(
+        AssetNetworkAssignment.status == "confirmed",
+        AssetNetworkAssignment.ended_at.is_(None),
+        AssetNetworkAssignment.dhcp_lease_id.is_(None),
+        AssetNetworkAssignment.provenance == ADOPTION_PROVENANCE,
+        IPAddress.assignment_type == "Dynamic",
+        DHCPLeaseHistory.provider_id == provider_id,
+        DHCPLeaseHistory.mac_address.isnot(None),
+        lease_state,
+    )
+    if lease_ids is not None:
+        query = query.filter(DHCPLeaseHistory.id.in_(lease_ids))
+    result = []
+    for row, lease in query.order_by(AssetNetworkAssignment.asset_id, AssetNetworkAssignment.id).limit(500).all():
+        try:
+            mac = _normalise_evidence("mac", lease.mac_address)
+        except ValueError:
+            continue
+        owners = {owner for (owner,) in db.query(AssetIdentityEvidence.asset_id).filter(
+            AssetIdentityEvidence.evidence_type == "mac",
+            AssetIdentityEvidence.normalised_value == mac,
+            AssetIdentityEvidence.status == "confirmed",
+            AssetIdentityEvidence.revoked_at.is_(None),
+            AssetIdentityEvidence.asset_id.isnot(None),
+        ).limit(20).all()}
+        if owners != {row.asset_id}:
+            continue
+        still_supported = db.query(DHCPLeaseHistory.id).filter(
+            DHCPLeaseHistory.id != lease.id,
+            DHCPLeaseHistory.ip_address == lease.ip_address,
+            DHCPLeaseHistory.mac_address == lease.mac_address,
+            DHCPLeaseHistory.is_active.is_(True),
+            or_(
+                DHCPLeaseHistory.expires_at.is_(None),
+                DHCPLeaseHistory.expires_at > observed_at,
+                DHCPLeaseHistory.expires_at <= DHCPLeaseHistory.lease_started_at,
+            ),
+        ).first()
+        if still_supported is None:
+            result.append((row, lease))
+    return result
+
+
 def close_ended_dhcp_assignments(
     db: Session,
     *,
@@ -867,7 +1008,9 @@ def close_ended_dhcp_assignments(
     """Close open confirmed assignments whose DHCP lease no longer supports them.
 
     Only assignments linked to a lease of this provider are considered, so
-    static and manually entered assignments are never closed here. A lease no
+    static and manually entered assignments are never closed here. Assignments
+    made by Review / Adopt carry no lease link; one is attributed to a lease
+    only as ``_legacy_adoption_candidates`` describes. A lease no
     longer supports its assignment once a successful collection has ended it
     (absent from the snapshot, or the address observed with another identity).
     During a provider outage (``expired_only``) only a provider-reported expiry
@@ -878,16 +1021,7 @@ def close_ended_dhcp_assignments(
     """
     if not module_is_enabled(db, MODULE_BY_KEY["asset_manager"]):
         return 0
-    lease_state = (
-        and_(
-            DHCPLeaseHistory.is_active.is_(True),
-            DHCPLeaseHistory.expires_at.isnot(None),
-            DHCPLeaseHistory.expires_at > DHCPLeaseHistory.lease_started_at,
-            DHCPLeaseHistory.expires_at <= observed_at,
-        )
-        if expired_only
-        else DHCPLeaseHistory.is_active.is_(False)
-    )
+    lease_state = _ended_lease_state(observed_at, expired_only=expired_only)
     query = db.query(AssetNetworkAssignment, DHCPLeaseHistory).join(
         DHCPLeaseHistory, DHCPLeaseHistory.id == AssetNetworkAssignment.dhcp_lease_id
     ).filter(
@@ -901,6 +1035,13 @@ def close_ended_dhcp_assignments(
             return 0
         query = query.filter(DHCPLeaseHistory.id.in_(lease_ids))
     candidates = query.order_by(AssetNetworkAssignment.asset_id, AssetNetworkAssignment.id).limit(500).all()
+    seen_ids = {row.id for row, _lease in candidates}
+    for row, lease in _legacy_adoption_candidates(db, provider_id=provider_id, observed_at=observed_at, lease_state=lease_state, lease_ids=lease_ids):
+        if row.id not in seen_ids:
+            seen_ids.add(row.id)
+            candidates.append((row, lease))
+    # Asset locks in ascending order, as for every other caller of this tier.
+    candidates.sort(key=lambda pair: (pair[0].asset_id, pair[0].id))
     closed = 0
     postgresql = db.get_bind().dialect.name == "postgresql"
     for row, lease in candidates:
@@ -916,7 +1057,10 @@ def close_ended_dhcp_assignments(
         audit = write_audit(
             db, None, "update", "asset_network_assignment", str(row.id),
             detail="Closed DHCP network assignment after its lease ended",
-            metadata={"asset_id": row.asset_id, "lease_id": lease.id, "reason": "lease_expired" if expired_only else "lease_ended", "address_family": row.address_family},
+            metadata={
+                "asset_id": row.asset_id, "lease_id": lease.id, "reason": "lease_expired" if expired_only else "lease_ended",
+                "lease_link": "direct" if row.dhcp_lease_id == lease.id else "inferred_adoption", "address_family": row.address_family,
+            },
             force=True, commit=False,
         )
         if audit is None:
