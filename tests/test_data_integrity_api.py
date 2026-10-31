@@ -202,6 +202,29 @@ def test_administrator_without_repair_permission_can_preview_but_not_repair(clie
     assert STATIC_IP not in [row.address for row in continuity._rows(db, asset) if row.ended_at is None]
 
 
+def test_set_asset_hostname_repair_over_http_is_csrf_protected_validated_and_attributed(client, db):
+    from tests.test_data_integrity_repairs import _administrator_hostnames, _hostname_finding
+
+    _record, asset, finding = _hostname_finding(db)
+    admin = _user(db)
+    _login(client, admin)
+    base = f"/api/data-integrity/findings/{finding.id}"
+    body = {"action": "set_asset_hostname", "params": {"hostname": "phone.example.invalid"}}
+    assert client.post(f"{base}/preview", json={**body, "params": {"hostname": "not a hostname"}}, headers=HEADERS).status_code == 400
+    preview = client.post(f"{base}/preview", json=body, headers=HEADERS).json()
+    assert preview["state"] == "ready"
+    repair = {**body, "preview_token": preview["preview_token"]}
+    assert client.post(f"{base}/repair", json=repair).status_code == 400                                   # no CSRF token
+    assert client.post(f"{base}/repair", json=repair, headers={"X-CSRF-Token": "wrong"}).status_code == 400
+    assert _administrator_hostnames(db, asset) == []
+    result = client.post(f"{base}/repair", json=repair, headers=HEADERS)
+    assert result.status_code == 200, result.text
+    assert result.json()["outcome"] == "applied"
+    db.expire_all()
+    (row,) = _administrator_hostnames(db, asset)
+    assert (row.normalised_value, row.confirmed_by) == ("phone.example.invalid", admin.id)
+
+
 def test_administrator_with_repair_permission_repairs_and_verifies_from_the_overview(client, db):
     finding, asset = _static_finding(db)
     _login(client, _user(db))

@@ -32,11 +32,15 @@ from app.models.models import (
 from app.services.asset_identity import (
     MANAGED_STATIC_PROVENANCE,
     MANAGED_STATIC_REPAIR_PROVENANCE,
+    awaits_retrospective_review,
+    dhcp_closure_candidates,
+    dhcp_closure_end,
     managed_static_record_mac,
     plan_managed_static_assignment,
+    reconciliation_baseline,
 )
 
-CHECK_SET_VERSION = "2026.10.30-1"
+CHECK_SET_VERSION = "2026.10.31-1"
 DEFAULT_LIMIT = 2000
 MAX_LIMIT = 5000
 ROWS_PER_SUBJECT = 50
@@ -92,8 +96,8 @@ FINDING_TYPES = {
         ),
         FindingType(
             "obsolete_dhcp_assignment", "Assignment still open after its DHCP lease ended", "dhcp", ("asset_manager", "dns_manager"), "warning", "open",
-            "An open assignment is linked to a DHCP lease that has ended, expired or been taken by another device.",
-            "Close the assignment at the lease's last observation, the last supported evidence of ownership.",
+            "An open assignment is linked to, or (for a Review / Adopt assignment) unambiguously attributed to, a DHCP lease that has ended, expired or been taken by another device.",
+            "Close the assignment at the lease's last observation, the last supported evidence of ownership. Findings marked for retrospective review predate this version's reconciliation baseline and are never closed automatically; repairing them is the explicit authorisation.",
             "The asset keeps an address it no longer holds; attribution for that address may be wrong.",
             ("close_obsolete_dhcp",), (), "close_obsolete_dhcp",
         ),
@@ -274,16 +278,22 @@ def confirmed_mac_duplicates(db: Session, limit: int, mac: str | None = None) ->
 
 
 def obsolete_dhcp_assignments(db: Session, now: datetime, limit: int, assignment_id: int | None = None) -> list[tuple]:
-    """Open lease-linked assignments whose lease ended, expired or was taken by another device.
+    """Open DHCP-derived assignments whose lease ended, expired or was taken by another device.
 
-    Returns ``(assignment, lease, replacement_lease_or_None, reason)``.
+    Ended and expired leases come from ``dhcp_closure_candidates``, the rules
+    DHCP collections apply, so lease-less adoption rows are included exactly
+    when a collection could close them. Returns
+    ``(assignment, lease, replacement_lease_or_None, reason, lease_link)``.
     """
+    found: dict[int, tuple] = {}
+    for assignment, lease, link in dhcp_closure_candidates(db, provider_id=None, observed_at=now, expired_only=False, assignment_id=assignment_id):
+        found.setdefault(assignment.id, (assignment, lease, None, "lease_ended", link))
     query = db.query(AssetNetworkAssignment, DHCPLeaseHistory).join(
         DHCPLeaseHistory, DHCPLeaseHistory.id == AssetNetworkAssignment.dhcp_lease_id,
-    ).filter(*_open_confirmed())
+    ).filter(*_open_confirmed(), DHCPLeaseHistory.is_active.is_(True))
     if assignment_id is not None:
         query = query.filter(AssetNetworkAssignment.id == assignment_id)
-    rows = query.order_by(AssetNetworkAssignment.id.asc()).limit(limit).all()
+    rows = [(assignment, lease) for assignment, lease in query.order_by(AssetNetworkAssignment.id.asc()).limit(limit).all() if assignment.id not in found]
     provider_ids = {lease.provider_id for _assignment, lease in rows if lease.provider_id is not None}
     addresses = {lease.ip_address for _assignment, lease in rows}
     newest: dict[tuple, DHCPLeaseHistory] = {}
@@ -297,25 +307,18 @@ def obsolete_dhcp_assignments(db: Session, now: datetime, limit: int, assignment
             current = newest.get(key)
             if current is None or (active.lease_started_at or datetime.min, active.id) > (current.lease_started_at or datetime.min, current.id):
                 newest[key] = active
-    result = []
     for assignment, lease in rows:
         replacement = newest.get((lease.provider_id, lease.ip_address))
-        superseded = bool(
+        if (
             replacement
             and replacement.id != lease.id
             and (replacement.lease_started_at or datetime.min, replacement.id) > (lease.lease_started_at or datetime.min, lease.id)
             and replacement.mac_address != lease.mac_address
-        )
-        if not lease.is_active or lease.ended_at is not None:
-            reason = "lease_ended"
-        elif superseded:
-            reason = "superseded_by_other_device"
-        elif lease.expires_at is not None and lease.lease_started_at is not None and lease.lease_started_at < lease.expires_at <= now:
-            reason = "lease_expired"
-        else:
-            continue
-        result.append((assignment, lease, replacement if superseded else None, reason))
-    return result
+        ):
+            found[assignment.id] = (assignment, lease, replacement, "superseded_by_other_device", "direct")
+    for assignment, lease, link in dhcp_closure_candidates(db, provider_id=None, observed_at=now, expired_only=True, assignment_id=assignment_id):
+        found.setdefault(assignment.id, (assignment, lease, None, "lease_expired", link))
+    return [found[key] for key in sorted(found)][:limit]
 
 
 def suspect_dhcp_client_id_evidence(db: Session, limit: int, evidence_id: int | None = None) -> list[AssetIdentityEvidence]:
@@ -576,12 +579,21 @@ def _check_duplicate_open_assignment(db: Session, now: datetime, limit: int, sub
 def _check_obsolete_dhcp_assignment(db: Session, now: datetime, limit: int, subject: str | None) -> CheckResult:
     rows = obsolete_dhcp_assignments(db, now, limit, assignment_id=int(subject) if subject else None)
     assets = _assets(db, {assignment.asset_id for assignment, *_rest in rows})
+    baseline = reconciliation_baseline(db)
     detections = []
-    for assignment, lease, replacement, reason in rows:
-        last_seen = lease.last_seen_at or lease.first_seen_at or assignment.started_at
-        proposed_end = max(assignment.started_at, min(last_seen, now))
+    for assignment, lease, replacement, reason, link in rows:
+        proposed_end = dhcp_closure_end(assignment, lease, now)
         label = _asset_text(assets.get(assignment.asset_id), assignment.asset_id)
-        definite = reason in {"lease_ended", "superseded_by_other_device"}
+        # An expiry is definite once the provider has not reported the lease since it passed.
+        definite = reason in {"lease_ended", "superseded_by_other_device"} or (
+            reason == "lease_expired" and lease.last_seen_at is not None and lease.expires_at is not None and lease.last_seen_at <= lease.expires_at
+        )
+        # Only the newer closure rules wait for review; established ones run at the next collection.
+        newer_rule = link == "inferred_adoption" or reason == "lease_expired"
+        retrospective = newer_rule and awaits_retrospective_review(baseline, lease, expired_only=reason == "lease_expired")
+        material = [assignment.id, _iso(assignment.ended_at), lease.id, bool(lease.is_active), _iso(lease.ended_at), _iso(lease.expires_at), replacement.id if replacement else None, reason]
+        if link != "direct":
+            material.append(link)
         detections.append(Detection(
             "obsolete_dhcp_assignment", str(assignment.id),
             {"lease_ended": "DHCP lease ended but the assignment is still open",
@@ -591,6 +603,11 @@ def _check_obsolete_dhcp_assignment(db: Session, now: datetime, limit: int, subj
             {
                 "asset": assets.get(assignment.asset_id) or {"asset_id": assignment.asset_id},
                 "assignment": _assignment(assignment), "reason": reason, "proposed_end": _iso(proposed_end),
+                "lease_link": link,
+                "retrospective_review": retrospective,
+                "automatic_closure": "Waits for administrator review: the lease evidence predates this version's reconciliation baseline."
+                if retrospective else "DHCP collections may close this assignment automatically.",
+                "reconciliation_baseline": _iso(baseline),
                 "lease": {
                     "lease_id": lease.id, "provider_id": lease.provider_id, "ip_address": lease.ip_address, "mac": lease.mac_address,
                     "hostname": lease.hostname, "is_active": bool(lease.is_active), "lease_started_at": _iso(lease.lease_started_at),
@@ -598,9 +615,9 @@ def _check_obsolete_dhcp_assignment(db: Session, now: datetime, limit: int, subj
                 },
                 "replacement_lease": {"lease_id": replacement.id, "mac": replacement.mac_address, "lease_started_at": _iso(replacement.lease_started_at)} if replacement else None,
             },
-            [assignment.id, _iso(assignment.ended_at), lease.id, bool(lease.is_active), _iso(lease.ended_at), _iso(lease.expires_at), replacement.id if replacement else None, reason],
+            material,
             asset_id=assignment.asset_id, mac=lease.mac_address, ip_address=assignment.address, hostname=lease.hostname,
-            search_terms=[label], bulk_repairable=definite,
+            search_terms=[label, "retrospective review" if retrospective else None], bulk_repairable=definite,
         ))
     return CheckResult(detections, len(rows), len(rows) >= limit and not subject)
 

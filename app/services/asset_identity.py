@@ -7,6 +7,7 @@ import ipaddress
 import re
 
 from sqlalchemy import and_, or_, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.models import (
@@ -15,6 +16,7 @@ from app.models.models import (
     DHCPLeaseHistory,
     HardwareAsset,
     IPAddress,
+    RemoteManagerSetting,
     TrafficDiscoveryNetworkMapping,
     TrafficSource,
     User,
@@ -900,6 +902,45 @@ def lock_identity_scope(
 
 
 ADOPTION_PROVENANCE = "discovered_device_adoption"
+# When this version's closure rules first ran (UTC, naive ISO). Set once by the
+# first DHCP collection that evaluates them and never moved by Kaya again.
+RECONCILIATION_BASELINE_KEY = "dhcp_reconciliation_baseline_at"
+_BASELINE_UNREADABLE = datetime.max
+
+
+def reconciliation_baseline(db: Session, *, initialise_at: datetime | None = None) -> datetime | None:
+    """Return the retrospective-review baseline, recording it on first use.
+
+    Expiry-based closures and closures of lease-less adoption rows happen automatically only
+    for lease evidence from this time on. Older evidence is left for an
+    administrator to review and authorise in Data Integrity. The value lives in
+    the database, so restarts and repeated polls cannot move it; an unreadable
+    value fails closed and treats all evidence as needing review. Without
+    ``initialise_at`` this only reads, and ``None`` means no collection has run.
+    """
+    row = db.query(RemoteManagerSetting).filter(RemoteManagerSetting.key == RECONCILIATION_BASELINE_KEY).first()
+    if row is None and initialise_at is not None:
+        stamp = initialise_at.replace(microsecond=0)
+        try:
+            with db.begin_nested():
+                db.add(RemoteManagerSetting(key=RECONCILIATION_BASELINE_KEY, value=stamp.isoformat()))
+        except IntegrityError:
+            pass  # a concurrent collection recorded it first
+        else:
+            audit = write_audit(
+                db, None, "create", "dhcp_reconciliation_baseline", RECONCILIATION_BASELINE_KEY,
+                detail="Recorded the DHCP retrospective review baseline",
+                metadata={"baseline_at": stamp.isoformat()}, force=True, commit=False,
+            )
+            if audit is None:
+                raise RuntimeError("The DHCP reconciliation baseline could not be audited.")
+        row = db.query(RemoteManagerSetting).filter(RemoteManagerSetting.key == RECONCILIATION_BASELINE_KEY).first()
+    if row is None:
+        return None
+    try:
+        return datetime.fromisoformat(str(row.value or ""))
+    except ValueError:
+        return _BASELINE_UNREADABLE
 
 
 def _ended_lease_state(observed_at: datetime, *, expired_only: bool):
@@ -914,87 +955,160 @@ def _ended_lease_state(observed_at: datetime, *, expired_only: bool):
     return DHCPLeaseHistory.is_active.is_(False)
 
 
-def pending_legacy_adoption_closures(db: Session, *, observed_at: datetime) -> list[tuple]:
-    """Read-only preview: ``(assignment, lease, reason)`` that collections would now close.
-
-    Covers lease-less Review / Adopt rows only; lease-linked rows are already
-    reported by the obsolete DHCP assignment check. An expired lease is listed
-    although a collection closes it only while the provider no longer reports it.
-    """
-    result, seen = [], set()
-    provider_ids = [row_id for (row_id,) in db.query(DHCPLeaseHistory.provider_id).filter(DHCPLeaseHistory.provider_id.isnot(None)).distinct().limit(200).all()]
-    for provider_id in sorted(provider_ids):
-        for expired_only, reason in ((False, "lease_ended"), (True, "lease_expired")):
-            state = _ended_lease_state(observed_at, expired_only=expired_only)
-            for row, lease in _legacy_adoption_candidates(db, provider_id=provider_id, observed_at=observed_at, lease_state=state, lease_ids=None):
-                if row.id not in seen:
-                    seen.add(row.id)
-                    result.append((row, lease, reason))
-    return result
+def _same_address(left: str | None, right: str | None) -> bool:
+    try:
+        return _normalise_ip(left)[0] == _normalise_ip(right)[0]
+    except ValueError:
+        return False
 
 
-def _legacy_adoption_candidates(db: Session, *, provider_id: int, observed_at: datetime, lease_state, lease_ids: list[int] | None) -> list[tuple]:
-    """Lease-less Review / Adopt assignments that an ended lease of this provider supported.
+def _legacy_adoption_candidates(
+    db: Session, *, provider_id: int | None, observed_at: datetime, expired_only: bool,
+    lease_ids: list[int] | None = None, assignment_id: int | None = None,
+) -> list[tuple]:
+    """Lease-less Review / Adopt assignments that an ended lease supported.
 
     Adoption records the address without a lease link, so lease closure alone
     never ends it. Such an assignment is attributed to a lease only when every
     condition holds: its managed record is Dynamic (a Static record is
     administrator intent and is never closed by DHCP evidence), the lease is for
-    the same address and was active when the assignment started, the lease's
-    MAC is confirmed for this asset and no other, and no other lease still
-    supports the same address and MAC. Anything less stays open for review.
+    the same address (compared normalised, so IPv6 spellings agree) and was
+    active when the assignment started, the lease's MAC is confirmed for this
+    asset and no other, and no other lease of any provider still supports the
+    same address and MAC. Anything less stays open for review. A
+    ``provider_id`` of ``None`` considers every provider (Data Integrity).
     """
     if lease_ids is not None and not lease_ids:
         return []
-    query = db.query(AssetNetworkAssignment, DHCPLeaseHistory).join(
+    rows_query = db.query(AssetNetworkAssignment).join(
         IPAddress, IPAddress.id == AssetNetworkAssignment.ip_address_id
-    ).join(
-        DHCPLeaseHistory, and_(
-            DHCPLeaseHistory.ip_address == AssetNetworkAssignment.address,
-            DHCPLeaseHistory.first_seen_at <= AssetNetworkAssignment.started_at,
-            or_(DHCPLeaseHistory.ended_at.is_(None), DHCPLeaseHistory.ended_at > AssetNetworkAssignment.started_at),
-        )
     ).filter(
         AssetNetworkAssignment.status == "confirmed",
         AssetNetworkAssignment.ended_at.is_(None),
         AssetNetworkAssignment.dhcp_lease_id.is_(None),
         AssetNetworkAssignment.provenance == ADOPTION_PROVENANCE,
         IPAddress.assignment_type == "Dynamic",
-        DHCPLeaseHistory.provider_id == provider_id,
-        DHCPLeaseHistory.mac_address.isnot(None),
-        lease_state,
     )
+    if assignment_id is not None:
+        rows_query = rows_query.filter(AssetNetworkAssignment.id == assignment_id)
+    rows = rows_query.order_by(AssetNetworkAssignment.asset_id, AssetNetworkAssignment.id).limit(500).all()
+    if not rows:
+        return []
+    lease_query = db.query(DHCPLeaseHistory).filter(
+        DHCPLeaseHistory.mac_address.isnot(None),
+        DHCPLeaseHistory.first_seen_at <= max(row.started_at for row in rows),
+        or_(DHCPLeaseHistory.ended_at.is_(None), DHCPLeaseHistory.ended_at > min(row.started_at for row in rows)),
+        _ended_lease_state(observed_at, expired_only=expired_only),
+    )
+    if provider_id is not None:
+        lease_query = lease_query.filter(DHCPLeaseHistory.provider_id == provider_id)
+    else:
+        lease_query = lease_query.filter(DHCPLeaseHistory.provider_id.isnot(None))
+    if lease_ids is not None:
+        lease_query = lease_query.filter(DHCPLeaseHistory.id.in_(lease_ids))
+    leases = lease_query.order_by(DHCPLeaseHistory.id.asc()).limit(5000).all()
+    result = []
+    for row in rows:
+        for lease in leases:
+            if not (_same_address(lease.ip_address, row.address) and lease.first_seen_at <= row.started_at
+                    and (lease.ended_at is None or lease.ended_at > row.started_at)):
+                continue
+            try:
+                mac = _normalise_evidence("mac", lease.mac_address)
+            except ValueError:
+                continue
+            owners = {owner for (owner,) in db.query(AssetIdentityEvidence.asset_id).filter(
+                AssetIdentityEvidence.evidence_type == "mac",
+                AssetIdentityEvidence.normalised_value == mac,
+                AssetIdentityEvidence.status == "confirmed",
+                AssetIdentityEvidence.revoked_at.is_(None),
+                AssetIdentityEvidence.asset_id.isnot(None),
+            ).limit(20).all()}
+            if owners != {row.asset_id}:
+                continue
+            supporting = db.query(DHCPLeaseHistory.ip_address).filter(
+                DHCPLeaseHistory.id != lease.id,
+                DHCPLeaseHistory.mac_address == lease.mac_address,
+                DHCPLeaseHistory.is_active.is_(True),
+                or_(
+                    DHCPLeaseHistory.expires_at.is_(None),
+                    DHCPLeaseHistory.expires_at > observed_at,
+                    DHCPLeaseHistory.expires_at <= DHCPLeaseHistory.lease_started_at,
+                ),
+            ).limit(200).all()
+            if any(_same_address(address, row.address) for (address,) in supporting):
+                continue
+            result.append((row, lease))
+            break
+    return result
+
+
+def dhcp_closure_candidates(
+    db: Session, *, provider_id: int | None, observed_at: datetime, expired_only: bool,
+    lease_ids: list[int] | None = None, assignment_id: int | None = None,
+) -> list[tuple]:
+    """``(assignment, lease, lease_link)`` that no longer have DHCP support.
+
+    The one rule set used by DHCP collections, Data Integrity detection and its
+    repair. ``lease_link`` is ``direct`` for a lease-linked assignment and
+    ``inferred_adoption`` for a lease-less adoption row. Ordered by asset.
+    """
+    if lease_ids is not None and not lease_ids:
+        return []
+    query = db.query(AssetNetworkAssignment, DHCPLeaseHistory).join(
+        DHCPLeaseHistory, DHCPLeaseHistory.id == AssetNetworkAssignment.dhcp_lease_id
+    ).filter(
+        AssetNetworkAssignment.status == "confirmed",
+        AssetNetworkAssignment.ended_at.is_(None),
+        _ended_lease_state(observed_at, expired_only=expired_only),
+    )
+    if provider_id is not None:
+        query = query.filter(DHCPLeaseHistory.provider_id == provider_id)
     if lease_ids is not None:
         query = query.filter(DHCPLeaseHistory.id.in_(lease_ids))
-    result = []
-    for row, lease in query.order_by(AssetNetworkAssignment.asset_id, AssetNetworkAssignment.id).limit(500).all():
-        try:
-            mac = _normalise_evidence("mac", lease.mac_address)
-        except ValueError:
-            continue
-        owners = {owner for (owner,) in db.query(AssetIdentityEvidence.asset_id).filter(
-            AssetIdentityEvidence.evidence_type == "mac",
-            AssetIdentityEvidence.normalised_value == mac,
-            AssetIdentityEvidence.status == "confirmed",
-            AssetIdentityEvidence.revoked_at.is_(None),
-            AssetIdentityEvidence.asset_id.isnot(None),
-        ).limit(20).all()}
-        if owners != {row.asset_id}:
-            continue
-        still_supported = db.query(DHCPLeaseHistory.id).filter(
-            DHCPLeaseHistory.id != lease.id,
-            DHCPLeaseHistory.ip_address == lease.ip_address,
-            DHCPLeaseHistory.mac_address == lease.mac_address,
-            DHCPLeaseHistory.is_active.is_(True),
-            or_(
-                DHCPLeaseHistory.expires_at.is_(None),
-                DHCPLeaseHistory.expires_at > observed_at,
-                DHCPLeaseHistory.expires_at <= DHCPLeaseHistory.lease_started_at,
-            ),
-        ).first()
-        if still_supported is None:
-            result.append((row, lease))
-    return result
+    if assignment_id is not None:
+        query = query.filter(AssetNetworkAssignment.id == assignment_id)
+    candidates = [(row, lease, "direct") for row, lease in query.order_by(AssetNetworkAssignment.asset_id, AssetNetworkAssignment.id).limit(500).all()]
+    seen_ids = {row.id for row, _lease, _link in candidates}
+    for row, lease in _legacy_adoption_candidates(
+        db, provider_id=provider_id, observed_at=observed_at, expired_only=expired_only, lease_ids=lease_ids, assignment_id=assignment_id,
+    ):
+        if row.id not in seen_ids:
+            seen_ids.add(row.id)
+            candidates.append((row, lease, "inferred_adoption"))
+    # Asset locks in ascending order, as for every other caller of this tier.
+    candidates.sort(key=lambda item: (item[0].asset_id, item[0].id))
+    return candidates
+
+
+def dhcp_closure_end(row: AssetNetworkAssignment, lease: DHCPLeaseHistory, observed_at: datetime) -> datetime:
+    """The lease's last observation: the last supported evidence of ownership."""
+    last_seen = lease.last_seen_at or lease.first_seen_at or row.started_at
+    return max(row.started_at, min(last_seen, observed_at))
+
+
+def awaits_retrospective_review(baseline: datetime | None, lease: DHCPLeaseHistory, *, expired_only: bool) -> bool:
+    """Whether the lease stopped supporting its assignment before the baseline.
+
+    The evidence time is the provider's expiry, or when Kaya ended the lease.
+    Missing evidence, or no recorded baseline yet, counts as needing review.
+    """
+    evidence_at = lease.expires_at if expired_only else lease.ended_at
+    return baseline is None or evidence_at is None or evidence_at < baseline
+
+
+def _try_lock_asset_dhcp(db: Session, asset_id: int) -> bool:
+    """Take the asset lock only if it is free (PostgreSQL); always true on SQLite.
+
+    Collections reach this after holding address locks for earlier leases of
+    the same snapshot, the reverse of the global MAC, asset, address order.
+    Waiting here could complete a deadlock cycle, so a contended closure is
+    skipped instead and the next collection, re-evaluating the same evidence,
+    closes it.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        return True
+    return bool(db.execute(text("SELECT pg_try_advisory_xact_lock(:lock_key)"), {"lock_key": _asset_dhcp_lock_key(asset_id)}).scalar())
 
 
 def close_ended_dhcp_assignments(
@@ -1015,51 +1129,38 @@ def close_ended_dhcp_assignments(
     (absent from the snapshot, or the address observed with another identity).
     During a provider outage (``expired_only``) only a provider-reported expiry
     that has passed counts; an expiry not after the lease start (for example an
-    infinite lease reported as 0) is not evidence. The assignment ends at the
-    lease's last observation, the last supported evidence of ownership, so the
-    uncertain interval is never attributed. Identity evidence is untouched.
+    infinite lease reported as 0) is not evidence; the same applies to leases a
+    successful but unverified collection did not renew. The assignment ends at the lease's last observation, the last supported
+    evidence of ownership, so the uncertain interval is never attributed.
+    Identity evidence is untouched.
+
+    Expiry and inferred adoption rows act automatically only on evidence from
+    the retrospective baseline on; older evidence stays open as a Data
+    Integrity finding until an administrator authorises its closure there.
     """
     if not module_is_enabled(db, MODULE_BY_KEY["asset_manager"]):
         return 0
-    lease_state = _ended_lease_state(observed_at, expired_only=expired_only)
-    query = db.query(AssetNetworkAssignment, DHCPLeaseHistory).join(
-        DHCPLeaseHistory, DHCPLeaseHistory.id == AssetNetworkAssignment.dhcp_lease_id
-    ).filter(
-        AssetNetworkAssignment.status == "confirmed",
-        AssetNetworkAssignment.ended_at.is_(None),
-        DHCPLeaseHistory.provider_id == provider_id,
-        lease_state,
-    )
-    if lease_ids is not None:
-        if not lease_ids:
-            return 0
-        query = query.filter(DHCPLeaseHistory.id.in_(lease_ids))
-    candidates = query.order_by(AssetNetworkAssignment.asset_id, AssetNetworkAssignment.id).limit(500).all()
-    seen_ids = {row.id for row, _lease in candidates}
-    for row, lease in _legacy_adoption_candidates(db, provider_id=provider_id, observed_at=observed_at, lease_state=lease_state, lease_ids=lease_ids):
-        if row.id not in seen_ids:
-            seen_ids.add(row.id)
-            candidates.append((row, lease))
-    # Asset locks in ascending order, as for every other caller of this tier.
-    candidates.sort(key=lambda pair: (pair[0].asset_id, pair[0].id))
+    baseline = reconciliation_baseline(db, initialise_at=observed_at)
     closed = 0
     postgresql = db.get_bind().dialect.name == "postgresql"
-    for row, lease in candidates:
-        _lock_asset_dhcp(db, row.asset_id)
+    for row, lease, link in dhcp_closure_candidates(db, provider_id=provider_id, observed_at=observed_at, expired_only=expired_only, lease_ids=lease_ids):
+        if (expired_only or link == "inferred_adoption") and awaits_retrospective_review(baseline, lease, expired_only=expired_only):
+            continue
+        if not _try_lock_asset_dhcp(db, row.asset_id):
+            continue
         if postgresql:
-            # Another collection may have closed it while this one waited.
+            # Another collection may have closed it before this one locked.
             db.refresh(row)
         if row.ended_at is not None or row.status != "confirmed":
             continue
-        last_seen = lease.last_seen_at or lease.first_seen_at or row.started_at
-        row.ended_at = max(row.started_at, min(last_seen, observed_at))
+        row.ended_at = dhcp_closure_end(row, lease, observed_at)
         db.flush()
         audit = write_audit(
             db, None, "update", "asset_network_assignment", str(row.id),
             detail="Closed DHCP network assignment after its lease ended",
             metadata={
                 "asset_id": row.asset_id, "lease_id": lease.id, "reason": "lease_expired" if expired_only else "lease_ended",
-                "lease_link": "direct" if row.dhcp_lease_id == lease.id else "inferred_adoption", "address_family": row.address_family,
+                "lease_link": link, "address_family": row.address_family,
             },
             force=True, commit=False,
         )

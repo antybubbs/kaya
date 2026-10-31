@@ -255,10 +255,12 @@ def _plan(db: Session, finding: DataIntegrityFinding, detection: Detection, acti
         record = evidence["record"]
         assignment = evidence.get("current_assignment")
         asset_id = assignment.get("asset_id") if assignment else None
-        if asset_id is None and evidence.get("mac"):
+        # The detection records the managed record's MAC under ``record``.
+        mac = record.get("mac")
+        if asset_id is None and mac:
             owner = db.query(AssetIdentityEvidence.asset_id).filter(
                 AssetIdentityEvidence.evidence_type == "mac",
-                AssetIdentityEvidence.normalised_value == evidence["mac"],
+                AssetIdentityEvidence.normalised_value == mac,
                 AssetIdentityEvidence.status == "confirmed",
                 AssetIdentityEvidence.revoked_at.is_(None),
             ).all()
@@ -266,8 +268,10 @@ def _plan(db: Session, finding: DataIntegrityFinding, detection: Detection, acti
             asset_id = next(iter(ids), None) if len(ids) == 1 else None
         if asset_id is None:
             raise RepairRefused("This managed record is not linked to one unambiguous asset.")
-        if action == "set_asset_hostname":
+        try:
             hostname = normalise_hostname_value(params.get("hostname"), allow_empty=True)
+        except ValueError as exc:
+            raise RepairRefused(str(exc)) from exc
         return Plan(
             {"asset_id": asset_id, "record": record["ip_address_id"], "current": record.get("name"), "proposed": hostname},
             changes=[{"record": f"Asset #{asset_id}", "field": "preferred hostname", "current": "(current evidence)" if record.get("name") else "(unset)", "proposed": hostname or "(cleared)"}],
@@ -401,7 +405,7 @@ def _close(db: Session, assignment_id: int, ended_at: datetime) -> dict:
     return {"assignment_id": row.id, "asset_id": row.asset_id, "before": None, "after": row.ended_at.isoformat()}
 
 
-def _apply(db: Session, finding: DataIntegrityFinding, action: str, plan: Plan, now: datetime) -> dict:
+def _apply(db: Session, user: User, finding: DataIntegrityFinding, action: str, plan: Plan, now: datetime) -> dict:
     material = plan.material
     if action == "choose_mac_owner":
         reason = f"Data Integrity finding {finding.id}: MAC ownership assigned to asset {material['owner']}"
@@ -438,10 +442,14 @@ def _apply(db: Session, finding: DataIntegrityFinding, action: str, plan: Plan, 
             ))
         return {"ip_address_id": record.id, "subject": evidence, "before": material["current"], "after": material["proposed"]}
     if action == "set_asset_hostname":
-        result = set_administrator_hostname(
-            db, user, asset_id=material["asset_id"], hostname=material["proposed"], commit=False,
-        )
-        return result
+        # Attributed to the administrator whose repair permission was checked;
+        # the audit row is written in this transaction (commit=False).
+        try:
+            return set_administrator_hostname(
+                db, user, asset_id=material["asset_id"], hostname=material["proposed"], commit=False,
+            )
+        except ValueError as exc:
+            raise StaleRepair("The asset changed after the preview. Preview the repair again.") from exc
     if action in {"relink_dns_client", "unlink_dns_client"}:
         query = db.query(DNSRecognisedDevice).filter(DNSRecognisedDevice.id == material["client"])
         if db.get_bind().dialect.name == "postgresql":
@@ -515,7 +523,7 @@ def _execute(db: Session, user: User, finding: DataIntegrityFinding, definition:
         raise StaleRepair("The affected records changed after the preview. Preview the repair again.")
     if plan.confirmation and (confirmation or "").strip().casefold() != plan.confirmation.casefold():
         raise RepairRefused(f"Type {plan.confirmation} to confirm this decision.")
-    affected = _apply(db, finding, action, plan, now)
+    affected = _apply(db, user, finding, action, plan, now)
     db.flush()
     record_event(db, finding, "repaired", actor=user, detail={"action": action, "affected": affected})
     audit_or_fail(db, user, "data_integrity_repair", str(finding.id), f"Data Integrity repair: {definition.label}",

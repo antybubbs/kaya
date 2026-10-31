@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import hashlib
 from ipaddress import ip_address
 import json
@@ -210,7 +210,8 @@ def _timestamp(value: Any) -> datetime | None:
         pass
     try:
         parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        return parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
+        # Kaya stores naive UTC: convert an offset rather than discarding it.
+        return parsed.astimezone(timezone.utc).replace(tzinfo=None) if parsed.tzinfo else parsed
     except (TypeError, ValueError):
         return None
 
@@ -558,7 +559,9 @@ def _persist_dhcp_leases(
         # provider itself said has expired, and that this collection did not
         # renew, no longer supports its assignment: the same evidence an
         # outage accepts. The lease row itself stays as it was.
-        close_ended_dhcp_assignments(db, provider_id=provider.id, observed_at=generated_at, lease_ids=retained_ids, expired_only=True)
+        close_ended_dhcp_assignments(
+            db, provider_id=provider.id, observed_at=generated_at, lease_ids=retained_ids, expired_only=True,
+        )
     close_ended_dhcp_assignments(db, provider_id=provider.id, observed_at=generated_at)
     return summary
 
