@@ -41,6 +41,15 @@ from scripts.kaya_test_migrations import _verify_connected_target, verify_dispos
 
 PROVIDER_NAME = "Stage2B DHCP continuity Pi-hole"
 SOURCE_ID = 9101
+
+
+def _mask_mac_address(mac: str | None) -> str | None:
+    if mac is None:
+        return None
+    parts = mac.split(":")
+    if len(parts) == 6:
+        return "xx:xx:xx:xx:xx:" + parts[-1]
+    return "redacted"
 EXPORTER = "192.0.2.1"
 REMOTE = "198.51.100.31"
 ADDRESSES = ("192.0.2.231", "192.0.2.232", "192.0.2.233")
@@ -58,6 +67,15 @@ def _provider(db) -> DNSProviderConfig:
         db.add(provider)
         db.commit()
     return provider
+
+
+def _redact_mac(mac: str | None) -> str:
+    if not mac:
+        return "REDACTED"
+    parts = mac.split(":")
+    if len(parts) == 6:
+        return ":".join(["xx", "xx", "xx", parts[3], parts[4], parts[5]])
+    return "REDACTED"
 
 
 def collect(db, leases: list[dict], minutes_ago: int) -> dict:
@@ -86,7 +104,7 @@ def collect(db, leases: list[dict], minutes_ago: int) -> dict:
     finally:
         dns_insights._collect_provider_data, dns_insights.datetime = original_collect, original_clock
     rows = db.query(DHCPLeaseHistory).filter(DHCPLeaseHistory.ip_address.in_(ADDRESSES)).order_by(DHCPLeaseHistory.id).all()
-    return {"collected_at": at.isoformat(), "leases": [{"id": row.id, "ip": row.ip_address, "mac": row.mac_address, "active": row.is_active} for row in rows]}
+    return {"collected_at": at.isoformat(), "leases": [{"id": row.id, "ip": row.ip_address, "mac": _redact_mac(row.mac_address), "active": row.is_active} for row in rows]}
 
 
 def flows(db, items: list[dict]) -> dict:
@@ -125,7 +143,7 @@ def inspect(db) -> dict:
             }
             for asset in assets
         },
-        "leases": [{"id": row.id, "ip": row.ip_address, "mac": row.mac_address, "active": row.is_active, "first_seen_at": row.first_seen_at.isoformat(),
+        "leases": [{"id": row.id, "ip": row.ip_address, "mac": _mask_mac_address(row.mac_address), "active": row.is_active, "first_seen_at": row.first_seen_at.isoformat(),
                     "last_seen_at": row.last_seen_at.isoformat(), "ended_at": row.ended_at.isoformat() if row.ended_at else None}
                    for row in db.query(DHCPLeaseHistory).filter(DHCPLeaseHistory.ip_address.in_(ADDRESSES)).order_by(DHCPLeaseHistory.id)],
         "dns_clients": db.query(func.count(DNSRecognisedDevice.id)).scalar(),

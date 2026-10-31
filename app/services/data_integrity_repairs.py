@@ -635,11 +635,11 @@ def execute_bulk(db: Session, user: User, items: list[dict], *, confirmation: st
             outcome = execute_repair(db, user, finding_id, action, {}, tokens[finding_id], now=now)
             results.append({"finding_id": finding_id, "outcome": outcome["outcome"], "verified": outcome.get("verified"),
                             "message": outcome.get("message") or ("Repaired and verified." if outcome.get("verified") else outcome.get("remaining"))})
-        except StaleRepair as exc:
-            results.append({"finding_id": finding_id, "outcome": "stale", "message": str(exc)})
-        except (RepairRefused, RuntimeError, LookupError) as exc:
+        except StaleRepair:
+            results.append({"finding_id": finding_id, "outcome": "stale", "message": "The repair preview is no longer current. Please preview again."})
+        except (RepairRefused, RuntimeError, LookupError):
             db.rollback()
-            results.append({"finding_id": finding_id, "outcome": "failed", "message": str(exc)})
+            results.append({"finding_id": finding_id, "outcome": "failed", "message": "The repair could not be completed for this finding."})
     succeeded = sum(1 for row in results if row["outcome"] in {"applied", "already_resolved"})
     status = "completed" if succeeded == len(results) else "partial" if succeeded else "failed"
     write_audit(db, user, "data_integrity_bulk_repair", "data_integrity_finding", None, detail=f"Bulk repair {status}: {succeeded} of {len(results)} succeeded",

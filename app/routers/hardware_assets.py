@@ -594,7 +594,7 @@ def update_asset_network_monitoring(
     except RuntimeError as exc:
         db.rollback()
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="The monitoring change could not be audited. Please retry.") from exc
-    return RedirectResponse(f"/infrastructure/asset-manager/{asset_id}#asset-traffic", status_code=303)
+    return RedirectResponse(f"/infrastructure/asset-manager/{asset.id}#asset-traffic", status_code=303)
 
 
 @router.get("/{asset_id}/profile")
@@ -708,7 +708,7 @@ def confirm_asset_identity_evidence(request: Request, asset_id: int, evidence_id
         confirm_existing_identity_evidence(db, user, evidence_id)
     except (ValueError, PermissionError) as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    return RedirectResponse(f"/infrastructure/asset-manager/{asset_id}", status_code=303)
+    return RedirectResponse(request.url_for("asset_profile", asset_id=asset_id), status_code=303)
 
 
 @router.post("/{asset_id}/hostname")
@@ -749,7 +749,7 @@ def revoke_asset_identity_evidence(request: Request, asset_id: int, evidence_id:
         revoke_identity_evidence(db, user, evidence_id)
     except (ValueError, PermissionError) as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    return RedirectResponse(f"/infrastructure/asset-manager/{asset_id}", status_code=303)
+    return RedirectResponse(request.url_for("asset_profile", asset_id=asset_id), status_code=303)
 
 
 @router.post("/{asset_id}/network-assignment/{assignment_id}/confirm")
@@ -763,7 +763,7 @@ def confirm_asset_network_assignment(request: Request, asset_id: int, assignment
         confirm_existing_network_assignment(db, user, assignment_id)
     except (ValueError, PermissionError) as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    return RedirectResponse(f"/infrastructure/asset-manager/{asset_id}", status_code=303)
+    return RedirectResponse(request.url_for("asset_profile", asset_id=asset_id), status_code=303)
 
 
 @router.post("/{asset_id}/network-assignment/{assignment_id}/close")
@@ -778,7 +778,7 @@ def close_asset_network_assignment(request: Request, asset_id: int, assignment_i
         close_network_assignment(db, user, assignment_id, end)
     except (ValueError, PermissionError) as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    return RedirectResponse(f"/infrastructure/asset-manager/{asset_id}", status_code=303)
+    return RedirectResponse(request.url_for("asset_profile", asset_id=asset_id), status_code=303)
 
 
 @router.post("/{asset_id}/network-assignment/source-context")

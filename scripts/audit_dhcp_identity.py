@@ -38,6 +38,23 @@ def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
 
 
+_SENSITIVE_OUTPUT_KEYS = {"dhcp_mac", "observed_mac", "lease_mac"}
+
+
+def _sanitize_for_output(value):
+    if isinstance(value, dict):
+        sanitized: dict = {}
+        for key, item in value.items():
+            if key in _SENSITIVE_OUTPUT_KEYS and item is not None:
+                sanitized[key] = "[REDACTED]"
+            else:
+                sanitized[key] = _sanitize_for_output(item)
+        return sanitized
+    if isinstance(value, list):
+        return [_sanitize_for_output(item) for item in value]
+    return value
+
+
 def _dns_link_conflicts(db: Session, limit: int) -> list[dict]:
     return [{key: value for key, value in row.items() if key != "client"} for row in dns_link_conflicts(db, limit)]
 
@@ -200,7 +217,8 @@ def main() -> int:
             with db.begin():
                 db.connection().exec_driver_sql("SET TRANSACTION READ ONLY")
                 report = run_audit(db, limit)
-            print(json.dumps(report, indent=2, sort_keys=True))
+            sanitized_report = _sanitize_for_output(report)
+            print(json.dumps(sanitized_report, indent=2, sort_keys=True))
     finally:
         engine.dispose()
     return 0

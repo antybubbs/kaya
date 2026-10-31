@@ -3171,9 +3171,10 @@ def _network_traffic_admin_status(db: Session) -> dict:
         if "KAYA_FLOW_COLLECTOR_BIND_ADDRESS" not in os.environ:
             runtime = {**runtime, "bind_address": None}
         runtime_error = None
-    except RuntimeError as exc:
+    except RuntimeError:
         runtime = {}
-        runtime_error = str(exc)
+        logger.exception("Failed to validate flow collector runtime configuration")
+        runtime_error = "Collector runtime configuration could not be validated."
 
     heartbeat = global_state.updated_at if global_state else None
     heartbeat_age = (now - heartbeat).total_seconds() if heartbeat else None
