@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block content %}
+{% include '_high_availability_cluster_header.html' %}
+<section class="panel">
+  <div class="ha-section-heading"><div><h2>HA Diagnostics &amp; Audit</h2><p class="muted">Read-only evidence from Kaya's persisted state and the latest signed agent reports. No remote Pi-hole calls are made while rendering this page.</p></div><a class="button secondary" href="/high-availability/clusters/{{ cluster.public_id }}/diagnostics/export">Download sanitized JSON</a></div>
+  <p class="muted">Generated {{ diagnostics.generated_at or 'unknown' }}. Unknown values mean Kaya does not have current evidence.</p>
+</section>
+<section class="panel">
+  <h2>Stored state versus observed state</h2>
+  <div class="table-wrap"><table><thead><tr><th>Property</th><th>Stored</th><th>Observed</th><th>Result</th></tr></thead><tbody>
+    <tr><td>Active node</td><td>{{ diagnostics.cluster.stored_active or 'Unknown' }}</td><td>{{ diagnostics.cluster.observed_vip_owner or 'Unknown' }}</td><td>{{ 'Match' if diagnostics.cluster.stored_active and diagnostics.cluster.stored_active == diagnostics.cluster.observed_vip_owner else 'Mismatch / unknown' }}</td></tr>
+    <tr><td>Configuration authority</td><td>{{ diagnostics.cluster.stored_authority or 'Unknown' }}</td><td>{{ diagnostics.cluster.observed_vip_owner or 'Unknown' }}</td><td>{{ 'Verified' if (diagnostics.cluster.stored_authority and diagnostics.cluster.stored_authority == diagnostics.cluster.observed_vip_owner) else 'Mismatch / unknown' }}</td></tr>
+    <tr><td>DHCP owner</td><td>{{ diagnostics.cluster.stored_active or 'Unknown' }}</td><td>{{ diagnostics.cluster.observed_dhcp_owner or ('Not applicable' if not pihole_manages_dhcp else 'Unknown') }}</td><td>{{ 'Observed' if diagnostics.cluster.observed_dhcp_owner else 'Unknown / not applicable' }}</td></tr>
+    <tr><td>Cluster generations</td><td>{{ diagnostics.cluster.generations }}</td><td>See node reports below</td><td>{{ 'Consistent' if diagnostics.decision_trace[4].passed else 'Blocked' }}</td></tr>
+    <tr><td>Maintenance</td><td>{{ 'Active' if diagnostics.cluster.maintenance_mode else 'Inactive' }}</td><td>{{ diagnostics.maintenance.active.phase if diagnostics.maintenance.active else 'No active run' }}</td><td>{{ 'Review' if diagnostics.maintenance.active else 'Clear' }}</td></tr>
+  </tbody></table></div>
+</section>
+<section class="panel">
+  <h2>Reconciliation decision trace</h2>
+  <div class="ha-event-list">{% for item in diagnostics.decision_trace %}<article><span class="ha-check-state ha-check-state--{{ 'pass' if item.passed else 'fail' }}">{{ 'Pass' if item.passed else 'Blocked' }}</span><div><strong>{{ item.label }}</strong><p>{{ item.code }}: observed <code>{{ item.observed }}</code>; expected <code>{{ item.expected }}</code>.</p>{% if not item.passed %}<small>{{ item.next_action }}</small>{% endif %}</div></article>{% endfor %}</div>
+</section>
+<section class="panel">
+  <h2>Recovery progression</h2>
+  {% for node in diagnostics.recovery %}<h3>{{ node.node }} — {{ node.state }}</h3><div class="table-wrap"><table><thead><tr><th>Gate</th><th>Required</th><th>Result</th><th>Evidence</th></tr></thead><tbody>{% for gate in node.gates %}<tr><td>{{ gate.label }}</td><td>{{ 'Yes' if gate.required else 'No' }}</td><td>{{ 'Pass' if gate.passed else 'Blocked' }}</td><td>{{ gate.detail }}</td></tr>{% endfor %}</tbody></table></div>{% endfor %}
+</section>
+<section class="panel">
+  <h2>Node reports</h2>
+  <div class="table-wrap"><table><thead><tr><th>Node</th><th>Report</th><th>Role</th><th>VIP</th><th>DHCP</th><th>Generations</th><th>Recovery</th></tr></thead><tbody>{% for node in diagnostics.nodes %}<tr><td>{{ node.node }}</td><td>{{ 'Fresh' if node.report_fresh else 'Unknown / stale' }}<br><small>seq {{ node.last_report_sequence }} · {{ node.last_heartbeat_at or 'never' }}</small></td><td>{{ node.stored_role }} / {{ node.observed_role or 'unknown' }}</td><td>{{ node.vip_owned if node.vip_owned is not none else 'Unknown' }}</td><td>{{ node.dhcp_state }}</td><td>role {{ node.observed_generation }} / config {{ node.config_generation }} / lease {{ node.lease_generation }}</td><td>{{ node.recovery_state }}</td></tr>{% endfor %}</tbody></table></div>
+</section>
+<section class="panel">
+  <div class="ha-section-heading"><div><h2>Operational audit</h2><p class="muted">Bounded HA event history. Existing records are preserved.</p></div><form method="get"><label>Severity <select name="severity"><option value="">All</option>{% for value in ['info','warning','error','critical'] %}<option value="{{ value }}" {% if diagnostic_severity == value %}selected{% endif %}>{{ value|title }}</option>{% endfor %}</select></label><label>Event type <input name="event_type" value="{{ diagnostic_event_type }}" maxlength="80"></label><button class="button secondary" type="submit">Filter</button></form></div>
+  <div class="ha-event-list">{% for event in diagnostics.events %}<article><span class="ha-check-state ha-check-state--{{ 'fail' if event.severity in ['error','critical'] else ('unknown' if event.severity == 'warning' else 'pass') }}">{{ event.severity|title }}</span><div><strong>{{ event.type|replace('_',' ')|title }}</strong><p>{{ event.message }}</p><small>{{ event.source }} · {{ event.node }} · {{ event.occurred_at }}</small></div></article>{% else %}<p class="muted">No matching HA events.</p>{% endfor %}</div>
+</section>
+{% endblock %}

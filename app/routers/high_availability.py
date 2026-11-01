@@ -54,6 +54,7 @@ from app.services.ha_clusters import (
 from app.services.ha_dns_advertisement import (
     WARNING_MESSAGE as DNS_ADVERTISEMENT_WARNING,
 )
+from app.services.ha_diagnostics import build_diagnostic_bundle
 from app.services.ha_dns_advertisement import (
     HADNSAdvertisementError,
     cached_dns_advertisement,
@@ -1762,6 +1763,52 @@ def cluster_events(
 ):
     return cluster_page(
         request, user, db, public_id, "events", "high_availability_cluster_events.html"
+    )
+
+
+@router.get("/clusters/{public_id}/diagnostics")
+def cluster_diagnostics(
+    public_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    user=Depends(require_ha_admin),
+):
+    cluster = cluster_or_404(db, public_id)
+    bundle = build_diagnostic_bundle(
+        db,
+        cluster,
+        severity=request.query_params.get("severity"),
+        event_type=request.query_params.get("event_type"),
+    )
+    return templates.TemplateResponse(
+        request,
+        "high_availability_cluster_diagnostics.html",
+        ha_context(
+            request,
+            user,
+            "clusters",
+            cluster=cluster,
+            cluster_section="diagnostics",
+            diagnostics=bundle,
+            diagnostic_severity=request.query_params.get("severity") or "",
+            diagnostic_event_type=request.query_params.get("event_type") or "",
+        ),
+    )
+
+
+@router.get("/clusters/{public_id}/diagnostics/export")
+def export_cluster_diagnostics(
+    public_id: str,
+    db: Session = Depends(get_db),
+    user=Depends(require_ha_admin),
+):
+    cluster = cluster_or_404(db, public_id)
+    bundle = build_diagnostic_bundle(db, cluster, event_limit=100)
+    safe_name = re.sub(r"[^a-z0-9-]+", "-", cluster.name.lower()).strip("-") or "cluster"
+    return Response(
+        json.dumps(bundle, sort_keys=True, default=str),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="kaya-ha-{safe_name}-diagnostics.json"'},
     )
 
 

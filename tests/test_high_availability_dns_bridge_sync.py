@@ -12,6 +12,7 @@ from app.services import dns_insights
 from app.services.dns_insights import analyse_provider
 from app.services.dns_providers import DNSProviderResult, HAPiHoleCollectionProvider, HAPiHoleProvider, PiHoleProvider, provider_for, provider_snapshot_for_io
 from app.services.ha_sync import HAStaleSyncPlanError, HASyncError, create_live_sync_plan, create_sync_plan, execute_sync, sync_plan
+from app.services.ha_diagnostics import build_diagnostic_bundle
 from app.routers.high_availability import sync_operational_summary
 from app.routers.admin import DNSProviderSettingsError, save_dns_manager_settings
 
@@ -82,6 +83,22 @@ def test_sync_summary_hides_direction_when_authority_is_unverified():
         assert summary["authority_verified"] is False
         assert summary["source_name"] == "Unknown / unsafe"
         assert summary["target_name"] == "Unknown / unsafe"
+
+
+def test_ha_diagnostics_explain_missing_evidence_and_bound_event_history():
+    with database() as db:
+        _, cluster, first, second = make_cluster(db)
+        first.vip_owned = second.vip_owned = False
+        first.last_heartbeat_at = second.last_heartbeat_at = datetime.utcnow() - timedelta(minutes=2)
+        db.commit()
+
+        bundle = build_diagnostic_bundle(db, cluster, event_limit=1)
+
+        assert bundle["source"].startswith("persisted Kaya state")
+        assert bundle["cluster"]["observed_vip_owner"] is None
+        assert any(item["code"] == "FRESH_REPORTS" and not item["passed"] for item in bundle["decision_trace"])
+        assert len(bundle["events"]) <= 1
+        assert "encrypted_secret" not in json.dumps(bundle)
 
 
 def test_standalone_provider_path_is_unchanged_and_linking_preserves_history():
