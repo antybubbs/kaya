@@ -106,6 +106,7 @@ from app.services.ha_registry import SUPPORTED_HA_PROVIDERS, provider_for_key
 from app.services.ha_sync import (
     HAStaleSyncPlanError,
     HASyncError,
+    authority_and_target,
     create_live_sync_plan,
     execute_sync,
     sync_plan,
@@ -325,13 +326,13 @@ def sync_operational_summary(db: Session, cluster: HACluster) -> dict[str, objec
         if latest
         else datetime.utcnow()
     )
-    source = next(
-        (node for node in cluster.nodes if node.id == cluster.authoritative_node_id),
-        None,
-    )
-    target = next(
-        (node for node in cluster.nodes if source and node.id != source.id), None
-    )
+    try:
+        source, target, authority_verified = authority_and_target(cluster)
+    except HASyncError:
+        source = target = None
+        authority_verified = False
+    display_source = source if authority_verified else None
+    display_target = target if authority_verified else None
     return {
         "monitoring": (
             "Active"
@@ -351,8 +352,9 @@ def sync_operational_summary(db: Session, cluster: HACluster) -> dict[str, objec
         "last_applied_at": last_applied.completed_at if last_applied else None,
         "next_check_at": next_check,
         "interval_seconds": interval,
-        "source_name": source.display_name if source else "Not selected",
-        "target_name": target.display_name if target else "Not selected",
+        "source_name": display_source.display_name if display_source else "Unknown / unsafe",
+        "target_name": display_target.display_name if display_target else "Unknown / unsafe",
+        "authority_verified": authority_verified,
         "error": (
             latest.error_redacted
             if latest and latest.status in {"FAILED", "ROLLED_BACK", "CHECK_FAILED"}

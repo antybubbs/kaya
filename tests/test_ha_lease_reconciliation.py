@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from datetime import datetime
 
 import pytest
 from sqlalchemy import create_engine, event
@@ -49,6 +50,7 @@ def lease_database(tmp_path):
         target = HANode(cluster_id=cluster.id, display_name="Standby", api_base_url="http://two.invalid", role="STANDBY", desired_role="STANDBY")
         db.add_all([source, target])
         db.flush()
+        _set_fresh_topology(source, target)
         cluster.authoritative_node_id = source.id
         db.add(
             HALeaseReplicationState(
@@ -62,6 +64,30 @@ def lease_database(tmp_path):
         db.commit()
         cluster_id = cluster.id
     return factory, cluster_id
+
+
+def _set_fresh_topology(source, target):
+    now = datetime.utcnow()
+    for node in (source, target):
+        node.last_heartbeat_at = now
+        node.dhcp_observed_at = now
+        node.dhcp_observation_status = "FRESH"
+        node.observed_generation = 0
+        node.config_generation = 0
+        node.dns_healthy = True
+        node.keepalived_runtime_state = "RUNNING"
+    source.observed_role = "ACTIVE"
+    source.vip_owned = True
+    source.dhcp_configured = True
+    source.dhcp_listener_active = True
+    source.ftl_active = True
+    source.dhcp_runtime_state = "RUNNING"
+    target.observed_role = "STANDBY"
+    target.vip_owned = False
+    target.dhcp_configured = False
+    target.dhcp_listener_active = False
+    target.ftl_active = True
+    target.dhcp_runtime_state = "STOPPED"
 
 
 def locked_error():
@@ -280,6 +306,7 @@ def lease_database_with_pihole_connection(tmp_path, db_name: str):
         target = HANode(cluster_id=cluster.id, display_name="Standby", api_base_url="http://two.invalid", role="STANDBY", desired_role="STANDBY")
         db.add_all([source, target])
         db.flush()
+        _set_fresh_topology(source, target)
         cluster.authoritative_node_id = source.id
         db.add(
             HALeaseReplicationState(
@@ -387,6 +414,7 @@ def test_split_path_pihole_error_matches_direct_blocked_state(tmp_path):
         target = HANode(cluster_id=cluster.id, display_name="Standby", api_base_url="http://two.invalid", role="STANDBY", desired_role="STANDBY")
         direct_db.add_all([source, target])
         direct_db.flush()
+        _set_fresh_topology(source, target)
         cluster.authoritative_node_id = source.id
         # Match lease_database_with_pihole_connection's starting state exactly
         # so the two BLOCKED-state outcomes are compared from identical priors.

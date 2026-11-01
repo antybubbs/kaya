@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.core.security import decrypt_secret, encrypt_secret
 from app.models.models import HACluster, HALeaseReplicationState, HALeaseSnapshot, HANode
 from app.services.dns_providers import PiHoleProvider
+from app.services.ha_sync import HASyncError, authority_and_target
 from app.services.ha_validation import PiHoleConnectionAdapter, connection_for_node
 from app.services.ha_topology import lease_continuity_enabled
 
@@ -42,6 +43,9 @@ class LeaseInspectionInputs:
     target_id: int
     continuity_enabled: bool
     connection: PiHoleConnectionAdapter | None
+    role_generation: int
+    keepalived_generation: int
+    cluster_generation: int
 
 
 @dataclass(frozen=True)
@@ -54,6 +58,9 @@ class LeasePlan:
     reservations: set[str]
     range_start: ipaddress.IPv4Address | None
     range_end: ipaddress.IPv4Address | None
+    role_generation: int | None = None
+    keepalived_generation: int | None = None
+    cluster_generation: int | None = None
 
 
 def _state(db: Session, cluster: HACluster) -> HALeaseReplicationState:
@@ -66,14 +73,27 @@ def _state(db: Session, cluster: HACluster) -> HALeaseReplicationState:
 
 
 def _nodes(cluster: HACluster) -> tuple[HANode, HANode]:
-    source = next((node for node in cluster.nodes if node.id == cluster.authoritative_node_id), None)
-    source = source or next((node for node in cluster.nodes if node.role == "ACTIVE"), None)
-    if source is None:
-        raise HALeaseError("Kaya cannot identify the main Pi-hole for lease replication.")
-    target = next((node for node in cluster.nodes if node.id != source.id), None)
-    if target is None:
-        raise HALeaseError("Lease replication requires a standby Pi-hole.")
+    try:
+        source, target, verified = authority_and_target(cluster)
+    except HASyncError as exc:
+        raise HALeaseError(str(exc)) from exc
+    if not verified:
+        raise HALeaseError("Kaya cannot verify one safe VIP owner for lease replication.")
     return source, target
+
+
+def _revalidate_plan_authority(cluster: HACluster, plan: LeasePlan) -> None:
+    source, target = _nodes(cluster)
+    if (source.id, target.id) != (plan.source_id, plan.target_id):
+        raise HALeaseError("Lease inspection authority changed before the snapshot was persisted.")
+    if (
+        plan.role_generation is not None
+        and plan.keepalived_generation is not None
+        and plan.cluster_generation is not None
+        and (plan.role_generation, plan.keepalived_generation, plan.cluster_generation)
+        != (cluster.role_generation, cluster.keepalived_generation, cluster.cluster_generation)
+    ):
+        raise HALeaseError("Lease inspection generation changed before the snapshot was persisted.")
 
 
 def _dict_at(value: Any, *keys: str) -> dict[str, Any]:
@@ -191,8 +211,13 @@ def prepare_lease_inspection(cluster: HACluster) -> LeaseInspectionInputs:
     so a caller can release its database connection before performing the
     (potentially slow) Pi-hole network calls in `inspect_lease_plan`.
     """
-    source, target = _nodes(cluster)
     continuity_enabled = lease_continuity_enabled(cluster)
+    if continuity_enabled:
+        source, target = _nodes(cluster)
+    else:
+        if len(cluster.nodes) != 2:
+            raise HALeaseError("Lease replication requires a standby Pi-hole.")
+        source, target = cluster.nodes
     connection = connection_for_node(source) if continuity_enabled else None
     return LeaseInspectionInputs(
         source_id=source.id,
@@ -200,6 +225,9 @@ def prepare_lease_inspection(cluster: HACluster) -> LeaseInspectionInputs:
         target_id=target.id,
         continuity_enabled=continuity_enabled,
         connection=connection,
+        role_generation=cluster.role_generation,
+        keepalived_generation=cluster.keepalived_generation,
+        cluster_generation=cluster.cluster_generation,
     )
 
 
@@ -210,7 +238,7 @@ def inspect_lease_plan(inputs: LeaseInspectionInputs, *, client_factory: Callabl
     to call after the session that produced `inputs` has been closed.
     """
     if not inputs.continuity_enabled:
-        return LeasePlan(False, inputs.source_id, inputs.source_public_id, inputs.target_id, [], set(), None, None)
+        return LeasePlan(False, inputs.source_id, inputs.source_public_id, inputs.target_id, [], set(), None, None, inputs.role_generation, inputs.keepalived_generation, inputs.cluster_generation)
     if inputs.connection is None:
         raise HALeaseError("The main Pi-hole connection is unavailable.")
     client = client_factory(inputs.connection)
@@ -221,14 +249,14 @@ def inspect_lease_plan(inputs: LeaseInspectionInputs, *, client_factory: Callabl
     reservations = _reservation_ips(dhcp)
     range_start, range_end = _range(dhcp)
     if not _is_enabled(dhcp):
-        return LeasePlan(False, inputs.source_id, inputs.source_public_id, inputs.target_id, [], reservations, range_start, range_end)
+        return LeasePlan(False, inputs.source_id, inputs.source_public_id, inputs.target_id, [], reservations, range_start, range_end, inputs.role_generation, inputs.keepalived_generation, inputs.cluster_generation)
     if range_start is None or range_end is None:
         raise HALeaseError("Pi-hole DHCP is enabled, but Kaya could not validate its address range.")
     result = client.get_dhcp_leases()
     if not result.ok:
         raise HALeaseError(result.message)
     leases = normalise_leases(result.data, range_start=range_start, range_end=range_end, reservation_ips=reservations)
-    return LeasePlan(True, inputs.source_id, inputs.source_public_id, inputs.target_id, leases, reservations, range_start, range_end)
+    return LeasePlan(True, inputs.source_id, inputs.source_public_id, inputs.target_id, leases, reservations, range_start, range_end, inputs.role_generation, inputs.keepalived_generation, inputs.cluster_generation)
 
 
 def inspect_cluster_leases(cluster: HACluster, *, client_factory: Callable = PiHoleProvider) -> LeasePlan:
@@ -271,6 +299,8 @@ def reconcile_cluster_leases(
             plan = precomputed_inspection
         else:
             plan = inspect_cluster_leases(cluster, client_factory=client_factory)
+        if plan.applicable:
+            _revalidate_plan_authority(cluster, plan)
         state.source_node_id, state.target_node_id = plan.source_id, plan.target_id
         state.last_full_reconciliation_at = now
         state.last_error_redacted = None
@@ -339,6 +369,10 @@ def record_lease_stage_result(db: Session, node: HANode, *, generation: int, che
     snapshot = next((item for item in node.cluster.lease_snapshots if item.generation == generation), None)
     if snapshot is None or (status == "APPLIED" and checksum != snapshot.checksum):
         raise HALeaseError("The staged lease checksum does not match Kaya's validated snapshot.")
+    if status == "APPLIED":
+        source, target = _nodes(node.cluster)
+        if target.id != node.id or source.id == node.id:
+            raise HALeaseError("Lease staging target is no longer the verified standby node.")
     now = datetime.utcnow()
     if status == "APPLIED":
         snapshot.status = "STAGED"

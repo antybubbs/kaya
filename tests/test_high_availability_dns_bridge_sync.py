@@ -12,6 +12,7 @@ from app.services import dns_insights
 from app.services.dns_insights import analyse_provider
 from app.services.dns_providers import DNSProviderResult, HAPiHoleCollectionProvider, HAPiHoleProvider, PiHoleProvider, provider_for, provider_snapshot_for_io
 from app.services.ha_sync import HAStaleSyncPlanError, HASyncError, create_live_sync_plan, create_sync_plan, execute_sync, sync_plan
+from app.routers.high_availability import sync_operational_summary
 from app.routers.admin import DNSProviderSettingsError, save_dns_manager_settings
 
 
@@ -54,6 +55,33 @@ def make_cluster(db: Session):
     cluster.current_active_node_id = first.id
     db.commit()
     return user, cluster, first, second
+
+
+def test_sync_summary_uses_verified_vip_owner_instead_of_stored_authority():
+    with database() as db:
+        _, cluster, first, second = make_cluster(db)
+        cluster.authoritative_node_id = second.id
+        db.commit()
+
+        summary = sync_operational_summary(db, cluster)
+
+        assert summary["authority_verified"] is True
+        assert summary["source_name"] == first.display_name
+        assert summary["target_name"] == second.display_name
+
+
+def test_sync_summary_hides_direction_when_authority_is_unverified():
+    with database() as db:
+        _, cluster, first, second = make_cluster(db)
+        first.vip_owned = second.vip_owned = True
+        cluster.current_active_node_id = None
+        db.commit()
+
+        summary = sync_operational_summary(db, cluster)
+
+        assert summary["authority_verified"] is False
+        assert summary["source_name"] == "Unknown / unsafe"
+        assert summary["target_name"] == "Unknown / unsafe"
 
 
 def test_standalone_provider_path_is_unchanged_and_linking_preserves_history():
