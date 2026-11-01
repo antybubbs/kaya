@@ -45,8 +45,9 @@ def make_cluster(db: Session):
     second_connection = HAProviderConnection(provider_key="pihole", name="Two", api_base_url="http://two.invalid", encrypted_secret="two", created_by=user)
     db.add_all([user, cluster, first_connection, second_connection])
     db.flush()
-    first = HANode(cluster_id=cluster.id, display_name="One", api_base_url=first_connection.api_base_url, ha_connection_id=first_connection.id, role="ACTIVE", desired_role="ACTIVE", vip_owned=True, dns_healthy=True, keepalived_runtime_state="RUNNING")
-    second = HANode(cluster_id=cluster.id, display_name="Two", api_base_url=second_connection.api_base_url, ha_connection_id=second_connection.id, role="STANDBY", desired_role="STANDBY", vip_owned=False, dns_healthy=True, keepalived_runtime_state="RUNNING")
+    now = datetime.utcnow()
+    first = HANode(cluster_id=cluster.id, display_name="One", api_base_url=first_connection.api_base_url, ha_connection_id=first_connection.id, role="ACTIVE", desired_role="ACTIVE", observed_role="ACTIVE", observed_generation=0, config_generation=0, vip_owned=True, dns_healthy=True, keepalived_runtime_state="RUNNING", last_heartbeat_at=now, dhcp_observed_at=now, dhcp_observation_status="FRESH", dhcp_configured=True, dhcp_listener_active=True, ftl_active=True, dhcp_runtime_state="RUNNING")
+    second = HANode(cluster_id=cluster.id, display_name="Two", api_base_url=second_connection.api_base_url, ha_connection_id=second_connection.id, role="STANDBY", desired_role="STANDBY", observed_role="STANDBY", observed_generation=0, config_generation=0, vip_owned=False, dns_healthy=True, keepalived_runtime_state="RUNNING", last_heartbeat_at=now, dhcp_observed_at=now, dhcp_observation_status="FRESH", dhcp_configured=False, dhcp_listener_active=False, ftl_active=True, dhcp_runtime_state="STOPPED")
     db.add_all([first, second])
     db.flush()
     cluster.authoritative_node_id = first.id
@@ -302,6 +303,40 @@ def test_sync_creates_encrypted_backup_before_write_and_verifies():
         assert run.backups[0].encrypted_snapshot != json.dumps({"local_dns": target_value}, sort_keys=True, separators=(",", ":"))
         assert SyncPiHole.writes == [(f"ha-{target.ha_connection_id}", "local_dns")]
         assert target.last_sync_at is not None
+
+
+def test_sync_plan_uses_fresh_vip_owner_when_stored_authority_is_stale():
+    with database() as db:
+        _, cluster, source, target = make_cluster(db)
+        cluster.authoritative_node_id = target.id
+        db.commit()
+
+        source.configuration_snapshot_json = json.dumps({"local_dns": {"hosts": ["one.test"]}})
+        target.configuration_snapshot_json = json.dumps({"local_dns": {"hosts": []}})
+
+        plan = sync_plan(cluster)
+
+        assert plan["source_node_id"] == source.id
+        assert plan["target_node_id"] == target.id
+        assert plan["authority_verified"] is True
+
+
+def test_sync_aborts_before_writes_when_vip_authority_changes():
+    with database() as db:
+        user, cluster, source, target = make_cluster(db)
+        source.configuration_snapshot_json = json.dumps({"local_dns": {"hosts": ["one.test"]}})
+        target.configuration_snapshot_json = json.dumps({"local_dns": {"hosts": []}})
+        db.commit()
+        run = create_sync_plan(db, cluster, user)
+        source.vip_owned = False
+        target.vip_owned = True
+        db.commit()
+        SyncPiHole.writes = []
+
+        with pytest.raises(HASyncError, match="authority changed or became unsafe"):
+            execute_sync(db, cluster, run, client_factory=SyncPiHole)
+        assert run.status == "PLANNED"
+        assert SyncPiHole.writes == []
 
 
 def test_live_plan_refreshes_both_snapshots_before_review():

@@ -84,7 +84,7 @@ def test_opted_in_monitor_applies_safe_drift_from_current_vip_owner(monkeypatch)
     def create_plan(db, cluster):
         source = next(node for node in cluster.nodes if node.id == cluster.authoritative_node_id)
         target = next(node for node in cluster.nodes if node.id != source.id)
-        run = HASyncRun(cluster_id=cluster.id, source_node_id=source.id, target_node_id=target.id, status="PLANNED", plan_json='{"blocked_groups":[],"deletion_count":0,"groups":[{"key":"local_dns"}]}')
+        run = HASyncRun(cluster_id=cluster.id, source_node_id=source.id, target_node_id=target.id, status="PLANNED", plan_json='{"authority_verified":true,"source_node_id":' + str(source.id) + ',"blocked_groups":[],"deletion_count":0,"groups":[{"key":"local_dns"}]}')
         db.add(run)
         db.commit()
         db.refresh(run)
@@ -116,7 +116,7 @@ def test_failed_automatic_sync_publishes_registered_safe_notification(monkeypatc
     def create_plan(db, cluster):
         source = next(node for node in cluster.nodes if node.id == cluster.authoritative_node_id)
         target = next(node for node in cluster.nodes if node.id != source.id)
-        run = HASyncRun(cluster_id=cluster.id, source_node_id=source.id, target_node_id=target.id, status="PLANNED", plan_json='{"blocked_groups":[],"deletion_count":0,"groups":[{"key":"local_dns"}]}')
+        run = HASyncRun(cluster_id=cluster.id, source_node_id=source.id, target_node_id=target.id, status="PLANNED", plan_json='{"authority_verified":true,"source_node_id":' + str(source.id) + ',"blocked_groups":[],"deletion_count":0,"groups":[{"key":"local_dns"}]}')
         db.add(run)
         db.commit()
         db.refresh(run)

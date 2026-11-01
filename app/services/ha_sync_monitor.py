@@ -26,7 +26,7 @@ _pass_lock = threading.Lock()
 
 def _record_failed_check(db, cluster: HACluster, message: str) -> None:
     try:
-        source, target = authority_and_target(cluster)
+        source, target, _verified = authority_and_target(cluster)
     except HASyncError:
         return
     db.add(HASyncRun(
@@ -128,8 +128,8 @@ def run_ha_sync_monitor_pass(session_factory=SessionLocal) -> int:
                 plan = json.loads(run.plan_json)
                 safe_authority = bool(
                     cluster.status == "HEALTHY"
-                    and cluster.current_active_node_id
-                    and cluster.current_active_node_id == cluster.authoritative_node_id == run.source_node_id
+                    and plan.get("authority_verified") is True
+                    and run.source_node_id == plan.get("source_node_id")
                 )
                 deletions_allowed = not plan.get("deletion_count") or (cluster.automatic_sync_allow_deletions and not recovery_sync)
                 if not safe_authority or plan.get("blocked_groups") or not deletions_allowed:

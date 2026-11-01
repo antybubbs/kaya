@@ -38,6 +38,7 @@
 <section class="panel ha-sync-direction">
   <div class="ha-section-heading"><div><h2>Copy direction</h2><p class="muted">{{ sync_summary.source_name }} currently owns the VIP and is the source of truth. Kaya writes to {{ sync_summary.target_name }} {{ 'after safety checks' if cluster.automatic_sync_enabled else 'only after approval' }}.</p></div></div>
   {% if sync_plan %}
+  {% if not sync_plan.authority_verified %}<div class="alert warning ha-sync-alert"><strong>Copy direction is not currently verified</strong><span>Kaya will not write configuration until fresh signed reports confirm exactly one safe VIP owner.</span></div>{% endif %}
   <div class="ha-sync-route" aria-label="Configuration copy direction">
     <article class="ha-sync-node is-source"><span class="ha-sync-node-label">Active authority - source</span><h3>{{ sync_plan.source_name }}</h3><p>This node owns the VIP and is not changed by synchronisation.</p></article>
     <div class="ha-sync-arrow" aria-hidden="true"><span>Approved settings copy this way</span><b>&rarr;</b></div>
@@ -69,7 +70,7 @@
   {% if sync_run.error_redacted %}<div class="alert error ha-sync-alert"><strong>The operation did not complete</strong><span>{{ sync_run.error_redacted }}</span></div>{% endif %}
   {% if user.role == 'admin' and sync_run.status == 'PLANNED' %}
   <div class="ha-sync-safety"><h3>When you continue, Kaya will:</h3><ol><li>Create an encrypted backup of {{ sync_plan.target_name }}.</li><li>Copy only the categories listed above.</li><li>Read the settings back and verify them.</li><li>Restore the backup automatically if verification fails.</li></ol></div>
-  <form method="post" action="/high-availability/clusters/{{ cluster.public_id }}/synchronisation/apply" class="ha-sync-apply" data-ha-sync-confirmation data-sync-blocked="{{ '1' if sync_plan.blocked_groups else '0' }}">
+  <form method="post" action="/high-availability/clusters/{{ cluster.public_id }}/synchronisation/apply" class="ha-sync-apply" data-ha-sync-confirmation data-sync-blocked="{{ '1' if sync_plan.blocked_groups or not sync_plan.authority_verified else '0' }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="sync_run_id" value="{{ sync_run.public_id }}">
     <label class="ha-sync-confirm"><input type="checkbox" name="acknowledge_authority" value="1"><span><strong>I have checked the copy direction.</strong><small>{{ sync_plan.source_name }} is the source and {{ sync_plan.target_name }} will be updated.</small></span></label>
     {% if sync_plan.deletion_count %}<label class="ha-sync-confirm is-danger"><input type="checkbox" name="acknowledge_deletions" value="1"><span><strong>I approve the {{ sync_plan.deletion_count }} deletion{{ '' if sync_plan.deletion_count == 1 else 's' }} shown above.</strong><small>Only items absent from the main Pi-hole will be removed.</small></span></label>{% endif %}

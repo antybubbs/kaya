@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.core.security import encrypt_secret
 from app.models.models import HABackup, HACluster, HADriftItem, HANode, HASyncRun, User
 from app.services.dns_providers import PiHoleProvider
+from app.services.ha_topology import reconcile_topology
 from app.services.ha_validation import GROUP_LABELS, HIGH_RISK_GROUPS, _safe_configuration, connection_for_node
 
 
@@ -147,18 +148,22 @@ def _collection_identities(group: str, value: Any) -> set[str]:
     return set()
 
 
-def authority_and_target(cluster: HACluster) -> tuple[HANode, HANode]:
+def authority_and_target(cluster: HACluster) -> tuple[HANode, HANode, bool]:
     if len(cluster.nodes) != 2:
         raise HASyncError("Exactly two nodes are required for synchronisation.")
-    source = next((node for node in cluster.nodes if node.id == cluster.authoritative_node_id), None)
+    topology = reconcile_topology(cluster)
+    source = next((node for node in cluster.nodes if node.id == topology.active_node_id), None)
+    authority_verified = bool(source and topology.topology_safe)
+    if source is None:
+        source = next((node for node in cluster.nodes if node.id == cluster.authoritative_node_id), None)
     if source is None:
         raise HASyncError("Choose an authoritative node before synchronising configuration.")
     target = next(node for node in cluster.nodes if node.id != source.id)
-    return source, target
+    return source, target, authority_verified
 
 
 def sync_plan(cluster: HACluster) -> dict[str, Any]:
-    source, target = authority_and_target(cluster)
+    source, target, authority_verified = authority_and_target(cluster)
     raw_source_snapshot = _snapshot(source)
     source_snapshot = _canonical_sync_snapshot(raw_source_snapshot)
     target_snapshot = _canonical_sync_snapshot(_snapshot(target))
@@ -197,6 +202,7 @@ def sync_plan(cluster: HACluster) -> dict[str, Any]:
         "source_name": source.display_name,
         "target_node_id": target.id,
         "target_name": target.display_name,
+        "authority_verified": authority_verified,
         "groups": groups,
         "blocked_groups": [item["key"] for item in groups if not item["writable"]],
         "deletion_count": sum(item["deletion_count"] for item in groups),
@@ -257,7 +263,9 @@ def create_live_sync_plan(
     client_factory: Callable = PiHoleProvider,
 ) -> HASyncRun:
     """Refresh both read-only snapshots before creating a plan the user can review."""
-    source, target = authority_and_target(cluster)
+    source, target, authority_verified = authority_and_target(cluster)
+    if not authority_verified:
+        raise HASyncError("The current VIP owner cannot be verified from fresh, safe node reports. Synchronisation is blocked until the HA state is unambiguous.")
     for node in (source, target):
         _, configuration = _live_configuration(node, client_factory)
         from app.services.ha_dns_advertisement import preserve_cached_dns_advertisement
@@ -293,8 +301,19 @@ def execute_sync(
         raise HASyncError("This plan contains deletions. Review the plan and explicitly confirm them before applying.")
     source = db.get(HANode, run.source_node_id)
     target = db.get(HANode, run.target_node_id)
-    if source is None or target is None or cluster.authoritative_node_id != source.id:
-        raise HASyncError("The authoritative node changed; create a new plan.")
+    if source is None or target is None:
+        raise HASyncError("The synchronisation nodes changed; create a new plan.")
+
+    def assert_current_authority() -> None:
+        db.expire_all()
+        current_cluster = db.get(HACluster, cluster.id)
+        if current_cluster is None:
+            raise HASyncError("The HA cluster is no longer available.")
+        current_source, current_target, verified = authority_and_target(current_cluster)
+        if not verified or current_source.id != source.id or current_target.id != target.id:
+            raise HASyncError("The verified VIP authority changed or became unsafe; no configuration was written. Create a new plan.")
+
+    assert_current_authority()
 
     run.status = "RUNNING"
     run.started_at = datetime.utcnow()
@@ -331,16 +350,19 @@ def execute_sync(
 
         collection_keys = planned_keys & COLLECTION_RECONCILIATION_GROUPS
         if collection_keys:
+            assert_current_authority()
             collections_applied = True  # A failed reconciliation may still have completed earlier item writes.
             result = target_client.reconcile_ha_collections(source_apply, allow_deletions=allow_deletions)
             if not result.ok:
                 raise HASyncError(result.message)
             applied.extend(sorted(collection_keys))
         for key in sorted(planned_keys - COLLECTION_RECONCILIATION_GROUPS):
+            assert_current_authority()
             result = target_client.apply_ha_configuration_group(key, source_apply.get(key))
             if not result.ok:
                 raise HASyncError(result.message)
             applied.append(key)
+        assert_current_authority()
         _, verified_raw = _live_configuration(target, client_factory)
         verified = _canonical_sync_snapshot(verified_raw)
         failed = [key for key in planned_keys if verified.get(key) != source_live.get(key)]
