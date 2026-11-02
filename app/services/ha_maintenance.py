@@ -946,7 +946,7 @@ def start_reinitialisation(
         desired_active_node_id=desired_active.id,
         authoritative_node_id=authority.id,
         previous_state_json=json.dumps(previous, sort_keys=True),
-        result_json=json.dumps({"progress": ["Waiting for fresh signed node reports"]}, sort_keys=True),
+        result_json=json.dumps({"progress": ["Waiting for fresh signed node reports"], "high_impact_approved": bool(acknowledged)}, sort_keys=True),
         requested_by_user_id=user.id,
     )
     cluster.maintenance_mode = True
@@ -1340,7 +1340,18 @@ def advance_reinitialisation(db: Session, run: HAMaintenanceRun) -> HAMaintenanc
             if sync_run is None:
                 raise HAMaintenanceError("The protected synchronisation plan is missing.")
             if sync_run.status == "PLANNED":
-                execute_sync(db, cluster, sync_run, allow_deletions=True, maintenance_authorised=True)
+                try:
+                    approval = json.loads(run.result_json or "{}")
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    approval = {}
+                execute_sync(
+                    db,
+                    cluster,
+                    sync_run,
+                    allow_deletions=True,
+                    maintenance_authorised=True,
+                    acknowledge_high_impact=approval.get("high_impact_approved") is True,
+                )
             elif sync_run.status not in {"IN_SYNC", "SUCCEEDED"}:
                 raise HAMaintenanceError("The protected configuration synchronisation did not complete.")
             if pihole_manages_dhcp(cluster):

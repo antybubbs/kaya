@@ -8,7 +8,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.models.models import HACluster, HAEvent, HAMaintenanceRun, HASyncRun
+from app.models.models import HAAgentActionResult, HACluster, HAEvent, HAMaintenanceRun, HASyncRun
 from app.services.ha_maintenance import (
     active_maintenance,
     inspect_cluster,
@@ -17,6 +17,7 @@ from app.services.ha_maintenance import (
     maintenance_status,
 )
 from app.services.ha_recovery import recovery_snapshot
+from app.services.ha_leases import desired_lease_action, latest_snapshot_summary
 from app.services.ha_sync import HASyncError, authority_and_target
 from app.services.ha_topology import dhcp_observation, pihole_manages_dhcp, reconcile_topology
 
@@ -96,6 +97,42 @@ def build_diagnostic_bundle(
         group for group in sync_plan.get("groups", [])
         if isinstance(group, dict) and group.get("key") == "dhcp"
     ]
+    sync_execution = sync_plan.get("execution") if isinstance(sync_plan.get("execution"), dict) else None
+
+    lease_snapshot = latest_snapshot_summary(cluster) if lease else None
+    lease_action = None
+    lease_gate = None
+    if lease:
+        target = lease.target_node
+        expected_action = desired_lease_action(cluster, target) if target else None
+        latest_action = (
+            db.query(HAAgentActionResult)
+            .filter(
+                HAAgentActionResult.cluster_id == cluster.id,
+                HAAgentActionResult.action_type == "LEASE_SNAPSHOT_STAGE",
+                HAAgentActionResult.node_id == (target.id if target else -1),
+            )
+            .order_by(HAAgentActionResult.received_at.desc())
+            .limit(1)
+            .first()
+        )
+        if latest_action:
+            lease_action = {
+                "status": latest_action.status,
+                "generation": latest_action.generation,
+                "received_at": _iso(latest_action.received_at),
+                "message": latest_action.message_redacted,
+            }
+        if lease.status != "PENDING" or lease.desired_generation <= lease.applied_generation:
+            lease_gate = {"code": "LEASE_CURRENT", "detail": "The desired lease generation is applied."}
+        elif not expected_action:
+            lease_gate = {"code": "LEASE_ACTION_NOT_AVAILABLE", "detail": "No protected stage action is currently available for the recorded standby target."}
+        elif latest_action and latest_action.generation == lease.desired_generation and latest_action.status in {"FAILED", "ERROR"}:
+            lease_gate = {"code": "LEASE_STAGE_FAILED", "detail": "The latest protected stage action failed; review its redacted result before retrying."}
+        elif latest_action and latest_action.generation == lease.desired_generation and latest_action.status == "APPLIED":
+            lease_gate = {"code": "LEASE_ACKNOWLEDGEMENT_PENDING", "detail": "The standby reported staging, but Kaya has not yet persisted the desired generation as current."}
+        else:
+            lease_gate = {"code": "LEASE_STAGE_ACKNOWLEDGEMENT_PENDING", "detail": "The protected stage action is awaiting a standby acknowledgement."}
 
     maintenance_state = (
         "ACTIVE_RUN"
@@ -259,6 +296,7 @@ def build_diagnostic_bundle(
             "required_generation": sync_plan.get("required_sync_generation"),
             "verified_generation": sync_plan.get("verified_sync_generation"),
             "dhcp_differences": dhcp_groups,
+            "execution": sync_execution,
         },
         "lease": None if lease is None else {
             "status": lease.status,
@@ -268,6 +306,9 @@ def build_diagnostic_bundle(
             "applied_generation": lease.applied_generation,
             "standby_generations": {node.display_name: node.lease_generation for node in cluster.nodes},
             "last_error": lease.last_error_redacted,
+            "snapshot": lease_snapshot,
+            "last_staging_action": lease_action,
+            "recovery_gate": lease_gate,
         },
         "resolver": [
             {"node": node.display_name, "status": node.resolver_repair_status, "error": node.resolver_repair_last_error, "observation": node.resolver_observation_status}

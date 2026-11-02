@@ -13,6 +13,7 @@ from app.db.session import SessionLocal
 from app.models.models import HACluster, HAEvent, HASyncRun
 from app.services.audit import write_audit
 from app.services.ha_sync import HASyncError, authority_and_target, create_live_sync_plan, execute_sync
+from app.services.ha_validation import HIGH_RISK_GROUPS
 from app.services.ha_recovery import evaluate_recovery
 from app.services.ha_notifications import publish_ha_notification
 from app.services.site_settings import get_site_setting
@@ -22,6 +23,50 @@ logger = logging.getLogger(__name__)
 STARTUP_DELAY_SECONDS = 30
 CHECK_INTERVAL_SECONDS = 15
 _pass_lock = threading.Lock()
+
+
+def _record_execution_blocker(db, run: HASyncRun, *, code: str, message: str, next_action: str, recovery: bool) -> None:
+    """Persist the latest safety decision without creating a per-cycle event."""
+    try:
+        plan = json.loads(run.plan_json or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        plan = {}
+    execution = {
+        "eligible": False,
+        "mode": "recovery" if recovery else "automatic",
+        "reason_code": code,
+        "reason": message,
+        "next_action": next_action,
+    }
+    previous = plan.get("execution") if isinstance(plan.get("execution"), dict) else {}
+    if all(previous.get(key) == value for key, value in execution.items()):
+        return
+    execution["recorded_at"] = datetime.utcnow().isoformat() + "Z"
+    plan["execution"] = execution
+    run.plan_json = json.dumps(plan, sort_keys=True, separators=(",", ":"))
+    db.commit()
+
+
+def _execution_blocker(cluster: HACluster, run: HASyncRun, plan: dict, *, recovery_sync: bool) -> tuple[str, str, str] | None:
+    if not cluster.automatic_sync_enabled and not recovery_sync:
+        return ("AUTOMATIC_SYNC_DISABLED", "Automatic configuration synchronisation is disabled.", "Review a plan and explicitly enable automatic synchronisation if desired.")
+    if run.status != "PLANNED":
+        return ("PLAN_NOT_EXECUTABLE", f"The latest plan is {run.status.lower().replace('_', ' ')}.", "Create a fresh read-only comparison.")
+    if cluster.maintenance_mode:
+        return ("MAINTENANCE_LATCH_ACTIVE", "The cluster maintenance safety latch is active.", "Complete the guarded maintenance recovery workflow; do not clear the latch automatically.")
+    if cluster.automatic_sync_hold:
+        return ("AUTOMATIC_SYNC_HOLD", "Automatic configuration writes remain held after failed-safe recovery.", "An administrator must explicitly resume automatic synchronisation after reviewing the plan.")
+    if cluster.status != "HEALTHY" or plan.get("authority_verified") is not True or run.source_node_id != plan.get("source_node_id"):
+        return ("AUTHORITY_UNVERIFIED", "The verified VIP authority is missing, stale or differs from the plan.", "Wait for fresh signed reports and create a new plan.")
+    if plan.get("blocked_groups"):
+        return ("UNSUPPORTED_CONFIGURATION_GROUP", "The plan contains unsupported configuration differences.", "Resolve the unsupported differences through the relevant guarded workflow.")
+    high_risk = [item for item in plan.get("groups", []) if isinstance(item, dict) and item.get("key") in HIGH_RISK_GROUPS]
+    if high_risk:
+        labels = ", ".join(str(item.get("label", item.get("key"))) for item in high_risk)
+        return ("HIGH_IMPACT_APPROVAL_REQUIRED", f"High-impact configuration changes require administrator approval: {labels}.", "Review the plan and apply it manually with explicit administrator approval.")
+    if plan.get("deletion_count") and not cluster.automatic_sync_allow_deletions and not recovery_sync:
+        return ("DELETION_APPROVAL_REQUIRED", "The plan contains deletions that are not approved for automatic application.", "Review and approve deletions through the manual synchronisation workflow.")
+    return None
 
 
 def _record_failed_check(db, cluster: HACluster, message: str) -> None:
@@ -112,6 +157,10 @@ def run_ha_sync_monitor_pass(session_factory=SessionLocal) -> int:
                     _record_failed_check(db, cluster, "Configuration check could not be completed.")
                     logger.exception("HA configuration drift check failed", extra={"cluster_id": cluster.public_id})
                     continue
+                if run is None:
+                    # A read-only comparison may be mocked or may produce no
+                    # persisted run when there is no comparable configuration.
+                    continue
                 recovering_target = next(
                     (
                         item
@@ -123,9 +172,11 @@ def run_ha_sync_monitor_pass(session_factory=SessionLocal) -> int:
                     None,
                 )
                 recovery_sync = recovering_target is not None
-                if (not cluster.automatic_sync_enabled and not recovery_sync) or run.status != "PLANNED" or cluster.maintenance_mode or cluster.automatic_sync_hold:
-                    continue
                 plan = json.loads(run.plan_json)
+                blocker = _execution_blocker(cluster, run, plan, recovery_sync=recovery_sync)
+                if blocker:
+                    _record_execution_blocker(db, run, code=blocker[0], message=blocker[1], next_action=blocker[2], recovery=recovery_sync)
+                    continue
                 safe_authority = bool(
                     cluster.status == "HEALTHY"
                     and plan.get("authority_verified") is True
@@ -133,6 +184,14 @@ def run_ha_sync_monitor_pass(session_factory=SessionLocal) -> int:
                 )
                 deletions_allowed = not plan.get("deletion_count") or (cluster.automatic_sync_allow_deletions and not recovery_sync)
                 if not safe_authority or plan.get("blocked_groups") or not deletions_allowed:
+                    _record_execution_blocker(
+                        db,
+                        run,
+                        code="AUTHORITY_OR_DELETION_CHECK_FAILED",
+                        message="The final authority or deletion safety check did not pass.",
+                        next_action="Wait for fresh reports and review a new plan.",
+                        recovery=recovery_sync,
+                    )
                     continue
                 try:
                     execute_sync(db, cluster, run, allow_deletions=cluster.automatic_sync_allow_deletions and not recovery_sync, automatic=not recovery_sync)

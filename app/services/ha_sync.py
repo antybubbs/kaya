@@ -287,6 +287,7 @@ def execute_sync(
     client_factory: Callable = PiHoleProvider,
     maintenance_authorised: bool = False,
     automatic: bool = False,
+    acknowledge_high_impact: bool = False,
 ) -> HASyncRun:
     if run.cluster_id != cluster.id or run.status != "PLANNED":
         raise HASyncError("This synchronisation plan is no longer executable.")
@@ -298,6 +299,17 @@ def execute_sync(
     if not maintenance_safe and (cluster.status != "HEALTHY" or cluster.keepalived_status != "DEPLOYED"):
         raise HASyncError("The cluster must be healthy and Keepalived deployed before synchronisation.")
     plan = json.loads(run.plan_json)
+    high_impact_groups = [
+        item.get("label", item.get("key", "configuration"))
+        for item in plan.get("groups", [])
+        if isinstance(item, dict) and (item.get("risk") == "high" or item.get("key") in HIGH_RISK_GROUPS)
+    ]
+    if high_impact_groups and not acknowledge_high_impact:
+        raise HASyncError(
+            "This plan contains high-impact configuration changes ("
+            + ", ".join(high_impact_groups)
+            + "). An administrator must explicitly approve them before applying."
+        )
     if plan.get("blocked_groups"):
         raise HASyncError("Resolve collection drift before applying this Beta synchronisation plan: " + ", ".join(plan["blocked_groups"]))
     if plan.get("deletion_count") and not allow_deletions:

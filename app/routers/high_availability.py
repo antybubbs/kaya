@@ -1061,6 +1061,7 @@ async def reinitialise_cluster(
             "authoritative_node_id": authority.public_id,
             "history_preserved": True,
             "pihole_data_preserved": True,
+            "high_impact_configuration_approved": True,
         },
     )
     return RedirectResponse(
@@ -2431,6 +2432,7 @@ async def apply_cluster_synchronisation(
             cluster,
             run,
             allow_deletions=str(form.get("acknowledge_deletions") or "") == "1",
+            acknowledge_high_impact=str(form.get("acknowledge_high_impact") or "") == "1",
         )
     except HASyncError as exc:
         write_audit(

@@ -491,6 +491,27 @@ def test_collection_deletions_require_explicit_confirmation_and_leases_are_exclu
         assert not run.backups
 
 
+def test_high_impact_configuration_requires_explicit_administrator_approval():
+    with database() as db:
+        user, cluster, source, target = make_cluster(db)
+        source.configuration_snapshot_json = json.dumps({"dhcp": {"start": "192.0.2.100"}})
+        target.configuration_snapshot_json = json.dumps({"dhcp": {"start": "192.0.2.101"}})
+        db.commit()
+        run = create_sync_plan(db, cluster, user)
+
+        with pytest.raises(HASyncError, match="high-impact configuration changes"):
+            execute_sync(db, cluster, run, client_factory=SyncPiHole)
+
+        assert not run.backups
+
+        SyncPiHole.state = {
+            f"ha-{source.ha_connection_id}": {"dhcp": {"start": "192.0.2.100"}},
+            f"ha-{target.ha_connection_id}": {"dhcp": {"start": "192.0.2.101"}},
+        }
+        execute_sync(db, cluster, run, client_factory=SyncPiHole, acknowledge_high_impact=True)
+        assert run.status == "SUCCEEDED"
+
+
 def test_renamed_pihole_default_group_is_a_change_not_a_deletion():
     with database() as db:
         _, cluster, source, target = make_cluster(db)

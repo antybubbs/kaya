@@ -103,7 +103,7 @@
         </fieldset>
         <label>Authoritative configuration source<select name="authoritative_node_id" required>{% for node in cluster.nodes %}<option value="{{ node.public_id }}" {{ 'selected' if preferred_node and preferred_node.id == node.id else '' }}>{{ node.display_name }}{{ ' (recommended)' if preferred_node and preferred_node.id == node.id else '' }}</option>{% endfor %}</select><small>Kaya copies supported configuration only from this node to its peer. Select the node holding the production configuration you want to keep.</small></label>
         <div class="ha-preserve-grid"><div><strong>Preserved</strong><ul><li>Pi-hole DNS configuration and local DNS</li><li>DHCP reservations and validated leases</li><li>Cluster, node, HA event, and audit history</li></ul></div><div><strong>Rebuilt</strong><ul><li>Active and standby orchestration state</li><li>Keepalived role and VIP ownership</li><li>DHCP ownership and recovery state</li></ul></div></div>
-        <label class="checkbox-row"><input type="checkbox" name="acknowledge_reinitialisation" value="1" required> I reviewed the selected Active node and configuration source. Kaya may back up both nodes and rebuild HA ownership.</label>
+        <label class="checkbox-row"><input type="checkbox" name="acknowledge_reinitialisation" value="1" required> I reviewed the selected Active node and configuration source, including any high-impact DHCP or upstream-DNS changes. Kaya may back up both nodes, apply the approved configuration to the peer, and rebuild HA ownership.</label>
         <button class="button" type="submit">Reinitialise Cluster</button>
       </form>
     </details>

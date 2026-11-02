@@ -20,6 +20,14 @@
   <div class="ha-event-list">{% for blocker in diagnostics.blockers %}<article><span class="ha-check-state ha-check-state--fail">Blocked</span><div><strong>{{ blocker.code|replace('_',' ')|title }}</strong><p>Owner: {{ blocker.owner }} · State: {{ blocker.state }}</p><small>{{ blocker.next_action }}</small></div></article>{% else %}<p class="muted">No persisted blockers were identified.</p>{% endfor %}</div>
 </section>
 <section class="panel">
+  <h2>Synchronisation execution</h2>
+  <div class="table-wrap"><table><thead><tr><th>Area</th><th>State</th><th>Decision</th><th>Next safe action</th></tr></thead><tbody>
+    <tr><td>Configuration</td><td>{{ diagnostics.sync.latest_status or 'No comparison' }}</td><td>{% if diagnostics.sync.execution %}{{ diagnostics.sync.execution.reason_code|replace('_',' ')|title }}: {{ diagnostics.sync.execution.reason }}{% else %}No persisted execution decision{% endif %}</td><td>{{ diagnostics.sync.execution.next_action if diagnostics.sync.execution else 'Run a read-only comparison when appropriate.' }}</td></tr>
+    <tr><td>Lease replication</td><td>{{ diagnostics.lease.status if diagnostics.lease else 'Not applicable' }}</td><td>{{ diagnostics.lease.recovery_gate.code|replace('_',' ')|title if diagnostics.lease and diagnostics.lease.recovery_gate else 'Not applicable' }}{% if diagnostics.lease and diagnostics.lease.recovery_gate %}: {{ diagnostics.lease.recovery_gate.detail }}{% endif %}</td><td>{% if diagnostics.lease and diagnostics.lease.last_staging_action %}Last action: {{ diagnostics.lease.last_staging_action.status }} at {{ diagnostics.lease.last_staging_action.received_at }}{% else %}Await the protected standby action and acknowledgement.{% endif %}</td></tr>
+  </tbody></table></div>
+  <p class="muted">Automatic sync: {{ 'enabled' if diagnostics.cluster.automatic_sync_enabled else 'disabled' }}; maintenance latch: {{ 'active' if diagnostics.cluster.maintenance_mode else 'clear' }}; automatic-write hold: {{ 'active' if diagnostics.cluster.automatic_sync_hold else 'clear' }}. This section uses persisted records only.</p>
+</section>
+<section class="panel">
   <h2>Reconciliation decision trace</h2>
   <div class="ha-event-list">{% for item in diagnostics.decision_trace %}<article><span class="ha-check-state ha-check-state--{{ 'pass' if item.passed else 'fail' }}">{{ 'Pass' if item.passed else 'Blocked' }}</span><div><strong>{{ item.label }}</strong><p>{{ item.code }}: observed <code>{{ item.observed }}</code>; expected <code>{{ item.expected }}</code>.</p>{% if not item.passed %}<small>{{ item.next_action }}</small>{% endif %}</div></article>{% endfor %}</div>
 </section>

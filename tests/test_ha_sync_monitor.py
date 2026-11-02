@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import datetime
 
 from sqlalchemy import create_engine
@@ -90,7 +91,7 @@ def test_opted_in_monitor_applies_safe_drift_from_current_vip_owner(monkeypatch)
         db.refresh(run)
         return run
 
-    def apply_plan(db, cluster, run, *, allow_deletions):
+    def apply_plan(db, cluster, run, *, allow_deletions, automatic=False):
         applied.append((run.source_node_id, run.target_node_id, allow_deletions))
         run.status = "SUCCEEDED"
         run.completed_at = datetime.utcnow()
@@ -133,6 +134,47 @@ def test_failed_automatic_sync_publishes_registered_safe_notification(monkeypatc
         event = db.query(NotificationEvent).filter_by(event_type="pihole.sync.failed").one()
         assert event.message == "Automatic configuration synchronisation for HA DNS stopped safely. Review the HA sync history."
         assert "synthetic" not in event.message
+
+
+def test_monitor_persists_high_impact_approval_block_without_writing(monkeypatch):
+    factory = monitor_database()
+    with factory() as db:
+        db.query(HACluster).one().automatic_sync_enabled = True
+        db.commit()
+    applied = []
+
+    def create_plan(db, cluster):
+        source, target = cluster.nodes
+        run = HASyncRun(
+            cluster_id=cluster.id,
+            source_node_id=source.id,
+            target_node_id=target.id,
+            status="PLANNED",
+            plan_json=json.dumps({
+                "authority_verified": True,
+                "source_node_id": source.id,
+                "blocked_groups": [],
+                "deletion_count": 0,
+                "groups": [{"key": "dhcp", "label": "DHCP", "risk": "high"}],
+            }),
+        )
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+        return run
+
+    monkeypatch.setattr(ha_sync_monitor, "get_site_setting", lambda db, key: "1")
+    monkeypatch.setattr(ha_sync_monitor, "create_live_sync_plan", create_plan)
+    monkeypatch.setattr(ha_sync_monitor, "execute_sync", lambda *args, **kwargs: applied.append(True))
+
+    ha_sync_monitor.run_ha_sync_monitor_pass(factory)
+
+    with factory() as db:
+        run = db.query(HASyncRun).one()
+        execution = json.loads(run.plan_json)["execution"]
+        assert execution["reason_code"] == "HIGH_IMPACT_APPROVAL_REQUIRED"
+        assert execution["eligible"] is False
+    assert applied == []
 
 
 def test_monitor_loop_retries_after_unexpected_pass_failure(monkeypatch):
