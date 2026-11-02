@@ -282,6 +282,28 @@ def test_reconciliation_clears_stale_recovery_metadata_without_service_move():
         assert not second.vip_owned and not second.dhcp_running
 
 
+def test_reconciliation_repairs_reversed_stored_roles_from_clean_signed_topology():
+    with database() as db:
+        user, cluster, first, second = pair(db)
+        cluster.current_active_node_id = second.id
+        cluster.authoritative_node_id = second.id
+        first.role = first.desired_role = "STANDBY"
+        second.role = second.desired_role = "ACTIVE"
+        db.commit()
+
+        run = start_reconciliation(db, cluster, user)
+        fresh_after(run, first, second)
+        before_runtime = (first.vip_owned, first.dhcp_running, second.vip_owned, second.dhcp_running)
+        reconcile_cluster_state(db, run)
+
+        assert run.status == "SUCCEEDED"
+        assert cluster.current_active_node_id == first.id
+        assert cluster.authoritative_node_id == first.id
+        assert first.role == first.desired_role == "ACTIVE"
+        assert second.role == second.desired_role == "STANDBY"
+        assert before_runtime == (first.vip_owned, first.dhcp_running, second.vip_owned, second.dhcp_running)
+
+
 def test_active_recovery_validation_is_not_reported_as_stale():
     with database() as db:
         _, cluster, first, second = pair(db)

@@ -12,8 +12,12 @@
     <tr><td>Configuration authority</td><td>{{ diagnostics.cluster.stored_authority or 'Unknown' }}</td><td>{{ diagnostics.cluster.observed_vip_owner or 'Unknown' }}</td><td>{{ 'Verified' if (diagnostics.cluster.stored_authority and diagnostics.cluster.stored_authority == diagnostics.cluster.observed_vip_owner) else 'Mismatch / unknown' }}</td></tr>
     <tr><td>DHCP owner</td><td>{{ diagnostics.cluster.stored_active or 'Unknown' }}</td><td>{{ diagnostics.cluster.observed_dhcp_owner or ('Not applicable' if not pihole_manages_dhcp else 'Unknown') }}</td><td>{{ 'Observed' if diagnostics.cluster.observed_dhcp_owner else 'Unknown / not applicable' }}</td></tr>
     <tr><td>Cluster generations</td><td>{{ diagnostics.cluster.generations }}</td><td>See node reports below</td><td>{{ 'Consistent' if diagnostics.decision_trace[4].passed else 'Blocked' }}</td></tr>
-    <tr><td>Maintenance</td><td>{{ 'Active' if diagnostics.cluster.maintenance_mode else 'Inactive' }}</td><td>{{ diagnostics.maintenance.active.phase if diagnostics.maintenance.active else 'No active run' }}</td><td>{{ 'Review' if diagnostics.maintenance.active else 'Clear' }}</td></tr>
+    <tr><td>Maintenance</td><td>{{ diagnostics.maintenance.state|replace('_',' ')|title }}</td><td>{{ diagnostics.maintenance.active.phase if diagnostics.maintenance.active else ('Retained from failed-safe run' if diagnostics.cluster.maintenance_mode else 'No active run') }}</td><td>{{ 'Blocked' if diagnostics.cluster.maintenance_mode else 'Clear' }}</td></tr>
   </tbody></table></div>
+</section>
+<section class="panel">
+  <h2>Current blockers and next safe actions</h2>
+  <div class="ha-event-list">{% for blocker in diagnostics.blockers %}<article><span class="ha-check-state ha-check-state--fail">Blocked</span><div><strong>{{ blocker.code|replace('_',' ')|title }}</strong><p>Owner: {{ blocker.owner }} · State: {{ blocker.state }}</p><small>{{ blocker.next_action }}</small></div></article>{% else %}<p class="muted">No persisted blockers were identified.</p>{% endfor %}</div>
 </section>
 <section class="panel">
   <h2>Reconciliation decision trace</h2>

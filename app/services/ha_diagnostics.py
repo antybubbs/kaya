@@ -97,6 +97,50 @@ def build_diagnostic_bundle(
         if isinstance(group, dict) and group.get("key") == "dhcp"
     ]
 
+    maintenance_state = (
+        "ACTIVE_RUN"
+        if active is not None
+        else "SAFETY_LATCH_NO_ACTIVE_RUN"
+        if cluster.maintenance_mode
+        else "INACTIVE"
+    )
+    blockers: list[dict[str, str]] = []
+    if maintenance_state == "SAFETY_LATCH_NO_ACTIVE_RUN":
+        blockers.append({
+            "code": "MAINTENANCE_SAFETY_LATCH",
+            "owner": "administrator",
+            "state": "blocked",
+            "next_action": "Inspect the failed-safe run and verify the live topology before explicitly clearing the latch.",
+        })
+    elif active is not None:
+        blockers.append({
+            "code": "MAINTENANCE_ACTIVE",
+            "owner": "maintenance workflow",
+            "state": active.status,
+            "next_action": "Allow the active maintenance workflow to complete or pause safely.",
+        })
+    if latest_sync and latest_sync.status == "PLANNED" and dhcp_groups:
+        blockers.append({
+            "code": "CONFIGURATION_SYNC_APPROVAL",
+            "owner": "administrator",
+            "state": "awaiting approval",
+            "next_action": "Review the high-impact DHCP difference; do not apply it automatically.",
+        })
+    if lease and (lease.status == "PENDING" or lease.desired_generation > lease.applied_generation):
+        blockers.append({
+            "code": "LEASE_GENERATION_PENDING",
+            "owner": lease.target_node.display_name if lease.target_node else "standby agent",
+            "state": "pending",
+            "next_action": "Verify authority and wait for the protected lease-stage action and acknowledgement.",
+        })
+    if latest and latest.status == "FAILED_SAFE":
+        blockers.append({
+            "code": "LAST_MAINTENANCE_FAILED_SAFE",
+            "owner": "maintenance workflow",
+            "state": "failed-safe",
+            "next_action": "Review the redacted failure and repair its prerequisite before retrying.",
+        })
+
     maintenance_rows = (
         db.query(HAMaintenanceRun)
         .filter(HAMaintenanceRun.cluster_id == cluster.id)
@@ -195,6 +239,7 @@ def build_diagnostic_bundle(
         "nodes": stored_observed_rows,
         "recovery": recovery_rows,
         "maintenance": {
+            "state": maintenance_state,
             "active": maintenance_status(active),
             "latest": maintenance_status(latest),
             "recent_runs": [
@@ -202,6 +247,7 @@ def build_diagnostic_bundle(
                 for run in maintenance_rows
             ],
         },
+        "blockers": blockers,
         "sync": {
             "latest_status": latest_sync.status if latest_sync else None,
             "created_at": _iso(latest_sync.created_at) if latest_sync else None,

@@ -7,7 +7,7 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session
 
 from app.db.session import Base
-from app.models.models import DNSClientIPHistory, DNSProviderConfig, DNSRecognisedDevice, DNSStatisticsSnapshot, HACluster, HANode, HAProviderConnection, User
+from app.models.models import DNSClientIPHistory, DNSProviderConfig, DNSRecognisedDevice, DNSStatisticsSnapshot, HACluster, HANode, HAProviderConnection, HAMaintenanceRun, User
 from app.services import dns_insights
 from app.services.dns_insights import analyse_provider
 from app.services.dns_providers import DNSProviderResult, HAPiHoleCollectionProvider, HAPiHoleProvider, PiHoleProvider, provider_for, provider_snapshot_for_io
@@ -99,6 +99,28 @@ def test_ha_diagnostics_explain_missing_evidence_and_bound_event_history():
         assert any(item["code"] == "FRESH_REPORTS" and not item["passed"] for item in bundle["decision_trace"])
         assert len(bundle["events"]) <= 1
         assert "encrypted_secret" not in json.dumps(bundle)
+
+
+def test_ha_diagnostics_distinguish_retained_maintenance_latch_from_active_run():
+    with database() as db:
+        _, cluster, _, _ = make_cluster(db)
+        cluster.maintenance_mode = True
+        db.add(HAMaintenanceRun(
+            cluster_id=cluster.id,
+            operation="REINITIALISE",
+            status="FAILED_SAFE",
+            phase="PAUSED",
+            error_redacted="Synthetic unavailable endpoint failure.",
+            completed_at=datetime.utcnow(),
+        ))
+        db.commit()
+
+        bundle = build_diagnostic_bundle(db, cluster)
+
+        assert bundle["maintenance"]["active"] is None
+        assert bundle["maintenance"]["state"] == "SAFETY_LATCH_NO_ACTIVE_RUN"
+        assert bundle["blockers"][0]["code"] == "MAINTENANCE_SAFETY_LATCH"
+        assert any(item["code"] == "LAST_MAINTENANCE_FAILED_SAFE" for item in bundle["blockers"])
 
 
 def test_standalone_provider_path_is_unchanged_and_linking_preserves_history():
