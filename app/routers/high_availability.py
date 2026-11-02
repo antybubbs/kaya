@@ -84,14 +84,17 @@ from app.services.ha_leases import (
 )
 from app.services.ha_maintenance import (
     HAMaintenanceError,
+    acknowledge_failed_safe_latch,
     active_maintenance,
     advance_dhcp_self_heal,
     advance_reinitialisation,
     inspect_cluster,
     inspection_json,
     latest_maintenance,
+    latch_preview,
     maintenance_status,
     reconcile_cluster_state,
+    release_maintenance_latch,
     start_dhcp_self_heal,
     start_reconciliation,
     start_reinitialisation,
@@ -341,9 +344,14 @@ def sync_operational_summary(db: Session, cluster: HACluster) -> dict[str, objec
             else "Starts after setup"
         ),
         "automation": (
-            "Automatic" if cluster.automatic_sync_enabled else "Approval required"
+            "Automatic writes held"
+            if cluster.automatic_sync_hold
+            else "Automatic"
+            if cluster.automatic_sync_enabled
+            else "Approval required"
         ),
         "automatic_sync_enabled": bool(cluster.automatic_sync_enabled),
+        "automatic_sync_hold": bool(cluster.automatic_sync_hold),
         "automatic_sync_allow_deletions": bool(cluster.automatic_sync_allow_deletions),
         "state": state,
         "sync_state": sync_state_map.get(latest.status if latest else "", "IDLE"),
@@ -867,12 +875,15 @@ def maintenance_page_context(
     request: Request,
     user,
     cluster: HACluster,
+    db: Session,
     error: str | None = None,
     *,
     show_latest_run: bool = True,
 ):
     consistency = inspect_cluster(cluster)
     latest_run = latest_maintenance(cluster) if show_latest_run else None
+    active_run = active_maintenance(cluster)
+    preview = latch_preview(db, cluster) if cluster.maintenance_mode or (latest_run and latest_run.status == "FAILED_SAFE") else None
     return ha_context(
         request,
         user,
@@ -881,11 +892,52 @@ def maintenance_page_context(
         cluster_section="maintenance",
         consistency=consistency,
         consistency_json=inspection_json(cluster, consistency),
-        maintenance_run=latest_run,
-        maintenance_status=maintenance_status(latest_run),
+        maintenance_run=active_run,
+        maintenance_status=maintenance_status(active_run),
+        latest_maintenance_run=latest_run,
+        latest_maintenance_status=maintenance_status(latest_run),
+        latch_preview=preview,
         preferred_node=preferred_node(cluster),
         maintenance_error=error,
     )
+
+
+@router.post("/clusters/{public_id}/maintenance/latch/acknowledge")
+async def acknowledge_maintenance_latch(
+    public_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    user=Depends(require_ha_admin),
+):
+    cluster = cluster_or_404(db, public_id)
+    form = await request.form()
+    validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    try:
+        acknowledge_failed_safe_latch(db, cluster, user)
+    except HAMaintenanceError as exc:
+        db.rollback()
+        return templates.TemplateResponse(request, "high_availability_cluster_maintenance.html", maintenance_page_context(request, user, cluster, db, str(exc)), status_code=409)
+    return RedirectResponse(f"/high-availability/clusters/{cluster.public_id}/maintenance?latch=acknowledged", status_code=303)
+
+
+@router.post("/clusters/{public_id}/maintenance/latch/release")
+async def release_maintenance_safety_latch(
+    public_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    user=Depends(require_ha_admin),
+):
+    cluster = cluster_or_404(db, public_id)
+    form = await request.form()
+    validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    if str(form.get("acknowledge_release") or "") != "1":
+        raise HTTPException(status_code=400, detail="Explicit latch-release confirmation is required")
+    try:
+        release_maintenance_latch(db, cluster, user)
+    except HAMaintenanceError as exc:
+        db.rollback()
+        return templates.TemplateResponse(request, "high_availability_cluster_maintenance.html", maintenance_page_context(request, user, cluster, db, str(exc)), status_code=409)
+    return RedirectResponse(f"/high-availability/clusters/{cluster.public_id}/maintenance?latch=released", status_code=303)
 
 
 @router.get("/clusters/{public_id}/maintenance")
@@ -903,7 +955,7 @@ def cluster_maintenance(
     return templates.TemplateResponse(
         request,
         "high_availability_cluster_maintenance.html",
-        maintenance_page_context(request, user, cluster, show_latest_run=show_latest),
+        maintenance_page_context(request, user, cluster, db, show_latest_run=show_latest),
     )
 
 
@@ -936,7 +988,7 @@ async def reconcile_cluster(
         return templates.TemplateResponse(
             request,
             "high_availability_cluster_maintenance.html",
-            maintenance_page_context(request, user, cluster, str(exc)),
+            maintenance_page_context(request, user, cluster, db, str(exc)),
             status_code=409,
         )
     write_audit(
@@ -993,7 +1045,7 @@ async def reinitialise_cluster(
         return templates.TemplateResponse(
             request,
             "high_availability_cluster_maintenance.html",
-            maintenance_page_context(request, user, cluster, str(exc)),
+            maintenance_page_context(request, user, cluster, db, str(exc)),
             status_code=409,
         )
     write_audit(
@@ -2248,10 +2300,25 @@ async def configure_automatic_synchronisation(
     user=Depends(require_ha_admin),
 ):
     cluster = cluster_or_404(db, public_id)
+    cluster = db.query(HACluster).populate_existing().filter(HACluster.id == cluster.id).with_for_update().one()
     require_no_cluster_maintenance(cluster)
     form = await request.form()
     validate_csrf_token(request, str(form.get("csrf_token") or ""))
     enabled = str(form.get("enabled") or "") == "1"
+    resume_held_sync = enabled and cluster.automatic_sync_hold
+    if resume_held_sync and str(form.get("resume_automatic_sync") or "") != "1":
+        return templates.TemplateResponse(
+            request,
+            "high_availability_cluster_synchronisation.html",
+            sync_page_context(
+                request,
+                user,
+                cluster,
+                db,
+                "Automatic synchronisation is held after failed-safe recovery. Explicitly confirm that reviewed writes may resume.",
+            ),
+            status_code=409,
+        )
     if enabled and str(form.get("acknowledge_direction") or "") != "1":
         return templates.TemplateResponse(
             request,
@@ -2266,6 +2333,8 @@ async def configure_automatic_synchronisation(
             status_code=400,
         )
     cluster.automatic_sync_enabled = enabled
+    if resume_held_sync:
+        cluster.automatic_sync_hold = False
     cluster.automatic_sync_allow_deletions = (
         enabled and str(form.get("allow_deletions") or "") == "1"
     )
@@ -2275,14 +2344,18 @@ async def configure_automatic_synchronisation(
             cluster_id=cluster.id,
             node_id=None,
             event_type=(
-                "automatic_config_sync_enabled"
+                "automatic_config_sync_resumed"
+                if resume_held_sync
+                else "automatic_config_sync_enabled"
                 if enabled
                 else "automatic_config_sync_disabled"
             ),
             severity="warning" if enabled else "info",
             source="kaya",
             message=(
-                "Automatic configuration synchronisation was enabled. The current VIP owner is the source; the other node is backed up and verified before changes are applied."
+                "Automatic configuration synchronisation resumed after explicit administrator approval. The current VIP owner is the source; the other node is backed up and verified before changes are applied."
+                if resume_held_sync
+                else "Automatic configuration synchronisation was enabled. The current VIP owner is the source; the other node is backed up and verified before changes are applied."
                 if enabled
                 else "Automatic configuration synchronisation was disabled. Read-only monitoring remains active."
             ),
@@ -2300,7 +2373,7 @@ async def configure_automatic_synchronisation(
     write_audit(
         db,
         user,
-        "enabled" if enabled else "disabled",
+        "resumed" if resume_held_sync else "enabled" if enabled else "disabled",
         "ha_automatic_configuration_sync",
         entity_id=cluster.public_id,
         detail=f"{'Enabled' if enabled else 'Disabled'} automatic configuration synchronisation for {cluster.name}.",
@@ -2309,6 +2382,7 @@ async def configure_automatic_synchronisation(
             "allow_deletions": cluster.automatic_sync_allow_deletions,
             "active_node_authoritative": True,
             "automatic_failback": False,
+            "held_sync_resumed": resume_held_sync,
         },
     )
     return RedirectResponse(

@@ -42,6 +42,21 @@
   {% if consistency.issues %}<div class="ha-maintenance-issues"><h3>Detected issues</h3>{% for issue in consistency.issues %}<article><span class="ha-check-state ha-check-state--{{ 'fail' if issue.severity == 'critical' else 'unknown' }}">{{ issue.severity|title }}</span><div><strong>{{ issue.title }}</strong><p>{{ issue.message }}</p></div></article>{% endfor %}</div>{% else %}<div class="success"><strong>No ownership contradiction detected</strong><span>The current signed reports agree on service ownership.</span></div>{% endif %}
 </section>
 
+{% if latch_preview %}
+<section class="panel" data-ha-latch-panel>
+  <div class="ha-section-heading"><div><span class="ha-sync-eyebrow">Failed-safe recovery</span><h2>Review &amp; Release Maintenance Safety Latch</h2><p class="muted">This workflow changes only Kaya's persisted safety latch. It never moves the VIP, restarts DHCP, changes Pi-hole configuration or stages leases.</p></div><span class="ha-status-chip is-{{ 'succeeded' if not cluster.maintenance_mode else 'error' }}">{{ 'Released' if not cluster.maintenance_mode else 'Latched' }}</span></div>
+  {% if maintenance_error %}<div class="alert" role="alert"><strong>Latch action blocked</strong><span>{{ maintenance_error }}</span></div>{% endif %}
+  {% if request.query_params.get('latch') == 'acknowledged' %}<div class="success" role="status"><strong>Historical failure acknowledged.</strong><span>The safety latch remains active.</span></div>{% endif %}
+  {% if request.query_params.get('latch') == 'released' %}<div class="success" role="status"><strong>Safety latch released.</strong><span>Automatic configuration writes remain on hold until separately resumed.</span></div>{% endif %}
+  <div class="table-wrap"><table><thead><tr><th>Safety condition</th><th>Result</th><th>Evidence</th></tr></thead><tbody>{% for check in latch_preview.checks %}<tr><td>{{ check.code|replace('_',' ')|title }}</td><td>{{ 'Pass' if check.passed else 'Blocked' }}</td><td>{{ check.detail }}</td></tr>{% endfor %}</tbody></table></div>
+  <p class="muted">Original failed run: {{ latch_preview.failed_run_id or 'not found' }}. Automatic sync: {{ 'enabled' if latch_preview.automatic_sync_enabled else 'disabled' }}{% if latch_preview.automatic_sync_hold %} — held after recovery{% endif %}.</p>
+  {% if cluster.maintenance_mode and user.role == 'admin' %}
+    {% if not latch_preview.acknowledged_at %}<form method="post" action="/high-availability/clusters/{{ cluster.public_id }}/maintenance/latch/acknowledge"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit">Acknowledge historical failure</button></form>{% else %}<p class="success">Historical failure acknowledged. This does not release the latch.</p>{% endif %}
+    <form method="post" action="/high-availability/clusters/{{ cluster.public_id }}/maintenance/latch/release" class="stack"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label class="checkbox-row"><input type="checkbox" name="acknowledge_release" value="1" required> I confirm that I reviewed every safety condition above and release only Kaya's maintenance latch. Automatic configuration writes will remain held.</label><button class="button" type="submit" {% if not latch_preview.release_allowed or not latch_preview.acknowledged_at %}disabled{% endif %}>Release maintenance safety latch</button></form>
+  {% endif %}
+</section>
+{% endif %}
+
 {% if maintenance_run and maintenance_run.status in ['RUNNING', 'PAUSED', 'FAILED_SAFE'] %}
 <section class="panel" data-ha-maintenance-panel>
   <div class="ha-section-heading"><div><span class="ha-sync-eyebrow">{{ maintenance_run.operation|replace('_', ' ')|title }}</span><h2 data-ha-maintenance-title>{{ 'Reinitialisation paused' if maintenance_run.status == 'FAILED_SAFE' else 'Cluster maintenance in progress' }}</h2><p class="muted">Kaya advances only after each safety condition is confirmed. DNS and DHCP remain on the nodes, not in Kaya.</p></div><span class="ha-status-chip is-{{ 'error' if maintenance_run.status == 'FAILED_SAFE' else 'deploying' }}" data-ha-maintenance-status>{{ maintenance_run.status|replace('_', ' ')|title }}</span></div>

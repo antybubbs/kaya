@@ -24,7 +24,7 @@ from app.models.models import (
 from app.services.ha_leases import HALeaseError, reconcile_cluster_leases
 from app.services.ha_agent_installer import version_tuple
 from app.services.ha_dhcp_safety import authorise_dhcp_demotion
-from app.services.ha_recovery import evaluate_recovery
+from app.services.ha_recovery import evaluate_recovery, recovery_snapshot
 from app.services.ha_sync import (
     HASyncError,
     _live_configuration,
@@ -78,6 +78,109 @@ DHCP_OWNER_STABILITY_SECONDS = 10
 
 class HAMaintenanceError(ValueError):
     pass
+
+
+def _latch_evidence(db: Session, cluster: HACluster) -> dict[str, Any]:
+    """Build a bounded, persisted-state-only safety decision for latch release."""
+    now = datetime.utcnow()
+    topology = reconcile_topology(cluster, now=now, freshness_seconds=FRESH_SECONDS)
+    inspection = inspect_cluster(cluster, now=now)
+    failed_run = next((run for run in sorted(cluster.maintenance_runs, key=lambda item: item.created_at or datetime.min, reverse=True) if run.operation == "REINITIALISE" and run.status == "FAILED_SAFE"), None)
+    active_run = active_maintenance(cluster)
+    from app.services.ha_failover import active_failover
+    failover = active_failover(cluster)
+    managed = pihole_manages_dhcp(cluster)
+    observed_owner = next((node for node in cluster.nodes if node.id == topology.active_node_id), None)
+    observed_dhcp = next((node for node in cluster.nodes if node.id in topology.dhcp_owner_ids), None)
+    roles_match = bool(observed_owner and cluster.current_active_node_id == observed_owner.id and all(
+        node.role == ("ACTIVE" if node.id == observed_owner.id else "STANDBY")
+        and node.desired_role == ("ACTIVE" if node.id == observed_owner.id else "STANDBY")
+        for node in cluster.nodes
+    ))
+    generations_ok = all(
+        node.observed_generation >= cluster.role_generation
+        and node.config_generation >= cluster.keepalived_generation
+        for node in cluster.nodes
+    )
+    latest_reconcile = next((run for run in sorted(cluster.maintenance_runs, key=lambda item: item.created_at or datetime.min, reverse=True) if run.operation == "RECONCILE"), None)
+    reconciliation_ok = bool(
+        failed_run and latest_reconcile and latest_reconcile.status == "SUCCEEDED"
+        and (latest_reconcile.completed_at or datetime.min) >= (failed_run.completed_at or failed_run.created_at or datetime.min)
+    )
+    unsafe_actions = []
+    for node in cluster.nodes:
+        if node.resolver_repair_status == "PENDING":
+            unsafe_actions.append(f"{node.display_name} has a pending resolver repair")
+        if node.keepalived_status == "ERROR":
+            unsafe_actions.append(f"{node.display_name} reports a Keepalived error")
+    if cluster.keepalived_requested_at and (not cluster.keepalived_deployed_at or cluster.keepalived_requested_at > cluster.keepalived_deployed_at):
+        unsafe_actions.append("The cluster has an unapplied Keepalived request")
+    checks = [
+        {"code": "HISTORICAL_FAILED_SAFE", "passed": failed_run is not None, "detail": "A failed-safe reinitialisation is present for review."},
+        {"code": "FRESH_SIGNED_REPORTS", "passed": inspection.fresh and all(_registered(node) for node in cluster.nodes), "detail": "Both registered agents have fresh signed reports."},
+        {"code": "EXCLUSIVE_VIP", "passed": len(topology.vip_owner_ids) == 1, "detail": "Exactly one node owns the Virtual IP."},
+        {"code": "EXCLUSIVE_DHCP", "passed": not managed or len(topology.dhcp_owner_ids) == 1, "detail": "Exactly one node owns DHCP when Pi-hole manages DHCP."},
+        {"code": "DHCP_VIP_MATCH", "passed": not managed or (observed_owner is not None and observed_dhcp is not None and observed_owner.id == observed_dhcp.id), "detail": "DHCP ownership matches VIP ownership."},
+        {"code": "STORED_ROLES_ALIGNED", "passed": roles_match, "detail": "Stored and observed Active/Standby assignments agree."},
+        {"code": "GENERATION_FENCING", "passed": generations_ok and cluster.keepalived_status == "DEPLOYED", "detail": "Role/configuration generations and Keepalived fencing are current."},
+        {"code": "NO_ACTIVE_OPERATION", "passed": active_run is None and failover is None, "detail": "No active maintenance, failover or rollback operation exists."},
+        {"code": "RECONCILIATION_COMPLETE", "passed": reconciliation_ok, "detail": "A successful reconciliation completed after the failed-safe run."},
+        {"code": "NO_UNSAFE_AGENT_ACTION", "passed": not unsafe_actions, "detail": "; ".join(unsafe_actions) if unsafe_actions else "No pending unsafe agent action is recorded."},
+    ]
+    return {"checks": checks, "release_allowed": all(item["passed"] for item in checks), "failed_run": failed_run, "active_run": active_run, "latest_reconcile": latest_reconcile, "recovery": recovery_snapshot(db, cluster, now=now), "unsafe_actions": unsafe_actions, "automatic_sync_enabled": bool(cluster.automatic_sync_enabled), "automatic_sync_hold": bool(cluster.automatic_sync_hold), "authority": observed_owner.display_name if observed_owner else None, "generated_at": now}
+
+
+def latch_preview(db: Session, cluster: HACluster) -> dict[str, Any]:
+    evidence = _latch_evidence(db, cluster)
+    return {"generated_at": evidence["generated_at"], "release_allowed": evidence["release_allowed"], "checks": evidence["checks"], "failed_run": maintenance_status(evidence["failed_run"]), "failed_run_id": evidence["failed_run"].public_id if evidence["failed_run"] else None, "active_run": maintenance_status(evidence["active_run"]), "latest_reconcile": maintenance_status(evidence["latest_reconcile"]), "automatic_sync_enabled": evidence["automatic_sync_enabled"], "automatic_sync_hold": evidence["automatic_sync_hold"], "acknowledged_at": cluster.maintenance_latch_acknowledged_at, "released_at": cluster.maintenance_latch_released_at, "authority": evidence["authority"], "unsafe_actions": evidence["unsafe_actions"]}
+
+
+def acknowledge_failed_safe_latch(db: Session, cluster: HACluster, user: User) -> HACluster:
+    locked = db.query(HACluster).populate_existing().filter(HACluster.id == cluster.id).with_for_update().one()
+    evidence = _latch_evidence(db, locked)
+    failed = evidence["failed_run"]
+    if not locked.maintenance_mode or failed is None:
+        write_audit(db, user, "denied", "ha_maintenance_latch", locked.public_id, detail=f"Failed-safe latch acknowledgement was denied for {locked.name}; no eligible retained failed-safe run exists.", severity="warning", metadata={"reason_code": "NO_ELIGIBLE_FAILED_SAFE_RUN"}, force=True)
+        raise HAMaintenanceError("No retained failed-safe maintenance latch is available for acknowledgement.")
+    locked.maintenance_latch_acknowledged_at = datetime.utcnow()
+    locked.maintenance_latch_acknowledged_by_user_id = user.id
+    locked.maintenance_latch_acknowledgement_json = json.dumps({"failed_run_id": failed.public_id, "checks": evidence["checks"], "authority": evidence["authority"], "runtime_unchanged": True}, sort_keys=True, default=str)
+    db.add(HAEvent(cluster_id=locked.id, node_id=None, event_type="maintenance_latch_failure_acknowledged", severity="warning", source="kaya", message="An administrator acknowledged the historical failed-safe maintenance operation; the safety latch remains active.", details_json_redacted=json.dumps({"maintenance_run_id": failed.public_id, "runtime_unchanged": True}, sort_keys=True), occurred_at=datetime.utcnow()))
+    write_audit(db, user, "acknowledged", "ha_maintenance_latch", locked.public_id, detail=f"Acknowledged the historical failed-safe maintenance operation for {locked.name}; the safety latch remains active.", severity="warning", metadata={"maintenance_run_id": failed.public_id, "runtime_unchanged": True}, commit=False)
+    db.commit()
+    return locked
+
+
+def release_maintenance_latch(db: Session, cluster: HACluster, user: User) -> HACluster:
+    locked = db.query(HACluster).populate_existing().filter(HACluster.id == cluster.id).with_for_update().one()
+    evidence = _latch_evidence(db, locked)
+    failed = evidence["failed_run"]
+    if not locked.maintenance_mode or failed is None:
+        write_audit(db, user, "denied", "ha_maintenance_latch", locked.public_id, detail=f"Failed-safe latch release was denied for {locked.name}; no eligible retained failed-safe run exists.", severity="warning", metadata={"reason_code": "NO_ELIGIBLE_FAILED_SAFE_RUN"}, force=True)
+        raise HAMaintenanceError("No retained failed-safe maintenance latch is available for release.")
+    acknowledgement = {}
+    try:
+        acknowledgement = json.loads(locked.maintenance_latch_acknowledgement_json or "{}")
+    except (TypeError, ValueError):
+        acknowledgement = {}
+    if not locked.maintenance_latch_acknowledged_at or acknowledgement.get("failed_run_id") != failed.public_id:
+        write_audit(db, user, "denied", "ha_maintenance_latch", locked.public_id, detail=f"Failed-safe latch release was denied for {locked.name}; historical failure acknowledgement is missing.", severity="warning", metadata={"reason_code": "ACKNOWLEDGEMENT_REQUIRED", "maintenance_run_id": failed.public_id}, force=True)
+        raise HAMaintenanceError("Acknowledge the historical failed-safe operation before releasing the latch.")
+    failed_checks = [item["code"] for item in evidence["checks"] if not item["passed"]]
+    if failed_checks:
+        write_audit(db, user, "denied", "ha_maintenance_latch", locked.public_id, detail=f"Failed-safe latch release was denied for {locked.name}; required safety checks remain blocked.", severity="warning", metadata={"reason_code": "SAFETY_CHECKS_BLOCKED", "maintenance_run_id": failed.public_id, "blocked_checks": failed_checks}, force=True)
+        raise HAMaintenanceError("Latch release is blocked: " + ", ".join(failed_checks) + ".")
+    now = datetime.utcnow()
+    locked.maintenance_mode = False
+    locked.automatic_sync_hold = True
+    locked.automatic_failover_enabled = False
+    locked.maintenance_latch_released_at = now
+    locked.maintenance_latch_released_by_user_id = user.id
+    locked.maintenance_latch_release_json = json.dumps({"checks": evidence["checks"], "automatic_sync_hold": True, "automatic_failover_disabled": True, "runtime_unchanged": True}, sort_keys=True, default=str)
+    db.add(HAEvent(cluster_id=locked.id, node_id=None, event_type="maintenance_latch_released", severity="warning", source="kaya", message="An administrator released the maintenance safety latch after all required persisted safety checks passed. Automatic configuration writes remain on hold and automatic failover remains disabled.", details_json_redacted=json.dumps({"maintenance_run_id": failed.public_id, "automatic_sync_hold": True, "automatic_failover_disabled": True, "runtime_unchanged": True}, sort_keys=True), occurred_at=now))
+    write_audit(db, user, "released", "ha_maintenance_latch", locked.public_id, detail=f"Released the maintenance safety latch for {locked.name}; automatic configuration writes remain on hold and automatic failover remains disabled.", severity="warning", metadata={"maintenance_run_id": failed.public_id, "automatic_sync_hold": True, "automatic_failover_disabled": True, "runtime_unchanged": True}, commit=False)
+    db.commit()
+    return locked
 
 
 @dataclass(frozen=True)
@@ -698,6 +801,7 @@ def _snapshot_state(cluster: HACluster) -> dict[str, Any]:
 
 
 def start_reconciliation(db: Session, cluster: HACluster, user: User) -> HAMaintenanceRun:
+    cluster = db.query(HACluster).populate_existing().filter(HACluster.id == cluster.id).with_for_update().one()
     if active_maintenance(cluster):
         raise HAMaintenanceError("Cluster maintenance is already in progress.")
     from app.services.ha_failover import active_failover
@@ -811,6 +915,9 @@ def start_reinitialisation(
     authority: HANode,
     acknowledged: bool,
 ) -> HAMaintenanceRun:
+    cluster = db.query(HACluster).populate_existing().filter(HACluster.id == cluster.id).with_for_update().one()
+    desired_active = next((node for node in cluster.nodes if node.id == desired_active.id), None)
+    authority = next((node for node in cluster.nodes if node.id == authority.id), None)
     if not acknowledged:
         raise HAMaintenanceError("Confirm that Kaya may rebuild HA ownership while preserving Pi-hole data and cluster history.")
     if desired_active not in cluster.nodes or authority not in cluster.nodes:

@@ -123,7 +123,7 @@ def run_ha_sync_monitor_pass(session_factory=SessionLocal) -> int:
                     None,
                 )
                 recovery_sync = recovering_target is not None
-                if (not cluster.automatic_sync_enabled and not recovery_sync) or run.status != "PLANNED" or cluster.maintenance_mode:
+                if (not cluster.automatic_sync_enabled and not recovery_sync) or run.status != "PLANNED" or cluster.maintenance_mode or cluster.automatic_sync_hold:
                     continue
                 plan = json.loads(run.plan_json)
                 safe_authority = bool(
@@ -135,7 +135,7 @@ def run_ha_sync_monitor_pass(session_factory=SessionLocal) -> int:
                 if not safe_authority or plan.get("blocked_groups") or not deletions_allowed:
                     continue
                 try:
-                    execute_sync(db, cluster, run, allow_deletions=cluster.automatic_sync_allow_deletions and not recovery_sync)
+                    execute_sync(db, cluster, run, allow_deletions=cluster.automatic_sync_allow_deletions and not recovery_sync, automatic=not recovery_sync)
                     _record_automation_event(db, cluster, succeeded=True, message=f"Automatically synchronised configuration from {run.source_node.display_name} to {run.target_node.display_name}; backup and verification completed.", run=run)
                     write_audit(db, None, "completed", "ha_recovery_configuration_sync" if recovery_sync else "ha_automatic_configuration_sync", entity_id=run.public_id, detail=f"Automatically synchronised allowlisted Pi-hole configuration for {cluster.name}.", metadata={"cluster_id": cluster.public_id, "backup_created": True, "verified": True, "lease_replication": False, "recovery": recovery_sync})
                 except HASyncError as exc:

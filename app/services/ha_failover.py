@@ -135,6 +135,7 @@ def automatic_failover_blockers(cluster: HACluster, *, now: datetime | None = No
 
 
 def set_automatic_failover(db: Session, cluster: HACluster, *, enabled: bool, confirmation: str, acknowledged: bool) -> HACluster:
+    cluster = db.query(HACluster).populate_existing().filter(HACluster.id == cluster.id).with_for_update().one()
     if enabled:
         if confirmation.strip() != cluster.name or not acknowledged:
             raise HAFailoverError(f"Type {cluster.name} and confirm the automatic-failover safety warning.")
@@ -233,6 +234,11 @@ def _move_vip(db: Session, run: HAFailoverRun, target: HANode) -> None:
 
 
 def start_controlled_failover(db: Session, cluster: HACluster, target: HANode, user: User, *, confirmation: str, acknowledged: bool) -> HAFailoverRun:
+    target_id = target.id
+    cluster = db.query(HACluster).populate_existing().filter(HACluster.id == cluster.id).with_for_update().one()
+    target = next((node for node in cluster.nodes if node.id == target_id), None)
+    if target is None:
+        raise HAFailoverError("Choose a failover target belonging to this cluster.")
     if not acknowledged or confirmation.strip() != cluster.name:
         raise HAFailoverError(f"Type {cluster.name} and confirm the expected interruption before starting.")
     readiness = failover_readiness(cluster)

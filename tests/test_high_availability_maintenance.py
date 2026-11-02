@@ -17,6 +17,7 @@ from app.models.models import (
     User,
 )
 from app.services.ha_maintenance import (
+    acknowledge_failed_safe_latch,
     active_maintenance,
     advance_dhcp_self_heal,
     advance_reinitialisation,
@@ -24,6 +25,7 @@ from app.services.ha_maintenance import (
     inspect_cluster,
     maintenance_status,
     reconcile_cluster_state,
+    release_maintenance_latch,
     record_maintenance_action_result,
     start_reconciliation,
     start_dhcp_self_heal,
@@ -302,6 +304,59 @@ def test_reconciliation_repairs_reversed_stored_roles_from_clean_signed_topology
         assert first.role == first.desired_role == "ACTIVE"
         assert second.role == second.desired_role == "STANDBY"
         assert before_runtime == (first.vip_owned, first.dhcp_running, second.vip_owned, second.dhcp_running)
+
+
+def test_failed_safe_latch_acknowledgement_does_not_release_or_resume_sync():
+    with database() as db:
+        user, cluster, first, second = pair(db)
+        cluster.maintenance_mode = True
+        cluster.automatic_sync_enabled = True
+        failed = HAMaintenanceRun(
+            cluster_id=cluster.id,
+            operation="REINITIALISE",
+            status="FAILED_SAFE",
+            phase="PAUSED",
+            error_redacted="Synthetic failed-safe condition.",
+            completed_at=datetime.utcnow() - timedelta(minutes=2),
+        )
+        db.add(failed)
+        db.commit()
+
+        acknowledge_failed_safe_latch(db, cluster, user)
+
+        assert cluster.maintenance_mode is True
+        assert cluster.automatic_sync_hold is False
+        assert cluster.maintenance_latch_acknowledged_at is not None
+        assert db.query(HAEvent).filter_by(event_type="maintenance_latch_failure_acknowledged").count() == 1
+
+
+def test_latch_release_requires_reconciliation_and_leaves_automatic_sync_held():
+    with database() as db:
+        user, cluster, first, second = pair(db)
+        cluster.maintenance_mode = True
+        cluster.automatic_sync_enabled = True
+        failed = HAMaintenanceRun(
+            cluster_id=cluster.id,
+            operation="REINITIALISE",
+            status="FAILED_SAFE",
+            phase="PAUSED",
+            error_redacted="Synthetic failed-safe condition.",
+            completed_at=datetime.utcnow() - timedelta(minutes=2),
+        )
+        db.add(failed)
+        db.commit()
+
+        acknowledge_failed_safe_latch(db, cluster, user)
+        run = start_reconciliation(db, cluster, user)
+        fresh_after(run, first, second)
+        reconcile_cluster_state(db, run)
+        release_maintenance_latch(db, cluster, user)
+
+        assert cluster.maintenance_mode is False
+        assert cluster.automatic_sync_hold is True
+        assert cluster.automatic_sync_enabled is True
+        assert cluster.automatic_failover_enabled is False
+        assert db.query(HAEvent).filter_by(event_type="maintenance_latch_released").count() == 1
 
 
 def test_active_recovery_validation_is_not_reported_as_stale():

@@ -222,6 +222,9 @@ def build_diagnostic_bundle(
             "status": cluster.status,
             "deployment_mode": cluster.deployment_mode,
             "maintenance_mode": bool(cluster.maintenance_mode),
+            "automatic_sync_hold": bool(cluster.automatic_sync_hold),
+            "maintenance_latch_acknowledged_at": _iso(cluster.maintenance_latch_acknowledged_at),
+            "maintenance_latch_released_at": _iso(cluster.maintenance_latch_released_at),
             "automatic_failover_enabled": bool(cluster.automatic_failover_enabled),
             "automatic_sync_enabled": bool(cluster.automatic_sync_enabled),
             "generations": {
