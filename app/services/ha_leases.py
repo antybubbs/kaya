@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer, object_session
 
 from app.core.security import decrypt_secret, encrypt_secret
 from app.models.models import HACluster, HALeaseReplicationState, HALeaseSnapshot, HANode
@@ -341,11 +341,33 @@ def reconcile_cluster_leases(
         raise
 
 
+def _snapshot_query(cluster: HACluster, *, include_payload: bool):
+    """Query one cluster's snapshots without materialising its full history.
+
+    Returns None only for an object with no session. Such an object cannot
+    lazy-load, so callers fall back to whatever collection is already in
+    memory; that fallback never issues a database query.
+    """
+    db = object_session(cluster)
+    if db is None:
+        return None
+    query = db.query(HALeaseSnapshot).filter(HALeaseSnapshot.cluster_id == cluster.id)
+    return query if include_payload else query.options(defer(HALeaseSnapshot.encrypted_payload))
+
+
+def _snapshot_for_generation(cluster: HACluster, generation: int, *, include_payload: bool = False) -> HALeaseSnapshot | None:
+    query = _snapshot_query(cluster, include_payload=include_payload)
+    if query is None:
+        return next((item for item in cluster.lease_snapshots if item.generation == generation), None)
+    # uq_ha_lease_snapshot_generation guarantees at most one row.
+    return query.filter(HALeaseSnapshot.generation == generation).one_or_none()
+
+
 def desired_lease_action(cluster: HACluster, node: HANode) -> dict[str, Any] | None:
     state = cluster.lease_replication
     if state is None or state.status != "PENDING" or state.target_node_id != node.id:
         return None
-    snapshot = next((item for item in cluster.lease_snapshots if item.generation == state.desired_generation), None)
+    snapshot = _snapshot_for_generation(cluster, state.desired_generation)
     if snapshot is None or snapshot.status != "PENDING":
         return None
     return {"action_id": f"lease:{cluster.public_id}:{node.public_id}:{snapshot.generation}:{snapshot.checksum[:12]}", "action_type": "LEASE_SNAPSHOT_STAGE", "generation": snapshot.generation, "checksum": snapshot.checksum, "snapshot_path": f"/api/ha/agent/v1/lease-snapshot/{snapshot.generation}"}
@@ -355,7 +377,7 @@ def snapshot_for_agent(node: HANode, generation: int) -> dict[str, Any]:
     state = node.cluster.lease_replication
     if state is None or state.target_node_id != node.id or state.desired_generation != generation:
         raise HALeaseError("This lease snapshot is not assigned to this node.")
-    snapshot = next((item for item in node.cluster.lease_snapshots if item.generation == generation), None)
+    snapshot = _snapshot_for_generation(node.cluster, generation, include_payload=True)
     if snapshot is None or snapshot.status != "PENDING":
         raise HALeaseError("The requested lease snapshot is unavailable.")
     payload = json.loads(decrypt_secret(snapshot.encrypted_payload))
@@ -366,7 +388,7 @@ def record_lease_stage_result(db: Session, node: HANode, *, generation: int, che
     state = node.cluster.lease_replication
     if state is None or state.target_node_id != node.id or state.desired_generation != generation:
         raise HALeaseError("The lease result does not match the target's current desired generation.")
-    snapshot = next((item for item in node.cluster.lease_snapshots if item.generation == generation), None)
+    snapshot = _snapshot_for_generation(node.cluster, generation)
     if snapshot is None or (status == "APPLIED" and checksum != snapshot.checksum):
         raise HALeaseError("The staged lease checksum does not match Kaya's validated snapshot.")
     if status == "APPLIED":
@@ -390,9 +412,13 @@ def record_lease_stage_result(db: Session, node: HANode, *, generation: int, che
 
 
 def latest_snapshot_summary(cluster: HACluster) -> dict[str, Any] | None:
-    if not cluster.lease_snapshots:
+    query = _snapshot_query(cluster, include_payload=False)
+    if query is None:
+        snapshot = max(cluster.lease_snapshots, key=lambda item: item.generation, default=None)
+    else:
+        snapshot = query.order_by(HALeaseSnapshot.generation.desc()).limit(1).one_or_none()
+    if snapshot is None:
         return None
-    snapshot = max(cluster.lease_snapshots, key=lambda item: item.generation)
     try:
         validation = json.loads(snapshot.validation_summary_json or "{}")
     except json.JSONDecodeError:
