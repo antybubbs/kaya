@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   python:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       SECRET_KEY: ci-only-secret-key-012345678901234567890123456789
       ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
@@ -50,7 +50,7 @@ jobs:
         run: git diff --check
 
   postgresql:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       SECRET_KEY: ci-only-secret-key-012345678901234567890123456789
       ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
