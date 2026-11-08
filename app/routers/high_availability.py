@@ -71,6 +71,7 @@ from app.services.ha_baseline_repair import (
     restoration_status,
 )
 from app.services.ha_health_workspace import alignment_remaining, service_overview
+from app.services.ha_dhcp_handover import HADHCPHandoverError, handover_assessment, record_physical_check
 from app.services.ha_recovery import recovery_snapshot as workspace_recovery_snapshot
 from app.services.ha_diagnostics import build_diagnostic_bundle
 from app.services.ha_dns_advertisement import (
@@ -1137,6 +1138,7 @@ def maintenance_page_context(
         overview=service_overview(db, cluster, recovery, now=now),
         restoration=restoration,
         restoration_run=restoration_status(cluster),
+        dhcp_handover=handover_assessment(cluster, now=now),
     )
 
 
@@ -1407,6 +1409,35 @@ async def restore_keepalived_baseline(
         f"/high-availability/clusters/{cluster.public_id}/maintenance?restore=started#restore-baseline",
         status_code=303,
     )
+
+
+@router.post("/clusters/{public_id}/maintenance/dhcp-fencing")
+async def confirm_dhcp_fencing(
+    public_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    user=Depends(require_ha_admin),
+):
+    """Record an administrator's physical check of a silent node.  A record only: it never promotes DHCP."""
+    cluster = cluster_or_404(db, public_id)
+    form = await request.form()
+    validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    fenced = str(form.get("fenced_node_id") or "")
+    confirmation = str(form.get("confirmation") or "")
+    if not NODE_PUBLIC_ID_PATTERN.fullmatch(fenced) or len(confirmation) > 200:
+        raise HTTPException(status_code=400, detail="Invalid fencing confirmation")
+    node_or_404(cluster, fenced)
+    try:
+        await run_in_threadpool(
+            record_physical_check, db, cluster, user, checked_node_public_id=fenced, confirmation=confirmation,
+            acknowledged=str(form.get("acknowledge_fencing") or "") == "1",
+        )
+    except HADHCPHandoverError as exc:
+        db.rollback()
+        cluster = cluster_or_404(db, public_id)
+        return templates.TemplateResponse(request, "high_availability_cluster_maintenance.html",
+                                          maintenance_page_context(request, user, cluster, db, str(exc)), status_code=409)
+    return RedirectResponse(f"/high-availability/clusters/{cluster.public_id}/maintenance?fencing=recorded#dhcp-fencing", status_code=303)
 
 
 @router.post("/clusters/{public_id}/maintenance/{run_public_id}/advance")

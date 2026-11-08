@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.models.models import HACluster, HAEvent, HAFailoverRun, HANode, User
+from app.services.ha_dhcp_authority import authority, ensure_authority, promotion_terms
 from app.services.ha_dhcp_safety import OWNER_PROTECTION_AGENT_VERSION, authorise_dhcp_demotion
 from app.services.ha_leases import HALeaseError, reconcile_cluster_leases
 from app.services.ha_notifications import publish_ha_notification, record_run_notification_diagnostic, refresh_notification_diagnostics
@@ -19,7 +20,9 @@ from app.services.ha_topology import dhcp_observation, pihole_manages_dhcp, reco
 
 ACTIVE_RUN_STATUSES = {"RUNNING", "ROLLING_BACK"}
 MIN_AGENT_VERSION = (0, 2, 7)
-AUTOMATIC_AGENT_VERSION = (0, 2, 7)
+# Revised DHCP handover protocol: the automatic gate is granted only to agents that never
+# promote DHCP locally (older agents promote after a hold-down on peer silence).
+AUTOMATIC_AGENT_VERSION = (0, 2, 16)
 FORWARD_PHASES = (
     "WAITING_FOR_LEASES",
     "DEMOTING_SOURCE",
@@ -132,7 +135,8 @@ def automatic_failover_blockers(cluster: HACluster, *, now: datetime | None = No
         blockers.append("Complete one successful controlled failover test first.")
     for node in cluster.nodes:
         if _version(node.agent_version) < AUTOMATIC_AGENT_VERSION:
-            blockers.append(f"Update {node.display_name} to agent 0.2.7 for ordered DHCP telemetry and verified offline failover.")
+            blockers.append(f"Update {node.display_name} to agent {'.'.join(str(part) for part in AUTOMATIC_AGENT_VERSION)}: "
+                            "automatic failover needs the revised DHCP handover protocol (no node-local promotion).")
     if cluster.maintenance_mode:
         blockers.append("Exit maintenance mode before enabling automatic failover.")
     return list(dict.fromkeys(blockers))
@@ -329,19 +333,47 @@ def desired_failover_action(cluster: HACluster, node: HANode) -> dict[str, Any] 
     if action_type is None:
         return None
     owner_handover = False
+    terms = {"authority_epoch": None}
+    if action_type == "DHCP_PROMOTE":
+        terms = promotion_terms(cluster, node)
+        if terms is None:
+            return None  # never promote a node that Kaya has not granted DHCP authority
     if action_type == "DHCP_DEMOTE":
         replacement = run.target_node if run.phase == "DEMOTING_SOURCE" else run.source_node
+        moved = run.phase == "DEMOTING_SOURCE" and _vip_already_on_target(run)
         decision = authorise_dhcp_demotion(
             cluster,
             node,
             replacement=replacement,
             owner_handover=True,
+            replacement_has_local_authority=moved,
+            vip_already_moved=moved,
         )
         if not decision.allowed:
             return None
         owner_handover = decision.owner_handover
     checksum = _action_checksum(run, node, action_type)
-    return {"action_id": f"failover:{run.public_id}:{action_type.lower()}:{node.public_id}", "action_type": action_type, "generation": run.role_generation, "checksum": checksum, "run_id": run.public_id, "automatic": False, "lease_generation": run.lease_generation, "restore_original": restore_original, "owner_handover_authorised": owner_handover}
+    return {"action_id": f"failover:{run.public_id}:{action_type.lower()}:{node.public_id}", "action_type": action_type, "generation": run.role_generation, "checksum": checksum, "run_id": run.public_id, "automatic": False, "lease_generation": run.lease_generation, "restore_original": restore_original, "owner_handover_authorised": owner_handover, **terms}
+
+
+def sync_promotion_authority(run: HAFailoverRun) -> None:
+    """Move DHCP authority to the node a run is about to promote (no commit; caller holds the lock).
+
+    Every entry into a promotion phase is preceded by verified release of the other node (or, for an
+    automatic handover, fresh positive external fencing evidence), so this is the only place a
+    failover run moves authority.  Idempotent per run and phase.
+    """
+    if run.status not in ACTIVE_RUN_STATUSES or not run.dhcp_managed:
+        return
+    node = run.target_node if run.phase == "PROMOTING_TARGET" else run.source_node if run.phase == "ROLLBACK_PROMOTING_SOURCE" else None
+    if node is None:
+        return
+    try:
+        evidence = json.loads(run.report_json or "{}").get("release_evidence")
+    except (TypeError, ValueError):
+        evidence = None
+    ensure_authority(run.cluster, node, evidence="external_fence" if evidence == "external_fence" else "verified_release",
+                     run_id=f"{run.public_id}:{run.phase}")
 
 
 def _safe_failure(db: Session, run: HAFailoverRun, message: str) -> None:
@@ -390,6 +422,14 @@ def _record_transition_warning(run: HAFailoverRun, message: str) -> None:
         warnings.append(redacted)
     report["warnings"] = warnings[-10:]
     run.report_json = json.dumps(report, sort_keys=True)
+
+
+def _last_transition_warning(run: HAFailoverRun) -> str | None:
+    try:
+        warnings = list(json.loads(run.report_json or "{}").get("warnings") or [])
+    except (TypeError, ValueError):
+        warnings = []
+    return str(warnings[-1])[:300] if warnings else None
 
 
 def _dhcp_active(node: HANode) -> bool:
@@ -584,6 +624,14 @@ def record_failover_action_result(db: Session, node: HANode, *, action_type: str
     return run
 
 
+def _vip_already_on_target(run: HAFailoverRun) -> bool:
+    """An automatic DHCP handover follows an unplanned VIP move; it never moves the VIP itself."""
+    try:
+        return json.loads(run.report_json or "{}").get("vip_already_on_target") is True
+    except (TypeError, ValueError):
+        return False
+
+
 def _complete(db: Session, run: HAFailoverRun, *, rolled_back: bool) -> None:
     active = run.source_node if rolled_back else run.target_node
     standby = run.target_node if rolled_back else run.source_node
@@ -598,6 +646,16 @@ def _complete(db: Session, run: HAFailoverRun, *, rolled_back: bool) -> None:
     run.phase = "ROLLED_BACK" if rolled_back else "COMPLETE"
     run.completed_at = datetime.utcnow()
     run.error_redacted = None if not rolled_back else run.error_redacted
+    current_authority = authority(run.cluster)
+    if run.dhcp_managed and (current_authority is None or current_authority["node_id"] != active.public_id):
+        # Completion is reached only from a verified topology (or the original owner retaining it).
+        ensure_authority(run.cluster, active, evidence="verified_release", run_id=f"{run.public_id}:COMPLETE")
+    if _vip_already_on_target(run):
+        run.cluster.cluster_generation += 1
+        _event(db, run, "automatic_dhcp_handover_completed", "warning",
+               f"DHCP was handed over to {active.display_name}, which holds the Virtual IP. Verified from fresh signed reports; "
+               f"{standby.display_name} released DHCP first. Automatic failback remains disabled.")
+        return
     # The destination temporarily receives a preempt-capable configuration so
     # it can take the VIP from a nopreempt MASTER. Once ownership and services
     # are verified, immediately restore nopreempt on both nodes to retain the
@@ -693,7 +751,13 @@ def _advance_failover(db: Session, cluster: HACluster) -> HAFailoverRun | None:
     if run.phase == "WAITING_FOR_LEASES" and state and state.status == "CURRENT" and state.applied_generation >= run.lease_generation:
         run.phase = "DEMOTING_SOURCE"
     elif run.phase == "VERIFYING_SOURCE_DHCP_RELEASE":
-        if _dhcp_released(run.source_node):
+        if _dhcp_released(run.source_node) and _vip_already_on_target(run):
+            if run.target_node.vip_owned and not run.source_node.vip_owned:
+                run.phase = "PROMOTING_TARGET"
+                _event(db, run, "dhcp_release_verified", "info", f"{run.source_node.display_name} released DHCP (verified from its signed report). Promoting {run.target_node.display_name}, which already holds the Virtual IP.")
+            else:
+                _safe_failure(db, run, "The Virtual IP is no longer held only by the handover target; Kaya stopped before promoting DHCP.")
+        elif _dhcp_released(run.source_node):
             run.phase = "MOVING_VIP"
             _move_vip(db, run, run.target_node)
             _event(db, run, "dhcp_release_verified", "info", f"{run.source_node.display_name} released DHCP after bounded final-state verification. The handover is continuing.")
@@ -744,13 +808,17 @@ def _advance_failover(db: Session, cluster: HACluster) -> HAFailoverRun | None:
             if not _queue_safe_dhcp_repair(db, run, active=run.target_node, standby=run.source_node, rolled_back=False):
                 dhcp_owners = [node.display_name for node in cluster.nodes if _dhcp_active(node)]
                 detail = _dhcp_activation_failure_detail(run.target_node)
-                _safe_failure(db, run, f"DHCP failed to start on {run.target_node.display_name}: {detail}. Final topology verification did not converge within 30 seconds; current DHCP owners: {', '.join(dhcp_owners) if dhcp_owners else 'none confirmed'}.")
+                reported = _last_transition_warning(run)
+                _safe_failure(db, run, f"DHCP failed to start on {run.target_node.display_name}: {detail}. "
+                                       + (f"{run.target_node.display_name} reported: {reported} " if reported else "")
+                                       + f"Final topology verification did not converge within 30 seconds; current DHCP owners: {', '.join(dhcp_owners) if dhcp_owners else 'none confirmed'}.")
     elif run.phase == "ROLLBACK_VERIFYING_SOURCE":
         if _requested_topology_is_verified(run, rolled_back=True):
             _complete(db, run, rolled_back=True)
         elif datetime.utcnow() - _verification_started_at(run) > timedelta(seconds=30):
             if not _queue_safe_dhcp_repair(db, run, active=run.source_node, standby=run.target_node, rolled_back=True):
                 _safe_failure(db, run, f"{run.source_node.display_name} did not report a fully restored DNS and DHCP topology within 30 seconds during rollback. Manual recovery is required; Kaya will not enable another DHCP owner.")
+    sync_promotion_authority(run)
     db.commit()
     if initial_status in ACTIVE_RUN_STATUSES and run.status == "SUCCEEDED":
         _publish_transition_notification(db, run, "completed")
@@ -784,6 +852,7 @@ def request_failover_rollback(db: Session, run: HAFailoverRun, *, acknowledged: 
         run.phase = "ROLLBACK_DEMOTING_TARGET"
         run.error_redacted = run.error_redacted or ("The promoted node reported unhealthy DNS after handover." if recover_unhealthy_active else "Operator requested rollback.")
         _event(db, run, "controlled_failover_rollback_started", "warning", f"Rollback to {run.source_node.display_name} started.")
+    sync_promotion_authority(run)
     db.commit()
     db.refresh(run)
     return run

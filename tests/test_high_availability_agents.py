@@ -473,7 +473,7 @@ def test_desired_state_supplies_offline_failover_safety_context():
         primary.management_host = "192.0.2.20"
         standby.management_host = "192.0.2.21"
         standby.network_interface = "eth0"
-        primary.agent_version = standby.agent_version = "0.2.7"
+        primary.agent_version = standby.agent_version = "0.2.16"  # revised DHCP handover protocol
         db.commit()
         state = desired_state(standby)
         assert state["automatic_failover"] is True
@@ -497,8 +497,8 @@ def test_desired_state_keeps_automatic_failover_off_during_rolling_agent_update(
     with database() as db:
         cluster, primary, standby = cluster_with_nodes(db)
         cluster.automatic_failover_enabled = True
-        primary.agent_version = "0.2.7"
-        standby.agent_version = "0.2.6"
+        primary.agent_version = "0.2.16"
+        standby.agent_version = "0.2.15"
         db.commit()
 
         assert desired_state(primary)["automatic_failover"] is False
@@ -509,8 +509,8 @@ def test_non_safety_agent_update_does_not_disable_automatic_failover():
     with database() as db:
         cluster, primary, standby = cluster_with_nodes(db)
         cluster.automatic_failover_enabled = True
-        primary.agent_version = "0.2.7"
-        standby.agent_version = "0.2.8"
+        primary.agent_version = "0.2.16"
+        standby.agent_version = "0.2.17"
         db.commit()
 
         assert desired_state(primary)["automatic_failover"] is True
@@ -767,6 +767,7 @@ def test_identical_dhcp_repair_desired_state_executes_once_until_result_is_deliv
             "lease_generation": 7,
             "restore_original": False,
             "configuration_only": True,
+            "authority_epoch": 3,
         },
     }
 

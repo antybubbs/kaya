@@ -3,7 +3,7 @@ from pathlib import Path
 
 
 AGENT_ROOT = Path(__file__).resolve().parents[2] / "ha_agent"
-CURRENT_AGENT_VERSION = "0.2.15"
+CURRENT_AGENT_VERSION = "0.2.16"
 PUBLIC_AGENT_FILES = frozenset({
     "install.sh",
     "update.sh",
@@ -19,6 +19,7 @@ PUBLIC_AGENT_FILES = frozenset({
     "check-pihole-dns",
     "kaya-ha-agent.service",
     "kaya-ha-agent.sudoers",
+    "kaya-ha-dhcp-guard.conf",
 })
 
 

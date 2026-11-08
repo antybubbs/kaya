@@ -1394,6 +1394,8 @@ class HACluster(Base):
     # Outstanding restoration of the stable Keepalived baseline (nopreempt everywhere) after an
     # operation granted a node a preempt-capable configuration; NULL when the baseline holds.
     keepalived_restoration_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Which node holds DHCP authority and at which epoch (proposal); NULL until established.
+    dhcp_authority_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -1468,6 +1470,10 @@ class HANode(Base):
     last_peer_dns_attempt_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_peer_dns_success_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     lease_generation: Mapped[int] = mapped_column(Integer, default=0)
+    # Newest DHCP authority epoch this node reports having seen (proposal); NULL for older agents.
+    dhcp_authority_epoch: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # "dns_only" while Pi-hole FTL runs with DHCP forced off by Kaya's boot guard (proposal); NULL if not reported.
+    dhcp_guard_mode: Mapped[str | None] = mapped_column(String(20), nullable=True)
     config_generation: Mapped[int] = mapped_column(Integer, default=0)
     recovery_state: Mapped[str] = mapped_column(String(30), default="STANDBY", index=True)
     recovery_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

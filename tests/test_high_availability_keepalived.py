@@ -295,6 +295,7 @@ def test_deployment_ui_and_agent_protocol_keep_dhcp_outside_keepalived_setup():
     assert "--config-test" in helper
     assert "rollback" not in helper.lower() or "reload" in helper
     assert "automatic_failover" in transition
-    assert "automatic-promote" in transition
-    assert "split_brain_prevented" in transition
+    # Revised DHCP handover protocol: the hook only ever releases DHCP; Kaya promotes after verified release.
+    assert "automatic-promote" not in transition and "automatic-demote" in transition
+    assert "arping" not in transition  # no local promotion decision: nothing to prove by ARP silence
     assert "shell=True" not in transition

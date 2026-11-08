@@ -35,7 +35,13 @@ class DHCPObservation:
 
     @property
     def released(self) -> bool:
+        """Configured off and not listening: the node cannot resume DHCP by itself."""
         return self.state == "RELEASED"
+
+    @property
+    def stopped(self) -> bool:
+        """Not serving right now (it may still have DHCP configured on)."""
+        return self.state in {"RELEASED", "INACTIVE"} and self.listening is False
 
 
 @dataclass(frozen=True)
@@ -144,7 +150,10 @@ def dhcp_observation(
     evidence = (node.dhcp_configured, node.ftl_active, node.dhcp_listener_active)
     if node.dhcp_listener_active is True and node.ftl_active is True and runtime == "RUNNING":
         return DHCPObservation("ACTIVE", "FRESH", observed_at, *evidence)
-    if node.dhcp_listener_active is False and runtime == "STOPPED":
+    if node.dhcp_listener_active is False and runtime == "STOPPED" and node.dhcp_configured is False:
+        # Released means DHCP is configured off as well as not listening.  A node that is not
+        # listening but still has DHCP configured on (for example while Pi-hole FTL restarts) may
+        # resume serving by itself, so it is INACTIVE and is never treated as having handed over.
         return DHCPObservation("RELEASED", "FRESH", observed_at, *evidence)
     if None in {node.dhcp_configured, node.dhcp_listener_active, node.ftl_active} or runtime == "UNKNOWN":
         return DHCPObservation("UNKNOWN", status, observed_at, *evidence)
@@ -213,7 +222,7 @@ def reconcile_topology(
             ))
         for standby in (node for node in fresh_nodes if node.id != owner.id):
             standby_observation = observations[standby.id]
-            if standby_observation.configured is True and standby_observation.released:
+            if standby_observation.configured is True and standby_observation.listening is False and standby_observation.state == "INACTIVE":
                 issues.append(TopologyIssue(
                     "STANDBY_DHCP_CONFIGURATION_ENABLED",
                     "Standby DHCP configuration drift detected",

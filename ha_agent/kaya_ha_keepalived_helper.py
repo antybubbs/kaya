@@ -38,6 +38,7 @@ SAFE_LINES = (
     re.compile(
         r"notify_(?:master|backup|fault) \"/usr/lib/kaya-ha-agent/kaya_ha_transition\.py (?:master|backup|fault) [1-9][0-9]*\""
     ),
+    re.compile(r"notify_stop \"/usr/lib/kaya-ha-agent/kaya_ha_transition\.py stop [1-9][0-9]*\""),
     re.compile(r"\}"),
 )
 
@@ -107,6 +108,8 @@ def validate_managed_document(content: bytes) -> bool:
         role: sum(line.startswith(f"notify_{role} ") for line in lines)
         for role in ("master", "backup", "fault")
     } != {"master": 1, "backup": 1, "fault": 1}:
+        return False
+    if sum(line.startswith("notify_stop ") for line in lines) > 1:
         return False
     vip_lines = [
         line

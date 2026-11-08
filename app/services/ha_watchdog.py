@@ -34,8 +34,10 @@ from app.models.models import HACluster, HAMaintenanceRun, HANode
 from app.services import ha_evaluation_queue
 from app.services.ha_agents import _adopt_verified_automatic_owner, prune_agent_request_history, reconcile_vip_ownership
 from app.services.ha_alignment import advance_alignment
+from app.services.ha_dhcp_authority import establish_authority
 from app.services.ha_keepalived import complete_pending_deployment
 from app.services.ha_keepalived_baseline import advance_keepalived_baseline
+from app.services.ha_dhcp_handover import start_automatic_dhcp_handover
 from app.services.ha_coordination import cluster_coordination, refresh_cluster
 from app.services.ha_failover import advance_failover
 from app.services.ha_maintenance import (
@@ -82,6 +84,8 @@ def evaluate_cluster(
             refresh_cluster(db, cluster.id)
         if complete_pending_deployment(cluster):  # recovers a deployment left pending (race or restart)
             db.commit()
+        if establish_authority(cluster):  # upgraded clusters: once, from a verified aligned topology only
+            db.commit()
         for node_id, event in adoptions or ():
             node = db.get(HANode, node_id)
             if node is not None and node.cluster_id == cluster.id:
@@ -102,7 +106,7 @@ def evaluate_cluster(
             advance_dhcp_self_heal(db, maintenance)
         elif maintenance and maintenance.operation == "ALIGN_OWNERSHIP":
             advance_alignment(db, maintenance)
-        else:
+        elif not start_automatic_dhcp_handover(db, cluster):  # verified release only (proposal)
             start_dhcp_self_heal(db, cluster)
         advance_keepalived_baseline(db, cluster)  # no-op unless a restoration is outstanding
         return True
@@ -202,6 +206,8 @@ def _reconcile_cluster(db, cluster: HACluster) -> None:
 
     if complete_pending_deployment(cluster):
         db.commit()
+    if establish_authority(cluster):
+        db.commit()
     assigned = assigned_active_node(cluster)
     if assigned is not None and cluster.current_active_node_id != assigned.id:
         cluster.current_active_node_id = assigned.id  # follows the authorised roles only (P4/D1)
@@ -222,7 +228,8 @@ def _reconcile_cluster(db, cluster: HACluster) -> None:
         elif maintenance.operation == "ALIGN_OWNERSHIP":
             advance_alignment(db, maintenance)
         return
-    start_dhcp_self_heal(db, cluster)
+    if not start_automatic_dhcp_handover(db, cluster):  # verified release only (proposal)
+        start_dhcp_self_heal(db, cluster)
     advance_keepalived_baseline(db, cluster)
 
 

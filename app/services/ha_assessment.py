@@ -133,6 +133,12 @@ class ClusterAssessment:
         }
 
 
+def _supports_authority(node) -> bool:
+    from app.services.ha_dhcp_authority import supports_authority
+
+    return supports_authority(node)
+
+
 def _when(value: datetime | None) -> str:
     return value.strftime("%Y-%m-%d %H:%M:%S UTC") if value else "never"
 
@@ -211,6 +217,17 @@ class _Builder:
             return RepairAction("VALIDATE_THEN_REDEPLOY", "Re-run the safety checks, then redeploy Keepalived", _page(self.cluster, "validation"),
                                 "Read-only checks first; the redeployment is a Keepalived reload on both nodes")
         return RepairAction("KEEPALIVED_DEPLOY", "Review and redeploy Keepalived", _page(self.cluster, "deployment"), "Keepalived reload on both nodes")
+
+    def rollback_ready(self, run) -> tuple[bool, str | None]:
+        """Rollback returns services to the original node through Keepalived, so that node must be able to take them."""
+        source = run.source_node
+        if source is None:
+            return False, None
+        ready = (source.id in self.topology.fresh_node_ids and source.keepalived_runtime_state == "RUNNING" and source.dns_healthy is True)
+        if ready:
+            return True, None
+        return False, (f"Rollback returns services to {source.display_name}, so it needs {source.display_name} reporting, with Keepalived "
+                       f"running and DNS healthy. Bring {source.display_name} back first; Rollback is then offered here.")
 
     def failed_failover_holding(self):
         """A failed-safe controlled failover keeps the maintenance hold; its recovery is the Failover page's rollback."""
@@ -313,6 +330,123 @@ class _Builder:
                              codes["STALE_RECOVERY_STATE"].message, "Controlled failback may be offered later than necessary. Services are unaffected.",
                              SELF_HEALING, self.ownership_observations(), (self.fresh_reports(), self.no_operation_running()),
                              repair=RepairAction("RECONCILE", "Reconcile stored state", _page(cluster, "maintenance") + "#reconcile", "None: records only, no service change")))
+
+    # --- DHCP handover after an unplanned Virtual IP move (proposal) ----------------
+
+    def dhcp_handover(self) -> None:
+        """A Virtual IP owner that does not serve DHCP: say why, what still works, and the next step."""
+        from app.services.ha_dhcp_handover import COOLDOWN_SECONDS, TRANSITION_KIND, handover_assessment
+
+        state = handover_assessment(self.cluster, now=self.now)
+        if state.target is None or state.state not in {"BLOCKED_SOURCE_SILENT", "BLOCKED", "COOLDOWN"}:
+            return
+        target, source = state.target.display_name, state.source.display_name
+        serving = [self.by_id[node_id].display_name for node_id in self.topology.dhcp_owner_ids if node_id in self.by_id]
+        impact = (f"DHCP is still served by {', '.join(serving)}, without the Virtual IP; clients are unaffected. DNS is unaffected."
+                  if serving else
+                  "New and renewing clients cannot get addresses until DHCP is restored. Existing leases keep working; DNS is unaffected.")
+        detail = state.detail or ""
+        attempts = tuple(
+            f"{_when(run.created_at)}: DHCP handover to {run.target_node.display_name if run.target_node else 'the Virtual IP owner'} "
+            f"{run.status.lower().replace('_', ' ')}" + (f" ({(run.error_redacted or '')[:160]})" if run.error_redacted else "")
+            for run in sorted(self.cluster.failover_runs, key=lambda item: item.created_at or datetime.min, reverse=True)[:3]
+            if json.loads(run.report_json or "{}").get("transition_kind") == TRANSITION_KIND
+        )
+        if state.state == "BLOCKED_SOURCE_SILENT":
+            disposition, prerequisite = BLOCKED, f"Fresh signed report from {source} proving DHCP is stopped"
+            next_step = (
+                f"Kaya never treats a silent node as stopped, because it may still be serving clients. Bring {source} back with its "
+                f"agent running: its boot guard keeps DHCP off after a restart, and Kaya then verifies the release and hands DHCP over "
+                f"automatically. If {source} cannot be brought back, only an independent fencing provider (power controller, switch "
+                f"port or hypervisor) confirming it is powered off or isolated allows promotion on {target}; none is configured. "
+                "A typed confirmation is recorded only and does not start DHCP."
+            )
+        elif state.state == "COOLDOWN":
+            disposition, prerequisite = SELF_HEALING, f"Anti-flap window of {COOLDOWN_SECONDS // 60} minutes after the last handover"
+            next_step = (f"DHCP was handed over away from {target} recently. Kaya waits until the anti-flap window has passed, then "
+                         "verifies the release again and hands DHCP over automatically. No action is needed.")
+        elif "revised protocol" in detail:
+            older = ", ".join(node.display_name for node in self.nodes if not _supports_authority(node)) or "one node"
+            disposition, prerequisite = BLOCKED, "Both agents run the revised DHCP protocol"
+            next_step = (f"Update the agent on {older}. Automatic DHCP handover needs both nodes on the same protocol; until then "
+                         "DHCP only moves through Controlled failover.")
+        elif "runs Pi-hole DNS-only" in detail:
+            disposition, prerequisite = BLOCKED, f"{target} can write its Pi-hole DHCP setting"
+            next_step = (f"On {target}, make /etc/pihole/pihole.toml writable and remove any FTLCONF_dhcp_active setting from the "
+                         f"pihole-FTL service environment, then restart pihole-FTL on {target}. Kaya then hands DHCP over automatically.")
+        elif detail.startswith("Waiting for leases"):
+            disposition, prerequisite = BLOCKED, f"A verified copy of {source}'s leases staged on {target}"
+            next_step = (f"Kaya will not start DHCP on {target} without {source}'s leases, so that existing clients keep their "
+                         f"addresses. Kaya reads them from {source}'s Pi-hole API only while {source} holds the Virtual IP and serves "
+                         f"DHCP. To restore DHCP now, restart Keepalived on {target}: the Virtual IP returns to {source} and Kaya "
+                         f"restarts DHCP there with its own leases.")
+        else:
+            # Waiting for a stable owner, another operation, or the old holder's FTL restart: re-checked on every report.
+            disposition, prerequisite = TRANSIENT, "Fresh reports from both nodes"
+            next_step = f"Kaya re-checks on every report and hands DHCP over automatically once this clears: {detail}"
+        self.add(Finding(
+            "DHCP_HANDOVER_BLOCKED", "DHCP handover waiting" if disposition in {TRANSIENT, SELF_HEALING} else "DHCP handover blocked",
+            "DHCP", "critical" if not serving and disposition == BLOCKED else "warning",
+            f"{target} holds the Virtual IP but does not serve DHCP. "
+            + (f"Release of DHCP by {source} is not verified: " if state.state == "BLOCKED_SOURCE_SILENT" else "") + detail,
+            impact, disposition, self.ownership_observations(),
+            (Prerequisite(prerequisite, False),),
+            no_repair_reason=next_step, automatic_attempts=attempts, node=source,
+        ))
+
+    def dhcp_guard(self) -> None:
+        """A node whose Pi-hole FTL started DNS-only because its DHCP setting could not be made safe."""
+        for node in self.nodes:
+            if node.dhcp_guard_mode != "dns_only" or node.id not in self.topology.fresh_node_ids:
+                continue
+            self.add(Finding(
+                "DHCP_DNS_ONLY_FALLBACK", "Pi-hole started DNS-only", "DHCP", "warning",
+                f"When Pi-hole FTL last started on {node.display_name}, Kaya's boot guard could not turn DHCP off in pihole.toml "
+                "(read-only file, failed write, or dhcp.active set in the pihole-FTL service environment), so FTL started with "
+                "DHCP forced off.",
+                f"DNS on {node.display_name} works. {node.display_name} cannot serve DHCP until this is repaired, so it cannot take "
+                "over DHCP.",
+                BLOCKED, self.ownership_observations(),
+                (Prerequisite(f"{node.display_name} can write its Pi-hole DHCP setting", False),),
+                no_repair_reason=(f"On {node.display_name}, make /etc/pihole/pihole.toml writable and remove any FTLCONF_dhcp_active "
+                                  f"setting from the pihole-FTL service environment, then restart pihole-FTL. No reinitialisation "
+                                  "is needed."),
+                node=node.display_name,
+            ))
+
+    def dhcp_authority(self) -> None:
+        from app.services.ha_dhcp_authority import authority, authority_behind, reported_epoch, serving_without_authority
+
+        current = authority(self.cluster)
+        if authority_behind(self.cluster):
+            self.add(Finding(
+                "DHCP_AUTHORITY_RECORD_BEHIND", "DHCP authority record is older than the cluster", "DHCP", "warning",
+                f"A node reports DHCP authority epoch {reported_epoch(self.cluster)}, newer than Kaya's record (epoch {current['epoch']}). "
+                "Kaya's database is older than the cluster, for example after a restore from a backup.",
+                "Kaya sends no DHCP authority instructions until it re-establishes authority, so nodes keep serving or not serving "
+                "DHCP exactly as they are. A DHCP handover cannot run until then.",
+                BLOCKED, self.ownership_observations(),
+                (Prerequisite("One fresh Virtual IP owner that is the only DHCP server, with the other node verified released", False),),
+                no_repair_reason=(
+                    "Kaya re-establishes DHCP authority automatically, above the newest epoch any node reports, as soon as the "
+                    "topology is verified. It never trusts its older record over what the nodes report."
+                ),
+            ))
+            return
+        for node in serving_without_authority(self.cluster, now=self.now):
+            self.add(Finding(
+                "DHCP_SERVED_WITHOUT_AUTHORITY", "DHCP served without authority", "DHCP", "critical",
+                f"{node.display_name} reports serving DHCP, but Kaya granted DHCP authority (epoch {current['epoch']}) to another node.",
+                "Two DHCP servers can hand out conflicting addresses. The node's agent releases DHCP on its next cycle.",
+                BLOCKED, self.ownership_observations(),
+                (Prerequisite(f"{node.display_name} agent reporting", True),),
+                no_repair_reason=(
+                    f"No manual repair is offered: the agent on {node.display_name} releases DHCP automatically because it does not hold "
+                    "authority (for example after a frozen host resumed). If this persists, the agent cannot run the release; stop DHCP on "
+                    f"{node.display_name} locally."
+                ),
+                node=node,
+            ))
 
     # --- nodes, agents and Keepalived ---------------------------------------------
 
@@ -448,9 +582,19 @@ class _Builder:
             failing = {item.get("code") for item in preview["checks"] if not item["passed"]}
             reconcile_first = (not allowed and not acknowledge and bool(preview.get("acknowledged_at")) and bool(failing)
                                and failing <= {"STORED_ROLES_ALIGNED", "RECONCILIATION_COMPLETE"})
-            self.add(Finding("MAINTENANCE_HOLD", "Automation is held after a failed repair", "MAINTENANCE", "warning",
-                             "A maintenance operation stopped safely earlier; automatic failover and configuration changes stay paused until an administrator reviews it.",
-                             "Kaya will not move services or apply configuration automatically. DNS and DHCP keep running.",
+            rollback_ready, rollback_note = self.rollback_ready(failover_hold) if failover_hold else (False, None)
+            if failover_hold is not None and not rollback_ready:
+                failover_hold = None
+            condition = "A maintenance operation stopped safely earlier; automatic failover and configuration changes stay paused until an administrator reviews it."
+            latest = self.failed_failover_holding()
+            if latest is not None and latest.error_redacted:
+                condition += f" The last transition stopped safely: {latest.error_redacted[:400]}"
+            dhcp_served = not self.managed or bool(self.topology.dhcp_owner_ids)
+            self.add(Finding("MAINTENANCE_HOLD", "Automation is held after a failed repair", "MAINTENANCE", "warning" if dhcp_served else "critical",
+                             condition,
+                             "Kaya will not move services or apply configuration automatically. "
+                             + ("DNS and DHCP keep running." if dhcp_served else
+                                "No node serves DHCP: new and renewing clients cannot get addresses. Existing leases keep working; DNS is unaffected."),
                              APPROVAL_REQUIRED if allowed or acknowledge or reconcile_first or failover_hold else BLOCKED,
                              (("Failed operation", preview.get("failed_run_id") or "none recorded"),
                               ("Acknowledged", _when(preview.get("acknowledged_at")))),
@@ -462,7 +606,8 @@ class _Builder:
                                                        "None: records only, no service change; the hold stays on") if reconcile_first
                                      else RepairAction("FAILOVER_ROLLBACK", "Review the failed controlled failover and its rollback", _page(cluster, "testing"),
                                                        "Rollback returns services to the original owner and releases the hold") if failover_hold else None),
-                             no_repair_reason=None if allowed or acknowledge or reconcile_first or failover_hold else "The hold can be released only when every listed check passes."))
+                             no_repair_reason=None if allowed or acknowledge or reconcile_first or failover_hold
+                             else rollback_note or "The hold can be released only when every listed check passes."))
         restoration = keepalived_restoration(cluster)
         if restoration is not None:
             phase = restoration.get("state")
@@ -553,6 +698,9 @@ def assess_cluster(
     readiness = readiness if readiness is not None else failover_readiness(cluster, now=current)
     builder = _Builder(db, cluster, current, inspection, recovery, readiness)
     builder.ownership()
+    builder.dhcp_handover()
+    builder.dhcp_guard()
+    builder.dhcp_authority()
     builder.nodes_and_agents()
     builder.standby()
     builder.operations()

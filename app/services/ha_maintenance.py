@@ -527,21 +527,29 @@ def start_dhcp_self_heal(
             max(0, int((current - stable_since).total_seconds())) if stable_since else 0,
         )
         return None
-    hard_failure_proven = bool(
-        len(topology.fresh_node_ids) == 1
-        and topology.fresh_node_ids == (owner.id,)
-        and _hard_failover_proof(db, cluster, owner, current)
-    )
+    # Revised DHCP handover protocol: a silent peer is never treated as released.  The
+    # owner's own "automatic failover completed" claim is not evidence about the peer.
+    hard_failure_proven = False
     if not topology.fresh and not hard_failure_proven:
         return None
-    if owner.dns_healthy is not True or owner.ftl_active is not True or (not standby_observation.released and not hard_failure_proven):
+    if owner.dns_healthy is not True or owner.ftl_active is not True or (not standby_observation.stopped and not hard_failure_proven):
         return None
 
     repair_node = None
     action_type = None
     if topology.fresh and standby_observation.configured is True:
         repair_node, action_type = standby, "DHCP_DEMOTE"
-    elif owner_observation.configured is False:
+    elif owner_observation.configured is False and owner_observation.active:
+        # Configuration-only repair applies to an owner that already serves DHCP.  An owner
+        # that is not serving needs a verified handover (with leases), never this repair.
+        # It never moves DHCP authority: only the holder is repaired.
+        from app.services.ha_dhcp_authority import authority as dhcp_authority, grant_authority
+
+        current_authority = dhcp_authority(cluster)
+        if current_authority is not None and current_authority["node_id"] != owner.public_id:
+            return None
+        if current_authority is None:
+            grant_authority(cluster, owner, evidence="established_verified_topology")  # standby verified released above
         repair_node, action_type = owner, "DHCP_PROMOTE"
     if repair_node is None:
         return None
@@ -705,7 +713,7 @@ def _advance_dhcp_self_heal(db: Session, run: HAMaintenanceRun) -> HAMaintenance
     repair_observation = dhcp_observation(repair_node, datetime.utcnow(), since=run.phase_started_at)
     standby = next(node for node in run.cluster.nodes if node.id != owner.id)
     standby_observation = dhcp_observation(standby, datetime.utcnow(), since=run.phase_started_at)
-    hard_failure_proven = bool(result.get("hard_failure_proven") and _hard_failover_proof(db, run.cluster, owner, datetime.utcnow()))
+    hard_failure_proven = False  # revised protocol: silence never counts as release
     reports_sufficient = topology.fresh or (
         hard_failure_proven
         and topology.fresh_node_ids == (owner.id,)
@@ -1198,6 +1206,9 @@ def desired_maintenance_action(cluster: HACluster, node: HANode) -> dict[str, An
             decision = authorise_dhcp_demotion(cluster, node, replacement=replacement, owner_handover=False)
             if not decision.allowed:
                 return None
+        terms = _promotion_terms(cluster, node) if action_type == "DHCP_PROMOTE" else {"authority_epoch": None}
+        if terms is None:
+            return None
         checksum = _maintenance_checksum(run, node, action_type)
         return {
             "action_id": f"maintenance:{run.public_id}:{action_type.lower()}:{node.public_id}",
@@ -1212,6 +1223,7 @@ def desired_maintenance_action(cluster: HACluster, node: HANode) -> dict[str, An
             # the VIP and serves DHCP, so live leases must remain untouched.
             "configuration_only": action_type == "DHCP_PROMOTE",
             "owner_handover_authorised": owner_handover,
+            **terms,
         }
     target = run.desired_active_node
     if target is None:
@@ -1235,6 +1247,9 @@ def desired_maintenance_action(cluster: HACluster, node: HANode) -> dict[str, An
         if not decision.allowed:
             return None
         owner_handover = decision.owner_handover
+    terms = _promotion_terms(cluster, node) if action_type == "DHCP_PROMOTE" else {"authority_epoch": None}
+    if terms is None:
+        return None
     checksum = _maintenance_checksum(run, node, action_type)
     return {
         "action_id": f"maintenance:{run.public_id}:{action_type.lower()}:{node.public_id}",
@@ -1246,7 +1261,15 @@ def desired_maintenance_action(cluster: HACluster, node: HANode) -> dict[str, An
         "lease_generation": run.cluster.lease_replication.desired_generation if run.cluster.lease_replication else 0,
         "restore_original": False,
         "owner_handover_authorised": owner_handover,
+        **terms,
     }
+
+
+def _promotion_terms(cluster: HACluster, node: HANode) -> dict | None:
+    """DHCP is only ever promoted on the node Kaya granted DHCP authority to (epoch and lease terms)."""
+    from app.services.ha_dhcp_authority import promotion_terms
+
+    return promotion_terms(cluster, node)
 
 
 def record_maintenance_action_result(
@@ -1602,6 +1625,11 @@ def _advance_reinitialisation(db: Session, run: HAMaintenanceRun) -> HAMaintenan
                     return _fail_safe(db, run, f"DHCP ownership changed while the Virtual IP moved to {target.display_name}. Reinitialisation stopped without starting or stopping DHCP anywhere.")
                 _set_phase(run, "STAGING_DHCP", f"{target.display_name} now holds the Virtual IP and serves DHCP; staging the validated lease snapshot on {standby.display_name}")
             elif pihole_manages_dhcp(cluster) and not _dhcp_active(target):
+                if not _dhcp_released(standby):
+                    return _fail_safe(db, run, f"{standby.display_name} no longer reports DHCP released, so DHCP authority was not moved to {target.display_name}. No DHCP service was started.")
+                from app.services.ha_dhcp_authority import ensure_authority
+
+                ensure_authority(cluster, target, evidence="verified_release", run_id=f"{run.public_id}:PROMOTING_ACTIVE")
                 _set_phase(run, "PROMOTING_ACTIVE", f"{target.display_name} exclusively owns the Virtual IP; starting DHCP there")
             else:
                 _set_phase(run, "VERIFYING", f"{target.display_name} exclusively owns the Virtual IP")

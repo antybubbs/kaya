@@ -20,6 +20,7 @@ from app.services.ha_coordination import coordinated
 from app.services import ha_evaluation_queue
 from app.services.ha_keepalived import desired_keepalived_action
 from app.services.ha_leases import HALeaseError, desired_lease_action, record_lease_stage_result
+from app.services.ha_dhcp_authority import authority_for_node, supports_authority
 from app.services.ha_failover import AUTOMATIC_AGENT_VERSION, HAFailoverError, desired_failover_action, record_failover_action_result
 from app.services.ha_notifications import publish_ha_notification, resolve_ha_notification
 from app.services.ha_agent_installer import CURRENT_AGENT_VERSION, version_tuple
@@ -371,6 +372,8 @@ def record_heartbeat(
         if heartbeat.peer_dns_reachable:
             node.last_peer_dns_success_at = node.last_heartbeat_at
     node.lease_generation = heartbeat.lease_generation
+    node.dhcp_authority_epoch = heartbeat.dhcp_authority_epoch
+    node.dhcp_guard_mode = heartbeat.dhcp_guard_mode
     node.config_generation = heartbeat.config_generation
     node.keepalived_runtime_state = heartbeat.keepalived_runtime_state
     node.keepalived_reported_at = datetime.utcnow()
@@ -908,6 +911,12 @@ def desired_state(node: HANode) -> dict:
         "resolver_repair": resolver,
         # Agents 0.2.15+ report their applied gates only when this is set.
         "accepts_automation_gates": True,
+        # Revised DHCP protocol: {"epoch", "holder"} once established.  An agent serving DHCP
+        # while another node holds a newer authority releases it (independent of Keepalived hooks).
+        # Older agents never receive either key: they would not understand them.
+        **({"dhcp_authority": authority_for_node(cluster, node) if dhcp_managed else None,
+            # Agents of the revised protocol report their authority epoch and guard mode only when set.
+            "accepts_dhcp_authority_report": True} if supports_authority(node) else {}),
     }
 
 

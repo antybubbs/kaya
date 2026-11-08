@@ -106,55 +106,12 @@ def automatic_transition(db, transition, generation):
         or not get_value(db, "dhcp_managed", False)
     ):
         return
-    command = "automatic-demote"
     if transition == "master":
-        hold_down = max(
-            5, min(60, int(get_value(db, "automatic_hold_down_seconds", 10)))
-        )
-        db.commit()
-        time.sleep(hold_down)
-        dns = subprocess.run(
-            ["/usr/lib/kaya-ha-agent/check-pihole-dns", "--observe"],
-            capture_output=True,
-            timeout=10,
-            check=False,
-        )
-        put_value(db, "dns_healthy", dns.returncode == 0)
-        interface = str(get_value(db, "network_interface", "") or "")
-        vip = str(get_value(db, "desired_virtual_ip", "") or "").split("/", 1)[0]
-        duplicate = (
-            subprocess.run(
-                ["/usr/bin/arping", "-D", "-I", interface, "-c", "3", "-w", "3", vip],
-                capture_output=True,
-                timeout=5,
-                check=False,
-            )
-            if interface and vip
-            else None
-        )
-        if duplicate is None or duplicate.returncode != 0:
-            queue_event(
-                db,
-                "split_brain_prevented",
-                "critical",
-                "Automatic promotion was blocked because exclusive virtual-IP ownership could not be established.",
-                generation,
-            )
-            return
-        if (
-            get_value(db, "observed_role") != "ACTIVE"
-            or not get_value(db, "vip_owned", False)
-            or dns.returncode != 0
-        ):
-            queue_event(
-                db,
-                "automatic_failover_blocked",
-                "critical",
-                "Automatic promotion was blocked because local ownership or DNS health was not safe after the hold-down.",
-                generation,
-            )
-            return
-        command = "automatic-promote"
+        # Revised protocol: a node never promotes DHCP on its own.  Silence of the
+        # peer (VRRP, ARP or DHCP) does not prove the peer stopped serving DHCP.
+        # Kaya promotes the Virtual IP owner only after verified release.
+        return
+    command = "automatic-demote"
     result = subprocess.run(
         ["sudo", "-n", HELPER, command, str(generation)],
         capture_output=True,
@@ -167,13 +124,6 @@ def automatic_transition(db, transition, generation):
     except json.JSONDecodeError:
         output = {}
     if result.returncode or output.get("status") != "applied":
-        if transition == "master":
-            subprocess.run(
-                ["sudo", "-n", HELPER, "automatic-demote", str(generation)],
-                capture_output=True,
-                timeout=20,
-                check=False,
-            )
         queue_event(
             db,
             "automatic_failover_blocked",
@@ -194,24 +144,16 @@ def automatic_transition(db, transition, generation):
         put_value(db, "dhcp_running", output.get("dhcp_running") is True)
     queue_event(
         db,
-        (
-            "automatic_failover_completed"
-            if transition == "master"
-            else "automatic_demotion_completed"
-        ),
-        "warning" if transition == "master" else "info",
-        (
-            "Local failover completed without requiring Kaya."
-            if transition == "master"
-            else "DHCP was disabled locally before this node remained standby."
-        ),
+        "automatic_demotion_completed",
+        "info",
+        "DHCP was disabled locally because this node gave up (or never held) the Virtual IP.",
         generation,
-        {"automatic": True},
+        {"automatic": True, "transition": transition},
     )
 
 
 def main() -> int:
-    if len(sys.argv) != 3 or sys.argv[1] not in {"master", "backup", "fault"}:
+    if len(sys.argv) != 3 or sys.argv[1] not in {"master", "backup", "fault", "stop"}:
         return 2
     try:
         generation = int(sys.argv[2])
@@ -233,12 +175,15 @@ def main() -> int:
         if not generation_accepted(db, generation):
             db.close()
             return 3
-        role = {"master": "ACTIVE", "backup": "STANDBY", "fault": "FAULT"}[sys.argv[1]]
+        # "stop": Keepalived is shutting down on this node and gives up the Virtual IP.
+        # Without this, a graceful stop ran no hook and the node kept serving DHCP while
+        # the peer took the Virtual IP and promoted DHCP (lab-reproduced dual DHCP).
+        role = {"master": "ACTIVE", "backup": "STANDBY", "fault": "FAULT", "stop": "STANDBY"}[sys.argv[1]]
         values = {
             "observed_role": role,
             "vip_owned": sys.argv[1] == "master",
             "keepalived_runtime_state": (
-                "FAULT" if sys.argv[1] == "fault" else "RUNNING"
+                "FAULT" if sys.argv[1] == "fault" else "STOPPED" if sys.argv[1] == "stop" else "RUNNING"
             ),
         }
         for key, value in values.items():
@@ -246,7 +191,7 @@ def main() -> int:
         queue_event(
             db,
             f"keepalived_{sys.argv[1]}",
-            "critical" if sys.argv[1] == "fault" else "info",
+            "critical" if sys.argv[1] == "fault" else "warning" if sys.argv[1] == "stop" else "info",
             f"Keepalived reported {sys.argv[1]} state.",
             generation,
         )

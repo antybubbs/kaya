@@ -908,7 +908,8 @@ def test_self_heal_refuses_agents_without_bounded_dhcp_repair_capability():
         assert cluster.maintenance_mode is False
 
 
-def test_proven_hard_failover_can_repair_surviving_owner_with_peer_offline():
+def test_peer_silence_is_never_proof_even_with_the_owners_failover_claim():
+    """Revised protocol: the owner's own completion event says nothing about the silent peer."""
     with database() as db:
         user, cluster, first, second = pair(db)
         now = datetime.utcnow()
@@ -934,8 +935,7 @@ def test_proven_hard_failover_can_repair_surviving_owner_with_peer_offline():
 
         run = start_dhcp_self_heal(db, cluster)
 
-        assert run is not None
-        assert desired_maintenance_action(cluster, first)["action_type"] == "DHCP_PROMOTE"
+        assert run is None  # no promotion without verified release from the peer
 
 
 def test_offline_peer_without_signed_failover_proof_blocks_self_heal():

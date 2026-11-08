@@ -170,6 +170,31 @@
 </section>
 {% endif %}
 
+{% if dhcp_handover and dhcp_handover.state == 'BLOCKED_SOURCE_SILENT' and not maintenance_run %}
+<section class="panel ha-align" id="dhcp-fencing" data-ha-dhcp-fencing>
+  <div class="ha-section-heading">
+    <div><span class="ha-sync-eyebrow">DHCP handover blocked &middot; administrator decision</span><h2>DHCP release of {{ dhcp_handover.source.display_name }} is not verified</h2><p class="muted">{{ dhcp_handover.target.display_name }} holds the Virtual IP but does not serve DHCP. Kaya never treats a silent node as stopped: a hung, partitioned or misconfigured node can still serve clients, and starting a second DHCP server would give clients conflicting addresses.</p></div>
+    <span class="ha-status-chip is-error">Blocked</span>
+  </div>
+  {% if request.query_params.get('fencing') == 'recorded' %}<div class="success" role="status"><strong>Physical check recorded.</strong><span>This is a record only. DHCP stays stopped until release is verified or an external fence confirms it.</span></div>{% endif %}
+  <h3>Safe ways forward</h3>
+  <ol>
+    <li><strong>Preferred:</strong> bring {{ dhcp_handover.source.display_name }} back on the network with its agent running. Its boot guard keeps DHCP off after a restart. When its agent reports, Kaya verifies that DHCP is stopped and hands DHCP over automatically.</li>
+    <li><strong>If {{ dhcp_handover.source.display_name }} cannot be brought back:</strong> an independent fencing provider (a power controller, a managed switch port or a hypervisor) must confirm that it is off or isolated. Kaya then promotes DHCP on {{ dhcp_handover.target.display_name }} from the last staged lease snapshot; leases issued after that snapshot may be missing. <strong>No fencing provider is configured for this cluster.</strong></li>
+  </ol>
+  <p class="muted">A typed confirmation cannot fence a node: the node may be switched back on or reconnected, or the wrong machine may have been checked. You can record what you physically checked for the audit trail, but Kaya will not start DHCP because of it.</p>
+  {% if user.role == 'admin' %}
+  <form method="post" action="/high-availability/clusters/{{ cluster.public_id }}/maintenance/dhcp-fencing" class="stack" data-ha-dhcp-fencing-form>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="fenced_node_id" value="{{ dhcp_handover.source.public_id }}">
+    <label class="checkbox-row"><input type="checkbox" name="acknowledge_fencing" value="1" required> I physically checked {{ dhcp_handover.source.display_name }}. I understand that this record does not start DHCP.</label>
+    <label>Type the cluster name <strong>{{ cluster.name }}</strong> to confirm<input type="text" name="confirmation" required autocomplete="off" maxlength="200"></label>
+    <button class="button secondary" type="submit">Record physical check</button>
+  </form>
+  {% else %}<p class="muted">An administrator can record a physical check.</p>{% endif %}
+</section>
+{% endif %}
+
 {% if latch_preview and not maintenance_run %}
 <section class="panel" id="latch-review" data-ha-latch-panel>
   <div class="ha-section-heading"><div><span class="ha-sync-eyebrow">Failed-safe recovery</span><h2>Review &amp; Release Maintenance Safety Latch</h2><p class="muted">This workflow changes only Kaya's persisted safety latch. It never moves the VIP, restarts DHCP, changes Pi-hole configuration or stages leases.</p></div><span class="ha-status-chip is-{{ 'succeeded' if not cluster.maintenance_mode else 'error' }}">{{ 'Released' if not cluster.maintenance_mode else 'Latched' }}</span></div>

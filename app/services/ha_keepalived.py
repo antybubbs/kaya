@@ -12,6 +12,9 @@ from app.services.ha_topology import dhcp_observation, pihole_manages_dhcp
 
 INTERFACE_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
 KEEPALIVED_HOOK = "/usr/lib/kaya-ha-agent/kaya_ha_transition.py"
+# Agents from this version accept (and act on) notify_stop: a graceful Keepalived stop
+# releases DHCP on the node giving up the Virtual IP.  Older agents reject the directive.
+STOP_HOOK_AGENT_VERSION = (0, 2, 16)
 
 
 class HAKeepalivedError(ValueError):
@@ -125,6 +128,12 @@ def _controlled_preemption_target(cluster: HACluster) -> int | None:
     return None
 
 
+def _stop_hook_supported(cluster: HACluster) -> bool:
+    from app.services.ha_agent_installer import version_tuple
+
+    return bool(cluster.nodes) and all(version_tuple(item.agent_version) >= STOP_HOOK_AGENT_VERSION for item in cluster.nodes)
+
+
 def render_keepalived_config(cluster: HACluster, node: HANode, *, allow_preemption: bool = False) -> KeepalivedConfig:
     validate_network(cluster)
     if node not in cluster.nodes or node.vrrp_priority not in range(1, 255):
@@ -161,7 +170,8 @@ def render_keepalived_config(cluster: HACluster, node: HANode, *, allow_preempti
         f"    notify_master \"{KEEPALIVED_HOOK} master {generation}\"\n"
         f"    notify_backup \"{KEEPALIVED_HOOK} backup {generation}\"\n"
         f"    notify_fault \"{KEEPALIVED_HOOK} fault {generation}\"\n"
-        "}\n"
+        + (f"    notify_stop \"{KEEPALIVED_HOOK} stop {generation}\"\n" if _stop_hook_supported(cluster) else "")
+        + "}\n"
     )
     return KeepalivedConfig(content, hashlib.sha256(content.encode()).hexdigest())
 

@@ -346,6 +346,9 @@ def test_transient_promotion_error_is_success_when_final_two_node_topology_is_ve
         target.vip_owned = True
         target.keepalived_status = source.keepalived_status = "DEPLOYED"
         run.phase = "PROMOTING_TARGET"
+        from app.services.ha_failover import sync_promotion_authority
+
+        sync_promotion_authority(run)  # as the state machine does on entering the promotion phase
         action = desired_failover_action(cluster, target)
 
         record_failover_action_result(
@@ -619,9 +622,11 @@ def test_configuration_only_dhcp_repair_never_reads_or_replaces_live_leases(tmp_
 
     monkeypatch.setattr(helper, "STATE_ROOT", tmp_path)
     monkeypatch.setattr(helper, "LOCK_FILE", tmp_path / "dhcp.lock")
+    monkeypatch.setattr(helper, "AUTHORITY_FILE", tmp_path / "dhcp-authority.json")
     monkeypatch.setattr(helper.sys, "argv", ["helper", "promote", "7"])
     values = {
         "failover_generation": 7,
+        "failover_authority_epoch": 1,  # Kaya's DHCP authority grant
         "failover_configuration_only": True,
         "dns_healthy": True,
         "observed_role": "ACTIVE",
@@ -644,11 +649,12 @@ def test_configuration_only_dhcp_repair_never_reads_or_replaces_live_leases(tmp_
     }
     monkeypatch.setattr(helper, "_set_dhcp", lambda enabled: expected)
     monkeypatch.setattr(helper, "_wait_for_dns", lambda: None)
+    monkeypatch.setattr(helper, "_other_dhcp_server", lambda interface: False)  # discovery veto: no other server
 
     helper.main()
 
     output = __import__("json").loads(capsys.readouterr().out)
-    assert output == {"status": "applied", **expected, "backup_reference": None}
+    assert output == {"status": "applied", **expected, "backup_reference": None, "discovery_check": "no_offer"}
 
 
 def test_dhcp_status_requires_the_service_and_udp_67_listener(tmp_path, monkeypatch):
@@ -674,6 +680,8 @@ def test_dhcp_status_requires_the_service_and_udp_67_listener(tmp_path, monkeypa
         )(),
     )
 
+    monkeypatch.setattr(helper, "AUTHORITY_FILE", tmp_path / "dhcp-authority.json")  # no local grant recorded
+    monkeypatch.setattr(helper, "GUARD_ENV", tmp_path / "ftl.env")  # FTL not in DNS-only fallback
     status = helper._dhcp_status()
 
     assert status == {
@@ -683,6 +691,9 @@ def test_dhcp_status_requires_the_service_and_udp_67_listener(tmp_path, monkeypa
         "runtime_state": "RUNNING",
         "observation_status": "FRESH",
         "dhcp_running": True,
+        "authority_epoch": None,
+        "authority_state": None,
+        "guard_mode": "normal",
     }
 
 
@@ -756,6 +767,9 @@ def test_agent_reports_dhcp_configuration_listener_and_ftl_separately():
         "dhcp_observation_status": "FRESH",
         "dhcp_observed_at": values["dhcp_observed_at"],
         "dhcp_running": False,
+        "dhcp_authority_epoch": None,  # this helper output reports no authority record
+        "dhcp_authority_state": None,
+        "dhcp_guard_mode": None,
     }
 
 
@@ -1011,7 +1025,7 @@ def test_automatic_failover_requires_current_agents_and_successful_controlled_te
     with database() as db:
         user, cluster, source, target = ready_pair(db)
         assert "successful controlled failover" in " ".join(automatic_failover_blockers(cluster))
-        source.agent_version = target.agent_version = "0.2.13"
+        source.agent_version = target.agent_version = "0.2.16"
         db.add(HAFailoverRun(cluster_id=cluster.id, source_node_id=source.id, target_node_id=target.id, status="SUCCEEDED", phase="COMPLETE", dhcp_managed=True, lease_generation=7, role_generation=2, requested_by_user_id=user.id))
         db.commit()
         assert automatic_failover_blockers(cluster) == []

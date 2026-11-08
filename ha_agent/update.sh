@@ -77,6 +77,7 @@ cleanup() {
         [ ! -d "$BACKUP_DIR/lib" ] || cp -a "$BACKUP_DIR/lib/." /usr/lib/kaya-ha-agent/
         [ ! -f "$BACKUP_DIR/service" ] || install -m 0644 -o root -g root "$BACKUP_DIR/service" /etc/systemd/system/kaya-ha-agent.service
         [ ! -f "$BACKUP_DIR/sudoers" ] || install -m 0440 -o root -g root "$BACKUP_DIR/sudoers" /etc/sudoers.d/kaya-ha-agent
+        if [ -f "$BACKUP_DIR/dhcp-guard" ]; then install -m 0644 -o root -g root "$BACKUP_DIR/dhcp-guard" /etc/systemd/system/pihole-FTL.service.d/zz-kaya-ha-dhcp-guard.conf; else rm -f /etc/systemd/system/pihole-FTL.service.d/zz-kaya-ha-dhcp-guard.conf; fi
         systemctl daemon-reload
         systemctl start kaya-ha-agent.service
     fi
@@ -85,7 +86,7 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 SOURCE_BASE="$KAYA_URL/api/ha/agent/v1/files"
-for file in kaya_ha_agent.py keepalived_runtime.py failover_runtime.py resolver_runtime.py kaya_ha_keepalived_helper.py kaya_ha_failover_helper.py kaya_ha_resolver_helper.py kaya_ha_transition.py check-pihole-dns kaya-ha-agent.service kaya-ha-agent.sudoers; do
+for file in kaya_ha_agent.py keepalived_runtime.py failover_runtime.py resolver_runtime.py kaya_ha_keepalived_helper.py kaya_ha_failover_helper.py kaya_ha_resolver_helper.py kaya_ha_transition.py check-pihole-dns kaya-ha-agent.service kaya-ha-agent.sudoers kaya-ha-dhcp-guard.conf; do
     curl --fail --show-error --silent --location "$SOURCE_BASE/$file" --output "$TEMP_DIR/$file" || fail "could not download $file from Kaya"
 done
 python3 -m py_compile "$TEMP_DIR/kaya_ha_agent.py" "$TEMP_DIR/keepalived_runtime.py" "$TEMP_DIR/failover_runtime.py" "$TEMP_DIR/resolver_runtime.py" "$TEMP_DIR/kaya_ha_keepalived_helper.py" "$TEMP_DIR/kaya_ha_failover_helper.py" "$TEMP_DIR/kaya_ha_resolver_helper.py" "$TEMP_DIR/kaya_ha_transition.py" || fail "downloaded Python files did not validate"
@@ -98,11 +99,15 @@ mkdir -p "$BACKUP_DIR/lib"
 cp -a /usr/lib/kaya-ha-agent/. "$BACKUP_DIR/lib/"
 [ ! -f /etc/systemd/system/kaya-ha-agent.service ] || cp -a /etc/systemd/system/kaya-ha-agent.service "$BACKUP_DIR/service"
 [ ! -f /etc/sudoers.d/kaya-ha-agent ] || cp -a /etc/sudoers.d/kaya-ha-agent "$BACKUP_DIR/sudoers"
+[ ! -f /etc/systemd/system/pihole-FTL.service.d/zz-kaya-ha-dhcp-guard.conf ] || cp -a /etc/systemd/system/pihole-FTL.service.d/zz-kaya-ha-dhcp-guard.conf "$BACKUP_DIR/dhcp-guard"
 systemctl stop kaya-ha-agent.service
 FILES_INSTALLED=1
 install -m 0755 -o root -g root "$TEMP_DIR/kaya_ha_agent.py" "$TEMP_DIR/keepalived_runtime.py" "$TEMP_DIR/failover_runtime.py" "$TEMP_DIR/resolver_runtime.py" "$TEMP_DIR/kaya_ha_keepalived_helper.py" "$TEMP_DIR/kaya_ha_failover_helper.py" "$TEMP_DIR/kaya_ha_resolver_helper.py" "$TEMP_DIR/kaya_ha_transition.py" "$TEMP_DIR/check-pihole-dns" /usr/lib/kaya-ha-agent/
 install -m 0440 -o root -g root "$TEMP_DIR/kaya-ha-agent.sudoers" /etc/sudoers.d/kaya-ha-agent
 install -m 0644 -o root -g root "$TEMP_DIR/kaya-ha-agent.service" /etc/systemd/system/kaya-ha-agent.service
+# DHCP boot guard: takes effect at the next FTL start (boot or restart); FTL is not restarted here.
+install -d -m 0755 -o root -g root /etc/systemd/system/pihole-FTL.service.d
+install -m 0644 -o root -g root "$TEMP_DIR/kaya-ha-dhcp-guard.conf" /etc/systemd/system/pihole-FTL.service.d/zz-kaya-ha-dhcp-guard.conf
 systemctl daemon-reload
 UPDATE_STARTED=$(date +%s)
 systemctl start kaya-ha-agent.service

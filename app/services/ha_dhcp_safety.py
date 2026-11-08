@@ -31,6 +31,7 @@ def authorise_dhcp_demotion(
     replacement: HANode | None = None,
     owner_handover: bool = False,
     replacement_has_local_authority: bool = False,
+    vip_already_moved: bool = False,
     now: datetime | None = None,
     freshness_seconds: int = 120,
 ) -> DHCPDemotionDecision:
@@ -65,7 +66,14 @@ def authorise_dhcp_demotion(
         (not topology.dhcp_unknown_node_ids, "DHCP ownership is not fully observed"),
         (bool(node.last_heartbeat_at and node.last_heartbeat_at >= current - timedelta(seconds=freshness_seconds)), "the current owner heartbeat is stale"),
         (node.dns_healthy is True and node.ftl_active is True, "the current owner service health is not ready"),
-        (node.keepalived_status == "DEPLOYED" and node.keepalived_runtime_state == "RUNNING", "the current owner failover service is not ready"),
+        # A planned move needs the current owner's Keepalived to hand the Virtual IP over.  When the
+        # replacement already holds the Virtual IP exclusively (an unplanned move), the owner's
+        # Keepalived state is irrelevant to releasing DHCP there; everything else still applies.
+        (
+            (node.keepalived_status == "DEPLOYED" and node.keepalived_runtime_state == "RUNNING")
+            or (vip_already_moved and topology.vip_owner_ids == (replacement.id,)),
+            "the current owner failover service is not ready",
+        ),
         (bool(replacement.last_heartbeat_at and replacement.last_heartbeat_at >= current - timedelta(seconds=freshness_seconds)), "the replacement heartbeat is stale"),
         (replacement.dns_healthy is True and replacement.ftl_active is True, "the replacement service health is not ready"),
         (replacement.keepalived_status == "DEPLOYED" and replacement.keepalived_runtime_state == "RUNNING", "the replacement failover service is not ready"),

@@ -49,6 +49,10 @@ class HAAgentHeartbeat(HAAgentMessage):
     agent_version: str = Field(min_length=1, max_length=80)
     keepalived_runtime_state: str = Field(default="UNKNOWN", pattern="^(RUNNING|STOPPED|FAULT|UNKNOWN)$")
     automation_gates: HAAgentAutomationGates | None = None
+    # Newest DHCP authority epoch the node has seen; sent only to a Kaya that accepts it.
+    dhcp_authority_epoch: int | None = Field(default=None, ge=1, le=2**31 - 1)
+    # "dns_only": Pi-hole FTL started with DHCP forced off because its configuration could not be made safe.
+    dhcp_guard_mode: str | None = Field(default=None, pattern="^(normal|dns_only)$")
 
 
 class HAAgentActionResult(HAAgentMessage):

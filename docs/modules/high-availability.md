@@ -127,6 +127,38 @@ When one node holds the Virtual IP and a different node is the only DHCP server,
 
 Details: [Health & Repair design](high-availability-health-and-repair.md#align-service-ownership).
 
+## DHCP authority (proposal: not enabled, not released)
+
+This section describes the revised DHCP protocol under review (agent 0.2.16 with the FTL drop-in). It is not part of any release. It exists so that two nodes never both serve DHCP, while routine restarts do not cost DHCP availability.
+
+**The rules**
+
+1. **One holder.** Kaya records which node holds DHCP authority, with an epoch number. Only that node may serve DHCP. Authority is never taken from node roles, Keepalived state or a node's saved Pi-hole setting.
+2. **Moving authority needs proof.** Kaya moves authority to the Virtual IP owner only when the other node reports, fresh and signed, that DHCP is *configured off and not listening* (released), or when an independent fencing provider reports it powered off or isolated. A node that is silent, or that still has DHCP configured on (for example while FTL restarts), is never treated as released. No fencing provider is configured, so a silent node blocks a handover. A typed administrator confirmation is recorded only.
+3. **Every grant is new.** Each grant has a higher epoch. A node enables DHCP only for a grant newer than any it has seen, and writes it to disk before enabling DHCP. A retry of the same grant is accepted only if the previous attempt failed. A holder that was already serving when Kaya established authority records the grant itself (*adopt*); this never starts, stops or changes DHCP.
+4. **Every FTL start is checked.** A systemd drop-in runs Kaya's boot guard before Pi-hole FTL starts:
+   - *FTL restart (crash, update or manual restart), same boot, grant still held, Virtual IP still held:* DHCP is left as it is. No Kaya contact is needed.
+   - *Anything else (host reboot, grant released or revoked, Virtual IP lost, no record):* DHCP is turned off in `pihole.toml` and the grant is voided. Only a fresh grant from Kaya starts DHCP again.
+   - *`pihole.toml` cannot be made safe* (read-only, failed write, or `dhcp.active` set in the FTL unit's environment): FTL starts **DNS-only**, with DHCP forced off through its environment. Promotion is refused until the configuration is repaired and FTL restarted.
+   - *Even that cannot be confirmed:* FTL does not start.
+5. **Agents enforce it.** Every agent cycle releases DHCP if the node serves it while Kaya names another holder, independent of Keepalived hooks. With Kaya unreachable, agents take no authority action.
+6. **Leases follow authority.** When authority stays on the same node (for example Keepalived start-up re-promoting the existing server), its live lease file is kept. When authority moves, the new holder installs the previous holder's lease snapshot, but only after checking its generation, its checksum and that it was captured from that holder. Kaya does not start a handover until that snapshot is staged. A failed promotion restores the original lease file byte for byte.
+7. **A restored Kaya database cannot take over.** Nodes report the newest epoch they have seen. If that is newer than Kaya's record, Kaya stops sending authority instructions (the *DHCP authority record is older than the cluster* finding) and re-establishes authority from a verified topology, above every reported epoch.
+
+**What it costs**
+
+| Event | DHCP | DNS |
+|---|---|---|
+| FTL restart or crash on the holder | Continues (no Kaya needed) | Brief restart |
+| Holder reboot, Kaya available | Off on that node; Kaya hands over after verified release, or re-grants | Unaffected |
+| Holder reboot, Kaya unavailable | **No DHCP** until Kaya returns; existing leases keep working | Unaffected |
+| Holder frozen, partitioned or powered off | **No DHCP** until it returns and reports released (no fencing provider) | Through the Virtual IP owner |
+| `pihole.toml` read-only or environment-controlled | Off on that node until repaired | Available (DNS-only start) |
+
+**What needs external fencing.** Two nodes cannot tell a dead peer from a frozen or partitioned one. Without a fencing provider, Kaya keeps DHCP off rather than risk a second server, so a silent holder causes a DHCP outage until it returns. With fencing, a resumed host can still serve briefly until its Keepalived backup hook or next agent cycle releases DHCP (seconds in the lab); only fencing that keeps it off or isolated closes that window.
+
+**Rolling back.** Roll agents back before Kaya: the 0.2.16 agent needs Kaya's authority grants to promote DHCP, and fails closed without them. Agent rollback removes the drop-in without restarting FTL.
+
 ## Health & Repair
 
 Each cluster's **Health & Repair** tab (formerly *Reconcile or reinitialise*) is the one place to see and fix HA problems. It starts with one status (Healthy, Recovering automatically, Needs approval or Blocked), the single recommended repair or the exact reason nothing can be done safely, and the observed service state: Virtual IP and DHCP owners, assigned roles, standby readiness, configuration and lease synchronisation, the Keepalived configuration and maintenance holds. Approved repairs (Align service ownership, Keepalived baseline restoration, the maintenance latch review) and their progress appear there when relevant. Reinitialise is under *Advanced* and is not needed for routine recovery. Details: [Health & Repair design](high-availability-health-and-repair.md#the-workspace).
