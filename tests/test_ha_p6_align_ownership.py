@@ -358,6 +358,7 @@ def test_retained_latch_requires_acknowledgement_and_explicit_authorisation_and_
     acknowledge_failed_safe_latch(sim.db, sim.cluster, sim.admin)
     preview = alignment_preview(sim.db, sim.cluster)
     assert preview.allowed and preview.latch_retained
+    assert latch_preview(sim.db, sim.cluster)["acknowledged"] is True
     with pytest.raises(HAAlignmentError):
         start(sim, latch_authorised=False)
     assert sim.db.query(HAMaintenanceRun).filter(HAMaintenanceRun.operation == "ALIGN_OWNERSHIP").count() == 0
@@ -381,6 +382,19 @@ def test_latch_without_an_identifiable_failed_operation_fails_closed():
     latch = next(check for check in preview.checks if check.code == "LATCH")
     assert not latch.passed and "cannot identify" in latch.detail
     assert not preview.allowed
+
+
+def test_stale_latch_acknowledgement_is_not_treated_as_current():
+    sim, failed = latched_mismatch()
+    sim.cluster.maintenance_latch_acknowledged_at = datetime.utcnow()
+    sim.cluster.maintenance_latch_acknowledgement_json = json.dumps({"failed_run_id": "different-failed-run"})
+    sim.db.commit()
+
+    preview = alignment_preview(sim.db, sim.cluster)
+    latch = next(check for check in preview.checks if check.code == "LATCH")
+    assert not latch.passed and not preview.allowed
+    assert latch_preview(sim.db, sim.cluster)["acknowledged"] is False
+    assert failed.public_id != "different-failed-run"
 
 
 # --------------------------------------------------------------------------------------

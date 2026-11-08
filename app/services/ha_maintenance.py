@@ -98,6 +98,17 @@ def latched_failed_run(cluster: HACluster) -> HAMaintenanceRun | None:
     return None
 
 
+def latch_acknowledgement_matches(cluster: HACluster, failed_run: HAMaintenanceRun | None) -> bool:
+    """Return true only when the persisted acknowledgement names the held latch run."""
+    if failed_run is None or cluster.maintenance_latch_acknowledged_at is None:
+        return False
+    try:
+        acknowledgement = json.loads(cluster.maintenance_latch_acknowledgement_json or "{}")
+    except (TypeError, ValueError):
+        return False
+    return isinstance(acknowledgement, dict) and acknowledgement.get("failed_run_id") == failed_run.public_id
+
+
 def _latch_evidence(db: Session, cluster: HACluster) -> dict[str, Any]:
     """Build a bounded, persisted-state-only safety decision for latch release."""
     now = datetime.utcnow()
@@ -150,7 +161,8 @@ def _latch_evidence(db: Session, cluster: HACluster) -> dict[str, Any]:
 
 def latch_preview(db: Session, cluster: HACluster) -> dict[str, Any]:
     evidence = _latch_evidence(db, cluster)
-    return {"generated_at": evidence["generated_at"], "release_allowed": evidence["release_allowed"], "checks": evidence["checks"], "failed_run": maintenance_status(evidence["failed_run"]), "failed_run_id": evidence["failed_run"].public_id if evidence["failed_run"] else None, "active_run": maintenance_status(evidence["active_run"]), "latest_reconcile": maintenance_status(evidence["latest_reconcile"]), "automatic_sync_enabled": evidence["automatic_sync_enabled"], "automatic_sync_hold": evidence["automatic_sync_hold"], "acknowledged_at": cluster.maintenance_latch_acknowledged_at, "released_at": cluster.maintenance_latch_released_at, "authority": evidence["authority"], "unsafe_actions": evidence["unsafe_actions"]}
+    failed_run = evidence["failed_run"]
+    return {"generated_at": evidence["generated_at"], "release_allowed": evidence["release_allowed"], "checks": evidence["checks"], "failed_run": maintenance_status(failed_run), "failed_run_id": failed_run.public_id if failed_run else None, "active_run": maintenance_status(evidence["active_run"]), "latest_reconcile": maintenance_status(evidence["latest_reconcile"]), "automatic_sync_enabled": evidence["automatic_sync_enabled"], "automatic_sync_hold": evidence["automatic_sync_hold"], "acknowledged_at": cluster.maintenance_latch_acknowledged_at, "acknowledged": latch_acknowledgement_matches(cluster, failed_run), "released_at": cluster.maintenance_latch_released_at, "authority": evidence["authority"], "unsafe_actions": evidence["unsafe_actions"]}
 
 
 def acknowledge_failed_safe_latch(db: Session, cluster: HACluster, user: User) -> HACluster:
@@ -176,12 +188,7 @@ def release_maintenance_latch(db: Session, cluster: HACluster, user: User) -> HA
     if not locked.maintenance_mode or failed is None:
         write_audit(db, user, "denied", "ha_maintenance_latch", locked.public_id, detail=f"Failed-safe latch release was denied for {locked.name}; no eligible retained failed-safe run exists.", severity="warning", metadata={"reason_code": "NO_ELIGIBLE_FAILED_SAFE_RUN"}, force=True)
         raise HAMaintenanceError("No retained failed-safe maintenance latch is available for release.")
-    acknowledgement = {}
-    try:
-        acknowledgement = json.loads(locked.maintenance_latch_acknowledgement_json or "{}")
-    except (TypeError, ValueError):
-        acknowledgement = {}
-    if not locked.maintenance_latch_acknowledged_at or acknowledgement.get("failed_run_id") != failed.public_id:
+    if not latch_acknowledgement_matches(locked, failed):
         write_audit(db, user, "denied", "ha_maintenance_latch", locked.public_id, detail=f"Failed-safe latch release was denied for {locked.name}; historical failure acknowledgement is missing.", severity="warning", metadata={"reason_code": "ACKNOWLEDGEMENT_REQUIRED", "maintenance_run_id": failed.public_id}, force=True)
         raise HAMaintenanceError("Acknowledge the historical failed-safe operation before releasing the latch.")
     failed_checks = [item["code"] for item in evidence["checks"] if not item["passed"]]

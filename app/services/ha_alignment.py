@@ -70,6 +70,7 @@ from app.services.ha_maintenance import (
     inspect_cluster,
     inspection_json,
     latched_failed_run,
+    latch_acknowledgement_matches,
 )
 from app.services.ha_topology import FRESH_SECONDS, dhcp_observation, heartbeat_is_fresh, pihole_manages_dhcp, reconcile_topology
 
@@ -236,12 +237,7 @@ def other_operations(cluster: HACluster) -> list[str]:
 def latch_authorisation(cluster: HACluster) -> tuple[HAMaintenanceRun | None, bool, str]:
     """(failed run behind the latch, may a repair be authorised under it, explanation).  Fails closed."""
     failed_run = latched_failed_run(cluster) if cluster.maintenance_mode else None
-    acknowledged = False
-    if failed_run is not None and cluster.maintenance_latch_acknowledged_at:
-        try:
-            acknowledged = json.loads(cluster.maintenance_latch_acknowledgement_json or "{}").get("failed_run_id") == failed_run.public_id
-        except (TypeError, ValueError):
-            acknowledged = False
+    acknowledged = latch_acknowledgement_matches(cluster, failed_run)
     if cluster.maintenance_mode and failed_run is None:
         detail = ("The maintenance hold is on, but Kaya cannot identify the failed operation that set it, so it cannot "
                   "authorise a repair under it. Resolve the operation shown on the Health & Repair or Failover page first.")
