@@ -23,7 +23,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 
 PROTOCOL_VERSION = 1
-AGENT_VERSION = "0.2.16"
+AGENT_VERSION = "0.2.15"
 SQLITE_BUSY_ATTEMPTS = 6
 SQLITE_BUSY_TIMEOUT_MS = 5000
 

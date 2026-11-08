@@ -1,25 +1,19 @@
-"""P7 safety close-out: dual-DHCP fencing, agent update confirmation and reliability fixes.  Synthetic data only.
+"""P7 safety close-out: agent update confirmation, transactional repair notifications and recovery routes.
 
-Dual DHCP (lab-reproduced with the real transition hook, the real privileged DHCP helper, real
-sudo/sudoers and a real DHCP server): a graceful Keepalived stop on the DHCP owner ran no hook, so
-the old owner kept serving DHCP while the new Virtual IP owner promoted itself after the hold-down.
+The DHCP handover protocol work is kept separately (tests/test_ha_dhcp_handover_protocol.py) because it
+is not approved.  Synthetic data only.
 """
 
 from __future__ import annotations
 
-import json
-import subprocess
 from types import SimpleNamespace
 
 import pytest
 
 pytest.importorskip("fcntl")
 
-from ha_agent import kaya_ha_transition as transition  # noqa: E402
 from ha_agent.kaya_ha_agent import AGENT_VERSION, State  # noqa: E402
-from test_ha_gate_a_agent_defects import agent_state, read_state, run_hook  # noqa: E402
 
-AUTOMATIC = {"automatic_failover": True, "maintenance_mode": False, "dhcp_managed": True}
 
 
 # --------------------------------------------------------------------------------------
@@ -73,160 +67,6 @@ def test_updater_confirms_sustained_health_and_a_versioned_heartbeat_before_succ
     # A failed update stops the new agent before restoring, so the old code really runs again.
     restore = updater[updater.index("Update did not complete"):updater.index('cp -a "$BACKUP_DIR/lib/."')]
     assert "systemctl stop kaya-ha-agent.service" in restore
-
-
-# --------------------------------------------------------------------------------------
-# Old owner: a graceful Keepalived stop releases DHCP (notify_stop)
-# --------------------------------------------------------------------------------------
-
-
-def test_stop_hook_releases_dhcp_on_the_node_giving_up_the_virtual_ip(tmp_path, monkeypatch):
-    root = tmp_path / "agent"
-    agent_state(root, observed_role="ACTIVE", vip_owned=True, dhcp_running=True, **AUTOMATIC)
-    code, commands = run_hook(monkeypatch, root, "stop", 37)
-    assert code == 0
-    assert any("automatic-demote" in command for command in commands)
-    assert not any("automatic-promote" in command for command in commands)
-    state = read_state(root)
-    assert state["observed_role"] == "STANDBY" and state["vip_owned"] is False and state["keepalived_runtime_state"] == "STOPPED"
-
-
-@pytest.mark.parametrize("gates", [{"automatic_failover": False, "maintenance_mode": False}, {"automatic_failover": True, "maintenance_mode": True}],
-                         ids=["automatic-failover-off", "maintenance-held"])
-def test_stop_hook_never_touches_dhcp_when_gated(tmp_path, monkeypatch, gates):
-    root = tmp_path / "agent"
-    agent_state(root, observed_role="ACTIVE", vip_owned=True, dhcp_running=True, **{**AUTOMATIC, **gates})
-    code, commands = run_hook(monkeypatch, root, "stop", 37)
-    assert code == 0 and commands == []
-
-
-def test_stop_hook_with_a_stale_generation_is_fenced(tmp_path, monkeypatch):
-    root = tmp_path / "agent"
-    agent_state(root, observed_role="ACTIVE", vip_owned=True, **AUTOMATIC)
-    code, commands = run_hook(monkeypatch, root, "stop", 36)
-    assert code == 3 and commands == []
-
-
-def _rendered(agent_versions):
-    from app.services.ha_keepalived import render_keepalived_config
-    from test_high_availability_keepalived import database, ready_cluster
-
-    db = database()
-    cluster = ready_cluster(db)
-    cluster.keepalived_generation = 5
-    for node, version in zip(cluster.nodes, agent_versions):
-        node.agent_version = version
-        node.vrrp_priority = node.vrrp_priority or 100
-    return render_keepalived_config(cluster, cluster.nodes[0]).content
-
-
-def _current():
-    from app.services.ha_keepalived import STOP_HOOK_AGENT_VERSION
-
-    return ".".join(str(part) for part in STOP_HOOK_AGENT_VERSION)
-
-
-def test_notify_stop_is_rendered_only_when_both_agents_understand_it():
-    current = _current()
-    assert 'notify_stop "/usr/lib/kaya-ha-agent/kaya_ha_transition.py stop ' in _rendered([current, current])
-    for versions in (["0.2.15", current], [current, None], ["0.2.14", "0.2.14"]):
-        assert "notify_stop" not in _rendered(versions)  # older agents reject unknown directives
-
-
-def test_agent_keepalived_helper_accepts_only_a_matching_notify_stop_line():
-    from ha_agent import kaya_ha_keepalived_helper as helper
-
-    content = _rendered([_current(), _current()])
-    assert helper.validate_managed_document(content.encode())
-    assert helper.validate_managed_document(_rendered(["0.2.15", "0.2.15"]).encode())
-    tampered = content.replace("kaya_ha_transition.py stop", "kaya_ha_transition.py master")
-    assert not helper.validate_managed_document(tampered.encode())
-    doubled = content.replace("    notify_fault", '    notify_stop "/usr/lib/kaya-ha-agent/kaya_ha_transition.py stop 1"\n    notify_fault')
-    assert not helper.validate_managed_document(doubled.encode())
-
-
-# --------------------------------------------------------------------------------------
-# New owner: the privileged helper refuses automatic promotion while another server answers
-# --------------------------------------------------------------------------------------
-
-
-def _automatic_promote(tmp_path, monkeypatch, probe_result):
-    from ha_agent import kaya_ha_failover_helper as helper
-
-    monkeypatch.setattr(helper, "STATE_ROOT", tmp_path)
-    monkeypatch.setattr(helper, "LOCK_FILE", tmp_path / "dhcp.lock")
-    monkeypatch.setattr(helper.sys, "argv", ["helper", "automatic-promote", "37"])
-    monkeypatch.setattr(helper.time, "sleep", lambda seconds: None)
-    values = {**AUTOMATIC, "keepalived_generation": 37, "dns_healthy": True, "observed_role": "ACTIVE", "vip_owned": True,
-              "network_interface": "eth0", "lease_generation": 8}
-    monkeypatch.setattr(helper, "_state", lambda key, default=None: values.get(key, default))
-    monkeypatch.setattr(helper, "_owns_vip", lambda: True)
-    calls = {"set_dhcp": [], "probes": 0, "lease_writes": 0}
-    monkeypatch.setattr(helper, "_set_dhcp", lambda enabled: calls["set_dhcp"].append(enabled) or {"configured": enabled})
-    monkeypatch.setattr(helper, "_wait_for_dns", lambda: None)
-    monkeypatch.setattr(helper, "_backup", lambda generation: (tmp_path / "backup", (0, 0, 0o644)))
-    monkeypatch.setattr(helper, "_lease_lines", lambda generation: "")
-    monkeypatch.setattr(helper, "_atomic_write", lambda *args, **kwargs: calls.__setitem__("lease_writes", calls["lease_writes"] + 1))
-
-    def probe(interface):
-        calls["probes"] += 1
-        return probe_result(calls["probes"]) if callable(probe_result) else probe_result
-
-    monkeypatch.setattr(helper, "_other_dhcp_server", probe)
-    return helper, calls
-
-
-@pytest.mark.parametrize("probe_result, reason", [("192.0.2.2", "still answering"), (None, "could not confirm")],
-                         ids=["peer-still-serving", "probe-unavailable"])
-def test_automatic_promotion_refuses_while_another_dhcp_server_answers_or_cannot_be_ruled_out(tmp_path, monkeypatch, probe_result, reason):
-    helper, calls = _automatic_promote(tmp_path, monkeypatch, probe_result)
-    with pytest.raises(RuntimeError) as raised:
-        helper.main()
-    assert reason in str(raised.value)
-    assert calls["set_dhcp"] == [] and calls["lease_writes"] == 0  # DHCP never enabled, leases never touched
-
-
-def test_automatic_promotion_waits_briefly_for_the_peer_to_release(tmp_path, monkeypatch, capsys):
-    helper, calls = _automatic_promote(tmp_path, monkeypatch, lambda attempt: "192.0.2.2" if attempt < 3 else False)
-    helper.main()
-    assert calls["probes"] == 3 and calls["set_dhcp"] == [True]
-    assert json.loads(capsys.readouterr().out)["status"] == "applied"
-
-
-def test_promotion_fence_ignores_this_nodes_own_server_and_unrelated_replies():
-    from ha_agent import kaya_ha_failover_helper as helper
-
-    def offer(xid, server, kind=2):
-        body = bytearray(240)
-        body[0] = 2
-        body[4:8] = xid.to_bytes(4, "big")
-        body[236:240] = b"\x63\x82\x53\x63"
-        return bytes(body) + bytes([53, 1, kind, 54, 4]) + bytes(int(part) for part in server.split(".")) + b"\xff"
-
-    own = {"192.0.2.8"}
-    assert helper._offer_server(offer(7, "192.0.2.2"), 7, own) == "192.0.2.2"
-    assert helper._offer_server(offer(7, "192.0.2.8"), 7, own) is None  # this node
-    assert helper._offer_server(offer(8, "192.0.2.2"), 7, own) is None  # another client's transaction
-    assert helper._offer_server(offer(7, "192.0.2.2", kind=5), 7, own) is None  # not an OFFER
-    assert helper._offer_server(b"short", 7, own) is None
-
-
-def test_hook_records_a_refused_promotion_and_never_reports_dhcp_running(monkeypatch):
-    from test_high_availability_automatic import state_database
-
-    db = state_database()
-    monkeypatch.setattr(transition.time, "sleep", lambda seconds: None)
-
-    def run(command, **kwargs):
-        if "automatic-promote" in command:
-            return subprocess.CompletedProcess(command, 1, '{"status":"failed","message":"Another DHCP server (192.0.2.2) is still answering; promotion refused."}', "")
-        return subprocess.CompletedProcess(command, 0, '{"status":"applied"}', "")
-
-    monkeypatch.setattr(transition.subprocess, "run", run)
-    transition.automatic_transition(db, "master", 8)
-    events = [json.loads(row[0]) for row in db.execute("SELECT payload FROM events")]
-    assert events[-1]["event_type"] == "automatic_failover_blocked" and "still answering" in events[-1]["message"]
-    assert db.execute("SELECT value FROM state WHERE key='dhcp_running'").fetchone() is None
 
 
 # --------------------------------------------------------------------------------------

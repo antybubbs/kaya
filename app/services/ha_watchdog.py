@@ -34,6 +34,7 @@ from app.models.models import HACluster, HAMaintenanceRun, HANode
 from app.services import ha_evaluation_queue
 from app.services.ha_agents import _adopt_verified_automatic_owner, prune_agent_request_history, reconcile_vip_ownership
 from app.services.ha_alignment import advance_alignment
+from app.services.ha_keepalived import complete_pending_deployment
 from app.services.ha_keepalived_baseline import advance_keepalived_baseline
 from app.services.ha_coordination import cluster_coordination, refresh_cluster
 from app.services.ha_failover import advance_failover
@@ -79,6 +80,8 @@ def evaluate_cluster(
             return False
         if refresh:
             refresh_cluster(db, cluster.id)
+        if complete_pending_deployment(cluster):  # recovers a deployment left pending (race or restart)
+            db.commit()
         for node_id, event in adoptions or ():
             node = db.get(HANode, node_id)
             if node is not None and node.cluster_id == cluster.id:
@@ -174,6 +177,22 @@ def reconcile_cluster(db, cluster: HACluster) -> None:
         _reconcile_cluster(db, cluster)
 
 
+def periodic_clusters(db) -> list[HACluster]:
+    """Clusters the periodic pass visits."""
+    # A running alignment or baseline restoration changes Keepalived (status PENDING_AGENT), so
+    # include it explicitly: its step limits must fire even if an agent stops reporting.  A
+    # pending deployment is included so it can never stay pending once every node has applied it.
+    aligning = select(HAMaintenanceRun.cluster_id).where(
+        HAMaintenanceRun.operation == "ALIGN_OWNERSHIP", HAMaintenanceRun.status == "RUNNING"
+    )
+    return db.query(HACluster).filter(
+        HACluster.deleted_at.is_(None),
+        HACluster.provider_key == "pihole",
+        or_(HACluster.keepalived_status.in_(["DEPLOYED", "PENDING_AGENT"]), HACluster.id.in_(aligning),
+            HACluster.keepalived_restoration_json.isnot(None)),
+    ).all()
+
+
 def _reconcile_cluster(db, cluster: HACluster) -> None:
     # Confirm or clear ownership alerts on the periodic pass too, so a
     # persisting condition is notified even if no heartbeat signals a change.
@@ -181,6 +200,8 @@ def _reconcile_cluster(db, cluster: HACluster) -> None:
 
     from app.services.ha_topology import assigned_active_node
 
+    if complete_pending_deployment(cluster):
+        db.commit()
     assigned = assigned_active_node(cluster)
     if assigned is not None and cluster.current_active_node_id != assigned.id:
         cluster.current_active_node_id = assigned.id  # follows the authorised roles only (P4/D1)
@@ -259,17 +280,7 @@ def run_ha_watchdog_pass(session_factory=SessionLocal, *, skip: set[int] | froze
                     logger.exception(
                         "ha.agent_request_retention.failed; retrying on a later pass"
                     )
-            # A running alignment or baseline restoration changes Keepalived (status
-            # PENDING_AGENT), so include it explicitly: its step limits must fire even if
-            # an agent stops reporting.
-            aligning = select(HAMaintenanceRun.cluster_id).where(
-                HAMaintenanceRun.operation == "ALIGN_OWNERSHIP", HAMaintenanceRun.status == "RUNNING"
-            )
-            clusters = db.query(HACluster).filter(
-                HACluster.deleted_at.is_(None),
-                HACluster.provider_key == "pihole",
-                or_(HACluster.keepalived_status == "DEPLOYED", HACluster.id.in_(aligning), HACluster.keepalived_restoration_json.isnot(None)),
-            ).all()
+            clusters = periodic_clusters(db)
             for cluster in clusters:
                 if cluster.id in skip:  # just fully evaluated by the coordinator
                     continue

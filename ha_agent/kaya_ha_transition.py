@@ -211,7 +211,7 @@ def automatic_transition(db, transition, generation):
 
 
 def main() -> int:
-    if len(sys.argv) != 3 or sys.argv[1] not in {"master", "backup", "fault", "stop"}:
+    if len(sys.argv) != 3 or sys.argv[1] not in {"master", "backup", "fault"}:
         return 2
     try:
         generation = int(sys.argv[2])
@@ -233,15 +233,12 @@ def main() -> int:
         if not generation_accepted(db, generation):
             db.close()
             return 3
-        # "stop": Keepalived is shutting down on this node and gives up the Virtual IP.
-        # Without this, a graceful stop ran no hook and the node kept serving DHCP while
-        # the peer took the Virtual IP and promoted DHCP (lab-reproduced dual DHCP).
-        role = {"master": "ACTIVE", "backup": "STANDBY", "fault": "FAULT", "stop": "STANDBY"}[sys.argv[1]]
+        role = {"master": "ACTIVE", "backup": "STANDBY", "fault": "FAULT"}[sys.argv[1]]
         values = {
             "observed_role": role,
             "vip_owned": sys.argv[1] == "master",
             "keepalived_runtime_state": (
-                "FAULT" if sys.argv[1] == "fault" else "STOPPED" if sys.argv[1] == "stop" else "RUNNING"
+                "FAULT" if sys.argv[1] == "fault" else "RUNNING"
             ),
         }
         for key, value in values.items():
@@ -249,7 +246,7 @@ def main() -> int:
         queue_event(
             db,
             f"keepalived_{sys.argv[1]}",
-            "critical" if sys.argv[1] == "fault" else "warning" if sys.argv[1] == "stop" else "info",
+            "critical" if sys.argv[1] == "fault" else "info",
             f"Keepalived reported {sys.argv[1]} state.",
             generation,
         )

@@ -803,6 +803,17 @@ def _record_action_result(db: Session, node: HANode, result: HAAgentActionResult
             cluster.status = "READY_TO_DEPLOY"
     with performance_phase("action_result.commit"):
         db.commit()
+    if result.action_type == "KEEPALIVED_APPLY" and result.status == "APPLIED" and cluster.keepalived_status in {"PENDING_AGENT", "DEPLOYING"}:
+        # Lost-update guard: two nodes' results committed concurrently can each have seen the
+        # other still pending.  Commits are serialised, so a re-read after our commit sees every
+        # committed result; completing the deployment is idempotent.
+        from app.services.ha_keepalived import complete_pending_deployment
+
+        db.refresh(cluster)
+        for peer in cluster.nodes:
+            db.refresh(peer)
+        if complete_pending_deployment(cluster):
+            db.commit()
     with performance_phase("action_result.refresh"):
         db.refresh(row)
     # The coordinator re-evaluates ownership and advances any operation waiting

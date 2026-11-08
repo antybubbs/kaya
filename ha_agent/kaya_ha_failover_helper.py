@@ -7,7 +7,6 @@ import ipaddress
 import json
 import os
 import pwd
-import random
 import re
 import shutil
 import socket
@@ -29,13 +28,6 @@ LOCK_FILE = STATE_ROOT / "failover.lock"
 PROC_UDP = (Path("/proc/net/udp"), Path("/proc/net/udp6"))
 FTL, IP = "/usr/bin/pihole-FTL", "/usr/sbin/ip"
 MAC = re.compile(r"^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$", re.I)
-INTERFACE = re.compile(r"^[A-Za-z0-9_.:-]{1,15}$")
-# Before an automatic promotion: broadcast DHCPDISCOVERs on the Virtual IP interface and refuse
-# if any other server offers an address.  A few attempts let a peer that is releasing DHCP finish.
-PROBE_ATTEMPTS = 4
-PROBE_WINDOW_SECONDS = 2.0
-PROBE_PAUSE_SECONDS = 1.0
-SO_BINDTODEVICE = getattr(socket, "SO_BINDTODEVICE", 25)
 
 
 def _state(key, default=None):
@@ -184,95 +176,6 @@ def _owns_vip():
             for link in json.loads(result.stdout)
             for a in link.get("addr_info", [])
         )
-    )
-
-
-def _own_addresses():
-    result = _run([IP, "-j", "address", "show"])
-    if result.returncode:
-        raise RuntimeError("local addresses unavailable")
-    return {
-        a.get("local")
-        for link in json.loads(result.stdout)
-        for a in link.get("addr_info", [])
-        if a.get("family") == "inet" and a.get("local")
-    }
-
-
-def _discover(xid, mac):
-    header = (
-        bytes([1, 1, 6, 0]) + xid.to_bytes(4, "big") + (0).to_bytes(2, "big") + (0x8000).to_bytes(2, "big")
-        + bytes(16) + mac + bytes(10) + bytes(192)
-    )
-    return header + b"\x63\x82\x53\x63" + bytes([53, 1, 1, 55, 2, 1, 54, 255])
-
-
-def _offer_server(data, xid, own):
-    """The server identifier of a DHCPOFFER answering ``xid`` from another host, else None."""
-    if len(data) < 244 or data[0] != 2 or int.from_bytes(data[4:8], "big") != xid or data[236:240] != b"\x63\x82\x53\x63":
-        return None
-    options, index, kind, server = data[240:], 0, None, None
-    while index < len(options) and options[index] != 255:
-        if options[index] == 0:
-            index += 1
-            continue
-        if index + 1 >= len(options):
-            return None
-        code, length = options[index], options[index + 1]
-        value = options[index + 2:index + 2 + length]
-        if code == 53 and length == 1:
-            kind = value[0]
-        elif code == 54 and length == 4:
-            server = socket.inet_ntoa(value)
-        index += 2 + length
-    return server if kind == 2 and server and server not in own else None
-
-
-def _other_dhcp_server(interface):
-    """Another DHCP server's address if one answers, False if none does, None if it cannot be determined."""
-    if not interface or not INTERFACE.fullmatch(interface):
-        return None
-    try:
-        own = _own_addresses()
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
-            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            probe.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            probe.setsockopt(socket.SOL_SOCKET, SO_BINDTODEVICE, interface.encode())
-            probe.bind(("0.0.0.0", 68))
-            xid = random.SystemRandom().getrandbits(32)
-            probe.sendto(_discover(xid, b"\x02" + os.urandom(5)), ("255.255.255.255", 67))
-            deadline = time.monotonic() + PROBE_WINDOW_SECONDS
-            while (remaining := deadline - time.monotonic()) > 0:
-                probe.settimeout(remaining)
-                try:
-                    data, _ = probe.recvfrom(2048)
-                except socket.timeout:
-                    break
-                server = _offer_server(data, xid, own)
-                if server:
-                    return server
-        return False
-    except (OSError, ValueError, RuntimeError):
-        return None
-
-
-def _require_no_other_dhcp_server(interface):
-    """Fail closed: promote automatically only when no other DHCP server answers clients."""
-    found = None
-    for attempt in range(PROBE_ATTEMPTS):
-        found = _other_dhcp_server(interface)
-        if found is False:
-            return
-        if found is None:
-            raise RuntimeError(
-                "Kaya could not confirm that no other DHCP server is answering on the network; "
-                "automatic promotion refused."
-            )
-        if attempt + 1 < PROBE_ATTEMPTS:
-            time.sleep(PROBE_PAUSE_SECONDS)
-    raise RuntimeError(
-        f"Another DHCP server ({found}) is still answering on the network; automatic promotion refused "
-        "so that two DHCP servers never run."
     )
 
 
@@ -438,10 +341,6 @@ def main():
             raise RuntimeError(
                 "Promotion requires current local VRRP authority, VIP ownership and healthy DNS."
             )
-        if automatic:
-            _require_no_other_dhcp_server(str(_state("network_interface", "") or ""))
-            if not _automatic_allowed(generation) or not _promotion_fence(generation, automatic) or not _owns_vip():
-                raise RuntimeError("Automatic promotion became stale while checking for another DHCP server.")
         configuration_only = (
             bool(_state("failover_configuration_only", False))
             if not automatic
