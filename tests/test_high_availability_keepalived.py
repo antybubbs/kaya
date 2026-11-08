@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session
 
+from app.services.ha_watchdog import drain_evaluations
 from app.db.session import Base
 from app.models.models import HAAgentCredential, HACluster, HAFailoverRun, HANode, User
 from app.schemas.high_availability import HAAgentActionResult, HAAgentHeartbeat
@@ -144,18 +145,22 @@ def test_action_results_are_generation_and_checksum_bound_then_reconcile_one_own
         record_action_result(db, first, first_result)
         second_action = desired_keepalived_action(cluster, second)
         record_action_result(db, second, HAAgentActionResult(action_id=second_action["action_id"], action_type="KEEPALIVED_APPLY", generation=1, status="APPLIED", checksum=second_action["checksum"], backup_reference="backup-two", message="applied"))
+        drain_evaluations(db)  # the HA coordinator makes the decision (P2B)
         assert cluster.keepalived_status == "DEPLOYED"
         assert cluster.status == "DEGRADED"
 
         record_heartbeat(db, first, HAAgentHeartbeat(observed_role="ACTIVE", observed_generation=cluster.cluster_generation, vip_owned=True, dhcp_running=True, dhcp_configured=True, dhcp_listener_active=True, ftl_active=True, dhcp_runtime_state="RUNNING", dhcp_observation_status="FRESH", dns_healthy=True, peer_reachable=True, config_generation=1, agent_version="0.2.6", keepalived_runtime_state="RUNNING"))
+        drain_evaluations(db)  # the HA coordinator makes the decision (P2B)
         assert cluster.status == "DEGRADED"
         assert cluster.current_active_node_id == first.id
         record_heartbeat(db, second, HAAgentHeartbeat(observed_role="STANDBY", observed_generation=cluster.cluster_generation, vip_owned=False, dhcp_running=False, dhcp_configured=False, dhcp_listener_active=False, ftl_active=True, dhcp_runtime_state="STOPPED", dhcp_observation_status="FRESH", dns_healthy=True, peer_reachable=True, config_generation=1, agent_version="0.2.6", keepalived_runtime_state="RUNNING"))
+        drain_evaluations(db)  # the HA coordinator makes the decision (P2B)
         assert cluster.status == "HEALTHY"
         assert cluster.current_active_node_id == first.id
         record_heartbeat(db, second, HAAgentHeartbeat(observed_role="STANDBY", observed_generation=cluster.cluster_generation, vip_owned=True, dhcp_running=False, dhcp_configured=False, dhcp_listener_active=False, ftl_active=True, dhcp_runtime_state="STOPPED", dhcp_observation_status="FRESH", dns_healthy=True, peer_reachable=True, config_generation=1, agent_version="0.2.6", keepalived_runtime_state="RUNNING"))
+        drain_evaluations(db)  # the HA coordinator makes the decision (P2B)
         assert cluster.status == "ERROR"
-        assert cluster.current_active_node_id is None
+        assert cluster.current_active_node_id == first.id  # dual ownership never clears or moves the assignment
 
 
 def test_manual_vip_move_is_explicit_and_blocked_when_dhcp_is_reported():

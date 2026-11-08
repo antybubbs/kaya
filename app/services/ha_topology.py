@@ -84,6 +84,21 @@ def lease_continuity_enabled(cluster: HACluster) -> bool:
     return cluster.deployment_mode != DNS_ONLY
 
 
+def assigned_active_node(cluster: HACluster) -> HANode | None:
+    """The node assigned the ACTIVE role by a verified, authorised operation.
+
+    Assigned state is what Kaya decided; observed state (which node holds the
+    Virtual IP or serves DHCP) comes only from fresh signed agent reports via
+    ``reconcile_topology``.  Every authorised path (verified automatic
+    adoption, the signed automatic-failover completion event, controlled
+    failover completion, reconciliation with one clean owner, reinitialisation)
+    sets ``role`` and ``desired_role`` together, so a node with both ACTIVE is
+    the assignment.  None when the stored roles are ambiguous.
+    """
+    assigned = [node for node in cluster.nodes if node.role == "ACTIVE" and node.desired_role == "ACTIVE"]
+    return assigned[0] if len(assigned) == 1 else None
+
+
 def peer_for(cluster: HACluster, node: HANode) -> HANode | None:
     return next((candidate for candidate in cluster.nodes if candidate.id != node.id), None)
 

@@ -1,0 +1,6 @@
+﻿{
+    "run_id":  "20261107-205350-4e4c09f85046",
+    "status":  "FAILED_OR_BLOCKED",
+    "error":  "You cannot call a method on a null-valued expression.",
+    "artifacts":  "C:\\Users\\me\\Nextcloud2\\Dev Work\\kaya\\artifacts\\phasea-validation-20261107-205350-4e4c09f85046"
+}

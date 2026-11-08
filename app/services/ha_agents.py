@@ -11,23 +11,23 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from fastapi import HTTPException, Request
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 from app.core.performance import performance_phase
 
 from app.models.models import HAAgentActionResult as HAAgentActionResultRow, HAAgentCredential, HAAgentRequest, HACluster, HAEvent, HANode
 from app.schemas.high_availability import HAAgentActionResult, HAAgentEventItem, HAAgentHeartbeat, HAAgentRegister
+from app.services.ha_coordination import coordinated
+from app.services import ha_evaluation_queue
 from app.services.ha_keepalived import desired_keepalived_action
 from app.services.ha_leases import HALeaseError, desired_lease_action, record_lease_stage_result
-from app.services.ha_failover import AUTOMATIC_AGENT_VERSION, HAFailoverError, advance_failover, desired_failover_action, record_failover_action_result
+from app.services.ha_failover import AUTOMATIC_AGENT_VERSION, HAFailoverError, desired_failover_action, record_failover_action_result
 from app.services.ha_notifications import publish_ha_notification, resolve_ha_notification
 from app.services.ha_agent_installer import CURRENT_AGENT_VERSION, version_tuple
 from app.services.audit import write_audit
-from app.services.ha_topology import dhcp_observation, pihole_manages_dhcp, reconcile_topology
+from app.services.ha_topology import assigned_active_node, dhcp_observation, pihole_manages_dhcp, reconcile_topology
 from app.services.ha_maintenance import (
     HAMaintenanceError,
-    active_maintenance,
-    advance_reinitialisation,
     desired_maintenance_action,
-    reconcile_cluster_state,
     record_maintenance_action_result,
 )
 
@@ -164,6 +164,22 @@ async def _authenticate_agent_request(request: Request, db: Session) -> Authenti
         _reject_agent_request(426, "Unsupported agent protocol version", "protocol_mismatch", agent_id=agent_id, request_id=request_id)
     if len(request_id) > 80 or not all(character.isalnum() or character in "-_.:" for character in request_id):
         _reject_agent_request(400, "Invalid agent request ID", "invalid_request_id", agent_id=agent_id, request_id=request_id)
+    # Database reads and writes (and any pool wait) run in the thread pool so a
+    # busy database never stalls the event loop; signature checking stays here.
+    credential, node, request_time = await run_in_threadpool(_lookup_agent_request, db, agent_id, timestamp_text, request_id)
+    body = await request.body()
+    if len(body) > MAX_AGENT_BODY_BYTES:
+        _reject_agent_request(413, "Agent payload is too large", "payload_too_large", agent_id=agent_id, request_id=request_id, node=node)
+    canonical = "\n".join((request.method.upper(), request.url.path, request_id, timestamp_text, hashlib.sha256(body).hexdigest())).encode()
+    try:
+        Ed25519PublicKey.from_public_bytes(_decode_urlsafe(credential.public_key)).verify(_decode_urlsafe(signature_text), canonical)
+    except (InvalidSignature, ValueError, HAAgentError):
+        _reject_agent_request(401, "Invalid agent request signature", "signature_invalid", agent_id=agent_id, request_id=request_id, node=node)
+    node = await run_in_threadpool(_record_agent_request, db, credential, node, agent_id, request_id, request_time)
+    return AuthenticatedAgent(credential, node)
+
+
+def _lookup_agent_request(db: Session, agent_id: str, timestamp_text: str, request_id: str):
     credential = db.query(HAAgentCredential).filter(HAAgentCredential.agent_id == agent_id).first()
     if credential is None or credential.revoked_at is not None or not credential.public_key or credential.registered_at is None or credential.node.cluster.deleted_at is not None:
         _reject_agent_request(401, "Invalid or revoked agent identity", "invalid_or_revoked_identity", agent_id=agent_id, request_id=request_id)
@@ -180,21 +196,17 @@ async def _authenticate_agent_request(request: Request, db: Session) -> Authenti
     recent = db.query(HAAgentRequest.id).filter(HAAgentRequest.credential_id == credential.id, HAAgentRequest.received_at >= now - timedelta(minutes=1)).count()
     if recent >= REQUESTS_PER_MINUTE:
         _reject_agent_request(429, "Agent request rate limit exceeded", "rate_limited", agent_id=agent_id, request_id=request_id, node=node)
-    body = await request.body()
-    if len(body) > MAX_AGENT_BODY_BYTES:
-        _reject_agent_request(413, "Agent payload is too large", "payload_too_large", agent_id=agent_id, request_id=request_id, node=node)
-    canonical = "\n".join((request.method.upper(), request.url.path, request_id, timestamp_text, hashlib.sha256(body).hexdigest())).encode()
-    try:
-        Ed25519PublicKey.from_public_bytes(_decode_urlsafe(credential.public_key)).verify(_decode_urlsafe(signature_text), canonical)
-    except (InvalidSignature, ValueError, HAAgentError):
-        _reject_agent_request(401, "Invalid agent request signature", "signature_invalid", agent_id=agent_id, request_id=request_id, node=node)
+    return credential, node, request_time
+
+
+def _record_agent_request(db: Session, credential: HAAgentCredential, node: HANode, agent_id: str, request_id: str, request_time: datetime) -> HANode:
     db.add(HAAgentRequest(credential_id=credential.id, request_id=request_id, request_timestamp=request_time))
     try:
         db.commit()
     except IntegrityError:
         db.rollback()
         _reject_agent_request(409, "Replayed agent request", "request_id_conflict", agent_id=agent_id, request_id=request_id, node=node)
-    return AuthenticatedAgent(credential, credential.node)
+    return credential.node  # reloaded here, never lazily on the event loop
 
 
 def prune_agent_request_history(
@@ -362,6 +374,11 @@ def record_heartbeat(
     node.config_generation = heartbeat.config_generation
     node.keepalived_runtime_state = heartbeat.keepalived_runtime_state
     node.keepalived_reported_at = datetime.utcnow()
+    node.agent_automation_gates_json = (
+        json.dumps(heartbeat.automation_gates.model_dump(), sort_keys=True, separators=(",", ":"))
+        if heartbeat.automation_gates is not None
+        else None
+    )
     peer_changed = (
         heartbeat.peer_reachable is not None
         and had_peer_result
@@ -396,29 +413,11 @@ def record_heartbeat(
         db.commit()
     with performance_phase("heartbeat.refresh"):
         db.refresh(node)
-    if needs_reconciliation:
-        with performance_phase("heartbeat.reconcile_vip_ownership"):
-            reconcile_vip_ownership(db, node.cluster, reporting_node=node)
-        with performance_phase("heartbeat.advance_failover"):
-            advance_failover(db, node.cluster)
-        from app.services.ha_recovery import evaluate_recovery
-        with performance_phase("heartbeat.evaluate_recovery"):
-            evaluate_recovery(db, node.cluster)
-        maintenance = active_maintenance(node.cluster)
-        if maintenance and maintenance.operation == "RECONCILE":
-            with performance_phase("heartbeat.reconcile_cluster_state"):
-                reconcile_cluster_state(db, maintenance)
-        elif maintenance and maintenance.operation == "REINITIALISE":
-            with performance_phase("heartbeat.advance_reinitialisation"):
-                advance_reinitialisation(db, maintenance)
-        elif maintenance and maintenance.operation == "DHCP_SELF_HEAL":
-            from app.services.ha_maintenance import advance_dhcp_self_heal
-            with performance_phase("heartbeat.advance_dhcp_self_heal"):
-                advance_dhcp_self_heal(db, maintenance)
-        else:
-            from app.services.ha_maintenance import start_dhcp_self_heal
-            with performance_phase("heartbeat.start_dhcp_self_heal"):
-                start_dhcp_self_heal(db, node.cluster)
+    # Heartbeats only record signed observations.  Ownership, failover,
+    # recovery and maintenance decisions are made by the HA coordinator
+    # (ha_watchdog), which this signals; the caller may wait, bounded, for it.
+    if needs_reconciliation or not ha_evaluation_queue.evaluated_since_start(node.cluster_id):
+        db.info["ha_evaluation_ticket"] = ha_evaluation_queue.request_evaluation(node.cluster_id, reporting_node_id=node.id)
     if peer_changed:
         write_audit(
             db,
@@ -501,6 +500,13 @@ def _automatic_completion_for_generation(db: Session, cluster: HACluster, node: 
 
 
 def reconcile_vip_ownership(db: Session, cluster: HACluster, reporting_node: HANode | None = None) -> None:
+    """Reconcile stored ownership with signed observations; one caller per cluster at a time."""
+    with coordinated(db, cluster.id, operation="reconcile_vip_ownership") as acquired:
+        if acquired:
+            _reconcile_vip_ownership(db, cluster, reporting_node)
+
+
+def _reconcile_vip_ownership(db: Session, cluster: HACluster, reporting_node: HANode | None = None) -> None:
     if cluster.keepalived_status != "DEPLOYED" or any(node.keepalived_status != "DEPLOYED" for node in cluster.nodes):
         return
     now = datetime.utcnow()
@@ -523,7 +529,13 @@ def reconcile_vip_ownership(db: Session, cluster: HACluster, reporting_node: HAN
         and previous_owner.last_heartbeat_at < reporting_node.last_heartbeat_at
     )
     completed = _automatic_completion_for_generation(db, cluster, current) if current else None
-    cluster.current_active_node_id = current.id if current else None
+    # The assigned ACTIVE node changes only through verified, authorised
+    # operations (the adoption below, the signed completion event, controlled
+    # failover, reconciliation, reinitialisation).  Observing the Virtual IP on
+    # another node never reassigns it; the assessment reports the mismatch.
+    assigned = assigned_active_node(cluster)
+    if assigned is not None and cluster.current_active_node_id != assigned.id:
+        cluster.current_active_node_id = assigned.id
     fully_healthy = (
         len(current_nodes) == len(cluster.nodes)
         and all(node.dns_healthy is True for node in current_nodes)
@@ -574,6 +586,7 @@ def reconcile_vip_ownership(db: Session, cluster: HACluster, reporting_node: HAN
                 node.desired_role = "ACTIVE" if node.id == current.id else "STANDBY"
                 node.role = node.desired_role
                 node.vrrp_priority = 150 if node.id == current.id else 100
+            cluster.current_active_node_id = current.id
             cluster.authoritative_node_id = current.id
             cluster.role_generation += 1
             cluster.last_failover_at = completed.occurred_at if completed else datetime.utcnow()
@@ -604,13 +617,16 @@ def reconcile_vip_ownership(db: Session, cluster: HACluster, reporting_node: HAN
             transient.message = f"Kaya reconciled cached ownership after verified automatic failover. {current.display_name} is the exclusive virtual-IP owner."
     db.commit()
     incident_key = f"pihole:cluster:{cluster.public_id}:degraded"
-    if previous_status == "HEALTHY" and cluster.status in {"DEGRADED", "ERROR"}:
+    from app.services.ha_ownership_alerts import OWNERSHIP_ALERT_CODES
+
+    ownership_cause = bool({issue.code for issue in topology.issues} & OWNERSHIP_ALERT_CODES)
+    if previous_status == "HEALTHY" and cluster.status in {"DEGRADED", "ERROR"} and not ownership_cause:
         publish_ha_notification(
             db,
             cluster,
             event_type_id="pihole.cluster.degraded",
             title="Pi-hole cluster degraded",
-            message=f"{cluster.name} is degraded. Review the HA topology and node health.",
+            message=_degraded_message(cluster, topology),
             deduplication_key=incident_key,
             source_entity_type="ha_cluster",
             source_entity_id=cluster.public_id,
@@ -630,6 +646,14 @@ def reconcile_vip_ownership(db: Session, cluster: HACluster, reporting_node: HAN
             correlation_id=cluster.public_id,
             metadata={"cluster_id": cluster.public_id, "status": cluster.status},
         )
+    from app.services.ha_ownership_alerts import update_ownership_alerts
+
+    update_ownership_alerts(db, cluster, now=now, topology=topology)
+
+
+def _degraded_message(cluster: HACluster, topology) -> str:
+    """Generic degraded text; ownership causes are notified by the confirmed ownership alerts instead."""
+    return f"{cluster.name} is degraded. Review the cluster's Health assessment for the cause and the safe next step."
 
 
 def _adopt_verified_automatic_owner(db: Session, node: HANode, event: HAAgentEventItem) -> None:
@@ -781,10 +805,9 @@ def _record_action_result(db: Session, node: HANode, result: HAAgentActionResult
         db.commit()
     with performance_phase("action_result.refresh"):
         db.refresh(row)
-    with performance_phase("action_result.reconcile_vip_ownership"):
-        reconcile_vip_ownership(db, cluster)
-    with performance_phase("action_result.advance_failover"):
-        advance_failover(db, cluster)
+    # The coordinator re-evaluates ownership and advances any operation waiting
+    # for this result (formerly done inline here).
+    ha_evaluation_queue.request_evaluation(cluster.id)
     return row
 
 
@@ -807,11 +830,14 @@ def ingest_events(db: Session, node: HANode, events: list[HAAgentEventItem]) -> 
             duplicates += 1
             continue
         db.add(HAEvent(cluster_id=node.cluster_id, node_id=node.id, event_type=event.event_type, severity=event.severity, source="agent", message=event.message, details_json_redacted=_redacted_details(event.details), agent_event_id=event.event_id, occurred_at=event.occurred_at.replace(tzinfo=None)))
-        _adopt_verified_automatic_owner(db, node, event)
         if event.event_type == "automatic_failover_completed":
             completed_failovers.append(event)
         accepted += 1
     db.commit()
+    # Adoption of a verified local failover is a decision: the coordinator
+    # applies it (with the same checks) under the cluster coordination lock.
+    for event in completed_failovers:
+        ha_evaluation_queue.request_evaluation(node.cluster_id, adoption=(node.id, event))
     for event in completed_failovers:
         publish_ha_notification(
             db,
@@ -831,7 +857,9 @@ def ingest_events(db: Session, node: HANode, events: list[HAAgentEventItem]) -> 
 def desired_state(node: HANode) -> dict:
     cluster: HACluster = node.cluster
     keepalived = desired_keepalived_action(cluster, node)
-    leases = desired_lease_action(cluster, node)
+    # Align service ownership issues Keepalived reloads only: no lease staging while it runs.
+    aligning = any(run.operation == "ALIGN_OWNERSHIP" and run.status == "RUNNING" for run in cluster.maintenance_runs)
+    leases = None if aligning else desired_lease_action(cluster, node)
     failover = desired_failover_action(cluster, node)
     maintenance = desired_maintenance_action(cluster, node)
     peer = next((item for item in cluster.nodes if item.id != node.id), None)
@@ -867,6 +895,8 @@ def desired_state(node: HANode) -> dict:
         "lease_snapshot": leases,
         "failover": maintenance or failover,
         "resolver_repair": resolver,
+        # Agents 0.2.15+ report their applied gates only when this is set.
+        "accepts_automation_gates": True,
     }
 
 

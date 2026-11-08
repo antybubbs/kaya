@@ -1,0 +1,10 @@
+POSTGRES_DB=kaya_test
+POSTGRES_USER=kaya_test
+POSTGRES_PASSWORD=kaya_test_only
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/lib/postgresql/16/bin
+GOSU_VERSION=1.19
+LANG=en_US.utf8
+PG_MAJOR=16
+PG_VERSION=16.14-1.pgdg13+1
+PGDATA=/var/lib/postgresql/data
+

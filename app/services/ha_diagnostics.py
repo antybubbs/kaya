@@ -250,7 +250,10 @@ def build_diagnostic_bundle(
         _check("MAINTENANCE_COMPATIBLE", "No incompatible maintenance operation", active is None or active.operation in {"RECONCILE"}, maintenance_status(active) if active else None, "none or reconciliation", "Complete or safely pause the active maintenance workflow before another operation."),
     ]
 
+    from app.services.ha_assessment import assess_cluster
+
     return {
+        "assessment": assess_cluster(db, cluster, now=now, recovery=recovery).as_dict(),
         "generated_at": _iso(now),
         "source": "persisted Kaya state and latest signed agent reports; no live remote calls",
         "cluster": {

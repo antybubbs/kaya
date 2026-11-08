@@ -2,6 +2,7 @@
 {% block content %}
 {% include '_high_availability_cluster_header.html' %}
 {% include '_ha_transition_progress.html' %}
+{% include '_ha_assessment.html' %}
 {# Legacy safety assertion retained for regression coverage: Type <span class="mono">{{ cluster.name }}</span> to confirm #}
 {# Removing a cluster means stored nodes, connections, validation records, DNS links, and history remain preserved. #}
 {% if request.query_params.get('saved') %}<div class="success" role="status">Cluster saved. Start with the guided setup steps below.</div>{% endif %}
@@ -32,7 +33,7 @@
   <article><span>HA readiness</span><strong data-ha-cluster-field="ha_readiness">{{ 'Ready' if operational_status.state == 'READY' else 'Unknown' if operational_status.state == 'UNKNOWN' else 'Needs attention' }}</strong><small>Can the other node take over safely?</small></article>
   <article><span>HA configuration</span><strong data-ha-cluster-field="ha_configuration">{{ consistency.configuration_state|replace('_', ' ')|title }}</strong><small>Do VIP, DHCP, and stored roles agree?</small></article>
   <article title="The single DNS address used by your devices."><span>DNS Virtual IP</span><strong class="mono">{{ cluster.virtual_ip }}/{{ cluster.prefix_length }}</strong><small>The stable DNS address</small></article>
-  <article><span>Current active node</span><strong data-ha-cluster-field="active_node">{{ active_node.display_name if active_node else 'Confirming ownership' }}</strong><small>Currently owns the virtual IP</small></article>
+  <article><span>Current active node</span><strong data-ha-cluster-field="active_node">{{ active_node.display_name if active_node else 'Confirming ownership' }}</strong><small>Currently owns the virtual IP{% if assigned_active_node and active_node and assigned_active_node.id != active_node.id %} · <span data-ha-cluster-field="assigned_active_node">Assigned Active: {{ assigned_active_node.display_name }}</span>{% endif %}</small></article>
   <article><span>Preferred node</span><strong data-ha-cluster-field="preferred_node">{{ preferred_node.display_name if preferred_node else 'Not set' }}</strong><small>Manual failback target after recovery</small></article>
   <article><span>Service responsibilities</span><strong>{{ deployment_mode_label }}</strong><small>{% if pihole_manages_dhcp %}Pi-hole also provides device addresses{% else %}DHCP: {{ (cluster.external_dhcp_provider or 'external')|replace('_', ' ')|title }}{% endif %} · <a href="/high-availability/clusters/{{ cluster.public_id }}/topology">Review</a></small></article>
   <article><span>Automatic failover</span><strong data-ha-cluster-field="automatic_failover">{{ 'Enabled' if cluster.automatic_failover_enabled else 'Disabled' }}</strong><small>Recovered nodes return as standby</small></article>

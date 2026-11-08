@@ -16,6 +16,14 @@ class HAAgentRegister(HAAgentMessage):
     protocol_version: int = Field(default=1, ge=1, le=1)
 
 
+class HAAgentAutomationGates(HAAgentMessage):
+    """Local gates the agent's Keepalived transition hook enforces (agent 0.2.15+)."""
+
+    automatic_failover: bool
+    maintenance_mode: bool
+    dhcp_managed: bool
+
+
 class HAAgentHeartbeat(HAAgentMessage):
     report_sequence: int = Field(default=0, ge=0, le=9_223_372_036_854_775_807)
     reported_at: datetime | None = None
@@ -40,6 +48,7 @@ class HAAgentHeartbeat(HAAgentMessage):
     config_generation: int = Field(default=0, ge=0)
     agent_version: str = Field(min_length=1, max_length=80)
     keepalived_runtime_state: str = Field(default="UNKNOWN", pattern="^(RUNNING|STOPPED|FAULT|UNKNOWN)$")
+    automation_gates: HAAgentAutomationGates | None = None
 
 
 class HAAgentActionResult(HAAgentMessage):

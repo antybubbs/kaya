@@ -7,6 +7,7 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session
+from sqlalchemy.pool import StaticPool
 from starlette.requests import Request
 
 from app.core.security import decrypt_secret, hash_password
@@ -37,7 +38,9 @@ from app.services.site_settings import get_site_setting
 
 
 def database():
-    engine = create_engine("sqlite:///:memory:")
+    # One shared in-memory connection: Pi-hole-calling routes run their work in
+    # a worker thread, which must see the same database as the test.
+    engine = create_engine("sqlite:///:memory:", poolclass=StaticPool, connect_args={"check_same_thread": False})
 
     @event.listens_for(engine, "connect")
     def foreign_keys(connection, record):

@@ -202,6 +202,20 @@ def normalise_leases(
     return sorted(normalised, key=lambda item: (int(ipaddress.IPv4Address(item["ip"])), item["hwaddr"]))
 
 
+def _material_checksum(payload: dict[str, Any]) -> str:
+    """Checksum of the lease set alone: the same leases with only renewed expiry times match."""
+    material = {**payload, "leases": [{key: value for key, value in lease.items() if key != "expires"} for lease in payload.get("leases", [])]}
+    return hashlib.sha256(json.dumps(material, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _summary(snapshot: HALeaseSnapshot) -> dict[str, Any]:
+    try:
+        value = json.loads(snapshot.validation_summary_json or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
 def prepare_lease_inspection(cluster: HACluster) -> LeaseInspectionInputs:
     """Load everything `inspect_lease_plan` needs from `cluster`'s session.
 
@@ -298,7 +312,9 @@ def reconcile_cluster_leases(
                 raise precomputed_inspection
             plan = precomputed_inspection
         else:
-            plan = inspect_cluster_leases(cluster, client_factory=client_factory)
+            inputs = prepare_lease_inspection(cluster)
+            db.commit()  # no transaction open during the Pi-hole calls
+            plan = inspect_lease_plan(inputs, client_factory=client_factory)
         if plan.applicable:
             _revalidate_plan_authority(cluster, plan)
         state.source_node_id, state.target_node_id = plan.source_id, plan.target_id
@@ -315,6 +331,7 @@ def reconcile_cluster_leases(
         payload = {"version": 1, "cluster_id": cluster.public_id, "source_node_id": plan.source_public_id, "leases": plan.leases}
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         checksum = hashlib.sha256(encoded.encode()).hexdigest()
+        material_checksum = _material_checksum(payload)
         latest = db.query(HALeaseSnapshot).filter(HALeaseSnapshot.cluster_id == cluster.id).order_by(HALeaseSnapshot.generation.desc()).first()
         state.lease_count = len(plan.leases)
         state.difference_count = 0 if latest and latest.checksum == checksum else max(1, len(plan.leases), latest.lease_count if latest else 0)
@@ -324,9 +341,16 @@ def reconcile_cluster_leases(
             db.commit()
             return state
         generation = max(state.desired_generation, latest.generation if latest else 0) + 1
-        snapshot = HALeaseSnapshot(cluster_id=cluster.id, source_node_id=plan.source_id, target_node_id=plan.target_id, generation=generation, checksum=checksum, encrypted_payload=encrypt_secret(encoded), lease_count=len(plan.leases), status="PENDING", validation_summary_json=json.dumps({"range": f"{plan.range_start}-{plan.range_end}", "reservation_count": len(plan.reservations), "conflicts": 0}, sort_keys=True))
+        # Renewals still produce a new staged generation (the failover helper
+        # writes staged expiry times into the lease file), but only a change to
+        # the lease set itself advances the material generation that standby
+        # readiness depends on.
+        renewal_only = bool(latest and _summary(latest).get("material_checksum") == material_checksum)
+        snapshot = HALeaseSnapshot(cluster_id=cluster.id, source_node_id=plan.source_id, target_node_id=plan.target_id, generation=generation, checksum=checksum, encrypted_payload=encrypt_secret(encoded), lease_count=len(plan.leases), status="PENDING", validation_summary_json=json.dumps({"range": f"{plan.range_start}-{plan.range_end}", "reservation_count": len(plan.reservations), "conflicts": 0, "material_checksum": material_checksum, "renewal_only": renewal_only}, sort_keys=True))
         db.add(snapshot)
         state.desired_generation = generation
+        if not renewal_only or state.material_generation is None:
+            state.material_generation = generation
         state.status = "PENDING"
         state.last_event_at = now
         db.commit()

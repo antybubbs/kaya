@@ -103,8 +103,15 @@ def _reconcile_cluster_with_retry(session_factory, cluster_id: int, *, client_fa
         inspection = exc
 
     def operation(db):
-        cluster = db.query(HACluster).filter(HACluster.id == cluster_id).one()
-        reconcile_cluster_leases(db, cluster, client_factory=client_factory, precomputed_inspection=inspection)
+        from app.services.ha_coordination import cluster_coordination
+
+        # Lease generations are also written by maintenance and failover steps;
+        # persist only while holding the cluster, otherwise retry next pass.
+        with cluster_coordination(db, cluster_id, operation="lease_reconciliation") as acquired:
+            if not acquired:
+                return
+            cluster = db.query(HACluster).filter(HACluster.id == cluster_id).one()
+            reconcile_cluster_leases(db, cluster, client_factory=client_factory, precomputed_inspection=inspection)
 
     run_with_sqlite_retry(
         session_factory,

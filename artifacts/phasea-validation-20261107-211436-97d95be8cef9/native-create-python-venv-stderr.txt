@@ -1,0 +1,3 @@
+Using CPython 3.12.15 interpreter at: C:\Users\me\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\python.exe
+Creating virtual environment at: C:\Users\me\AppData\Local\Temp\kaya-phasea-20261107-211436-97d95be8cef9\venv
+Activate with: C:\Users\me\AppData\Local\Temp\kaya-phasea-20261107-211436-97d95be8cef9\venv\Scripts\activate

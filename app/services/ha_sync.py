@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime
+from dataclasses import dataclass
 from typing import Any, Callable
 
 from sqlalchemy.orm import Session
@@ -241,18 +242,39 @@ def create_sync_plan(db: Session, cluster: HACluster, user: User | None = None) 
     return run
 
 
-def _live_configuration(node: HANode, client_factory: Callable = PiHoleProvider) -> tuple[PiHoleProvider, dict[str, Any]]:
-    connection = connection_for_node(node)
-    if connection is None:
-        raise HASyncError(f"{node.display_name} has no usable provider connection.")
-    client = client_factory(connection)
+@dataclass(frozen=True)
+class PiHoleEndpoint:
+    """Session-free details needed to call one node's Pi-hole.
+
+    Built while a session is open, then used after the transaction has ended so
+    no database transaction is held open across Pi-hole HTTP calls.
+    """
+
+    id: int
+    display_name: str
+    connection: Any
+
+
+def pihole_endpoint(node: HANode) -> PiHoleEndpoint:
+    return PiHoleEndpoint(node.id, node.display_name, connection_for_node(node))
+
+
+def read_live_configuration(endpoint: PiHoleEndpoint, client_factory: Callable = PiHoleProvider) -> tuple[PiHoleProvider, dict[str, Any]]:
+    """Read a node's supported configuration; touches no database session."""
+    if endpoint.connection is None:
+        raise HASyncError(f"{endpoint.display_name} has no usable provider connection.")
+    client = client_factory(endpoint.connection)
     result = client.get_ha_configuration()
     if not result.ok or not isinstance(result.data, dict):
-        raise HASyncError(f"Could not read {node.display_name} before synchronisation: {result.message}")
+        raise HASyncError(f"Could not read {endpoint.display_name} before synchronisation: {result.message}")
     raw = result.data.get("configuration")
     if not isinstance(raw, dict):
-        raise HASyncError(f"{node.display_name} returned no supported configuration.")
+        raise HASyncError(f"{endpoint.display_name} returned no supported configuration.")
     return client, {key: _safe_configuration(value) for key, value in raw.items() if key in GROUP_LABELS}
+
+
+def _live_configuration(node: HANode, client_factory: Callable = PiHoleProvider) -> tuple[PiHoleProvider, dict[str, Any]]:
+    return read_live_configuration(pihole_endpoint(node), client_factory)
 
 
 def create_live_sync_plan(
@@ -266,8 +288,11 @@ def create_live_sync_plan(
     source, target, authority_verified = authority_and_target(cluster)
     if not authority_verified:
         raise HASyncError("The current VIP owner cannot be verified from fresh, safe node reports. Synchronisation is blocked until the HA state is unambiguous.")
+    endpoints = [pihole_endpoint(source), pihole_endpoint(target)]
+    db.commit()  # no transaction open during the Pi-hole reads
+    live = {endpoint.id: read_live_configuration(endpoint, client_factory)[1] for endpoint in endpoints}
     for node in (source, target):
-        _, configuration = _live_configuration(node, client_factory)
+        configuration = live[node.id]
         from app.services.ha_dns_advertisement import preserve_cached_dns_advertisement
 
         configuration = preserve_cached_dns_advertisement(node, configuration)
@@ -327,8 +352,10 @@ def execute_sync(
         current_source, current_target, verified = authority_and_target(current_cluster)
         if not verified or current_source.id != source.id or current_target.id != target.id:
             raise HASyncError("The verified VIP authority changed or became unsafe; no configuration was written. Create a new plan.")
+        db.commit()  # end the check's transaction before the Pi-hole call that follows
 
     assert_current_authority()
+    source_endpoint, target_endpoint = pihole_endpoint(source), pihole_endpoint(target)
 
     run.status = "RUNNING"
     run.started_at = datetime.utcnow()
@@ -338,8 +365,8 @@ def execute_sync(
     target_client = None
     collections_applied = False
     try:
-        _, source_live_raw = _live_configuration(source, client_factory)
-        target_client, target_before_raw = _live_configuration(target, client_factory)
+        _, source_live_raw = read_live_configuration(source_endpoint, client_factory)
+        target_client, target_before_raw = read_live_configuration(target_endpoint, client_factory)
         source_live = _canonical_sync_snapshot(source_live_raw)
         target_before = _canonical_sync_snapshot(target_before_raw)
         source_apply = _sync_snapshot(source_live_raw)
@@ -378,7 +405,7 @@ def execute_sync(
                 raise HASyncError(result.message)
             applied.append(key)
         assert_current_authority()
-        _, verified_raw = _live_configuration(target, client_factory)
+        _, verified_raw = read_live_configuration(target_endpoint, client_factory)
         verified = _canonical_sync_snapshot(verified_raw)
         failed = [key for key in planned_keys if verified.get(key) != source_live.get(key)]
         if failed:

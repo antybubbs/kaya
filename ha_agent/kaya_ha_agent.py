@@ -23,7 +23,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 
 PROTOCOL_VERSION = 1
-AGENT_VERSION = "0.2.14"
+AGENT_VERSION = "0.2.16"
 SQLITE_BUSY_ATTEMPTS = 6
 SQLITE_BUSY_TIMEOUT_MS = 5000
 
@@ -341,6 +341,9 @@ def reconcile_desired(state: State, desired: dict, *, helper_runner=None) -> Non
     state.set("automatic_failover", bool(desired.get("automatic_failover", False)))
     state.set("maintenance_mode", bool(desired.get("maintenance_mode", False)))
     state.set("dhcp_managed", bool(desired.get("dhcp_managed", False)))
+    # Report the applied gates only to a Kaya that accepts them; older servers
+    # reject unknown heartbeat fields.
+    state.set("server_accepts_automation_gates", desired.get("accepts_automation_gates") is True)
     state.set("peer_host", desired.get("peer_host"))
     state.set("network_interface", desired.get("network_interface"))
     state.set("automatic_hold_down_seconds", max(5, min(60, int(desired.get("automatic_hold_down_seconds") or 10))))
@@ -411,6 +414,15 @@ def reconcile_desired(state: State, desired: dict, *, helper_runner=None) -> Non
         state.set("pending_resolver_action_result", result)
 
 
+def automation_gates(state: State) -> dict:
+    """The local gates the transition hook enforces, as last applied from Kaya."""
+    return {
+        "automatic_failover": state.get("automatic_failover", False) is True,
+        "maintenance_mode": state.get("maintenance_mode", False) is True,
+        "dhcp_managed": state.get("dhcp_managed", False) is True,
+    }
+
+
 def run_once(state: State) -> None:
     state.telemetry_deferred = False
     _config = json.loads(state.config_path.read_text(encoding="utf-8"))
@@ -464,10 +476,15 @@ def run_once(state: State) -> None:
     if not state.set_telemetry("report_sequence", report_sequence):
         return
     heartbeat = {"report_sequence": report_sequence, "reported_at": datetime.now(timezone.utc).isoformat(), "observed_role": state.get("observed_role", "STANDBY"), "observed_generation": int(state.get("observed_generation", 0)), "vip_owned": bool(state.get("vip_owned", False)), "dhcp_running": bool(state.get("dhcp_running", False)), "dhcp_configured": state.get("dhcp_configured"), "dhcp_listener_active": state.get("dhcp_listener_active"), "ftl_active": state.get("ftl_active"), "dhcp_runtime_state": state.get("dhcp_runtime_state", "UNKNOWN"), "dhcp_observation_status": state.get("dhcp_observation_status", "UNAVAILABLE"), "dhcp_observed_at": state.get("dhcp_observed_at"), "dns_healthy": bool(state.get("dns_healthy", False)), "peer_reachable": state.get("peer_reachable"), "peer_icmp_probe_status": state.get("peer_icmp_probe_status"), "peer_dns_reachable": state.get("peer_dns_reachable"), "resolver_manager": state.get("resolver_manager", "UNKNOWN"), "resolver_nameservers": state.get("resolver_nameservers", []), "resolver_observation_status": state.get("resolver_observation_status", "UNAVAILABLE"), "lease_generation": int(state.get("lease_generation", 0)), "config_generation": int(state.get("config_generation", 0)), "agent_version": AGENT_VERSION, "keepalived_runtime_state": state.get("keepalived_runtime_state", "UNKNOWN")}
+    if state.get("server_accepts_automation_gates", False) is True:
+        heartbeat["automation_gates"] = automation_gates(state)
     response = signed_request(state, "POST", "/api/ha/agent/v1/heartbeat", heartbeat)
     if response.get("accepted") is False:
         reason = str(response.get("reason") or "report_rejected")[:80]
         report_transport_failure(state, "heartbeat acceptance", AgentRequestError(f"report_{reason}", "Kaya did not accept the runtime observation."))
+    else:
+        # Lets update.sh confirm that Kaya accepted a heartbeat from this exact agent version.
+        state.set("last_accepted_heartbeat", {"at": datetime.now(timezone.utc).isoformat(), "agent_version": AGENT_VERSION})
 
     # Local failover evidence is authoritative, generation-bound safety proof.
     # Deliver it before optional action results so one obsolete/rejected result
@@ -519,6 +536,9 @@ def main() -> None:
     elif args.command == "once":
         run_once(state)
     else:
+        # A pending Keepalived generation belongs to an apply this daemon was
+        # performing; after a crash or restart nothing is applying it any more.
+        state.set("pending_keepalived_generation", None)
         while True:
             try:
                 run_once(state)

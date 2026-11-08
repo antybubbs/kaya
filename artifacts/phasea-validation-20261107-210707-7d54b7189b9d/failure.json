@@ -1,0 +1,8 @@
+﻿{
+    "run_id":  "20261107-210707-7d54b7189b9d",
+    "status":  "FAILED_OR_BLOCKED",
+    "stage":  "verify-new-compose-project",
+    "exit_code":  1,
+    "error":  "You cannot call a method on a null-valued expression.",
+    "artifacts":  "C:\\Users\\me\\Nextcloud2\\Dev Work\\kaya\\artifacts\\phasea-validation-20261107-210707-7d54b7189b9d"
+}

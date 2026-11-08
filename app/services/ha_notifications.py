@@ -94,6 +94,8 @@ def publish_ha_notification(
     correlation_id: str,
     created_by_user_id: int | None = None,
     metadata: dict | None = None,
+    target_route: str | None = None,
+    resolve_deduplication_key: str | None = None,
 ) -> dict:
     """Publish after source-state commit and return only safe operational counts."""
     try:
@@ -102,10 +104,11 @@ def publish_ha_notification(
             event_type_id=event_type_id,
             title=title,
             message=message,
-            target_route=f"/high-availability/clusters/{cluster.public_id}/testing",
+            target_route=target_route or f"/high-availability/clusters/{cluster.public_id}/testing",
             source_entity_type=source_entity_type,
             source_entity_id=source_entity_id,
             deduplication_key=deduplication_key,
+            resolve_deduplication_key=resolve_deduplication_key,
             created_by_user_id=created_by_user_id,
             correlation_id=correlation_id,
             metadata=metadata,

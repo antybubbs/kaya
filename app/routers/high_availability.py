@@ -1,13 +1,21 @@
 import json
 import re
 import shlex
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timedelta
+from functools import partial
 from ipaddress import IPv4Address, IPv4Interface
 
+import anyio
+import anyio.to_thread
+from anyio.lowlevel import RunVar
 from fastapi import APIRouter, Depends, HTTPException, Request
+from starlette.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from pydantic import ValidationError
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, object_session, selectinload
 from sqlalchemy.orm.attributes import set_committed_value
 
 from app.core.csrf import csrf_context, validate_csrf_token
@@ -54,6 +62,16 @@ from app.services.ha_clusters import (
 from app.services.ha_dns_advertisement import (
     WARNING_MESSAGE as DNS_ADVERTISEMENT_WARNING,
 )
+from app.services.ha_assessment import assess_cluster, health_summary
+from app.services.ha_baseline_repair import (
+    HABaselineRepairBusy,
+    HABaselineRepairError,
+    approve_restoration,
+    restoration_preview,
+    restoration_status,
+)
+from app.services.ha_health_workspace import alignment_remaining, service_overview
+from app.services.ha_recovery import recovery_snapshot as workspace_recovery_snapshot
 from app.services.ha_diagnostics import build_diagnostic_bundle
 from app.services.ha_dns_advertisement import (
     HADNSAdvertisementError,
@@ -61,6 +79,7 @@ from app.services.ha_dns_advertisement import (
     repair_dns_advertisement,
 )
 from app.services.ha_failover import (
+    HAFailoverBusyError,
     HAFailoverError,
     active_failover,
     automatic_failover_blockers,
@@ -79,21 +98,30 @@ from app.services.ha_keepalived import (
 )
 from app.services.ha_leases import (
     HALeaseError,
+    LeasePlan,
+    inspect_lease_plan,
     latest_snapshot_summary,
+    prepare_lease_inspection,
     reconcile_cluster_leases,
+)
+from app.services.ha_alignment import (
+    HAAlignmentBusy,
+    HAAlignmentError,
+    CONDITION_DETAILS,
+    alignment_preview,
+    alignment_status,
+    latest_alignment,
+    start_alignment,
 )
 from app.services.ha_maintenance import (
     HAMaintenanceError,
     acknowledge_failed_safe_latch,
     active_maintenance,
-    advance_dhcp_self_heal,
-    advance_reinitialisation,
     inspect_cluster,
     inspection_json,
     latest_maintenance,
     latch_preview,
     maintenance_status,
-    reconcile_cluster_state,
     release_maintenance_latch,
     start_dhcp_self_heal,
     start_reconciliation,
@@ -115,13 +143,77 @@ from app.services.ha_sync import (
     execute_sync,
     sync_plan,
 )
-from app.services.ha_topology import deployment_mode, pihole_manages_dhcp
+from app.services.ha_topology import assigned_active_node, deployment_mode, pihole_manages_dhcp
 from app.services.ha_validation import (
     GROUP_LABELS,
     configuration_differences,
     run_live_validation,
 )
 from app.services.site_settings import get_site_setting
+
+from app.services import ha_evaluation_queue  # noqa: E402
+from app.services.ha_coordination import coordinated_waiting, current_operation  # noqa: E402
+
+MAINTENANCE_EVALUATION_WAIT_SECONDS = 5.0
+
+# Administrator requests that call Pi-hole run in worker threads, never on the
+# event loop.  They use their own small thread limit, so slow or unreachable
+# Pi-hole nodes can occupy at most this many threads (and, while they wait on
+# Pi-hole, at most this many coordination-lock connections) and never consume
+# the shared thread pool that page requests and agent heartbeats rely on.
+# Requests beyond the limit queue without a thread or a database connection.
+HA_PROVIDER_OPERATION_LIMIT = 3
+# How long a Pi-hole-changing request retries the cluster's coordination lock
+# while the coordinator briefly holds it, before reporting that Kaya is busy.
+HA_PROVIDER_COORDINATION_WAIT_SECONDS = 5.0
+
+_provider_limiter: RunVar[anyio.CapacityLimiter] = RunVar("ha_provider_operation_limiter")
+_single_flight_guard = threading.Lock()
+_single_flight_running: set[tuple[str, int]] = set()
+
+
+def provider_operation_limiter() -> anyio.CapacityLimiter:
+    try:
+        return _provider_limiter.get()
+    except LookupError:
+        limiter = anyio.CapacityLimiter(HA_PROVIDER_OPERATION_LIMIT)
+        _provider_limiter.set(limiter)
+        return limiter
+
+
+def _end_transaction(db: Session) -> None:
+    if db.in_transaction():
+        db.commit()
+
+
+async def run_provider_operation(db: Session, operation, *args, **kwargs):
+    """Run a request's Pi-hole-calling work off the event loop.
+
+    The request session's transaction (opened by authentication and the
+    cluster lookup) is ended first, so a request queued behind the limit holds
+    no pooled connection.  The work then runs in one worker thread; the session
+    is only ever used by one thread at a time.
+    """
+    await run_in_threadpool(_end_transaction, db)
+    return await anyio.to_thread.run_sync(
+        partial(operation, *args, **kwargs), limiter=provider_operation_limiter()
+    )
+
+
+@contextmanager
+def single_flight(operation: str, cluster_id: int) -> Iterator[bool]:
+    """Yield False when the same operation is already running for this cluster in this process."""
+    key = (operation, int(cluster_id))
+    with _single_flight_guard:
+        acquired = key not in _single_flight_running
+        if acquired:
+            _single_flight_running.add(key)
+    try:
+        yield acquired
+    finally:
+        if acquired:
+            with _single_flight_guard:
+                _single_flight_running.discard(key)
 
 router = APIRouter(
     prefix="/high-availability",
@@ -405,8 +497,95 @@ def node_or_404(cluster: HACluster, node_public_id: str) -> HANode:
     return node
 
 
-def require_no_cluster_maintenance(cluster: HACluster) -> None:
+class HAClusterBusy(HTTPException):
+    """409: another operation is running on the cluster; this request changed nothing.
+
+    Carries a page rendered while the request's session was open; the
+    application's exception handler returns it.  Kaya never retries the
+    administrator's request automatically.
+    """
+
+    def __init__(self, response: Response, detail: str):
+        super().__init__(status_code=409, detail=detail)
+        self.response = response
+
+
+BUSY_OPERATION_DESCRIPTIONS = {
+    "coordinator_evaluation": "Kaya's HA coordinator is evaluating this cluster",
+    "approve_baseline_restoration": "An administrator is starting a Keepalived baseline restoration",
+    "periodic_watchdog": "Kaya's HA coordinator is checking this cluster",
+    "evaluate_recovery": "Kaya is checking the standby node's recovery",
+    "reconcile_vip_ownership": "Kaya is recording a change of Virtual IP owner",
+    "advance_failover": "Kaya is advancing a controlled failover or failback",
+    "start_controlled_failover": "A controlled failover or failback is starting",
+    "advance_reinitialisation": "Kaya is advancing a cluster reinitialisation",
+    "start_alignment": "An administrator is starting Align service ownership",
+    "advance_alignment": "Kaya is aligning service ownership",
+    "advance_dhcp_self_heal": "Kaya is repairing the DHCP configuration",
+    "reconcile_cluster_state": "Kaya is reconciling the cluster state",
+    "lease_reconciliation": "Kaya is reconciling DHCP leases",
+    "manual_lease_reconciliation": "An administrator is reconciling DHCP leases",
+    "dns_advertisement_repair": "The DHCP DNS advertisement is being repaired",
+    "manual_configuration_sync": "A configuration synchronisation is being applied",
+    "validation": "A live validation of this cluster is running",
+    "sync_plan": "A synchronisation plan is being prepared",
+}
+BUSY_RETURN_PAGES = {
+    "overview": ("", "cluster overview"),
+    "synchronisation": ("/synchronisation", "synchronisation status"),
+    "dhcp": ("/dhcp", "DHCP status"),
+    "testing": ("/testing", "failover status"),
+    "validation": ("/validation", "validation results"),
+    "topology": ("/topology", "service responsibilities"),
+    "deployment": ("/deployment", "deployment status"),
+    "nodes": ("/nodes", "node list"),
+    "maintenance": ("/maintenance", "Health & Repair"),
+}
+
+
+def cluster_busy(
+    request: Request,
+    user,
+    cluster: HACluster,
+    *,
+    section: str,
+    operation: str | None = None,
+) -> HAClusterBusy:
+    """Build the 409 explaining which operation is running and how to continue."""
+    maintenance = active_maintenance(cluster)
+    if operation is None and maintenance is not None:
+        running = f"Cluster maintenance ({str(maintenance.operation).replace('_', ' ').lower()}) is in progress"
+        code = "maintenance"
+    else:
+        if operation is None:
+            session = object_session(cluster)
+            operation = current_operation(session, cluster.id) if session is not None else None
+        running = BUSY_OPERATION_DESCRIPTIONS.get(operation or "", "Another Kaya operation is updating this cluster")
+        code = operation or "unknown"
+    suffix, label = BUSY_RETURN_PAGES.get(section, BUSY_RETURN_PAGES["overview"])
+    base = f"/high-availability/clusters/{cluster.public_id}"
+    busy = {
+        "code": code,
+        "running": running,
+        "return_path": base + suffix,
+        "return_label": label,
+        "maintenance_path": base + "/maintenance" if code == "maintenance" else None,
+    }
+    response = templates.TemplateResponse(
+        request,
+        "high_availability_cluster_busy.html",
+        ha_context(request, user, "clusters", cluster=cluster, cluster_section=section, busy=busy),
+        status_code=409,
+    )
+    return HAClusterBusy(response, f"{running}. Nothing was changed.")
+
+
+def require_no_cluster_maintenance(
+    cluster: HACluster, request: Request | None = None, user=None, *, section: str = "overview"
+) -> None:
     if active_maintenance(cluster):
+        if request is not None:
+            raise cluster_busy(request, user, cluster, section=section)
         raise HTTPException(
             status_code=409, detail="Cluster maintenance is in progress"
         )
@@ -539,13 +718,21 @@ async def test_cluster_connection(
             {"ok": False, "message": "Choose a cluster node to test."}, status_code=400
         )
     provider_key = str(form.get("provider_key") or "")
+    draft_node = {
+        "name": str(form.get(f"{node_key}_name") or node_key.title()),
+        "api_base_url": str(form.get(f"{node_key}_api_base_url") or ""),
+        "secret": str(form.get(f"{node_key}_secret") or "") or None,
+        "ssl_verify": str(form.get(f"{node_key}_ssl_verify") or "") == "1",
+    }
+    return await run_provider_operation(
+        db, _test_cluster_connection_work, db, user, node_key, provider_key, draft_node
+    )
+
+
+def _test_cluster_connection_work(
+    db: Session, user, node_key: str, provider_key: str, draft_node: dict
+) -> JSONResponse:
     try:
-        draft_node = {
-            "name": str(form.get(f"{node_key}_name") or node_key.title()),
-            "api_base_url": str(form.get(f"{node_key}_api_base_url") or ""),
-            "secret": str(form.get(f"{node_key}_secret") or "") or None,
-            "ssl_verify": str(form.get(f"{node_key}_ssl_verify") or "") == "1",
-        }
         result = test_draft_node_connection(
             db, HANodeDraftCreate(**draft_node), provider_key
         )
@@ -679,6 +866,7 @@ def cluster_detail_context(
     preferred = preferred_node(cluster)
     active = current_active_node(cluster, now=now)
     consistency = inspect_cluster(cluster, now=now, recovery=recovery)
+    assessment = assess_cluster(db, cluster, now=now, inspection=consistency, recovery=recovery, readiness=readiness)
     operational_status = operational_readiness_summary(readiness, recovery)
     failback_recovery = (
         recovery.get(preferred.id)
@@ -718,6 +906,7 @@ def cluster_detail_context(
         },
         preferred_node=preferred,
         active_node=active,
+        assigned_active_node=assigned_active_node(cluster),
         failback_recovery=failback_recovery,
         action_ready=readiness.ready
         and (failback_recovery is None or failback_recovery.ready),
@@ -729,6 +918,7 @@ def cluster_detail_context(
         dns_advertisement=active_advertisement,
         dns_advertisement_warning=DNS_ADVERTISEMENT_WARNING,
         unacknowledged_alerts=unacknowledged_cluster_alert_count(db, cluster),
+        assessment=assessment,
         **extra,
     )
 
@@ -740,11 +930,28 @@ async def repair_cluster_dhcp_dns_advertisement(
     db: Session = Depends(get_db),
     user=Depends(require_ha_admin),
 ):
-    cluster = cluster_or_404(db, public_id)
-    require_no_cluster_maintenance(cluster)
+    await run_in_threadpool(idle_cluster_or_404, db, public_id, request, user)
     form = await request.form()
     validate_csrf_token(request, str(form.get("csrf_token") or ""))
-    if str(form.get("acknowledge_reload") or "") != "1":
+    acknowledged = str(form.get("acknowledge_reload") or "") == "1"
+    return await run_provider_operation(
+        db, _repair_dns_advertisement_work, request, db, user, public_id, acknowledged
+    )
+
+
+def idle_cluster_or_404(
+    db: Session, public_id: str, request: Request | None = None, user=None, *, section: str = "overview"
+) -> HACluster:
+    cluster = cluster_or_404(db, public_id)
+    require_no_cluster_maintenance(cluster, request, user, section=section)
+    return cluster
+
+
+def _repair_dns_advertisement_work(
+    request: Request, db: Session, user, public_id: str, acknowledged: bool
+):
+    cluster = cluster_or_404(db, public_id)
+    if not acknowledged:
         return templates.TemplateResponse(
             request,
             "high_availability_cluster_detail.html",
@@ -757,10 +964,25 @@ async def repair_cluster_dhcp_dns_advertisement(
             ),
             status_code=400,
         )
-    try:
-        repair_dns_advertisement(db, cluster)
-    except HADNSAdvertisementError as exc:
+    failure: HADNSAdvertisementError | None = None
+    with coordinated_waiting(
+        db,
+        cluster.id,
+        operation="dns_advertisement_repair",
+        wait_seconds=HA_PROVIDER_COORDINATION_WAIT_SECONDS,
+    ) as acquired:
+        if acquired:
+            require_no_cluster_maintenance(cluster, request, user)  # re-checked on fresh state under the lock
+            try:
+                repair_dns_advertisement(db, cluster)
+            except HADNSAdvertisementError as exc:
+                db.rollback()  # discard the failed attempt while still coordinated
+                failure = exc
+    if not acquired:
         db.rollback()
+        raise cluster_busy(request, user, cluster_or_404(db, public_id), section="overview")
+    if failure is not None:
+        exc = failure
         write_audit(
             db,
             user,
@@ -880,10 +1102,16 @@ def maintenance_page_context(
     *,
     show_latest_run: bool = True,
 ):
-    consistency = inspect_cluster(cluster)
+    now = datetime.utcnow()
+    recovery = workspace_recovery_snapshot(db, cluster, now=now)
+    consistency = inspect_cluster(cluster, now=now, recovery=recovery)
+    assessment = assess_cluster(db, cluster, now=now, inspection=consistency, recovery=recovery)
     latest_run = latest_maintenance(cluster) if show_latest_run else None
     active_run = active_maintenance(cluster)
     preview = latch_preview(db, cluster) if cluster.maintenance_mode or (latest_run and latest_run.status == "FAILED_SAFE") else None
+    alignment = alignment_preview(db, cluster, now=now)
+    last_alignment = latest_alignment(cluster)
+    restoration = restoration_preview(db, cluster, now=now)
     return ha_context(
         request,
         user,
@@ -899,6 +1127,16 @@ def maintenance_page_context(
         latch_preview=preview,
         preferred_node=preferred_node(cluster),
         maintenance_error=error,
+        assessment=assessment,
+        alignment=alignment,
+        alignment_condition_detail=CONDITION_DETAILS.get(alignment.condition, ""),
+        alignment_run=alignment_status(last_alignment),
+        alignment_run_active=bool(last_alignment and last_alignment.status == "RUNNING"),
+        alignment_remaining=alignment_remaining(cluster, last_alignment, now=now),
+        health=health_summary(assessment),
+        overview=service_overview(db, cluster, recovery, now=now),
+        restoration=restoration,
+        restoration_run=restoration_status(cluster),
     )
 
 
@@ -981,7 +1219,7 @@ async def reconcile_cluster(
                 )
         else:
             run = start_reconciliation(db, cluster, user)
-            reconcile_cluster_state(db, run)
+            await run_in_threadpool(ha_evaluation_queue.request_and_wait, cluster.id, MAINTENANCE_EVALUATION_WAIT_SECONDS)
     except HAMaintenanceError as exc:
         db.rollback()
         cluster = cluster_or_404(db, public_id)
@@ -1070,6 +1308,107 @@ async def reinitialise_cluster(
     )
 
 
+ALIGNMENT_FINGERPRINT_PATTERN = re.compile(r"^[a-f0-9]{64}$")
+NODE_PUBLIC_ID_PATTERN = re.compile(r"^[A-Za-z0-9-]{1,36}$")
+
+
+@router.post("/clusters/{public_id}/maintenance/align")
+async def align_service_ownership(
+    public_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    user=Depends(require_ha_admin),
+):
+    """Start one administrator-approved Align service ownership run (moves only the Virtual IP)."""
+    cluster = cluster_or_404(db, public_id)
+    form = await request.form()
+    validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    target = str(form.get("target_node_id") or "")
+    fingerprint = str(form.get("preview_fingerprint") or "")
+    confirmation = str(form.get("confirmation") or "")
+    if (
+        not NODE_PUBLIC_ID_PATTERN.fullmatch(target)
+        or not ALIGNMENT_FINGERPRINT_PATTERN.fullmatch(fingerprint)
+        or len(confirmation) > 200
+    ):
+        raise HTTPException(status_code=400, detail="Invalid alignment request")
+    node_or_404(cluster, target)
+    try:
+        await run_in_threadpool(
+            start_alignment,
+            db,
+            cluster,
+            user,
+            target_public_id=target,
+            fingerprint=fingerprint,
+            confirmation=confirmation,
+            acknowledged=str(form.get("acknowledge_alignment") or "") == "1",
+            latch_authorised=str(form.get("authorise_under_latch") or "") == "1",
+        )
+    except HAAlignmentBusy:
+        db.rollback()
+        raise cluster_busy(request, user, cluster_or_404(db, public_id), section="maintenance")
+    except HAAlignmentError as exc:
+        db.rollback()
+        cluster = cluster_or_404(db, public_id)
+        return templates.TemplateResponse(
+            request,
+            "high_availability_cluster_maintenance.html",
+            maintenance_page_context(request, user, cluster, db, str(exc)),
+            status_code=409,
+        )
+    await run_in_threadpool(ha_evaluation_queue.request_and_wait, cluster.id, MAINTENANCE_EVALUATION_WAIT_SECONDS)
+    return RedirectResponse(
+        f"/high-availability/clusters/{cluster.public_id}/maintenance?align=started#align-ownership",
+        status_code=303,
+    )
+
+
+@router.post("/clusters/{public_id}/maintenance/restore-baseline")
+async def restore_keepalived_baseline(
+    public_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    user=Depends(require_ha_admin),
+):
+    """Approve one Keepalived baseline restoration attempt (reloads only; the Virtual IP and DHCP do not move)."""
+    cluster = cluster_or_404(db, public_id)
+    form = await request.form()
+    validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    fingerprint = str(form.get("preview_fingerprint") or "")
+    confirmation = str(form.get("confirmation") or "")
+    if not ALIGNMENT_FINGERPRINT_PATTERN.fullmatch(fingerprint) or len(confirmation) > 200:
+        raise HTTPException(status_code=400, detail="Invalid restoration request")
+    try:
+        await run_in_threadpool(
+            approve_restoration,
+            db,
+            cluster,
+            user,
+            fingerprint=fingerprint,
+            confirmation=confirmation,
+            acknowledged=str(form.get("acknowledge_restoration") or "") == "1",
+            latch_authorised=str(form.get("authorise_under_latch") or "") == "1",
+        )
+    except HABaselineRepairBusy:
+        db.rollback()
+        raise cluster_busy(request, user, cluster_or_404(db, public_id), section="maintenance")
+    except HABaselineRepairError as exc:
+        db.rollback()
+        cluster = cluster_or_404(db, public_id)
+        return templates.TemplateResponse(
+            request,
+            "high_availability_cluster_maintenance.html",
+            maintenance_page_context(request, user, cluster, db, str(exc)),
+            status_code=409,
+        )
+    await run_in_threadpool(ha_evaluation_queue.request_and_wait, cluster.id, MAINTENANCE_EVALUATION_WAIT_SECONDS)
+    return RedirectResponse(
+        f"/high-availability/clusters/{cluster.public_id}/maintenance?restore=started#restore-baseline",
+        status_code=303,
+    )
+
+
 @router.post("/clusters/{public_id}/maintenance/{run_public_id}/advance")
 async def advance_cluster_maintenance(
     public_id: str,
@@ -1109,12 +1448,8 @@ async def advance_cluster_maintenance(
             f"/high-availability/clusters/{cluster.public_id}/maintenance",
             status_code=303,
         )
-    if run.operation == "REINITIALISE":
-        advance_reinitialisation(db, run)
-    elif run.operation == "DHCP_SELF_HEAL":
-        advance_dhcp_self_heal(db, run)
-    elif run.operation == "RECONCILE":
-        reconcile_cluster_state(db, run)
+    # The HA coordinator advances operations; this request only asks it to run now.
+    await run_in_threadpool(ha_evaluation_queue.request_and_wait, cluster.id, MAINTENANCE_EVALUATION_WAIT_SECONDS)
     return RedirectResponse(
         f"/high-availability/clusters/{cluster.public_id}/maintenance", status_code=303
     )
@@ -1156,7 +1491,7 @@ async def update_cluster_topology(
     user=Depends(require_ha_admin),
 ):
     cluster = cluster_or_404(db, public_id)
-    require_no_cluster_maintenance(cluster)
+    require_no_cluster_maintenance(cluster, request, user, section="topology")
     form = await request.form()
     validate_csrf_token(request, str(form.get("csrf_token") or ""))
     mode = str(form.get("deployment_mode") or "")
@@ -1464,6 +1799,8 @@ def cluster_live_status(
                 ),
                 "current_agent_version": CURRENT_AGENT_VERSION,
                 "active_node": active_node.display_name if active_node else None,
+                # Assigned by a verified operation; may differ from the observed VIP owner above.
+                "assigned_active_node": (lambda assigned: assigned.display_name if assigned else None)(assigned_active_node(cluster)),
                 "preferred_node": preferred.display_name if preferred else None,
                 "standby_node": (
                     readiness.target.display_name if readiness.target else None
@@ -1843,6 +2180,7 @@ def cluster_diagnostics(
             cluster=cluster,
             cluster_section="diagnostics",
             diagnostics=bundle,
+            assessment=assess_cluster(db, cluster),
             diagnostic_severity=request.query_params.get("severity") or "",
             diagnostic_event_type=request.query_params.get("event_type") or "",
         ),
@@ -1891,6 +2229,7 @@ def failover_page_context(
         recovery=recovery,
         preferred_node=preferred,
         active_node=active,
+        assigned_active_node=assigned_active_node(cluster),
         failback_recovery=failback_recovery,
         action_ready=readiness.ready
         and (failback_recovery is None or failback_recovery.ready),
@@ -1919,19 +2258,46 @@ async def start_cluster_failover(
     db: Session = Depends(get_db),
     user=Depends(require_ha_admin),
 ):
-    cluster = cluster_or_404(db, public_id)
+    await run_in_threadpool(cluster_or_404, db, public_id)
     form = await request.form()
     validate_csrf_token(request, str(form.get("csrf_token") or ""))
-    target = node_or_404(cluster, str(form.get("target_node_id") or ""))
+    return await run_provider_operation(
+        db,
+        _start_cluster_failover_work,
+        request,
+        db,
+        user,
+        public_id,
+        target_node_id=str(form.get("target_node_id") or ""),
+        confirmation=str(form.get("cluster_name") or ""),
+        acknowledged=str(form.get("acknowledge_interruption") or "") == "1",
+    )
+
+
+def _start_cluster_failover_work(
+    request: Request,
+    db: Session,
+    user,
+    public_id: str,
+    *,
+    target_node_id: str,
+    confirmation: str,
+    acknowledged: bool,
+):
+    cluster = cluster_or_404(db, public_id)
+    target = node_or_404(cluster, target_node_id)
     try:
         run = start_controlled_failover(
             db,
             cluster,
             target,
             user,
-            confirmation=str(form.get("cluster_name") or ""),
-            acknowledged=str(form.get("acknowledge_interruption") or "") == "1",
+            confirmation=confirmation,
+            acknowledged=acknowledged,
         )
+    except HAFailoverBusyError:
+        db.rollback()
+        raise cluster_busy(request, user, cluster_or_404(db, public_id), section="testing")
     except HAFailoverError as exc:
         db.rollback()
         cluster = cluster_or_404(db, public_id)
@@ -2073,11 +2439,44 @@ async def reconcile_cluster_dhcp(
     db: Session = Depends(get_db),
     user=Depends(require_ha_admin),
 ):
-    cluster = cluster_or_404(db, public_id)
+    await run_in_threadpool(cluster_or_404, db, public_id)
     form = await request.form()
     validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    return await run_provider_operation(
+        db, _reconcile_cluster_dhcp_work, request, db, user, public_id
+    )
+
+
+def _reconcile_cluster_dhcp_work(request: Request, db: Session, user, public_id: str):
+    cluster = cluster_or_404(db, public_id)
+    # Inspect Pi-hole with no transaction open and without the coordination
+    # lock (as the lease monitor does); persist the result under the lock.  The
+    # persisted plan is re-fenced against the cluster's current generations.
+    inspection: LeasePlan | HALeaseError
     try:
-        state = reconcile_cluster_leases(db, cluster)
+        inputs = prepare_lease_inspection(cluster)
+    except HALeaseError as exc:
+        inspection = exc
+    else:
+        db.commit()
+        try:
+            inspection = inspect_lease_plan(inputs)
+        except HALeaseError as exc:
+            inspection = exc
+    try:
+        with coordinated_waiting(
+            db,
+            cluster.id,
+            operation="manual_lease_reconciliation",
+            wait_seconds=HA_PROVIDER_COORDINATION_WAIT_SECONDS,
+        ) as acquired:
+            if acquired:
+                state = reconcile_cluster_leases(
+                    db, cluster, precomputed_inspection=inspection
+                )
+        if not acquired:
+            db.rollback()
+            raise cluster_busy(request, user, cluster_or_404(db, public_id), section="dhcp")
     except HALeaseError as exc:
         write_audit(
             db,
@@ -2205,10 +2604,26 @@ async def plan_cluster_synchronisation(
     db: Session = Depends(get_db),
     user=Depends(require_ha_editor),
 ):
-    cluster = cluster_or_404(db, public_id)
-    require_no_cluster_maintenance(cluster)
+    await run_in_threadpool(idle_cluster_or_404, db, public_id, request, user, section="synchronisation")
     form = await request.form()
     validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    return await run_provider_operation(
+        db, _plan_cluster_synchronisation_work, request, db, user, public_id
+    )
+
+
+def _plan_cluster_synchronisation_work(request: Request, db: Session, user, public_id: str):
+    cluster = idle_cluster_or_404(db, public_id, request, user, section="synchronisation")
+    # Planning only reads Pi-hole, so it does not hold the coordination lock
+    # (which would delay the coordinator for this cluster during slow reads);
+    # it only refuses to run twice at once for the same cluster.
+    with single_flight("sync_plan", cluster.id) as acquired:
+        if not acquired:
+            raise cluster_busy(request, user, cluster, section="synchronisation", operation="sync_plan")
+        return _plan_cluster_synchronisation(request, db, user, cluster)
+
+
+def _plan_cluster_synchronisation(request: Request, db: Session, user, cluster: HACluster):
     try:
         run = create_live_sync_plan(db, cluster, user)
     except HAStaleSyncPlanError as exc:
@@ -2217,7 +2632,8 @@ async def plan_cluster_synchronisation(
             user,
             "stale",
             "ha_configuration_sync",
-            entity_id=run.public_id,
+            # No plan was created, so the audit entry identifies the cluster.
+            entity_id=cluster.public_id,
             detail=f"Live Pi-hole configuration changed while reviewing the synchronisation plan for {cluster.name}.",
             severity="warning",
             metadata={
@@ -2302,7 +2718,7 @@ async def configure_automatic_synchronisation(
 ):
     cluster = cluster_or_404(db, public_id)
     cluster = db.query(HACluster).populate_existing().filter(HACluster.id == cluster.id).with_for_update().one()
-    require_no_cluster_maintenance(cluster)
+    require_no_cluster_maintenance(cluster, request, user, section="synchronisation")
     form = await request.form()
     validate_csrf_token(request, str(form.get("csrf_token") or ""))
     enabled = str(form.get("enabled") or "") == "1"
@@ -2399,21 +2815,46 @@ async def apply_cluster_synchronisation(
     db: Session = Depends(get_db),
     user=Depends(require_ha_admin),
 ):
-    cluster = cluster_or_404(db, public_id)
-    require_no_cluster_maintenance(cluster)
+    await run_in_threadpool(idle_cluster_or_404, db, public_id, request, user, section="synchronisation")
     form = await request.form()
     validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    return await run_provider_operation(
+        db,
+        _apply_cluster_synchronisation_work,
+        request,
+        db,
+        user,
+        public_id,
+        sync_run_id=str(form.get("sync_run_id") or ""),
+        acknowledge_authority=str(form.get("acknowledge_authority") or "") == "1",
+        allow_deletions=str(form.get("acknowledge_deletions") or "") == "1",
+        acknowledge_high_impact=str(form.get("acknowledge_high_impact") or "") == "1",
+    )
+
+
+def _apply_cluster_synchronisation_work(
+    request: Request,
+    db: Session,
+    user,
+    public_id: str,
+    *,
+    sync_run_id: str,
+    acknowledge_authority: bool,
+    allow_deletions: bool,
+    acknowledge_high_impact: bool,
+):
+    cluster = idle_cluster_or_404(db, public_id, request, user, section="synchronisation")
     run = (
         db.query(HASyncRun)
         .filter(
             HASyncRun.cluster_id == cluster.id,
-            HASyncRun.public_id == str(form.get("sync_run_id") or ""),
+            HASyncRun.public_id == sync_run_id,
         )
         .first()
     )
     if run is None:
         raise HTTPException(status_code=404, detail="Synchronisation plan not found")
-    if str(form.get("acknowledge_authority") or "") != "1":
+    if not acknowledge_authority:
         return templates.TemplateResponse(
             request,
             "high_availability_cluster_synchronisation.html",
@@ -2426,15 +2867,32 @@ async def apply_cluster_synchronisation(
             ),
             status_code=400,
         )
-    try:
-        execute_sync(
-            db,
-            cluster,
-            run,
-            allow_deletions=str(form.get("acknowledge_deletions") or "") == "1",
-            acknowledge_high_impact=str(form.get("acknowledge_high_impact") or "") == "1",
-        )
-    except HASyncError as exc:
+    failure: HASyncError | None = None
+    with coordinated_waiting(
+        db,
+        cluster.id,
+        operation="manual_configuration_sync",
+        wait_seconds=HA_PROVIDER_COORDINATION_WAIT_SECONDS,
+    ) as acquired:
+        if acquired:
+            # The lock ends the transaction and re-reads the cluster; the plan
+            # row is re-read on access, so a plan another request has already
+            # applied is seen as no longer executable.
+            try:
+                execute_sync(
+                    db,
+                    cluster,
+                    run,
+                    allow_deletions=allow_deletions,
+                    acknowledge_high_impact=acknowledge_high_impact,
+                )
+            except HASyncError as exc:
+                failure = exc
+    if not acquired:
+        db.rollback()
+        raise cluster_busy(request, user, cluster_or_404(db, public_id), section="synchronisation")
+    if failure is not None:
+        exc = failure
         write_audit(
             db,
             user,
@@ -2484,7 +2942,7 @@ async def deploy_cluster_keepalived(
     user=Depends(require_ha_admin),
 ):
     cluster = cluster_or_404(db, public_id)
-    require_no_cluster_maintenance(cluster)
+    require_no_cluster_maintenance(cluster, request, user, section="deployment")
     form = await request.form()
     validate_csrf_token(request, str(form.get("csrf_token") or ""))
     try:
@@ -2551,7 +3009,7 @@ async def move_cluster_vip(
     user=Depends(require_ha_admin),
 ):
     cluster = cluster_or_404(db, public_id)
-    require_no_cluster_maintenance(cluster)
+    require_no_cluster_maintenance(cluster, request, user, section="deployment")
     form = await request.form()
     validate_csrf_token(request, str(form.get("csrf_token") or ""))
     target = node_or_404(cluster, str(form.get("target_node_id") or ""))
@@ -2790,7 +3248,7 @@ async def save_cluster_node(
     user=Depends(require_ha_admin),
 ):
     cluster = cluster_or_404(db, public_id)
-    require_no_cluster_maintenance(cluster)
+    require_no_cluster_maintenance(cluster, request, user, section="nodes")
     node = node_or_404(cluster, node_public_id)
     form = await request.form()
     validate_csrf_token(request, str(form.get("csrf_token") or ""))
@@ -2868,8 +3326,18 @@ async def validate_cluster(
 ):
     form = await request.form()
     validate_csrf_token(request, str(form.get("csrf_token") or ""))
+    return await run_provider_operation(db, _validate_cluster_work, request, db, user, public_id)
+
+
+def _validate_cluster_work(request: Request, db: Session, user, public_id: str):
     cluster = cluster_or_404(db, public_id)
-    rows = run_live_validation(db, cluster)
+    # Validation only reads Pi-hole, so it does not hold the coordination lock
+    # (an unreachable node would otherwise delay the coordinator for minutes);
+    # it only refuses to run twice at once for the same cluster.
+    with single_flight("validation", cluster.id) as acquired:
+        if not acquired:
+            raise cluster_busy(request, user, cluster, section="validation", operation="validation")
+        rows = run_live_validation(db, cluster)
     blocking_count = sum(
         1 for row in rows if row.severity == "blocking" and row.status != "PASS"
     )

@@ -16,6 +16,7 @@ from sqlalchemy import create_engine, func
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+import app.services.asset_discovery as asset_discovery
 import app.services.asset_identity as asset_identity
 from app.db.session import Base
 from app.models.models import (
@@ -55,7 +56,8 @@ OLD_IP, NEW_IP = "192.0.2.165", "192.0.2.178"
 
 
 @pytest.fixture(params=["sqlite", "postgresql"])
-def db(request):
+def db(request, monkeypatch):
+    monkeypatch.setattr(asset_discovery, "datetime", _AdoptionClock)  # see _AdoptionClock
     if request.param == "sqlite":
         engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
         Base.metadata.create_all(engine)
@@ -122,6 +124,21 @@ def _lease(db, provider, ip, *, active=True):
     if active:
         query = query.filter_by(is_active=True)
     return query.order_by(DHCPLeaseHistory.id.desc()).first()
+
+
+class _AdoptionClock(datetime):
+    """Review / Adopt's wall clock, kept inside the hour after NOW.
+
+    These tests place adoption inside the hour after NOW and later observations
+    at LATER (NOW + 1 hour) or after.  NOW is fixed when this module is
+    imported, so a long run that crosses the next hour before these tests
+    execute would otherwise stamp adoption after those observations.  The real
+    clock is used unchanged whenever it is still inside that hour.
+    """
+
+    @classmethod
+    def utcnow(cls):
+        return min(datetime.utcnow(), NOW + timedelta(minutes=59))
 
 
 def _adopt(db, admin, provider, ip, name=None):

@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 {% include '_high_availability_cluster_header.html' %}
+{% include '_ha_assessment.html' %}
 <section class="panel">
   <div class="ha-section-heading"><div><h2>HA Diagnostics &amp; Audit</h2><p class="muted">Read-only evidence from Kaya's persisted state and the latest signed agent reports. No remote Pi-hole calls are made while rendering this page.</p></div><a class="button secondary" href="/high-availability/clusters/{{ cluster.public_id }}/diagnostics/export">Download sanitized JSON</a></div>
   <p class="muted">Generated {{ diagnostics.generated_at or 'unknown' }}. Unknown values mean Kaya does not have current evidence.</p>

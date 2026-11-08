@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block content %}
+{% include '_high_availability_cluster_header.html' %}
+{# Shown with HTTP 409 when another operation is running on the cluster.  Read-only: it never resubmits the request. #}
+<section class="panel ha-busy" role="status" aria-labelledby="ha-busy-heading" data-ha-busy="{{ busy.code }}">
+  <h2 id="ha-busy-heading">Another operation is running on this cluster</h2>
+  <p>{{ busy.running }}.</p>
+  <p><strong>Your request was not carried out, and nothing was changed.</strong> Kaya does not repeat it automatically.</p>
+  <p class="muted">Wait for the other operation to finish, then check the current status. If your change is still needed, submit it again from that page.</p>
+  <div class="ha-busy-actions">
+    <a class="button" href="{{ busy.return_path }}">Refresh {{ busy.return_label }}</a>
+    {% if busy.maintenance_path %}<a class="button secondary" href="{{ busy.maintenance_path }}">View maintenance progress</a>{% endif %}
+  </div>
+</section>
+{% endblock %}

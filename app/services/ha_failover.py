@@ -43,6 +43,10 @@ class HAFailoverError(ValueError):
     pass
 
 
+class HAFailoverBusyError(HAFailoverError):
+    """Another operation holds the cluster's coordination lock; nothing was started."""
+
+
 @dataclass(frozen=True)
 class FailoverReadiness:
     source: HANode | None
@@ -224,6 +228,9 @@ def _move_vip(db: Session, run: HAFailoverRun, target: HANode) -> None:
     cluster.keepalived_status = "PENDING_AGENT"
     cluster.keepalived_requested_at = datetime.utcnow()
     cluster.status = "DEPLOYING"
+    from app.services.ha_keepalived_baseline import record_preemption
+
+    record_preemption(cluster, target, reason="controlled_failover")  # target may preempt at this generation
     try:
         report = json.loads(run.report_json or "{}")
     except json.JSONDecodeError:
@@ -234,6 +241,21 @@ def _move_vip(db: Session, run: HAFailoverRun, target: HANode) -> None:
 
 
 def start_controlled_failover(db: Session, cluster: HACluster, target: HANode, user: User, *, confirmation: str, acknowledged: bool) -> HAFailoverRun:
+    """Start a controlled failover while holding the cluster's coordination lock.
+
+    The start may call Pi-hole (final sync and lease capture), which ends the
+    row-locking transaction first; holding the coordination lock for the whole
+    start keeps another start or advancement from interleaving.
+    """
+    from app.services.ha_coordination import coordinated
+
+    with coordinated(db, cluster.id, operation="start_controlled_failover") as acquired:
+        if not acquired:
+            raise HAFailoverBusyError("Kaya is already updating this cluster. Wait a moment and try again.")
+        return _start_controlled_failover(db, cluster, target, user, confirmation=confirmation, acknowledged=acknowledged)
+
+
+def _start_controlled_failover(db: Session, cluster: HACluster, target: HANode, user: User, *, confirmation: str, acknowledged: bool) -> HAFailoverRun:
     target_id = target.id
     cluster = db.query(HACluster).populate_existing().filter(HACluster.id == cluster.id).with_for_update().one()
     target = next((node for node in cluster.nodes if node.id == target_id), None)
@@ -588,6 +610,9 @@ def _complete(db: Session, run: HAFailoverRun, *, rolled_back: bool) -> None:
     for node in run.cluster.nodes:
         node.keepalived_status = "PENDING_AGENT"
         node.keepalived_last_error = None
+    from app.services.ha_keepalived_baseline import track_completion_restore
+
+    track_completion_restore(run.cluster, active)  # verified later from fresh reports, never assumed
     kind = _transition_kind(run)
     event_type = "controlled_failover_rolled_back" if rolled_back else (
         "controlled_failback_completed" if kind == "FAILBACK" else "controlled_failover_completed"
@@ -603,6 +628,28 @@ def _complete(db: Session, run: HAFailoverRun, *, rolled_back: bool) -> None:
 
 
 def advance_failover(db: Session, cluster: HACluster) -> HAFailoverRun | None:
+    """Advance the active failover one step; one caller per cluster at a time.
+
+    A concurrent caller gets the current run back without changing it.
+    """
+    if active_failover(cluster) is None:
+        return None
+    from app.services.ha_coordination import coordinated, holds_coordination
+
+    newly_acquired = not holds_coordination(db, cluster.id)
+    with coordinated(db, cluster.id, operation="advance_failover") as acquired:
+        if not acquired:
+            return active_failover(cluster)
+        if newly_acquired:
+            # Another worker may have advanced the run since this caller loaded it.
+            believed_active = [run.id for run in cluster.failover_runs if run.status in ACTIVE_RUN_STATUSES]
+            if believed_active:
+                db.query(HAFailoverRun).populate_existing().filter(HAFailoverRun.id.in_(believed_active)).all()
+            db.expire(cluster, ["failover_runs"])
+        return _advance_failover(db, cluster)
+
+
+def _advance_failover(db: Session, cluster: HACluster) -> HAFailoverRun | None:
     run = active_failover(cluster)
     if run is None:
         return None

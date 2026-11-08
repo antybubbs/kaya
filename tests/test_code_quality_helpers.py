@@ -41,7 +41,10 @@ def test_resource_paths_do_not_depend_on_working_directory(tmp_path, monkeypatch
     assert templates.get_template("base.html").name == "base.html"
 
 
-def test_container_path_defaults_preserve_existing_volume_contract():
+def test_container_path_defaults_preserve_existing_volume_contract(monkeypatch):
+    # Assert the built-in defaults, not whatever the test runner's environment sets.
+    for name in ("DATABASE_URL", "DATA_DIR", "UPLOAD_DIR", "RECORDING_DIR"):
+        monkeypatch.delenv(name, raising=False)
     settings = Settings(
         app_env="test",
         encryption_key="MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=",

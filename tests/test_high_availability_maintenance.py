@@ -468,10 +468,18 @@ def drive_to_runtime_rebuild(db, monkeypatch, run, first, second):
         return state
     monkeypatch.setattr("app.services.ha_maintenance.reconcile_cluster_leases", stage_leases)
     fresh_after(run, first, second)
-    advance_reinitialisation(db, run)  # fresh reports
-    advance_reinitialisation(db, run)  # backups
-    advance_reinitialisation(db, run)  # sync
-    advance_reinitialisation(db, run)  # lease capture
+    # Phase-driven: leases are staged before the rebuild, or (D4) after the
+    # Virtual IP moves when the selected Active already is the sole DHCP owner.
+    for _ in range(12):
+        if run.status != "RUNNING" or run.phase in {"REBUILDING_HA", "DEMOTING_STANDBY"}:
+            break
+        if run.phase == "WAITING_FOR_DHCP_STAGE":
+            stage_current_leases(db, run)
+        advance_reinitialisation(db, run)
+
+
+def stage_current_leases(db, run):
+    """The selected standby's agent acknowledges the queued lease generation."""
     state = run.cluster.lease_replication
     standby = next(node for node in run.cluster.nodes if node.id != run.desired_active_node_id)
     state.status = "CURRENT"
@@ -479,8 +487,6 @@ def drive_to_runtime_rebuild(db, monkeypatch, run, first, second):
     state.applied_generation = state.desired_generation
     standby.lease_generation = state.desired_generation
     db.commit()
-    advance_reinitialisation(db, run)  # lease staged
-    advance_reinitialisation(db, run)  # normalise standby
 
 
 def complete_runtime(db, run, target, standby):
@@ -497,6 +503,11 @@ def complete_runtime(db, run, target, standby):
         node.dhcp_observed_at = node.last_heartbeat_at
     db.commit()
     advance_reinitialisation(db, run)
+    if run.phase == "STAGING_DHCP":  # D4: leases are staged once ownership is aligned
+        advance_reinitialisation(db, run)
+    if run.phase == "WAITING_FOR_DHCP_STAGE":
+        stage_current_leases(db, run)
+        advance_reinitialisation(db, run)
     if run.phase == "PROMOTING_ACTIVE":
         action = desired_maintenance_action(run.cluster, target)
         record_maintenance_action_result(

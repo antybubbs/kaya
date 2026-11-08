@@ -1,0 +1,6 @@
+ Container kaya-phasea-20261107-212151-e0037873cd9c-postgres-1 Stopping 
+ Container kaya-phasea-20261107-212151-e0037873cd9c-postgres-1 Stopped 
+ Container kaya-phasea-20261107-212151-e0037873cd9c-postgres-1 Removing 
+ Container kaya-phasea-20261107-212151-e0037873cd9c-postgres-1 Removed 
+ Network kaya-phasea-20261107-212151-e0037873cd9c_default Removing 
+ Network kaya-phasea-20261107-212151-e0037873cd9c_default Removed 

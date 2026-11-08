@@ -2,50 +2,177 @@
 {% block content %}
 {% include '_high_availability_cluster_header.html' %}
 
-{% if maintenance_error %}<div class="alert" role="alert"><strong>Cluster maintenance could not start</strong><span>{{ maintenance_error }}</span></div>{% endif %}
-{% if consistency.issues %}
-<section class="alert ha-maintenance-alert" role="alert">
-  <div><strong>{{ consistency.issues[0].title }}</strong><span>{{ consistency.issues[0].message }}</span></div>
-  <span class="ha-status-chip is-{{ 'error' if consistency.issues[0].severity == 'critical' else 'degraded' }}">{{ consistency.issues[0].severity|title }}</span>
+{% if maintenance_error %}<div class="alert" role="alert"><strong>The request could not start</strong><span>{{ maintenance_error }}</span></div>{% endif %}
+{% if request.query_params.get('reconcile') == 'started' %}<div class="success" role="status"><strong>Reconciliation started.</strong><span>Kaya waits for fresh signed reports from both nodes.</span></div>{% endif %}
+
+{# 1. One answer: is the cluster fine, and if not, what now? #}
+<section class="panel ha-health is-{{ health.state|lower|replace('_', '-') }}" id="health-summary" data-ha-health-state="{{ health.state|lower }}" aria-labelledby="ha-health-heading">
+  <div class="ha-section-heading">
+    <div>
+      <span class="ha-sync-eyebrow">Health &amp; Repair</span>
+      <h2 id="ha-health-heading">{{ health.label }}</h2>
+      <p class="ha-health-headline"><strong>{{ health.headline }}</strong></p>
+      <p class="muted">{{ health.detail }}</p>
+    </div>
+    <span class="ha-status-chip is-{{ 'succeeded' if health.state == 'HEALTHY' else 'deploying' if health.state == 'RECOVERING' else 'degraded' if health.state == 'NEEDS_APPROVAL' else 'error' }}">{{ health.label }}</span>
+  </div>
+  {% set doing = health.recovering|selectattr('disposition', 'equalto', 'SELF_HEALING')|list + health.recovering|selectattr('code', 'in', ['MAINTENANCE_IN_PROGRESS', 'FAILOVER_IN_PROGRESS', 'KEEPALIVED_BASELINE_RESTORING'])|list %}
+  {% if doing %}
+  <div class="ha-health-doing" data-ha-health-recovering>
+    <h3>What Kaya is doing</h3>
+    <ul>{% for item in doing %}<li><strong>{{ item.title }}{% if item.node %} ({{ item.node }}){% endif %}.</strong> {{ item.condition }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+  {% if health.action %}
+  <div class="ha-health-action" data-ha-health-action="{{ health.action.key }}">
+    <h3>{{ 'Recommended action' if health.state == 'NEEDS_APPROVAL' else 'Next safe step' }}</h3>
+    {% if health.state != 'NEEDS_APPROVAL' and health.action_finding %}<p class="muted">{{ health.action_finding.title }}{% if health.action_finding.node %} ({{ health.action_finding.node }}){% endif %}: {{ health.action_finding.condition }}</p>{% endif %}
+    {% if health.action.key in ['RECONCILE', 'RETRY_DHCP_SELF_HEAL'] and user.role == 'admin' and not maintenance_run %}
+    <form method="post" action="/high-availability/clusters/{{ cluster.public_id }}/maintenance/reconcile" class="ha-health-action-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="repair_action" value="{{ 'retry_dhcp_self_heal' if health.action.key == 'RETRY_DHCP_SELF_HEAL' else 'reconcile' }}">
+      <button class="button" type="submit">{{ health.action.label }}</button>
+      <small class="muted">Effect: {{ health.action.service_impact }}</small>
+    </form>
+    {% else %}
+    <p><a class="button" href="{{ health.action.path }}">{{ health.action.label }}</a> <small class="muted">Effect: {{ health.action.service_impact }}</small></p>
+    {% endif %}
+  </div>
+  {% elif health.state == 'BLOCKED' %}
+  <p class="ha-health-next"><strong>Next safe step:</strong> follow the explanation above; this page re-checks from the next signed reports.</p>
+  {% endif %}
+</section>
+
+{# 2. Observed service state #}
+<section class="panel" id="service-state" aria-labelledby="ha-service-state-heading">
+  <div class="ha-section-heading"><div><h2 id="ha-service-state-heading">Service state</h2><p class="muted">Observed from signed agent reports; roles are those assigned by the last verified operation.</p></div></div>
+  <div class="ha-summary-grid ha-maintenance-summary">
+    <article><span>Cluster health</span><strong data-ha-cluster-field="status">{{ cluster.status|replace('_', ' ')|title }}</strong><small>Overall HA state</small></article>
+    <article><span>Service availability</span><strong data-ha-cluster-field="service_availability">{{ consistency.service_availability|replace('_', ' ')|title }}</strong><small>Whether the clustered service is usable</small></article>
+    <article><span>HA configuration</span><strong data-ha-cluster-field="ha_configuration">{{ consistency.configuration_state|replace('_', ' ')|title }}</strong><small>Whether ownership and stored roles agree</small></article>
+  </div>
+  <dl class="ha-overview-list">
+    {% for item in overview %}
+    <div class="ha-overview-item is-{{ item.tone }}" data-ha-overview="{{ item.key }}" data-ha-overview-tone="{{ item.tone }}">
+      <dt>{{ item.label }}</dt>
+      <dd>{{ item.value }}{% if item.note %}<small>{{ item.note }}</small>{% endif %}</dd>
+    </div>
+    {% endfor %}
+  </dl>
+</section>
+
+{# 3. Every finding, with its safety prerequisites #}
+{% include '_ha_assessment.html' %}
+
+{# 4. Approved repairs #}
+{% if alignment and (alignment.relevant or alignment_run) %}
+<section class="panel ha-align" id="align-ownership" data-ha-alignment data-ha-alignment-condition="{{ alignment.condition|lower }}">
+  <div class="ha-section-heading">
+    <div><span class="ha-sync-eyebrow">Virtual IP only &middot; administrator approval</span><h2>Align service ownership</h2><p class="muted">Moves only the Virtual IP to the node that already serves DHCP, so one node holds both again. DHCP is never started, stopped or moved, and lease files are never written.</p></div>
+    {% if alignment_run_active %}<span class="ha-status-chip is-deploying">Running</span>{% elif alignment.allowed %}<span class="ha-status-chip is-degraded">Ready for approval</span>{% elif alignment.condition == 'MISMATCH' %}<span class="ha-status-chip is-error">Blocked</span>{% elif alignment.relevant %}<span class="ha-status-chip is-error">Not applicable</span>{% endif %}
+  </div>
+  {% if request.query_params.get('align') == 'started' %}<div class="success" role="status"><strong>Align service ownership started.</strong><span>Kaya advances each step only after fresh signed reports confirm it.</span></div>{% endif %}
+  {% if alignment.relevant %}
+  <dl class="ha-finding-observations ha-align-facts">
+    <dt>What is wrong</dt><dd>{{ alignment_condition_detail }}</dd>
+    <dt>Current Virtual IP owner</dt><dd data-ha-align-vip>{{ alignment.vip_owner.display_name if alignment.vip_owner else 'none confirmed' }}</dd>
+    <dt>Current DHCP server</dt><dd data-ha-align-dhcp>{{ alignment.dhcp_owner.display_name if alignment.dhcp_owner else 'none confirmed' }}</dd>
+    <dt>Evidence checked</dt><dd>{{ alignment.generated_at.strftime('%H:%M:%S') }} UTC, from stored signed agent reports</dd>
+  </dl>
+  {% if alignment.condition == 'MISMATCH' and alignment.dhcp_owner and alignment.vip_owner %}
+  <p><strong>Why Kaya recommends this repair:</strong> {{ alignment.dhcp_owner.display_name }} already serves DHCP and holds the live leases. Moving only the Virtual IP to it is the smallest change that puts DNS and DHCP on one node again: DHCP never moves, so there is no lease handover. Reinitialise would rebuild the whole HA runtime and is not needed for this condition.</p>
+  {% endif %}
+  <div class="table-wrap"><table><thead><tr><th>Prerequisite</th><th>Result</th><th>Evidence or action needed</th></tr></thead><tbody>
+    {% for check in alignment.checks %}<tr data-ha-align-check="{{ check.code }}"><td>{{ check.label }}</td><td>{{ 'Pass' if check.passed else 'Blocked' }}</td><td>{{ check.detail }}</td></tr>{% endfor %}
+  </tbody></table></div>
+  {% if alignment.impact %}<h3>Expected service impact</h3><ul class="ha-preservation-list">{% for line in alignment.impact %}<li>{{ line }}</li>{% endfor %}</ul>{% endif %}
+  {% if alignment.allowed and not maintenance_run %}
+    {% if user.role == 'admin' %}
+    <form method="post" action="/high-availability/clusters/{{ cluster.public_id }}/maintenance/align" class="stack" data-ha-align-form>
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="target_node_id" value="{{ alignment.dhcp_owner.public_id }}">
+      <input type="hidden" name="preview_fingerprint" value="{{ alignment.fingerprint }}">
+      <label class="checkbox-row"><input type="checkbox" name="acknowledge_alignment" value="1" required> I approve moving the Virtual IP once, from {{ alignment.vip_owner.display_name }} to {{ alignment.dhcp_owner.display_name }}. DNS through the Virtual IP may pause briefly. DHCP and leases stay unchanged, and Kaya will not move the Virtual IP back if a step fails.</label>
+      {% if alignment.latch_retained %}<label class="checkbox-row"><input type="checkbox" name="authorise_under_latch" value="1" required> I authorise this single repair while the maintenance safety latch (failed operation {{ alignment.latch_failed_run_id }}) stays in place. No other automation resumes, and the latch must still be released separately.</label>{% endif %}
+      <label>Type the cluster name <strong>{{ cluster.name }}</strong> to confirm<input type="text" name="confirmation" required autocomplete="off" maxlength="200"></label>
+      <button class="button" type="submit">Align service ownership</button>
+    </form>
+    {% else %}<p class="muted">An administrator can approve this repair.</p>{% endif %}
+  {% elif alignment.condition == 'MISMATCH' and not alignment_run_active %}
+  <div class="alert" role="status"><strong>Alignment is blocked</strong><span>Kaya offers this repair only when every prerequisite above passes. Resolve the items marked Blocked; this page re-checks them from the next signed reports.</span></div>
+  {% endif %}
+  {% endif %}
+  {% if alignment_run %}
+  <div class="ha-align-run" data-ha-align-run="{{ alignment_run.status|lower }}"{% if alignment_run_active %} data-ha-repair-running{% endif %}>
+    <h3>{% if alignment_run.status == 'RUNNING' %}Repair in progress{% elif alignment_run.status == 'SUCCEEDED' %}Last repair: aligned and verified{% else %}Last repair: stopped safely{% endif %}</h3>
+    <ol class="ha-maintenance-progress">{% for step in alignment_run.steps %}<li class="is-{{ step.state }}">{{ step.label }}</li>{% endfor %}</ol>
+    {% if alignment_run_active %}<p><a class="button secondary" href="/high-availability/clusters/{{ cluster.public_id }}/maintenance#align-ownership">Refresh progress</a></p>{% endif %}
+    {% if alignment_run.error %}<div class="alert"><strong>Stopped safely</strong><span>{{ alignment_run.error }}</span></div>{% endif %}
+    {% if alignment_remaining %}
+    <div class="ha-remaining" data-ha-align-remaining>
+      <h4>What is still outstanding</h4>
+      <ul>{% for item in alignment_remaining %}<li class="is-{{ 'open' if item.open else 'resolved' }}" data-ha-remaining-open="{{ 'true' if item.open else 'false' }}"><strong>{{ item.label }}:</strong> {{ item.detail }}{% if item.anchor %} <a href="{{ item.anchor }}">Go to it</a>{% endif %}</li>{% endfor %}</ul>
+    </div>
+    {% endif %}
+    {% if alignment_run.authorised_under_latch %}<p class="muted">This repair was authorised while the maintenance safety latch was held; the latch was not released.</p>{% endif %}
+    <details><summary>Progress and verification evidence</summary>
+      <ul>{% for item in alignment_run.progress %}<li>{{ item }}</li>{% endfor %}</ul>
+      {% if alignment_run.verification %}<dl class="ha-finding-observations">
+        <dt>Virtual IP reported by</dt><dd>{{ (alignment_run.verification.vip_owners or ['none'])|join(', ') }}</dd>
+        <dt>DHCP served by</dt><dd>{{ (alignment_run.verification.dhcp_owners or ['none'])|join(', ') }}</dd>
+        <dt>Observed at</dt><dd>{{ alignment_run.verification.observed_at }}</dd>
+        {% for item in alignment_run.verification.keepalived or [] %}<dt>Keepalived on {{ item.name }}</dt><dd>{{ (item.status or 'unknown')|lower }}, {{ (item.runtime or 'unknown')|lower }}, generation {{ item.config_generation }}{% if item.last_error %}: {{ item.last_error }}{% endif %}</dd>{% endfor %}
+      </dl>{% endif %}
+    </details>
+  </div>
+  {% endif %}
 </section>
 {% endif %}
 
-<section class="panel">
+{% if restoration and restoration.relevant and not maintenance_run %}
+<section class="panel ha-align" id="restore-baseline" data-ha-restoration data-ha-restoration-state="{{ (restoration.state or '')|lower }}"{% if restoration.running %} data-ha-repair-running{% endif %}>
   <div class="ha-section-heading">
-    <div><span class="ha-sync-eyebrow">Cluster maintenance</span><h2>Inspect and repair the existing HA relationship</h2><p class="muted">These tools preserve both Pi-holes, their configuration, DNS and DHCP data, the Kaya cluster record, and all HA and audit history.</p></div>
+    <div><span class="ha-sync-eyebrow">Keepalived reloads only &middot; administrator approval</span><h2>Restore the stable Keepalived configuration</h2><p class="muted">A node received a preempt-capable configuration for a step that has ended. Restoring the stable no-preemption configuration removes the risk that it takes the Virtual IP on its own. The Virtual IP and DHCP do not move. Automatic restoration is disabled.</p></div>
+    {% if restoration.running %}<span class="ha-status-chip is-deploying">Running</span>{% elif restoration.allowed %}<span class="ha-status-chip is-degraded">Ready for approval</span>{% elif restoration.state == 'OUTSTANDING' %}<span class="ha-status-chip is-deploying">Waiting</span>{% else %}<span class="ha-status-chip is-error">Blocked</span>{% endif %}
   </div>
-  <div class="ha-summary-grid ha-maintenance-summary">
-    <article><span>Cluster health</span><strong data-ha-cluster-field="status">{{ cluster.status|replace('_', ' ')|title }}</strong><small>Overall HA state</small></article>
-    <article><span>Service availability</span><strong data-ha-cluster-field="service_availability">{{ consistency.service_availability|replace('_', ' ')|title }}</strong><small>Whether the current clustered service is usable</small></article>
-    <article><span>HA configuration</span><strong data-ha-cluster-field="ha_configuration">{{ consistency.configuration_state|replace('_', ' ')|title }}</strong><small>Whether ownership and stored roles agree</small></article>
-  </div>
+  {% if request.query_params.get('restore') == 'started' %}<div class="success" role="status"><strong>Restoration started.</strong><span>Kaya advances each step only after fresh signed reports confirm it.</span></div>{% endif %}
+  <dl class="ha-finding-observations ha-align-facts">
+    <dt>Node that may preempt</dt><dd data-ha-restore-preempt>{{ restoration_run.preempt_node or 'unknown' }} (since generation {{ restoration_run.preempt_generation }})</dd>
+    <dt>Granted for</dt><dd>{{ restoration_run.reason or 'a completed or stopped operation' }}</dd>
+    <dt>Current Virtual IP owner</dt><dd data-ha-restore-owner>{{ restoration.owner.display_name if restoration.owner else 'none confirmed' }}</dd>
+    <dt>State</dt><dd>{{ restoration.state_detail }}</dd>
+    {% if restoration.detail and restoration.state == 'BLOCKED' %}<dt>Last attempt stopped</dt><dd data-ha-restore-blocked>{{ restoration.detail }}</dd>{% endif %}
+    {% if restoration_run.attempts %}<dt>Attempts</dt><dd>{{ restoration_run.attempts }} (each needs its own approval)</dd>{% endif %}
+  </dl>
+  {% if restoration.running %}
+  <ol class="ha-maintenance-progress">{% for step in restoration_run.steps %}<li class="is-{{ step.state }}">{{ step.label }}</li>{% endfor %}</ol>
+  <p><a class="button secondary" href="/high-availability/clusters/{{ cluster.public_id }}/maintenance#restore-baseline">Refresh progress</a></p>
+  {% else %}
+  <div class="table-wrap"><table><thead><tr><th>Prerequisite</th><th>Result</th><th>Evidence or action needed</th></tr></thead><tbody>
+    {% for check in restoration.checks %}<tr data-ha-restore-check="{{ check.code }}"><td>{{ check.label }}</td><td>{{ 'Pass' if check.passed else 'Blocked' }}</td><td>{{ check.detail }}</td></tr>{% endfor %}
+  </tbody></table></div>
+  {% if restoration.impact %}<h3>Expected service impact</h3><ul class="ha-preservation-list">{% for line in restoration.impact %}<li>{{ line }}</li>{% endfor %}</ul>{% endif %}
+  {% if restoration.allowed and not maintenance_run %}
+    {% if user.role == 'admin' %}
+    <form method="post" action="/high-availability/clusters/{{ cluster.public_id }}/maintenance/restore-baseline" class="stack" data-ha-restore-form>
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="preview_fingerprint" value="{{ restoration.fingerprint }}">
+      <label class="checkbox-row"><input type="checkbox" name="acknowledge_restoration" value="1" required> I approve one restoration attempt: Keepalived reloads with the stable configuration, {{ restoration.standby.display_name }} first, then {{ restoration.owner.display_name }}. The Virtual IP stays on {{ restoration.owner.display_name }}; DHCP and leases are not changed; Kaya will not retry if a step fails.</label>
+      {% if restoration.latch_retained %}<label class="checkbox-row"><input type="checkbox" name="authorise_under_latch" value="1" required> I authorise this single restoration while the maintenance safety latch (failed operation {{ restoration.latch_failed_run_id }}) stays in place. No other automation resumes, and the latch must still be released separately.</label>{% endif %}
+      <label>Type the cluster name <strong>{{ cluster.name }}</strong> to confirm<input type="text" name="confirmation" required autocomplete="off" maxlength="200"></label>
+      <button class="button" type="submit">Restore the stable configuration</button>
+    </form>
+    {% else %}<p class="muted">An administrator can approve this restoration.</p>{% endif %}
+  {% elif restoration.state in ['PENDING_APPROVAL', 'BLOCKED'] %}
+  <div class="alert" role="status"><strong>Restoration is blocked</strong><span>Kaya offers it only when every prerequisite above passes. Resolve the items marked Blocked; this page re-checks them from the next signed reports.</span></div>
+  {% endif %}
+  {% endif %}
 </section>
+{% endif %}
 
-<section class="panel">
-  <div class="ha-section-heading"><div><h2>Current observed state</h2><p class="muted">This view uses signed HA Agent reports. Starting reconciliation waits for a new report from both nodes instead of trusting the current dashboard cache.</p></div></div>
-  <div class="ha-node-grid">
-    {% for node in consistency_json.nodes %}
-    <article class="ha-node-card" data-ha-node-id="{{ node.id }}">
-      <div class="ha-node-card-heading"><span class="table-chip">{{ node.name }}</span><span class="ha-agent-state {{ 'is-online' if node.agent_connected else 'is-pending' }}">{{ 'Connected' if node.agent_connected else 'Waiting' }}</span></div>
-      <p class="mono">{{ node.address or 'Address not reported' }}</p>
-      <dl class="ha-node-facts">
-        <div><dt>DNS</dt><dd data-ha-node-field="dns_healthy">{{ 'Healthy' if node.dns_healthy else 'Unhealthy' }}</dd></div>
-        <div><dt>DHCP</dt><dd data-ha-node-field="dhcp_running">{{ 'Running' if node.dhcp_observation_status == 'FRESH' and node.dhcp_runtime_state == 'RUNNING' else 'Stopped' if node.dhcp_observation_status == 'FRESH' and node.dhcp_runtime_state == 'STOPPED' else 'Unknown — probe unavailable' }}</dd></div>
-        <div><dt>Virtual IP</dt><dd data-ha-node-field="vip_owned">{{ 'Owned' if node.vip_owned else 'Not owned' }}</dd></div>
-        <div><dt>Keepalived</dt><dd>{{ 'Running' if node.keepalived_running else 'Not running' }}</dd></div>
-        <div><dt>Recovery</dt><dd>{{ node.recovery_state|replace('_', ' ')|title }}</dd></div>
-        <div><dt>Last signed report</dt><dd>{% if node.last_heartbeat_at %}<time data-utc-time="{{ node.last_heartbeat_at }}" data-time-format="friendly">{{ node.last_heartbeat_at }}</time>{% else %}Never{% endif %}</dd></div>
-      </dl>
-    </article>
-    {% endfor %}
-  </div>
-  {% if consistency.issues %}<div class="ha-maintenance-issues"><h3>Detected issues</h3>{% for issue in consistency.issues %}<article><span class="ha-check-state ha-check-state--{{ 'fail' if issue.severity == 'critical' else 'unknown' }}">{{ issue.severity|title }}</span><div><strong>{{ issue.title }}</strong><p>{{ issue.message }}</p></div></article>{% endfor %}</div>{% else %}<div class="success"><strong>No ownership contradiction detected</strong><span>The current signed reports agree on service ownership.</span></div>{% endif %}
-</section>
-
-{% if latch_preview %}
-<section class="panel" data-ha-latch-panel>
+{% if latch_preview and not maintenance_run %}
+<section class="panel" id="latch-review" data-ha-latch-panel>
   <div class="ha-section-heading"><div><span class="ha-sync-eyebrow">Failed-safe recovery</span><h2>Review &amp; Release Maintenance Safety Latch</h2><p class="muted">This workflow changes only Kaya's persisted safety latch. It never moves the VIP, restarts DHCP, changes Pi-hole configuration or stages leases.</p></div><span class="ha-status-chip is-{{ 'succeeded' if not cluster.maintenance_mode else 'error' }}">{{ 'Released' if not cluster.maintenance_mode else 'Latched' }}</span></div>
-  {% if maintenance_error %}<div class="alert" role="alert"><strong>Latch action blocked</strong><span>{{ maintenance_error }}</span></div>{% endif %}
   {% if request.query_params.get('latch') == 'acknowledged' %}<div class="success" role="status"><strong>Historical failure acknowledged.</strong><span>The safety latch remains active.</span></div>{% endif %}
   {% if request.query_params.get('latch') == 'released' %}<div class="success" role="status"><strong>Safety latch released.</strong><span>Automatic configuration writes remain on hold until separately resumed.</span></div>{% endif %}
   <div class="table-wrap"><table><thead><tr><th>Safety condition</th><th>Result</th><th>Evidence</th></tr></thead><tbody>{% for check in latch_preview.checks %}<tr><td>{{ check.code|replace('_',' ')|title }}</td><td>{{ 'Pass' if check.passed else 'Blocked' }}</td><td>{{ check.detail }}</td></tr>{% endfor %}</tbody></table></div>
@@ -58,8 +185,8 @@
 {% endif %}
 
 {% if maintenance_run and maintenance_run.status in ['RUNNING', 'PAUSED', 'FAILED_SAFE'] %}
-<section class="panel" data-ha-maintenance-panel>
-  <div class="ha-section-heading"><div><span class="ha-sync-eyebrow">{{ maintenance_run.operation|replace('_', ' ')|title }}</span><h2 data-ha-maintenance-title>{{ 'Reinitialisation paused' if maintenance_run.status == 'FAILED_SAFE' else 'Cluster maintenance in progress' }}</h2><p class="muted">Kaya advances only after each safety condition is confirmed. DNS and DHCP remain on the nodes, not in Kaya.</p></div><span class="ha-status-chip is-{{ 'error' if maintenance_run.status == 'FAILED_SAFE' else 'deploying' }}" data-ha-maintenance-status>{{ maintenance_run.status|replace('_', ' ')|title }}</span></div>
+<section class="panel" data-ha-maintenance-panel{% if maintenance_run.status == 'RUNNING' %} data-ha-repair-running{% endif %}>
+  <div class="ha-section-heading"><div><span class="ha-sync-eyebrow">{{ maintenance_run.operation|replace('_', ' ')|title }}</span><h2 data-ha-maintenance-title>{{ 'Operation paused' if maintenance_run.status == 'FAILED_SAFE' else 'Operation in progress' }}</h2><p class="muted">Kaya advances only after each safety condition is confirmed. DNS and DHCP remain on the nodes, not in Kaya.</p></div><span class="ha-status-chip is-{{ 'error' if maintenance_run.status == 'FAILED_SAFE' else 'deploying' }}" data-ha-maintenance-status>{{ maintenance_run.status|replace('_', ' ')|title }}</span></div>
   {% if maintenance_run.error_redacted %}<div class="alert"><strong>The operation stopped safely</strong><span data-ha-maintenance-error>{{ maintenance_run.error_redacted }}</span></div>{% endif %}
   <ol class="ha-maintenance-progress" data-ha-maintenance-progress>
     {% for item in maintenance_status.progress %}<li class="is-complete">{{ item }}</li>{% else %}<li>Waiting for the first fresh node reports</li>{% endfor %}
@@ -72,24 +199,47 @@
     <button class="button secondary" type="submit">Continue safety checks</button>
     <small class="muted">This page continues automatically while it is open.</small>
   </form>
-  {% elif maintenance_run.status == 'FAILED_SAFE' %}
-  <a class="button secondary" href="/high-availability/clusters/{{ cluster.public_id }}/maintenance?new=1">Review current state and create a new repair plan</a>
   {% endif %}
 </section>
-{% else %}
-<section class="ha-detail-grid section-gap">
-  <article class="panel">
-    <span class="ha-sync-eyebrow">Low impact</span><h2>Reconcile State</h2>
-    <p>Re-detect the current state of both Pi-hole nodes and correct Kaya's stored HA status where it is safe to do so.</p>
-    <ul class="ha-preservation-list"><li>Waits for fresh signed reports from both agents</li><li>Corrects stale roles and completed recovery metadata</li><li>Does not intentionally move DNS, DHCP, or the Virtual IP</li></ul>
-    {% if user.role == 'admin' %}<form method="post" action="/high-availability/clusters/{{ cluster.public_id }}/maintenance/reconcile"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit">Reconcile State</button></form>{% endif %}
-  </article>
-  <article class="panel">
+{% endif %}
+
+{# 5. Node reports #}
+<section class="panel" id="node-reports">
+  <details>
+    <summary><strong>Node reports</strong> <span class="muted">Each node's last signed report</span></summary>
+    <div class="ha-node-grid">
+      {% for node in consistency_json.nodes %}
+      <article class="ha-node-card" data-ha-node-id="{{ node.id }}">
+        <div class="ha-node-card-heading"><span class="table-chip">{{ node.name }}</span><span class="ha-agent-state {{ 'is-online' if node.agent_connected else 'is-pending' }}">{{ 'Connected' if node.agent_connected else 'Waiting' }}</span></div>
+        <p class="mono">{{ node.address or 'Address not reported' }}</p>
+        <dl class="ha-node-facts">
+          <div><dt>DNS</dt><dd data-ha-node-field="dns_healthy">{{ 'Healthy' if node.dns_healthy else 'Unhealthy' }}</dd></div>
+          <div><dt>DHCP</dt><dd data-ha-node-field="dhcp_running">{{ 'Running' if node.dhcp_observation_status == 'FRESH' and node.dhcp_runtime_state == 'RUNNING' else 'Stopped' if node.dhcp_observation_status == 'FRESH' and node.dhcp_runtime_state == 'STOPPED' else 'Unknown — probe unavailable' }}</dd></div>
+          <div><dt>Virtual IP</dt><dd data-ha-node-field="vip_owned">{{ 'Owned' if node.vip_owned else 'Not owned' }}</dd></div>
+          <div><dt>Keepalived</dt><dd>{{ 'Running' if node.keepalived_running else 'Not running' }}</dd></div>
+          <div><dt>Recovery</dt><dd>{{ node.recovery_state|replace('_', ' ')|title }}</dd></div>
+          <div><dt>Last signed report</dt><dd>{% if node.last_heartbeat_at %}<time data-utc-time="{{ node.last_heartbeat_at }}" data-time-format="friendly">{{ node.last_heartbeat_at }}</time>{% else %}Never{% endif %}</dd></div>
+        </dl>
+      </article>
+      {% endfor %}
+    </div>
+  </details>
+</section>
+
+{# 6. Low-level tools: not needed for routine recovery #}
+{% if not (maintenance_run and maintenance_run.status in ['RUNNING', 'PAUSED', 'FAILED_SAFE']) %}
+<section class="panel" id="reconcile">
+  <div class="ha-section-heading"><div><span class="ha-sync-eyebrow">Low impact &middot; records only</span><h2>Reconcile State</h2><p class="muted">Re-detect both nodes from fresh signed reports and correct Kaya's stored HA status where it is safe to do so. It does not move DNS, DHCP or the Virtual IP.</p></div></div>
+  {% if user.role == 'admin' %}<form method="post" action="/high-availability/clusters/{{ cluster.public_id }}/maintenance/reconcile"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit">Reconcile State</button></form>{% endif %}
+</section>
+<details class="panel ha-advanced" id="advanced" data-ha-advanced>
+  <summary><strong>Advanced: Reinitialise HA cluster</strong> <span class="muted">Not needed for routine recovery. Use it only after interrupted setup or to rebuild HA around a chosen Active node.</span></summary>
+  <article>
     <span class="ha-sync-eyebrow">Controlled service transition may occur</span><h2>Reinitialise HA Cluster</h2>
-    <p>Use this after interrupted setup or when VIP and DHCP ownership disagree. Kaya preserves the existing cluster and rebuilds HA around the nodes you already have.</p>
+    <p>Kaya preserves the existing cluster and rebuilds HA around the nodes you already have.{% if alignment and alignment.condition == 'MISMATCH' %} When only the Virtual IP and DHCP are on different nodes, use Align service ownership above instead.{% endif %}</p>
     {% if user.role == 'admin' %}
-    <details class="ha-action-disclosure" {% if consistency.issues|selectattr('requires_service_movement')|list %}open{% endif %}>
-      <summary class="button">Plan reinitialisation</summary>
+    <details class="ha-action-disclosure">
+      <summary class="button secondary">Plan reinitialisation</summary>
       <form method="post" action="/high-availability/clusters/{{ cluster.public_id }}/maintenance/reinitialise" class="stack">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <fieldset>
@@ -109,9 +259,9 @@
     </details>
     {% endif %}
   </article>
-</section>
+</details>
 {% endif %}
 
-<section class="panel ha-sync-offline section-gap"><div><h2>If Kaya goes offline</h2><p>Pi-hole DNS{% if pihole_manages_dhcp %}, DHCP{% endif %} and the local failover service continue on the nodes. Kaya coordinates this repair but is never in the network traffic path.</p></div><span class="ha-sync-safe-badge">Network services stay local</span></section>
+<section class="panel ha-sync-offline section-gap"><div><h2>If Kaya goes offline</h2><p>Pi-hole DNS{% if pihole_manages_dhcp %}, DHCP{% endif %} and the local failover service continue on the nodes. Kaya coordinates repairs but is never in the network traffic path.</p></div><span class="ha-sync-safe-badge">Network services stay local</span></section>
 <script src="/static/js/ha_maintenance.js?v={{ asset_version }}" defer></script>
 {% endblock %}

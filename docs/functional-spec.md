@@ -63,3 +63,7 @@ The current application is a FastAPI/Jinja/SQLAlchemy application with PostgreSQ
 - `RemoteManagerSetting` stores many unrelated site-wide settings.
 - Several routers are large, especially `admin.py` and `compute_manager.py`.
 - The Markdown renderer, remote access flows, backup agent dispatch, DNS provider parsing, and compute metadata parsing are areas that need dedicated tests.
+- Three `async` request handlers still make blocking network calls on the event loop, so a slow or unreachable target pauses other requests until it times out. These are not part of High Availability, whose equivalent handlers were moved to worker threads:
+  - Network Monitor `POST /traffic/sources/{source_id}/test` (`test_traffic_source`): traffic-source connection test.
+  - Remote Manager `POST /{remote_id}/ssh/host-key/scan` (`scan_remote_host_key`): SSH host-key scan.
+  - Remote Manager `POST /{remote_id}/ssh/host-key/trust` (`trust_remote_host_key`): SSH host-key scan before trusting.

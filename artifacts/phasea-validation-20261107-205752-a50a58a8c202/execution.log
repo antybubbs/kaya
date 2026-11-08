@@ -1,0 +1,42 @@
+﻿**********************
+Windows PowerShell transcript start
+Start time: 20261107205753
+Username: HOMEGAMINGPC\me
+RunAs User: HOMEGAMINGPC\me
+Configuration Name: 
+Machine: HOMEGAMINGPC (Microsoft Windows NT 10.0.26300.0)
+Host Application: C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Users\me\Nextcloud2\Dev Work\kaya\scripts\phasea_interactive_validation.ps1
+Process ID: 54824
+PSVersion: 5.1.26100.9818
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.9818
+BuildVersion: 10.0.26100.9818
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+Phase A validation run: 20261107-205752-a50a58a8c202
+Artifacts: C:\Users\me\Nextcloud2\Dev Work\kaya\artifacts\phasea-validation-20261107-205752-a50a58a8c202
+
+
+
+
+
+
+
+PS>TerminatingError(): "Refusing non-disposable PostgreSQL storage: "
+PS>TerminatingError(docker.exe): "The running command stopped because the preference variable "ErrorActionPreference" or common parameter is set to Stop:  Container kaya-phasea-20261107-205752-a50a58a8c202-postgres-1 Stopping "
+>> TerminatingError(docker.exe): "The running command stopped because the preference variable "ErrorActionPreference" or common parameter is set to Stop:  Container kaya-phasea-20261107-205752-a50a58a8c202-postgres-1 Stopping "
+The running command stopped because the preference variable "ErrorActionPreference" or common parameter is set to Stop:  Container kaya-phasea-20261107-205752-a50a58a8c202-postgres-1 Stopping
+docker.exe :  Container kaya-phasea-20261107-205752-a50a58a8c202-postgres-1 Stopping
+At C:\Users\me\Nextcloud2\Dev Work\kaya\scripts\phasea_interactive_validation.ps1:195 char:9
++         & docker.exe compose --env-file $composeEnv -p $project -f $c ...
++         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ( Container kaya...res-1 Stopping :String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+
+**********************
+Windows PowerShell transcript end
+End time: 20261107205801
+**********************

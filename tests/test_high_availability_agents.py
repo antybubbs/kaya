@@ -12,8 +12,10 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import HTTPException
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 from starlette.requests import Request
 
+from app.services.ha_watchdog import drain_evaluations
 from app.db.session import Base
 from app.models.models import HAAgentCredential, HAAgentRequest, HACluster, HAEvent, HALeaseReplicationState, HANode, NotificationEvent
 from app.schemas.high_availability import HAAgentActionResult, HAAgentEventItem, HAAgentHeartbeat, HAAgentRegister
@@ -26,7 +28,10 @@ from ha_agent.kaya_ha_agent import AgentRequestError, ICMP_AVAILABLE, ICMP_NO_RE
 
 
 def database():
-    engine = create_engine("sqlite:///:memory:")
+    # Like production (check_same_thread=False): agent authentication runs its
+    # database work in the thread pool, so the in-memory database is shared
+    # across threads through one static connection.
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
 
     @event.listens_for(engine, "connect")
     def foreign_keys(connection, record):
@@ -542,12 +547,14 @@ def test_verified_automatic_failover_event_immediately_adopts_the_surviving_owne
         db.commit()
 
         record_heartbeat(db, standby, HAAgentHeartbeat(observed_role="ACTIVE", observed_generation=8, vip_owned=True, dhcp_running=True, dhcp_configured=True, dhcp_listener_active=True, ftl_active=True, dhcp_runtime_state="RUNNING", dhcp_observation_status="FRESH", dns_healthy=True, peer_reachable=False, lease_generation=0, config_generation=8, agent_version="0.2.7", keepalived_runtime_state="RUNNING"))
+        drain_evaluations(db)  # the HA coordinator makes the decision (P2B)
         assert cluster.status == "DEGRADED"
         assert db.query(HAEvent).filter_by(event_type="ownership_transition_pending", severity="warning").one()
         assert db.query(HAEvent).filter_by(event_type="split_brain_detected").count() == 0
 
         completed = HAAgentEventItem(event_id="automatic-completed-001", event_type="automatic_failover_completed", severity="warning", message="Local failover completed without requiring Kaya.", occurred_at=datetime.utcnow(), details={"generation": 8, "automatic": True})
         assert ingest_events(db, standby, [completed]) == (1, 0)
+        drain_evaluations(db)  # the HA coordinator makes the decision (P2B)
         db.refresh(cluster)
         db.refresh(primary)
         db.refresh(standby)
@@ -581,6 +588,7 @@ def test_both_nodes_reporting_vip_confirms_split_brain_after_transition_window()
 
         record_heartbeat(db, standby, HAAgentHeartbeat(observed_role="ACTIVE", observed_generation=8, vip_owned=True, dhcp_running=False, dns_healthy=True, peer_reachable=False, lease_generation=0, config_generation=8, agent_version="0.2.3", keepalived_runtime_state="RUNNING"))
         record_heartbeat(db, primary, HAAgentHeartbeat(observed_role="ACTIVE", observed_generation=8, vip_owned=True, dhcp_running=True, dns_healthy=True, peer_reachable=True, lease_generation=0, config_generation=8, agent_version="0.2.3", keepalived_runtime_state="RUNNING"))
+        drain_evaluations(db)  # the HA coordinator makes the decision (P2B)
 
         assert cluster.status == "ERROR"
         assert db.query(HAEvent).filter_by(event_type="split_brain_detected", severity="critical").one()
@@ -611,7 +619,10 @@ def test_stale_cached_owner_recovers_on_the_next_surviving_heartbeat():
         db.refresh(cluster)
         db.refresh(primary)
         assert cluster.status == "DEGRADED"
-        assert cluster.current_active_node_id == standby.id
+        # The standby is the observed owner; the assignment moves only on verified
+        # adoption (DHCP is not yet confirmed on it here), never from the observation.
+        assert reconcile_topology(cluster).active_node_id == standby.id
+        assert cluster.current_active_node_id == primary.id
         assert primary.vip_owned is False
         assert db.query(HAEvent).filter_by(event_type="ownership_reconciled", severity="info").one()
 
