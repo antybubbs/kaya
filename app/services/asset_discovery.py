@@ -115,8 +115,9 @@ def compose_discovered_devices(db: Session, *, query: str = "", source: str = ""
         mac_address = row.normalised_mac or row.mac_address
         if mac_address:
             item["mac_addresses"] = [mac_address]
-        if row.provider_client_id:
-            item["dhcp_client_ids"] = [row.provider_client_id]
+        # ``provider_client_id`` is the provider's own client record number (the
+        # Pi-hole network table id). It is local to that provider and reusable,
+        # never a DHCP client identifier, so it is not adopted as one.
         if row.is_ignored:
             item["review_state"] = "dismissed"
         dns_by_id[row.id] = item

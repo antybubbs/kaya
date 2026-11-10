@@ -144,7 +144,7 @@
   <header><div><p class="eyebrow">Bulk repair</p><h2 id="di-bulk-title">Preview selected repairs</h2></div><button type="button" class="button secondary" data-di-close aria-label="Close bulk repair">Close</button></header>
   <p class="muted">Only deterministic repairs are offered: managed static assignments with one confirmed owner, and assignments whose DHCP lease definitely ended. Each repair is re-validated and committed on its own; one failure never leaves another partly applied.</p>
   <div data-di-bulk-body></div>
-  <footer><label class="checkbox-label"><input type="checkbox" data-di-bulk-confirm> I reviewed every change above</label><button type="button" class="button danger" data-di-bulk-execute disabled>Apply repairs</button></footer>
+  <footer><label class="checkbox-label"><input type="checkbox" data-di-bulk-confirm disabled> I reviewed every change above</label><button type="button" class="button danger" data-di-bulk-execute disabled>Apply repairs</button></footer>
 </dialog>
 {% endblock %}
 {% block extra_scripts %}<script src="/static/vendor/echarts/echarts.min.js?v=6.1.0" defer></script><script src="/static/js/data_integrity.js?v={{ asset_version }}" defer></script>{% endblock %}
