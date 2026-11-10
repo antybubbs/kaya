@@ -216,6 +216,85 @@ def test_hostname_correction_accepts_only_an_observed_hostname(db):
     assert db.query(DNSClientEvent).filter_by(dns_client_id=client.id, source=repairs.HOSTNAME_SOURCE).count() == 1
 
 
+def _hostname_finding(db):
+    """An auto-filled Static record whose MAC is confirmed for exactly one asset."""
+    record, _client = _auto_filled(db)
+    asset = _asset(db)
+    _evidence(db, asset, record.mac_address)
+    db.commit()
+    _audit(db)
+    return record, asset, _finding(db, "static_hostname_auto_filled", str(record.id))
+
+
+def _administrator_hostnames(db, asset):
+    return db.query(AssetIdentityEvidence).filter_by(asset_id=asset.id, evidence_type="hostname", source="administrator").all()
+
+
+def test_set_asset_hostname_repair_is_attributed_to_the_repairing_administrator(db):
+    record, asset, finding = _hostname_finding(db)
+    admin, other_admin = _admin(db), _admin(db)
+    preview = preview_repair(db, admin, finding, "set_asset_hostname", {"hostname": "Phone.Example.Invalid"})
+    assert preview["state"] == "ready"
+    result = execute_repair(db, admin, finding.id, "set_asset_hostname", {"hostname": "Phone.Example.Invalid"}, preview["preview_token"])
+    assert result["outcome"] == "applied"
+    assert result["affected"]["hostname"] == "phone.example.invalid"
+    db.expire_all()
+    (row,) = _administrator_hostnames(db, asset)
+    assert (row.normalised_value, row.status, row.confirmed_by) == ("phone.example.invalid", "confirmed", admin.id)
+    audits = db.query(AuditLog).filter(AuditLog.action.in_(["set_hostname", "data_integrity_repair"]), AuditLog.user_id.in_([admin.id, other_admin.id])).all()
+    assert sorted((audit.action, audit.user_id) for audit in audits) == [("data_integrity_repair", admin.id), ("set_hostname", admin.id)]
+    assert db.get(IPAddress, record.id).name == "old-phone.example.invalid"   # only the asset's preference changes
+
+
+def test_set_asset_hostname_rejects_an_invalid_hostname_as_a_refusal(db):
+    _record, asset, finding = _hostname_finding(db)
+    with pytest.raises(RepairRefused):
+        preview_repair(db, _admin(db), finding, "set_asset_hostname", {"hostname": "not a hostname"})
+    db.rollback()
+    assert _administrator_hostnames(db, asset) == []
+
+
+def test_set_asset_hostname_requires_the_repair_permission(db):
+    _record, asset, finding = _hostname_finding(db)
+    admin = _admin(db)
+    token = preview_repair(db, admin, finding, "set_asset_hostname", {"hostname": "phone.example.invalid"})["preview_token"]
+    db.query(UserModulePermission).filter_by(user_id=admin.id, module_key="data_integrity.repair").delete()
+    db.commit()
+    with pytest.raises(PermissionError):
+        execute_repair(db, admin, finding.id, "set_asset_hostname", {"hostname": "phone.example.invalid"}, token)
+    db.rollback()
+    assert _administrator_hostnames(db, asset) == []
+
+
+def test_set_asset_hostname_audit_failure_rolls_back(db, monkeypatch):
+    import app.services.asset_identity as asset_identity
+
+    _record, asset, finding = _hostname_finding(db)
+    admin = _admin(db)
+    token = preview_repair(db, admin, finding, "set_asset_hostname", {"hostname": "phone.example.invalid"})["preview_token"]
+    monkeypatch.setattr(asset_identity, "write_audit", lambda *args, **kwargs: None)
+    with pytest.raises(RuntimeError):
+        execute_repair(db, admin, finding.id, "set_asset_hostname", {"hostname": "phone.example.invalid"}, token)
+    monkeypatch.undo()
+    db.rollback()
+    db.expire_all()
+    assert _administrator_hostnames(db, asset) == []
+    assert db.get(DataIntegrityFinding, finding.id).status != "resolved"
+
+
+def test_set_asset_hostname_for_a_deleted_asset_is_stale_not_a_crash(db, monkeypatch):
+    _record, _asset_row, finding = _hostname_finding(db)
+    admin = _admin(db)
+    token = preview_repair(db, admin, finding, "set_asset_hostname", {"hostname": "phone.example.invalid"})["preview_token"]
+
+    def vanished(*args, **kwargs):
+        raise ValueError("Hardware asset not found.")
+
+    monkeypatch.setattr(repairs, "set_administrator_hostname", vanished)
+    with pytest.raises(StaleRepair):
+        execute_repair(db, admin, finding.id, "set_asset_hostname", {"hostname": "phone.example.invalid"}, token)
+
+
 def test_retaining_a_hostname_survives_later_audits(db):
     record, _client = _auto_filled(db)
     _audit(db)

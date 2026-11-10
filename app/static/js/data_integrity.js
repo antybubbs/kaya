@@ -119,6 +119,9 @@
       if (!options.length) box.append(message("warning", "No alternative observed hostname is available."));
       else box.append(el("label", {}, "Observed hostname",
         el("select", { "data-param": "hostname" }, el("option", { value: "", text: "Select a hostname" }), options.map((name) => el("option", { value: name, text: name })))));
+    } else if (action === "set_asset_hostname") {
+      box.append(el("p", { class: "muted", text: "Set the linked asset's preferred hostname. Leave blank to explicitly clear its administrator preference." }));
+      box.append(el("label", {}, "Hostname or FQDN", el("input", { type: "text", maxlength: "255", autocomplete: "off", "data-param": "hostname", placeholder: "device.example.invalid" })));
     }
     return box;
   }
@@ -398,7 +401,9 @@
   let bulkItems = [];
   if (bulkPreview) bulkPreview.addEventListener("click", async () => {
     bulkBody.replaceChildren(message("info", "Previewing every selected repair against current data…"));
+    // Each preview needs its own review: confirmation is reset and unavailable until it loads.
     bulkConfirm.checked = false;
+    bulkConfirm.disabled = true;
     bulkExecute.disabled = true;
     bulkItems = [];
     bulkDialog.showModal();
@@ -410,8 +415,10 @@
         result.items.length ? el("ol", { class: "di-bulk-list" }, result.items.map((item) => el("li", {},
           el("strong", { text: item.affected_label }), el("small", { text: ` ${item.action_label}` }),
           item.changes.length ? table(item.changes) : null, item.closes.length ? table(item.closes) : null))) : null,
-        result.skipped.length ? el("section", {}, el("h3", { text: "Skipped (not safe for bulk repair)" }),
-          el("ul", {}, result.skipped.map((row) => el("li", { text: `Finding ${row.finding_id}: ${row.reason}` })))) : null);
+        // Native replaceChildren renders null as text, so pass only real nodes.
+        ...(result.skipped.length ? [el("section", {}, el("h3", { text: "Skipped (not safe for bulk repair)" }),
+          el("ul", {}, result.skipped.map((row) => el("li", { text: `Finding ${row.finding_id}: ${row.reason}` }))))] : []));
+      bulkConfirm.disabled = !bulkItems.length;
     } catch (error) {
       bulkBody.replaceChildren(message("error", error.message));
     }
@@ -433,7 +440,8 @@
     } catch (error) {
       bulkBody.prepend(message("error", error.message));
     } finally {
-      bulkConfirm.disabled = false;
+      // A batch is applied once; confirming again requires a fresh preview.
+      bulkConfirm.disabled = !bulkItems.length;
     }
   });
 

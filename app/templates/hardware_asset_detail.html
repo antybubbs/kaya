@@ -217,6 +217,20 @@
   <div class="asset-profile-grid">
     <section class="record-panel" aria-labelledby="identity-overview-heading">
       <h3 id="identity-overview-heading">Identity overview</h3>
+      {% if user.role == 'admin' %}
+      <form method="post" action="/infrastructure/asset-manager/{{ record.id }}/hostname" class="record-panel ad-hostname-editor">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label for="asset-hostname"><strong>Edit hostname</strong><input id="asset-hostname" name="hostname" value="{{ host_evidence.normalised_value if host_evidence else '' }}" maxlength="255" pattern="[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?)*\.?" title="Use letters, numbers and hyphens in each hostname label." placeholder="device.example.invalid" autocomplete="off"><small>Enter a hostname or FQDN. Leave blank to clear the administrator preference.</small></label>
+        <div class="muted ad-body-sm">Current preferred: <span class="mono">{{ host_evidence.normalised_value if host_evidence else 'Unset' }}</span>{% if host_evidence %} · {{ host_evidence.source }} · {{ host_evidence.status|title }}{% endif %}</div>
+        {% set linked_static = namespace(rows=[]) %}
+        {% for assignment in asset_profile.assignment_rows %}{% if assignment.ip_address_id %}{% set managed = (asset_profile.managed_ips or [])|selectattr('id', 'equalto', assignment.ip_address_id)|first %}{% if managed and managed.assignment_type == 'Static' %}{% set linked_static.rows = linked_static.rows + [managed] %}{% endif %}{% endif %}{% endfor %}
+        {% if linked_static.rows %}
+        <label class="checkbox-label"><input type="checkbox" name="update_managed_hostname" value="1"> Also update associated Static IP/VLAN Manager hostname</label>
+        <label for="managed-hostname-record">Managed record<select id="managed-hostname-record" name="managed_ip_address_id"><option value="">Choose a record only when updating it</option>{% for managed in linked_static.rows|unique(attribute='id') %}<option value="{{ managed.id }}">{{ managed.address }} · {{ managed.name or '(blank)' }}</option>{% endfor %}</select></label>
+        {% endif %}
+        <button class="button" type="submit">Save hostname</button><button class="button secondary" type="reset">Cancel</button>
+      </form>
+      {% endif %}
       {% if asset_profile.identity_rows %}
       <div class="asset-profile-list">
       {% for evidence in asset_profile.identity_rows %}

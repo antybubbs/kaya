@@ -189,10 +189,11 @@ def test_reused_dhcp_identifier_is_retained_for_review_without_blocking_new_mac_
     assert adopted.id != old_asset.id
     assert db.get(DNSRecognisedDevice, client.id).hardware_asset_id == adopted.id
     assert db.query(AssetIdentityEvidence).filter_by(asset_id=old_asset.id, evidence_type="mac", status="confirmed").count() == 1
-    review_id = db.query(AssetIdentityEvidence).filter_by(asset_id=adopted.id, evidence_type="dhcp_client_id").one()
-    assert review_id.normalised_value == "73"
-    assert review_id.status == "confirmed"
-    assert review_id.source_scope == "provider:1:range:unscoped"
+    # The provider's client record number is never adopted as a DHCP client ID;
+    # the old asset's historical "73" evidence is left for Data Integrity review.
+    assert db.query(AssetIdentityEvidence).filter_by(asset_id=adopted.id, evidence_type="dhcp_client_id").count() == 0
+    assert db.query(AssetIdentityEvidence).filter_by(asset_id=adopted.id, evidence_type="mac", normalised_value=sky_mac, status="confirmed").count() == 1
+    assert db.query(AssetIdentityEvidence).filter_by(asset_id=old_asset.id, evidence_type="dhcp_client_id", normalised_value="73").one().status == "confirmed"
     assert db.query(AssetNetworkAssignment).filter_by(asset_id=old_asset.id).one().ended_at == reassigned_at
 
 

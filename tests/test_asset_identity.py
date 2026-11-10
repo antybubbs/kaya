@@ -6,7 +6,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.db.session import Base
-from app.models.models import AuditLog, AssetIdentityEvidence, AssetNetworkAssignment, HardwareAsset, RemoteManagerSetting, User, VLAN
+from app.models.models import AuditLog, AssetIdentityEvidence, AssetNetworkAssignment, HardwareAsset, IPAddress, RemoteManagerSetting, User, VLAN
 from app.services.asset_identity import (
     _assignment_lock_key,
     asset_identity_summary,
@@ -16,6 +16,7 @@ from app.services.asset_identity import (
     confirm_existing_network_assignment,
     confirm_identity_evidence,
     revoke_identity_evidence,
+    set_administrator_hostname,
 )
 
 
@@ -141,6 +142,37 @@ def test_identity_mutations_require_admin():
     viewer = User(id=3, email="viewer@example.invalid", role="viewer")
     with pytest.raises(PermissionError):
         confirm_identity_evidence(db, viewer, asset_id=1, evidence_type="mac", value="001122334455", source="test")
+
+
+def test_administrator_hostname_replaces_revoked_evidence_and_can_be_cleared():
+    db, admin, *_ = setup()
+    old = confirm_identity_evidence(db, admin, asset_id=1, evidence_type="hostname", value="old.example.invalid", source="dhcp")
+    revoke_identity_evidence(db, admin, old.id)
+    result = set_administrator_hostname(db, admin, asset_id=1, hostname="managed.example.invalid")
+    assert result["hostname"] == "managed.example.invalid"
+    assert db.get(AssetIdentityEvidence, old.id).status == "revoked"
+    manual = db.query(AssetIdentityEvidence).filter_by(asset_id=1, source="administrator", status="confirmed").one()
+    assert manual.normalised_value == "managed.example.invalid"
+    set_administrator_hostname(db, admin, asset_id=1, hostname="replacement.example.invalid")
+    assert db.get(AssetIdentityEvidence, manual.id).status == "revoked"
+    set_administrator_hostname(db, admin, asset_id=1, hostname="")
+    assert db.query(AssetIdentityEvidence).filter_by(source="administrator", status="confirmed").count() == 0
+    assert db.get(AssetIdentityEvidence, manual.id).status == "revoked"
+
+
+def test_administrator_hostname_validates_and_updates_only_related_static_record():
+    db, admin, asset, *_ = setup()
+    confirm_identity_evidence(db, admin, asset_id=asset.id, evidence_type="mac", value="02:00:00:00:00:01", source="manual")
+    record = IPAddress(id=10, address="192.0.2.10", name="old.example.invalid", mac_address="02:00:00:00:00:01", assignment_type="Static")
+    db.add(record)
+    assignment = AssetNetworkAssignment(asset_id=asset.id, address=record.address, address_family=4, ip_address_id=record.id, started_at=datetime(2026, 1, 1), provenance="static", status="confirmed")
+    db.add(assignment)
+    db.commit()
+    with pytest.raises(ValueError, match="valid hostname"):
+        set_administrator_hostname(db, admin, asset_id=asset.id, hostname="bad name")
+    set_administrator_hostname(db, admin, asset_id=asset.id, hostname="new.example.invalid", managed_ip_address_id=record.id, update_managed_hostname=True)
+    assert db.get(IPAddress, record.id).name == "new.example.invalid"
+    assert db.query(AssetNetworkAssignment).filter_by(id=assignment.id).one().address == "192.0.2.10"
 
 
 def test_assignment_lock_key_distinguishes_null_and_scoped_contexts():

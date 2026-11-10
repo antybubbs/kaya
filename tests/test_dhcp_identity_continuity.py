@@ -29,6 +29,7 @@ from app.models.models import (
     HardwareAsset,
     IPAddress,
     NetworkMonitor,
+    RemoteManagerSetting,
     TrafficDeviceMonitoring,
     TrafficEndpointAggregate,
     TrafficLocalNetwork,
@@ -69,6 +70,9 @@ def db(request):
     connection = engine.connect()
     transaction = connection.begin()
     session = sessionmaker(bind=connection, join_transaction_mode="create_savepoint")()
+    # Start before any DHCP collection, whatever a committed test left behind.
+    session.query(RemoteManagerSetting).filter_by(key=asset_identity.RECONCILIATION_BASELINE_KEY).delete(synchronize_session=False)
+    session.commit()
     yield session
     session.close()
     transaction.rollback()
@@ -749,6 +753,9 @@ def test_postgres_concurrent_lease_end_closes_once():
     factory = sessionmaker(bind=engine)
     mac = _mac()
     with factory.begin() as db:
+        # Closure records the retrospective baseline on first use; restore it afterwards.
+        had_baseline = db.query(RemoteManagerSetting).filter_by(key=asset_identity.RECONCILIATION_BASELINE_KEY).first() is not None
+        audits_before = db.query(func.max(AuditLog.id)).scalar() or 0
         provider = DNSProviderConfig(name=f"Concurrent closure {uuid.uuid4().hex[:6]}", base_url="https://dns.example.invalid", provider_type="pihole")
         asset = HardwareAsset(name=f"Concurrent closure asset {uuid.uuid4().hex[:6]}")
         db.add_all([provider, asset])
@@ -781,6 +788,9 @@ def test_postgres_concurrent_lease_end_closes_once():
             db.query(DHCPLeaseHistory).filter_by(id=lease_id).delete()
             db.query(HardwareAsset).filter_by(id=asset_id).delete()
             db.query(DNSProviderConfig).filter_by(id=provider_id).delete()
+            if not had_baseline:
+                db.query(RemoteManagerSetting).filter_by(key=asset_identity.RECONCILIATION_BASELINE_KEY).delete()
+                db.query(AuditLog).filter(AuditLog.id > audits_before, AuditLog.entity == "dhcp_reconciliation_baseline").delete(synchronize_session=False)
         engine.dispose()
 
 
