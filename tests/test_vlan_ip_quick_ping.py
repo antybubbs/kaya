@@ -110,3 +110,28 @@ def test_detail_and_table_ping_controls_keep_separate_ui_contracts():
     assert ".quick-ping-button.quick-ping-success{background:" in stylesheet and "!important" in stylesheet
     assert ".quick-ping-button.quick-ping-no-response{background:" in stylesheet
     assert ".quick-ping-button.quick-ping-error{background:" in stylesheet
+
+
+def test_quick_ping_result_colours_outrank_kaya_refresh_button_overrides():
+    # kaya-refresh.css loads last and nests `.button.secondary{background:transparent!important}` (and its
+    # light-theme :is() variant) under html:not(#kaya-refresh), giving id-level specificity. Result colours
+    # declared with plain class selectors were silently overridden, leaving the button neutral at runtime.
+    # Dynamic computed-colour proof: scripts/quick_ping_browser_acceptance.mjs.
+    stylesheet = Path("app/static/css/app.css").read_text(encoding="utf-8")
+    refresh = Path("app/static/css/kaya-refresh.css").read_text(encoding="utf-8")
+    base = Path("app/templates/base.html").read_text(encoding="utf-8")
+
+    assert "html:not(#kaya-refresh){" in refresh
+    assert base.index("css/app.css") < base.index("css/kaya-refresh.css")
+    for state in ("success", "no-response", "error"):
+        rule = f"html:not(#kaya-refresh) .ip-row-actions .button.quick-ping-button.quick-ping-{state}{{background:"
+        assert rule in stylesheet
+        declarations = stylesheet.split(rule, 1)[1].split("}", 1)[0]
+        assert "!important" in declarations and "border-color:" in declarations and "color:" in declarations
+    for state in ("ping-up", "ping-down"):
+        rule = f"html:not(#kaya-refresh) .service-card.{state}[data-ping-card] button[data-ping-url]{{background:"
+        assert rule in stylesheet
+        assert "!important" in stylesheet.split(rule, 1)[1].split("}", 1)[0]
+    # The loading spinner sits inside the icon slot so it cannot overlap the "Ping" label.
+    assert ".quick-ping-button.is-loading .quick-ping-icon::after{animation:quick-ping-spin" in stylesheet
+    assert ".quick-ping-button.is-loading::after" not in stylesheet
