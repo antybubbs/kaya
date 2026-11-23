@@ -96,6 +96,7 @@ def test_quick_ping_rejects_missing_csrf_and_rate_excess(monkeypatch, db):
 
 def test_detail_and_table_ping_controls_keep_separate_ui_contracts():
     javascript = Path("app/static/js/ip_addresses.js").read_text(encoding="utf-8")
+    stylesheet = Path("app/static/css/app.css").read_text(encoding="utf-8")
     table_template = Path("app/templates/ip_addresses.html").read_text(encoding="utf-8")
     detail_template = Path("app/templates/ip_address_detail.html").read_text(encoding="utf-8")
 
@@ -106,3 +107,6 @@ def test_detail_and_table_ping_controls_keep_separate_ui_contracts():
     assert 'data-ping-record-id' in table_template
     assert 'quick-ping-label">Ping' in table_template
     assert 'quick-ping-success' in javascript and 'quick-ping-no-response' in javascript and 'quick-ping-error' in javascript
+    assert ".quick-ping-button.quick-ping-success{background:" in stylesheet and "!important" in stylesheet
+    assert ".quick-ping-button.quick-ping-no-response{background:" in stylesheet
+    assert ".quick-ping-button.quick-ping-error{background:" in stylesheet
