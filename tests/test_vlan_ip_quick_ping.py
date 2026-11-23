@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
@@ -91,3 +92,17 @@ def test_quick_ping_rejects_missing_csrf_and_rate_excess(monkeypatch, db):
     with pytest.raises(HTTPException) as rate_error:
         ip_addresses.ping_ip_address(request, row.id, "synthetic-csrf", db, SimpleNamespace(id=9))
     assert rate_error.value.status_code == 429
+
+
+def test_detail_and_table_ping_controls_keep_separate_ui_contracts():
+    javascript = Path("app/static/js/ip_addresses.js").read_text(encoding="utf-8")
+    table_template = Path("app/templates/ip_addresses.html").read_text(encoding="utf-8")
+    detail_template = Path("app/templates/ip_address_detail.html").read_text(encoding="utf-8")
+
+    assert 'data-ping-card' in detail_template
+    assert 'data-ping-message' in detail_template
+    assert 'button.textContent = "Pinging..."' in javascript
+    assert 'button.textContent = `Up - ${payload.latency_ms}ms`' in javascript
+    assert 'data-ping-record-id' in table_template
+    assert 'quick-ping-label">Ping' in table_template
+    assert 'quick-ping-success' in javascript and 'quick-ping-no-response' in javascript and 'quick-ping-error' in javascript
