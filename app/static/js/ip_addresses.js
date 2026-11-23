@@ -53,13 +53,12 @@
 
   function setupQuickPing() {
     document.querySelectorAll("[data-ping-url]").forEach((button) => {
-      const card = button.closest("[data-ping-card]");
-      const message = card?.querySelector("[data-ping-message]");
+      const defaultLabel = button.getAttribute("title") || "Ping this IP address";
       button.addEventListener("click", async () => {
-        const originalText = button.textContent;
         button.disabled = true;
-        button.textContent = "Pinging...";
-        card?.classList.remove("ping-up", "ping-down");
+        button.classList.remove("quick-ping-success", "quick-ping-no-response", "quick-ping-error", "is-loading");
+        button.classList.add("is-loading");
+        button.title = `Checking ${button.dataset.pingAddress}...`;
         try {
           const formData = new FormData();
           formData.append("csrf_token", button.dataset.csrfToken || "");
@@ -73,32 +72,20 @@
           if (!response.ok) {
             throw new Error(payload.detail || "Ping failed.");
           }
-          if (payload.ok) {
-            card?.classList.add("ping-up");
-            button.textContent = `Up - ${payload.latency_ms}ms`;
-            if (message) {
-              message.textContent = "Device responded successfully.";
-            }
-          } else {
-            card?.classList.add("ping-down");
-            button.textContent = "Down";
-            if (message) {
-              message.textContent = payload.error || "No response.";
-            }
-          }
+          if (String(payload.record_id) !== String(button.dataset.pingRecordId) || payload.target !== button.dataset.pingAddress) return;
+          const timestamp = payload.checked_at ? new Date(payload.checked_at).toLocaleString() : "just now";
+          const latency = payload.latency_ms == null ? "" : ` · ${payload.latency_ms} ms`;
+          const reason = payload.reason || "No ICMP response was received.";
+          const stateClass = payload.status === "success" ? "quick-ping-success" : payload.status === "no_response" ? "quick-ping-no-response" : "quick-ping-error";
+          button.classList.add(stateClass);
+          button.title = payload.status === "success" ? `${payload.target} responded successfully${latency} · ${timestamp}` : payload.status === "no_response" ? `${payload.target}: no ICMP response was received · ${timestamp}` : `${payload.target}: ${reason} · ${timestamp}`;
         } catch (error) {
-          card?.classList.add("ping-down");
-          button.textContent = "Error";
-          if (message) {
-            message.textContent = error.message || "Ping could not be completed.";
-          }
+          button.classList.add("quick-ping-error");
+          button.title = error.message || "Ping could not be completed.";
         } finally {
-          setTimeout(() => {
-            button.disabled = false;
-            if (button.textContent === "Error") {
-              button.textContent = originalText;
-            }
-          }, 900);
+          button.classList.remove("is-loading");
+          button.disabled = false;
+          if (!button.classList.contains("quick-ping-success") && !button.classList.contains("quick-ping-no-response") && !button.classList.contains("quick-ping-error")) button.title = defaultLabel;
         }
       });
     });

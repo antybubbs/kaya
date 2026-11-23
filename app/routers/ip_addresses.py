@@ -1,5 +1,8 @@
+from collections import defaultdict, deque
 from datetime import datetime, timedelta
 from ipaddress import ip_address
+import threading
+import time
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from pydantic import BaseModel
@@ -87,6 +90,15 @@ router = APIRouter(prefix="/networking/vlan-ip-manager", dependencies=[Depends(r
 
 ASSIGNMENT_TYPES = {"Static", "Dynamic"}
 REMOTE_PROTOCOLS = {"ssh", "rdp", "vnc"}
+
+QUICK_PING_TIMEOUT_MS = 2000
+QUICK_PING_RATE_WINDOW_SECONDS = 60
+QUICK_PING_RATE_LIMIT = 20
+QUICK_PING_MAX_CONCURRENT = 8
+_quick_ping_guard = threading.Lock()
+_quick_ping_attempts: dict[str, deque[float]] = defaultdict(deque)
+_quick_ping_in_flight: set[tuple[str, int]] = set()
+_quick_ping_slots = threading.BoundedSemaphore(QUICK_PING_MAX_CONCURRENT)
 
 
 class DeviceMonitoringPayload(BaseModel):
@@ -522,21 +534,56 @@ def ping_ip_address(request: Request, record_id: int, csrf_token: str = Form(...
     row = db.get(IPAddress, record_id)
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="IP address not found")
-    ok, latency_ms, error = ping_ipv4(row.address, 2000)
+    try:
+        ip_address(row.address)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="The managed record contains an invalid IP address.") from exc
+    client_ip = trusted_client_ip(request)
+    rate_key = f"user:{user.id}:ip:{client_ip or 'unknown'}"
+    flight_key = (rate_key, row.id)
+    now = time.monotonic()
+    with _quick_ping_guard:
+        attempts = _quick_ping_attempts[rate_key]
+        while attempts and attempts[0] <= now - QUICK_PING_RATE_WINDOW_SECONDS:
+            attempts.popleft()
+        if len(attempts) >= QUICK_PING_RATE_LIMIT:
+            raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many manual ping requests. Try again shortly.")
+        if flight_key in _quick_ping_in_flight:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A ping for this record is already in progress.")
+        if not _quick_ping_slots.acquire(blocking=False):
+            raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Manual ping capacity is temporarily full. Try again shortly.")
+        attempts.append(now)
+        _quick_ping_in_flight.add(flight_key)
+
+    try:
+        ok, latency_ms, error = ping_ipv4(row.address, QUICK_PING_TIMEOUT_MS)
+    finally:
+        with _quick_ping_guard:
+            _quick_ping_in_flight.discard(flight_key)
+            _quick_ping_slots.release()
+
+    checked_at = datetime.utcnow()
+    status_value = "success" if ok else "no_response"
+    if not ok and any(marker in (error or "").lower() for marker in ("not installed", "execution failed")):
+        status_value = "error"
     write_audit(
         db,
         user,
         "ping",
         "ip_address",
         str(row.id),
-        request.client.host if request.client else None,
-        detail=f"{row.address} {'up' if ok else 'down'}{f' {latency_ms}ms' if latency_ms is not None else ''}{f': {error}' if error else ''}",
+        client_ip,
+        detail=f"Manual ping {row.address} {status_value}{f' {latency_ms}ms' if latency_ms is not None else ''}",
     )
     return JSONResponse({
+        "record_id": row.id,
+        "target": row.address,
         "ok": ok,
-        "status": "up" if ok else "down",
+        "status": status_value,
         "latency_ms": latency_ms,
+        "reason": error if status_value != "success" else None,
         "error": error,
+        "checked_at": checked_at.isoformat(timespec="seconds") + "Z",
     })
 
 
