@@ -1,0 +1,8 @@
+﻿{
+    "run_id":  "20261107-212151-e0037873cd9c",
+    "status":  "FAILED_OR_BLOCKED",
+    "stage":  "inspect-compose-environment",
+    "exit_code":  1,
+    "error":  "PostgreSQL disposable marker/credentials check failed.",
+    "artifacts":  "C:\\Users\\me\\Nextcloud2\\Dev Work\\kaya\\artifacts\\phasea-validation-20261107-212151-e0037873cd9c"
+}

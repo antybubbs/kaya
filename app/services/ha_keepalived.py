@@ -12,6 +12,9 @@ from app.services.ha_topology import dhcp_observation, pihole_manages_dhcp
 
 INTERFACE_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
 KEEPALIVED_HOOK = "/usr/lib/kaya-ha-agent/kaya_ha_transition.py"
+# Agents from this version accept (and act on) notify_stop: a graceful Keepalived stop
+# releases DHCP on the node giving up the Virtual IP.  Older agents reject the directive.
+STOP_HOOK_AGENT_VERSION = (0, 2, 16)
 
 
 class HAKeepalivedError(ValueError):
@@ -111,7 +114,24 @@ def _controlled_preemption_target(cluster: HACluster) -> int | None:
     ), None)
     if maintenance is not None:
         return maintenance.desired_active_node_id
+    # Align service ownership: only the verified sole DHCP server may preempt, and
+    # only while the run is moving the Virtual IP to it.
+    alignment = next((
+        item
+        for item in sorted(cluster.maintenance_runs, key=lambda value: value.created_at, reverse=True)
+        if item.operation == "ALIGN_OWNERSHIP"
+        and item.status == "RUNNING"
+        and item.phase == "MOVING_VIP"
+    ), None)
+    if alignment is not None:
+        return alignment.desired_active_node_id
     return None
+
+
+def _stop_hook_supported(cluster: HACluster) -> bool:
+    from app.services.ha_agent_installer import version_tuple
+
+    return bool(cluster.nodes) and all(version_tuple(item.agent_version) >= STOP_HOOK_AGENT_VERSION for item in cluster.nodes)
 
 
 def render_keepalived_config(cluster: HACluster, node: HANode, *, allow_preemption: bool = False) -> KeepalivedConfig:
@@ -150,9 +170,27 @@ def render_keepalived_config(cluster: HACluster, node: HANode, *, allow_preempti
         f"    notify_master \"{KEEPALIVED_HOOK} master {generation}\"\n"
         f"    notify_backup \"{KEEPALIVED_HOOK} backup {generation}\"\n"
         f"    notify_fault \"{KEEPALIVED_HOOK} fault {generation}\"\n"
-        "}\n"
+        + (f"    notify_stop \"{KEEPALIVED_HOOK} stop {generation}\"\n" if _stop_hook_supported(cluster) else "")
+        + "}\n"
     )
     return KeepalivedConfig(content, hashlib.sha256(content.encode()).hexdigest())
+
+
+def complete_pending_deployment(cluster: HACluster) -> bool:
+    """Mark a pending deployment complete once every node reported the current generation (no commit).
+
+    Idempotent.  Used after each Keepalived result and by every coordinator evaluation and
+    periodic pass, so a lost update between two simultaneous results, or a Kaya restart between a
+    result's commit and its completion check, can never leave the cluster pending indefinitely.
+    """
+    if cluster.keepalived_status not in {"PENDING_AGENT", "DEPLOYING"} or not cluster.nodes:
+        return False
+    if not all(node.keepalived_status == "DEPLOYED" and node.config_generation >= cluster.keepalived_generation for node in cluster.nodes):
+        return False
+    cluster.keepalived_status = "DEPLOYED"
+    cluster.keepalived_deployed_at = datetime.utcnow()
+    cluster.status = "READY_TO_DEPLOY"
+    return True
 
 
 def prepare_deployment(db: Session, cluster: HACluster, router_id: int, acknowledged: bool) -> HACluster:

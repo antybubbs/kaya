@@ -4,11 +4,16 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Callable
 
 HELPER_PATH = "/usr/lib/kaya-ha-agent/kaya_ha_keepalived_helper.py"
 FORBIDDEN_CONFIG_MARKERS = (";", "`", "$", "|", "&&", ">", "<", "include ")
+# How long a notify hook may report a generation that is still being applied.
+# Covers the helper's 30 s timeout; after this the pending marker is ignored even
+# if the agent crashed before clearing it, so it is never a standing authorisation.
+PENDING_GENERATION_WINDOW_SECONDS = 60
 
 
 class KeepalivedRuntimeError(RuntimeError):
@@ -109,27 +114,39 @@ def apply_desired_keepalived(
         }
     pending = state.root / "pending-keepalived.conf"
     atomic_bytes(pending, validate_desired_configuration(action))
+    # A reload can fire notify_master/backup with the new generation before the
+    # helper returns.  Publish it as pending so the transition hook records that
+    # observation instead of fencing it out; it becomes current only on success.
+    state.set(
+        "pending_keepalived_generation",
+        {"generation": generation, "expires_at": time.time() + PENDING_GENERATION_WINDOW_SECONDS},
+    )
     try:
-        completed = runner(
-            ["sudo", "-n", HELPER_PATH, "apply", str(pending)],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise KeepalivedRuntimeError(
-            "The restricted Keepalived helper could not be executed."
-        ) from exc
-    try:
-        output = json.loads((completed.stdout or "{}").strip())
-    except json.JSONDecodeError as exc:
-        detail = command_diagnostic(completed)
-        raise KeepalivedRuntimeError(
-            "The restricted Keepalived helper did not return a valid result."
-            + (f" Diagnostic: {detail}" if detail else "")
-        ) from exc
+        try:
+            completed = runner(
+                ["sudo", "-n", HELPER_PATH, "apply", str(pending)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise KeepalivedRuntimeError(
+                "The restricted Keepalived helper could not be executed."
+            ) from exc
+        try:
+            output = json.loads((completed.stdout or "{}").strip())
+        except json.JSONDecodeError as exc:
+            detail = command_diagnostic(completed)
+            raise KeepalivedRuntimeError(
+                "The restricted Keepalived helper did not return a valid result."
+                + (f" Diagnostic: {detail}" if detail else "")
+            ) from exc
+    except KeepalivedRuntimeError:
+        state.set("pending_keepalived_generation", None)
+        raise
     if completed.returncode != 0 or not output.get("ok"):
+        state.set("pending_keepalived_generation", None)
         return {
             "action_id": action["action_id"],
             "action_type": "KEEPALIVED_APPLY",
@@ -144,6 +161,7 @@ def apply_desired_keepalived(
         }
     state.set("config_generation", generation)
     state.set("keepalived_generation", generation)
+    state.set("pending_keepalived_generation", None)
     state.set("keepalived_checksum", action["checksum"])
     state.set("keepalived_backup_reference", output.get("backup_reference"))
     state.set("keepalived_runtime_state", "RUNNING")

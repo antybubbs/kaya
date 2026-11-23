@@ -38,6 +38,7 @@ SAFE_LINES = (
     re.compile(
         r"notify_(?:master|backup|fault) \"/usr/lib/kaya-ha-agent/kaya_ha_transition\.py (?:master|backup|fault) [1-9][0-9]*\""
     ),
+    re.compile(r"notify_stop \"/usr/lib/kaya-ha-agent/kaya_ha_transition\.py stop [1-9][0-9]*\""),
     re.compile(r"\}"),
 )
 
@@ -108,6 +109,8 @@ def validate_managed_document(content: bytes) -> bool:
         for role in ("master", "backup", "fault")
     } != {"master": 1, "backup": 1, "fault": 1}:
         return False
+    if sum(line.startswith("notify_stop ") for line in lines) > 1:
+        return False
     vip_lines = [
         line
         for line in lines
@@ -123,6 +126,45 @@ def validate_managed_document(content: bytes) -> bool:
         interface.network.network_address,
         interface.network.broadcast_address,
     }
+
+
+ROLLBACK_MESSAGES = {
+    "NOT_CHANGED": "The running Keepalived configuration was not changed.",
+    "PREVIOUS_CONFIGURATION_RESTORED": "The previous configuration was restored and reloaded.",
+    "STOPPED": "The previous configuration files were restored; Keepalived is not running.",
+    "UNCERTAIN": "Rollback could not be confirmed, so the running Keepalived configuration is unknown. Treat this node's Virtual IP state as uncertain until a fresh report confirms it.",
+}
+
+
+def rollback(target_existed: bool, target_backup: Path, main_existed: bool, main_backup: Path, running: bool | None) -> str:
+    """Restore the previous files and report what is known to be running.
+
+    ``running`` is None when activation was never attempted (the running
+    Keepalived never read the new files), otherwise whether it was active
+    before activation.  Never restarts: an unconfirmed rollback is UNCERTAIN.
+    """
+    try:
+        if target_existed and target_backup.exists():
+            shutil.copy2(target_backup, TARGET)
+        elif TARGET.exists():
+            TARGET.unlink()
+        if main_existed and main_backup.exists():
+            shutil.copy2(main_backup, MAIN)
+        elif MAIN.exists():
+            MAIN.unlink()
+    except OSError:
+        return "UNCERTAIN"
+    if running is None:
+        return "NOT_CHANGED"
+    try:
+        if running:
+            reloaded = command(["systemctl", "reload", "keepalived"]).returncode == 0
+            return "PREVIOUS_CONFIGURATION_RESTORED" if reloaded else "UNCERTAIN"
+        # A failed start may still have left Keepalived running the new files.
+        still_running = command(["systemctl", "is-active", "--quiet", "keepalived"], timeout=5).returncode == 0
+        return "UNCERTAIN" if still_running else "STOPPED"
+    except (OSError, subprocess.TimeoutExpired):
+        return "UNCERTAIN"
 
 
 def apply(source: str) -> int:
@@ -148,6 +190,7 @@ def apply(source: str) -> int:
     main_backup = BACKUPS / f"{reference}.main"
     target_existed = TARGET.exists()
     main_existed = MAIN.exists()
+    running = None  # whether Keepalived was active before activation; None until checked
     try:
         if target_existed:
             shutil.copy2(TARGET, target_backup)
@@ -174,9 +217,11 @@ def apply(source: str) -> int:
                     else " No diagnostic output was returned."
                 )
             )
-        activation = command(["systemctl", "reload", "keepalived"])
-        if activation.returncode != 0:
-            activation = command(["systemctl", "restart", "keepalived"])
+        # Never restart a running Keepalived: a restart drops the VIP on the
+        # current owner.  Only a stopped service (which holds no VIP) may be
+        # started; a failed reload of a running service is rolled back below.
+        running = command(["systemctl", "is-active", "--quiet", "keepalived"], timeout=5).returncode == 0
+        activation = command(["systemctl", "reload" if running else "start", "keepalived"])
         if activation.returncode != 0:
             detail = command_diagnostic(activation)
             raise RuntimeError(
@@ -193,19 +238,9 @@ def apply(source: str) -> int:
             backup_reference=reference,
         )
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
-        try:
-            if target_existed and target_backup.exists():
-                shutil.copy2(target_backup, TARGET)
-            elif TARGET.exists():
-                TARGET.unlink()
-            if main_existed and main_backup.exists():
-                shutil.copy2(main_backup, MAIN)
-            elif MAIN.exists():
-                MAIN.unlink()
-            command(["systemctl", "reload", "keepalived"])
-        except OSError:
-            pass
-        return emit(False, str(exc), backup_reference=reference)
+        outcome = rollback(target_existed, target_backup, main_existed, main_backup, running)
+        message = str(exc) + " " + ROLLBACK_MESSAGES[outcome]
+        return emit(False, message[:1000], backup_reference=reference, runtime_state_after_failure=outcome)
 
 
 def status(vip_text: str) -> int:

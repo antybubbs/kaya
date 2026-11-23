@@ -483,6 +483,13 @@ def _run_migrations(conn, cur, *, quiet):
         "keepalived_status": "VARCHAR(40) DEFAULT 'NOT_CONFIGURED' NOT NULL",
         "keepalived_requested_at": "DATETIME",
         "keepalived_deployed_at": "DATETIME",
+        "automatic_sync_hold": "BOOLEAN DEFAULT 0 NOT NULL",
+        "maintenance_latch_acknowledged_at": "DATETIME",
+        "maintenance_latch_acknowledged_by_user_id": "INTEGER REFERENCES users(id) ON DELETE SET NULL",
+        "maintenance_latch_acknowledgement_json": "TEXT DEFAULT '{}' NOT NULL",
+        "maintenance_latch_released_at": "DATETIME",
+        "maintenance_latch_released_by_user_id": "INTEGER REFERENCES users(id) ON DELETE SET NULL",
+        "maintenance_latch_release_json": "TEXT DEFAULT '{}' NOT NULL",
     }.items():
         if not column_exists(cur, "ha_clusters", column):
             cur.execute(f"ALTER TABLE ha_clusters ADD COLUMN {column} {definition}")

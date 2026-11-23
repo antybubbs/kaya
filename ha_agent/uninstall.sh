@@ -36,6 +36,12 @@ if [ -f "$RESOLVER_CONFIG" ] && grep -qx '# Managed by Kaya HA' "$RESOLVER_CONFI
     if systemctl is-active --quiet systemd-resolved.service 2>/dev/null; then systemctl restart systemd-resolved.service; fi
 fi
 
+# Remove the DHCP boot guard before its helper, so Pi-hole FTL can still start.  DHCP stays as
+# configured now; re-enable it in Pi-hole if this node should serve DHCP on its own.
+rm -f /etc/systemd/system/pihole-FTL.service.d/zz-kaya-ha-dhcp-guard.conf
+rm -f /run/kaya-ha-dhcp-guard/ftl.env
+rmdir /run/kaya-ha-dhcp-guard 2>/dev/null || true
+rmdir /etc/systemd/system/pihole-FTL.service.d 2>/dev/null || true
 rm -f /etc/systemd/system/kaya-ha-agent.service /etc/sudoers.d/kaya-ha-agent
 rm -rf /usr/lib/kaya-ha-agent /var/lib/kaya-ha-agent
 systemctl daemon-reload

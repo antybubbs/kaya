@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime
+from dataclasses import dataclass
 from typing import Any, Callable
 
 from sqlalchemy.orm import Session
@@ -10,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.core.security import encrypt_secret
 from app.models.models import HABackup, HACluster, HADriftItem, HANode, HASyncRun, User
 from app.services.dns_providers import PiHoleProvider
+from app.services.ha_topology import reconcile_topology
 from app.services.ha_validation import GROUP_LABELS, HIGH_RISK_GROUPS, _safe_configuration, connection_for_node
 
 
@@ -147,18 +149,22 @@ def _collection_identities(group: str, value: Any) -> set[str]:
     return set()
 
 
-def authority_and_target(cluster: HACluster) -> tuple[HANode, HANode]:
+def authority_and_target(cluster: HACluster) -> tuple[HANode, HANode, bool]:
     if len(cluster.nodes) != 2:
         raise HASyncError("Exactly two nodes are required for synchronisation.")
-    source = next((node for node in cluster.nodes if node.id == cluster.authoritative_node_id), None)
+    topology = reconcile_topology(cluster)
+    source = next((node for node in cluster.nodes if node.id == topology.active_node_id), None)
+    authority_verified = bool(source and topology.topology_safe)
+    if source is None:
+        source = next((node for node in cluster.nodes if node.id == cluster.authoritative_node_id), None)
     if source is None:
         raise HASyncError("Choose an authoritative node before synchronising configuration.")
     target = next(node for node in cluster.nodes if node.id != source.id)
-    return source, target
+    return source, target, authority_verified
 
 
 def sync_plan(cluster: HACluster) -> dict[str, Any]:
-    source, target = authority_and_target(cluster)
+    source, target, authority_verified = authority_and_target(cluster)
     raw_source_snapshot = _snapshot(source)
     source_snapshot = _canonical_sync_snapshot(raw_source_snapshot)
     target_snapshot = _canonical_sync_snapshot(_snapshot(target))
@@ -197,6 +203,7 @@ def sync_plan(cluster: HACluster) -> dict[str, Any]:
         "source_name": source.display_name,
         "target_node_id": target.id,
         "target_name": target.display_name,
+        "authority_verified": authority_verified,
         "groups": groups,
         "blocked_groups": [item["key"] for item in groups if not item["writable"]],
         "deletion_count": sum(item["deletion_count"] for item in groups),
@@ -235,18 +242,39 @@ def create_sync_plan(db: Session, cluster: HACluster, user: User | None = None) 
     return run
 
 
-def _live_configuration(node: HANode, client_factory: Callable = PiHoleProvider) -> tuple[PiHoleProvider, dict[str, Any]]:
-    connection = connection_for_node(node)
-    if connection is None:
-        raise HASyncError(f"{node.display_name} has no usable provider connection.")
-    client = client_factory(connection)
+@dataclass(frozen=True)
+class PiHoleEndpoint:
+    """Session-free details needed to call one node's Pi-hole.
+
+    Built while a session is open, then used after the transaction has ended so
+    no database transaction is held open across Pi-hole HTTP calls.
+    """
+
+    id: int
+    display_name: str
+    connection: Any
+
+
+def pihole_endpoint(node: HANode) -> PiHoleEndpoint:
+    return PiHoleEndpoint(node.id, node.display_name, connection_for_node(node))
+
+
+def read_live_configuration(endpoint: PiHoleEndpoint, client_factory: Callable = PiHoleProvider) -> tuple[PiHoleProvider, dict[str, Any]]:
+    """Read a node's supported configuration; touches no database session."""
+    if endpoint.connection is None:
+        raise HASyncError(f"{endpoint.display_name} has no usable provider connection.")
+    client = client_factory(endpoint.connection)
     result = client.get_ha_configuration()
     if not result.ok or not isinstance(result.data, dict):
-        raise HASyncError(f"Could not read {node.display_name} before synchronisation: {result.message}")
+        raise HASyncError(f"Could not read {endpoint.display_name} before synchronisation: {result.message}")
     raw = result.data.get("configuration")
     if not isinstance(raw, dict):
-        raise HASyncError(f"{node.display_name} returned no supported configuration.")
+        raise HASyncError(f"{endpoint.display_name} returned no supported configuration.")
     return client, {key: _safe_configuration(value) for key, value in raw.items() if key in GROUP_LABELS}
+
+
+def _live_configuration(node: HANode, client_factory: Callable = PiHoleProvider) -> tuple[PiHoleProvider, dict[str, Any]]:
+    return read_live_configuration(pihole_endpoint(node), client_factory)
 
 
 def create_live_sync_plan(
@@ -257,9 +285,14 @@ def create_live_sync_plan(
     client_factory: Callable = PiHoleProvider,
 ) -> HASyncRun:
     """Refresh both read-only snapshots before creating a plan the user can review."""
-    source, target = authority_and_target(cluster)
+    source, target, authority_verified = authority_and_target(cluster)
+    if not authority_verified:
+        raise HASyncError("The current VIP owner cannot be verified from fresh, safe node reports. Synchronisation is blocked until the HA state is unambiguous.")
+    endpoints = [pihole_endpoint(source), pihole_endpoint(target)]
+    db.commit()  # no transaction open during the Pi-hole reads
+    live = {endpoint.id: read_live_configuration(endpoint, client_factory)[1] for endpoint in endpoints}
     for node in (source, target):
-        _, configuration = _live_configuration(node, client_factory)
+        configuration = live[node.id]
         from app.services.ha_dns_advertisement import preserve_cached_dns_advertisement
 
         configuration = preserve_cached_dns_advertisement(node, configuration)
@@ -278,23 +311,51 @@ def execute_sync(
     allow_deletions: bool = False,
     client_factory: Callable = PiHoleProvider,
     maintenance_authorised: bool = False,
+    automatic: bool = False,
+    acknowledge_high_impact: bool = False,
 ) -> HASyncRun:
     if run.cluster_id != cluster.id or run.status != "PLANNED":
         raise HASyncError("This synchronisation plan is no longer executable.")
     maintenance_safe = maintenance_authorised and cluster.maintenance_mode and cluster.keepalived_status == "DEPLOYED"
     if cluster.maintenance_mode and not maintenance_authorised:
         raise HASyncError("Cluster maintenance is in progress.")
+    if automatic and cluster.automatic_sync_hold:
+        raise HASyncError("Automatic configuration synchronisation is held pending explicit administrator approval.")
     if not maintenance_safe and (cluster.status != "HEALTHY" or cluster.keepalived_status != "DEPLOYED"):
         raise HASyncError("The cluster must be healthy and Keepalived deployed before synchronisation.")
     plan = json.loads(run.plan_json)
+    high_impact_groups = [
+        item.get("label", item.get("key", "configuration"))
+        for item in plan.get("groups", [])
+        if isinstance(item, dict) and (item.get("risk") == "high" or item.get("key") in HIGH_RISK_GROUPS)
+    ]
+    if high_impact_groups and not acknowledge_high_impact:
+        raise HASyncError(
+            "This plan contains high-impact configuration changes ("
+            + ", ".join(high_impact_groups)
+            + "). An administrator must explicitly approve them before applying."
+        )
     if plan.get("blocked_groups"):
         raise HASyncError("Resolve collection drift before applying this Beta synchronisation plan: " + ", ".join(plan["blocked_groups"]))
     if plan.get("deletion_count") and not allow_deletions:
         raise HASyncError("This plan contains deletions. Review the plan and explicitly confirm them before applying.")
     source = db.get(HANode, run.source_node_id)
     target = db.get(HANode, run.target_node_id)
-    if source is None or target is None or cluster.authoritative_node_id != source.id:
-        raise HASyncError("The authoritative node changed; create a new plan.")
+    if source is None or target is None:
+        raise HASyncError("The synchronisation nodes changed; create a new plan.")
+
+    def assert_current_authority() -> None:
+        db.expire_all()
+        current_cluster = db.get(HACluster, cluster.id)
+        if current_cluster is None:
+            raise HASyncError("The HA cluster is no longer available.")
+        current_source, current_target, verified = authority_and_target(current_cluster)
+        if not verified or current_source.id != source.id or current_target.id != target.id:
+            raise HASyncError("The verified VIP authority changed or became unsafe; no configuration was written. Create a new plan.")
+        db.commit()  # end the check's transaction before the Pi-hole call that follows
+
+    assert_current_authority()
+    source_endpoint, target_endpoint = pihole_endpoint(source), pihole_endpoint(target)
 
     run.status = "RUNNING"
     run.started_at = datetime.utcnow()
@@ -304,8 +365,8 @@ def execute_sync(
     target_client = None
     collections_applied = False
     try:
-        _, source_live_raw = _live_configuration(source, client_factory)
-        target_client, target_before_raw = _live_configuration(target, client_factory)
+        _, source_live_raw = read_live_configuration(source_endpoint, client_factory)
+        target_client, target_before_raw = read_live_configuration(target_endpoint, client_factory)
         source_live = _canonical_sync_snapshot(source_live_raw)
         target_before = _canonical_sync_snapshot(target_before_raw)
         source_apply = _sync_snapshot(source_live_raw)
@@ -331,17 +392,20 @@ def execute_sync(
 
         collection_keys = planned_keys & COLLECTION_RECONCILIATION_GROUPS
         if collection_keys:
+            assert_current_authority()
             collections_applied = True  # A failed reconciliation may still have completed earlier item writes.
             result = target_client.reconcile_ha_collections(source_apply, allow_deletions=allow_deletions)
             if not result.ok:
                 raise HASyncError(result.message)
             applied.extend(sorted(collection_keys))
         for key in sorted(planned_keys - COLLECTION_RECONCILIATION_GROUPS):
+            assert_current_authority()
             result = target_client.apply_ha_configuration_group(key, source_apply.get(key))
             if not result.ok:
                 raise HASyncError(result.message)
             applied.append(key)
-        _, verified_raw = _live_configuration(target, client_factory)
+        assert_current_authority()
+        _, verified_raw = read_live_configuration(target_endpoint, client_factory)
         verified = _canonical_sync_snapshot(verified_raw)
         failed = [key for key in planned_keys if verified.get(key) != source_live.get(key)]
         if failed:

@@ -1,0 +1,52 @@
+{# Unified HA health assessment (read-only).  Identical on Overview, Health & Repair and Diagnostics. #}
+{% if assessment %}
+<section class="panel ha-assessment" data-ha-assessment data-ha-assessment-overall="{{ assessment.overall|lower }}" aria-labelledby="ha-assessment-heading">
+  <div class="ha-section-heading">
+    <div>
+      <h2 id="ha-assessment-heading">Health assessment</h2>
+      <p class="muted">
+        {% if assessment.overall == "HEALTHY" %}No problems found.{% elif assessment.overall == "CRITICAL" %}Needs attention now.{% else %}Needs attention.{% endif %}
+        Checked {{ assessment.assessed_at.strftime('%H:%M:%S') }} UTC from the latest signed node reports.
+        {% if cluster is defined and cluster and cluster_section != 'maintenance' and assessment.overall != 'HEALTHY' %}<a href="/high-availability/clusters/{{ cluster.public_id }}/maintenance" data-ha-open-health-repair>Open Health &amp; Repair</a>{% endif %}
+      </p>
+    </div>
+    <span class="status-pill {{ 'up' if assessment.overall == 'HEALTHY' else 'critical' if assessment.overall == 'CRITICAL' else 'warning' }}">{{ assessment.overall|title }}</span>
+  </div>
+  {% if assessment.findings %}
+  <div class="attention-list">
+    {% for finding in assessment.findings %}
+    <details class="ha-finding severity-{{ finding.severity }}" data-ha-finding="{{ finding.code }}"{% if finding.node %} data-ha-finding-node="{{ finding.node }}"{% endif %}>
+      <summary class="attention-row">
+        <span class="attention-severity">{{ finding.severity }}</span>
+        <span class="attention-copy"><strong>{{ finding.title }}{% if finding.node %} ({{ finding.node }}){% endif %}</strong><small>{{ finding.condition }}</small></span>
+        <span class="table-chip muted-chip">{{ finding.disposition_label }}</span>
+      </summary>
+      <div class="ha-finding-body">
+        <p><strong>Impact:</strong> {{ finding.impact }}</p>
+        {% if finding.repair %}
+        <p><a class="button secondary" href="{{ finding.repair.path }}">{{ finding.repair.label }}</a> <small class="muted">Effect: {{ finding.repair.service_impact }}</small></p>
+        {% elif finding.no_repair_reason %}
+        <p><strong>Why Kaya is not repairing this:</strong> {{ finding.no_repair_reason }}</p>
+        {% endif %}
+        {% if finding.prerequisites %}
+        <p><strong>Safety prerequisites</strong></p>
+        <ul class="ha-finding-checks">
+          {% for item in finding.prerequisites %}<li>{{ "Met" if item.satisfied else "Not met" }}: {{ item.label }}</li>{% endfor %}
+        </ul>
+        {% endif %}
+        {% if finding.automatic_attempts %}
+        <p><strong>Automatic recovery so far</strong></p>
+        <ul>{% for attempt in finding.automatic_attempts %}<li>{{ attempt }}</li>{% endfor %}</ul>
+        {% endif %}
+        {% if finding.observations %}
+        <details><summary>Technical details</summary>
+          <dl class="ha-finding-observations">{% for label, value in finding.observations %}<dt>{{ label }}</dt><dd>{{ value }}</dd>{% endfor %}</dl>
+        </details>
+        {% endif %}
+      </div>
+    </details>
+    {% endfor %}
+  </div>
+  {% endif %}
+</section>
+{% endif %}

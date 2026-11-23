@@ -1,0 +1,3 @@
+[submodule "external/Kaya-Docker-Agent"]
+	path = external/Kaya-Docker-Agent
+	url = https://github.com/antybubbs/Kaya-Docker-Agent.git

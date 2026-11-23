@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     guacd_port: str = ""
     version_check_interval_seconds: int = 1800
     performance_diagnostics: bool = False
+    # Automatic restoration of Kaya's stable Keepalived configuration (nopreempt) after a
+    # preempt-capable maintenance or failover step.  Off until separately approved for live
+    # deployments; while off, Kaya only reports the outstanding restoration.
+    ha_keepalived_baseline_restoration: bool = False
     vapid_public_key: str = ""
     vapid_private_key: str = ""
     vapid_subject: str = "mailto:admin@example.invalid"

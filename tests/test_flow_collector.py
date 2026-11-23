@@ -8,8 +8,9 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.db.session import Base
-from app.models.models import TrafficFlowAggregate, TrafficFlowCollectorState, TrafficMonitoringConfiguration, TrafficSource
-from app.services.flow_collector import _allowlisted_sources, _update_template_lifecycle_summary, process_records
+from app.models.models import TrafficFlowAggregate, TrafficFlowCollectorGlobalState, TrafficFlowCollectorState, TrafficMonitoringConfiguration, TrafficSource
+from app.services.flow_collector import FlowCollector, _allowlisted_sources, _update_template_lifecycle_summary, process_records
+import app.services.flow_collector as flow_collector_module
 from app.services.flow_protocol import FlowDecodeError, NetFlowV9Decoder
 
 
@@ -237,3 +238,22 @@ def test_global_network_traffic_disable_prevents_flow_source_resolution():
         db.get(TrafficMonitoringConfiguration, 1).is_enabled = True
         db.commit()
         assert list(_allowlisted_sources(db, 2055)) == ["192.0.2.1"]
+
+
+def test_collector_metrics_are_batched_and_durable(monkeypatch):
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    monkeypatch.setattr(flow_collector_module, "SessionLocal", factory)
+    with factory() as db:
+        db.add(TrafficSource(id=1, name="Synthetic NSEL metrics", provider_key="cisco_nsel", source_category="flow_export", is_enabled=True, exporter_allowlist_json='["192.0.2.1"]', collector_port=2055))
+        db.commit()
+    collector = FlowCollector({"queue_size": 2, "workers": 1, "max_packets_per_second": 1000, "port": 2055, "bind_address": "127.0.0.1", "enabled": False})
+    collector._queue_global_metrics(increments={"packets_received": 7}, last_datagram_at=datetime(2026, 11, 7, 20, 19))
+    collector._queue_source_metrics(1, increments={"queue_drops": 3}, last_error_category="queue_full")
+    collector._flush_metrics()
+    with factory() as db:
+        assert db.get(TrafficFlowCollectorGlobalState, 1).packets_received == 7
+        state = db.query(TrafficFlowCollectorState).filter_by(source_id=1).one()
+        assert state.queue_drops == 3
+        assert state.last_error_category == "queue_full"

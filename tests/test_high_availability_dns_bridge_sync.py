@@ -7,11 +7,13 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session
 
 from app.db.session import Base
-from app.models.models import DNSClientIPHistory, DNSProviderConfig, DNSRecognisedDevice, DNSStatisticsSnapshot, HACluster, HANode, HAProviderConnection, User
+from app.models.models import DNSClientIPHistory, DNSProviderConfig, DNSRecognisedDevice, DNSStatisticsSnapshot, HACluster, HANode, HAProviderConnection, HAMaintenanceRun, HASyncRun, User
 from app.services import dns_insights
 from app.services.dns_insights import analyse_provider
 from app.services.dns_providers import DNSProviderResult, HAPiHoleCollectionProvider, HAPiHoleProvider, PiHoleProvider, provider_for, provider_snapshot_for_io
 from app.services.ha_sync import HAStaleSyncPlanError, HASyncError, create_live_sync_plan, create_sync_plan, execute_sync, sync_plan
+from app.services.ha_diagnostics import build_diagnostic_bundle
+from app.routers.high_availability import sync_operational_summary
 from app.routers.admin import DNSProviderSettingsError, save_dns_manager_settings
 
 
@@ -45,14 +47,99 @@ def make_cluster(db: Session):
     second_connection = HAProviderConnection(provider_key="pihole", name="Two", api_base_url="http://two.invalid", encrypted_secret="two", created_by=user)
     db.add_all([user, cluster, first_connection, second_connection])
     db.flush()
-    first = HANode(cluster_id=cluster.id, display_name="One", api_base_url=first_connection.api_base_url, ha_connection_id=first_connection.id, role="ACTIVE", desired_role="ACTIVE", vip_owned=True, dns_healthy=True, keepalived_runtime_state="RUNNING")
-    second = HANode(cluster_id=cluster.id, display_name="Two", api_base_url=second_connection.api_base_url, ha_connection_id=second_connection.id, role="STANDBY", desired_role="STANDBY", vip_owned=False, dns_healthy=True, keepalived_runtime_state="RUNNING")
+    now = datetime.utcnow()
+    first = HANode(cluster_id=cluster.id, display_name="One", api_base_url=first_connection.api_base_url, ha_connection_id=first_connection.id, role="ACTIVE", desired_role="ACTIVE", observed_role="ACTIVE", observed_generation=0, config_generation=0, vip_owned=True, dns_healthy=True, keepalived_runtime_state="RUNNING", last_heartbeat_at=now, dhcp_observed_at=now, dhcp_observation_status="FRESH", dhcp_configured=True, dhcp_listener_active=True, ftl_active=True, dhcp_runtime_state="RUNNING")
+    second = HANode(cluster_id=cluster.id, display_name="Two", api_base_url=second_connection.api_base_url, ha_connection_id=second_connection.id, role="STANDBY", desired_role="STANDBY", observed_role="STANDBY", observed_generation=0, config_generation=0, vip_owned=False, dns_healthy=True, keepalived_runtime_state="RUNNING", last_heartbeat_at=now, dhcp_observed_at=now, dhcp_observation_status="FRESH", dhcp_configured=False, dhcp_listener_active=False, ftl_active=True, dhcp_runtime_state="STOPPED")
     db.add_all([first, second])
     db.flush()
     cluster.authoritative_node_id = first.id
     cluster.current_active_node_id = first.id
     db.commit()
     return user, cluster, first, second
+
+
+def test_sync_summary_uses_verified_vip_owner_instead_of_stored_authority():
+    with database() as db:
+        _, cluster, first, second = make_cluster(db)
+        cluster.authoritative_node_id = second.id
+        db.commit()
+
+        summary = sync_operational_summary(db, cluster)
+
+        assert summary["authority_verified"] is True
+        assert summary["source_name"] == first.display_name
+        assert summary["target_name"] == second.display_name
+
+
+def test_sync_summary_hides_direction_when_authority_is_unverified():
+    with database() as db:
+        _, cluster, first, second = make_cluster(db)
+        first.vip_owned = second.vip_owned = True
+        cluster.current_active_node_id = None
+        db.commit()
+
+        summary = sync_operational_summary(db, cluster)
+
+        assert summary["authority_verified"] is False
+        assert summary["source_name"] == "Unknown / unsafe"
+        assert summary["target_name"] == "Unknown / unsafe"
+
+
+def test_ha_diagnostics_explain_missing_evidence_and_bound_event_history():
+    with database() as db:
+        _, cluster, first, second = make_cluster(db)
+        first.vip_owned = second.vip_owned = False
+        first.last_heartbeat_at = second.last_heartbeat_at = datetime.utcnow() - timedelta(minutes=2)
+        db.commit()
+
+        bundle = build_diagnostic_bundle(db, cluster, event_limit=1)
+
+        assert bundle["source"].startswith("persisted Kaya state")
+        assert bundle["cluster"]["observed_vip_owner"] is None
+        assert any(item["code"] == "FRESH_REPORTS" and not item["passed"] for item in bundle["decision_trace"])
+        assert len(bundle["events"]) <= 1
+        assert "encrypted_secret" not in json.dumps(bundle)
+
+
+def test_ha_diagnostics_distinguish_retained_maintenance_latch_from_active_run():
+    with database() as db:
+        _, cluster, first, second = make_cluster(db)
+        cluster.maintenance_mode = True
+        db.add(HAMaintenanceRun(
+            cluster_id=cluster.id,
+            operation="REINITIALISE",
+            status="FAILED_SAFE",
+            phase="PAUSED",
+            error_redacted="Synthetic unavailable endpoint failure.",
+            completed_at=datetime.utcnow(),
+        ))
+        db.commit()
+
+        bundle = build_diagnostic_bundle(db, cluster)
+
+        assert bundle["maintenance"]["active"] is None
+        assert bundle["maintenance"]["state"] == "SAFETY_LATCH_NO_ACTIVE_RUN"
+        assert bundle["blockers"][0]["code"] == "MAINTENANCE_SAFETY_LATCH"
+        assert any(item["code"] == "LAST_MAINTENANCE_FAILED_SAFE" for item in bundle["blockers"])
+
+
+def test_automatic_sync_hold_blocks_backend_write_path_without_remote_call():
+    with database() as db:
+        _, cluster, first, second = make_cluster(db)
+        run = HASyncRun(
+            cluster_id=cluster.id,
+            source_node_id=first.id,
+            target_node_id=second.id,
+            status="PLANNED",
+            plan_json='{"groups":[],"blocked_groups":[],"deletion_count":0}',
+        )
+        db.add(run)
+        db.flush()
+        cluster.automatic_sync_hold = True
+        db.commit()
+
+        with pytest.raises(HASyncError, match="held pending explicit administrator approval"):
+            execute_sync(db, cluster, run, automatic=True)
 
 
 def test_standalone_provider_path_is_unchanged_and_linking_preserves_history():
@@ -304,6 +391,40 @@ def test_sync_creates_encrypted_backup_before_write_and_verifies():
         assert target.last_sync_at is not None
 
 
+def test_sync_plan_uses_fresh_vip_owner_when_stored_authority_is_stale():
+    with database() as db:
+        _, cluster, source, target = make_cluster(db)
+        cluster.authoritative_node_id = target.id
+        db.commit()
+
+        source.configuration_snapshot_json = json.dumps({"local_dns": {"hosts": ["one.test"]}})
+        target.configuration_snapshot_json = json.dumps({"local_dns": {"hosts": []}})
+
+        plan = sync_plan(cluster)
+
+        assert plan["source_node_id"] == source.id
+        assert plan["target_node_id"] == target.id
+        assert plan["authority_verified"] is True
+
+
+def test_sync_aborts_before_writes_when_vip_authority_changes():
+    with database() as db:
+        user, cluster, source, target = make_cluster(db)
+        source.configuration_snapshot_json = json.dumps({"local_dns": {"hosts": ["one.test"]}})
+        target.configuration_snapshot_json = json.dumps({"local_dns": {"hosts": []}})
+        db.commit()
+        run = create_sync_plan(db, cluster, user)
+        source.vip_owned = False
+        target.vip_owned = True
+        db.commit()
+        SyncPiHole.writes = []
+
+        with pytest.raises(HASyncError, match="authority changed or became unsafe"):
+            execute_sync(db, cluster, run, client_factory=SyncPiHole)
+        assert run.status == "PLANNED"
+        assert SyncPiHole.writes == []
+
+
 def test_live_plan_refreshes_both_snapshots_before_review():
     with database() as db:
         user, cluster, source, target = make_cluster(db)
@@ -368,6 +489,27 @@ def test_collection_deletions_require_explicit_confirmation_and_leases_are_exclu
         with pytest.raises(HASyncError, match="explicitly confirm"):
             execute_sync(db, cluster, run, client_factory=SyncPiHole)
         assert not run.backups
+
+
+def test_high_impact_configuration_requires_explicit_administrator_approval():
+    with database() as db:
+        user, cluster, source, target = make_cluster(db)
+        source.configuration_snapshot_json = json.dumps({"dhcp": {"start": "192.0.2.100"}})
+        target.configuration_snapshot_json = json.dumps({"dhcp": {"start": "192.0.2.101"}})
+        db.commit()
+        run = create_sync_plan(db, cluster, user)
+
+        with pytest.raises(HASyncError, match="high-impact configuration changes"):
+            execute_sync(db, cluster, run, client_factory=SyncPiHole)
+
+        assert not run.backups
+
+        SyncPiHole.state = {
+            f"ha-{source.ha_connection_id}": {"dhcp": {"start": "192.0.2.100"}},
+            f"ha-{target.ha_connection_id}": {"dhcp": {"start": "192.0.2.101"}},
+        }
+        execute_sync(db, cluster, run, client_factory=SyncPiHole, acknowledge_high_impact=True)
+        assert run.status == "SUCCEEDED"
 
 
 def test_renamed_pihole_default_group_is_a_change_not_a_deletion():

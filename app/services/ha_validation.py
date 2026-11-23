@@ -239,17 +239,24 @@ def run_live_validation(
 ) -> list[HAHealthCheck]:
     node_inputs = [(node.id, node.management_host or "", connection_for_node(node)) for node in cluster.nodes]
     cluster_id = cluster.id
-    db.rollback()  # End the read transaction before contacting either provider.
     require_dhcp = requires_dhcp_validation(cluster)
+    advertisement_targets = None
+    if pihole_manages_dhcp(cluster) and cluster.virtual_ip and len(cluster.nodes) == 2:
+        from app.services.ha_dns_advertisement import advertisement_targets as build_advertisement_targets
+
+        advertisement_targets = build_advertisement_targets(cluster)
+    # End the read transaction before contacting either provider.  Everything the
+    # Pi-hole calls need was copied above, so no ORM access reopens a transaction.
+    db.rollback()
     collected = [
         (node_id, *_collect_node(node_id, host, connection, client_factory, dns_probe, require_dhcp))
         for node_id, host, connection in node_inputs
     ]
     advertisement_states = []
-    if pihole_manages_dhcp(cluster) and cluster.virtual_ip and len(cluster.nodes) == 2:
-        from app.services.ha_dns_advertisement import inspect_dns_advertisement
+    if advertisement_targets is not None:
+        from app.services.ha_dns_advertisement import inspect_advertisement_targets
 
-        advertisement_states = inspect_dns_advertisement(cluster, client_factory=client_factory)
+        advertisement_states = inspect_advertisement_targets(advertisement_targets, client_factory=client_factory)
     db.query(HAHealthCheck).filter(HAHealthCheck.cluster_id == cluster_id).delete(synchronize_session=False)
     findings: list[ValidationFinding] = []
     for node_id, node_findings, version, capabilities, configuration in collected:

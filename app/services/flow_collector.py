@@ -40,6 +40,8 @@ MAX_QUEUE_SIZE = 10000
 MAX_WORKERS = 16
 MAX_PACKET_RATE = 10000
 STATE_REFRESH_SECONDS = 5
+METRICS_FLUSH_SECONDS = 0.5
+MAX_PENDING_SOURCE_METRICS = 1024
 DEDUP_RETENTION = timedelta(hours=48)
 COUNTER_RETENTION = timedelta(days=2)
 
@@ -423,6 +425,10 @@ class FlowCollector:
         self._rate_window = 0
         self._rate_count = 0
         self._write_lock = threading.Lock()
+        self._metrics_lock = threading.Lock()
+        self._pending_global_metrics: dict[str, int | datetime] = {}
+        self._pending_source_metrics: dict[int, dict[str, int | str]] = {}
+        self._metrics_thread: threading.Thread | None = None
         self._decode_condition = threading.Condition()
         self._next_packet_ordinal = 0
         self._next_decode_ordinal = 0
@@ -446,7 +452,7 @@ class FlowCollector:
             return True
 
     def _record_packet_state(self, source_id: int, *, increments: dict[str, int] | None = None, **values) -> None:
-        with SessionLocal() as db:
+        with self._write_lock, SessionLocal() as db:
             state = _state(db, source_id)
             for key, value in values.items():
                 setattr(state, key, value)
@@ -467,13 +473,87 @@ class FlowCollector:
             db.commit()
 
     def _record_global(self, *, increments: dict[str, int] | None = None, **values) -> None:
-        with SessionLocal() as db:
+        with self._write_lock, SessionLocal() as db:
             state = _global_state(db)
             for key, value in values.items():
                 setattr(state, key, value)
             for key, value in (increments or {}).items():
                 setattr(state, key, int(getattr(state, key) or 0) + int(value))
             db.commit()
+
+    def _queue_global_metrics(self, *, increments: dict[str, int] | None = None, last_datagram_at: datetime | None = None) -> None:
+        with self._metrics_lock:
+            for key, value in (increments or {}).items():
+                self._pending_global_metrics[key] = int(self._pending_global_metrics.get(key, 0)) + int(value)
+            if last_datagram_at is not None:
+                self._pending_global_metrics["last_datagram_at"] = last_datagram_at
+
+    def _queue_source_metrics(self, source_id: int, *, increments: dict[str, int] | None = None, last_error_category: str | None = None) -> None:
+        with self._metrics_lock:
+            pending = self._pending_source_metrics.get(source_id)
+            if pending is None:
+                if len(self._pending_source_metrics) >= MAX_PENDING_SOURCE_METRICS:
+                    logger.error("flow_collector.metrics_source_bound_exceeded source_id=%s", source_id)
+                    return
+                pending = {}
+                self._pending_source_metrics[source_id] = pending
+            for key, value in (increments or {}).items():
+                pending[key] = int(pending.get(key, 0)) + int(value)
+            if last_error_category:
+                pending["last_error_category"] = last_error_category
+
+    def _flush_metrics(self) -> None:
+        with self._metrics_lock:
+            global_metrics = self._pending_global_metrics
+            source_metrics = self._pending_source_metrics
+            self._pending_global_metrics = {}
+            self._pending_source_metrics = {}
+        if not global_metrics and not source_metrics:
+            return
+        try:
+            with self._write_lock, SessionLocal() as db:
+                if global_metrics:
+                    state = _global_state(db)
+                    for key, value in global_metrics.items():
+                        if key == "last_datagram_at":
+                            state.last_datagram_at = value
+                        else:
+                            setattr(state, key, int(getattr(state, key) or 0) + int(value))
+                for source_id, values in source_metrics.items():
+                    state = _state(db, source_id)
+                    for key, value in values.items():
+                        if key == "last_error_category":
+                            state.last_error_category = str(value)
+                        else:
+                            setattr(state, key, int(getattr(state, key) or 0) + int(value))
+                    error_category = values.get("last_error_category")
+                    if error_category:
+                        event = {"source_id": source_id, "template_id": 0, "status": "error", "reason": str(error_category), "cache_present": False}
+                        now = _now()
+                        _append_template_lifecycle(state, [event], now)
+                        _update_template_lifecycle_summary(state, [event], now)
+                db.commit()
+        except Exception:
+            with self._metrics_lock:
+                for key, value in global_metrics.items():
+                    if key == "last_datagram_at":
+                        previous = self._pending_global_metrics.get(key)
+                        if previous is None or value > previous:
+                            self._pending_global_metrics[key] = value
+                    else:
+                        self._pending_global_metrics[key] = int(self._pending_global_metrics.get(key, 0)) + int(value)
+                for source_id, values in source_metrics.items():
+                    pending = self._pending_source_metrics.setdefault(source_id, {})
+                    for key, value in values.items():
+                        if key == "last_error_category":
+                            pending[key] = value
+                        else:
+                            pending[key] = int(pending.get(key, 0)) + int(value)
+            logger.exception("flow_collector.metrics_persistence_failed")
+
+    def _metrics_loop(self) -> None:
+        while not self.stop_event.wait(METRICS_FLUSH_SECONDS):
+            self._flush_metrics()
 
     def _receive_loop(self) -> None:
         assert self.socket is not None
@@ -487,17 +567,17 @@ class FlowCollector:
                     logger.exception("flow_collector.receive_failed")
                 return
             exporter = address[0]
-            self._record_global(increments={"packets_received": 1}, last_datagram_at=_now())
+            self._queue_global_metrics(increments={"packets_received": 1}, last_datagram_at=_now())
             self._refresh_sources()
             sources = self._source_cache.get(exporter, [])
             if not sources:
                 logger.warning("flow_collector.unknown_exporter exporter=%s", exporter)
-                self._record_global(increments={"unknown_exporter_packets": 1})
+                self._queue_global_metrics(increments={"unknown_exporter_packets": 1})
                 continue
             if len(packet) > MAX_DATAGRAM_SIZE or not self._rate_allowed():
-                self._record_global(increments={"oversized_packets" if len(packet) > MAX_DATAGRAM_SIZE else "rate_limited_packets": 1})
+                self._queue_global_metrics(increments={"oversized_packets" if len(packet) > MAX_DATAGRAM_SIZE else "rate_limited_packets": 1})
                 for source in sources:
-                    self._record_packet_state(source.id, increments={"packets_rejected": 1}, last_error_category="rate_or_size_limit")
+                    self._queue_source_metrics(source.id, increments={"packets_rejected": 1}, last_error_category="rate_or_size_limit")
                 continue
             for source in sources:
                 try:
@@ -506,7 +586,7 @@ class FlowCollector:
                         self.queue.put_nowait((ordinal, source.id, exporter, packet))
                         self._next_packet_ordinal += 1
                 except queue.Full:
-                    self._record_packet_state(source.id, increments={"queue_drops": 1}, last_error_category="queue_full")
+                    self._queue_source_metrics(source.id, increments={"queue_drops": 1}, last_error_category="queue_full")
 
     def _worker_loop(self) -> None:
         while not self.stop_event.is_set() or not self.queue.empty():
@@ -598,6 +678,8 @@ class FlowCollector:
         self.socket.bind((self.settings["bind_address"], self.settings["port"]))
         self.discovery.start()
         self._refresh_sources()
+        self._metrics_thread = threading.Thread(target=self._metrics_loop, name="flow-metrics", daemon=True)
+        self._metrics_thread.start()
         self.receiver = threading.Thread(target=self._receive_loop, name="flow-receiver", daemon=True)
         self.receiver.start()
         self.workers = [threading.Thread(target=self._worker_loop, name=f"flow-worker-{index}", daemon=True) for index in range(self.settings["workers"])]
@@ -640,6 +722,9 @@ class FlowCollector:
             self.receiver.join(timeout=2)
         for worker in self.workers:
             worker.join(timeout=2)
+        if self._metrics_thread:
+            self._metrics_thread.join(timeout=2)
+        self._flush_metrics()
         try:
             self._set_listener_state("stopped")
         except Exception:

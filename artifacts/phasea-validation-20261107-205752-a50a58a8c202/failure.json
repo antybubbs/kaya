@@ -1,0 +1,6 @@
+﻿{
+    "run_id":  "20261107-205752-a50a58a8c202",
+    "status":  "FAILED_OR_BLOCKED",
+    "error":  "Refusing non-disposable PostgreSQL storage: ",
+    "artifacts":  "C:\\Users\\me\\Nextcloud2\\Dev Work\\kaya\\artifacts\\phasea-validation-20261107-205752-a50a58a8c202"
+}

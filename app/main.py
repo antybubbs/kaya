@@ -150,6 +150,13 @@ async def secure_session_cookie_on_https(request: Request, call_next):
     return response
 
 
+@app.exception_handler(high_availability.HAClusterBusy)
+async def ha_cluster_busy_handler(request: Request, exc: high_availability.HAClusterBusy):
+    # The page explaining which operation is running was rendered by the route
+    # while its session was open.  Nothing is retried automatically.
+    return exc.response
+
+
 @app.exception_handler(PermissionError)
 async def permission_handler(request: Request, exc: PermissionError):
     if request.session.get("user_id"):

@@ -17,6 +17,7 @@ from app.models.models import (
     User,
 )
 from app.services.ha_maintenance import (
+    acknowledge_failed_safe_latch,
     active_maintenance,
     advance_dhcp_self_heal,
     advance_reinitialisation,
@@ -24,6 +25,7 @@ from app.services.ha_maintenance import (
     inspect_cluster,
     maintenance_status,
     reconcile_cluster_state,
+    release_maintenance_latch,
     record_maintenance_action_result,
     start_reconciliation,
     start_dhcp_self_heal,
@@ -282,6 +284,81 @@ def test_reconciliation_clears_stale_recovery_metadata_without_service_move():
         assert not second.vip_owned and not second.dhcp_running
 
 
+def test_reconciliation_repairs_reversed_stored_roles_from_clean_signed_topology():
+    with database() as db:
+        user, cluster, first, second = pair(db)
+        cluster.current_active_node_id = second.id
+        cluster.authoritative_node_id = second.id
+        first.role = first.desired_role = "STANDBY"
+        second.role = second.desired_role = "ACTIVE"
+        db.commit()
+
+        run = start_reconciliation(db, cluster, user)
+        fresh_after(run, first, second)
+        before_runtime = (first.vip_owned, first.dhcp_running, second.vip_owned, second.dhcp_running)
+        reconcile_cluster_state(db, run)
+
+        assert run.status == "SUCCEEDED"
+        assert cluster.current_active_node_id == first.id
+        assert cluster.authoritative_node_id == first.id
+        assert first.role == first.desired_role == "ACTIVE"
+        assert second.role == second.desired_role == "STANDBY"
+        assert before_runtime == (first.vip_owned, first.dhcp_running, second.vip_owned, second.dhcp_running)
+
+
+def test_failed_safe_latch_acknowledgement_does_not_release_or_resume_sync():
+    with database() as db:
+        user, cluster, first, second = pair(db)
+        cluster.maintenance_mode = True
+        cluster.automatic_sync_enabled = True
+        failed = HAMaintenanceRun(
+            cluster_id=cluster.id,
+            operation="REINITIALISE",
+            status="FAILED_SAFE",
+            phase="PAUSED",
+            error_redacted="Synthetic failed-safe condition.",
+            completed_at=datetime.utcnow() - timedelta(minutes=2),
+        )
+        db.add(failed)
+        db.commit()
+
+        acknowledge_failed_safe_latch(db, cluster, user)
+
+        assert cluster.maintenance_mode is True
+        assert cluster.automatic_sync_hold is False
+        assert cluster.maintenance_latch_acknowledged_at is not None
+        assert db.query(HAEvent).filter_by(event_type="maintenance_latch_failure_acknowledged").count() == 1
+
+
+def test_latch_release_requires_reconciliation_and_leaves_automatic_sync_held():
+    with database() as db:
+        user, cluster, first, second = pair(db)
+        cluster.maintenance_mode = True
+        cluster.automatic_sync_enabled = True
+        failed = HAMaintenanceRun(
+            cluster_id=cluster.id,
+            operation="REINITIALISE",
+            status="FAILED_SAFE",
+            phase="PAUSED",
+            error_redacted="Synthetic failed-safe condition.",
+            completed_at=datetime.utcnow() - timedelta(minutes=2),
+        )
+        db.add(failed)
+        db.commit()
+
+        acknowledge_failed_safe_latch(db, cluster, user)
+        run = start_reconciliation(db, cluster, user)
+        fresh_after(run, first, second)
+        reconcile_cluster_state(db, run)
+        release_maintenance_latch(db, cluster, user)
+
+        assert cluster.maintenance_mode is False
+        assert cluster.automatic_sync_hold is True
+        assert cluster.automatic_sync_enabled is True
+        assert cluster.automatic_failover_enabled is False
+        assert db.query(HAEvent).filter_by(event_type="maintenance_latch_released").count() == 1
+
+
 def test_active_recovery_validation_is_not_reported_as_stale():
     with database() as db:
         _, cluster, first, second = pair(db)
@@ -391,10 +468,18 @@ def drive_to_runtime_rebuild(db, monkeypatch, run, first, second):
         return state
     monkeypatch.setattr("app.services.ha_maintenance.reconcile_cluster_leases", stage_leases)
     fresh_after(run, first, second)
-    advance_reinitialisation(db, run)  # fresh reports
-    advance_reinitialisation(db, run)  # backups
-    advance_reinitialisation(db, run)  # sync
-    advance_reinitialisation(db, run)  # lease capture
+    # Phase-driven: leases are staged before the rebuild, or (D4) after the
+    # Virtual IP moves when the selected Active already is the sole DHCP owner.
+    for _ in range(12):
+        if run.status != "RUNNING" or run.phase in {"REBUILDING_HA", "DEMOTING_STANDBY"}:
+            break
+        if run.phase == "WAITING_FOR_DHCP_STAGE":
+            stage_current_leases(db, run)
+        advance_reinitialisation(db, run)
+
+
+def stage_current_leases(db, run):
+    """The selected standby's agent acknowledges the queued lease generation."""
     state = run.cluster.lease_replication
     standby = next(node for node in run.cluster.nodes if node.id != run.desired_active_node_id)
     state.status = "CURRENT"
@@ -402,8 +487,6 @@ def drive_to_runtime_rebuild(db, monkeypatch, run, first, second):
     state.applied_generation = state.desired_generation
     standby.lease_generation = state.desired_generation
     db.commit()
-    advance_reinitialisation(db, run)  # lease staged
-    advance_reinitialisation(db, run)  # normalise standby
 
 
 def complete_runtime(db, run, target, standby):
@@ -420,6 +503,11 @@ def complete_runtime(db, run, target, standby):
         node.dhcp_observed_at = node.last_heartbeat_at
     db.commit()
     advance_reinitialisation(db, run)
+    if run.phase == "STAGING_DHCP":  # D4: leases are staged once ownership is aligned
+        advance_reinitialisation(db, run)
+    if run.phase == "WAITING_FOR_DHCP_STAGE":
+        stage_current_leases(db, run)
+        advance_reinitialisation(db, run)
     if run.phase == "PROMOTING_ACTIVE":
         action = desired_maintenance_action(run.cluster, target)
         record_maintenance_action_result(
@@ -820,7 +908,8 @@ def test_self_heal_refuses_agents_without_bounded_dhcp_repair_capability():
         assert cluster.maintenance_mode is False
 
 
-def test_proven_hard_failover_can_repair_surviving_owner_with_peer_offline():
+def test_peer_silence_is_never_proof_even_with_the_owners_failover_claim():
+    """Revised protocol: the owner's own completion event says nothing about the silent peer."""
     with database() as db:
         user, cluster, first, second = pair(db)
         now = datetime.utcnow()
@@ -846,8 +935,7 @@ def test_proven_hard_failover_can_repair_surviving_owner_with_peer_offline():
 
         run = start_dhcp_self_heal(db, cluster)
 
-        assert run is not None
-        assert desired_maintenance_action(cluster, first)["action_type"] == "DHCP_PROMOTE"
+        assert run is None  # no promotion without verified release from the peer
 
 
 def test_offline_peer_without_signed_failover_proof_blocks_self_heal():

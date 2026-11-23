@@ -32,41 +32,31 @@ def state_database():
     return db
 
 
-def test_local_promotion_waits_checks_duplicate_vip_and_enables_dhcp(monkeypatch):
+def test_master_hook_never_promotes_dhcp_locally(monkeypatch):
+    """Revised DHCP handover protocol: no hold-down, ARP or discovery check can prove the peer stopped
+    serving, so the master hook records the Virtual IP and leaves promotion to Kaya's verified release."""
     db = state_database()
     commands = []
     monkeypatch.setattr(transition.time, "sleep", lambda seconds: None)
 
     def run(command, **kwargs):
         commands.append(command)
-        if command[0].endswith("check-pihole-dns") or command[0].endswith("arping"):
-            return subprocess.CompletedProcess(command, 0, "", "")
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            '{"status":"applied","configured":true,"service_active":true,"listening":true,"runtime_state":"RUNNING","observation_status":"FRESH","dhcp_running":true}',
-            "",
-        )
+        return subprocess.CompletedProcess(command, 0, '{"status":"applied"}', "")
 
     monkeypatch.setattr(transition.subprocess, "run", run)
     transition.automatic_transition(db, "master", 8)
-    assert any("automatic-promote" in command for command in commands)
-    assert json.loads(db.execute("SELECT value FROM state WHERE key='dhcp_running'").fetchone()[0]) is True
-    payloads = [json.loads(row[0]) for row in db.execute("SELECT payload FROM events")]
-    assert payloads[-1]["event_type"] == "automatic_failover_completed"
+    assert commands == []
+    assert db.execute("SELECT value FROM state WHERE key='dhcp_running'").fetchone() is None
 
 
-def test_duplicate_vip_blocks_local_dhcp_promotion(monkeypatch):
+def test_backup_hook_still_releases_dhcp_when_automatic_failover_is_on(monkeypatch):
     db = state_database()
     commands = []
-    monkeypatch.setattr(transition.time, "sleep", lambda seconds: None)
 
     def run(command, **kwargs):
         commands.append(command)
-        return subprocess.CompletedProcess(command, 1 if command[0].endswith("arping") else 0, "", "")
+        return subprocess.CompletedProcess(command, 0, '{"status":"applied","observation_status":"FRESH","dhcp_running":false}', "")
 
     monkeypatch.setattr(transition.subprocess, "run", run)
-    transition.automatic_transition(db, "master", 8)
-    assert not any("automatic-promote" in command for command in commands)
-    payloads = [json.loads(row[0]) for row in db.execute("SELECT payload FROM events")]
-    assert payloads[-1]["event_type"] == "split_brain_prevented"
+    transition.automatic_transition(db, "backup", 8)
+    assert any("automatic-demote" in command for command in commands)

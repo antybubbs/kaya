@@ -130,28 +130,60 @@ def _dhcp_active(value: Any) -> bool | None:
     return None
 
 
-def _client(node: HANode, client_factory: Callable = PiHoleProvider):
-    connection = connection_for_node(node)
-    if connection is None:
-        raise HADNSAdvertisementError(f"{node.display_name} has no usable Pi-hole connection.")
-    return client_factory(connection)
+@dataclass(frozen=True)
+class AdvertisementTarget:
+    """Session-free details for inspecting or repairing one node's Option 6.
+
+    Built while the session's transaction is open, then used after it has ended
+    so no database transaction is held open across Pi-hole calls.
+    """
+
+    node_id: int
+    node_name: str
+    expected: tuple[str, str] | None
+    management_host: str
+    vip_owned: bool
+    connection: Any = None
+    connection_error: Exception | None = None
 
 
-def inspect_dns_advertisement(cluster: HACluster, *, client_factory: Callable = PiHoleProvider) -> list[DNSAdvertisementState]:
-    if not pihole_manages_dhcp(cluster):
-        return []
-    states: list[DNSAdvertisementState] = []
+def advertisement_targets(cluster: HACluster) -> list[AdvertisementTarget]:
+    targets: list[AdvertisementTarget] = []
     for node in cluster.nodes:
         expected = advertised_dns_addresses(cluster, node)
+        connection, error = None, None
         try:
-            result = _client(node, client_factory).get_ha_dhcp_dns_advertisement()
+            connection = connection_for_node(node)
+            if connection is None:
+                error = HADNSAdvertisementError(f"{node.display_name} has no usable Pi-hole connection.")
+        except Exception as exc:  # reported per node, exactly as a failed client build was before
+            error = exc
+        targets.append(AdvertisementTarget(
+            node.id, node.display_name, expected, node.management_host or "", bool(node.vip_owned), connection, error,
+        ))
+    return targets
+
+
+def _target_client(target: AdvertisementTarget, client_factory: Callable = PiHoleProvider):
+    if target.connection_error is not None:
+        raise target.connection_error
+    return client_factory(target.connection)
+
+
+def inspect_advertisement_targets(targets: list[AdvertisementTarget], *, client_factory: Callable = PiHoleProvider) -> list[DNSAdvertisementState]:
+    """Read each node's Option 6 using session-free targets; touches no database session."""
+    states: list[DNSAdvertisementState] = []
+    for target in targets:
+        expected = target.expected
+        try:
+            result = _target_client(target, client_factory).get_ha_dhcp_dns_advertisement()
             if not result.ok:
                 raise HADNSAdvertisementError(result.message)
             lines = _dnsmasq_lines(result.data)
             observed = tuple(address for line in lines for address in _option_6_addresses(line))
             states.append(DNSAdvertisementState(
-                node.id,
-                node.display_name,
+                target.node_id,
+                target.node_name,
                 expected,
                 observed,
                 tuple(lines),
@@ -159,8 +191,8 @@ def inspect_dns_advertisement(cluster: HACluster, *, client_factory: Callable = 
             ))
         except Exception as exc:
             states.append(DNSAdvertisementState(
-                node.id,
-                node.display_name,
+                target.node_id,
+                target.node_name,
                 expected,
                 (),
                 (),
@@ -168,6 +200,12 @@ def inspect_dns_advertisement(cluster: HACluster, *, client_factory: Callable = 
                 str(exc)[:500],
             ))
     return states
+
+
+def inspect_dns_advertisement(cluster: HACluster, *, client_factory: Callable = PiHoleProvider) -> list[DNSAdvertisementState]:
+    if not pihole_manages_dhcp(cluster):
+        return []
+    return inspect_advertisement_targets(advertisement_targets(cluster), client_factory=client_factory)
 
 
 def cached_dns_advertisement(cluster: HACluster) -> list[DNSAdvertisementState]:
@@ -246,38 +284,41 @@ def repair_dns_advertisement(
             "Repair is blocked until exactly one node owns the Virtual IP and that same node reports DHCP active."
         )
     original_owner_id = owners[0].id if len(owners) == 1 else None
+    targets = advertisement_targets(cluster)
+    by_id = {target.node_id: target for target in targets}
+    db.commit()  # end the read transaction; no transaction is open during the Pi-hole calls
     clients: dict[int, Any] = {}
     before: dict[int, list[str]] = {}
-    applied: list[HANode] = []
+    applied: list[AdvertisementTarget] = []
     try:
-        for node in cluster.nodes:
-            client = _client(node, client_factory)
-            clients[node.id] = client
+        for target in targets:
+            client = _target_client(target, client_factory)
+            clients[target.node_id] = client
             result = client.get_ha_dhcp_dns_advertisement()
             if not result.ok:
-                raise HADNSAdvertisementError(f"Could not read {node.display_name}: {result.message}")
-            before[node.id] = _dnsmasq_lines(result.data)
+                raise HADNSAdvertisementError(f"Could not read {target.node_name}: {result.message}")
+            before[target.node_id] = _dnsmasq_lines(result.data)
 
         # Configure the non-owner first so the active DHCP service is touched last.
-        ordered = sorted(cluster.nodes, key=lambda node: bool(node.vip_owned))
-        for node in ordered:
-            expected = advertised_dns_addresses(cluster, node)
+        ordered = sorted(targets, key=lambda target: target.vip_owned)
+        for target in ordered:
+            expected = target.expected
             if expected is None:
-                raise HADNSAdvertisementError(f"Could not determine the DNS advertisement for {node.display_name}.")
-            generated = generated_dnsmasq_lines(before[node.id], expected)
-            result = clients[node.id].apply_ha_dhcp_dns_advertisement(generated)
+                raise HADNSAdvertisementError(f"Could not determine the DNS advertisement for {target.node_name}.")
+            generated = generated_dnsmasq_lines(before[target.node_id], expected)
+            result = clients[target.node_id].apply_ha_dhcp_dns_advertisement(generated)
             if not result.ok:
-                raise HADNSAdvertisementError(f"{node.display_name} rejected the generated DHCP DNS advertisement: {result.message}")
-            applied.append(node)
+                raise HADNSAdvertisementError(f"{target.node_name} rejected the generated DHCP DNS advertisement: {result.message}")
+            applied.append(target)
 
-        states = inspect_dns_advertisement(cluster, client_factory=client_factory)
+        states = inspect_advertisement_targets(targets, client_factory=client_factory)
         failed = [state.node_name for state in states if not state.matches]
         if failed:
             raise HADNSAdvertisementError("Read-back verification failed for: " + ", ".join(failed) + ".")
         live_dhcp: dict[int, bool | None] = {}
-        for node in cluster.nodes:
-            configuration = clients[node.id].get_ha_configuration()
-            live_dhcp[node.id] = _dhcp_active(configuration.data) if configuration.ok else None
+        for target in targets:
+            configuration = clients[target.node_id].get_ha_configuration()
+            live_dhcp[target.node_id] = _dhcp_active(configuration.data) if configuration.ok else None
         if original_owner_id is not None and (
             live_dhcp.get(original_owner_id) is not True
             or any(active is True for node_id, active in live_dhcp.items() if node_id != original_owner_id)
@@ -285,17 +326,17 @@ def repair_dns_advertisement(
             raise HADNSAdvertisementError(
                 "Post-repair verification could not confirm DHCP active only on the Virtual IP owner."
             )
-        if original_owner_id is not None and not next(node for node in cluster.nodes if node.id == original_owner_id).vip_owned:
+        if original_owner_id is not None and not by_id[original_owner_id].vip_owned:
             raise HADNSAdvertisementError("The Virtual IP owner changed during repair.")
-        unhealthy = [node.display_name for node in cluster.nodes if not dns_probe(node.management_host or "")[0]]
+        unhealthy = [target.node_name for target in targets if not dns_probe(target.management_host)[0]]
         if unhealthy:
             raise HADNSAdvertisementError("DNS health verification failed for: " + ", ".join(unhealthy) + ".")
     except Exception as exc:
         rollback_failures: list[str] = []
-        for node in reversed(applied):
-            result = clients[node.id].apply_ha_dhcp_dns_advertisement(before[node.id])
+        for target in reversed(applied):
+            result = clients[target.node_id].apply_ha_dhcp_dns_advertisement(before[target.node_id])
             if not result.ok:
-                rollback_failures.append(node.display_name)
+                rollback_failures.append(target.node_name)
         if rollback_failures:
             raise HADNSAdvertisementError(
                 "Repair failed and rollback could not be confirmed for: "

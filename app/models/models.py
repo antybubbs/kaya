@@ -1369,6 +1369,13 @@ class HACluster(Base):
     sync_interval_seconds: Mapped[int] = mapped_column(Integer, default=300)
     drift_check_interval_seconds: Mapped[int] = mapped_column(Integer, default=300)
     maintenance_mode: Mapped[bool] = mapped_column(Boolean, default=False)
+    automatic_sync_hold: Mapped[bool] = mapped_column(Boolean, default=False)
+    maintenance_latch_acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    maintenance_latch_acknowledged_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    maintenance_latch_acknowledgement_json: Mapped[str] = mapped_column(Text, default="{}")
+    maintenance_latch_released_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    maintenance_latch_released_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    maintenance_latch_release_json: Mapped[str] = mapped_column(Text, default="{}")
     cluster_generation: Mapped[int] = mapped_column(Integer, default=1)
     role_generation: Mapped[int] = mapped_column(Integer, default=1)
     desired_sync_generation: Mapped[int] = mapped_column(Integer, default=0)
@@ -1379,6 +1386,16 @@ class HACluster(Base):
     keepalived_deployed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_healthy_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_failover_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # When Kaya first observed the VIP and DHCP on different nodes / more than one VIP owner
+    # (cleared when resolved).  Used only to confirm a condition before notifying.
+    ownership_mismatch_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    split_brain_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    missing_owner_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Outstanding restoration of the stable Keepalived baseline (nopreempt everywhere) after an
+    # operation granted a node a preempt-capable configuration; NULL when the baseline holds.
+    keepalived_restoration_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Which node holds DHCP authority and at which epoch (proposal); NULL until established.
+    dhcp_authority_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -1446,11 +1463,17 @@ class HANode(Base):
     resolver_repair_generation: Mapped[int] = mapped_column(Integer, default=0)
     resolver_repair_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
     resolver_repair_last_error: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    # Signed, agent-reported local automation gates; None when not reported.
+    agent_automation_gates_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_peer_attempt_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_peer_success_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_peer_dns_attempt_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_peer_dns_success_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     lease_generation: Mapped[int] = mapped_column(Integer, default=0)
+    # Newest DHCP authority epoch this node reports having seen (proposal); NULL for older agents.
+    dhcp_authority_epoch: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # "dns_only" while Pi-hole FTL runs with DHCP forced off by Kaya's boot guard (proposal); NULL if not reported.
+    dhcp_guard_mode: Mapped[str | None] = mapped_column(String(20), nullable=True)
     config_generation: Mapped[int] = mapped_column(Integer, default=0)
     recovery_state: Mapped[str] = mapped_column(String(30), default="STANDBY", index=True)
     recovery_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -1545,6 +1568,8 @@ class HALeaseReplicationState(Base):
     status: Mapped[str] = mapped_column(String(30), default="NOT_APPLICABLE", index=True)
     desired_generation: Mapped[int] = mapped_column(Integer, default=0)
     applied_generation: Mapped[int] = mapped_column(Integer, default=0)
+    # Latest generation whose lease set changed (expiry-only renewals excluded); None = unknown.
+    material_generation: Mapped[int | None] = mapped_column(Integer, nullable=True)
     lease_count: Mapped[int] = mapped_column(Integer, default=0)
     difference_count: Mapped[int] = mapped_column(Integer, default=0)
     conflict_count: Mapped[int] = mapped_column(Integer, default=0)

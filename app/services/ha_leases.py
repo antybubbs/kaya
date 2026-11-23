@@ -8,11 +8,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer, object_session
 
 from app.core.security import decrypt_secret, encrypt_secret
 from app.models.models import HACluster, HALeaseReplicationState, HALeaseSnapshot, HANode
 from app.services.dns_providers import PiHoleProvider
+from app.services.ha_sync import HASyncError, authority_and_target
 from app.services.ha_validation import PiHoleConnectionAdapter, connection_for_node
 from app.services.ha_topology import lease_continuity_enabled
 
@@ -42,6 +43,9 @@ class LeaseInspectionInputs:
     target_id: int
     continuity_enabled: bool
     connection: PiHoleConnectionAdapter | None
+    role_generation: int
+    keepalived_generation: int
+    cluster_generation: int
 
 
 @dataclass(frozen=True)
@@ -54,6 +58,9 @@ class LeasePlan:
     reservations: set[str]
     range_start: ipaddress.IPv4Address | None
     range_end: ipaddress.IPv4Address | None
+    role_generation: int | None = None
+    keepalived_generation: int | None = None
+    cluster_generation: int | None = None
 
 
 def _state(db: Session, cluster: HACluster) -> HALeaseReplicationState:
@@ -66,14 +73,27 @@ def _state(db: Session, cluster: HACluster) -> HALeaseReplicationState:
 
 
 def _nodes(cluster: HACluster) -> tuple[HANode, HANode]:
-    source = next((node for node in cluster.nodes if node.id == cluster.authoritative_node_id), None)
-    source = source or next((node for node in cluster.nodes if node.role == "ACTIVE"), None)
-    if source is None:
-        raise HALeaseError("Kaya cannot identify the main Pi-hole for lease replication.")
-    target = next((node for node in cluster.nodes if node.id != source.id), None)
-    if target is None:
-        raise HALeaseError("Lease replication requires a standby Pi-hole.")
+    try:
+        source, target, verified = authority_and_target(cluster)
+    except HASyncError as exc:
+        raise HALeaseError(str(exc)) from exc
+    if not verified:
+        raise HALeaseError("Kaya cannot verify one safe VIP owner for lease replication.")
     return source, target
+
+
+def _revalidate_plan_authority(cluster: HACluster, plan: LeasePlan) -> None:
+    source, target = _nodes(cluster)
+    if (source.id, target.id) != (plan.source_id, plan.target_id):
+        raise HALeaseError("Lease inspection authority changed before the snapshot was persisted.")
+    if (
+        plan.role_generation is not None
+        and plan.keepalived_generation is not None
+        and plan.cluster_generation is not None
+        and (plan.role_generation, plan.keepalived_generation, plan.cluster_generation)
+        != (cluster.role_generation, cluster.keepalived_generation, cluster.cluster_generation)
+    ):
+        raise HALeaseError("Lease inspection generation changed before the snapshot was persisted.")
 
 
 def _dict_at(value: Any, *keys: str) -> dict[str, Any]:
@@ -182,6 +202,20 @@ def normalise_leases(
     return sorted(normalised, key=lambda item: (int(ipaddress.IPv4Address(item["ip"])), item["hwaddr"]))
 
 
+def _material_checksum(payload: dict[str, Any]) -> str:
+    """Checksum of the lease set alone: the same leases with only renewed expiry times match."""
+    material = {**payload, "leases": [{key: value for key, value in lease.items() if key != "expires"} for lease in payload.get("leases", [])]}
+    return hashlib.sha256(json.dumps(material, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _summary(snapshot: HALeaseSnapshot) -> dict[str, Any]:
+    try:
+        value = json.loads(snapshot.validation_summary_json or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
 def prepare_lease_inspection(cluster: HACluster) -> LeaseInspectionInputs:
     """Load everything `inspect_lease_plan` needs from `cluster`'s session.
 
@@ -191,8 +225,13 @@ def prepare_lease_inspection(cluster: HACluster) -> LeaseInspectionInputs:
     so a caller can release its database connection before performing the
     (potentially slow) Pi-hole network calls in `inspect_lease_plan`.
     """
-    source, target = _nodes(cluster)
     continuity_enabled = lease_continuity_enabled(cluster)
+    if continuity_enabled:
+        source, target = _nodes(cluster)
+    else:
+        if len(cluster.nodes) != 2:
+            raise HALeaseError("Lease replication requires a standby Pi-hole.")
+        source, target = cluster.nodes
     connection = connection_for_node(source) if continuity_enabled else None
     return LeaseInspectionInputs(
         source_id=source.id,
@@ -200,6 +239,9 @@ def prepare_lease_inspection(cluster: HACluster) -> LeaseInspectionInputs:
         target_id=target.id,
         continuity_enabled=continuity_enabled,
         connection=connection,
+        role_generation=cluster.role_generation,
+        keepalived_generation=cluster.keepalived_generation,
+        cluster_generation=cluster.cluster_generation,
     )
 
 
@@ -210,7 +252,7 @@ def inspect_lease_plan(inputs: LeaseInspectionInputs, *, client_factory: Callabl
     to call after the session that produced `inputs` has been closed.
     """
     if not inputs.continuity_enabled:
-        return LeasePlan(False, inputs.source_id, inputs.source_public_id, inputs.target_id, [], set(), None, None)
+        return LeasePlan(False, inputs.source_id, inputs.source_public_id, inputs.target_id, [], set(), None, None, inputs.role_generation, inputs.keepalived_generation, inputs.cluster_generation)
     if inputs.connection is None:
         raise HALeaseError("The main Pi-hole connection is unavailable.")
     client = client_factory(inputs.connection)
@@ -221,14 +263,14 @@ def inspect_lease_plan(inputs: LeaseInspectionInputs, *, client_factory: Callabl
     reservations = _reservation_ips(dhcp)
     range_start, range_end = _range(dhcp)
     if not _is_enabled(dhcp):
-        return LeasePlan(False, inputs.source_id, inputs.source_public_id, inputs.target_id, [], reservations, range_start, range_end)
+        return LeasePlan(False, inputs.source_id, inputs.source_public_id, inputs.target_id, [], reservations, range_start, range_end, inputs.role_generation, inputs.keepalived_generation, inputs.cluster_generation)
     if range_start is None or range_end is None:
         raise HALeaseError("Pi-hole DHCP is enabled, but Kaya could not validate its address range.")
     result = client.get_dhcp_leases()
     if not result.ok:
         raise HALeaseError(result.message)
     leases = normalise_leases(result.data, range_start=range_start, range_end=range_end, reservation_ips=reservations)
-    return LeasePlan(True, inputs.source_id, inputs.source_public_id, inputs.target_id, leases, reservations, range_start, range_end)
+    return LeasePlan(True, inputs.source_id, inputs.source_public_id, inputs.target_id, leases, reservations, range_start, range_end, inputs.role_generation, inputs.keepalived_generation, inputs.cluster_generation)
 
 
 def inspect_cluster_leases(cluster: HACluster, *, client_factory: Callable = PiHoleProvider) -> LeasePlan:
@@ -270,7 +312,11 @@ def reconcile_cluster_leases(
                 raise precomputed_inspection
             plan = precomputed_inspection
         else:
-            plan = inspect_cluster_leases(cluster, client_factory=client_factory)
+            inputs = prepare_lease_inspection(cluster)
+            db.commit()  # no transaction open during the Pi-hole calls
+            plan = inspect_lease_plan(inputs, client_factory=client_factory)
+        if plan.applicable:
+            _revalidate_plan_authority(cluster, plan)
         state.source_node_id, state.target_node_id = plan.source_id, plan.target_id
         state.last_full_reconciliation_at = now
         state.last_error_redacted = None
@@ -285,6 +331,7 @@ def reconcile_cluster_leases(
         payload = {"version": 1, "cluster_id": cluster.public_id, "source_node_id": plan.source_public_id, "leases": plan.leases}
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         checksum = hashlib.sha256(encoded.encode()).hexdigest()
+        material_checksum = _material_checksum(payload)
         latest = db.query(HALeaseSnapshot).filter(HALeaseSnapshot.cluster_id == cluster.id).order_by(HALeaseSnapshot.generation.desc()).first()
         state.lease_count = len(plan.leases)
         state.difference_count = 0 if latest and latest.checksum == checksum else max(1, len(plan.leases), latest.lease_count if latest else 0)
@@ -294,9 +341,16 @@ def reconcile_cluster_leases(
             db.commit()
             return state
         generation = max(state.desired_generation, latest.generation if latest else 0) + 1
-        snapshot = HALeaseSnapshot(cluster_id=cluster.id, source_node_id=plan.source_id, target_node_id=plan.target_id, generation=generation, checksum=checksum, encrypted_payload=encrypt_secret(encoded), lease_count=len(plan.leases), status="PENDING", validation_summary_json=json.dumps({"range": f"{plan.range_start}-{plan.range_end}", "reservation_count": len(plan.reservations), "conflicts": 0}, sort_keys=True))
+        # Renewals still produce a new staged generation (the failover helper
+        # writes staged expiry times into the lease file), but only a change to
+        # the lease set itself advances the material generation that standby
+        # readiness depends on.
+        renewal_only = bool(latest and _summary(latest).get("material_checksum") == material_checksum)
+        snapshot = HALeaseSnapshot(cluster_id=cluster.id, source_node_id=plan.source_id, target_node_id=plan.target_id, generation=generation, checksum=checksum, encrypted_payload=encrypt_secret(encoded), lease_count=len(plan.leases), status="PENDING", validation_summary_json=json.dumps({"range": f"{plan.range_start}-{plan.range_end}", "reservation_count": len(plan.reservations), "conflicts": 0, "material_checksum": material_checksum, "renewal_only": renewal_only}, sort_keys=True))
         db.add(snapshot)
         state.desired_generation = generation
+        if not renewal_only or state.material_generation is None:
+            state.material_generation = generation
         state.status = "PENDING"
         state.last_event_at = now
         db.commit()
@@ -311,11 +365,33 @@ def reconcile_cluster_leases(
         raise
 
 
+def _snapshot_query(cluster: HACluster, *, include_payload: bool):
+    """Query one cluster's snapshots without materialising its full history.
+
+    Returns None only for an object with no session. Such an object cannot
+    lazy-load, so callers fall back to whatever collection is already in
+    memory; that fallback never issues a database query.
+    """
+    db = object_session(cluster)
+    if db is None:
+        return None
+    query = db.query(HALeaseSnapshot).filter(HALeaseSnapshot.cluster_id == cluster.id)
+    return query if include_payload else query.options(defer(HALeaseSnapshot.encrypted_payload))
+
+
+def _snapshot_for_generation(cluster: HACluster, generation: int, *, include_payload: bool = False) -> HALeaseSnapshot | None:
+    query = _snapshot_query(cluster, include_payload=include_payload)
+    if query is None:
+        return next((item for item in cluster.lease_snapshots if item.generation == generation), None)
+    # uq_ha_lease_snapshot_generation guarantees at most one row.
+    return query.filter(HALeaseSnapshot.generation == generation).one_or_none()
+
+
 def desired_lease_action(cluster: HACluster, node: HANode) -> dict[str, Any] | None:
     state = cluster.lease_replication
     if state is None or state.status != "PENDING" or state.target_node_id != node.id:
         return None
-    snapshot = next((item for item in cluster.lease_snapshots if item.generation == state.desired_generation), None)
+    snapshot = _snapshot_for_generation(cluster, state.desired_generation)
     if snapshot is None or snapshot.status != "PENDING":
         return None
     return {"action_id": f"lease:{cluster.public_id}:{node.public_id}:{snapshot.generation}:{snapshot.checksum[:12]}", "action_type": "LEASE_SNAPSHOT_STAGE", "generation": snapshot.generation, "checksum": snapshot.checksum, "snapshot_path": f"/api/ha/agent/v1/lease-snapshot/{snapshot.generation}"}
@@ -325,7 +401,7 @@ def snapshot_for_agent(node: HANode, generation: int) -> dict[str, Any]:
     state = node.cluster.lease_replication
     if state is None or state.target_node_id != node.id or state.desired_generation != generation:
         raise HALeaseError("This lease snapshot is not assigned to this node.")
-    snapshot = next((item for item in node.cluster.lease_snapshots if item.generation == generation), None)
+    snapshot = _snapshot_for_generation(node.cluster, generation, include_payload=True)
     if snapshot is None or snapshot.status != "PENDING":
         raise HALeaseError("The requested lease snapshot is unavailable.")
     payload = json.loads(decrypt_secret(snapshot.encrypted_payload))
@@ -336,9 +412,13 @@ def record_lease_stage_result(db: Session, node: HANode, *, generation: int, che
     state = node.cluster.lease_replication
     if state is None or state.target_node_id != node.id or state.desired_generation != generation:
         raise HALeaseError("The lease result does not match the target's current desired generation.")
-    snapshot = next((item for item in node.cluster.lease_snapshots if item.generation == generation), None)
+    snapshot = _snapshot_for_generation(node.cluster, generation)
     if snapshot is None or (status == "APPLIED" and checksum != snapshot.checksum):
         raise HALeaseError("The staged lease checksum does not match Kaya's validated snapshot.")
+    if status == "APPLIED":
+        source, target = _nodes(node.cluster)
+        if target.id != node.id or source.id == node.id:
+            raise HALeaseError("Lease staging target is no longer the verified standby node.")
     now = datetime.utcnow()
     if status == "APPLIED":
         snapshot.status = "STAGED"
@@ -356,9 +436,13 @@ def record_lease_stage_result(db: Session, node: HANode, *, generation: int, che
 
 
 def latest_snapshot_summary(cluster: HACluster) -> dict[str, Any] | None:
-    if not cluster.lease_snapshots:
+    query = _snapshot_query(cluster, include_payload=False)
+    if query is None:
+        snapshot = max(cluster.lease_snapshots, key=lambda item: item.generation, default=None)
+    else:
+        snapshot = query.order_by(HALeaseSnapshot.generation.desc()).limit(1).one_or_none()
+    if snapshot is None:
         return None
-    snapshot = max(cluster.lease_snapshots, key=lambda item: item.generation)
     try:
         validation = json.loads(snapshot.validation_summary_json or "{}")
     except json.JSONDecodeError:

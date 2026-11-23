@@ -1,0 +1,270 @@
+﻿**********************
+Windows PowerShell transcript start
+Start time: 20261107211436
+Username: HOMEGAMINGPC\me
+RunAs User: HOMEGAMINGPC\me
+Configuration Name: 
+Machine: HOMEGAMINGPC (Microsoft Windows NT 10.0.26300.0)
+Host Application: C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Users\me\Nextcloud2\Dev Work\kaya\scripts\phasea_interactive_validation.ps1
+Process ID: 77432
+PSVersion: 5.1.26100.9818
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.9818
+BuildVersion: 10.0.26100.9818
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+Phase A validation run: 20261107-211436-97d95be8cef9
+Artifacts: C:\Users\me\Nextcloud2\Dev Work\kaya\artifacts\phasea-validation-20261107-211436-97d95be8cef9
+Python 3.12.15
+uv 0.13.1 (62faed335 2026-10-13 x86_64-pc-windows-msvc)
+Client:
+ Version:           29.5.3
+ API version:       1.54
+ Go version:        go1.26.4
+ Git commit:        d1c06ef
+ Built:             Wed Jun  3 18:03:06 2026
+ OS/Arch:           windows/amd64
+ Context:           desktop-linux
+
+Server: Docker Desktop 4.78.0 (229452)
+ Engine:
+  Version:          29.5.3
+  API version:      1.54 (minimum version 1.40)
+  Go version:       go1.26.4
+  Git commit:       285b471
+  Built:            Wed Jun  3 17:59:56 2026
+  OS/Arch:          linux/amd64
+  Experimental:     false
+ containerd:
+  Version:          v2.2.4
+  GitCommit:        193637f7ee8ae5f5aa5248f49e7baa3e6164966e
+ runc:
+  Version:          1.3.5
+  GitCommit:        v1.3.5-0-g488fc13e
+ docker-init:
+  Version:          0.19.0
+  GitCommit:        de40ad0
+Client:
+ Version:    29.5.3
+ Context:    desktop-linux
+ Debug Mode: false
+ Plugins:
+  agent: Docker AI Agent Runner (Docker Inc.)
+    Version:  v1.73.0
+    Path:     C:\Program Files\Docker\cli-plugins\docker-agent.exe
+  ai: Docker AI Agent - Ask Gordon (Docker Inc.)
+    Version:  v1.25.0
+    Path:     C:\Program Files\Docker\cli-plugins\docker-ai.exe
+  buildx: Docker Buildx (Docker Inc.)
+    Version:  v0.34.1-desktop.1
+    Path:     C:\Program Files\Docker\cli-plugins\docker-buildx.exe
+  compose: Docker Compose (Docker Inc.)
+    Version:  v5.1.4
+    Path:     C:\Program Files\Docker\cli-plugins\docker-compose.exe
+  debug: Get a shell into any image or container (Docker Inc.)
+    Version:  0.0.47
+    Path:     C:\Program Files\Docker\cli-plugins\docker-debug.exe
+  desktop: Docker Desktop commands (Docker Inc.)
+    Version:  v0.3.0
+    Path:     C:\Program Files\Docker\cli-plugins\docker-desktop.exe
+  dhi: CLI for managing Docker Hardened Images (Docker Inc.)
+    Version:  v0.0.4
+    Path:     C:\Program Files\Docker\cli-plugins\docker-dhi.exe
+  extension: Manages Docker extensions (Docker Inc.)
+    Version:  v0.2.31
+    Path:     C:\Program Files\Docker\cli-plugins\docker-extension.exe
+  init: Creates Docker-related starter files for your project (Docker Inc.)
+    Version:  v1.4.0
+    Path:     C:\Program Files\Docker\cli-plugins\docker-init.exe
+  mcp: Docker MCP Plugin (Docker Inc.)
+    Version:  v0.42.2
+    Path:     C:\Program Files\Docker\cli-plugins\docker-mcp.exe
+  model: Docker Model Runner (Docker Inc.)
+    Version:  v1.2.1
+    Path:     C:\Program Files\Docker\cli-plugins\docker-model.exe
+  offload: Docker Offload (Docker Inc.)
+    Version:  v0.6.3
+    Path:     C:\Program Files\Docker\cli-plugins\docker-offload.exe
+  pass: Docker Pass Secrets Manager Plugin (beta) (Docker Inc.)
+    Version:  v0.1.4
+    Path:     C:\Program Files\Docker\cli-plugins\docker-pass.exe
+  sandbox: Docker Sandbox (Docker Inc.)
+    Version:  v0.12.0
+    Path:     C:\Program Files\Docker\cli-plugins\docker-sandbox.exe
+  scout: Docker Scout (Docker Inc.)
+    Version:  v1.21.0
+    Path:     C:\Program Files\Docker\cli-plugins\docker-scout.exe
+
+Server:
+ Containers: 20
+  Running: 20
+  Paused: 0
+  Stopped: 0
+ Images: 110
+ Server Version: 29.5.3
+ Storage Driver: overlayfs
+  driver-type: io.containerd.snapshotter.v1
+ Logging Driver: json-file
+ Cgroup Driver: cgroupfs
+ Cgroup Version: 2
+ Plugins:
+  Volume: local
+  Network: bridge host ipvlan macvlan null overlay
+  Log: awslogs fluentd gcplogs gelf journald json-file local splunk syslog
+ CDI spec directories:
+  /etc/cdi
+  /var/run/cdi
+ Discovered Devices:
+  cdi: docker.com/gpu=webgpu
+ Swarm: inactive
+ Runtimes: runc io.containerd.runc.v2 nvidia
+ Default Runtime: runc
+ Init Binary: docker-init
+ containerd version: 193637f7ee8ae5f5aa5248f49e7baa3e6164966e
+ runc version: v1.3.5-0-g488fc13e
+ init version: de40ad0
+ Security Options:
+  seccomp
+   Profile: builtin
+  cgroupns
+ Kernel Version: 6.6.87.2-microsoft-standard-WSL2
+ Operating System: Docker Desktop
+ OSType: linux
+ Architecture: x86_64
+ CPUs: 32
+ Total Memory: 31.19GiB
+ Name: docker-desktop
+ ID: 98c5fd49-cab2-49f1-a31b-f010919c031b
+ Docker Root Dir: /var/lib/docker
+ Debug Mode: false
+ HTTP Proxy: http.docker.internal:3128
+ HTTPS Proxy: http.docker.internal:3128
+ No Proxy: hubproxy.docker.internal
+ Labels:
+  com.docker.desktop.address=npipe://\\.\pipe\docker_cli
+ Experimental: false
+ Insecure Registries:
+  hubproxy.docker.internal:5555
+  ::1/128
+  127.0.0.0/8
+ Live Restore Enabled: false
+ Firewall Backend: iptables
+desktop-linux
+[create-python-venv stderr]
+Using CPython 3.12.15 interpreter at: C:\Users\me\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\python.exe
+Creating virtual environment at: C:\Users\me\AppData\Local\Temp\kaya-phasea-20261107-211436-97d95be8cef9\venv
+Activate with: C:\Users\me\AppData\Local\Temp\kaya-phasea-20261107-211436-97d95be8cef9\venv\Scripts\activate
+[install-python-dependencies stderr]
+Using Python 3.12.15 environment at: C:\Users\me\AppData\Local\Temp\kaya-phasea-20261107-211436-97d95be8cef9\venv
+Resolved 79 packages in 189ms
+Installed 79 packages in 973ms
+ + aiohappyeyeballs==2.7.1
+ + aiohttp==3.14.5
+ + aiosignal==1.4.0
+ + alembic==1.16.5
+ + annotated-doc==0.0.5
+ + annotated-types==0.8.0
+ + anyio==4.16.0
+ + argon2-cffi==25.1.0
+ + argon2-cffi-bindings==26.1.0
+ + attrs==26.1.0
+ + authlib==1.9.1
+ + certifi==2026.10.19
+ + cffi==2.1.1
+ + charset-normalizer==3.5.2
+ + click==8.5.1
+ + colorama==0.4.6
+ + cryptography==50.0.0
+ + dnspython==2.9.0
+ + email-validator==2.2.0
+ + et-xmlfile==2.0.0
+ + fastapi==0.136.3
+ + frozenlist==1.8.0
+ + greenlet==3.5.6
+ + h11==0.16.0
+ + http-ece==1.2.1
+ + httpcore==1.0.9
+ + httpcore2==2.12.0
+ + httptools==0.9.0
+ + httpx==0.28.1
+ + httpx2==2.12.0
+ + idna==3.20
+ + iniconfig==2.3.1
+ + itsdangerous==2.2.0
+ + jinja2==3.1.6
+ + joserfc==1.8.0
+ + mako==1.4.3
+ + markupsafe==3.0.4
+ + multidict==7.2.1
+ + numpy==2.5.4
+ + openpyxl==3.1.5
+ + packaging==26.3
+ + pandas==2.2.3
+ + passlib==1.7.4
+ + pillow==13.0.0
+ + pluggy==1.7.0
+ + propcache==0.5.4
+ + psycopg==3.2.9
+ + psycopg-binary==3.2.9
+ + py-vapid==1.9.6
+ + pyasn1==0.6.5
+ + pycparser==3.12
+ + pydantic==2.14.3
+ + pydantic-core==2.50.4
+ + pydantic-settings==2.14.2
+ + pygments==2.21.0
+ + pysnmp==7.1.30
+ + pyspnego==0.12.4
+ + pytest==9.2.0
+ + python-dateutil==4.0.0
+ + python-dotenv==1.2.4
+ + python-multipart==0.0.31
+ + pytz==2026.6
+ + pywebpush==2.3.0
+ + pyyaml==6.0.3
+ + qrcode==8.2
+ + requests==2.34.2
+ + smbprotocol==1.15.0
+ + sqlalchemy==2.0.36
+ + sspilib==0.6.0
+ + starlette==1.3.1
+ + truststore==0.10.5
+ + typing-extensions==4.16.0
+ + typing-inspection==0.4.5
+ + tzdata==2026.6
+ + urllib3==2.8.0
+ + uvicorn==0.34.0
+ + watchfiles==1.3.0
+ + websockets==17.4
+ + yarl==1.25.1
+Python 3.12.15
+dependency-imports-ok
+[start-disposable-postgres stderr]
+ Network kaya-phasea-20261107-211436-97d95be8cef9_default Creating 
+ Network kaya-phasea-20261107-211436-97d95be8cef9_default Created 
+ Container kaya-phasea-20261107-211436-97d95be8cef9-postgres-1 Creating 
+ Container kaya-phasea-20261107-211436-97d95be8cef9-postgres-1 Created 
+ Container kaya-phasea-20261107-211436-97d95be8cef9-postgres-1 Starting 
+ Container kaya-phasea-20261107-211436-97d95be8cef9-postgres-1 Started 
+ Container kaya-phasea-20261107-211436-97d95be8cef9-postgres-1 Waiting 
+ Container kaya-phasea-20261107-211436-97d95be8cef9-postgres-1 Healthy
+75ace3d1d2e3a150e78113a1b9320e3f26fccc9a31880b7d74625517d7a40c9d
+{"com.docker.compose.config-hash":"6782df72e4b1b631ea7319776f1976a9b18f54710d74b7bcd52b55735378f02a","com.docker.compose.container-number":"1","com.docker.compose.depends_on":"","com.docker.compose.image":"sha256:95206741a5b214807675e14165369d05b93a9cf692223b616d07cca227e74b0b","com.docker.compose.oneoff":"False","com.docker.compose.project":"kaya-phasea-20261107-211436-97d95be8cef9","com.docker.compose.project.config_files":"C:\\Users\\me\\Nextcloud2\\Dev Work\\kaya\\ci\\compose\\docker-compose.postgres-test.yml","com.docker.compose.project.environment_file":"C:\\Users\\me\\AppData\\Local\\Temp\\kaya-phasea-20261107-211436-97d95be8cef9\\compose.env","com.docker.compose.project.working_dir":"C:\\Users\\me\\Nextcloud2\\Dev Work\\kaya\\ci\\compose","com.docker.compose.service":"postgres","com.docker.compose.version":"5.1.4"}
+postgres:16.14
+
+PS>TerminatingError(): "Refusing non-disposable PostgreSQL storage: 
+"
+[cleanup-run-owned-compose stderr]
+ Container kaya-phasea-20261107-211436-97d95be8cef9-postgres-1 Stopping 
+ Container kaya-phasea-20261107-211436-97d95be8cef9-postgres-1 Stopped 
+ Container kaya-phasea-20261107-211436-97d95be8cef9-postgres-1 Removing 
+ Container kaya-phasea-20261107-211436-97d95be8cef9-postgres-1 Removed 
+ Network kaya-phasea-20261107-211436-97d95be8cef9_default Removing 
+ Network kaya-phasea-20261107-211436-97d95be8cef9_default Removed
+**********************
+Windows PowerShell transcript end
+End time: 20261107211500
+**********************

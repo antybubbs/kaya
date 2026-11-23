@@ -1,0 +1,8 @@
+﻿{
+    "run_id":  "20261107-211436-97d95be8cef9",
+    "status":  "FAILED_OR_BLOCKED",
+    "stage":  "inspect-compose-storage",
+    "exit_code":  1,
+    "error":  "Refusing non-disposable PostgreSQL storage: \n",
+    "artifacts":  "C:\\Users\\me\\Nextcloud2\\Dev Work\\kaya\\artifacts\\phasea-validation-20261107-211436-97d95be8cef9"
+}

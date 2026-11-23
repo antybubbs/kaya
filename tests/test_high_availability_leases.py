@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import create_engine, event
@@ -10,7 +11,7 @@ from app.models.models import HACluster, HALeaseSnapshot, HANode, HAProviderConn
 from app.schemas.high_availability import HAAgentActionResult
 from app.services.dns_providers import DNSProviderResult
 from app.services.ha_agents import desired_state, record_action_result
-from app.services.ha_leases import HALeaseError, reconcile_cluster_leases, snapshot_for_agent
+from app.services.ha_leases import HALeaseError, inspect_lease_plan, prepare_lease_inspection, reconcile_cluster_leases, record_lease_stage_result, snapshot_for_agent
 from ha_agent.kaya_ha_agent import State, reconcile_desired
 
 
@@ -35,10 +36,113 @@ def make_cluster(db: Session):
     standby = HANode(cluster_id=cluster.id, display_name="Two", api_base_url=second_connection.api_base_url, ha_connection_id=second_connection.id, role="STANDBY", desired_role="STANDBY")
     db.add_all([primary, standby])
     db.flush()
+    now = datetime.utcnow()
+    primary.last_heartbeat_at = now
+    primary.dhcp_observed_at = now
+    primary.dhcp_observation_status = "FRESH"
+    primary.observed_role = "ACTIVE"
+    primary.observed_generation = 0
+    primary.config_generation = 0
+    primary.vip_owned = True
+    primary.dns_healthy = True
+    primary.dhcp_configured = True
+    primary.dhcp_listener_active = True
+    primary.ftl_active = True
+    primary.dhcp_runtime_state = "RUNNING"
+    standby.last_heartbeat_at = now
+    standby.dhcp_observed_at = now
+    standby.dhcp_observation_status = "FRESH"
+    standby.observed_role = "STANDBY"
+    standby.observed_generation = 0
+    standby.config_generation = 0
+    standby.vip_owned = False
+    standby.dns_healthy = True
+    standby.dhcp_configured = False
+    standby.dhcp_listener_active = False
+    standby.ftl_active = True
+    standby.dhcp_runtime_state = "STOPPED"
     cluster.authoritative_node_id = primary.id
     db.commit()
     return cluster, primary, standby
 
+
+def test_lease_replication_uses_verified_vip_owner_when_stored_authority_is_stale():
+    with database() as db:
+        cluster, primary, standby = make_cluster(db)
+        cluster.authoritative_node_id = standby.id
+        db.commit()
+
+        inputs = prepare_lease_inspection(cluster)
+
+        assert inputs.source_id == primary.id
+        assert inputs.target_id == standby.id
+
+
+def test_lease_replication_fails_closed_for_ambiguous_or_stale_authority():
+    with database() as db:
+        cluster, primary, standby = make_cluster(db)
+        standby.vip_owned = True
+        db.commit()
+        with pytest.raises(HALeaseError, match="safe VIP owner"):
+            prepare_lease_inspection(cluster)
+        standby.vip_owned = False
+        primary.last_heartbeat_at = datetime.utcnow() - timedelta(minutes=2)
+        db.commit()
+        with pytest.raises(HALeaseError, match="safe VIP owner"):
+            prepare_lease_inspection(cluster)
+
+
+def test_lease_snapshot_persistence_revalidates_authority_and_generation():
+    with database() as db:
+        cluster, primary, standby = make_cluster(db)
+        inputs = prepare_lease_inspection(cluster)
+        LeasePiHole.active = True
+        LeasePiHole.hosts = []
+        LeasePiHole.leases = []
+        plan = inspect_lease_plan(inputs, client_factory=LeasePiHole)
+
+        cluster.role_generation += 1
+        db.commit()
+
+        with pytest.raises(HALeaseError, match="generation changed"):
+            reconcile_cluster_leases(db, cluster, precomputed_inspection=plan)
+        assert db.query(HALeaseSnapshot).count() == 0
+
+        cluster.role_generation -= 1
+        primary.vip_owned = False
+        standby.vip_owned = True
+        db.commit()
+        with pytest.raises(HALeaseError, match="safe VIP owner"):
+            reconcile_cluster_leases(db, cluster, precomputed_inspection=plan)
+
+
+def test_lease_stage_application_revalidates_verified_standby():
+    with database() as db:
+        cluster, _primary, standby = make_cluster(db)
+        LeasePiHole.active = True
+        LeasePiHole.hosts = []
+        LeasePiHole.leases = []
+        state = reconcile_cluster_leases(db, cluster, client_factory=LeasePiHole)
+        snapshot = db.query(HALeaseSnapshot).one()
+        cluster.nodes[0].vip_owned = False
+        cluster.nodes[0].dhcp_configured = False
+        cluster.nodes[0].dhcp_listener_active = False
+        cluster.nodes[0].dhcp_runtime_state = "STOPPED"
+        standby.vip_owned = True
+        standby.dhcp_configured = True
+        standby.dhcp_listener_active = True
+        standby.dhcp_runtime_state = "RUNNING"
+        db.commit()
+
+        with pytest.raises(HALeaseError, match="verified standby"):
+            record_lease_stage_result(
+                db,
+                standby,
+                generation=state.desired_generation,
+                checksum=snapshot.checksum,
+                status="APPLIED",
+                message="synthetic application",
+            )
 
 class LeasePiHole:
     active = True

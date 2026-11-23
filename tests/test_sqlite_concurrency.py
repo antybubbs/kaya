@@ -196,25 +196,28 @@ def test_dns_collection_loop_recovers_after_transient_database_lock(monkeypatch)
 
 
 def test_ha_watchdog_loop_recovers_after_transient_database_lock(monkeypatch):
+    """A locked database in one periodic pass is logged; the coordinator keeps running."""
     calls = 0
-    sleeps = 0
 
-    def watchdog_pass():
+    def watchdog_pass(session_factory=None):
         nonlocal calls
         calls += 1
         if calls == 1:
             raise sqlite3.OperationalError("database is locked")
         return 10
 
-    async def bounded_sleep(_delay):
-        nonlocal sleeps
-        sleeps += 1
-        if sleeps >= 3:
-            raise asyncio.CancelledError
-
     monkeypatch.setattr(ha_watchdog, "run_ha_watchdog_pass", watchdog_pass)
-    monkeypatch.setattr(ha_watchdog.asyncio, "sleep", bounded_sleep)
+    monkeypatch.setattr(ha_watchdog, "STARTUP_DELAY_SECONDS", 0)
+    monkeypatch.setattr(ha_watchdog, "CHECK_INTERVAL_SECONDS", 0.05)
 
-    with pytest.raises(asyncio.CancelledError):
-        asyncio.run(ha_watchdog.ha_watchdog_loop())
-    assert calls == 2
+    async def main():
+        task = asyncio.create_task(ha_watchdog.ha_watchdog_loop())
+        for _ in range(300):
+            if calls >= 2:
+                break
+            await asyncio.sleep(0.01)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(main())
+    assert calls >= 2

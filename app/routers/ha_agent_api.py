@@ -11,6 +11,7 @@ from app.schemas.high_availability import (
     HAAgentHeartbeat,
     HAAgentRegister,
 )
+from app.services import ha_evaluation_queue
 from app.services.ha_agent_installer import agent_file
 from app.services.ha_agents import (
     AuthenticatedAgent,
@@ -25,6 +26,10 @@ from app.services.ha_agents import (
 from app.services.ha_leases import HALeaseError, snapshot_for_agent
 
 router = APIRouter(prefix="/api/ha/agent/v1", tags=["ha-agent"])
+# How long a heartbeat waits for the coordinator to evaluate what it reported,
+# so the reply normally carries any resulting action, as before.  On timeout the
+# reply carries the current desired state and the next heartbeat delivers more.
+HEARTBEAT_EVALUATION_WAIT_SECONDS = 2.0
 _registration_attempts: dict[str, list[datetime]] = {}
 
 
@@ -79,6 +84,11 @@ def register(payload: HAAgentRegister, request: Request, db: Session = Depends(g
 def heartbeat(payload: HAAgentHeartbeat, db: Session = Depends(get_db), agent: AuthenticatedAgent = Depends(require_agent)):
     with database_write_context("ha_agent", "heartbeat"):
         node, accepted, reason = record_heartbeat(db, agent.node, payload, return_status=True)
+    ticket = db.info.pop("ha_evaluation_ticket", None)
+    if ticket is not None:
+        with performance_phase("heartbeat.await_coordinator"):
+            if ha_evaluation_queue.wait_for_evaluation(node.cluster_id, ticket, HEARTBEAT_EVALUATION_WAIT_SECONDS):
+                db.expire_all()  # the coordinator committed decisions in its own session
     with performance_phase("heartbeat.desired_state"):
         desired = desired_state(node)
     return {

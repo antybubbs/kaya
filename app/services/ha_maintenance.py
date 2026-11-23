@@ -21,15 +21,18 @@ from app.models.models import (
     HASyncRun,
     User,
 )
+from app.services.ha_coordination import coordinated
 from app.services.ha_leases import HALeaseError, reconcile_cluster_leases
 from app.services.ha_agent_installer import version_tuple
 from app.services.ha_dhcp_safety import authorise_dhcp_demotion
-from app.services.ha_recovery import evaluate_recovery
+from app.services.ha_recovery import evaluate_recovery, recovery_snapshot
 from app.services.ha_sync import (
     HASyncError,
-    _live_configuration,
+    PiHoleEndpoint,
     create_sync_plan,
     execute_sync,
+    pihole_endpoint,
+    read_live_configuration,
 )
 from app.services.ha_topology import (
     dhcp_observation,
@@ -78,6 +81,131 @@ DHCP_OWNER_STABILITY_SECONDS = 10
 
 class HAMaintenanceError(ValueError):
     pass
+
+
+def latched_failed_run(cluster: HACluster) -> HAMaintenanceRun | None:
+    """The most recent failed-safe operation that holds the maintenance safety latch.
+
+    A failed REINITIALISE always latches.  A failed ALIGN_OWNERSHIP latches only
+    once it had changed Keepalived (``latch_active``); earlier failures changed
+    nothing and restored the previous maintenance setting.
+    """
+    for run in sorted(cluster.maintenance_runs, key=lambda item: (item.created_at or datetime.min, item.id or 0), reverse=True):
+        if run.status != "FAILED_SAFE":
+            continue
+        if run.operation == "REINITIALISE" or (run.operation == "ALIGN_OWNERSHIP" and _result_document(run).get("latch_active") is True):
+            return run
+    return None
+
+
+def latch_acknowledgement_matches(cluster: HACluster, failed_run: HAMaintenanceRun | None) -> bool:
+    """Return true only when the persisted acknowledgement names the held latch run."""
+    if failed_run is None or cluster.maintenance_latch_acknowledged_at is None:
+        return False
+    try:
+        acknowledgement = json.loads(cluster.maintenance_latch_acknowledgement_json or "{}")
+    except (TypeError, ValueError):
+        return False
+    return isinstance(acknowledgement, dict) and acknowledgement.get("failed_run_id") == failed_run.public_id
+
+
+def _latch_evidence(db: Session, cluster: HACluster) -> dict[str, Any]:
+    """Build a bounded, persisted-state-only safety decision for latch release."""
+    now = datetime.utcnow()
+    topology = reconcile_topology(cluster, now=now, freshness_seconds=FRESH_SECONDS)
+    inspection = inspect_cluster(cluster, now=now)
+    failed_run = latched_failed_run(cluster)
+    active_run = active_maintenance(cluster)
+    from app.services.ha_failover import active_failover
+    failover = active_failover(cluster)
+    managed = pihole_manages_dhcp(cluster)
+    observed_owner = next((node for node in cluster.nodes if node.id == topology.active_node_id), None)
+    observed_dhcp = next((node for node in cluster.nodes if node.id in topology.dhcp_owner_ids), None)
+    roles_match = bool(observed_owner and cluster.current_active_node_id == observed_owner.id and all(
+        node.role == ("ACTIVE" if node.id == observed_owner.id else "STANDBY")
+        and node.desired_role == ("ACTIVE" if node.id == observed_owner.id else "STANDBY")
+        for node in cluster.nodes
+    ))
+    generations_ok = all(
+        node.observed_generation >= cluster.role_generation
+        and node.config_generation >= cluster.keepalived_generation
+        for node in cluster.nodes
+    )
+    latest_reconcile = next((run for run in sorted(cluster.maintenance_runs, key=lambda item: item.created_at or datetime.min, reverse=True) if run.operation == "RECONCILE"), None)
+    reconciliation_ok = bool(
+        failed_run and latest_reconcile and latest_reconcile.status == "SUCCEEDED"
+        and (latest_reconcile.completed_at or datetime.min) >= (failed_run.completed_at or failed_run.created_at or datetime.min)
+    )
+    unsafe_actions = []
+    for node in cluster.nodes:
+        if node.resolver_repair_status == "PENDING":
+            unsafe_actions.append(f"{node.display_name} has a pending resolver repair")
+        if node.keepalived_status == "ERROR":
+            unsafe_actions.append(f"{node.display_name} reports a Keepalived error")
+    if cluster.keepalived_requested_at and (not cluster.keepalived_deployed_at or cluster.keepalived_requested_at > cluster.keepalived_deployed_at):
+        unsafe_actions.append("The cluster has an unapplied Keepalived request")
+    checks = [
+        {"code": "HISTORICAL_FAILED_SAFE", "passed": failed_run is not None, "detail": "A failed-safe reinitialisation is present for review."},
+        {"code": "FRESH_SIGNED_REPORTS", "passed": inspection.fresh and all(_registered(node) for node in cluster.nodes), "detail": "Both registered agents have fresh signed reports."},
+        {"code": "EXCLUSIVE_VIP", "passed": len(topology.vip_owner_ids) == 1, "detail": "Exactly one node owns the Virtual IP."},
+        {"code": "EXCLUSIVE_DHCP", "passed": not managed or len(topology.dhcp_owner_ids) == 1, "detail": "Exactly one node owns DHCP when Pi-hole manages DHCP."},
+        {"code": "DHCP_VIP_MATCH", "passed": not managed or (observed_owner is not None and observed_dhcp is not None and observed_owner.id == observed_dhcp.id), "detail": "DHCP ownership matches VIP ownership."},
+        {"code": "STORED_ROLES_ALIGNED", "passed": roles_match, "detail": "Stored and observed Active/Standby assignments agree."},
+        {"code": "GENERATION_FENCING", "passed": generations_ok and cluster.keepalived_status == "DEPLOYED", "detail": "Role/configuration generations and Keepalived fencing are current."},
+        {"code": "NO_ACTIVE_OPERATION", "passed": active_run is None and failover is None, "detail": "No active maintenance, failover or rollback operation exists."},
+        {"code": "RECONCILIATION_COMPLETE", "passed": reconciliation_ok, "detail": "A successful reconciliation completed after the failed-safe run."},
+        {"code": "NO_UNSAFE_AGENT_ACTION", "passed": not unsafe_actions, "detail": "; ".join(unsafe_actions) if unsafe_actions else "No pending unsafe agent action is recorded."},
+    ]
+    return {"checks": checks, "release_allowed": all(item["passed"] for item in checks), "failed_run": failed_run, "active_run": active_run, "latest_reconcile": latest_reconcile, "recovery": recovery_snapshot(db, cluster, now=now), "unsafe_actions": unsafe_actions, "automatic_sync_enabled": bool(cluster.automatic_sync_enabled), "automatic_sync_hold": bool(cluster.automatic_sync_hold), "authority": observed_owner.display_name if observed_owner else None, "generated_at": now}
+
+
+def latch_preview(db: Session, cluster: HACluster) -> dict[str, Any]:
+    evidence = _latch_evidence(db, cluster)
+    failed_run = evidence["failed_run"]
+    return {"generated_at": evidence["generated_at"], "release_allowed": evidence["release_allowed"], "checks": evidence["checks"], "failed_run": maintenance_status(failed_run), "failed_run_id": failed_run.public_id if failed_run else None, "active_run": maintenance_status(evidence["active_run"]), "latest_reconcile": maintenance_status(evidence["latest_reconcile"]), "automatic_sync_enabled": evidence["automatic_sync_enabled"], "automatic_sync_hold": evidence["automatic_sync_hold"], "acknowledged_at": cluster.maintenance_latch_acknowledged_at, "acknowledged": latch_acknowledgement_matches(cluster, failed_run), "released_at": cluster.maintenance_latch_released_at, "authority": evidence["authority"], "unsafe_actions": evidence["unsafe_actions"]}
+
+
+def acknowledge_failed_safe_latch(db: Session, cluster: HACluster, user: User) -> HACluster:
+    locked = db.query(HACluster).populate_existing().filter(HACluster.id == cluster.id).with_for_update().one()
+    evidence = _latch_evidence(db, locked)
+    failed = evidence["failed_run"]
+    if not locked.maintenance_mode or failed is None:
+        write_audit(db, user, "denied", "ha_maintenance_latch", locked.public_id, detail=f"Failed-safe latch acknowledgement was denied for {locked.name}; no eligible retained failed-safe run exists.", severity="warning", metadata={"reason_code": "NO_ELIGIBLE_FAILED_SAFE_RUN"}, force=True)
+        raise HAMaintenanceError("No retained failed-safe maintenance latch is available for acknowledgement.")
+    locked.maintenance_latch_acknowledged_at = datetime.utcnow()
+    locked.maintenance_latch_acknowledged_by_user_id = user.id
+    locked.maintenance_latch_acknowledgement_json = json.dumps({"failed_run_id": failed.public_id, "checks": evidence["checks"], "authority": evidence["authority"], "runtime_unchanged": True}, sort_keys=True, default=str)
+    db.add(HAEvent(cluster_id=locked.id, node_id=None, event_type="maintenance_latch_failure_acknowledged", severity="warning", source="kaya", message="An administrator acknowledged the historical failed-safe maintenance operation; the safety latch remains active.", details_json_redacted=json.dumps({"maintenance_run_id": failed.public_id, "runtime_unchanged": True}, sort_keys=True), occurred_at=datetime.utcnow()))
+    write_audit(db, user, "acknowledged", "ha_maintenance_latch", locked.public_id, detail=f"Acknowledged the historical failed-safe maintenance operation for {locked.name}; the safety latch remains active.", severity="warning", metadata={"maintenance_run_id": failed.public_id, "runtime_unchanged": True}, commit=False)
+    db.commit()
+    return locked
+
+
+def release_maintenance_latch(db: Session, cluster: HACluster, user: User) -> HACluster:
+    locked = db.query(HACluster).populate_existing().filter(HACluster.id == cluster.id).with_for_update().one()
+    evidence = _latch_evidence(db, locked)
+    failed = evidence["failed_run"]
+    if not locked.maintenance_mode or failed is None:
+        write_audit(db, user, "denied", "ha_maintenance_latch", locked.public_id, detail=f"Failed-safe latch release was denied for {locked.name}; no eligible retained failed-safe run exists.", severity="warning", metadata={"reason_code": "NO_ELIGIBLE_FAILED_SAFE_RUN"}, force=True)
+        raise HAMaintenanceError("No retained failed-safe maintenance latch is available for release.")
+    if not latch_acknowledgement_matches(locked, failed):
+        write_audit(db, user, "denied", "ha_maintenance_latch", locked.public_id, detail=f"Failed-safe latch release was denied for {locked.name}; historical failure acknowledgement is missing.", severity="warning", metadata={"reason_code": "ACKNOWLEDGEMENT_REQUIRED", "maintenance_run_id": failed.public_id}, force=True)
+        raise HAMaintenanceError("Acknowledge the historical failed-safe operation before releasing the latch.")
+    failed_checks = [item["code"] for item in evidence["checks"] if not item["passed"]]
+    if failed_checks:
+        write_audit(db, user, "denied", "ha_maintenance_latch", locked.public_id, detail=f"Failed-safe latch release was denied for {locked.name}; required safety checks remain blocked.", severity="warning", metadata={"reason_code": "SAFETY_CHECKS_BLOCKED", "maintenance_run_id": failed.public_id, "blocked_checks": failed_checks}, force=True)
+        raise HAMaintenanceError("Latch release is blocked: " + ", ".join(failed_checks) + ".")
+    now = datetime.utcnow()
+    locked.maintenance_mode = False
+    locked.automatic_sync_hold = True
+    locked.automatic_failover_enabled = False
+    locked.maintenance_latch_released_at = now
+    locked.maintenance_latch_released_by_user_id = user.id
+    locked.maintenance_latch_release_json = json.dumps({"checks": evidence["checks"], "automatic_sync_hold": True, "automatic_failover_disabled": True, "runtime_unchanged": True}, sort_keys=True, default=str)
+    db.add(HAEvent(cluster_id=locked.id, node_id=None, event_type="maintenance_latch_released", severity="warning", source="kaya", message="An administrator released the maintenance safety latch after all required persisted safety checks passed. Automatic configuration writes remain on hold and automatic failover remains disabled.", details_json_redacted=json.dumps({"maintenance_run_id": failed.public_id, "automatic_sync_hold": True, "automatic_failover_disabled": True, "runtime_unchanged": True}, sort_keys=True), occurred_at=now))
+    write_audit(db, user, "released", "ha_maintenance_latch", locked.public_id, detail=f"Released the maintenance safety latch for {locked.name}; automatic configuration writes remain on hold and automatic failover remains disabled.", severity="warning", metadata={"maintenance_run_id": failed.public_id, "automatic_sync_hold": True, "automatic_failover_disabled": True, "runtime_unchanged": True}, commit=False)
+    db.commit()
+    return locked
 
 
 @dataclass(frozen=True)
@@ -406,21 +534,29 @@ def start_dhcp_self_heal(
             max(0, int((current - stable_since).total_seconds())) if stable_since else 0,
         )
         return None
-    hard_failure_proven = bool(
-        len(topology.fresh_node_ids) == 1
-        and topology.fresh_node_ids == (owner.id,)
-        and _hard_failover_proof(db, cluster, owner, current)
-    )
+    # Revised DHCP handover protocol: a silent peer is never treated as released.  The
+    # owner's own "automatic failover completed" claim is not evidence about the peer.
+    hard_failure_proven = False
     if not topology.fresh and not hard_failure_proven:
         return None
-    if owner.dns_healthy is not True or owner.ftl_active is not True or (not standby_observation.released and not hard_failure_proven):
+    if owner.dns_healthy is not True or owner.ftl_active is not True or (not standby_observation.stopped and not hard_failure_proven):
         return None
 
     repair_node = None
     action_type = None
     if topology.fresh and standby_observation.configured is True:
         repair_node, action_type = standby, "DHCP_DEMOTE"
-    elif owner_observation.configured is False:
+    elif owner_observation.configured is False and owner_observation.active:
+        # Configuration-only repair applies to an owner that already serves DHCP.  An owner
+        # that is not serving needs a verified handover (with leases), never this repair.
+        # It never moves DHCP authority: only the holder is repaired.
+        from app.services.ha_dhcp_authority import authority as dhcp_authority, grant_authority
+
+        current_authority = dhcp_authority(cluster)
+        if current_authority is not None and current_authority["node_id"] != owner.public_id:
+            return None
+        if current_authority is None:
+            grant_authority(cluster, owner, evidence="established_verified_topology")  # standby verified released above
         repair_node, action_type = owner, "DHCP_PROMOTE"
     if repair_node is None:
         return None
@@ -528,6 +664,15 @@ def start_dhcp_self_heal(
 def advance_dhcp_self_heal(db: Session, run: HAMaintenanceRun) -> HAMaintenanceRun:
     if run.operation != "DHCP_SELF_HEAL" or run.status != "RUNNING":
         return run
+    with coordinated(db, run.cluster_id, operation="advance_dhcp_self_heal", run=run) as acquired:
+        if not acquired:
+            return run
+        return _advance_dhcp_self_heal(db, run)
+
+
+def _advance_dhcp_self_heal(db: Session, run: HAMaintenanceRun) -> HAMaintenanceRun:
+    if run.operation != "DHCP_SELF_HEAL" or run.status != "RUNNING":
+        return run
     if run.phase == "REPAIRING_DHCP":
         result = _result_document(run)
         repair_node = db.get(HANode, result.get("repair_node_id"))
@@ -575,7 +720,7 @@ def advance_dhcp_self_heal(db: Session, run: HAMaintenanceRun) -> HAMaintenanceR
     repair_observation = dhcp_observation(repair_node, datetime.utcnow(), since=run.phase_started_at)
     standby = next(node for node in run.cluster.nodes if node.id != owner.id)
     standby_observation = dhcp_observation(standby, datetime.utcnow(), since=run.phase_started_at)
-    hard_failure_proven = bool(result.get("hard_failure_proven") and _hard_failover_proof(db, run.cluster, owner, datetime.utcnow()))
+    hard_failure_proven = False  # revised protocol: silence never counts as release
     reports_sufficient = topology.fresh or (
         hard_failure_proven
         and topology.fresh_node_ids == (owner.id,)
@@ -698,6 +843,7 @@ def _snapshot_state(cluster: HACluster) -> dict[str, Any]:
 
 
 def start_reconciliation(db: Session, cluster: HACluster, user: User) -> HAMaintenanceRun:
+    cluster = db.query(HACluster).populate_existing().filter(HACluster.id == cluster.id).with_for_update().one()
     if active_maintenance(cluster):
         raise HAMaintenanceError("Cluster maintenance is already in progress.")
     from app.services.ha_failover import active_failover
@@ -720,6 +866,15 @@ def start_reconciliation(db: Session, cluster: HACluster, user: User) -> HAMaint
 
 
 def reconcile_cluster_state(db: Session, run: HAMaintenanceRun) -> HAMaintenanceRun:
+    if run.operation != "RECONCILE" or run.status not in ACTIVE_STATUSES:
+        return run
+    with coordinated(db, run.cluster_id, operation="reconcile_cluster_state", run=run) as acquired:
+        if not acquired:
+            return run
+        return _reconcile_cluster_state(db, run)
+
+
+def _reconcile_cluster_state(db: Session, run: HAMaintenanceRun) -> HAMaintenanceRun:
     if run.operation != "RECONCILE" or run.status not in ACTIVE_STATUSES:
         return run
     inspection = inspect_cluster(run.cluster, since=run.started_at)
@@ -802,6 +957,97 @@ def reconcile_cluster_state(db: Session, run: HAMaintenanceRun) -> HAMaintenance
     return run
 
 
+def _reinitialisation_previous_state(cluster: HACluster, prior_run: HAMaintenanceRun | None) -> dict[str, Any]:
+    """Settings a new REINITIALISE may restore on success, plus what to put back if it fails safe.
+
+    A retry may carry automatic-sync settings forward only from the FAILED_SAFE
+    run that still holds the maintenance latch. Automatic failover is never
+    re-enabled from saved history: it is restored only if it was enabled when
+    this run started, so an older or released failure cannot switch it back on.
+    """
+    current = _snapshot_state(cluster)
+    previous = current
+    if (
+        prior_run is not None
+        and prior_run.operation == "REINITIALISE"
+        and prior_run.status == "FAILED_SAFE"
+        and cluster.maintenance_mode
+    ):
+        try:
+            inherited = json.loads(prior_run.previous_state_json or "{}")
+        except (TypeError, ValueError):
+            inherited = None
+        if isinstance(inherited, dict):
+            previous = {key: value for key, value in inherited.items() if key != "restore_on_failure"}
+            previous["inherited_from_maintenance_run_id"] = prior_run.public_id
+            if inherited.get("automatic_failover_enabled") is True and not current["automatic_failover_enabled"]:
+                previous["automatic_failover_review_required"] = True
+            previous["automatic_failover_enabled"] = current["automatic_failover_enabled"]
+    # Values this run may overwrite before it succeeds (D5/D6). Captured fresh,
+    # never inherited, so a failed run can put them back.
+    previous["restore_on_failure"] = {
+        "authoritative_node_id": cluster.authoritative_node_id,
+        "nodes": [{
+            "id": node.id,
+            "configuration_checksum": node.configuration_checksum,
+            "configuration_snapshot_json": node.configuration_snapshot_json,
+        } for node in cluster.nodes],
+    }
+    return previous
+
+
+def _restore_automation(cluster: HACluster, run: HAMaintenanceRun) -> list[str]:
+    """Restore automation settings on success; return any notes for the operator."""
+    try:
+        previous = json.loads(run.previous_state_json or "{}")
+    except (TypeError, ValueError):
+        previous = {}
+    if not isinstance(previous, dict):
+        previous = {}
+    cluster.automatic_failover_enabled = previous.get("automatic_failover_enabled") is True
+    cluster.automatic_sync_enabled = previous.get("automatic_sync_enabled") is True
+    cluster.automatic_sync_allow_deletions = previous.get("automatic_sync_allow_deletions") is True
+    if previous.get("automatic_failover_review_required") is True:
+        return ["Automatic failover was left disabled after the earlier failed repair; re-enable it in cluster settings once you have reviewed the cluster"]
+    return []
+
+
+def _restore_after_failed_reinitialisation(run: HAMaintenanceRun) -> None:
+    """Put back authority and configuration baselines a failed REINITIALISE overwrote.
+
+    Compare-and-restore: a value is reverted only while it still holds what this
+    run wrote, so a later verified change (for example a successful sync to the
+    target) is never undone. Runs created before this field existed are left as-is.
+    """
+    if run.operation != "REINITIALISE":
+        return
+    try:
+        saved = json.loads(run.previous_state_json or "{}").get("restore_on_failure")
+    except (TypeError, ValueError, AttributeError):
+        return
+    if not isinstance(saved, dict):
+        return
+    cluster = run.cluster
+    if cluster.authoritative_node_id == run.authoritative_node_id:
+        original = saved.get("authoritative_node_id")
+        if original is None or any(node.id == original for node in cluster.nodes):
+            cluster.authoritative_node_id = original
+    try:
+        written = json.loads(run.result_json or "{}").get("baseline_checksums_written") or {}
+    except (TypeError, ValueError, AttributeError):
+        written = {}
+    nodes = {node.id: node for node in cluster.nodes}
+    for item in saved.get("nodes") or []:
+        if not isinstance(item, dict):
+            continue
+        node = nodes.get(item.get("id"))
+        if node is None or str(node.id) not in written:
+            continue
+        if node.configuration_checksum == written[str(node.id)]:
+            node.configuration_checksum = item.get("configuration_checksum")
+            node.configuration_snapshot_json = item.get("configuration_snapshot_json")
+
+
 def start_reinitialisation(
     db: Session,
     cluster: HACluster,
@@ -811,6 +1057,9 @@ def start_reinitialisation(
     authority: HANode,
     acknowledged: bool,
 ) -> HAMaintenanceRun:
+    cluster = db.query(HACluster).populate_existing().filter(HACluster.id == cluster.id).with_for_update().one()
+    desired_active = next((node for node in cluster.nodes if node.id == desired_active.id), None)
+    authority = next((node for node in cluster.nodes if node.id == authority.id), None)
     if not acknowledged:
         raise HAMaintenanceError("Confirm that Kaya may rebuild HA ownership while preserving Pi-hole data and cluster history.")
     if desired_active not in cluster.nodes or authority not in cluster.nodes:
@@ -823,14 +1072,7 @@ def start_reinitialisation(
     if active_failover(cluster):
         raise HAMaintenanceError("Wait for the current failover or rollback operation to finish.")
 
-    prior_run = latest_maintenance(cluster)
-    if prior_run and prior_run.operation == "REINITIALISE" and prior_run.status == "FAILED_SAFE":
-        try:
-            previous = json.loads(prior_run.previous_state_json or "{}")
-        except json.JSONDecodeError:
-            previous = _snapshot_state(cluster)
-    else:
-        previous = _snapshot_state(cluster)
+    previous = _reinitialisation_previous_state(cluster, latest_maintenance(cluster))
     run = HAMaintenanceRun(
         cluster_id=cluster.id,
         operation="REINITIALISE",
@@ -839,7 +1081,7 @@ def start_reinitialisation(
         desired_active_node_id=desired_active.id,
         authoritative_node_id=authority.id,
         previous_state_json=json.dumps(previous, sort_keys=True),
-        result_json=json.dumps({"progress": ["Waiting for fresh signed node reports"]}, sort_keys=True),
+        result_json=json.dumps({"progress": ["Waiting for fresh signed node reports"], "high_impact_approved": bool(acknowledged)}, sort_keys=True),
         requested_by_user_id=user.id,
     )
     cluster.maintenance_mode = True
@@ -884,6 +1126,7 @@ def _fail_safe(db: Session, run: HAMaintenanceRun, message: str) -> HAMaintenanc
     run.error_redacted = message[:1000]
     run.completed_at = datetime.utcnow()
     run.cluster.status = "DEGRADED"
+    _restore_after_failed_reinitialisation(run)
     _event(db, run, "cluster_reinitialisation_failed", "critical", message[:1000])
     db.commit()
     write_audit(
@@ -899,12 +1142,20 @@ def _fail_safe(db: Session, run: HAMaintenanceRun, message: str) -> HAMaintenanc
     return run
 
 
+def _live_configuration(endpoint: PiHoleEndpoint):
+    """Read one node's live configuration; no database session is involved."""
+    return read_live_configuration(endpoint)
+
+
 def _create_two_node_backups(db: Session, run: HAMaintenanceRun) -> HASyncRun:
     cluster = run.cluster
+    endpoints = [pihole_endpoint(node) for node in cluster.nodes]
+    db.commit()  # end the transaction before the (slow) Pi-hole reads
+    live = {endpoint.id: _live_configuration(endpoint)[1] for endpoint in endpoints}
     cluster.authoritative_node_id = run.authoritative_node_id
     raw_snapshots: dict[int, dict[str, Any]] = {}
     for node in cluster.nodes:
-        _, configuration = _live_configuration(node)
+        configuration = live[node.id]
         safe = {key: _safe_configuration(value) for key, value in configuration.items()}
         from app.services.ha_dns_advertisement import preserve_cached_dns_advertisement
 
@@ -916,6 +1167,13 @@ def _create_two_node_backups(db: Session, run: HAMaintenanceRun) -> HASyncRun:
         node.configuration_snapshot_json = snapshot_text
         node.configuration_checksum = hashlib.sha256(snapshot_text.encode()).hexdigest()
         raw_snapshots[node.id] = safe
+    try:
+        result = json.loads(run.result_json or "{}")
+    except (TypeError, ValueError):
+        result = {}
+    # Recorded so a FAILED_SAFE run can restore only the baselines it replaced.
+    result["baseline_checksums_written"] = {str(node.id): node.configuration_checksum for node in cluster.nodes}
+    run.result_json = json.dumps(result, sort_keys=True)
     db.commit()
     sync_run = create_sync_plan(db, cluster, run.requested_by)
     for node in cluster.nodes:
@@ -955,6 +1213,9 @@ def desired_maintenance_action(cluster: HACluster, node: HANode) -> dict[str, An
             decision = authorise_dhcp_demotion(cluster, node, replacement=replacement, owner_handover=False)
             if not decision.allowed:
                 return None
+        terms = _promotion_terms(cluster, node) if action_type == "DHCP_PROMOTE" else {"authority_epoch": None}
+        if terms is None:
+            return None
         checksum = _maintenance_checksum(run, node, action_type)
         return {
             "action_id": f"maintenance:{run.public_id}:{action_type.lower()}:{node.public_id}",
@@ -969,6 +1230,7 @@ def desired_maintenance_action(cluster: HACluster, node: HANode) -> dict[str, An
             # the VIP and serves DHCP, so live leases must remain untouched.
             "configuration_only": action_type == "DHCP_PROMOTE",
             "owner_handover_authorised": owner_handover,
+            **terms,
         }
     target = run.desired_active_node
     if target is None:
@@ -992,6 +1254,9 @@ def desired_maintenance_action(cluster: HACluster, node: HANode) -> dict[str, An
         if not decision.allowed:
             return None
         owner_handover = decision.owner_handover
+    terms = _promotion_terms(cluster, node) if action_type == "DHCP_PROMOTE" else {"authority_epoch": None}
+    if terms is None:
+        return None
     checksum = _maintenance_checksum(run, node, action_type)
     return {
         "action_id": f"maintenance:{run.public_id}:{action_type.lower()}:{node.public_id}",
@@ -1003,7 +1268,15 @@ def desired_maintenance_action(cluster: HACluster, node: HANode) -> dict[str, An
         "lease_generation": run.cluster.lease_replication.desired_generation if run.cluster.lease_replication else 0,
         "restore_original": False,
         "owner_handover_authorised": owner_handover,
+        **terms,
     }
+
+
+def _promotion_terms(cluster: HACluster, node: HANode) -> dict | None:
+    """DHCP is only ever promoted on the node Kaya granted DHCP authority to (epoch and lease terms)."""
+    from app.services.ha_dhcp_authority import promotion_terms
+
+    return promotion_terms(cluster, node)
 
 
 def record_maintenance_action_result(
@@ -1093,6 +1366,11 @@ def _request_runtime_rebuild(db: Session, run: HAMaintenanceRun) -> None:
         node.keepalived_status = "PENDING_AGENT"
         node.keepalived_last_error = None
     _set_phase(run, "WAITING_FOR_VIP", f"HA runtime configuration queued with {target.display_name} selected as Active")
+    # The destination receives a preempt-capable configuration at this generation
+    # (D8/D9): record it so the stable baseline is restored and verified afterwards.
+    from app.services.ha_keepalived_baseline import record_preemption
+
+    record_preemption(cluster, target, reason="reinitialisation")
     db.commit()
 
 
@@ -1126,7 +1404,51 @@ def validate_cluster_invariants(run: HAMaintenanceRun, *, now: datetime | None =
     return list(dict.fromkeys(blockers))
 
 
+LEASE_STAGING_AFTER_ALIGNMENT = "lease_staging_after_alignment"
+# Bound for both agents to apply and report the runtime rebuild (previously unbounded).
+RUNTIME_APPLY_TIMEOUT_SECONDS = 180
+
+
+def _verified_sole_dhcp_owner(run: HAMaintenanceRun, target: HANode, standby: HANode) -> bool:
+    """Fresh signed reports show the selected Active as the only DHCP server and the standby released.
+
+    Then DHCP never moves during reinitialisation: only the Virtual IP moves onto
+    the node that already serves DHCP, so no DHCP owner changes at any point.
+    """
+    inspection = inspect_cluster(run.cluster)  # fresh signed reports (normal freshness window)
+    return bool(
+        pihole_manages_dhcp(run.cluster)
+        and inspection.fresh
+        and inspection.dhcp_owner_ids == (target.id,)
+        and _dhcp_active(target)
+        and _dhcp_released(standby)
+    )
+
+
+def _lease_staging_deferred(run: HAMaintenanceRun) -> bool:
+    try:
+        return json.loads(run.result_json or "{}").get(LEASE_STAGING_AFTER_ALIGNMENT) is True
+    except (TypeError, ValueError):
+        return False
+
+
+def _defer_lease_staging(run: HAMaintenanceRun) -> None:
+    result = json.loads(run.result_json or "{}")
+    result[LEASE_STAGING_AFTER_ALIGNMENT] = True
+    run.result_json = json.dumps(result, sort_keys=True)
+
+
 def advance_reinitialisation(db: Session, run: HAMaintenanceRun) -> HAMaintenanceRun:
+    """Advance one REINITIALISE step; concurrent callers skip while another holds the cluster."""
+    if run.operation != "REINITIALISE" or run.status != "RUNNING":
+        return run
+    with coordinated(db, run.cluster_id, operation="advance_reinitialisation", run=run) as acquired:
+        if not acquired:
+            return run
+        return _advance_reinitialisation(db, run)
+
+
+def _advance_reinitialisation(db: Session, run: HAMaintenanceRun) -> HAMaintenanceRun:
     if run.operation != "REINITIALISE" or run.status != "RUNNING":
         return run
     cluster = run.cluster
@@ -1186,10 +1508,7 @@ def advance_reinitialisation(db: Session, run: HAMaintenanceRun) -> HAMaintenanc
                     node.recovery_stable_since = datetime.utcnow() if not active else None
                 cluster.current_active_node_id = target.id
                 cluster.authoritative_node_id = run.authoritative_node_id
-                previous = json.loads(run.previous_state_json or "{}")
-                cluster.automatic_failover_enabled = bool(previous.get("automatic_failover_enabled"))
-                cluster.automatic_sync_enabled = bool(previous.get("automatic_sync_enabled"))
-                cluster.automatic_sync_allow_deletions = bool(previous.get("automatic_sync_allow_deletions"))
+                automation_notes = _restore_automation(cluster, run)
                 cluster.status = "HEALTHY"
                 cluster.maintenance_mode = False
                 run.status = "SUCCEEDED"
@@ -1203,6 +1522,7 @@ def advance_reinitialisation(db: Session, run: HAMaintenanceRun) -> HAMaintenanc
                         "Fresh signed reports received from both nodes",
                         "Observed topology already matches the requested Active and Standby assignment",
                         "Kaya stored state reconciled without moving DNS, DHCP or the Virtual IP",
+                        *automation_notes,
                     ],
                     "service_movement_performed": False,
                 }, sort_keys=True)
@@ -1233,10 +1553,28 @@ def advance_reinitialisation(db: Session, run: HAMaintenanceRun) -> HAMaintenanc
             if sync_run is None:
                 raise HAMaintenanceError("The protected synchronisation plan is missing.")
             if sync_run.status == "PLANNED":
-                execute_sync(db, cluster, sync_run, allow_deletions=True, maintenance_authorised=True)
+                try:
+                    approval = json.loads(run.result_json or "{}")
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    approval = {}
+                execute_sync(
+                    db,
+                    cluster,
+                    sync_run,
+                    allow_deletions=True,
+                    maintenance_authorised=True,
+                    acknowledge_high_impact=approval.get("high_impact_approved") is True,
+                )
             elif sync_run.status not in {"IN_SYNC", "SUCCEEDED"}:
                 raise HAMaintenanceError("The protected configuration synchronisation did not complete.")
-            if pihole_manages_dhcp(cluster):
+            if pihole_manages_dhcp(cluster) and _verified_sole_dhcp_owner(run, target, standby):
+                # D4: lease staging needs one verified owner of both the Virtual IP and
+                # DHCP.  When the selected Active already is the only DHCP server, DHCP
+                # never moves; align the Virtual IP first, then stage leases with the
+                # full authority, generation and fencing checks.
+                _set_phase(run, "NORMALISING_STANDBY", f"Supported configuration synchronised and verified; {target.display_name} is the verified sole DHCP server, so DHCP stays there and leases are staged once it also holds the Virtual IP")
+                _defer_lease_staging(run)
+            elif pihole_manages_dhcp(cluster):
                 _set_phase(run, "STAGING_DHCP", "Supported configuration synchronised and verified")
             else:
                 _set_phase(run, "NORMALISING_STANDBY", "Supported configuration synchronised and verified")
@@ -1250,7 +1588,10 @@ def advance_reinitialisation(db: Session, run: HAMaintenanceRun) -> HAMaintenanc
             if not state or state.status != "CURRENT" or state.target_node_id != standby.id or standby.lease_generation < state.desired_generation:
                 db.commit()
                 return run
-            _set_phase(run, "NORMALISING_STANDBY", "Current DHCP generation staged on the selected standby")
+            if _lease_staging_deferred(run):
+                _set_phase(run, "VERIFYING", "Current DHCP generation staged on the selected standby after ownership was aligned")
+            else:
+                _set_phase(run, "NORMALISING_STANDBY", "Current DHCP generation staged on the selected standby")
         elif run.phase == "NORMALISING_STANDBY":
             if pihole_manages_dhcp(cluster) and not _dhcp_released(standby):
                 _set_phase(run, "DEMOTING_STANDBY", f"Stopping DHCP on {standby.display_name} before changing Virtual IP ownership")
@@ -1277,6 +1618,8 @@ def advance_reinitialisation(db: Session, run: HAMaintenanceRun) -> HAMaintenanc
                 )
                 return _fail_safe(db, run, "The HA runtime rebuild stopped safely. " + detail)
             if not fresh.fresh or any(node.keepalived_status != "DEPLOYED" for node in cluster.nodes):
+                if datetime.utcnow() - run.phase_started_at > timedelta(seconds=RUNTIME_APPLY_TIMEOUT_SECONDS):
+                    return _fail_safe(db, run, "The HA runtime configuration was not applied and reported by both nodes within 3 minutes. Reinitialisation stopped without starting or stopping DHCP.")
                 db.commit()
                 return run
             if fresh.vip_owner_ids != (target.id,):
@@ -1284,7 +1627,16 @@ def advance_reinitialisation(db: Session, run: HAMaintenanceRun) -> HAMaintenanc
                     return _fail_safe(db, run, f"Kaya could not confirm that {target.display_name} became the only Virtual IP owner. No additional DHCP service was started.")
                 db.commit()
                 return run
-            if pihole_manages_dhcp(cluster) and not _dhcp_active(target):
+            if _lease_staging_deferred(run):
+                if not (fresh.dhcp_owner_ids == (target.id,) and _dhcp_active(target) and _dhcp_released(standby)):
+                    return _fail_safe(db, run, f"DHCP ownership changed while the Virtual IP moved to {target.display_name}. Reinitialisation stopped without starting or stopping DHCP anywhere.")
+                _set_phase(run, "STAGING_DHCP", f"{target.display_name} now holds the Virtual IP and serves DHCP; staging the validated lease snapshot on {standby.display_name}")
+            elif pihole_manages_dhcp(cluster) and not _dhcp_active(target):
+                if not _dhcp_released(standby):
+                    return _fail_safe(db, run, f"{standby.display_name} no longer reports DHCP released, so DHCP authority was not moved to {target.display_name}. No DHCP service was started.")
+                from app.services.ha_dhcp_authority import ensure_authority
+
+                ensure_authority(cluster, target, evidence="verified_release", run_id=f"{run.public_id}:PROMOTING_ACTIVE")
                 _set_phase(run, "PROMOTING_ACTIVE", f"{target.display_name} exclusively owns the Virtual IP; starting DHCP there")
             else:
                 _set_phase(run, "VERIFYING", f"{target.display_name} exclusively owns the Virtual IP")
@@ -1321,16 +1673,13 @@ def advance_reinitialisation(db: Session, run: HAMaintenanceRun) -> HAMaintenanc
             cluster.authoritative_node_id = run.authoritative_node_id
             cluster.status = "HEALTHY"
             cluster.maintenance_mode = False
-            previous = json.loads(run.previous_state_json or "{}")
-            cluster.automatic_failover_enabled = bool(previous.get("automatic_failover_enabled"))
-            cluster.automatic_sync_enabled = bool(previous.get("automatic_sync_enabled"))
-            cluster.automatic_sync_allow_deletions = bool(previous.get("automatic_sync_allow_deletions"))
+            automation_notes = _restore_automation(cluster, run)
             run.status = "SUCCEEDED"
             run.phase = "COMPLETE"
             run.completed_at = datetime.utcnow()
             run.error_redacted = None
             result = inspection_json(cluster, inspect_cluster(cluster))
-            result["progress"] = list(json.loads(run.result_json or "{}").get("progress") or []) + ["Final invariants verified; HA automation restored"]
+            result["progress"] = list(json.loads(run.result_json or "{}").get("progress") or []) + ["Final invariants verified; HA automation restored", *automation_notes]
             run.result_json = json.dumps(result, sort_keys=True)
             _event(db, run, "cluster_reinitialisation_completed", "info", f"Cluster reinitialised with {target.display_name} as the exclusive Active node.", {"selected_active_node_id": target.public_id, "selected_standby_node_id": standby.public_id})
         db.commit()
@@ -1389,7 +1738,12 @@ def maintenance_status(run: HAMaintenanceRun | None) -> dict[str, Any] | None:
         "COMPLETE": "Maintenance completed",
         "PAUSED": "Maintenance stopped safely",
     }
-    phases = REINITIALISATION_PHASES if run.operation == "REINITIALISE" else DHCP_SELF_HEAL_PHASES if run.operation == "DHCP_SELF_HEAL" else ("WAITING_FOR_REPORTS", "RECONCILING", "COMPLETE")
+    if run.operation == "ALIGN_OWNERSHIP":
+        from app.services.ha_alignment import ALIGNMENT_PHASES, PHASE_LABELS
+
+        labels.update(PHASE_LABELS)
+    phases = (REINITIALISATION_PHASES if run.operation == "REINITIALISE" else DHCP_SELF_HEAL_PHASES if run.operation == "DHCP_SELF_HEAL"
+              else ALIGNMENT_PHASES if run.operation == "ALIGN_OWNERSHIP" else ("WAITING_FOR_REPORTS", "RECONCILING", "COMPLETE"))
     current_index = phases.index(run.phase) if run.phase in phases else 0
     attempts = dict(result.get("phase_attempts") or {})
     elapsed = max(0, int((datetime.utcnow() - (run.started_at or run.created_at)).total_seconds()))

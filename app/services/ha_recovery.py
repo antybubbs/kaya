@@ -16,8 +16,17 @@ from app.services.ha_topology import dhcp_observation, pihole_manages_dhcp, reco
 
 RECOVERY_HEARTBEAT_SECONDS = 45
 RECOVERY_STABILITY_SECONDS = 60
+# An expiry-only lease refresh (a client renewed) that the standby has not yet
+# staged does not reset readiness for this long; a standby that stops staging
+# refreshes for longer is no longer ready.
+LEASE_REFRESH_GRACE_SECONDS = 300
+BASIC_RECOVERY_CHECKS = frozenset({"kaya_heartbeat", "agent_identity", "dns", "network_interface", "keepalived", "cluster_generation", "standby_runtime", "dhcp_safe"})
+SYNC_RECOVERY_CHECKS = frozenset({"configuration_sync", "lease_sync"})
 RECOVERY_STATES = {
     "OFFLINE",
+    # Serving DHCP or claiming the Virtual IP while not its sole owner: an
+    # ownership problem for the assessment, not a standby recovering.
+    "OWNERSHIP_CONFLICT",
     "RECOVERING",
     "SYNCHRONISING",
     "VERIFYING",
@@ -180,17 +189,7 @@ def recovery_checks(db: Session, cluster: HACluster, node: HANode, *, now: datet
             or (latest_sync.completed_at or latest_sync.created_at) >= node.recovery_started_at
         )
     )
-    lease = cluster.lease_replication
-    lease_sync = bool(
-        not pihole_manages_dhcp(cluster)
-        or (
-            lease
-            and lease.status == "CURRENT"
-            and lease.target_node_id == node.id
-            and lease.applied_generation >= lease.desired_generation
-            and node.lease_generation >= lease.desired_generation
-        )
-    )
+    lease_sync, lease_detail = _lease_readiness(cluster, node, current)
     peer_label = "Peer Network Reachability (optional)"
     peer = next((item for item in cluster.nodes if item.id != node.id), None)
     try:
@@ -255,7 +254,7 @@ def recovery_checks(db: Session, cluster: HACluster, node: HANode, *, now: datet
         RecoveryCheck("standby_runtime", "Standby ownership", standby_runtime, "The recovered node is not claiming the DNS Virtual IP."),
         RecoveryCheck("dhcp_safe", "DHCP standby state", dhcp_safe, "A fresh Pi-hole configuration and UDP/67 observation confirms DHCP is released on the recovered node.", pihole_manages_dhcp(cluster)),
         RecoveryCheck("configuration_sync", "Pi-hole API, configuration and drift", configuration_sync, "A post-recovery active-to-standby API comparison or synchronisation completed without supported drift."),
-        RecoveryCheck("lease_sync", "DHCP generation and lease staging", lease_sync, "The standby has staged the current validated DHCP generation.", pihole_manages_dhcp(cluster)),
+        RecoveryCheck("lease_sync", "DHCP generation and lease staging", lease_sync, lease_detail, pihole_manages_dhcp(cluster)),
         RecoveryCheck(
             "peer_reachability",
             peer_label,
@@ -266,9 +265,56 @@ def recovery_checks(db: Session, cluster: HACluster, node: HANode, *, now: datet
     )
 
 
+def _lease_readiness(cluster: HACluster, node: HANode, now: datetime) -> tuple[bool, str]:
+    """Whether the standby holds the current lease set.
+
+    A client renewing its lease changes only expiry times.  Kaya still stages
+    those refreshes (the failover helper writes staged expiry times into the
+    lease file, so stale copies could let a live address be reissued), but an
+    unstaged refresh younger than LEASE_REFRESH_GRACE_SECONDS does not reset
+    readiness.  Any change to the lease set itself must be staged first.
+    """
+    current_detail = "The standby has staged the current validated DHCP generation."
+    if not pihole_manages_dhcp(cluster):
+        return True, current_detail
+    lease = cluster.lease_replication
+    if lease is None or lease.target_node_id != node.id:
+        return False, current_detail
+    staged = min(lease.applied_generation or 0, node.lease_generation or 0)
+    if lease.status == "CURRENT" and staged >= lease.desired_generation:
+        return True, current_detail
+    material = lease.material_generation
+    if material is None or lease.status not in {"CURRENT", "PENDING"} or staged < material:
+        return False, current_detail
+    refreshed_at = lease.last_event_at
+    if refreshed_at is not None and (now - refreshed_at).total_seconds() <= LEASE_REFRESH_GRACE_SECONDS:
+        return True, "The standby has staged every lease change; a lease renewal refresh is being staged."
+    return False, "The standby has not staged recent lease renewals."
+
+
+def standby_progress(checks: tuple[RecoveryCheck, ...]) -> str | None:
+    """RECOVERING or SYNCHRONISING when required standby checks fail now; None when all pass."""
+    required = [check for check in checks if check.required]
+    if not all(check.passed for check in required if check.key in BASIC_RECOVERY_CHECKS):
+        return "RECOVERING"
+    if not all(check.passed for check in required if check.key in SYNC_RECOVERY_CHECKS):
+        return "SYNCHRONISING"
+    return None
+
+
+def ownership_conflict(cluster: HACluster, node: HANode, active: HANode | None, now: datetime) -> bool:
+    """A fresh node that is not the sole Virtual IP owner yet claims the VIP or serves DHCP."""
+    if (active is not None and node.id == active.id) or not _fresh(node, now):
+        return False
+    if node.vip_owned is True:
+        return True
+    return pihole_manages_dhcp(cluster) and dhcp_observation(node, now, freshness_seconds=RECOVERY_HEARTBEAT_SECONDS).active
+
+
 def _event_for_transition(db: Session, cluster: HACluster, node: HANode, previous: str, current: str, now: datetime) -> None:
     labels = {
         "OFFLINE": ("node_offline", "warning", f"{node.display_name} stopped reporting to Kaya."),
+        "OWNERSHIP_CONFLICT": ("node_ownership_conflict", "warning", f"{node.display_name} is serving DHCP or holding the virtual IP while it is not the sole virtual-IP owner. Standby recovery is paused until ownership is consistent."),
         "RECOVERING": ("node_recovered", "info", f"{node.display_name} is online and recovery checks have started."),
         "SYNCHRONISING": ("node_recovery_synchronising", "info", f"{node.display_name} is being synchronised from the current active node."),
         "VERIFYING": ("node_recovery_verifying", "info", f"{node.display_name} passed synchronisation checks and entered the stability window."),
@@ -296,6 +342,26 @@ def evaluate_recovery(
     now: datetime | None = None,
     stability_seconds: int = RECOVERY_STABILITY_SECONDS,
 ) -> dict[int, NodeRecovery]:
+    """Persist recovery transitions; one caller per cluster at a time.
+
+    A concurrent caller gets a read-only snapshot instead of evaluating again,
+    so a transition (and its event, notification and audit row) is recorded once.
+    """
+    from app.services.ha_coordination import coordinated
+
+    with coordinated(db, cluster.id, operation="evaluate_recovery") as acquired:
+        if not acquired:
+            return recovery_snapshot(db, cluster, now=now)
+        return _evaluate_recovery(db, cluster, now=now, stability_seconds=stability_seconds)
+
+
+def _evaluate_recovery(
+    db: Session,
+    cluster: HACluster,
+    *,
+    now: datetime | None,
+    stability_seconds: int,
+) -> dict[int, NodeRecovery]:
     current = now or datetime.utcnow()
     preferred = preferred_node(cluster)
     if cluster.preferred_node_id is None and preferred is not None:
@@ -307,7 +373,6 @@ def evaluate_recovery(
     for node in cluster.nodes:
         previous = node.recovery_state if node.recovery_state in RECOVERY_STATES else "STANDBY"
         checks = recovery_checks(db, cluster, node, now=current)
-        required = [check for check in checks if check.required]
         if active and node.id == active.id:
             state = "ACTIVE"
             node.recovery_started_at = None
@@ -316,17 +381,17 @@ def evaluate_recovery(
             state = "OFFLINE"
             node.recovery_started_at = None
             node.recovery_stable_since = None
+        elif ownership_conflict(cluster, node, active, current):
+            # Not a standby: recovery starts afresh once ownership is consistent.
+            state = "OWNERSHIP_CONFLICT"
+            node.recovery_started_at = None
+            node.recovery_stable_since = None
         else:
-            if previous == "OFFLINE" or node.recovery_started_at is None:
+            if previous in {"OFFLINE", "OWNERSHIP_CONFLICT"} or node.recovery_started_at is None:
                 node.recovery_started_at = current
-            basic_keys = {"kaya_heartbeat", "agent_identity", "dns", "network_interface", "keepalived", "cluster_generation", "standby_runtime", "dhcp_safe"}
-            basic_ready = all(check.passed for check in required if check.key in basic_keys)
-            sync_ready = all(check.passed for check in required if check.key in {"configuration_sync", "lease_sync"})
-            if not basic_ready:
-                state = "RECOVERING"
-                node.recovery_stable_since = None
-            elif not sync_ready:
-                state = "SYNCHRONISING"
+            progress = standby_progress(checks)
+            if progress is not None:
+                state = progress
                 node.recovery_stable_since = None
             else:
                 if node.recovery_stable_since is None:
@@ -387,14 +452,29 @@ def recovery_snapshot(db: Session, cluster: HACluster, *, now: datetime | None =
     results: dict[int, NodeRecovery] = {}
     for node in cluster.nodes:
         stable_for = int((current - node.recovery_stable_since).total_seconds()) if node.recovery_stable_since else 0
+        checks = recovery_checks(db, cluster, node, now=current)
         results[node.id] = NodeRecovery(
             node,
-            node.recovery_state if node.recovery_state in RECOVERY_STATES else "STANDBY",
-            recovery_checks(db, cluster, node, now=current),
+            _current_state(node, checks, current),
+            checks,
             max(0, stable_for),
             RECOVERY_STABILITY_SECONDS,
         )
     return results
+
+
+def _current_state(node: HANode, checks: tuple[RecoveryCheck, ...], now: datetime) -> str:
+    """The stored state, never claiming more readiness than the current evidence shows.
+
+    Read-only views may run between coordinator evaluations: a standby that has
+    since gone stale or failed a required check is shown as such, not READY.
+    """
+    stored = node.recovery_state if node.recovery_state in RECOVERY_STATES else "STANDBY"
+    if stored not in {"STANDBY_READY", "VERIFYING"}:
+        return stored
+    if not _fresh(node, now):
+        return "OFFLINE"
+    return standby_progress(checks) or stored
 
 
 def peer_diagnostic(node: HANode, peer: HANode | None, *, now: datetime | None = None) -> dict[str, object | None]:
